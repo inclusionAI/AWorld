@@ -216,6 +216,3 @@ For academic citations or wish to contact us, please use the following BibTeX en
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-
-key=https://aistudio.alipay.com/project/model/service/
