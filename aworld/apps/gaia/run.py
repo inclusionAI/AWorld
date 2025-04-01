@@ -46,7 +46,7 @@ async def gaia_run():
     )
 
     agent1 = PlanAgent(conf=agent_config)
-    agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value])
+    agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,fiel],mcp_server=[fiel,tool1,tool2])
 
     # agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
     #                                                      Tools.PYTHON_EXECUTE.value, Tools.SEARCH_API.value])

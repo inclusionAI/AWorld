@@ -221,7 +221,8 @@ class Diagnostic:
                 except asyncio.QueueEmpty:
                     break
             return [result.model_dump() for result in results]
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
+            logging.warning(f"Timeout getting diagnostic data from queue: {e}")
             return None
         except Exception as e:
             logging.warning(f"Error getting diagnostic data from queue: {e}")
@@ -319,8 +320,8 @@ class Diagnostic:
         args_info = json.loads(args_info_str) if isinstance(args_info_str, str) else args_info_str
         return RenderData(type=args_info.get('source_type', 'action'),
                           agent_name='',
-                          tool_name=observation.observer,
-                          action_name=observation.ability,
+                          tool_name=observation.get('observer', ''),
+                          action_name=observation.get('ability', ''),
                           result=[observation],
                           status='success' if diagnostic.success else 'error'
                           )
