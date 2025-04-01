@@ -2,13 +2,14 @@
 # Copyright (c) 2025 inclusionAI.
 
 from enum import Enum
+from typing import Any, Dict, List, Union
 
 from pydantic import BaseModel
-from typing import Dict, Any, Union, List
 
 
 class ActionResult(BaseModel):
     """Result of executing an action by use tool."""
+
     is_done: bool = False
     success: bool = None
     content: str = None
@@ -16,8 +17,10 @@ class ActionResult(BaseModel):
     keep: bool = False
 
 
+# 在现有的 Tools 枚举类中添加 VIDEO_ANALYSIS
 class Tools(Enum):
     """Tool list supported in the framework."""
+
     BROWSER = "browser"
     ANDROID = "android"
     GYM = "openai_gym"
@@ -27,11 +30,14 @@ class Tools(Enum):
     CODE_EXECUTE = "code_execute"
     FILE = "file"
     IMAGE_ANALYSIS = "image_analysis"
+    AUDIO_ANALYSIS = "audio_analysis"
+    VIDEO_ANALYSIS = "video_analysis"
     DOCUMENT_ANALYSIS = "document_analysis"
 
 
 class Agents(Enum):
     """Tool list supported in the framework."""
+
     BROWSER = "browser_agent"
     ANDROID = "android_agent"
     SEARCH = "search_agent"
@@ -72,6 +78,7 @@ class ToolActionInfo(BaseModel):
 
 class ActionModel(BaseModel):
     """The unified model of BaseAgent response can be provided to the agent, or tool actions in environmental."""
+
     tool_name: str = None
     # agent name
     agent_name: str = None

@@ -1,30 +1,32 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
+from aworld.core.envs.action_factory import ActionFactory
+from aworld.core.envs.tool import ToolFactory
+from aworld.logs.util import logger
+from aworld.virtual_environments.android.action.adb_actions import *
 from aworld.virtual_environments.android.android import AndroidTool
+from aworld.virtual_environments.apis.actions import *
 from aworld.virtual_environments.apis.search_api import SearchTool
-from aworld.virtual_environments.image.image_analysis import ImageAnalysisTool
-from aworld.virtual_environments.browsers.browser import BrowserTool
+from aworld.virtual_environments.audio.actions import *
+from aworld.virtual_environments.audio.audio_analysis import AudioAnalysisTool
+from aworld.virtual_environments.browsers.action.actions import *
 from aworld.virtual_environments.browsers.async_browser import (
     BrowserTool as ABrowserTool,
 )
-from aworld.virtual_environments.document.document import DocumentTool
-from aworld.virtual_environments.gym.openai_gym import OpenAIGym
-from aworld.virtual_environments.gym.async_openai_gym import OpenAIGym as AOpenAIGym
-from aworld.virtual_environments.interpreters.python_tool import PythonTool
-from aworld.virtual_environments.terminals.shell_tool import ShellTool
-
-from aworld.virtual_environments.android.action.adb_actions import *
-from aworld.virtual_environments.apis.actions import *
-from aworld.virtual_environments.browsers.action.actions import *
+from aworld.virtual_environments.browsers.browser import BrowserTool
 from aworld.virtual_environments.document.actions import *
+from aworld.virtual_environments.document.document import DocumentTool
 from aworld.virtual_environments.gym.actions import *
-from aworld.virtual_environments.terminals.actions import *
+from aworld.virtual_environments.gym.async_openai_gym import OpenAIGym as AOpenAIGym
+from aworld.virtual_environments.gym.openai_gym import OpenAIGym
 from aworld.virtual_environments.image.actions import *
-
-from aworld.core.envs.action_factory import ActionFactory
-from aworld.logs.util import logger
-from aworld.core.envs.tool import ToolFactory
+from aworld.virtual_environments.image.image_analysis import ImageAnalysisTool
+from aworld.virtual_environments.interpreters.python_tool import PythonTool
+from aworld.virtual_environments.terminals.actions import *
+from aworld.virtual_environments.terminals.shell_tool import ShellTool
+from aworld.virtual_environments.video.actions import *
+from aworld.virtual_environments.video.video_analysis import VideoAnalysisTool
 
 
 def tool_desc():
