@@ -1,16 +1,22 @@
-IMAGE_OCR = 'Input is a base64 encoded image. Read text from image if present. Return a json string with the following format: {"image_text": "text from image"}'
+"""Image OCR prompt for extracting text from images.
 
-GUILDE_LINE = """
-1. Careful visual inspection
-2. Contextual reasoning
-3. Text transcription where relevant
-4. Logical deduction from visual evidence
+Returns:
+    str: A JSON string format prompt containing the extracted image text
 """
 
-IMAGE_REASONING = """
-Input is a base64 encoded image. Given user's task: {task}, solve it following the guide line: 
-1. Careful visual inspection
-2. Contextual reasoning
-3. Text transcription where relevant
-4. Logical deduction from visual evidence
-Return a json string with the following format: {{\"image_reasoning_result\": \"reasoning result given task and image\"}}"""
+IMAGE_OCR = (
+    "Input is a base64 encoded image. Read text from image if present. "
+    "Return a json string with the following format: "
+    '{"image_text": "text from image"}'
+)
+
+IMAGE_REASONING = (
+    "Input is a base64 encoded image. Given user's task: {task}, "
+    "solve it following the guide line:\n"
+    "1. Careful visual inspection\n"
+    "2. Contextual reasoning\n"
+    "3. Text transcription where relevant\n"
+    "4. Logical deduction from visual evidence\n"
+    "Return a json string with the following format: "
+    '{"image_reasoning_result": "reasoning result given task and image"}'
+)
