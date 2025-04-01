@@ -1,25 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
-import base64
-import json
-import os
-import subprocess
-import tempfile
 from typing import Any, Dict, Tuple
-from urllib.parse import urlparse
-
-from pydantic import BaseModel
 
 from aworld.config import ToolConfig
-from aworld.core.common import ActionModel, ActionResult, Observation, Tools
+from aworld.core.common import ActionModel, Observation, Tools
 from aworld.core.envs.tool import Tool, ToolFactory
 from aworld.core.envs.tool_action import ImageAnalysisAction
-from aworld.logs.util import logger
-from aworld.models.llm import get_llm_model
-from aworld.utils import import_packages
 from aworld.virtual_environments.image.llm_executor import LLMToolActionExecutor
-from aworld.virtual_environments.image.prompts import IMAGE_OCR, IMAGE_REASONING
 
 
 @ToolFactory.register(
@@ -28,21 +15,28 @@ from aworld.virtual_environments.image.prompts import IMAGE_OCR, IMAGE_REASONING
     supported_action=ImageAnalysisAction,
 )
 class ImageAnalysisTool(Tool[Observation, ActionModel]):
+    """A tool for performing image analysis tasks like OCR and reasoning.
+
+    This tool inherits from the base Tool class and specializes in processing images
+    through OCR (Optical Character Recognition) and performing reasoning tasks on images
+    provided either as file paths or URLs.
+
+    Attributes:
+        content: Stores the processed content from the image
+        image_base64: Stores the base64 encoded image data
+        cur_observation: Keeps track of the current observation state
+        step_finished: Indicates if the current processing step is complete
+    """
+
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
         """Init image tool."""
-        super(ImageAnalysisTool, self).__init__(conf, **kwargs)
-        self._observation_space = self.observation_space()
-        self._action_space = self.action_space()
-        self.cur_observation = None
+        super().__init__(conf, **kwargs)
         self.content = None
+        self.image_base64 = None
+        self.cur_observation = None
         self.init()
+        self._finish = False
         self.step_finished = True
-
-    def observation_space(self):
-        pass
-
-    def action_space(self):
-        pass
 
     def reset(
         self, *, seed: int | None = None, options: Dict[str, str] | None = None
@@ -54,17 +48,20 @@ class ImageAnalysisTool(Tool[Observation, ActionModel]):
         return self._get_observation(), {}
 
     def init(self) -> None:
+        """Initialize the image analysis tool.
+
+        This method sets up the LLM tool action executor and marks the tool as initialized.
+        """
         self.action_executor = LLMToolActionExecutor()
         self.initialized = True
 
-    def _get_observation(self):
+    def _get_observation(self) -> Observation:
         return Observation(
             **{"dom_tree": "", "image": "", "action_result": [], "info": {}}
         )
 
     def close(self) -> None:
-        if hasattr(self, "context") and self.context:
-            self.context.close()
+        pass
 
     def finished(self) -> bool:
         return self.step_finished
@@ -84,7 +81,7 @@ class ImageAnalysisTool(Tool[Observation, ActionModel]):
                 actions, **kwargs
             )
             reward = 1
-        except Exception as e:
+        except (ValueError, IOError, RuntimeError) as e:
             fail_error = str(e)
 
         terminated = kwargs.get("terminated", False)
