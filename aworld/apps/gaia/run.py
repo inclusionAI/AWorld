@@ -48,15 +48,6 @@ async def gaia_run():
     agent1 = PlanAgent(conf=agent_config)
     agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value])
 
-    # agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
-    #                                                      Tools.PYTHON_EXECUTE.value, Tools.SEARCH_API.value])
-    # print("-------agent_config------")
-    # print(agent_config)
-    # print([Tools.DOCUMENT_ANALYSIS.value, Tools.PYTHON_EXECUTE.value, Tools.SEARCH_API.value])
-    # return
-
-    # Create swarm for multi-agents
-    # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
     swarm = Swarm((agent1, agent2))
 
     # Define a task
@@ -66,8 +57,6 @@ async def gaia_run():
     result = client.submit(task=[task])
     diagnostic_data = await Diagnostic.get_diagnostics()
     print(f"######Diagnostic all data: {diagnostic_data}")
-
-    # print(f"######Diagnostic data: {diagnostic_data}")
     print(f"Task completed: {result['success']}")
     print(f"Time cost: {result['time_cost']}")
     print(f"Task Answer: {result['task_0']['answer']}")
@@ -85,7 +74,7 @@ def gaia_run_for_ui(params: "GaiaRunParams"):
     # Create swarm for multi-agents
     # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
     swarm = Swarm((agent1, agent2))
-    # TODO 测试临时用
+    # TODO test
     test_sample = mock_dataset("gaia")
     # Define a task
     task = Task(input=test_sample, swarm=swarm, conf=TaskConfig())
