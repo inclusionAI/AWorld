@@ -47,13 +47,27 @@ class Agents(Enum):
 
 
 class Observation(BaseModel):
+    """Observation information obtained from the tools.
+
+    It can be an agent(as a tool) in the swarm or a tool in the virtual environment.
+    """
+    # default is None, means the main virtual environment or swarm
+    container_id: str = None
+    # default is None for compatible, means an agent name or a tool name
+    observer: str = None
+    # default is None for compatible, means with its action/ability name of an agent or a tool
+    # NOTE: The only ability of an agent as a tool is handoffs
+    ability: str = None
+    # general info for agent
+    content: Any = None
     # dom_tree is a str or DomTree object
     dom_tree: Union[str, Any] = None
     image: str = None  # base64
-    content: Any = None
-    action_result: List[ActionResult] = None
-    info: Dict[str, Any] = None
-    key_frame: List[str] = []
+    action_result: List[ActionResult] = []
+    # for video or image list
+    images: List[str] = []
+    info: Dict[str, Any] = {}
+
 
 
 class ParamInfo(BaseModel):

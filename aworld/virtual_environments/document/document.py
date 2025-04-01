@@ -82,6 +82,8 @@ class DocumentTool(Tool[Observation, ActionModel]):
                 raise ValueError("document path invalid")
             output, keyframes, error = self.document_analysis(document_path)
             observation.content = output
+            observation.observer = self.name()
+            observation.ability = action.tool_name + "__" + action.action_name
             observation.action_result.append(
                 ActionResult(is_done=True,
                              success=False if error else True,

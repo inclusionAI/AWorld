@@ -289,25 +289,21 @@ class Diagnostic:
             return None
         args_info = diagnostic_info.get('args', {}).get('info', {})
         args_info = json.loads(args_info) if isinstance(args_info, str) else args_info
-        render_data = RenderData(type=args_info.get('source_type', 'agent'),
-                                 agent_name=args_info.get('agent_name', '') if args_info.get('agent_name',
-                                                                                             '') else 'PlanAgent',
-                                 tool_name=args_info.get('tool_name', ''),
-                                 action_name=args_info.get('action_name', ''),
+        source_type = args_info.get('source_type', 'agent')
+        render_data = RenderData(type=source_type,
+                                 agent_name='',
+                                 tool_name='',
+                                 action_name='',
                                  result=[],
-                                 status='success' if diagnostic.success else 'error'
-                                 )
+                                 status='success' if diagnostic.success else 'error')
         for result_str in results:
             result = json.loads(result_str)
-            tool_name = result.get('tool_name')
-            action_name = result.get('action_name')
-            agent_name = result.get('agent_name')
             params = result.get('params', {})
             policy_info = result.get('policy_info', "")
             render_data.result.append({'info': policy_info,
-                                       'tool_name': tool_name,
-                                       'action_name': action_name,
-                                       'agent_name': agent_name,
+                                       'tool_name': '',
+                                       'action_name': '',
+                                       'agent_name': result.get('observer', ''),
                                        'params': params})
         return render_data
 
@@ -322,9 +318,9 @@ class Diagnostic:
         args_info_str = diagnostic_info.get('args', {}).get('info', {})
         args_info = json.loads(args_info_str) if isinstance(args_info_str, str) else args_info_str
         return RenderData(type=args_info.get('source_type', 'action'),
-                          agent_name=args_info.get('agent_name', ''),
-                          tool_name=args_info.get('tool_name', ''),
-                          action_name=args_info.get('action_name', ''),
+                          agent_name='',
+                          tool_name=observation.observer,
+                          action_name=observation.ability,
                           result=[observation],
                           status='success' if diagnostic.success else 'error'
                           )
