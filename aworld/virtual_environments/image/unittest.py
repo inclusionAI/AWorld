@@ -7,19 +7,18 @@ from loguru import logger
 from aworld.agents.gaia.agent import ExecuteAgent, PlanAgent
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.client import Client
-from aworld.core.common import ActionModel, Agents, Observation, Tools
 from aworld.core.swarm import Swarm
 from aworld.core.task import Task
-from aworld.dataset.mock import mock_dataset
+from aworld.core.common import Tools
 
 if __name__ == "__main__":
     # Initialize client
     client = Client()
 
     # One sample for example
-    filepath = "/Users/arac/Desktop/qw.jpg"
+    FILEPATH = "/Users/arac/Desktop/qw.jpg"
     test_sample = (
-        f"What animal is in the given picture? The picture file path is {filepath}"
+        f"What animal is in the given picture? The picture file path is {FILEPATH}"
     )
 
     llm_api_key = os.getenv("LLM_API_KEY", "")
