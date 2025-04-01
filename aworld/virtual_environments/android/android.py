@@ -7,6 +7,7 @@ from typing import Any, Tuple, List, Dict
 from aworld.core.envs.tool_action import AndroidAction
 from aworld.core.common import ActionModel, Observation, ActionResult, Tools
 from aworld.logs.util import logger
+from aworld.utils.diagnostic_tools import Diagnostic
 from aworld.virtual_environments.android.action.adb_controller import ADBController
 from aworld.virtual_environments.android.action.executor import AndroidToolActionExecutor
 from aworld.virtual_environments.conf import AndroidToolConfig
@@ -40,6 +41,7 @@ class AndroidTool(Tool[Observation, List[ActionModel]]):
         action_result_list = [ActionResult(content='start', keep=True)]
         return Observation(dom_tree=xml, image=pic_base64, action_result=action_result_list), {}
 
+    @Diagnostic()
     def step(self, action_list: List[ActionModel], **kwargs) -> Tuple[
         Observation, float, bool, bool, Dict[str, Any]]:
 

@@ -16,6 +16,7 @@ from aworld.core.envs.tool_action import DocumentExecuteAction
 from aworld.core.common import Tools, Observation, ActionModel, ActionResult
 from aworld.core.envs.tool import ToolFactory, Tool
 from aworld.logs.util import logger
+from aworld.utils.diagnostic_tools import Diagnostic
 from aworld.virtual_environments.document.utils import encode_image_from_file, encode_image_from_url
 from aworld.utils import import_package, import_packages
 
@@ -65,6 +66,7 @@ class DocumentTool(Tool[Observation, ActionModel]):
     def finished(self) -> bool:
         return self.step_finished
 
+    @Diagnostic()
     def step(self, actions: list[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.

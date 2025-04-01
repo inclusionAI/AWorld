@@ -14,6 +14,7 @@ from aworld.core.common import Observation, ActionModel, ActionResult, Tools
 from aworld.logs.util import logger
 from aworld.core.envs.tool import action_executor, ToolFactory
 from aworld.core.envs.tool import Tool
+from aworld.utils.diagnostic_tools import Diagnostic
 from aworld.virtual_environments.browsers.action.executor import BrowserToolActionExecutor
 from aworld.virtual_environments.browsers.util.dom import DomTree
 from aworld.virtual_environments.conf import BrowserToolConfig
@@ -244,6 +245,7 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         if self.initialized:
             self.context_manager.__exit__()
 
+    @Diagnostic()
     def step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         if not self.initialized:
             raise RuntimeError("Call init first before calling step.")

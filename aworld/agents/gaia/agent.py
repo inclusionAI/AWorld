@@ -14,6 +14,7 @@ from aworld.logs.util import logger
 from aworld.core.envs.tool_desc import get_tool_desc
 from aworld.agents.gaia.prompts import *
 from aworld.agents.gaia.utils import extract_pattern
+from aworld.utils.diagnostic_tools import Diagnostic
 
 
 @AgentFactory.register(name=Agents.EXECUTE.value, desc="execute agent")
@@ -33,6 +34,7 @@ class ExecuteAgent(BaseAgent):
         self.trajectory = []
         self.system_prompt = execute_system_prompt.format(task=self.task)
 
+    @Diagnostic()
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None,
@@ -139,6 +141,7 @@ class PlanAgent(BaseAgent):
         self.first_prompt = init_prompt
         self.first = True
 
+    @Diagnostic()
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None,
