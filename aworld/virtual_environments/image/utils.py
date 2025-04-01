@@ -4,18 +4,29 @@ import base64
 import json
 import os
 import re
+from io import BytesIO
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 import requests
 from PIL import Image
 
-from aworld.logs.util import logger
-
 
 def encode_image(image_url: str, with_header: bool = True) -> str:
+    """Encode image to base64 format
+
+    Args:
+        image_url (str): URL or local file path of the image
+        with_header (bool, optional): Whether to include MIME type header. Defaults to True.
+
+    Returns:
+        str: Base64 encoded image string, with MIME type prefix if with_header is True
+
+    Raises:
+        ValueError: When image URL is empty or image format is not supported
+    """
     # extension: MIME type
-    MIME_TYPE = {
+    mime_types = {
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".png": "image/png",
@@ -26,37 +37,36 @@ def encode_image(image_url: str, with_header: bool = True) -> str:
     if not image_url:
         raise ValueError("Image URL cannot be empty")
 
-    if any(image_url.endswith(ext) for ext in MIME_TYPE.keys()):
-        parsed_url = urlparse(image_url)
-        is_url = all([parsed_url.scheme, parsed_url.netloc])
-        if not is_url:
-            image_base64 = encode_image_from_file(image_url)
-        else:
-            image_base64 = encode_image_from_url(image_url)
-
-        mime_type = MIME_TYPE.get(os.path.splitext(image_url)[1], "image/jpeg")
-        final_image = (
-            f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
-        )
-        return final_image
-    else:
+    if not any(image_url.endswith(ext) for ext in mime_types):
         raise ValueError(
-            f"Unsupported image format. Supported formats: {', '.join(MIME_TYPE.keys())}"
+            f"Unsupported image format. Supported formats: {', '.join(mime_types)}"
         )
+    parsed_url = urlparse(image_url)
+    is_url = all([parsed_url.scheme, parsed_url.netloc])
+    if not is_url:
+        image_base64 = encode_image_from_file(image_url)
+    else:
+        image_base64 = encode_image_from_url(image_url)
+
+    mime_type = mime_types.get(os.path.splitext(image_url)[1], "image/jpeg")
+    final_image = (
+        f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
+    )
+    return final_image
 
 
 def handle_llm_response(response_content: str, result_key: str) -> str:
-    """统一处理 LLM 响应
+    """Process LLM response uniformly
 
     Args:
-        response_content: LLM 返回的原始响应内容
-        result_key: 需要从 JSON 中提取的键名
+        response_content: Raw response content from LLM
+        result_key: Key name to extract from JSON
 
     Returns:
-        str: 提取的结果内容
+        str: Extracted result content
 
     Raises:
-        ValueError: 当响应为空或结果键不存在时
+        ValueError: When response is empty or result key doesn't exist
     """
     if not response_content:
         raise ValueError("No response from llm.")
@@ -74,22 +84,34 @@ def handle_llm_response(response_content: str, result_key: str) -> str:
 
 
 def create_image_content(prompt: str, image_base64: str) -> List[Dict[str, Any]]:
-    """创建统一的图像内容格式"""
+    """Create uniform image format for querying llm."""
     return [
         {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": image_base64}},
     ]
 
 
-def encode_image_from_url(image_url):
-    response = requests.get(image_url)
+def encode_image_from_url(image_url: str) -> str:
+    """Fetch an image from URL and encode it to base64
+
+    Args:
+        image_url: URL of the image
+
+    Returns:
+        str: base64 encoded image string
+
+    Raises:
+        requests.RequestException: When failed to fetch the image
+        PIL.UnidentifiedImageError: When image format cannot be identified
+    """
+    response = requests.get(image_url, timeout=10)
     image = Image.open(BytesIO(response.content))
 
     max_size = 1024
     if max(image.size) > max_size:
         ratio = max_size / max(image.size)
         new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
-        image = image.resize(new_size, Image.LANCZOS)
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
 
     buffered = BytesIO()
     image_format = image.format if image.format else "JPEG"
@@ -99,6 +121,6 @@ def encode_image_from_url(image_url):
 
 
 def encode_image_from_file(image_path):
-    """从本地文件读取图片并编码为base64"""
+    """Read image from local file and encode to base64 format."""
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode()
