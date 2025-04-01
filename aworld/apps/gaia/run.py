@@ -29,8 +29,8 @@ async def gaia_run():
 
     import os
 
-    GOOGLE_API_KEY = "AI----"
-    GOOGLE_ENGINE_ID = "9-----"
+    GOOGLE_API_KEY = "AIz"
+    GOOGLE_ENGINE_ID = "95"
     os.environ['GOOGLE_API_KEY'] = GOOGLE_API_KEY
     os.environ['GOOGLE_ENGINE_ID'] = GOOGLE_ENGINE_ID
     #test_sample="The attached spreadsheet shows the inventory for a movie and video game rental store in Seattle, Washington. What is the title of the oldest Blu-Ray recorded in this spreadsheet? Return it as appearing in the spreadsheet. Here are the necessary table files: {file_path}, for processing excel file, you can write python code and leverage excel toolkit to process the file step-by-step and get the information."
@@ -42,11 +42,11 @@ async def gaia_run():
         llm_provider="openai",
         llm_model_name="gpt-4o",
         llm_api_key="sk-",
-        llm_base_url="https://api"
+        llm_base_url="https://api."
     )
 
     agent1 = PlanAgent(conf=agent_config)
-    agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,fiel],mcp_server=[fiel,tool1,tool2])
+    agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value])
 
     # agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
     #                                                      Tools.PYTHON_EXECUTE.value, Tools.SEARCH_API.value])
@@ -66,10 +66,6 @@ async def gaia_run():
     result = client.submit(task=[task])
     diagnostic_data = await Diagnostic.get_diagnostics()
     print(f"######Diagnostic all data: {diagnostic_data}")
-    print("############-diagnostic-start############")
-    # for diagnostic in diagnostic_data:
-    #     print(diagnostic.model_dump())
-    print("###########-diagnostic-end-#############")
 
     # print(f"######Diagnostic data: {diagnostic_data}")
     print(f"Task completed: {result['success']}")
