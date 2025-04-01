@@ -37,8 +37,10 @@ logging/
 # Environment and virtual environments
 .env
 .venv
+.conda
 env/
 venv/
+conda/
 ENV/
 env.bak/
 venv.bak/
