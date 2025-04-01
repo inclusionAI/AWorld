@@ -21,8 +21,9 @@ class ExecuteAgent(BaseAgent):
     def __init__(self, conf: AgentConfig, **kwargs):
         super(ExecuteAgent, self).__init__(conf, **kwargs)
         self.has_summary = False
-        self.tools = tool_desc_transform(get_tool_desc(),
-                                         tools=self.tool_names if self.tool_names else [])
+        self.tools = tool_desc_transform(
+            get_tool_desc(), tools=self.tool_names if self.tool_names else []
+        )
 
     def name(self) -> str:
         return Agents.EXECUTE.value
@@ -33,38 +34,47 @@ class ExecuteAgent(BaseAgent):
         self.trajectory = []
         self.system_prompt = execute_system_prompt.format(task=self.task)
 
-    def policy(self,
-               observation: Observation,
-               info: Dict[str, Any] = None,
-               **kwargs) -> List[ActionModel] | None:
+    def policy(
+        self, observation: Observation, info: Dict[str, Any] = None, **kwargs
+    ) -> List[ActionModel] | None:
         start_time = time.time()
         content = observation.content
 
         llm_result = None
         ## build input of llm
         input_content = [
-            {'role': 'system', 'content': self.system_prompt},
+            {"role": "system", "content": self.system_prompt},
         ]
         for traj in self.trajectory:
             input_content.append(traj[0].content)
             if traj[-1].choices[0].message.tool_calls is not None:
                 input_content.append(
-                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].choices[0].message.tool_calls})
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": traj[-1].choices[0].message.tool_calls,
+                    }
+                )
             else:
-                input_content.append({'role': 'assistant', 'content': traj[-1].choices[0].message.content})
+                input_content.append(
+                    {
+                        "role": "assistant",
+                        "content": traj[-1].choices[0].message.content,
+                    }
+                )
 
         if content is None:
             content = observation.action_result[0].error
         if not self.trajectory:
-            message = {'role': 'user', 'content': content}
+            message = {"role": "user", "content": content}
         else:
             tool_id = None
             if self.trajectory[-1][-1].choices[0].message.tool_calls:
                 tool_id = self.trajectory[-1][-1].choices[0].message.tool_calls[0].id
             if tool_id:
-                message = {'role': 'tool', 'content': content, 'tool_call_id': tool_id}
+                message = {"role": "tool", "content": content, "tool_call_id": tool_id}
             else:
-                message = {'role': 'user', 'content': content}
+                message = {"role": "user", "content": content}
         input_content.append(message)
 
         tool_calls = []
@@ -72,13 +82,13 @@ class ExecuteAgent(BaseAgent):
             llm_result = self.llm.chat.completions.create(
                 messages=input_content,
                 model=self.model_name,
-                **{'temperature': 0, 'tools': self.tools},
+                **{"temperature": 0, "tools": self.tools},
             )
             logger.info(f"Execute response: {llm_result.choices[0].message}")
             content = llm_result.choices[0].message.content
             tool_calls = llm_result.choices[0].message.tool_calls
         except Exception as e:
-            logger.warn(traceback.format_exc())
+            logger.warning(traceback.format_exc())
             raise e
         finally:
             if llm_result:
@@ -88,7 +98,7 @@ class ExecuteAgent(BaseAgent):
                 ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warn("no result to record!")
+                logger.warning("no result to record!")
 
         res = []
         if tool_calls:
@@ -99,7 +109,11 @@ class ExecuteAgent(BaseAgent):
                 tool_name = tool_action_name.split("__")[0]
                 action_name = tool_action_name.split("__")[1]
                 params = json.loads(tool_call.function.arguments)
-                res.append(ActionModel(tool_name=tool_name, action_name=action_name, params=params))
+                res.append(
+                    ActionModel(
+                        tool_name=tool_name, action_name=action_name, params=params
+                    )
+                )
 
         if res:
             res[0].policy_info = content
@@ -109,12 +123,20 @@ class ExecuteAgent(BaseAgent):
             if self.has_summary:
                 policy_info = extract_pattern(content, "final_answer")
                 if policy_info:
-                    res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=policy_info))
+                    res.append(
+                        ActionModel(
+                            agent_name=Agents.PLAN.value, policy_info=policy_info
+                        )
+                    )
                     self._finished = True
                 else:
-                    res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=content))
+                    res.append(
+                        ActionModel(agent_name=Agents.PLAN.value, policy_info=content)
+                    )
             else:
-                res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=content))
+                res.append(
+                    ActionModel(agent_name=Agents.PLAN.value, policy_info=content)
+                )
                 self.has_summary = True
 
         logger.info(f">>> execute result: {res}")
@@ -139,29 +161,38 @@ class PlanAgent(BaseAgent):
         self.first_prompt = init_prompt
         self.first = True
 
-    def policy(self,
-               observation: Observation,
-               info: Dict[str, Any] = None,
-               **kwargs) -> List[ActionModel] | None:
+    def policy(
+        self, observation: Observation, info: Dict[str, Any] = None, **kwargs
+    ) -> List[ActionModel] | None:
         llm_result = None
         input_content = [
-            {'role': 'system', 'content': self.system_prompt},
+            {"role": "system", "content": self.system_prompt},
         ]
         # build input of llm based history
         for traj in self.trajectory:
-            input_content.append({'role': 'user', 'content': traj[0].content})
+            input_content.append({"role": "user", "content": traj[0].content})
             if traj[-1].choices[0].message.tool_calls is not None:
                 input_content.append(
-                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].choices[0].message.tool_calls})
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": traj[-1].choices[0].message.tool_calls,
+                    }
+                )
             else:
-                input_content.append({'role': 'assistant', 'content': traj[-1].choices[0].message.content})
+                input_content.append(
+                    {
+                        "role": "assistant",
+                        "content": traj[-1].choices[0].message.content,
+                    }
+                )
 
         message = observation.content
         if self.first_prompt:
             message = self.first_prompt
             self.first_prompt = None
 
-        input_content.append({'role': 'user', 'content': message})
+        input_content.append({"role": "user", "content": message})
         try:
             llm_result = self.llm.chat.completions.create(
                 messages=input_content,
@@ -169,7 +200,7 @@ class PlanAgent(BaseAgent):
             )
             logger.info(f"Plan response: {llm_result.choices[0].message}")
         except Exception as e:
-            logger.warn(traceback.format_exc())
+            logger.warning(traceback.format_exc())
             raise e
         finally:
             if llm_result:
@@ -179,7 +210,7 @@ class PlanAgent(BaseAgent):
                 ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warn("no result to record!")
+                logger.warning("no result to record!")
         content = llm_result.choices[0].message.content
         if "TASK_DONE" not in content:
             content += self.done_prompt
@@ -191,5 +222,4 @@ class PlanAgent(BaseAgent):
 
         self.first = False
         logger.info(f">>> plan result: {content}")
-        return [ActionModel(agent_name=Agents.EXECUTE.value,
-                            policy_info=content)]
+        return [ActionModel(agent_name=Agents.EXECUTE.value, policy_info=content)]
