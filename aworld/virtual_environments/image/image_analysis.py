@@ -4,9 +4,9 @@ from typing import Any, Dict, Tuple
 
 from aworld.config import ToolConfig
 from aworld.core.common import ActionModel, Observation, Tools
+from aworld.core.envs.llm_executor import LLMToolActionExecutor
 from aworld.core.envs.tool import Tool, ToolFactory
 from aworld.core.envs.tool_action import ImageAnalysisAction
-from aworld.virtual_environments.image.llm_executor import LLMToolActionExecutor
 
 
 @ToolFactory.register(
