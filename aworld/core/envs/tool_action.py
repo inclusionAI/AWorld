@@ -3,7 +3,7 @@
 
 from enum import Enum
 
-from aworld.core.common import ToolActionInfo, ParamInfo
+from aworld.core.common import ParamInfo, ToolActionInfo
 
 
 class ToolAction(Enum):
@@ -250,9 +250,31 @@ class FileAction(ToolAction):
 
 class ImageAnalysisAction(ToolAction):
     """Definition of image analysis supported action."""
-    ANALYSIS = ToolActionInfo(name="analysis",
-                              input_params={},
-                              desc="")
+    OCR = ToolActionInfo(name="ocr",
+                         input_params={
+                             "image_url": ParamInfo(
+                                 name="image_url",
+                                 type="str",
+                                 required=True,
+                                 desc="The input image in given filepath or url."
+                             )
+                         },
+                         desc="Read text (if present) from the given image in given filepath or url.")
+    REASONING = ToolActionInfo(name="reasoning",
+                               input_params={
+                                    "image_url": ParamInfo(
+                                        name="image_url",
+                                        type="str",
+                                        required=True,
+                                        desc="The input image in given filepath or url."
+                                    ), "question": ParamInfo(
+                                        name="question",
+                                        type="str",
+                                        required=True,
+                                        desc="The question to ask."
+                                    )
+                                },
+                                desc="Solve the question by careful reasoning given the image in given filepath or url.")
 
 
 class CodeExecuteAction(ToolAction):
