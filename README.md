@@ -38,24 +38,47 @@ export CLAUDE_API_KEY=sk-ant-api03xyz...
 
 ## Usage
 ### Running Pre-defined Agents ([demo code](./aworld/apps/browsers/run.py))
-Below are two YouTube demo videos showcasing how a single agent can use both a browser and a phone, respectively. 
+Below are demonstration videos showcasing AWorld's capabilities across different agent configurations and environments.
 
 <table>
   <tr>
-    <td width="50%">
+    <th>Mode</th>
+    <th>Type</th>
+    <th>Demo</th>
+  </tr>
+  <tr>
+    <td rowspan="2">Single Agent</td>
+    <td>Browser use</td>
+    <td>
       <a href="https://www.youtube.com/watch?v=R7keOLrRDoM" target="_blank">
         <img src="https://img.youtube.com/vi/R7keOLrRDoM/0.jpg" alt="AWorld Browser Demo on YouTube" width="95%">
         <br>
         <p align="center">▶️ Watch Browser Demo on YouTube</p>
       </a>
     </td>
-    <td width="50%">
+  </tr>
+  <tr>
+    <td>Phone use</td>
+    <td>
       <a href="https://www.youtube.com/watch?v=TYh3iqDeIoQ" target="_blank">
         <img src="https://img.youtube.com/vi/TYh3iqDeIoQ/0.jpg" alt="AWorld Mobile Demo on YouTube" width="95%">
         <br>
         <p align="center">▶️ Watch Mobile Demo on YouTube</p>
       </a>
     </td>
+  </tr>
+  <tr>
+    <td rowspan="3">Multi Agent</td>
+    <td>Cooperative Teams</td>
+    <td align="center"><i>Coming Soon</i> 🚀</td>
+  </tr>
+  <tr>
+    <td>Competitive Teams</td>
+    <td align="center"><i>Coming Soon</i> 🚀</td>
+  </tr>
+  <tr>
+    <td>Mixed of both Teams</td>
+    <td align="center"><i>Coming Soon</i> 🚀</td>
   </tr>
 </table>
 
@@ -65,10 +88,17 @@ Here is a multi-agent example of running a level2 task from the [GAIA](https://h
 ```python
 from aworld.agents.gaia.agent import PlanAgent, ExecuteAgent
 from aworld.core.client import Client
+from aworld.core.common import Tools
 from aworld.core.swarm import Swarm
 from aworld.core.task import Task
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.dataset.mock import mock_dataset
+
+import os
+# Need OPENAI_API_KEY
+os.environ['OPENAI_API_KEY'] = "your key"
+# Optional endpoint settings, default `https://api.openai.com/v1`
+# os.environ['OPENAI_ENDPOINT'] = "https://api.openai.com/v1"
 
 # Initialize client
 client = Client()
