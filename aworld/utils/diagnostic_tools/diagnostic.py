@@ -300,7 +300,7 @@ class Diagnostic:
             result = json.loads(result_str)
             params = result.get('params', {})
             policy_info = result.get('policy_info', "")
-            render_data.result.append({'info': policy_info,
+            render_data.result.append({'content': policy_info,
                                        'tool_name': '',
                                        'action_name': '',
                                        'agent_name': result.get('observer', ''),
