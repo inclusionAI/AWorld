@@ -3,8 +3,11 @@
 
 from aworld.virtual_environments.android.android import AndroidTool
 from aworld.virtual_environments.apis.search_api import SearchTool
+from aworld.virtual_environments.image.image_analysis import ImageAnalysisTool
 from aworld.virtual_environments.browsers.browser import BrowserTool
-from aworld.virtual_environments.browsers.async_browser import BrowserTool as ABrowserTool
+from aworld.virtual_environments.browsers.async_browser import (
+    BrowserTool as ABrowserTool,
+)
 from aworld.virtual_environments.document.document import DocumentTool
 from aworld.virtual_environments.gym.openai_gym import OpenAIGym
 from aworld.virtual_environments.gym.async_openai_gym import OpenAIGym as AOpenAIGym
@@ -17,6 +20,7 @@ from aworld.virtual_environments.browsers.action.actions import *
 from aworld.virtual_environments.document.actions import *
 from aworld.virtual_environments.gym.actions import *
 from aworld.virtual_environments.terminals.actions import *
+from aworld.virtual_environments.image.actions import *
 
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.logs.util import logger
@@ -75,7 +79,9 @@ def tool_desc():
             for action_name in action_names:
                 info = tool_action.get_value_by_name(action_name)
                 if not info:
-                    logger.warning(f"{action_name} can not find in {tool}, please check it.")
+                    logger.warning(
+                        f"{action_name} can not find in {tool}, please check it."
+                    )
                     continue
                 try:
                     action_dict = process(info)
