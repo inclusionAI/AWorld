@@ -103,7 +103,7 @@ class ExecuteAgent(BaseAgent):
             content = llm_result.choices[0].message.content
             tool_calls = llm_result.choices[0].message.tool_calls
         except Exception as e:
-            logger.warn(traceback.format_exc())
+            logger.warning(traceback.format_exc())
             raise e
         finally:
             if llm_result:
@@ -113,7 +113,7 @@ class ExecuteAgent(BaseAgent):
                 ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warn("no result to record!")
+                logger.warning("no result to record!")
 
         res = []
         if tool_calls:
@@ -195,7 +195,7 @@ class PlanAgent(BaseAgent):
             )
             logger.info(f"Plan response: {llm_result.choices[0].message}")
         except Exception as e:
-            logger.warn(traceback.format_exc())
+            logger.warning(traceback.format_exc())
             raise e
         finally:
             if llm_result:
@@ -205,7 +205,7 @@ class PlanAgent(BaseAgent):
                 ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warn("no result to record!")
+                logger.warning("no result to record!")
         content = llm_result.choices[0].message.content
         if "TASK_DONE" not in content:
             content += self.done_prompt
