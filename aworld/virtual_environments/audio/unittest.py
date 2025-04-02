@@ -16,7 +16,7 @@ if __name__ == "__main__":
     client = Client()
 
     # One sample for example
-    FILEPATH = "/Users/arac/Desktop/audio_sample.mp3"
+    FILEPATH = "file.mp3"
     test_sample = f"What style is this song? The audio file path is {FILEPATH}"
 
     llm_api_key = os.getenv("LLM_API_KEY", "")

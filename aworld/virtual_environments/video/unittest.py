@@ -16,7 +16,7 @@ if __name__ == "__main__":
     client = Client()
 
     # One sample for example
-    FILEPATH = "/Users/arac/Desktop/normal_video.mp4"
+    FILEPATH = "file.mp4"
     test_sample = f"Transcribe the video content. The video file path is {FILEPATH}"
 
     llm_api_key = os.getenv("LLM_API_KEY", "")

@@ -16,7 +16,7 @@ if __name__ == "__main__":
     client = Client()
 
     # One sample for example
-    FILEPATH = "/Users/arac/Desktop/qw.jpg"
+    FILEPATH = "file.jpg"
     test_sample = (
         f"What animal is in the given picture? The picture file path is {FILEPATH}"
     )
