@@ -20,11 +20,11 @@ class LLMToolActionExecutor(ToolActionExecutor):
     LLM-related tool actions.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(
+        self, tool_name: str, llm_provider: str, llm_model_name: str, **kwargs
+    ):
         super().__init__(**kwargs)
         # check environment variables valid
-        llm_provider = os.getenv("LLM_PROVIDER", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME", "gpt-4o")
         llm_api_key = os.getenv("LLM_API_KEY", "")
         llm_base_url = os.getenv("LLM_BASE_URL", "")
 
@@ -39,6 +39,9 @@ class LLMToolActionExecutor(ToolActionExecutor):
             llm_base_url=llm_base_url,
         )
         self.llm = get_llm_model(llm_config)
+        logger.info(
+            f"{tool_name} executor set LLM model to {llm_provider}: {llm_model_name}"
+        )
 
     def _exec(
         self, action_model: ActionModel, **kwargs
@@ -51,7 +54,7 @@ class LLMToolActionExecutor(ToolActionExecutor):
 
         action = ActionFactory(action_name)
         action_result, ctx = action.act(action_model, llm=self.llm, **kwargs)
-        logger.info("%s execute finished", action_name)
+        logger.info(f"{action_name} execute finished")
         return action_result, ctx
 
     def execute_action(
@@ -86,3 +89,15 @@ class LLMToolActionExecutor(ToolActionExecutor):
             ctx: action context object.
         """
         return self.execute_action(actions, **kwargs)
+
+    def execute_env_action(
+        self, action_model: ActionModel, **kwargs
+    ) -> Tuple[ActionResult, Any]:
+        """Execute the specified android action by agent policy.
+        Args:
+            action_model: Tool action model.
+        Returns:
+            action_result: LLM action result.
+            ctx: action context object.
+        """
+        return self._exec(action_model, **kwargs)
