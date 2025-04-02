@@ -11,7 +11,7 @@ from aworld.core.envs.tool_action import AudioAnalysisAction
 
 @ToolFactory.register(
     name=Tools.AUDIO_ANALYSIS.value,
-    desc="Perform transcription or analysis over the given audio filepath or url",
+    desc="Perform transcription over the given audio filepath or url",
     supported_action=AudioAnalysisAction,
 )
 class AudioAnalysisTool(Tool[Observation, ActionModel]):
@@ -52,7 +52,15 @@ class AudioAnalysisTool(Tool[Observation, ActionModel]):
 
         This method sets up the LLM tool action executor and marks the tool as initialized.
         """
-        self.action_executor = LLMToolActionExecutor()
+        tool_name = self.name
+        llm_provider = self.dict_conf.get("LLM_PROVIDER", "openai")
+        llm_model_name = self.dict_conf.get("LLM_MODEL_NAME", "gpt-4o-transcribe")
+        self.action_executor = LLMToolActionExecutor(
+            tool_name,
+            llm_provider,
+            llm_model_name,
+        )
+
         self.initialized = True
 
     def _get_observation(self) -> Observation:
@@ -60,8 +68,7 @@ class AudioAnalysisTool(Tool[Observation, ActionModel]):
             **{"dom_tree": "", "image": "", "action_result": [], "info": {}}
         )
 
-    def close(self) -> None:
-        pass
+    def close(self) -> None: ...
 
     def finished(self) -> bool:
         return self.step_finished

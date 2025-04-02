@@ -5,10 +5,36 @@ import base64
 import json
 import os
 import re
-from typing import Any, Dict, List
+import tempfile
 from urllib.parse import urlparse
 
 import requests
+
+
+def get_audio_filepath_from_url(audio_url: str, save_path: str = None) -> str:
+    """Fetch an audio from URL and encode it to base64
+
+    Args:
+        audio_url: URL of the audio
+        save_path: Path to save the original audio file, if None, use temp directory
+
+    Returns:
+        str: audio file path, if not specified, return a temporary path
+
+    Raises:
+        requests.RequestException: When failed to fetch the audio
+    """
+    response = requests.get(audio_url, timeout=60, stream=True)
+    audio_bytes = response.content
+
+    if save_path is None:
+        file_name = os.path.basename(audio_url)
+        save_path = os.path.join(tempfile.gettempdir(), file_name)
+
+    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+    with open(save_path, "wb") as f:
+        f.write(audio_bytes)
+    return save_path
 
 
 def encode_audio(audio_url: str, with_header: bool = True) -> str:
@@ -82,14 +108,6 @@ def handle_llm_response(response_content: str, result_key: str) -> str:
     if not result:
         raise ValueError(f"No {result_key} in response.")
     return result
-
-
-def create_audio_content(prompt: str, audio_base64: str) -> List[Dict[str, Any]]:
-    """Create uniform audio content format for querying llm."""
-    return [
-        {"type": "text", "text": prompt},
-        {"type": "audio", "audio": {"url": audio_base64}},
-    ]
 
 
 def encode_audio_from_url(audio_url: str) -> str:

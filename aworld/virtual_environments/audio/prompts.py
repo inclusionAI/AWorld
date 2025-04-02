@@ -10,7 +10,7 @@ Returns:
 AUDIO_TRANSCRIBE = (
     "Input is a base64 encoded audio file. Transcribe all speech in the audio. "
     "Return a json string with the following format: "
-    '{"audio_text": "transcribed text from audio"}'
+    '{{"audio_text": "transcribed text from audio"}}'
 )
 
 AUDIO_ANALYZE = (
@@ -21,5 +21,5 @@ AUDIO_ANALYZE = (
     "3. Transcribe relevant speech\n"
     "4. Identify background sounds if relevant\n"
     "Return a json string with the following format: "
-    '{"audio_analysis_result": "analysis result given question and audio content"}'
+    '{{"audio_analysis_result": "analysis result given question and audio content"}}'
 )
