@@ -470,19 +470,74 @@ class PythonToolAction(ToolAction):
 class VideoAnalysisAction(Enum):
     """Video analysis action."""
 
-    TRANSCRIBE = ToolActionInfo(name="transcribe", desc="Transcribe video to text")
+    TRANSCRIBE = ToolActionInfo(
+        name="transcribe",
+        input_params={
+            "video_url": ParamInfo(
+                name="video_url",
+                type="str",
+                required=True,
+                desc="The input video in given filepath or url.",
+            ),
+        },
+        desc="Transcribe video to text",
+    )
     ANALYZE = ToolActionInfo(
-        name="analyze", desc="Analyze video content and answer questions"
+        name="analyze",
+        input_params={
+            "video_url": ParamInfo(
+                name="video_url",
+                type="str",
+                required=True,
+                desc="The input video in given filepath or url.",
+            ),
+            "question": ParamInfo(
+                name="question", type="str", required=True, desc="The question to ask."
+            ),
+        },
+        desc="Analyze video content and answer questions",
     )
     SUMMARIZE = ToolActionInfo(
-        name="summarize", desc="Summarize the main content of the video"
+        name="summarize",
+        input_params={
+            "video_url": ParamInfo(
+                name="video_url",
+                type="str",
+                required=True,
+                desc="The input video in given filepath or url.",
+            ),
+        },
+        desc="Summarize the main content of the video",
     )
 
 
 class AudioAnalysisAction(Enum):
     """Audio analysis action."""
 
-    TRANSCRIBE = ToolActionInfo(name="transcribe", desc="Transcribe audio to text")
+    TRANSCRIBE = ToolActionInfo(
+        name="transcribe",
+        input_params={
+            "audio_url": ParamInfo(
+                name="audio_url",
+                type="str",
+                required=True,
+                desc="The input audio in given filepath or url.",
+            )
+        },
+        desc="Transcribe audio to text",
+    )
     ANALYZE = ToolActionInfo(
-        name="analyze", desc="Analyze audio content and answer questions"
+        name="analyze",
+        input_params={
+            "audio_url": ParamInfo(
+                name="audio_url",
+                type="str",
+                required=True,
+                desc="The input audio in given filepath or url.",
+            ),
+            "question": ParamInfo(
+                name="question", type="str", required=True, desc="The question to ask."
+            ),
+        },
+        desc="Analyze audio content and answer questions",
     )
