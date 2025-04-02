@@ -467,7 +467,7 @@ class PythonToolAction(ToolAction):
     )
 
 
-class VideoAnalysisAction(Enum):
+class VideoAnalysisAction(ToolAction):
     """Video analysis action."""
 
     TRANSCRIBE = ToolActionInfo(name="transcribe", desc="Transcribe video to text")
@@ -479,7 +479,7 @@ class VideoAnalysisAction(Enum):
     )
 
 
-class AudioAnalysisAction(Enum):
+class AudioAnalysisAction(ToolAction):
     """Audio analysis action."""
 
     TRANSCRIBE = ToolActionInfo(name="transcribe", desc="Transcribe audio to text")
