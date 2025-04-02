@@ -467,11 +467,11 @@ class PythonToolAction(ToolAction):
     )
 
 
-class VideoAnalysisAction(Enum):
+class VideoAnalysisAction(ToolAction):
     """Video analysis action."""
 
-    TRANSCRIBE = ToolActionInfo(
-        name="transcribe",
+    EXTRACT_SUBTITLES = ToolActionInfo(
+        name="extract_subtitles",
         input_params={
             "video_url": ParamInfo(
                 name="video_url",
@@ -479,8 +479,15 @@ class VideoAnalysisAction(Enum):
                 required=True,
                 desc="The input video in given filepath or url.",
             ),
+            "sample_rate": ParamInfo(
+                name="sample_rate",
+                type="str",
+                required=False,
+                default_value="2",
+                desc="Sample rate of the video which determines the number of frames to be sampled per second. The higher the sample rate, the more accurate the analysis, but the longer the analysis time. The default value is 2.",
+            ),
         },
-        desc="Transcribe video to text",
+        desc="Extract subtitles of the given video to text",
     )
     ANALYZE = ToolActionInfo(
         name="analyze",
@@ -493,6 +500,13 @@ class VideoAnalysisAction(Enum):
             ),
             "question": ParamInfo(
                 name="question", type="str", required=True, desc="The question to ask."
+            ),
+            "sample_rate": ParamInfo(
+                name="sample_rate",
+                type="str",
+                required=False,
+                default_value="2",
+                desc="Sample rate of the video which determines the number of frames to be sampled per second. The higher the sample rate, the more accurate the analysis, but the longer the analysis time. The default value is 2.",
             ),
         },
         desc="Analyze video content and answer questions",
@@ -506,12 +520,19 @@ class VideoAnalysisAction(Enum):
                 required=True,
                 desc="The input video in given filepath or url.",
             ),
+            "sample_rate": ParamInfo(
+                name="sample_rate",
+                type="str",
+                required=False,
+                default_value="2",
+                desc="Sample rate of the video which determines the number of frames to be sampled per second. The higher the sample rate, the more accurate the analysis, but the longer the analysis time. The default value is 2.",
+            ),
         },
         desc="Summarize the main content of the video",
     )
 
 
-class AudioAnalysisAction(Enum):
+class AudioAnalysisAction(ToolAction):
     """Audio analysis action."""
 
     TRANSCRIBE = ToolActionInfo(
@@ -525,19 +546,4 @@ class AudioAnalysisAction(Enum):
             )
         },
         desc="Transcribe audio to text",
-    )
-    ANALYZE = ToolActionInfo(
-        name="analyze",
-        input_params={
-            "audio_url": ParamInfo(
-                name="audio_url",
-                type="str",
-                required=True,
-                desc="The input audio in given filepath or url.",
-            ),
-            "question": ParamInfo(
-                name="question", type="str", required=True, desc="The question to ask."
-            ),
-        },
-        desc="Analyze audio content and answer questions",
     )
