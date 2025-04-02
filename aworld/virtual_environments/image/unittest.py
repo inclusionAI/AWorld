@@ -7,9 +7,9 @@ from loguru import logger
 from aworld.agents.gaia.agent import ExecuteAgent, PlanAgent
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.client import Client
+from aworld.core.common import Tools
 from aworld.core.swarm import Swarm
 from aworld.core.task import Task
-from aworld.core.common import Tools
 
 if __name__ == "__main__":
     # Initialize client

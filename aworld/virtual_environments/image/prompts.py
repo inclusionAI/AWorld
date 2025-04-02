@@ -7,7 +7,7 @@ Returns:
 IMAGE_OCR = (
     "Input is a base64 encoded image. Read text from image if present. "
     "Return a json string with the following format: "
-    '{"image_text": "text from image"}'
+    '{{"image_text": "text from image"}}'
 )
 
 IMAGE_REASONING = (
@@ -18,5 +18,5 @@ IMAGE_REASONING = (
     "3. Text transcription where relevant\n"
     "4. Logical deduction from visual evidence\n"
     "Return a json string with the following format: "
-    '{"image_reasoning_result": "reasoning result given task and image"}'
+    '{{"image_reasoning_result": "reasoning result given task and image"}}'
 )

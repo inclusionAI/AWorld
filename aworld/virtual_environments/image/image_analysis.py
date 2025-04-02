@@ -52,7 +52,15 @@ class ImageAnalysisTool(Tool[Observation, ActionModel]):
 
         This method sets up the LLM tool action executor and marks the tool as initialized.
         """
-        self.action_executor = LLMToolActionExecutor()
+        tool_name = self.name
+        llm_provider = self.dict_conf.get("LLM_PROVIDER", "openai")
+        llm_model_name = self.dict_conf.get("LLM_MODEL_NAME", "gpt-4o")
+        self.action_executor = LLMToolActionExecutor(
+            tool_name,
+            llm_provider,
+            llm_model_name,
+        )
+
         self.initialized = True
 
     def _get_observation(self) -> Observation:
