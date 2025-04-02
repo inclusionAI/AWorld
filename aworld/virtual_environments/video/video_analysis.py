@@ -32,7 +32,7 @@ class VideoAnalysisTool(Tool[Observation, ActionModel]):
         """Init video tool."""
         super().__init__(conf, **kwargs)
         self.content = None
-        self.video_base64 = None
+        self.video_frames = None
         self.cur_observation = None
         self.init()
         self._finish = False
@@ -52,7 +52,15 @@ class VideoAnalysisTool(Tool[Observation, ActionModel]):
 
         This method sets up the LLM tool action executor and marks the tool as initialized.
         """
-        self.action_executor = LLMToolActionExecutor()
+        tool_name = self.name
+        llm_provider = self.dict_conf.get("LLM_PROVIDER", "openai")
+        llm_model_name = self.dict_conf.get("LLM_MODEL_NAME", "gpt-4o")
+        self.action_executor = LLMToolActionExecutor(
+            tool_name,
+            llm_provider,
+            llm_model_name,
+        )
+
         self.initialized = True
 
     def _get_observation(self) -> Observation:
@@ -77,7 +85,7 @@ class VideoAnalysisTool(Tool[Observation, ActionModel]):
         action_result = None
 
         try:
-            action_result, self.video_base64 = self.action_executor.execute_action(
+            action_result, self.video_frames = self.action_executor.execute_action(
                 actions, **kwargs
             )
             reward = 1

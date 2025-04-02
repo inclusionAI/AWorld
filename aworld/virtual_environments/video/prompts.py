@@ -7,26 +7,29 @@ Returns:
     str: Prompt templates for video processing tasks
 """
 
-VIDEO_TRANSCRIBE = (
-    "Input is a base64 encoded video file. Transcribe all speech in the video. "
+VIDEO_EXTRACT_SUBTITLES = (
+    "Input is a video file consisting a series of base64 encoded frames which are in jpeg format. "
+    "Extract all subtitles (if present) in the video. "
     "Return a json string with the following format: "
-    '{"video_text": "transcribed text from video"}'
+    '{{"video_subtitles": "extracted subtitles from video"}}'
 )
 
 VIDEO_ANALYZE = (
-    "Input is a base64 encoded video file. Given user's question: {question}, "
+    "Input is a video file consisting a series of base64 encoded frames which are in jpeg format. "
+    "Given user's question: {question}, "
     "analyze the video content and answer the question following these guidelines:\n"
     "1. Watch the entire video carefully\n"
     "2. Consider visual elements, speech, and sounds\n"
     "3. Identify key actions and events\n"
     "4. Note any text displayed in the video\n"
     "Return a json string with the following format: "
-    '{"video_analysis_result": "analysis result given question and video content"}'
+    '{{"video_analysis_result": "analysis result given question and video content"}}'
 )
 
 VIDEO_SUMMARIZE = (
-    "Input is a base64 encoded video file. Summarize the main content of the video. "
+    "Input is a video file consisting a series of base64 encoded frames which are in jpeg format. "
+    "Summarize the main content of the video. "
     "Include key points, main topics, and important visual elements. "
     "Return a json string with the following format: "
-    '{"video_summary": "concise summary of the video content"}'
+    '{{"video_summary": "concise summary of the video content"}}'
 )
