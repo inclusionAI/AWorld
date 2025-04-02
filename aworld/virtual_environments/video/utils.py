@@ -41,7 +41,7 @@ def encode_video(video_url: str, with_header: bool = True) -> str:
         raise ValueError(
             f"Unsupported video format. Supported formats: {', '.join(mime_types)}"
         )
-    
+
     parsed_url = urlparse(video_url)
     is_url = all([parsed_url.scheme, parsed_url.netloc])
     if not is_url:
@@ -59,25 +59,25 @@ def encode_video(video_url: str, with_header: bool = True) -> str:
 
 def handle_llm_response(response_content: str, result_key: str) -> str:
     """Process LLM response uniformly
-    
+
     Args:
         response_content: Raw response content from LLM
         result_key: Key name to extract from JSON
-        
+
     Returns:
         str: Extracted result content
-        
+
     Raises:
         ValueError: When response is empty or result key doesn't exist
     """
     if not response_content:
         raise ValueError("No response from llm.")
-    
+
     json_pattern = r"```json\s*(.*?)\s*```"
     match = re.search(json_pattern, response_content, re.DOTALL)
     if match:
         response_content = match.group(1)
-    
+
     json_content = json.loads(response_content)
     result = json_content.get(result_key)
     if not result:
@@ -89,7 +89,7 @@ def create_video_content(prompt: str, video_base64: str) -> List[Dict[str, Any]]
     """Create uniform video content format for querying llm."""
     return [
         {"type": "text", "text": prompt},
-        {"type": "video", "video": {"url": video_base64}}
+        {"type": "video", "video": {"url": video_base64}},
     ]
 
 
@@ -105,7 +105,7 @@ def encode_video_from_url(video_url: str) -> str:
     Raises:
         requests.RequestException: When failed to fetch the video
     """
-    response = requests.get(video_url, timeout=30)  # 视频可能较大，增加超时时间
+    response = requests.get(video_url, timeout=30)
     video_bytes = response.content
     video_base64 = base64.b64encode(video_bytes).decode()
     return video_base64
