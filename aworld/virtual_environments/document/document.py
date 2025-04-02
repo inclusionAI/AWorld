@@ -16,6 +16,7 @@ from aworld.core.envs.tool_action import DocumentExecuteAction
 from aworld.core.common import Tools, Observation, ActionModel, ActionResult
 from aworld.core.envs.tool import ToolFactory, Tool
 from aworld.logs.util import logger
+from aworld.utils.diagnostic_tools import Diagnostic
 from aworld.virtual_environments.document.utils import encode_image_from_file, encode_image_from_url
 from aworld.utils import import_package, import_packages
 
@@ -65,6 +66,7 @@ class DocumentTool(Tool[Observation, ActionModel]):
     def finished(self) -> bool:
         return self.step_finished
 
+    @Diagnostic()
     def step(self, actions: list[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
@@ -80,6 +82,8 @@ class DocumentTool(Tool[Observation, ActionModel]):
                 raise ValueError("document path invalid")
             output, keyframes, error = self.document_analysis(document_path)
             observation.content = output
+            observation.observer = self.name()
+            observation.ability = action.tool_name + "__" + action.action_name
             observation.action_result.append(
                 ActionResult(is_done=True,
                              success=False if error else True,

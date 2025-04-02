@@ -9,6 +9,7 @@ from aworld.core.envs.tool import Tool, ToolFactory
 from aworld.core.envs.tool_action import SearchAction
 from aworld.core.common import Observation, ActionModel, Tools, ActionResult
 from aworld.logs.util import logger
+from aworld.utils.diagnostic_tools import Diagnostic
 
 
 @ToolFactory.register(name=Tools.SEARCH_API.value,
@@ -24,6 +25,7 @@ class SearchTool(Tool[Observation, List[ActionModel]]):
         # from options obtain user query
         return Observation(content=options.get("query", None) if options else None), {}
 
+    @Diagnostic()
     def step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         reward = 0
         fail_error = ""

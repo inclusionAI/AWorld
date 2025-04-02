@@ -15,6 +15,7 @@ from aworld.core.common import Observation
 from aworld.core.envs.tool import Tool, ToolFactory
 from aworld.core.swarm import Swarm
 from aworld.logs.util import logger, color_log
+from aworld.utils.diagnostic_tools import Diagnostic
 
 
 @dataclass
@@ -86,6 +87,7 @@ class Task(object):
     def after_run(self):
         pass
 
+    @Diagnostic()
     def start(self) -> Any:
         try:
             self.before_run()
@@ -106,6 +108,7 @@ class Task(object):
             t.setDaemon(True)
             t.start()
 
+    @Diagnostic()
     def run(self):
         # init tool state by reset(), and ignore them observation
         observation = None
@@ -126,6 +129,7 @@ class Task(object):
             # example now
             return self._swarm_process(observation, info)
 
+    @Diagnostic()
     def _swarm_process(self,
                        observation: Observation,
                        info: Dict[str, Any]) -> Dict[str, Any]:
@@ -185,6 +189,7 @@ class Task(object):
                     "success": False,
                     "total_time": (time.time() - start)}
 
+    @Diagnostic()
     def _agent_process(self,
                        observation: Observation,
                        info: Dict[str, Any]) -> Dict[str, Any]:

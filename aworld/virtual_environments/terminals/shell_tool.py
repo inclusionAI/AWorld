@@ -12,6 +12,7 @@ from aworld.core.envs.tool_action import ShellAction
 from aworld.core.common import ActionModel, Observation, ActionResult, Tools
 from aworld.core.envs.tool import Tool, AgentInput, ToolFactory
 from aworld.logs.util import logger
+from aworld.utils.diagnostic_tools import Diagnostic
 
 
 @ToolFactory.register(name=Tools.SHELL.value,
@@ -89,6 +90,7 @@ class ShellTool(Tool[Observation, List[ActionModel]]):
             self.processes = []
             self.step_finished = True
 
+    @Diagnostic()
     def step(self,
              actions: list[ActionModel],
              **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:

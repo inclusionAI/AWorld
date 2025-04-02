@@ -11,6 +11,7 @@ from aworld.logs.util import logger, color_log
 from aworld.core.common import Observation, ActionModel
 from aworld.config.conf import ToolConfig, load_config
 from aworld.core.envs.tool_desc import get_actions_by_tools
+from aworld.utils.diagnostic_tools import Diagnostic
 
 
 class Swarm(object):
@@ -69,6 +70,7 @@ class Swarm(object):
     def is_agent(self, policy: ActionModel):
         return policy.tool_name is None and policy.action_name is None
 
+    @Diagnostic()
     def process(self, observation, info) -> Dict[str, Any]:
         """Multi-agent general process workflow.
 

@@ -10,6 +10,8 @@ from aworld.core.envs.tool_action import PythonToolAction
 from aworld.core.common import ActionModel, Observation, ActionResult, Tools
 from aworld.core.envs.tool import Tool, AgentInput, ToolFactory
 from aworld.utils import import_package
+from aworld.utils.diagnostic_tools import Diagnostic
+
 
 @ToolFactory.register(name=Tools.PYTHON_EXECUTE.value,
                       desc="python interpreter tool",
@@ -164,6 +166,7 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
         finally:
             self.step_finished = True
 
+    @Diagnostic()
     def step(
             self,
             actions: List[ActionModel],
@@ -215,6 +218,7 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
                     "exception": fail_error
                 })
 
+    @Diagnostic()
     def execute(self, code, timeout=300):
         """
         Execute the code
