@@ -39,8 +39,8 @@ if __name__ == '__main__':
     )
 
     # Define a task
-    save_path = '~/result.json'
-    save_score_path = '~/score.json'
+    save_path = '~'
+    save_score_path = '~'
     if os.path.exists(save_path):
         with open(save_path, 'r') as f:
             _results = json.load(f)
@@ -48,6 +48,8 @@ if __name__ == '__main__':
         _results = []
     for idx, sample in enumerate(dataset):
         logger.info(f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. ")
+        # if sample["task_id"] != "32102e3e-d12a-4209-9163-7b3a104efe5d":
+            # continue
 
         if _check_task_completed(sample["task_id"], _results):
             logger.info(f"The following task is already completed:\n task id: {sample['task_id']}, question: {sample['Question']}")
@@ -55,6 +57,11 @@ if __name__ == '__main__':
 
         question = sample['Question']
         logger.info(f'question: {question}')
+
+        # debug
+        # question = "What is the surname of the equine veterinarian mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
+        # question = "What is the surname of the horse doctor mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
+        # end debug
 
         agent1 = PlanAgent(conf=agent_config)
         agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
