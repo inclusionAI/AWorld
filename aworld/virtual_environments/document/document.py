@@ -8,6 +8,7 @@ import tempfile
 import subprocess
 from typing import Any, Dict, Tuple
 from urllib.parse import urlparse
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -21,6 +22,16 @@ from aworld.utils import import_package, import_packages
 
 class InputDocument(BaseModel):
     document_path: str | None = None
+
+
+class ComplexEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.strftime('%Y-%m-%d %H:%M:%S')
+        elif isinstance(obj, date):
+            return obj.strftime('%Y-%m-%d')
+        else:
+            return json.JSONEncoder.default(self, obj)
 
 
 @ToolFactory.register(name=Tools.DOCUMENT_ANALYSIS.value,
@@ -100,8 +111,13 @@ class DocumentTool(Tool[Observation, ActionModel]):
         import xmltodict
         error = None
         # Initialize content to empty list to avoid None return
-        self.content = []
+        self.content = None
         try:
+            if any(document_path.endswith(ext) for ext in ["txt", "py"]):
+                with open(document_path, "r") as f:
+                    self.content = f.read()
+                f.close()
+
             if any(document_path.endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
                 parsed_url = urlparse(document_path)
                 is_url = all([parsed_url.scheme, parsed_url.netloc])
@@ -129,7 +145,8 @@ class DocumentTool(Tool[Observation, ActionModel]):
                             sheet_data = df.to_dict(orient='records')
                             excel_data[sheet_name] = sheet_data
 
-                    self.content = json.dumps(excel_data, ensure_ascii=False)
+                    # self.content = json.dumps(excel_data, ensure_ascii=False)
+                    self.content = json.dumps(excel_data, ensure_ascii=False, cls=ComplexEncoder)
                     logger.info(f"Successfully processed Excel file: {document_path}")
                     logger.info(f"Found {len(sheet_names)} sheets: {', '.join(sheet_names)}")
 

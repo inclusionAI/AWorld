@@ -1,6 +1,6 @@
 import re
 from typing import Any, Dict, List, Literal, Optional, Union, Tuple
-import logging as logger
+from aworld.logs.util import logger
 
 
 def extract_pattern(content: str, pattern: str) -> Optional[str]:

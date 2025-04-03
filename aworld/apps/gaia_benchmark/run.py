@@ -3,7 +3,7 @@
 
 import json
 import os
-import logging as logger
+from aworld.logs.util import logger
 from typing import Any, Dict, List, Literal, Optional, Union, Tuple
 
 from aworld.core.client import Client
@@ -39,8 +39,8 @@ if __name__ == '__main__':
     )
 
     # Define a task
-    save_path = '~'
-    save_score_path = '~'
+    save_path = 'result.json'
+    save_score_path = 'score.json'
     if os.path.exists(save_path):
         with open(save_path, 'r') as f:
             _results = json.load(f)
@@ -64,8 +64,15 @@ if __name__ == '__main__':
         # end debug
 
         agent1 = PlanAgent(conf=agent_config)
+        # agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
+        #                                                     Tools.PYTHON_EXECUTE.value, 
+        #                                                     Tools.IMAGE_ANALYSIS.value,
+        #                                                     Tools.SEARCH_API.value,
+        #                                                     Tools.BROWSER.value])
         agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
-                                                            Tools.PYTHON_EXECUTE.value, Tools.SEARCH_API.value])
+                                                            Tools.PYTHON_EXECUTE.value, 
+                                                            Tools.IMAGE_ANALYSIS.value,
+                                                            ])
 
         # Create swarm for multi-agents
         # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph

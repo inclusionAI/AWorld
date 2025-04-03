@@ -80,7 +80,7 @@ class ExecuteAgent(BaseAgent):
                     content = re.sub(r'\n{3,}', '\n', cleaned_html)
                 
                 # 如果是读取图片
-                if content.startswith('data:image/jpeg;base64'):
+                if isinstance(content, str) and content.startswith('data:image/jpeg;base64'):
                     content =  [
                         {"type": "text", "text": self.task},
                         {"type": "image_url", "image_url": {"url": content}},

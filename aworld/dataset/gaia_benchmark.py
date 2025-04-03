@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Literal, Optional, Union, Tuple
 from pathlib import Path
 import json
-import logging as logger
+from aworld.logs.util import logger
 
 
 class GAIABenchmark:
