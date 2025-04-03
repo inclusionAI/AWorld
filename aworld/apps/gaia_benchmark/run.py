@@ -106,4 +106,3 @@ if __name__ == '__main__':
     print(score_dict)
     with open(save_score_path, 'w') as f:
         json.dump(score_dict, f, indent=4, ensure_ascii=False)
-
