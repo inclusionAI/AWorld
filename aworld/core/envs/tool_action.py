@@ -443,10 +443,10 @@ class DocumentExecuteAction(ToolAction):
                 name="document_path",
                 type="str",
                 required=True,
-                desc="The path of the document to be processed, either a local path or a URL. It can process image, video, audio, ppt, docx, pdf, doc, xls, xlsx and xml, etc.",
+                desc="The path of the document to be processed, either a local path or a URL. It can process txt, ppt, docx, pdf, doc, xls, xlsx and xml, etc.",
             )
         },
-        desc="Extract the content of a given document (or url) and return the processed text. It can process image, video, audio, ppt, docx, pdf, doc, xls, xlsx and xml, etc. It may filter out some information, resulting in inaccurate content.",
+        desc="Extract the content of a given document (or url) and return the processed text. It can process txt, ppt, docx, pdf, doc, xls, xlsx and xml, etc. It may filter out some information, resulting in inaccurate content.",
     )
 
 

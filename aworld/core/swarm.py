@@ -88,7 +88,8 @@ class Swarm(object):
 
         start = time.time()
         step = 0
-        max_steps = self.conf.get("max_steps", 100)
+        # max_steps = self.conf.get("max_steps", 100)
+        max_steps = self.conf.get("max_steps", 45)
         # use entry agent every time
         self.cur_agent = self.entry_agent
         policy: List[ActionModel] = self.cur_agent.policy(observation, info)

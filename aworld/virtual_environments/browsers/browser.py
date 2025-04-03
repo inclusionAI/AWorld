@@ -189,17 +189,18 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         dom_tree = self._parse_dom_tree()
         image = self.screenshot()
         pixels_above, pixels_below = self._scroll_info()
+        content = self.page.content()
         info = {"pixels_above": pixels_above,
                 "pixels_below": pixels_below,
                 "url": self.page.url}
-        return Observation(dom_tree=dom_tree, image=image, info=info)
+        return Observation(dom_tree=dom_tree, image=image, content=content, info=info)
 
     def _parse_dom_tree(self) -> DomTree:
         args = {
             'doHighlightElements': self.dict_conf.get("do_highlight", True),
             'focusHighlightIndex': self.dict_conf.get("focus_highlight", -1),
             'viewportExpansion': self.dict_conf.get("viewport_expansion", 0),
-            'debugMode': logger.getEffectiveLevel() == 10,
+            # 'debugMode': logger.getEffectiveLevel() == 10,
         }
         element_tree, element_map = build_dom_tree(self.page, self.js_code, args)
         return DomTree(element_tree=element_tree, element_map=element_map)
