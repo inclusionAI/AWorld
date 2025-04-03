@@ -1,14 +1,14 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-try:
-    from loguru import logger
-except ImportError:
-    import logging
+# try:
+#     from loguru import logger
+# except ImportError:
+import logging
 
-    LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-    logger = logging.getLogger("common")
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+logger = logging.getLogger("common")
 
 
 class Color:
