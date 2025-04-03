@@ -9,12 +9,12 @@ from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.envs.tool_action import ImageAnalysisAction
 from aworld.logs.util import logger
 from aworld.virtual_environments.action import ExecutableAction
-from aworld.virtual_environments.image.prompts import IMAGE_OCR, IMAGE_REASONING
-from aworld.virtual_environments.image.utils import (
+from aworld.virtual_environments.toolagents.image.utils import (
     create_image_content,
     encode_image,
     handle_llm_response,
 )
+from aworld.virtual_environments.toolagents.prompts import IMAGE_OCR, IMAGE_REASONING
 
 
 @ActionFactory.register(

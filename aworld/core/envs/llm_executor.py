@@ -3,7 +3,7 @@
 import os
 from typing import Any, List, Tuple
 
-from aworld.config.conf import ModelConfig
+from aworld.config.conf import AgentConfig
 from aworld.core.common import ActionModel, ActionResult
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.envs.tool import ToolActionExecutor
@@ -32,7 +32,7 @@ class LLMToolActionExecutor(ToolActionExecutor):
         assert llm_base_url, "LLM_BASE_URL is required"
 
         # set llm model
-        llm_config = ModelConfig(
+        llm_config = AgentConfig(
             llm_provider=llm_provider,
             llm_model_name=llm_model_name,
             llm_api_key=llm_api_key,
@@ -59,7 +59,7 @@ class LLMToolActionExecutor(ToolActionExecutor):
 
     def execute_action(
         self, actions: List[ActionModel], **kwargs
-    ) -> List[Tuple[ActionResult, Any]]:
+    ) -> List[Tuple[List[ActionResult], ActionResult, Any]]:
         """Execute the specified android action sequence by agent policy.
 
         Args:

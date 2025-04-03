@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from typing import Any, Dict, Tuple
+from typing import Any, List, Tuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -10,12 +10,12 @@ from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.envs.tool_action import VideoAnalysisAction
 from aworld.logs.util import logger
 from aworld.virtual_environments.action import ExecutableAction
-from aworld.virtual_environments.video.prompts import (
+from aworld.virtual_environments.toolagents.prompts import (
     VIDEO_ANALYZE,
     VIDEO_EXTRACT_SUBTITLES,
     VIDEO_SUMMARIZE,
 )
-from aworld.virtual_environments.video.utils import (
+from aworld.virtual_environments.toolagents.video.utils import (
     create_video_content,
     get_video_frames,
     handle_llm_response,
@@ -41,7 +41,7 @@ class VideoExtractSubtitlesAction(ExecutableAction):
         params = action.params
         video_url = params.get("video_url", "")
         sample_rate = params.get("sample_rate", 2)
-        video_base64: Dict[str, Any] = get_video_frames(video_url, sample_rate)
+        video_base64: List[str] = get_video_frames(video_url, sample_rate)
 
         inputs = []
         try:
@@ -90,7 +90,7 @@ class VideoAnalyzeAction(ExecutableAction):
         question = params.get("question", "")
         video_url = params.get("video_url", "")
         sample_rate = params.get("sample_rate", 2)
-        video_base64: Dict[str, Any] = get_video_frames(video_url, sample_rate)
+        video_base64: List[str] = get_video_frames(video_url, sample_rate)
 
         inputs = []
         try:
@@ -139,8 +139,8 @@ class VideoSummarizeAction(ExecutableAction):
         params = action.params
         video_url = params.get("video_url", "")
         sample_rate = params.get("sample_rate", 2)
-        video_base64: Dict[str, Any] = get_video_frames(video_url, sample_rate)
-
+        video_base64: List[str] = get_video_frames(video_url, sample_rate)
+        logger.success(f"video frames: {len(video_base64)}")
         inputs = []
         try:
             content = create_video_content(VIDEO_SUMMARIZE, video_base64)

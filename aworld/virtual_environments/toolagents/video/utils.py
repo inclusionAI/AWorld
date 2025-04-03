@@ -6,7 +6,7 @@
 import base64
 import json
 import re
-from typing import Any, Dict, List
+from typing import List
 
 from cv2 import (
     CAP_PROP_FPS,
@@ -33,14 +33,14 @@ def get_video_duration(video_path: str) -> float:
     return duration
 
 
-def get_video_frames(video_path: str, sample_rate: int = 2) -> List[Dict[str, Any]]:
+def get_video_frames(video_path: str, sample_rate: int = 2) -> List[str]:
     """
     Get the frames of a video file.
     Args:
         video_path (str): The path to the video file.
         sample_rate (int): Sample n frames per second.
     Returns:
-        List[Dict[str, Any]]: The frames of the video.
+        List[str]: The frames of the video.
     """
     video: VideoCapture = VideoCapture(video_path)
     fps = video.get(CAP_PROP_FPS)
@@ -53,17 +53,17 @@ def get_video_frames(video_path: str, sample_rate: int = 2) -> List[Dict[str, An
             break
         _, buffer = imencode(".jpg", frame)
         frame_data = base64.b64encode(buffer).decode("utf-8")
-        frames.append({"data": f"data:image/jpeg;base64,{frame_data}", "time": i / fps})
+        frames.append(f"data:image/jpeg;base64,{frame_data}")
     video.release()
     return frames
 
 
-def create_video_content(prompt: str, video_base64: Dict[str, Any]):
+def create_video_content(prompt: str, frames: List[str]):
     """
     Create the content for the video.
     Args:
         prompt (str): The prompt for the video.
-        video_base64 (Dict[str, Any]): The base64 encoded video.
+        frames (List[Dict[str, Any]]): The base64 encoded video.
     Returns:
         str: The content for the video.
     """
@@ -73,15 +73,9 @@ def create_video_content(prompt: str, video_base64: Dict[str, Any]):
             "text": f"The video is as follows. \n{prompt}",
         }
     ]
-    content.extend(
-        [
-            {
-                "type": "image_url",
-                "image_url": {"url": frame["data"]},
-            }
-            for frame in video_base64
-        ]
-    )
+    for frame in frames:
+        frame_content = {"type": "image_url", "image_url": {"url": frame}}
+        content.append(frame_content)
     return content
 
 

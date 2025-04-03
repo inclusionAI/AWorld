@@ -11,7 +11,9 @@ from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.envs.tool_action import AudioAnalysisAction
 from aworld.logs.util import logger
 from aworld.virtual_environments.action import ExecutableAction
-from aworld.virtual_environments.audio.utils import get_audio_filepath_from_url
+from aworld.virtual_environments.toolagents.audio.utils import (
+    get_audio_filepath_from_url,
+)
 
 
 @ActionFactory.register(
