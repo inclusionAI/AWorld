@@ -13,8 +13,10 @@ from aworld.logs.util import logger
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task_description", type=str, default="")
-    parser.add_argument("--file_path", type=str, default="")
+    #parser.add_argument("--task_description", type=str, default="What animals are in the given image and what text content is included in the image?")
+    parser.add_argument("--task_description", type=str, default="What animals are in the given image?")
+    parser.add_argument("--file_path", type=str, default="file.jpg")
+    #parser.add_argument("--file_path", type=str, default="")
     args = parser.parse_args()
     task_description = args.task_description
     file_path = args.file_path
@@ -28,6 +30,9 @@ if __name__ == "__main__":
 
     # One sample for example
     test_sample = f"{task_description}\nThe relevant file path is {file_path}"
+
+    os.environ['LLM_API_KEY'] = "sk-z"
+    os.environ['LLM_BASE_URL'] = "https://api."
 
     llm_api_key = os.getenv("LLM_API_KEY", "")
     llm_base_url = os.getenv("LLM_BASE_URL", "")
@@ -44,9 +49,12 @@ if __name__ == "__main__":
     executor = ExecuteAgent(
         conf=agent_config,
         tool_names=[
-            Tools.AUDIO_ANALYSIS.value,
+            #Tools.AUDIO_ANALYSIS.value,
             Tools.IMAGE_ANALYSIS.value,
-            Tools.VIDEO_ANALYSIS.value,
+            #Tools.VIDEO_ANALYSIS.value,
+        ],
+        mcp_servers=[
+            "image",
         ],
     )
 

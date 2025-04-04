@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import asyncio
 import copy
 import json
 import time
@@ -7,6 +8,7 @@ import traceback
 from typing import Dict, Any, List
 
 from aworld.core.agent.base import BaseAgent, AgentFactory
+from aworld.core.mcp.utils import mcp_tool_desc_transform
 from aworld.models.utils import tool_desc_transform
 from aworld.config.conf import AgentConfig
 from aworld.core.common import Observation, ActionModel, Agents, Tools
@@ -24,6 +26,10 @@ class ExecuteAgent(BaseAgent):
         self.tools = tool_desc_transform(
             get_tool_desc(), tools=self.tool_names if self.tool_names else []
         )
+        # mcp
+        self.mcp_tools = asyncio.run(mcp_tool_desc_transform(self.mcp_servers))
+        #self.tools = self.mcp_tools + self.tools
+        self.tools = self.mcp_tools
 
     def name(self) -> str:
         return Agents.EXECUTE.value
@@ -106,12 +112,20 @@ class ExecuteAgent(BaseAgent):
                 tool_action_name: str = tool_call.function.name
                 if not tool_action_name:
                     continue
+                # mcp
+                is_mcp = False
+                if tool_action_name.startswith("mcp__"):
+                    is_mcp = True
+                    tool_action_name = tool_action_name.replace("mcp__", "", 1)
+                    if not tool_action_name:
+                        continue
+
                 tool_name = tool_action_name.split("__")[0]
                 action_name = tool_action_name.split("__")[1]
                 params = json.loads(tool_call.function.arguments)
                 res.append(
                     ActionModel(
-                        tool_name=tool_name, action_name=action_name, params=params
+                        tool_name=tool_name, action_name=action_name, params=params,is_mcp=is_mcp
                     )
                 )
 
