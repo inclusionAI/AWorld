@@ -28,8 +28,7 @@ class ExecuteAgent(BaseAgent):
         )
         # mcp
         self.mcp_tools = asyncio.run(mcp_tool_desc_transform(self.mcp_servers))
-        #self.tools = self.mcp_tools + self.tools
-        self.tools = self.mcp_tools
+        self.tools = self.mcp_tools + self.tools
 
     def name(self) -> str:
         return Agents.EXECUTE.value
