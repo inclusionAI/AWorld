@@ -14,8 +14,8 @@ from aworld.logs.util import logger
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     #parser.add_argument("--task_description", type=str, default="What animals are in the given image and what text content is included in the image?")
-    parser.add_argument("--task_description", type=str, default="What animals are in the given image?")
-    parser.add_argument("--file_path", type=str, default="file.jpg")
+    parser.add_argument("--task_description", type=str, default="")
+    parser.add_argument("--file_path", type=str, default="")
     #parser.add_argument("--file_path", type=str, default="")
     args = parser.parse_args()
     task_description = args.task_description
