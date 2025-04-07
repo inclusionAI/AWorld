@@ -8,6 +8,12 @@
       },
       "image": {
         "url": "http://localhost:1111/sse"
+      },
+      "audio": {
+        "url": "http://localhost:2222/sse"
+      },
+      "video": {
+        "url": "http://localhost:333/sse"
       }
-    }
+    } 
   }
