@@ -73,10 +73,10 @@ def wipe_secret_info(config: Dict[str, Any], keys: List[str]) -> Dict[str, Any]:
 
 class ModelConfig(BaseModel):
     llm_provider: str = None
-    llm_model_name: str | None = None
-    llm_temperature: float | None = None
-    llm_base_url: str | None = None
-    llm_api_key: str | None = None
+    llm_model_name: str = None
+    llm_temperature: float = None
+    llm_base_url: str = None
+    llm_api_key: str = None
     max_input_tokens: int = 128000
 
 
@@ -122,4 +122,26 @@ class ToolConfig(BaseModel):
     enable_recording: bool = False
     working_dir: str = ""
     max_retry: int = 3
+    llm_config: ModelConfig = None
     ext: dict = {}
+
+
+class ConfigDict(dict):
+    """Object mode operates dict."""
+    __setattr__ = dict.__setitem__
+    __getattr__ = dict.__getitem__
+
+    def __init__(self, seq: dict, **kwargs):
+        super(ConfigDict, self).__init__(seq, **kwargs)
+        self.nested(self)
+
+    def nested(self, seq: dict):
+        """Nested recursive processing dict.
+
+        Args:
+            seq: Python original format dict
+        """
+        for k, v in seq.items():
+            if isinstance(v, dict):
+                seq[k] = ConfigDict(v)
+                self.nested(v)

@@ -101,190 +101,129 @@ class GymAction(ToolAction):
 
 class BrowserAction(ToolAction):
     """Definition of Browser tool supported action."""
-
-    NONE = ToolActionInfo(name="none", desc="Do nothing")
-    GO_TO_URL = ToolActionInfo(
-        name="go_to_url",
-        input_params={
-            "url": ParamInfo(
-                name="url",
-                type="str",
-                required=True,
-                desc="got to url in page on browser.",
-            )
-        },
-        desc="Navigate to URL in the current tab",
-    )
-    INPUT_TEXT = ToolActionInfo(
-        name="input_text",
-        input_params={
-            "text": ParamInfo(
-                name="text",
-                type="str",
-                required=True,
-                desc="input text in page on browser",
-            ),
-            "index": ParamInfo(
-                name="index",
-                type="str",
-                required=True,
-                desc="index of click element in page on browser.",
-            ),
-        },
-        desc="Input text into a input interactive element",
-    )
-    SEARCH = ToolActionInfo(
-        name="search",
-        input_params={
-            "url": ParamInfo(name="url", type="str", required=True, desc="search url."),
-            "query": ParamInfo(
-                name="query",
-                type="str",
-                required=True,
-                desc="search query input in page on browser.",
-            ),
-        },
-        desc="Search the query in search engine, Google, Baidu etc., in the current tab, the query should be a search query like humans search in search engine, concrete and not vague or super long. More the single most important items. ",
-    )
-    SEARCH_GOOGLE = ToolActionInfo(
-        name="search_google",
-        input_params={
-            "url": ParamInfo(name="url", type="str", required=True, desc="search url."),
-            "query": ParamInfo(
-                name="query",
-                type="str",
-                required=True,
-                desc="search query input in google.",
-            ),
-        },
-        desc="Search the query in Google in the current tab, the query should be a search query like humans search in Google, concrete and not vague or super long. More the single most important items. ",
-    )
-    GO_BACK = ToolActionInfo(name="go_back", desc="Go back")
-    GO_FORWARD = ToolActionInfo(name="go_forward", desc="Go forward")
-    SCROLL_DOWN = ToolActionInfo(
-        name="scroll_down",
-        input_params={
-            "amount": ParamInfo(
-                name="amount", type="str", required=True, desc="pixel amount."
-            )
-        },
-        desc="Scroll down the page by pixel amount - if no amount is specified, scroll down one page",
-    )
-    SCROLL_UP = ToolActionInfo(
-        name="scroll_up",
-        input_params={
-            "amount": ParamInfo(
-                name="amount", type="str", required=True, desc="Pixel amount."
-            )
-        },
-        desc="Scroll up the page by pixel amount - if no amount is specified, scroll up one page",
-    )
-    CLICK_ELEMENT = ToolActionInfo(
-        name="click_element",
-        input_params={
-            "index": ParamInfo(
-                name="index",
-                type="str",
-                required=True,
-                desc="Index of click element in page on browser.",
-            )
-        },
-        desc="Click element",
-    )
+    NONE = ToolActionInfo(name="none",
+                          desc="Do nothing")
+    GO_TO_URL = ToolActionInfo(name="go_to_url",
+                               input_params={"url": ParamInfo(name="url",
+                                                              type="str",
+                                                              required=True,
+                                                              desc="got to url in page on browser.")},
+                               desc="Navigate to URL in the current tab")
+    INPUT_TEXT = ToolActionInfo(name="input_text",
+                                input_params={"text": ParamInfo(name="text",
+                                                                type="str",
+                                                                required=True,
+                                                                desc="input text in page on browser"),
+                                              "index": ParamInfo(name="index",
+                                                                 type="str",
+                                                                 required=True,
+                                                                 desc="index of click element in page on browser.")},
+                                desc="Input text into a input interactive element")
+    SEARCH = ToolActionInfo(name="search",
+                            input_params={"url": ParamInfo(name="url",
+                                                           type="str",
+                                                           required=True,
+                                                           desc="search url."),
+                                          "query": ParamInfo(name="query",
+                                                             type="str",
+                                                             required=True,
+                                                             desc="search query input in page on browser.")},
+                            desc="Search the query in search engine, Google, Baidu etc., in the current tab, the query should be a search query like humans search in search engine, concrete and not vague or super long. More the single most important items. ")
+    SEARCH_GOOGLE = ToolActionInfo(name="search_google",
+                                   input_params={"url": ParamInfo(name="url",
+                                                                  type="str",
+                                                                  required=True,
+                                                                  desc="search url."),
+                                                 "query": ParamInfo(name="query",
+                                                                    type="str",
+                                                                    required=True,
+                                                                    desc="search query input in google.")},
+                                   desc="Search the query in Google in the current tab, the query should be a search query like humans search in Google, concrete and not vague or super long. More the single most important items. ")
+    GO_BACK = ToolActionInfo(name="go_back",
+                             desc="Go back")
+    GO_FORWARD = ToolActionInfo(name="go_forward",
+                                desc="Go forward")
+    SCROLL_DOWN = ToolActionInfo(name="scroll_down",
+                                 input_params={"amount": ParamInfo(name="amount",
+                                                                   type="str",
+                                                                   required=True,
+                                                                   desc="pixel amount.")},
+                                 desc="Scroll down the page by pixel amount - if no amount is specified, scroll down one page")
+    SCROLL_UP = ToolActionInfo(name="scroll_up",
+                               input_params={"amount": ParamInfo(name="amount",
+                                                                 type="str",
+                                                                 required=True,
+                                                                 desc="Pixel amount.")},
+                               desc="Scroll up the page by pixel amount - if no amount is specified, scroll up one page")
+    CLICK_ELEMENT = ToolActionInfo(name="click_element",
+                                   input_params={"index": ParamInfo(name="index",
+                                                                    type="str",
+                                                                    required=True,
+                                                                    desc="Index of click element in page on browser.")},
+                                   desc="Click element")
     SAYING = ToolActionInfo(name="saying")
-    NEW_TAB = ToolActionInfo(
-        name="new_tab",
-        input_params={
-            "url": ParamInfo(
-                name="url",
-                type="str",
-                required=True,
-                desc="Open url in new tab on browser.",
-            )
-        },
-        desc="Open url in new tab",
-    )
-    SWITCH_TAB = ToolActionInfo(
-        name="switch_tab",
-        input_params={
-            "page_id": ParamInfo(
-                name="page_id",
-                type="str",
-                required=True,
-                desc="Switch tab by page id on browser.",
-            )
-        },
-        desc="Switch tab",
-    )
-    OPEN_NEW_TAB = ToolActionInfo(
-        name="open_new_tab",
-        input_params={
-            "url": ParamInfo(
-                name="url",
-                type="str",
-                required=True,
-                desc="Open url in new tab on browser.",
-            )
-        },
-        desc="Open url in new tab",
-    )
-    WAIT = ToolActionInfo(
-        name="wait",
-        input_params={
-            "seconds": ParamInfo(
-                name="seconds", type="str", required=True, desc="Wait some seconds."
-            )
-        },
-        desc="Open url in new tab",
-    )
-    EXTRACT_CONTENT = ToolActionInfo(
-        name="extract_content",
-        input_params={
-            "goal": ParamInfo(
-                name="goal", type="str", required=True, desc="The goal in page content."
-            )
-        },
-        desc="Extract page content to retrieve specific information from the page, e.g. all company names, a specifc description, all information about, links with companies in structured format or simply links",
-    )
-    SEND_KEYS = ToolActionInfo(
-        name="send_keys",
-        input_params={
-            "keys": ParamInfo(
-                name="keys", type="str", required=True, desc="Strings of special keys."
-            )
-        },
-        desc="Send strings of special keys like Escape,Backspace, Insert, PageDown, Delete, Enter, Shortcuts such as `Control+o`, `Control+Shift+T` are supported as well. This gets used in keyboard.press. ",
-    )
-    WRITE_TO_FILE = ToolActionInfo(
-        name="write_to_file",
-        input_params={
-            "file_path": ParamInfo(
-                name="file_path",
-                type="str",
-                required=False,
-                default_value="tmp_result.md",
-                desc="Path to the file to write to",
-            ),
-            "content": ParamInfo(
-                name="content",
-                type="str",
-                required=True,
-                desc="Content to write to the file",
-            ),
-            "mode": ParamInfo(
-                name="mode",
-                type="str",
-                required=False,
-                default_value="a",
-                desc="File opening mode: 'w' for write (overwrite), 'a' for append (default)",
-            ),
-        },
-        desc="Write content to a file",
-    )
-    DONE = ToolActionInfo(
-        name="done",
-        desc="Complete task - with return text and if the task is finished (success=True) or not yet  completly finished (success=False), because last step is reached",
-    )
+    NEW_TAB = ToolActionInfo(name="new_tab",
+                             input_params={"url": ParamInfo(name="url",
+                                                            type="str",
+                                                            required=True,
+                                                            desc="Open url in new tab on browser.")},
+                             desc="Open url in new tab")
+    SWITCH_TAB = ToolActionInfo(name="switch_tab",
+                                input_params={"page_id": ParamInfo(name="page_id",
+                                                                   type="str",
+                                                                   required=True,
+                                                                   desc="Switch tab by page id on browser.")},
+                                desc="Switch tab")
+    OPEN_NEW_TAB = ToolActionInfo(name="open_new_tab",
+                                  input_params={"url": ParamInfo(name="url",
+                                                                 type="str",
+                                                                 required=True,
+                                                                 desc="Open url in new tab on browser.")},
+                                  desc="Open url in new tab")
+    WAIT = ToolActionInfo(name="wait",
+                          input_params={"seconds": ParamInfo(name="seconds",
+                                                             type="str",
+                                                             required=True,
+                                                             desc="Wait some seconds.")},
+                          desc="Open url in new tab")
+    EXTRACT_CONTENT = ToolActionInfo(name="extract_content",
+                                     input_params={"goal": ParamInfo(name="goal",
+                                                                     type="str",
+                                                                     required=True,
+                                                                     desc="The goal in page content.")},
+                                     desc="Extract page content to retrieve specific information from the page, e.g. all company names, a specifc description, all information about, links with companies in structured format or simply links")
+    SEND_KEYS = ToolActionInfo(name="send_keys",
+                               input_params={"keys": ParamInfo(name="keys",
+                                                               type="str",
+                                                               required=True,
+                                                               desc="Strings of special keys.")},
+                               desc="Send strings of special keys like Escape,Backspace, Insert, PageDown, Delete, Enter, Shortcuts such as `Control+o`, `Control+Shift+T` are supported as well. This gets used in keyboard.press. ")
+    WRITE_TO_FILE = ToolActionInfo(name="write_to_file",
+                                   input_params={
+                                       "file_path": ParamInfo(
+                                           name="file_path",
+                                           type="str",
+                                           required=False,
+                                           default_value="tmp_result.md",
+                                           desc="Path to the file to write to"
+                                       ),
+                                       "content": ParamInfo(
+                                           name="content",
+                                           type="str",
+                                           required=True,
+                                           desc="Content to write to the file"
+                                       ),
+                                       "mode": ParamInfo(
+                                           name="mode",
+                                           type="str",
+                                           required=False,
+                                           default_value="a",
+                                           desc="File opening mode: 'w' for write (overwrite), 'a' for append (default)"
+                                       )
+                                   },
+                                   desc="Write content to a file")
+    DONE = ToolActionInfo(name="done",
+                          desc="Complete task - with return text and if the task is finished (success=True) or not yet  completly finished (success=False), because last step is reached")
 
 
 class AndroidAction(ToolAction):

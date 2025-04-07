@@ -7,8 +7,9 @@ import os
 import time
 from importlib import resources
 from pathlib import Path
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, Tuple, List, Union
 
+from aworld.config import ConfigDict
 from aworld.core.envs.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult, Tools
 from aworld.logs.util import logger
@@ -30,15 +31,15 @@ ASCII = "".join(chr(x) for x in range(32, 128))
                       supported_action=BrowserAction,
                       conf_file_name=f'{Tools.BROWSER.value}_tool.yaml')
 class BrowserTool(Tool[Observation, List[ActionModel]]):
-    def __init__(self, conf: BrowserToolConfig, **kwargs) -> None:
+    def __init__(self, conf: Union[ConfigDict, BrowserToolConfig], **kwargs) -> None:
         super(BrowserTool, self).__init__(conf)
 
         self.initialized = False
         self._finish = False
-        self.record_trace = self.dict_conf.get("enable_recording", False)
-        self.sleep_after_init = self.dict_conf.get("sleep_after_init", False)
+        self.record_trace = self.conf.get("enable_recording", False)
+        self.sleep_after_init = self.conf.get("sleep_after_init", False)
 
-        dom_js_path = self.dict_conf.get('dom_js_path')
+        dom_js_path = self.conf.get('dom_js_path')
         if dom_js_path and os.path.exists(dom_js_path):
             with open(dom_js_path, 'r') as read:
                 self.js_code = read.read()
@@ -61,17 +62,17 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             self.context.tracing.start(screenshots=True, snapshots=True)
 
         self.page = self.context.new_page()
-        if self.dict_conf.get("custom_executor"):
+        if self.conf.get("custom_executor"):
             self.action_executor = BrowserToolActionExecutor(self)
         else:
             self.action_executor = action_executor
         self.initialized = True
 
     def _create_browser(self):
-        browse_name = self.dict_conf.get("browse_name", "chromium")
+        browse_name = self.conf.get("browse_name", "chromium")
         browse = getattr(self.playwright, browse_name)
-        cdp_url = self.dict_conf.get("cdp_url")
-        wss_url = self.dict_conf.get("wss_url")
+        cdp_url = self.conf.get("cdp_url")
+        wss_url = self.conf.get("wss_url")
         if cdp_url:
             if browse_name != "chromium":
                 logger.warning(f"{browse_name} unsupported CDP, will use chromium browser")
@@ -82,10 +83,10 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             logger.info(f"Connecting to remote browser via wss {wss_url}")
             browser = browse.connect(wss_url)
         else:
-            headless = self.dict_conf.get("headless", False)
-            slow_mo = self.dict_conf.get("slow_mo", 0)
+            headless = self.conf.get("headless", False)
+            slow_mo = self.conf.get("slow_mo", 0)
             disable_security_args = []
-            if self.dict_conf.get('disable_security', False):
+            if self.conf.get('disable_security', False):
                 disable_security_args = ['--disable-web-security',
                                          '--disable-site-isolation-trials',
                                          '--disable-features=IsolateOrigins,site-per-process']
@@ -108,7 +109,7 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
                 headless=headless,
                 slow_mo=slow_mo,
                 args=args,
-                proxy=self.dict_conf.get('proxy'),
+                proxy=self.conf.get('proxy'),
             )
         return browser
 
@@ -117,39 +118,39 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         from playwright.sync_api import ViewportSize
 
         browser = self.browser
-        if self.dict_conf.get("cdp_url") and len(browser.contexts) > 0:
+        if self.conf.get("cdp_url") and len(browser.contexts) > 0:
             context = browser.contexts[0]
         else:
-            viewport_size = ViewportSize(width=self.dict_conf.get("width", 1280),
-                                         height=self.dict_conf.get("height", 720))
-            disable_security = self.dict_conf.get('disable_security', False)
+            viewport_size = ViewportSize(width=self.conf.get("width", 1280),
+                                         height=self.conf.get("height", 720))
+            disable_security = self.conf.get('disable_security', False)
 
             context = browser.new_context(viewport=viewport_size,
                                           no_viewport=False,
-                                          user_agent=self.dict_conf.get('user_agent'),
+                                          user_agent=self.conf.get('user_agent'),
                                           java_script_enabled=True,
                                           bypass_csp=disable_security,
                                           ignore_https_errors=disable_security,
-                                          record_video_dir=self.dict_conf.get('working_dir'),
+                                          record_video_dir=self.conf.get('working_dir'),
                                           record_video_size=viewport_size,
-                                          locale=self.dict_conf.get('locale'),
-                                          storage_state=self.dict_conf.get("storage_state", None),
-                                          geolocation=self.dict_conf.get("geolocation", None),
+                                          locale=self.conf.get('locale'),
+                                          storage_state=self.conf.get("storage_state", None),
+                                          geolocation=self.conf.get("geolocation", None),
                                           device_scale_factor=1)
-            if "chromium" == self.dict_conf.get("browse_name", "chromium"):
+            if "chromium" == self.conf.get("browse_name", "chromium"):
                 context.grant_permissions(['camera', 'microphone'])
 
-        if self.dict_conf.get('working_dir'):
+        if self.conf.get('working_dir'):
             context.tracing.start(screenshots=True, snapshots=True, sources=True)
 
-        cookie_file = self.dict_conf.get('cookies_file')
+        cookie_file = self.conf.get('cookies_file')
         if cookie_file and os.path.exists(cookie_file):
             with open(cookie_file, 'r') as read:
                 cookies = json.loads(read.read())
                 context.add_cookies(cookies)
                 logger.info(f'Cookies load from {cookie_file} finished')
 
-        if self.dict_conf.get('private'):
+        if self.conf.get('private'):
             js = resources.read_text("aworld.virtual_environments.browsers.script", "stealth.min.js")
             context.add_init_script(js)
 
@@ -189,18 +190,17 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         dom_tree = self._parse_dom_tree()
         image = self.screenshot()
         pixels_above, pixels_below = self._scroll_info()
-        content = self.page.content()
         info = {"pixels_above": pixels_above,
                 "pixels_below": pixels_below,
                 "url": self.page.url}
-        return Observation(dom_tree=dom_tree, image=image, content=content, info=info)
+        return Observation(dom_tree=dom_tree, image=image, info=info)
 
     def _parse_dom_tree(self) -> DomTree:
         args = {
-            'doHighlightElements': self.dict_conf.get("do_highlight", True),
-            'focusHighlightIndex': self.dict_conf.get("focus_highlight", -1),
-            'viewportExpansion': self.dict_conf.get("viewport_expansion", 0),
-            # 'debugMode': logger.getEffectiveLevel() == 10,
+            'doHighlightElements': self.conf.get("do_highlight", True),
+            'focusHighlightIndex': self.conf.get("focus_highlight", -1),
+            'viewportExpansion': self.conf.get("viewport_expansion", 0),
+            'debugMode': logger.getEffectiveLevel() == 10,
         }
         element_tree, element_map = build_dom_tree(self.page, self.js_code, args)
         return DomTree(element_tree=element_tree, element_map=element_map)
@@ -242,6 +242,9 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             self.context.close()
         if hasattr(self, 'browser') and self.browser:
             self.browser.close()
+        if hasattr(self, 'playwright') and self.playwright:
+            self.playwright.stop()
+        
         if self.initialized:
             self.context_manager.__exit__()
 
@@ -266,6 +269,7 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         try:
             action_result, self.page = self.action_executor.execute_action(action,
                                                                            observation=self.cur_observation,
+                                                                           llm_config=self.conf.llm_config,
                                                                            **kwargs)
             reward = 1
         except Exception as e:

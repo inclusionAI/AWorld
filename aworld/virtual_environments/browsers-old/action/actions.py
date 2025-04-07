@@ -17,7 +17,6 @@ from aworld.logs.util import logger
 from aworld.virtual_environments.browsers.action.utils import DomUtil
 from aworld.virtual_environments.action import ExecutableAction
 from aworld.utils import import_packages
-from aworld.models.llm import get_llm_model
 
 
 def get_page(**kwargs):
@@ -89,8 +88,6 @@ class InputText(ExecutableAction):
 
         params = action.params
         index = params.get("index")
-        # compatible with int and str datatype
-        index = int(index)
         input = params.get("text", "")
 
         ob: Observation = kwargs.get("observation")
@@ -115,8 +112,6 @@ class InputText(ExecutableAction):
 
         params = action.params
         index = params.get("index")
-        # compatible with int and str datatype
-        index = int(index)
         input = params.get("text", "")
 
         ob: Observation = kwargs.get("observation")
@@ -214,8 +209,6 @@ class ClickElement(ExecutableAction):
             return ActionResult(content="none browser context", keep=True), page
 
         index = action.params.get("index")
-        # compatible with int and str datatype
-        index = int(index)
         ob: Observation = kwargs.get("observation")
         if not ob or index not in ob.dom_tree.element_map:
             raise RuntimeError(f'Element index {index} does not exist')
@@ -255,8 +248,6 @@ class ClickElement(ExecutableAction):
             return ActionResult(content="none browser context", keep=True), page
 
         index = action.params.get("index")
-        # compatible with int and str datatype
-        index = int(index)
         ob: Observation = kwargs.get("observation")
         if not ob or index not in ob.dom_tree.element_map:
             raise RuntimeError(f'Element index {index} does not exist')
@@ -284,11 +275,8 @@ class ClickElement(ExecutableAction):
             return ActionResult(error=str(e)), page
 
 
-# SEARCH_ENGINE = {"": "https://www.google.com/search?udm=14&q=",
-#                  "google": "https://www.google.com/search?udm=14&q="}
-
-SEARCH_ENGINE = {"": "https://www.bing.com/search?q=",
-                 "google": "https://www.bing.com/search?q="}
+SEARCH_ENGINE = {"": "https://www.google.com/search?udm=14&q=",
+                 "google": "https://www.google.com/search?udm=14&q="}
 
 
 @ActionFactory.register(name=BrowserAction.SEARCH.value.name,
@@ -406,9 +394,7 @@ class ExtractContent(ExecutableAction):
             return ActionResult(content="extract content no page", keep=True), page
 
         goal = action.params.get("goal")
-        llm_config=kwargs.get("llm_config")
-        if llm_config:
-            llm = get_llm_model(llm_config)
+        llm = kwargs.get("llm")
         content = markdownify.markdownify(page.content())
 
         prompt = 'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format. Extraction goal: {goal}, Page: {page}'
@@ -539,8 +525,6 @@ class ScrollUp(ExecutableAction):
 class Wait(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         seconds = action.params.get("seconds")
-        if not seconds:
-            seconds = action.params.get("duration")
         msg = f'Waiting for {seconds} seconds'
         logger.info(msg)
         time.sleep(seconds)
