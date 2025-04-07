@@ -10,7 +10,6 @@ import requests
 from PIL import Image
 from pydantic import Field
 
-from aworld.config import ModelConfig
 from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model
 from aworld.virtual_environments.toolagents.mcp.utils import (
