@@ -92,3 +92,4 @@ class ActionModel(BaseModel):
     action_name: str = None
     params: Dict[str, Any] = {}
     policy_info: Any = None
+    is_mcp: bool = False

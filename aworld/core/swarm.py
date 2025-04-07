@@ -7,6 +7,7 @@ from typing import Dict, Any, List
 
 from aworld.core.agent.base import Agent, BaseAgent
 from aworld.core.envs.tool import ToolFactory
+from aworld.core.mcp.tools import MCPToolExecutor
 from aworld.logs.util import logger, color_log
 from aworld.core.common import Observation, ActionModel
 from aworld.config.conf import ToolConfig, load_config
@@ -144,17 +145,24 @@ class Swarm(object):
                     for act in policy:
                         if not self.tools or (self.tools and act.tool_name not in self.tools):
                             # dynamic only use default config in module.
-                            tool = ToolFactory(act.tool_name)
-                            tool.reset()
-                            tool_mapping[act.tool_name] = []
-                            self.tools[act.tool_name] = tool
+                            if not act.is_mcp:
+                                tool = ToolFactory(act.tool_name)
+                                tool.reset()
+                                tool_mapping[act.tool_name] = []
+                                self.tools[act.tool_name] = tool
                         if act.tool_name not in tool_mapping:
                             tool_mapping[act.tool_name] = []
                         tool_mapping[act.tool_name].append(act)
 
                     for tool_name, action in tool_mapping.items():
                         # Execute action using browser tool and unpack all return values
-                        observation, reward, terminated, _, info = self.tools[tool_name].step(action)
+                        if action and hasattr(action[0], 'is_mcp') and action[0].is_mcp:
+                            mcp_executor = MCPToolExecutor()
+                            # Initialize the MCPToolExecutor before calling step
+                            mcp_executor._load_mcp_config()
+                            observation, reward, terminated, _, info = mcp_executor.step(action)
+                        else:
+                           observation, reward, terminated, _, info = self.tools[tool_name].step(action)
 
                         logger.info(f'{action} state: {observation}; reward: {reward}')
                         # Check if there's an exception in info

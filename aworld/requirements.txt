@@ -26,3 +26,5 @@ xls2xlsx~=0.2.0
 wikipedia~=1.4.0
 duckduckgo_search~=7.5.2
 langchain-experimental~=0.3.4
+mcp[cli]~=1.6.0
+

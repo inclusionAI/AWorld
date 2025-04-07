@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+      "weather": {
+        "url": "http://localhost:7777/sse"
+      },
+      "file_system": {
+        "url": "http://localhost:8888/sse"
+      },
+      "image": {
+        "url": "http://localhost:1111/sse"
+      }
+    }
+  }
