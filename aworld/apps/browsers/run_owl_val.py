@@ -43,10 +43,6 @@ if __name__ == '__main__':
         llm_provider="openai",
         llm_model_name="gpt-4o",
         llm_temperature=0.3,
-        # llm_api_key="sk-duKYX5S7l5jtHPpC5277469201Af4596B244F20b3eFfA7F4",
-        # llm_base_url="https://aihubmix.com/v1",
-        # llm_api_key="sk-zk2472c63c1948a8073d9c84873da16c8bb67eba047c4a94",
-        # llm_base_url="https://api.zhizengzeng.com/v1",
         llm_api_key="dummy-key",
         llm_base_url="http://localhost:5000",
         max_input_tokens = 128000
@@ -63,10 +59,6 @@ if __name__ == '__main__':
         llm_model_name="gpt-4o",
         llm_num_ctx=32000,
         llm_temperature=1,
-        # llm_api_key="sk-duKYX5S7l5jtHPpC5277469201Af4596B244F20b3eFfA7F4",
-        # llm_base_url="https://aihubmix.com/v1",
-        # llm_api_key="sk-zk2472c63c1948a8073d9c84873da16c8bb67eba047c4a94",
-        # llm_base_url="https://api.zhizengzeng.com/v1",
         llm_api_key="dummy-key",
         llm_base_url="http://localhost:5000",
         max_actions_per_step=10
