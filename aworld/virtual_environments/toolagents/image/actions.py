@@ -9,12 +9,12 @@ from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.envs.tool_action import ImageAnalysisAction
 from aworld.logs.util import logger
 from aworld.virtual_environments.action import ExecutableAction
-from aworld.virtual_environments.image.prompts import IMAGE_OCR, IMAGE_REASONING
-from aworld.virtual_environments.image.utils import (
+from aworld.virtual_environments.toolagents.image.utils import (
     create_image_content,
     encode_image,
     handle_llm_response,
 )
+from aworld.virtual_environments.toolagents.prompts import IMAGE_OCR, IMAGE_REASONING
 
 
 @ActionFactory.register(
@@ -23,6 +23,11 @@ from aworld.virtual_environments.image.utils import (
     tool_name=Tools.IMAGE_ANALYSIS.value,
 )
 class ImageOcrAction(ExecutableAction):
+    """Image OCR Action class for performing optical character recognition tasks.
+
+    Inherits from ExecutableAction base class and implements specific OCR functionality.
+    """
+
     def act(
         self, action: ActionModel, llm: BaseChatModel, **kwargs
     ) -> Tuple[ActionResult, Any]:
@@ -46,11 +51,17 @@ class ImageOcrAction(ExecutableAction):
             image_text = handle_llm_response(
                 response.choices[0].message.content, "image_text"
             )
-        except Exception as e:
+        except (ValueError, IOError, RuntimeError) as e:
             image_text = ""
             logger.error(f"Execute error: {str(e)}")
 
         return ActionResult(content=image_text, keep=True), image_base64
+
+    async def async_act(
+        self, action: ActionModel, llm: BaseChatModel, **kwargs
+    ) -> Tuple[ActionResult, Any]:
+        """Asynchronous execution method for OCR action"""
+        return await self.act(action, llm, **kwargs)
 
 
 @ActionFactory.register(
@@ -59,6 +70,11 @@ class ImageOcrAction(ExecutableAction):
     tool_name=Tools.IMAGE_ANALYSIS.value,
 )
 class ImageReasoningAction(ExecutableAction):
+    """Image Reasoning Action class for answering questions about images.
+
+    Inherits from ExecutableAction base class and implements specific reasoning functionality.
+    """
+
     def act(
         self, action: ActionModel, llm: BaseChatModel, **kwargs
     ) -> Tuple[ActionResult, Any]:
@@ -85,8 +101,14 @@ class ImageReasoningAction(ExecutableAction):
             image_reasoning_result = handle_llm_response(
                 response.choices[0].message.content, "image_reasoning_result"
             )
-        except Exception as e:
+        except (ValueError, IOError, RuntimeError) as e:
             image_reasoning_result = ""
             logger.error(f"Execute error: {str(e)}")
 
         return ActionResult(content=image_reasoning_result, keep=True), image_base64
+
+    async def async_act(
+        self, action: ActionModel, llm: BaseChatModel, **kwargs
+    ) -> Tuple[ActionResult, Any]:
+        """Asynchronous execution method for reasoning action"""
+        return await self.act(action, llm, **kwargs)

@@ -1,7 +1,7 @@
 import re
 import string
 from typing import Any, Dict, List, Literal, Optional, Union, Tuple
-import logging as logger
+from aworld.logs.util import logger
 
 
 def normalize_str(input_str, remove_punct=True) -> str:

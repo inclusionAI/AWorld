@@ -1,0 +1,2 @@
+LLM_PROVIDER: "openai"
+LLM_MODEL_NAME: "gpt-4o-transcribe"

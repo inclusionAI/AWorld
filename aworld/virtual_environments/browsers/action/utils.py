@@ -23,23 +23,38 @@ class DomUtil:
             if element_handle is None:
                 raise Exception(f'Element: {repr(element_node)} not found')
 
-            logger.info(f"click {element_handle}!!")
-            if await element_handle.text_content():
-                browser: ABrowserContext = kwargs.get('browser')
-                if browser:
-                    try:
-                        async with browser.expect_page() as new_page_info:
-                            await page.click(f"text={element_handle.text_content()}")
-                        page = await new_page_info.value
+            bound = await element_handle.bounding_box()
+            try:
+                # todo: iframe.
+                center_x = bound['x'] + bound['width'] / 2
+                center_y = bound['y'] + bound['height'] / 2
+
+                try:
+                    browser: ABrowserContext = kwargs.get('browser')
+                    async with browser.expect_page() as new_page_info:
+                        await page.mouse.click(center_x, center_y)
+                    await page.mouse.click(center_x, center_y)
+                    await page.wait_for_load_state()
+                except:
+                    logger.warning(traceback.format_exc())
+            except:
+                logger.info(f"click {element_handle}!!")
+                if await element_handle.text_content():
+                    browser: ABrowserContext = kwargs.get('browser')
+                    if browser:
+                        try:
+                            async with browser.expect_page() as new_page_info:
+                                await page.click(f"text={element_handle.text_content()}")
+                            page = await new_page_info.value
+                            await page.wait_for_load_state()
+                        except:
+                            logger.warning(traceback.format_exc())
+                    else:
+                        await element_handle.click()
                         await page.wait_for_load_state()
-                    except:
-                        logger.warning(traceback.format_exc())
                 else:
                     await element_handle.click()
                     await page.wait_for_load_state()
-            else:
-                await element_handle.click()
-                await page.wait_for_load_state()
         except Exception as e:
             logger.error(traceback.format_exc())
             raise Exception(f'Failed to click element: {repr(element_node)}. Error: {str(e)}')
@@ -53,23 +68,38 @@ class DomUtil:
             if element_handle is None:
                 raise Exception(f'Element: {repr(element_node)} not found')
 
-            logger.info(f"click {element_handle}!!")
-            if element_handle.text_content():
-                browser: BrowserContext = kwargs.get('browser')
-                if browser:
-                    try:
-                        with browser.expect_page() as new_page_info:
-                            page.click(f"text={element_handle.text_content()}")
-                        page = new_page_info.value
+            bound = element_handle.bounding_box()
+            try:
+                # todo: iframe.
+                center_x = bound['x'] + bound['width'] / 2
+                center_y = bound['y'] + bound['height'] / 2
+
+                try:
+                    browser: BrowserContext = kwargs.get('browser')
+                    with browser.expect_page() as new_page_info:
+                        page.mouse.click(center_x, center_y)
+                    page = new_page_info.value
+                    page.wait_for_load_state()
+                except:
+                    logger.warning(traceback.format_exc())
+            except:
+                logger.info(f"click {element_handle}!!")
+                if element_handle.text_content():
+                    browser: BrowserContext = kwargs.get('browser')
+                    if browser:
+                        try:
+                            with browser.expect_page() as new_page_info:
+                                page.click(f"text={element_handle.text_content()}")
+                            page = new_page_info.value
+                            page.wait_for_load_state()
+                        except:
+                            logger.warning(traceback.format_exc())
+                    else:
+                        element_handle.click()
                         page.wait_for_load_state()
-                    except:
-                        logger.warning(traceback.format_exc())
                 else:
                     element_handle.click()
                     page.wait_for_load_state()
-            else:
-                element_handle.click()
-                page.wait_for_load_state()
         except Exception as e:
             logger.error(traceback.format_exc())
             raise Exception(f'Failed to click element: {repr(element_node)}. Error: {str(e)}')

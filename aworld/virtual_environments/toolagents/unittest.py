@@ -1,25 +1,33 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import argparse
 import os
-
-from loguru import logger
 
 from aworld.agents.gaia.agent import ExecuteAgent, PlanAgent
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.client import Client
+from aworld.core.common import Tools
 from aworld.core.swarm import Swarm
 from aworld.core.task import Task
-from aworld.core.common import Tools
+from aworld.logs.util import logger
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task_description", type=str, default="")
+    parser.add_argument("--file_path", type=str, default="")
+    args = parser.parse_args()
+    task_description = args.task_description
+    file_path = args.file_path
+    if not file_path:
+        raise ValueError("Please provide a file path")
+    if not os.path.exists(file_path):
+        raise ValueError("File path does not exist")
+
     # Initialize client
     client = Client()
 
     # One sample for example
-    FILEPATH = "/Users/arac/Desktop/qw.jpg"
-    test_sample = (
-        f"What animal is in the given picture? The picture file path is {FILEPATH}"
-    )
+    test_sample = f"{task_description}\nThe relevant file path is {file_path}"
 
     llm_api_key = os.getenv("LLM_API_KEY", "")
     llm_base_url = os.getenv("LLM_BASE_URL", "")
@@ -29,10 +37,18 @@ if __name__ == "__main__":
         llm_model_name="gpt-4o",
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url,
+        llm_temperature=0.0,
     )
 
     planner = PlanAgent(conf=agent_config)
-    executor = ExecuteAgent(conf=agent_config, tool_names=[Tools.IMAGE_ANALYSIS.value])
+    executor = ExecuteAgent(
+        conf=agent_config,
+        tool_names=[
+            Tools.AUDIO_ANALYSIS.value,
+            Tools.IMAGE_ANALYSIS.value,
+            Tools.VIDEO_ANALYSIS.value,
+        ],
+    )
 
     swarm = Swarm((planner, executor))
 

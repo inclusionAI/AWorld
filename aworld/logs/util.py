@@ -1,9 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-# try:
-#     from loguru import logger
-# except ImportError:
 import logging
 
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

@@ -88,7 +88,8 @@ class Swarm(object):
 
         start = time.time()
         step = 0
-        max_steps = self.conf.get("max_steps", 100)
+        # max_steps = self.conf.get("max_steps", 100)
+        max_steps = self.conf.get("max_steps", 45)
         # use entry agent every time
         self.cur_agent = self.entry_agent
         policy: List[ActionModel] = self.cur_agent.policy(observation, info)
@@ -107,6 +108,7 @@ class Swarm(object):
         msg = None
         response = None
         return_entry = False
+        self.finished = False
         try:
             while step < max_steps:
                 terminated = False
@@ -250,7 +252,7 @@ class Swarm(object):
                 logger.info("entry agent finished, swarm process finished.")
                 self.finished = True
 
-            if return_entry:
+            if return_entry and self.finished:
                 # Return to the entrance, reset current agent finished state
                 self.cur_agent._finished = False
             return {

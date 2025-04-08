@@ -3,36 +3,30 @@
 from typing import Any, Dict, Tuple
 
 from aworld.config import ToolConfig
-from aworld.core.common import ActionModel, Observation, Tools
+from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.llm_executor import LLMToolActionExecutor
-from aworld.core.envs.tool import Tool, ToolFactory
-from aworld.core.envs.tool_action import ImageAnalysisAction
+from aworld.core.envs.tool import Tool
 
 
-@ToolFactory.register(
-    name=Tools.IMAGE_ANALYSIS.value,
-    desc="Perform OCR or reasoning over the given image filepath or url",
-    supported_action=ImageAnalysisAction,
-)
-class ImageAnalysisTool(Tool[Observation, ActionModel]):
-    """A tool for performing image analysis tasks like OCR and reasoning.
-
-    This tool inherits from the base Tool class and specializes in processing images
-    through OCR (Optical Character Recognition) and performing reasoning tasks on images
-    provided either as file paths or URLs.
-
+class ToolAgentBase(Tool[Observation, ActionModel]):
+    """A base class for tool agents.
+    This class provides a foundation for creating agents that interact with tools.
     Attributes:
-        content: Stores the processed content from the image
-        image_base64: Stores the base64 encoded image data
-        cur_observation: Keeps track of the current observation state
-        step_finished: Indicates if the current processing step is complete
+        conf (ToolConfig): The configuration for the tool.
+        initialized (bool): Flag indicating whether the tool has been initialized.
+        action_executor (LLMToolActionExecutor): The LLM tool action executor.
+        content (Any): The content of the tool.
+        action_ctx (Any): The context of the tool action.
+        cur_observation (Observation): The current observation of the tool.
+        _finish (bool): Flag indicating whether the tool has finished.
+        step_finished (bool): Flag indicating whether the current step is finished.
     """
 
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
-        """Init image tool."""
+        """Init tool agent."""
         super().__init__(conf, **kwargs)
         self.content = None
-        self.image_base64 = None
+        self.action_ctx = None
         self.cur_observation = None
         self.init()
         self._finish = False
@@ -48,11 +42,19 @@ class ImageAnalysisTool(Tool[Observation, ActionModel]):
         return self._get_observation(), {}
 
     def init(self) -> None:
-        """Initialize the image analysis tool.
+        """Initialize the tool agent.
 
         This method sets up the LLM tool action executor and marks the tool as initialized.
         """
-        self.action_executor = LLMToolActionExecutor()
+        tool_name = self.name
+        llm_provider = self.dict_conf.get("LLM_PROVIDER", "openai")
+        llm_model_name = self.dict_conf.get("LLM_MODEL_NAME", "gpt-4o")
+        self.action_executor = LLMToolActionExecutor(
+            tool_name,
+            llm_provider,
+            llm_model_name,
+        )
+
         self.initialized = True
 
     def _get_observation(self) -> Observation:
@@ -77,7 +79,7 @@ class ImageAnalysisTool(Tool[Observation, ActionModel]):
         action_result = None
 
         try:
-            action_result, self.image_base64 = self.action_executor.execute_action(
+            action_result, self.action_ctx = self.action_executor.execute_action(
                 actions, **kwargs
             )
             reward = 1

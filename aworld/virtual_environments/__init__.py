@@ -8,8 +8,6 @@ from aworld.virtual_environments.android.action.adb_actions import *
 from aworld.virtual_environments.android.android import AndroidTool
 from aworld.virtual_environments.apis.actions import *
 from aworld.virtual_environments.apis.search_api import SearchTool
-from aworld.virtual_environments.audio.actions import *
-from aworld.virtual_environments.audio.audio_analysis import AudioAnalysisTool
 from aworld.virtual_environments.browsers.action.actions import *
 from aworld.virtual_environments.browsers.async_browser import (
     BrowserTool as ABrowserTool,
@@ -20,13 +18,21 @@ from aworld.virtual_environments.document.document import DocumentTool
 from aworld.virtual_environments.gym.actions import *
 from aworld.virtual_environments.gym.async_openai_gym import OpenAIGym as AOpenAIGym
 from aworld.virtual_environments.gym.openai_gym import OpenAIGym
-from aworld.virtual_environments.image.actions import *
-from aworld.virtual_environments.image.image_analysis import ImageAnalysisTool
 from aworld.virtual_environments.interpreters.python_tool import PythonTool
 from aworld.virtual_environments.terminals.actions import *
 from aworld.virtual_environments.terminals.shell_tool import ShellTool
-from aworld.virtual_environments.video.actions import *
-from aworld.virtual_environments.video.video_analysis import VideoAnalysisTool
+from aworld.virtual_environments.toolagents.audio.actions import *
+from aworld.virtual_environments.toolagents.audio.audio_analysis import (
+    AudioAnalysisTool,
+)
+from aworld.virtual_environments.toolagents.image.actions import *
+from aworld.virtual_environments.toolagents.image.image_analysis import (
+    ImageAnalysisTool,
+)
+from aworld.virtual_environments.toolagents.video.actions import *
+from aworld.virtual_environments.toolagents.video.video_analysis import (
+    VideoAnalysisTool,
+)
 
 
 def tool_desc():

@@ -4,7 +4,8 @@
 import re
 import time
 import traceback
-from typing import Dict, Any, Optional, List, Union
+import json, base64
+from typing import Dict, Any, Optional, List, Union, Tuple
 from dataclasses import dataclass, field
 
 from langchain_core.messages import HumanMessage, BaseMessage, AIMessage, ToolMessage
@@ -24,15 +25,24 @@ from aworld.agents.browser.prompts import AgentMessagePrompt
 @dataclass
 class Trajectory:
     """A class to store agent history records, including all observations, info and AgentResult"""
-    history: List[tuple[Observation, Dict[str, Any], AgentResult]] = field(default_factory=list)
+    history: List[tuple[List[BaseMessage], Observation, Dict[str, Any], AIMessage, AgentResult]] = field(default_factory=list)
 
-    def add_step(self, observation: Observation, info: Dict[str, Any], agent_result: AgentResult):
+    def add_step(self, input_messages:List[BaseMessage], observation: Observation, info: Dict[str, Any], output_message:AIMessage, agent_result: AgentResult):
         """Add a step to the history"""
-        self.history.append((observation, info, agent_result))
+        self.history.append((input_messages, observation, info, output_message, agent_result))
 
-    def get_history(self) -> List[tuple[Observation, Dict[str, Any], AgentResult]]:
+    def get_history(self) -> List[tuple[List[BaseMessage], Observation, Dict[str, Any], AIMessage, AgentResult]]:
         """Get the complete history"""
         return self.history
+    
+    def save_history(self, file_path: str):
+        his_li=[]
+        for input_messages, observation, info, output_message, agent_result in self.get_history():
+            llm_input=[{"type":input_message.type, "content":input_message.content} for input_message in input_messages]
+            llm_output=output_message.content
+            his_li.append({"llm_input":llm_input, "llm_output":llm_output})
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(his_li, f, ensure_ascii=False, indent=4)
 
 
 @AgentFactory.register(name=Agents.BROWSER.value, desc="browser agent")
@@ -41,9 +51,11 @@ class BrowserAgent(BaseAgent):
         super(BrowserAgent, self).__init__(conf, **kwargs)
         self.state = AgentState()
         self.settings = conf.model_dump()
+        self.save_file_path=kwargs.get("save_file_path", "browser_agent_history3.json")
         if conf.llm_provider == 'openai':
             conf.llm_provider = 'chatopenai'
-
+        # raw actions list
+        self.available_actions = self._build_action_prompt()
         # Note: Removed _message_manager initialization as it's no longer used
         # Initialize trajectory
         self.trajectory = Trajectory()
@@ -108,6 +120,10 @@ class BrowserAgent(BaseAgent):
                     logger.info(f"[agent] Tool call: {tool_call.get('name')} - ID: {tool_call.get('id')}")
                     args = str(tool_call.get('args', {}))[:1000]
                     logger.info(f"[agent] Tool args: {args}...")
+    
+    def save_process(self,file_path: str):
+        self.trajectory.save_history(file_path)
+            
 
     def policy(self,
                observation: Observation,
@@ -134,11 +150,12 @@ class BrowserAgent(BaseAgent):
         tokens = self._estimate_tokens_for_messages(input_messages)
 
         llm_result = None
+        output_message =None
         try:
             # Log the message sequence
             self._log_message_sequence(input_messages)
 
-            llm_result = self._do_policy(input_messages)
+            output_message, llm_result = self._do_policy(input_messages)
 
             if not llm_result:
                 logger.error("[agent] ❌ Failed to parse LLM response")
@@ -156,7 +173,7 @@ class BrowserAgent(BaseAgent):
             tool_action = llm_result.actions
 
             # Add the current step to the trajectory
-            self.trajectory.add_step(observation, info, llm_result)
+            self.trajectory.add_step(input_messages, observation, info, output_message, llm_result)
 
         except Exception as e:
             logger.warning(traceback.format_exc())
@@ -169,13 +186,14 @@ class BrowserAgent(BaseAgent):
                 current_state=AgentBrain(
                     evaluation_previous_goal="Failed due to error",
                     memory=f"Error occurred: {str(e)}",
+                    thought="Recover from error",
                     next_goal="Recover from error"
                 ),
                 actions=[]  # Empty actions list
             )
 
             # Add the error state to the trajectory
-            self.trajectory.add_step(observation, info, error_result)
+            self.trajectory.add_step(input_messages, observation, info, output_message, error_result)
 
             raise RuntimeError("Browser agent encountered exception while making the policy.", e)
         finally:
@@ -193,10 +211,12 @@ class BrowserAgent(BaseAgent):
                 self._make_history_item(llm_result, observation, observation.action_result, metadata)
             else:
                 logger.warning("no result to record!")
+            if self._finished:
+                self.save_process(self.save_file_path)
 
         return tool_action
 
-    def _do_policy(self, input_messages: list[BaseMessage]) -> AgentResult:
+    def _do_policy(self, input_messages: list[BaseMessage]) -> Tuple[AIMessage, AgentResult]:
         THINK_TAGS = re.compile(r'<think>.*?</think>', re.DOTALL)
 
         def _remove_think_tags(text: str) -> str:
@@ -211,7 +231,7 @@ class BrowserAgent(BaseAgent):
 
             if not output_message or not output_message.content:
                 logger.warning("[agent] LLM returned empty response")
-                return AgentResult(current_state=AgentBrain(evaluation_previous_goal="", memory="", next_goal=""),
+                return output_message, AgentResult(current_state=AgentBrain(evaluation_previous_goal="", memory="", thought="", next_goal=""),
                                    actions=[ActionModel(tool_name=Tools.BROWSER.value, action_name="stop")])
         except:
             logger.error(f"[agent] Response content: {output_message}")
@@ -229,7 +249,7 @@ class BrowserAgent(BaseAgent):
                 actions = parsed_json.get("actions")
             if not actions:
                 logger.warning("agent not policy  an action.")
-                return AgentResult(current_state=agent_brain,
+                return output_message, AgentResult(current_state=agent_brain,
                                    actions=[ActionModel(tool_name=Tools.BROWSER.value,
                                                         action_name="done")])
 
@@ -251,7 +271,9 @@ class BrowserAgent(BaseAgent):
 
                         action_model = ActionModel(tool_name=Tools.BROWSER.value, action_name=k, params=v)
                         result.append(action_model)
-            return AgentResult(current_state=agent_brain, actions=result)
+                        if k=="done":
+                            self._finished = True
+            return output_message, AgentResult(current_state=agent_brain, actions=result)
         except (ValueError, ValidationError) as e:
             logger.warning(f'Failed to parse model output: {output_message} {str(e)}')
             raise ValueError('Could not parse response.')
@@ -292,19 +314,26 @@ class BrowserAgent(BaseAgent):
             observation: Current observation object, if None current observation won't be added
         """
         messages = []
-
         # Add system message
         system_message = SystemPrompt(
-            action_description=self._build_action_prompt(),
             max_actions_per_step=self.settings.get('max_actions_per_step')
         ).get_system_message()
         if isinstance(system_message, tuple):
             system_message = system_message[0]
         messages.append(system_message)
 
+        tool_calling_method = self.settings.get("tool_calling_method")
+        llm_provider = self.settings.get("llm_provider")
+
+        if tool_calling_method == 'raw' or (tool_calling_method == 'auto' and (
+                llm_provider == 'deepseek-reasoner' or llm_provider.startswith('deepseek-r1'))):
+            message_context = f'\n\nAvailable actions: {self.available_actions}'
+        else:
+            message_context = None
+
         # Add task context (if any)
-        if self.settings.get('message_context'):
-            context_message = HumanMessage(content='Context for the task' + self.settings.message_context)
+        if message_context:
+            context_message = HumanMessage(content='Context for the task' + message_context)
             messages.append(context_message)
 
         # Add task message
@@ -325,6 +354,7 @@ class BrowserAgent(BaseAgent):
                     'current_state': {
                         'evaluation_previous_goal': 'Success - I opend the first page',
                         'memory': 'Starting with the new task. I have completed 1/10 steps',
+                        'thought': 'From the current page I can get information about all the companies.',
                         'next_goal': 'Click on company a',
                     },
                     'action': [{'click_element': {'index': 0}}],
@@ -350,23 +380,19 @@ class BrowserAgent(BaseAgent):
             filepaths_msg = HumanMessage(
                 content=f'Here are file paths you can use: {self.settings.get("available_file_paths")}')
             messages.append(filepaths_msg)
-
+        last_tool_calls = []
         # Add messages from the history trajectory
-        for obs, info, result in self.trajectory.get_history():
-            # Add observation message
-            step_info = AgentStepInfo(number=len(messages) - 7, max_steps=self.conf.max_steps)
-
-            # Build observation message
-            if hasattr(obs, 'dom_tree') and obs.dom_tree:
-                state_message = AgentMessagePrompt(
-                    obs,
-                    obs.action_result,
-                    include_attributes=self.settings.get('include_attributes'),
-                    step_info=step_info,
-                ).get_user_message(self.settings.get('use_vision'))
-                messages.append(state_message)
-            elif obs.content:
-                messages.append(HumanMessage(content=obs.content))
+        for input_msgs, obs, info, output_msg, result in self.trajectory.get_history():
+            # 添加判断上一步的actionResult
+            last_action_result = obs.action_result
+            if last_action_result is not None:
+                for one_action_result in last_action_result:
+                    if one_action_result.content is not None:
+                        messages.append(HumanMessage(content='Action result: ' + one_action_result.content))
+                    elif one_action_result.error is not None:
+                        messages.append(HumanMessage(content='Action result: ' + one_action_result.error))
+                    elif one_action_result.success is False:
+                        logger.error(f"Action {last_tool_calls} failed: {one_action_result.error}")
 
             # Add agent response
             if result:
@@ -386,7 +412,7 @@ class BrowserAgent(BaseAgent):
                         'type': 'tool_call',
                     }
                 ]
-
+                last_tool_calls = tool_calls
                 ai_message = AIMessage(
                     content='',
                     tool_calls=tool_calls,

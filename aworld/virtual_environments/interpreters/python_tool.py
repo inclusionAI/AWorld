@@ -10,11 +10,13 @@ from aworld.core.envs.tool_action import PythonToolAction
 from aworld.core.common import ActionModel, Observation, ActionResult, Tools
 from aworld.core.envs.tool import Tool, AgentInput, ToolFactory
 from aworld.utils import import_package
+import sys
+sys.path.append('/Users/zhuige/Documents/llm/agent/projects/new_owl/owl/owl/camel/interpreters/')
+sys.path.append('/Users/zhuige/Documents/llm/agent/projects/new_owl/owl/owl')
+from subprocess_interpreter import SubprocessInterpreter
 
-@ToolFactory.register(name=Tools.PYTHON_EXECUTE.value,
-                      desc="python interpreter tool",
-                      supported_action=PythonToolAction,
-                      conf_file_name=f'{Tools.PYTHON_EXECUTE.value}_tool.yaml')
+@ToolFactory.register(name=Tools.PYTHON_EXECUTE.value, desc="python interpreter tool",
+                      supported_action=PythonToolAction)
 class PythonTool(Tool[Observation, List[ActionModel]]):
 
     def __init__(self,
@@ -39,6 +41,21 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
         import_package('langchain_experimental')
         from langchain_experimental.utilities.python import PythonREPL
         self.python_repl = PythonREPL()
+        self.interpreter = SubprocessInterpreter(
+            require_confirm=False,
+            print_stdout=True,
+            print_stderr=True,
+        )
+
+    def name(self):
+        """
+        Get the name of the tool
+        Args:
+            -
+        Returns:
+            str: tool name
+        """
+        return self.__class__.__name__
 
     def extract_imports(self, code: str) -> set:
         """
@@ -215,28 +232,23 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
                     "exception": fail_error
                 })
 
-    def execute(self, code, timeout=300):
-        """
-        Execute the code
-        Args:
-            code: python code
-            timeout: timeout seconds
-        Returns:
-            result, output, error
-        """
-        required_packages = self.extract_imports(code)
-        self.install_dependencies(required_packages)
-        self.python_repl.globals = self.global_namespace
-        self.python_repl.locals = self.local_namespace
-        error = None
-        try:
-            output = self.python_repl.run(code, timeout)
-        except Exception as e:
-            error = f'{repr(e)}'
-        finally:
-            self.uninstall_dependencies()
-        return '', output, error
+    def execute(self, code: str) -> str:
+        r"""Execute the given codes. Codes should be complete and runnable (like running a script), and need to explicitly use the print statement to get the output.
 
+        Args:
+            code (str): The input code to execute. Codes should be complete and runnable (like running a script), and need to explicitly use the print statement to get the output.
+
+        Returns:
+            str: The text output of the given codes.
+        """
+        from loguru import logger
+        logger.debug(f"calling execute_code with code: {code}")
+        output = self.interpreter.run(code, "python")
+        # ruff: noqa: E501
+        content = f"Executed the code below:\n```py\n{code}\n```\n> Executed Results:\n{output}"
+        # print(content)
+        return '', content, ''
+    
     def get_execute_result(self):
         """
         Get the execute result

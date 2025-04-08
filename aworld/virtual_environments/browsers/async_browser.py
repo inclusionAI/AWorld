@@ -185,7 +185,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
         info = {"pixels_above": pixels_above,
                 "pixels_below": pixels_below,
                 "url": self.page.url}
-        return Observation(dom_tree=dom_tree, image=image, info=info)
+        return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
 
     async def _parse_dom_tree(self) -> DomTree:
         args = {
@@ -218,6 +218,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
 
         observation = await self._get_observation()
         observation.action_result = [ActionResult(content='start', keep=True)]
+        observation.ability = ''
         self.cur_observation = observation
         return observation, {}
 
@@ -295,6 +296,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
             # normal observation
             observation = await self._get_observation()
             observation.action_result = action_result
+            observation.ability = action[-1].action_name
             self.cur_observation = observation
             return (observation,
                     reward,
