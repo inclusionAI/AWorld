@@ -17,6 +17,9 @@
       },
       "document": {
         "url": "http://localhost:4444/sse"
+      },
+      "search": {
+        "url": "http://localhost:5555/sse"
       }
     } 
   }
