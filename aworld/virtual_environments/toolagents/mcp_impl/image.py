@@ -12,7 +12,7 @@ from pydantic import Field
 
 from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model
-from aworld.virtual_environments.toolagents.mcp.utils import (
+from aworld.virtual_environments.toolagents.mcp_impl.utils import (
     get_current_filename_without_extension,
     handle_llm_response,
     read_llm_config_from_yaml,
