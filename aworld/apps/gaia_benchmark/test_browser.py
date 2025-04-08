@@ -123,7 +123,7 @@ if __name__ == '__main__':
         # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
         swarm = Swarm((agent2, browser_agent))
 
-        task = Task(input=question, swarm=swarm, conf=TaskConfig(),tools=[ToolFactory(Tools.BROWSER.value, conf=browser_tool_config)],)
+        task = Task(input=question, swarm=swarm, conf=TaskConfig(),tools=[ToolFactory(Tools.BROWSER.value, conf=browser_tool_config)])
 
         # Run task
         result = client.submit(task=[task])

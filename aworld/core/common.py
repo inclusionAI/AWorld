@@ -57,8 +57,8 @@ class Observation(BaseModel):
     dom_tree: Union[str, Any] = None
     image: str = None  # base64
     content: Any = None
-    action_result: List[ActionResult] = None
-    info: Dict[str, Any] = None
+    action_result: List[ActionResult] = []
+    info: Dict[str, Any] = {}
     key_frame: List[str] = []
 
 

@@ -45,7 +45,7 @@ class Trajectory:
             json.dump(his_li, f, ensure_ascii=False, indent=4)
 
 
-@AgentFactory.register(name=Agents.BROWSER.value, desc="browser agent")
+@AgentFactory.register(name=Agents.BROWSER.value, desc="This is a browser assistant that helps you perform actions on the browser.")
 class BrowserAgent(BaseAgent):
     def __init__(self, conf: AgentConfig, **kwargs):
         super(BrowserAgent, self).__init__(conf, **kwargs)
@@ -60,6 +60,7 @@ class BrowserAgent(BaseAgent):
         # Initialize trajectory
         self.trajectory = Trajectory()
         self._init = False
+        self._finished=True
 
     def reset(self, options: Dict[str, Any]):
         super(BrowserAgent, self).reset(options)
@@ -139,7 +140,7 @@ class BrowserAgent(BaseAgent):
                 self.trajectory.add_step(input_messages, None, info, output_message, None)
                 if not output_message or not output_message.content:
                     logger.warning("[agent] LLM returned empty response")
-                return [ActionModel(agent_name="browser_agent",policy_info={"model_output":output_message.content,"trajectory":self.trajectory})]
+                return [ActionModel(agent_name="execute_agent",policy_info={"model_output":output_message.content,"trajectory":self.trajectory,"final_obervation":observation})]
             except:
                 logger.error(f"[agent] Response content: {output_message}")
                 raise RuntimeError('call llm fail, please check llm conf and network.')
@@ -214,21 +215,6 @@ class BrowserAgent(BaseAgent):
             self.trajectory.add_step(input_messages, observation, info, output_message, error_result)
 
             raise RuntimeError("Browser agent encountered exception while making the policy.", e)
-        finally:
-            if llm_result:
-                # Remove duplicate trajectory addition, as it's already been added in the try block
-                # self.trajectory.add_step(observation, info, llm_result) - Already executed in try block
-
-                # Only keep the history_item creation part
-                metadata = PolicyMetadata(
-                    number=self.state.n_steps,
-                    start_time=start_time,
-                    end_time=time.time(),
-                    input_tokens=tokens,
-                )
-                self._make_history_item(llm_result, observation, observation.action_result, metadata)
-            else:
-                logger.warning("no result to record!")
 
         return tool_action
 
@@ -300,25 +286,6 @@ class BrowserAgent(BaseAgent):
         else:
             return input_messages
 
-    def _make_history_item(self,
-                           model_output: AgentResult | None,
-                           state: Observation,
-                           result: list[ActionResult],
-                           metadata: Optional[PolicyMetadata] = None) -> None:
-        content = ""
-        if hasattr(state, 'dom_tree') and state.dom_tree is not None:
-            if hasattr(state.dom_tree, 'element_tree'):
-                content = state.dom_tree.element_tree.__repr__()
-            else:
-                content = str(state.dom_tree)
-
-        history_item = AgentHistory(model_output=model_output,
-                                    result=state.action_result,
-                                    metadata=metadata,
-                                    content=content,
-                                    base64_img=state.image if hasattr(state, 'image') else None)
-
-        self.state.history.history.append(history_item)
 
     def build_summary_messages_from_trajectory(self, observation: Optional[Observation] = None) -> List[
         BaseMessage]:

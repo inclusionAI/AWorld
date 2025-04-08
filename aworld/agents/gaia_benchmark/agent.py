@@ -15,6 +15,8 @@ from aworld.logs.util import logger
 from aworld.core.envs.tool_desc import get_tool_desc, get_tool_desc_by_name
 from aworld.agents.gaia_benchmark.prompts import *
 from aworld.agents.gaia_benchmark.utils import extract_pattern
+from aworld.models.utils import tool_desc_transform, agent_desc_transform
+from aworld.core.agent.agent_desc import get_agent_desc
 
 
 @AgentFactory.register(name=Agents.EXECUTE.value, desc="execute agent")
@@ -25,8 +27,9 @@ class ExecuteAgent(BaseAgent):
         tmp = get_tool_desc()
         tmp['search_api']['actions'] = [i for i in tmp['search_api']['actions'] if i['name']=='google']
         tmp['browser']['actions'] = [i for i in tmp['browser']['actions'] if i['name']=='go_to_url']
-        self.tools = tool_desc_transform(tmp,
-                                         tools=self.tool_names if self.tool_names else [])
+        # self.tools = tool_desc_transform(tmp,
+                                        #  tools=self.tool_names if self.tool_names else [])
+        self._finished=True
 
     def name(self) -> str:
         return Agents.EXECUTE.value
@@ -43,9 +46,17 @@ class ExecuteAgent(BaseAgent):
                observation: Observation,
                info: Dict[str, Any] = None,
                **kwargs) -> List[ActionModel] | None:
+        self.tools = tool_desc_transform(get_tool_desc(),
+                                 tools=self.tool_names if self.tool_names else [])
+        # Agents as tool
+        agents_desc = agent_desc_transform(get_agent_desc(),
+                                        agents=self.handoffs if self.handoffs else [])
+        self.tools.extend(agents_desc)
         start_time = time.time()
         content = observation.content
 
+        if isinstance(content,dict) and "model_output" in content:
+            content = content['model_output']
         llm_result = None
         ## build input of llm
         input_content = [
@@ -124,10 +135,14 @@ class ExecuteAgent(BaseAgent):
                 tool_name = tool_action_name.split("__")[0]
                 action_name = tool_action_name.split("__")[1]
                 params = json.loads(tool_call.function.arguments)
-                res.append(ActionModel(tool_name=tool_name, action_name=action_name, params=params))
+                if tool_action_name=="browser_agent__policy":
+                    res.append(ActionModel(tool_name=tool_name, action_name=action_name, params=params, policy_info=params["content"]+". "+params["info"]))
+                else:
+                    res.append(ActionModel(tool_name=tool_name, action_name=action_name, params=params))
 
         if res:
-            res[0].policy_info = content
+            if res[0].tool_name!="browser_agent":
+                res[0].policy_info = content
             self._finished = False
             self.has_summary = False
         elif content:

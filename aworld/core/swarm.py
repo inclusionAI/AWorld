@@ -5,13 +5,14 @@ import time
 import traceback
 from typing import Dict, Any, List
 
-from aworld.core.agent.base import Agent, BaseAgent
+from aworld.core.agent.base import Agent, AgentFactory, BaseAgent
 from aworld.core.envs.tool import ToolFactory
 from aworld.logs.util import logger, color_log
 from aworld.core.common import Observation, ActionModel
 from aworld.config.conf import ToolConfig, load_config
 from aworld.core.envs.tool_desc import get_actions_by_tools
-
+def is_agent_by_name(name: str) -> bool:
+    return name in AgentFactory
 
 class Swarm(object):
     """Simple implementation of interactive collaboration between multi-agent and interaction with env tools."""
@@ -73,7 +74,7 @@ class Swarm(object):
         self.initialized = True
 
     def is_agent(self, policy: ActionModel):
-        return policy.tool_name is None and policy.action_name is None
+        return (policy.tool_name is None and policy.action_name is None) or is_agent_by_name(policy.tool_name)
 
     def process(self, observation, info) -> Dict[str, Any]:
         """Multi-agent general process workflow.
@@ -115,10 +116,11 @@ class Swarm(object):
                 if self.is_agent(policy[0]):
                     # only one agent, and get agent from policy
                     policy_for_agent = policy[0]
-                    cur_agent: BaseAgent = self.agents.get(policy_for_agent.agent_name)
+                    agent_name = policy_for_agent.agent_name if policy_for_agent.agent_name else policy_for_agent.tool_name
+                    cur_agent: BaseAgent = self.agents.get(agent_name)
                     if not cur_agent:
                         raise RuntimeError(
-                            f"Can not find {policy_for_agent.agent_name} agent in swarm."
+                            f"Can not find {agent_name} agent in swarm."
                         )
                     if cur_agent.name() == self.entry_agent.name():
                         # Current agent is entrance agent, means need to exit to the outer loop
@@ -128,11 +130,11 @@ class Swarm(object):
 
                     if (
                         self.cur_agent.handoffs
-                        and policy_for_agent.agent_name not in self.cur_agent.handoffs
+                        and agent_name not in self.cur_agent.handoffs
                     ):
                         # Unable to hand off, exit to the outer loop
                         return {
-                            "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+                            "msg": f"Can not handoffs {agent_name} agent "
                             f"by {cur_agent.name()} agent.",
                             "response": policy[0].policy_info if policy else "",
                             "steps": step,
@@ -149,9 +151,9 @@ class Swarm(object):
                     agent_policy = cur_agent.policy(observation, info=info)
                     if not agent_policy:
                         logger.warning(
-                            f"{observation} can not get the valid policy in {policy_for_agent.agent_name}, exit task!"
+                            f"{observation} can not get the valid policy in {agent_name}, exit task!"
                         )
-                        msg = f"{policy_for_agent.agent_name} invalid policy"
+                        msg = f"{agent_name} invalid policy"
                         break
                     self.cur_agent = cur_agent
                     policy = agent_policy
@@ -167,7 +169,8 @@ class Swarm(object):
                         ):
                             # dynamic only use default config in module.
                             tool = ToolFactory(act.tool_name)
-                            tool.reset()
+                            if act.tool_name!="browser":
+                                tool.reset()
                             tool_mapping[act.tool_name] = []
                             self.tools[act.tool_name] = tool
                         if act.tool_name not in tool_mapping:
