@@ -252,7 +252,7 @@ class Swarm(object):
                 logger.info("entry agent finished, swarm process finished.")
                 self.finished = True
 
-            if return_entry and self.finished:
+            if return_entry and not self.finished:
                 # Return to the entrance, reset current agent finished state
                 self.cur_agent._finished = False
             return {

@@ -5,6 +5,7 @@ import json
 import os
 from aworld.agents.browser.agent import BrowserAgent
 from aworld.agents.browser.config import BrowserAgentConfig
+from aworld.core.envs.tool import ToolFactory
 from aworld.logs.util import logger
 from typing import Any, Dict, List, Literal, Optional, Union, Tuple
 
@@ -53,7 +54,7 @@ if __name__ == '__main__':
         _results = []
     for idx, sample in enumerate(dataset):
         logger.info(f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. ")
-        # if sample["task_id"] != "df6561b2-7ee5-4540-baab-5095f742716a":
+        # if sample["task_id"] != "32102e3e-d12a-4209-9163-7b3a104efe5d":
             # continue
 
         if _check_task_completed(sample["task_id"], _results):
@@ -64,7 +65,7 @@ if __name__ == '__main__':
         logger.info(f'question: {question}')
 
         # debug
-        # question = "What is the surname of the equine veterinarian mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
+        question = "访问http://www.baidu.com"
         # question = "What is the surname of the horse doctor mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
         # end debug
 
@@ -72,10 +73,6 @@ if __name__ == '__main__':
             llm_provider="openai",
             llm_model_name="gpt-4o",
             llm_temperature=0.3,
-            # llm_api_key="sk-duKYX5S7l5jtHPpC5277469201Af4596B244F20b3eFfA7F4",
-            # llm_base_url="https://aihubmix.com/v1",
-            # llm_api_key="sk-zk2472c63c1948a8073d9c84873da16c8bb67eba047c4a94",
-            # llm_base_url="https://api.zhizengzeng.com/v1",
             llm_api_key="dummy-key",
             llm_base_url="http://localhost:5000",
             max_input_tokens = 128000
@@ -85,6 +82,7 @@ if __name__ == '__main__':
                                                 headless=False,
                                                 keep_browser_open=True,
                                                 llm_config=inner_llm_model_config)
+        
         browser_agent_config = BrowserAgentConfig(
             tool_calling_method="raw",
             agent_name=Agents.BROWSER.value,
@@ -92,10 +90,6 @@ if __name__ == '__main__':
             llm_model_name="gpt-4o",
             llm_num_ctx=32000,
             llm_temperature=1,
-            # llm_api_key="sk-duKYX5S7l5jtHPpC5277469201Af4596B244F20b3eFfA7F4",
-            # llm_base_url="https://aihubmix.com/v1",
-            # llm_api_key="sk-zk2472c63c1948a8073d9c84873da16c8bb67eba047c4a94",
-            # llm_base_url="https://api.zhizengzeng.com/v1",
             llm_api_key="dummy-key",
             llm_base_url="http://localhost:5000",
             max_actions_per_step=10
@@ -110,6 +104,7 @@ if __name__ == '__main__':
         #     max_actions_per_step=10,
         #     max_steps=100,
         # )
+
         browser_agent=BrowserAgent(conf=browser_agent_config)
 
         agent1 = PlanAgent(conf=agent_config)
@@ -126,9 +121,9 @@ if __name__ == '__main__':
 
         # Create swarm for multi-agents
         # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
-        swarm = Swarm((agent1, agent2), (agent2, browser_agent))
+        swarm = Swarm((agent2, browser_agent))
 
-        task = Task(input=question, swarm=swarm, conf=TaskConfig())
+        task = Task(input=question, swarm=swarm, conf=TaskConfig(),tools=[ToolFactory(Tools.BROWSER.value, conf=browser_tool_config)],)
 
         # Run task
         result = client.submit(task=[task])

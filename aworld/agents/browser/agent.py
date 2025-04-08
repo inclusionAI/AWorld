@@ -19,7 +19,7 @@ from aworld.config.conf import AgentConfig
 from aworld.core.envs.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, Tools, ToolActionInfo, Agents, ActionResult
 from aworld.logs.util import logger
-from aworld.agents.browser.prompts import AgentMessagePrompt
+from aworld.agents.browser.prompts import AgentMessagePrompt,SummaryPrompt
 
 
 @dataclass
@@ -128,6 +128,24 @@ class BrowserAgent(BaseAgent):
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None, **kwargs) -> Union[List[ActionModel], None]:
+        
+        if observation.content=="done":
+            self._finished=True
+            input_messages = self.build_summary_messages_from_trajectory(observation=observation)
+            input_messages = self._convert_input_messages(input_messages)
+            output_message = None
+            try:
+                output_message = self.llm.invoke(input_messages)
+                self.trajectory.add_step(input_messages, None, info, output_message, None)
+                if not output_message or not output_message.content:
+                    logger.warning("[agent] LLM returned empty response")
+                return [ActionModel(agent_name="browser_agent",policy_info={"model_output":output_message.content,"trajectory":self.trajectory})]
+            except:
+                logger.error(f"[agent] Response content: {output_message}")
+                raise RuntimeError('call llm fail, please check llm conf and network.')
+            finally:
+                self.save_process(self.save_file_path)
+
         start_time = time.time()
 
         if self._init is False:
@@ -211,8 +229,6 @@ class BrowserAgent(BaseAgent):
                 self._make_history_item(llm_result, observation, observation.action_result, metadata)
             else:
                 logger.warning("no result to record!")
-            if self._finished:
-                self.save_process(self.save_file_path)
 
         return tool_action
 
@@ -271,8 +287,7 @@ class BrowserAgent(BaseAgent):
 
                         action_model = ActionModel(tool_name=Tools.BROWSER.value, action_name=k, params=v)
                         result.append(action_model)
-                        if k=="done":
-                            self._finished = True
+                        
             return output_message, AgentResult(current_state=agent_brain, actions=result)
         except (ValueError, ValidationError) as e:
             logger.warning(f'Failed to parse model output: {output_message} {str(e)}')
@@ -304,6 +319,38 @@ class BrowserAgent(BaseAgent):
                                     base64_img=state.image if hasattr(state, 'image') else None)
 
         self.state.history.history.append(history_item)
+
+    def build_summary_messages_from_trajectory(self, observation: Optional[Observation] = None) -> List[
+        BaseMessage]:
+        messages=[]
+        system_message=SummaryPrompt().get_message()
+        messages.append(system_message)
+        task_message = HumanMessage(
+            content=f'Your ultimate task is: """{self.task}""". If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.'
+        )
+        messages.append(task_message)
+        messages.append(HumanMessage(content='[Your process history starts here]'))
+        his_step=0
+        for input_msgs, obs, info, output_msg, result in self.trajectory.get_history():
+            # 添加判断上一步的actionResult
+            last_action_result = obs.action_result
+            if last_action_result is not None:
+                for one_action_result in last_action_result:
+                    if one_action_result.content is not None:
+                        messages.append(HumanMessage(content='Action result: ' + one_action_result.content))
+                    elif one_action_result.error is not None:
+                        messages.append(HumanMessage(content='Action result: ' + one_action_result.error))
+                    elif one_action_result.success is False:
+                        logger.error(f"Action {one_action_result} failed: {one_action_result.error}")
+
+            # Add agent response
+            if result:
+                # Create AI message
+                output_data = result.model_dump(mode='json', exclude_unset=True)
+                messages.append(HumanMessage(content=f"history step {his_step+1}:\n"+json.dumps(output_data, indent=4)))
+                his_step+=1
+
+        return messages
 
     def build_messages_from_trajectory_and_observation(self, observation: Optional[Observation] = None) -> List[
         BaseMessage]:
