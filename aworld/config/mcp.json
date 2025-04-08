@@ -13,7 +13,10 @@
         "url": "http://localhost:2222/sse"
       },
       "video": {
-        "url": "http://localhost:333/sse"
+        "url": "http://localhost:3333/sse"
+      },
+      "document": {
+        "url": "http://localhost:4444/sse"
       }
     } 
   }
