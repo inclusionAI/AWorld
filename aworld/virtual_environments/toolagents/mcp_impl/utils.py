@@ -1,6 +1,8 @@
 import inspect
+import json
 import os
 import random
+import re
 from typing import Any, Callable, Dict, List
 
 import yaml
@@ -99,3 +101,31 @@ def read_llm_config_from_yaml(filepath: str) -> ModelConfig:
         logger.error(f"No llm_config section found in {filepath}")
         raise KeyError(f"No llm_config section found in {filepath}")
     return ModelConfig(**config["llm_config"])
+
+
+def handle_llm_response(response_content: str, result_key: str) -> str:
+    """Process LLM response uniformly
+
+    Args:
+        response_content: Raw response content from LLM
+        result_key: Key name to extract from JSON
+
+    Returns:
+        str: Extracted result content
+
+    Raises:
+        ValueError: When response is empty or result key doesn't exist
+    """
+    if not response_content:
+        raise ValueError("No response from llm.")
+
+    json_pattern = r"```json\s*(.*?)\s*```"
+    match = re.search(json_pattern, response_content, re.DOTALL)
+    if match:
+        response_content = match.group(1)
+
+    json_content = json.loads(response_content)
+    result = json_content.get(result_key)
+    if not result:
+        raise ValueError(f"No {result_key} in response.")
+    return json.dumps(result, ensure_ascii=False)

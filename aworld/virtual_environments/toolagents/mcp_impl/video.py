@@ -11,6 +11,7 @@ from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model
 from aworld.virtual_environments.toolagents.mcp.utils import (
     get_current_filename_without_extension,
+    handle_llm_response,
     read_llm_config_from_yaml,
     run_mcp_server,
 )
@@ -76,23 +77,6 @@ def create_video_content(
         ]
     )
     return content
-
-
-def handle_llm_response(response_content: str, result_key: str) -> str:
-    """Process LLM response uniformly"""
-    if not response_content:
-        raise ValueError("No response from llm.")
-
-    json_pattern = r"```json\s*(.*?)\s*```"
-    match = re.search(json_pattern, response_content, re.DOTALL)
-    if match:
-        response_content = match.group(1)
-
-    json_content = json.loads(response_content)
-    result = json_content.get(result_key)
-    if not result:
-        raise ValueError(f"No {result_key} in response.")
-    return result
 
 
 def mcpanalyze(
