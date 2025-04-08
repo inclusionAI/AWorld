@@ -48,7 +48,7 @@ if __name__ == '__main__':
         _results = []
     for idx, sample in enumerate(dataset):
         logger.info(f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. ")
-        # if sample["task_id"] != "32102e3e-d12a-4209-9163-7b3a104efe5d":
+        # if sample["task_id"] != "df6561b2-7ee5-4540-baab-5095f742716a":
             # continue
 
         if _check_task_completed(sample["task_id"], _results):

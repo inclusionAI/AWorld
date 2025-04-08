@@ -80,7 +80,7 @@ def handle_llm_response(response_content: str, result_key: str) -> str:
     result = json_content.get(result_key)
     if not result:
         raise ValueError(f"No {result_key} in response.")
-    return result
+    return json.dumps(result)
 
 
 def create_image_content(prompt: str, image_base64: str) -> List[Dict[str, Any]]:

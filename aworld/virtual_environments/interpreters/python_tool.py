@@ -11,8 +11,7 @@ from aworld.core.common import ActionModel, Observation, ActionResult, Tools
 from aworld.core.envs.tool import Tool, AgentInput, ToolFactory
 from aworld.utils import import_package
 import sys
-sys.path.append('/Users/zhuige/Documents/llm/agent/projects/new_owl/owl/owl/camel/interpreters/')
-sys.path.append('/Users/zhuige/Documents/llm/agent/projects/new_owl/owl/owl')
+sys.path.append('~/owl/owl/camel/interpreters/')
 from subprocess_interpreter import SubprocessInterpreter
 
 @ToolFactory.register(name=Tools.PYTHON_EXECUTE.value, desc="python interpreter tool",
