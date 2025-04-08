@@ -1,7 +1,5 @@
 import base64
-import json
 import os
-import re
 from io import BytesIO
 from typing import Any, Dict, List
 from urllib.parse import urlparse
