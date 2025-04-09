@@ -40,12 +40,8 @@ if __name__ == '__main__':
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="gpt-4o",
-        # llm_api_key="sk-duKYX5S7l5jtHPpC5277469201Af4596B244F20b3eFfA7F4",
-        # llm_base_url="https://aihubmix.com/v1",
-        llm_api_key="sk-zk2472c63c1948a8073d9c84873da16c8bb67eba047c4a94",
-        llm_base_url="https://api.zhizengzeng.com/v1"
-        # llm_api_key="dummy-key",
-        # llm_base_url="http://localhost:5000"
+        llm_api_key="dummy-key",
+        llm_base_url="http://localhost:5000"
     )
 
     # Define a task
