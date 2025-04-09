@@ -1,7 +1,25 @@
 {
   "mcpServers": {
+    "image": {
+      "url": "http://localhost:1111/sse"
+    },
+    "audio": {
+      "url": "http://localhost:2222/sse"
+    },
+    "video": {
+      "url": "http://localhost:3333/sse"
+    },
+    "document": {
+      "url": "http://localhost:4444/sse"
+    },
+    "search": {
+      "url": "http://localhost:5555/sse"
+    },
+    "playwright": {
+      "url": "http://localhost:8931/sse"
+    },
     "amap-amap-sse": {
-      "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY"
+      "url": "https://mcp.amap.com/sse?key="
     }
-  }
+  } 
 }
