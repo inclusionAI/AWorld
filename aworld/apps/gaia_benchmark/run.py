@@ -26,6 +26,12 @@ GOOGLE_API_KEY="AIzaSyBz68rKBQNmUV-0zM8KMqiK6qrhF-JuK_k" ## zhuige
 GOOGLE_ENGINE_ID="c790a773fba27404b"
 os.environ['GOOGLE_API_KEY'] = GOOGLE_API_KEY
 os.environ['GOOGLE_ENGINE_ID'] = GOOGLE_ENGINE_ID
+llm_api_key="dummy-key"
+llm_base_url="http://localhost:5000"
+use_model_name="gpt-4o"
+# llm_api_key="sk-3d5f9af9ec1c457c96d86a668cdc5d0a"
+# llm_base_url="https://agi-pre.alipay.com/api"
+# use_model_name="openrouterproxy.openai/gpt-4o"
 
 
 if __name__ == '__main__':
@@ -39,9 +45,9 @@ if __name__ == '__main__':
     # Create agents
     agent_config = AgentConfig(
         llm_provider="openai",
-        llm_model_name="gpt-4o",
-        llm_api_key="dummy-key",
-        llm_base_url="http://localhost:5000"
+        llm_model_name=use_model_name,
+        llm_api_key=llm_api_key,
+        llm_base_url=llm_base_url
     )
 
     # Define a task
@@ -73,10 +79,10 @@ if __name__ == '__main__':
 
         inner_llm_model_config = ModelConfig(
             llm_provider="openai",
-            llm_model_name="gpt-4o",
+            llm_model_name=use_model_name,
             llm_temperature=0.3,
-            llm_api_key="dummy-key",
-            llm_base_url="http://localhost:5000",
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
             max_input_tokens = 128000
         )
         browser_tool_config = BrowserToolConfig(width=1280,
@@ -88,11 +94,11 @@ if __name__ == '__main__':
             tool_calling_method="raw",
             agent_name=Agents.BROWSER.value,
             llm_provider="openai",
-            llm_model_name="gpt-4o",
+            llm_model_name=use_model_name,
             llm_num_ctx=32000,
             llm_temperature=1,
-            llm_api_key="dummy-key",
-            llm_base_url="http://localhost:5000",
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
             max_actions_per_step=10
         )
 
@@ -129,7 +135,7 @@ if __name__ == '__main__':
         # Run task
         result = client.submit(task=[task])
         browser_tool.close()
-
+        
         answer = result['task_0']['answer']
 
         logger.info(f"Task completed: {result['success']}")

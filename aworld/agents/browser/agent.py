@@ -244,7 +244,49 @@ class BrowserAgent(BaseAgent):
         if self.model_name == 'deepseek-reasoner':
             output_message.content = _remove_think_tags(output_message.content)
         try:
-            parsed_json = extract_json_from_model_output(output_message.content)
+            # Get max retries from config
+            max_retries = self.settings.get('max_llm_json_retries', 3)
+            retry_count = 0
+            json_parse_error = None
+
+            while retry_count < max_retries:
+                try:
+                    parsed_json = extract_json_from_model_output(output_message.content)
+                    # If parsing succeeds, break out of the retry loop
+                    json_parse_error = None
+                    break
+                except ValueError as e:
+                    # Store the error and retry
+                    json_parse_error = e
+                    retry_count += 1
+                    logger.warning(f"[agent] Failed to parse JSON (attempt {retry_count}/{max_retries}): {str(e)}")
+
+                    # Add a reminder message about JSON format with specific structure guidance
+                    format_reminder = HumanMessage(
+                        content="Your responses must be always JSON with the specified format. Make sure your response includes a 'current_state' object with 'evaluation_previous_goal', 'memory', and 'next_goal' fields, and an 'action' array with the actions to perform. Do not include any explanatory text, only return the raw JSON.")
+                    retry_messages = input_messages.copy()
+                    retry_messages.append(format_reminder)
+
+                    # Retry with the updated messages
+                    logger.info(
+                        f"[agent] Retrying LLM invocation ({retry_count}/{max_retries}) with format reminder")
+                    output_message = self.llm.invoke(retry_messages)
+
+                    # Check for empty response during retry
+                    if not output_message or not output_message.content:
+                        logger.warning(
+                            f"[agent] LLM returned empty response on retry attempt {retry_count}/{max_retries}")
+                        # Continue to next retry instead of immediately returning
+                        continue
+
+                    if self.model_name == 'deepseek-reasoner':
+                        output_message.content = _remove_think_tags(output_message.content)
+
+            # If all retries failed, raise the last error
+            if json_parse_error:
+                logger.error(f"[agent] ❌ All {max_retries} attempts to parse JSON failed")
+                raise json_parse_error
+
             logger.info((f"llm response: {parsed_json}"))
             agent_brain = AgentBrain(**parsed_json['current_state'])
             actions = parsed_json.get('action')
