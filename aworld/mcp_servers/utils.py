@@ -62,9 +62,7 @@ def read_config_from_yaml(filepath: str) -> Dict[str, Any]:
         yaml.YAMLError: When YAML parsing fails
     """
     if not os.path.isabs(filepath):
-        project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        )
+        project_root = os.path.dirname((os.path.dirname(__file__)))
         config_dir = os.path.join(project_root, "config")
         filepath = os.path.join(config_dir, filepath)
         logger.debug(f"Resolved config path: {filepath}")

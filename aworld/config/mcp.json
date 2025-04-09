@@ -20,6 +20,12 @@
       },
       "search": {
         "url": "http://localhost:5555/sse"
+      },
+      "playwright": {
+        "url": "http://localhost:8931/sse"
+      },
+      "amap-amap-sse": {
+        "url": "https://mcp.amap.com/sse?key="
       }
     } 
   }

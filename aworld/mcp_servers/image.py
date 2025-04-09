@@ -9,13 +9,13 @@ from PIL import Image
 from pydantic import Field
 
 from aworld.logs.util import logger
-from aworld.models.llm import get_llm_model
-from aworld.virtual_environments.toolagents.mcp_impl.utils import (
+from aworld.mcp_servers.utils import (
     get_current_filename_without_extension,
     handle_llm_response,
     read_llm_config_from_yaml,
     run_mcp_server,
 )
+from aworld.models.llm import get_llm_model
 
 filename = get_current_filename_without_extension()
 llm_config = read_llm_config_from_yaml(f"{filename}_analysis_tool.yaml")

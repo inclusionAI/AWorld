@@ -9,9 +9,9 @@ from pptx import Presentation
 from pydantic import Field
 
 from aworld.logs.util import logger
+from aworld.mcp_servers.image import encode_image_from_file
+from aworld.mcp_servers.utils import run_mcp_server
 from aworld.utils import import_package, import_packages
-from aworld.virtual_environments.document.utils import encode_image_from_file
-from aworld.virtual_environments.toolagents.mcp_impl.utils import run_mcp_server
 
 import_package("cv2", install_name="opencv-python")
 import_packages(["xmltodict", "pandas", "docx2markdown", "PyPDF2"])

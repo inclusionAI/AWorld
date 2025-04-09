@@ -1,13 +1,13 @@
 import json
 import os
-from typing import List, Optional
+from typing import List
 
 from exa_py import Exa
 from exa_py.api import ResultWithText, SearchResponse
 from pydantic import BaseModel, Field, field_validator
 
 from aworld.logs.util import logger
-from aworld.virtual_environments.toolagents.mcp_impl.utils import run_mcp_server
+from aworld.mcp_servers.utils import run_mcp_server
 
 
 class ExaSearchResult(BaseModel):
@@ -37,47 +37,63 @@ class ExaSearchResult(BaseModel):
         }
 
 
+def mcpsearchquery(
+    query: str = Field(..., description="The query string."),
+):
+    """Search the web using Exa with a query to retrieve relevant results."""
+    try:
+        api_key = os.environ.get("EXA_API_KEY")
+        if not api_key:
+            raise ValueError("EXA_API_KEY environment variable not set")
+        exa = Exa(api_key=api_key)
+        logger.info(f"Search starts for query: {query}")
+        search_results = exa.search_and_contents(query, text=True)
+
+        results = build_response(search_results)
+        logger.success(f"Search successfully for query: {query}")
+        return [result.model_dump_json() for result in results]
+
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+
 def mcpsearch(
     query: str = Field(..., description="The query string."),
-    *,
-    num_results: Optional[int] = Field(
-        20, description="Number of search results to return (default 10)."
+    num_results: str = Field(
+        "20", description="Number of search results to return (default 10)."
     ),
-    include_domains: Optional[List[str]] = Field(
-        None, description="Domains to include in the search."
+    include_domains: List[str] = Field(
+        "", description="Domains to include in the search."
     ),
-    exclude_domains: Optional[List[str]] = Field(
-        None, description="Domains to exclude from the search."
+    exclude_domains: List[str] = Field(
+        "", description="Domains to exclude from the search."
     ),
-    start_crawl_date: Optional[str] = Field(
-        None, description="Only links crawled after this date."
+    start_crawl_date: str = Field(
+        "", description="Only links crawled after this date."
     ),
-    end_crawl_date: Optional[str] = Field(
-        None, description="Only links crawled before this date."
+    end_crawl_date: str = Field("", description="Only links crawled before this date."),
+    start_published_date: str = Field(
+        "", description="Only links published after this date."
     ),
-    start_published_date: Optional[str] = Field(
-        None, description="Only links published after this date."
+    end_published_date: str = Field(
+        "", description="Only links published before this date."
     ),
-    end_published_date: Optional[str] = Field(
-        None, description="Only links published before this date."
+    include_text: List[str] = Field(
+        [], description="Strings that must appear in the page text."
     ),
-    include_text: Optional[List[str]] = Field(
-        None, description="Strings that must appear in the page text."
+    exclude_text: List[str] = Field(
+        [], description="Strings that must not appear in the page text."
     ),
-    exclude_text: Optional[List[str]] = Field(
-        None, description="Strings that must not appear in the page text."
-    ),
-    use_autoprompt: Optional[bool] = Field(
+    use_autoprompt: bool = Field(
         False, description="Convert query to Exa (default False)."
     ),
-    type: Optional[str] = Field(
+    type: str = Field(
         "neural", description="'keyword' or 'neural' (default 'neural')."
     ),
-    category: Optional[str] = Field(None, description="e.g. 'company'"),
-    flags: Optional[List[str]] = Field(
-        None, description="Experimental flags for Exa usage."
-    ),
-    moderation: Optional[bool] = Field(
+    category: str = Field("", description="e.g. 'company'"),
+    flags: List[str] = Field([], description="Experimental flags for Exa usage."),
+    moderation: bool = Field(
         False, description="If True, the search results will be moderated for safety."
     ),
 ) -> List[str]:
@@ -97,9 +113,10 @@ def mcpsearch(
                 )
 
         exa = Exa(api_key=api_key)
+        logger.info(f"Search starts for query: {query}")
         search_results = exa.search_and_contents(
             query,
-            num_results=num_results,
+            num_results=int(num_results),
             include_domains=include_domains,
             exclude_domains=exclude_domains,
             start_crawl_date=start_crawl_date,
@@ -116,6 +133,7 @@ def mcpsearch(
         )
 
         results = build_response(search_results)
+        logger.success(f"Search successfully for query: {query}")
         return [result.model_dump_json() for result in results]
 
     except Exception as e:
@@ -146,4 +164,4 @@ def build_response(results: SearchResponse[ResultWithText]) -> List[ExaSearchRes
 
 
 if __name__ == "__main__":
-    run_mcp_server("Search Server", funcs=[mcpsearch], port=5555)
+    run_mcp_server("Search Server", funcs=[mcpsearchquery], port=5555)

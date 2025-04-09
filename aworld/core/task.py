@@ -1,20 +1,19 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import time
-
 import traceback
-
 import uuid
-from typing import Union, Dict, Any, List
 from dataclasses import dataclass
+from typing import Any, Dict, List, Union
+
 from pydantic import BaseModel
 
-from aworld.core.agent.base import BaseAgent
 from aworld.config import ToolConfig, load_config, wipe_secret_info
+from aworld.core.agent.base import BaseAgent
 from aworld.core.common import Observation
 from aworld.core.envs.tool import Tool, ToolFactory
 from aworld.core.swarm import Swarm
-from aworld.logs.util import logger, color_log
+from aworld.logs.util import color_log, logger
 
 
 @dataclass
@@ -28,16 +27,18 @@ class TaskModel:
 
 
 class Task(object):
-    def __init__(self,
-                 task: TaskModel = None,
-                 agent: BaseAgent = None,
-                 swarm: Swarm = None,
-                 name: str = uuid.uuid1().hex,
-                 input: Any = None,
-                 conf: Union[Dict[str, Any], BaseModel] = {},
-                 tools: List[Tool] = None,
-                 *args,
-                 **kwargs):
+    def __init__(
+        self,
+        task: TaskModel = None,
+        agent: BaseAgent = None,
+        swarm: Swarm = None,
+        name: str = uuid.uuid1().hex,
+        input: Any = None,
+        conf: Union[Dict[str, Any], BaseModel] = {},
+        tools: List[Tool] = None,
+        *args,
+        **kwargs,
+    ):
         """Task instance init.
 
         Args:
@@ -74,8 +75,8 @@ class Task(object):
         self.name = name
         self.conf = conf
         self.tools = {tool.name(): tool for tool in tools} if tools else {}
-        self.daemon_target = kwargs.pop('daemon_target', None)
-        self._use_demon = False if not conf else conf.get('use_demon', False)
+        self.daemon_target = kwargs.pop("daemon_target", None)
+        self._use_demon = False if not conf else conf.get("use_demon", False)
         self._exception = None
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -102,6 +103,7 @@ class Task(object):
     def _daemon_run(self) -> None:
         if self._use_demon and self.daemon_target and callable(self.daemon_target):
             import threading
+
             t = threading.Thread(target=self.daemon_target, name="daemon")
             t.setDaemon(True)
             t.start()
@@ -126,9 +128,9 @@ class Task(object):
             # example now
             return self._swarm_process(observation, info)
 
-    def _swarm_process(self,
-                       observation: Observation,
-                       info: Dict[str, Any]) -> Dict[str, Any]:
+    def _swarm_process(
+        self, observation: Observation, info: Dict[str, Any]
+    ) -> Dict[str, Any]:
         start = time.time()
 
         input = observation.content
@@ -166,28 +168,36 @@ class Task(object):
             time_cost = time.time() - start
             if not results:
                 logger.warning("task no result!")
-                return {"answer": "",
-                        "traceback": traceback.format_exc(),
-                        "steps": step,
-                        "success": False,
-                        "total_time": time_cost}
-
-            answer = results[-1].get('response')
-            return {"answer": answer,
-                    "steps": step,
-                    "success": True,
-                    "total_time": (time.time() - start)}
-        except Exception as e:
-            logger.error(f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
-            return {"msg": str(e),
+                return {
+                    "answer": "",
                     "traceback": traceback.format_exc(),
                     "steps": step,
                     "success": False,
-                    "total_time": (time.time() - start)}
+                    "total_time": time_cost,
+                }
 
-    def _agent_process(self,
-                       observation: Observation,
-                       info: Dict[str, Any]) -> Dict[str, Any]:
+            answer = results[-1].get("response")
+            return {
+                "answer": answer,
+                "steps": step,
+                "success": True,
+                "total_time": (time.time() - start),
+            }
+        except Exception as e:
+            logger.error(
+                f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}"
+            )
+            return {
+                "msg": str(e),
+                "traceback": traceback.format_exc(),
+                "steps": step,
+                "success": False,
+                "total_time": (time.time() - start),
+            }
+
+    def _agent_process(
+        self, observation: Observation, info: Dict[str, Any]
+    ) -> Dict[str, Any]:
         agent = self.agent
         agent.reset({"task": observation.content})
         step = 0
@@ -201,7 +211,9 @@ class Task(object):
                 policy = agent.policy(observation=observation, info=info)
 
                 if not policy:
-                    logger.warning(f"{observation} can not get the valid policy, exit task!")
+                    logger.warning(
+                        f"{observation} can not get the valid policy, exit task!"
+                    )
                     excep = "invalid policy"
                     break
 
@@ -209,14 +221,18 @@ class Task(object):
                 tool_mapping = dict()
                 # Directly use or use tools after creation.
                 for act in policy:
-                    if not self.tools or (self.tools and act.tool_name not in self.tools):
+                    if not self.tools or (
+                        self.tools and act.tool_name not in self.tools
+                    ):
                         # only use default config in module or XXConfig.
                         conf = load_config(f"{act.tool_name}.yaml")
                         if not conf:
                             conf = ToolConfig()
                         tool = ToolFactory(act.tool_name, conf=conf)
-                        logger.info(f"Dynamic load config from {act.tool_name}.yaml, "
-                                    f"conf is: {wipe_secret_info(conf, ['api_key'])}")
+                        logger.info(
+                            f"Dynamic load config from {act.tool_name}.yaml, "
+                            f"conf is: {wipe_secret_info(conf, ['api_key'])}"
+                        )
                         tool.reset()
                         tool_mapping[act.tool_name] = []
                         self.tools[act.tool_name] = tool
@@ -226,13 +242,17 @@ class Task(object):
 
                 for tool_name, action in tool_mapping.items():
                     # Execute action using browser tool and unpack all return values
-                    observation, reward, terminated, _, info = self.tools[tool_name].step(action)
+                    observation, reward, terminated, _, info = self.tools[
+                        tool_name
+                    ].step(action)
                     # need merge?
 
-                    logger.info(f'{action} state: {observation}; reward: {reward}')
+                    logger.info(f"{action} state: {observation}; reward: {reward}")
                     # Check if there's an exception in info
                     if info.get("exception"):
-                        color_log(f"Step {step} failed with exception: {info['exception']}")
+                        color_log(
+                            f"Step {step} failed with exception: {info['exception']}"
+                        )
                         excep = info.get("exception")
 
                     step += 1
@@ -247,19 +267,23 @@ class Task(object):
                     break
 
             time_cost = time.time() - start
-            return {"steps": step,
-                    "msg": excep,
-                    "success": True if not excep else False,
-                    "total_time": time_cost}
+            return {
+                "steps": step,
+                "msg": excep,
+                "success": True if not excep else False,
+                "total_time": time_cost,
+            }
         except Exception as e:
-            logger.error(f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
+            logger.error(
+                f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}"
+            )
             time_cost = time.time() - start
             return {
                 "msg": str(e),
                 "traceback": traceback.format_exc(),
                 "steps": step,
                 "success": False,
-                "total_time": time_cost
+                "total_time": time_cost,
             }
         finally:
             # Cleanup if not keeping open

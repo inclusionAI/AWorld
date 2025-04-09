@@ -3,15 +3,15 @@
 
 import time
 import traceback
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-from aworld.core.agent.base import Agent, BaseAgent
-from aworld.core.envs.tool import ToolFactory
-from aworld.core.mcp.tools import MCPToolExecutor
-from aworld.logs.util import logger, color_log
-from aworld.core.common import Observation, ActionModel
 from aworld.config.conf import ToolConfig, load_config
+from aworld.core.agent.base import Agent, BaseAgent
+from aworld.core.common import ActionModel, Observation
+from aworld.core.envs.tool import ToolFactory
 from aworld.core.envs.tool_desc import get_actions_by_tools
+from aworld.core.mcp.tools import MCPToolExecutor
+from aworld.logs.util import color_log, logger
 
 
 class Swarm(object):
@@ -86,7 +86,6 @@ class Swarm(object):
         """
         if not self.initialized:
             raise RuntimeError("swarm needs to use `reset` to init first.")
-
         start = time.time()
         step = 0
         # max_steps = self.conf.get("max_steps", 100)
@@ -178,12 +177,14 @@ class Swarm(object):
 
                     for tool_name, action in tool_mapping.items():
                         # Execute action using browser tool and unpack all return values
-                        #mcp
-                        if action and hasattr(action[0], 'is_mcp') and action[0].is_mcp:
+                        # mcp
+                        if action and hasattr(action[0], "is_mcp") and action[0].is_mcp:
                             mcp_executor = MCPToolExecutor()
                             # Initialize the MCPToolExecutor before calling step
                             mcp_executor._load_mcp_config()
-                            observation, reward, terminated, _, info = mcp_executor.step(action)
+                            observation, reward, terminated, _, info = (
+                                mcp_executor.step(action)
+                            )
                         else:
                             # Execute action using browser tool and unpack all return values
                             observation, reward, terminated, _, info = self.tools[

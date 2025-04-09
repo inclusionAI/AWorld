@@ -1,0 +1,1 @@
+yes | npx @playwright/mcp@latest --port 8931
