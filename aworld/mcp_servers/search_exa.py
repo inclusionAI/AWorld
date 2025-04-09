@@ -46,11 +46,9 @@ def mcpsearchquery(
         if not api_key:
             raise ValueError("EXA_API_KEY environment variable not set")
         exa = Exa(api_key=api_key)
-        logger.info(f"Search starts for query: {query}")
         search_results = exa.search_and_contents(query, text=True)
 
         results = build_response(search_results)
-        logger.success(f"Search successfully for query: {query}")
         return [result.model_dump_json() for result in results]
 
     except Exception as e:
