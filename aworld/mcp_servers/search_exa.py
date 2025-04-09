@@ -39,17 +39,19 @@ class ExaSearchResult(BaseModel):
 
 def mcpsearchquery(
     query: str = Field(..., description="The query string."),
-):
+) -> str:
     """Search the web using Exa with a query to retrieve relevant results."""
     try:
         api_key = os.environ.get("EXA_API_KEY")
         if not api_key:
             raise ValueError("EXA_API_KEY environment variable not set")
         exa = Exa(api_key=api_key)
+        logger.success(f"Search starts for query: {query}")
         search_results = exa.search_and_contents(query, text=True)
+        logger.success(f"Search ends for query: {query}")
 
         results = build_response(search_results)
-        return [result.model_dump_json() for result in results]
+        return json.dumps([result.model_dump_json() for result in results])
 
     except Exception as e:
         logger.error(f"Search error: {str(e)}")
