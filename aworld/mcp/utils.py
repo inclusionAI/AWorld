@@ -20,10 +20,28 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                     required = tool.inputSchema.get("required", [])
                     _properties = tool.inputSchema["properties"]
                     for param_name, param_info in _properties.items():
-                        properties[param_name] = {
-                            "description": param_info["description"] if param_info["description"]  else "",
-                            "type": param_info["type"] if param_info["type"] != "str" else "string"
-                        }
+                        param_type = param_info["type"] if param_info["type"] != "str" else "string"
+                        param_desc = param_info["description"] if param_info["description"] else ""
+                        
+                        if param_type == "array":
+                            # Handle array type parameters
+                            item_type = param_info.get("items", {}).get("type", "string")
+                            if item_type == "str":
+                                item_type = "string"
+                            properties[param_name] = {
+                                "description": param_desc,
+                                "type": param_type,
+                                "items": {
+                                    "type": item_type
+                                }
+                            }
+                        else:
+                            # Handle non-array type parameters
+                            properties[param_name] = {
+                                "description": param_desc,
+                                "type": param_type
+                            }
+                        
                         if param_info.get("required", False):
                             required.append(param_name)
 
