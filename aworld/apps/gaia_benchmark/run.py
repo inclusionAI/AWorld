@@ -56,7 +56,7 @@ if __name__ == '__main__':
         logger.info(f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. ")
         # if sample["task_id"] != "df6561b2-7ee5-4540-baab-5095f742716a":
             # continue
-        if sample["task_id"] != "5a0c1adf-205e-4841-a666-7c3ef95def9d":
+        if sample["task_id"] != "8e867cd7-cff9-4e6c-867a-ff5ddc2550be":
             continue
 
         if _check_task_completed(sample["task_id"], _results):
@@ -67,7 +67,7 @@ if __name__ == '__main__':
         logger.info(f'question: {question}')
 
         # debug
-        question = "打开wikipedia"
+        # question = "打开wikipedia"
         # question = "What is the surname of the horse doctor mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
         # end debug
 
@@ -115,18 +115,21 @@ if __name__ == '__main__':
         #                                                     Tools.BROWSER.value])
         agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
                                                             Tools.PYTHON_EXECUTE.value, 
-                                                            Tools.IMAGE_ANALYSIS.value
+                                                            Tools.IMAGE_ANALYSIS.value,
+                                                            Tools.SEARCH_API.value
                                                             ])
                                                             # ,agent_names=[browser_agent])
 
         # Create swarm for multi-agents
         # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
         swarm = Swarm((agent1, agent2), (agent2, browser_agent))
-
-        task = Task(input=question, swarm=swarm, conf=TaskConfig(),tools=[ToolFactory(Tools.BROWSER.value, conf=browser_tool_config)])
+        browser_tool = ToolFactory(Tools.BROWSER.value, conf=browser_tool_config)
+        task = Task(input=question, swarm=swarm, conf=TaskConfig(),tools=[browser_tool])
 
         # Run task
         result = client.submit(task=[task])
+        browser_tool.close()
+
         answer = result['task_0']['answer']
 
         logger.info(f"Task completed: {result['success']}")
@@ -152,3 +155,5 @@ if __name__ == '__main__':
     print(score_dict)
     with open(save_score_path, 'w') as f:
         json.dump(score_dict, f, indent=4, ensure_ascii=False)
+
+    

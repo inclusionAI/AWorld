@@ -67,6 +67,7 @@ class BrowserAgent(BaseAgent):
 
         # Reset trajectory
         self.trajectory = Trajectory()
+        self.state = AgentState()
 
         # Note: Removed _message_manager initialization as it's no longer used
         # _estimate_tokens_for_messages method now directly uses functions from utils.py

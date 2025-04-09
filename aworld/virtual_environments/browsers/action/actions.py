@@ -69,7 +69,7 @@ class GotoUrl(ExecutableAction):
             logger.warning("empty url, go to nothing.")
             return ActionResult(content="empty url", keep=True), page
 
-        await page.goto(url)
+        await page.goto(url, timeout=60000)
         await page.wait_for_load_state()
         msg = f'Navigated to {url}'
         logger.info(msg)
@@ -411,7 +411,7 @@ class ExtractContent(ExecutableAction):
             llm = get_llm_model(llm_config)
         content = markdownify.markdownify(page.content())
 
-        prompt = 'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format. Extraction goal: {goal}, Page: {page}'
+        prompt = 'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Just extract the key pieces of information that are relevant to the goal. If the information is long, summarize it. Keep the output to less than 3000 words. Respond in json format. Extraction goal: {goal}, Page: {page}'
         template = PromptTemplate(input_variables=['goal', 'page'], template=prompt)
         try:
             output = llm.invoke(template.format(goal=goal, page=content))
@@ -450,6 +450,40 @@ class ExtractContent(ExecutableAction):
             logger.info(msg)
             return ActionResult(content=msg), page
 
+
+@ActionFactory.register(name=BrowserAction.NEW_TAB.value.name,
+                        desc=BrowserAction.NEW_TAB.value.desc,
+                        tool_name=Tools.BROWSER.value)
+class NewTab(ExecutableAction):
+    def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
+        logger.info(f"exec {BrowserAction.NEW_TAB.value.name} action")
+        browser = get_browser(**kwargs)
+        url = action.params.get("url")
+
+        new_page = browser.new_page()
+        new_page.wait_for_load_state()
+
+        if url:
+            new_page.goto(url)
+            DomUtil.wait_for_stable_network(new_page)
+
+        msg = f'Opened new tab with {url}'
+        logger.debug(msg)
+        return ActionResult(content=msg, keep=True), new_page
+
+    async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
+        logger.info(f"exec {BrowserAction.NEW_TAB.value.name} action")
+        browser = get_browser(**kwargs)
+        url = action.params.get("url")
+        new_page = await browser.new_page()
+        await new_page.wait_for_load_state()
+
+        if url:
+            await new_page.goto(url)
+            DomUtil.wait_for_stable_network(new_page)
+        msg = f'Opened new tab with {url}'
+        logger.debug(msg)
+        return ActionResult(content=msg, keep=True), get_page(**kwargs)
 
 @ActionFactory.register(name=BrowserAction.SCROLL_DOWN.value.name,
                         desc=BrowserAction.SCROLL_DOWN.value.desc,
