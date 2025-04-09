@@ -51,7 +51,7 @@ class GotoUrl(ExecutableAction):
 
         params = action.params
         url = params.get("url")
-        page.goto(url)
+        page.goto(url, timeout=120000)
         page.wait_for_load_state()
         msg = f'Navigated to {url}'
         logger.info(msg)

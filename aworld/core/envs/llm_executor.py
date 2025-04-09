@@ -25,8 +25,10 @@ class LLMToolActionExecutor(ToolActionExecutor):
     ):
         super().__init__(**kwargs)
         # check environment variables valid
-        llm_api_key = os.getenv("LLM_API_KEY", "")
-        llm_base_url = os.getenv("LLM_BASE_URL", "")
+        llm_api_key="dummy-key"
+        llm_base_url="http://localhost:5000"
+        # llm_api_key = os.getenv("LLM_API_KEY", "")
+        # llm_base_url = os.getenv("LLM_BASE_URL", "")
 
         assert llm_api_key, "LLM_API_KEY is required"
         assert llm_base_url, "LLM_BASE_URL is required"

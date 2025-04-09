@@ -20,18 +20,13 @@ from aworld.apps.gaia_benchmark.utils import _check_task_completed, question_sco
 from aworld.core.common import Agents, Tools
 
 import os
-# GOOGLE_API_KEY = ""
-# GOOGLE_ENGINE_ID = ""
-GOOGLE_API_KEY="AIzaSyBz68rKBQNmUV-0zM8KMqiK6qrhF-JuK_k" ## zhuige
-GOOGLE_ENGINE_ID="c790a773fba27404b"
+GOOGLE_API_KEY = ""
+GOOGLE_ENGINE_ID = ""
 os.environ['GOOGLE_API_KEY'] = GOOGLE_API_KEY
 os.environ['GOOGLE_ENGINE_ID'] = GOOGLE_ENGINE_ID
 llm_api_key="dummy-key"
 llm_base_url="http://localhost:5000"
 use_model_name="gpt-4o"
-# llm_api_key="sk-3d5f9af9ec1c457c96d86a668cdc5d0a"
-# llm_base_url="https://agi-pre.alipay.com/api"
-# use_model_name="openrouterproxy.openai/gpt-4o"
 
 
 if __name__ == '__main__':
@@ -42,12 +37,17 @@ if __name__ == '__main__':
     gaia_dir = "/Users/zhuige/Documents/llm/agent/projects/web_understanding/datasets/GAIA"
     dataset = GAIABenchmark(gaia_dir).load()['valid']
 
+    # 读取json直接获取数据
+    path = '~/doc_code_gaia.json'
+    with open(path, 'r') as f:
+        dataset = json.load(f)
+
     # Create agents
     agent_config = AgentConfig(
         llm_provider="openai",
-        llm_model_name=use_model_name,
-        llm_api_key=llm_api_key,
-        llm_base_url=llm_base_url
+        llm_model_name="gpt-4o",
+        llm_api_key="dummy-key",
+        llm_base_url="http://localhost:5000"
     )
 
     # Define a task
@@ -58,12 +58,14 @@ if __name__ == '__main__':
             _results = json.load(f)
     else:
         _results = []
-    for idx, sample in enumerate(dataset):
+    for idx, sample in enumerate(dataset[:2]):
         logger.info(f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. ")
-        # if sample["task_id"] != "df6561b2-7ee5-4540-baab-5095f742716a":
+        # if sample["task_id"] != "32102e3e-d12a-4209-9163-7b3a104efe5d": # excel
             # continue
-        if sample["task_id"] != "8e867cd7-cff9-4e6c-867a-ff5ddc2550be":
-            continue
+        # if sample["task_id"] != "5a0c1adf-205e-4841-a666-7c3ef95def9d":
+            # continue
+        # if sample["task_id"] != "cabe07ed-9eca-40ea-8ead-410ef5e83f91":
+            # continue
 
         if _check_task_completed(sample["task_id"], _results):
             logger.info(f"The following task is already completed:\n task id: {sample['task_id']}, question: {sample['Question']}")
@@ -81,8 +83,8 @@ if __name__ == '__main__':
             llm_provider="openai",
             llm_model_name=use_model_name,
             llm_temperature=0.3,
-            llm_api_key=llm_api_key,
-            llm_base_url=llm_base_url,
+            llm_api_key="dummy-key",
+            llm_base_url="http://localhost:5000",
             max_input_tokens = 128000
         )
         browser_tool_config = BrowserToolConfig(width=1280,
@@ -97,8 +99,8 @@ if __name__ == '__main__':
             llm_model_name=use_model_name,
             llm_num_ctx=32000,
             llm_temperature=1,
-            llm_api_key=llm_api_key,
-            llm_base_url=llm_base_url,
+            llm_api_key="dummy-key",
+            llm_base_url="http://localhost:5000",
             max_actions_per_step=10
         )
 
@@ -153,7 +155,7 @@ if __name__ == '__main__':
         }
         _results.append(_result_info)
         logger.info(_result_info)
-        break
+        # break
         with open(save_path, 'w') as f:
             json.dump(_results, f, indent=4, ensure_ascii=False)
 

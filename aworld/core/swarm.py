@@ -182,8 +182,10 @@ class Swarm(object):
                         observation, reward, terminated, _, info = self.tools[
                             tool_name
                         ].step(action)
-
-                        logger.info(f"{action} state: {observation}; reward: {reward}")
+                        if action[0].tool_name == 'browser':
+                            logger.info(f"{action}")
+                        else:
+                            logger.info(f"{action} state: {observation}; reward: {reward}")
                         # Check if there's an exception in info
                         if info.get("exception"):
                             color_log(
@@ -248,7 +250,15 @@ class Swarm(object):
                 )
 
             # All agents or tools have completed their tasks
-            if all(agent.finished for _, agent in self.agents.items()) or (
+            for _, agent in self.agents.items():
+                logger.info(f'agent {agent}, agent.finished {agent.finished}')
+            for _, tool in self.tools.items():
+                logger.info(f'tool {tool}, tool.finished {tool.finished}')
+            # if all(agent.finished for _, agent in self.agents.items()) or (
+            #     all(tool.finished for _, tool in self.tools.items())
+            #     and len(self.agents) == 1
+            # ):
+            if all((self.agents['plan_agent'].finished, self.agents['execute_agent'].finished)) or (
                 all(tool.finished for _, tool in self.tools.items())
                 and len(self.agents) == 1
             ):
