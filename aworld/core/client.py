@@ -34,7 +34,8 @@ class Client(InheritanceSingleton):
                 loop = self.loop()
                 loop.run_until_complete(self._parallel_run_in_local(task, res))
             else:
-                [self._run_in_local(t, res, i) for i, t in enumerate(task)]
+                for i, t in enumerate(task):
+                    self._run_in_local(t, res, i, None)
 
         res['success'] = True
         res['time_cost'] = time.time() - start
@@ -56,11 +57,14 @@ class Client(InheritanceSingleton):
             loop = asyncio.get_event_loop()
         return loop
 
-    def _run_in_local(self, task: Task, res: Dict[str, Any], idx: int = 0) -> None:
+    def _run_in_local(self, task: Task, res: Dict[str, Any], idx: int = 0, input: Any = None) -> None:
         try:
             # Execute the task
+            if input:
+                task.input = input
             result = task.start()
             res[f'task_{idx}'] = result
+            return result
         except Exception as e:
             logger.error(traceback.format_exc())
             # Re-raise the exception to allow caller to handle it

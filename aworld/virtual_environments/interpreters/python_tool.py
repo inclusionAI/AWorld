@@ -1,26 +1,28 @@
-import sys
 import ast
 import re
 import subprocess
-from typing import Any, Dict, Tuple, List
-from io import StringIO
-from aworld.logs.util import logger
-from aworld.config.conf import ToolConfig
-from aworld.core.envs.tool_action import PythonToolAction
-from aworld.core.common import ActionModel, Observation, ActionResult, Tools
-from aworld.core.envs.tool import Tool, AgentInput, ToolFactory
-from aworld.utils import import_package
 import sys
-sys.path.append('~/owl/owl/camel/interpreters/')
-from subprocess_interpreter import SubprocessInterpreter
+from io import StringIO
 
-@ToolFactory.register(name=Tools.PYTHON_EXECUTE.value, desc="python interpreter tool",
-                      supported_action=PythonToolAction)
+from aworld.config.common import Tools
+from aworld.config.conf import ToolConfig
+from aworld.config.tool_action import PythonToolAction
+from aworld.core.common import ActionModel, ActionResult, Observation
+from aworld.core.envs.tool import AgentInput, Tool, ToolFactory
+from aworld.logs.util import logger
+from aworld.utils import import_package
+from aworld.virtual_environments.utils import build_observation
+
+
+@ToolFactory.register(
+    name=Tools.PYTHON_EXECUTE.value,
+    desc="python interpreter tool",
+    supported_action=PythonToolAction,
+    conf_file_name=f"{Tools.PYTHON_EXECUTE.value}_tool.yaml",
+)
 class PythonTool(Tool[Observation, List[ActionModel]]):
 
-    def __init__(self,
-                 conf: ToolConfig,
-                 **kwargs) -> None:
+    def __init__(self, conf: ToolConfig, **kwargs) -> None:
         """
         Initialize the PythonExecutor
         Args:
@@ -35,10 +37,10 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
         self.global_namespace = {}
         self.original_stdout = sys.stdout
         self.output_buffer = StringIO()
-        self.step_finished = True
         self.installed_packages = set()
-        import_package('langchain_experimental')
+        import_package("langchain_experimental")
         from langchain_experimental.utilities.python import PythonREPL
+
         self.python_repl = PythonREPL()
         self.interpreter = SubprocessInterpreter(
             require_confirm=False,
@@ -73,24 +75,24 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
                 if isinstance(node, ast.Import):
                     # deal import xxx or import xxx as yyy
                     for name in node.names:
-                        package_name = name.name.split('.')[0]
+                        package_name = name.name.split(".")[0]
                         imports.add(package_name)
 
                 elif isinstance(node, ast.ImportFrom):
                     # deal from xxx import yyy or from xxx.yyy import zzz
                     if node.module:
-                        package_name = node.module.split('.')[0]
+                        package_name = node.module.split(".")[0]
                         imports.add(package_name)
 
         except SyntaxError:
-            import_pattern = r'^import\s+([\w\s,]+)|from\s+(\w+)'
-            for line in code.split('\n'):
+            import_pattern = r"^import\s+([\w\s,]+)|from\s+(\w+)"
+            for line in code.split("\n"):
                 line = line.strip()
                 match = re.match(import_pattern, line)
                 if match:
                     if match.group(1):
 
-                        packages = [p.strip() for p in match.group(1).split(',')]
+                        packages = [p.strip() for p in match.group(1).split(",")]
                         for package in packages:
                             if package:
                                 package_name = package.split()[0]
@@ -100,8 +102,7 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
 
         return imports
 
-    def install_dependencies(self,
-                             packages: set) -> None:
+    def install_dependencies(self, packages: set) -> None:
         """
         Install dependency packages
         Args:
@@ -114,7 +115,9 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
                 __import__(package)
             except ImportError:
                 try:
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+                    subprocess.check_call(
+                        [sys.executable, "-m", "pip", "install", package]
+                    )
                     self.installed_packages.add(package)
                 except subprocess.CalledProcessError as e:
                     logger.warning(f"Failed to install {package}: {str(e)}")
@@ -130,17 +133,18 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
         try:
             for package in self.installed_packages:
                 try:
-                    subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", package])
+                    subprocess.check_call(
+                        [sys.executable, "-m", "pip", "uninstall", "-y", package]
+                    )
                 except subprocess.CalledProcessError as e:
                     logger.warning(f"Failed to uninstall {package}: {str(e)}")
             self.installed_packages.clear()
         except Exception as e:
             logger.warning(f"Failed to uninstall dependencies: {repr(e)}")
 
-    def reset(self,
-              *,
-              seed: int | None = None,
-              options: Dict[str, str] | None = None) -> Tuple[AgentInput, dict[str, Any]]:
+    def reset(
+        self, *, seed: int | None = None, options: Dict[str, str] | None = None
+    ) -> Tuple[AgentInput, dict[str, Any]]:
         """
         Reset the executor
         Args:
@@ -152,16 +156,15 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
         self.close()
         self.local_namespace = {}
         self.global_namespace = {}
-        self.step_finished = True
+        self._finished = False
         self.installed_packages.clear()
 
-    def finished(self) -> bool:
-        """
-        Check if the executor is finished
-        Returns:
-            bool: True if finished, False otherwise
-        """
-        return self.step_finished
+        return (
+            build_observation(
+                observer=self.name(), ability=PythonToolAction.EXECUTE.value.name
+            ),
+            {},
+        )
 
     def close(self) -> None:
         """
@@ -178,12 +181,11 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
         except:
             pass
         finally:
-            self.step_finished = True
+            self._finished = True
 
     def step(
-            self,
-            actions: List[ActionModel],
-            **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
+        self, actions: List[ActionModel], **kwargs
+    ) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
         """
         Step the executor
         Args:
@@ -195,41 +197,49 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
         self.step_finished = False
         reward = 0
         fail_error = ""
-        observation: 'Observation' = Observation(**{
-            'dom_tree': '',
-            'image': '',
-            'action_result': [],
-            'info': {}
-        })
+        observation = build_observation(
+            observer=self.name(), ability=PythonToolAction.EXECUTE.value.name
+        )
         try:
             if not actions:
-                return (observation, reward,
-                        kwargs.get("terminated",
-                                   False), kwargs.get("truncated", False), {
-                            "exception": "actions is empty"
-                        })
+                return (
+                    observation,
+                    reward,
+                    kwargs.get("terminated", False),
+                    kwargs.get("truncated", False),
+                    {"exception": "actions is empty"},
+                )
             for action in actions:
                 code = action.params.get("code", "")
                 if not code:
+                    logger.warning(f"{action} no code to execute.")
                     continue
                 _, output, error = self.execute(code)
                 observation.content = output
                 observation.action_result.append(
-                    ActionResult(is_done=True,
-                                 success=False if error else True,
-                                 content=f"{output}",
-                                 error=f"{error}",
-                                 keep=False))
+                    ActionResult(
+                        is_done=True,
+                        success=False if error else True,
+                        content=f"{output}",
+                        error=f"{error}",
+                        keep=False,
+                    )
+                )
             reward = 1
         except Exception as e:
             fail_error = str(e)
         finally:
-            self.step_finished = True
+            self._finished = True
 
-        return (observation, reward, kwargs.get("terminated", False),
-                kwargs.get("truncated", False), {
-                    "exception": fail_error
-                })
+        info = {"exception": fail_error}
+        info.update(kwargs)
+        return (
+            observation,
+            reward,
+            kwargs.get("terminated", False),
+            kwargs.get("truncated", False),
+            info,
+        )
 
     def execute(self, code: str) -> str:
         r"""Execute the given codes. Codes should be complete and runnable (like running a script), and need to explicitly use the print statement to get the output.
@@ -238,16 +248,21 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
             code (str): The input code to execute. Codes should be complete and runnable (like running a script), and need to explicitly use the print statement to get the output.
 
         Returns:
-            str: The text output of the given codes.
+            result, output, error
         """
-        from loguru import logger
-        logger.debug(f"calling execute_code with code: {code}")
-        output = self.interpreter.run(code, "python")
-        # ruff: noqa: E501
-        content = f"Executed the code below:\n```py\n{code}\n```\n> Executed Results:\n{output}"
-        # print(content)
-        return '', content, ''
-    
+        required_packages = self.extract_imports(code)
+        self.install_dependencies(required_packages)
+        self.python_repl.globals = self.global_namespace
+        self.python_repl.locals = self.local_namespace
+        error = None
+        try:
+            output = self.python_repl.run(code, timeout)
+        except Exception as e:
+            error = f"{repr(e)}"
+        finally:
+            self.uninstall_dependencies()
+        return "", output, error
+
     def get_execute_result(self):
         """
         Get the execute result
@@ -255,13 +270,13 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
             output, error
         """
         output = None
-        error = ''
+        error = ""
         try:
             output = self.output_buffer.getvalue()
             self.output_buffer.truncate(0)
             self.output_buffer.seek(0)
             sys.stdout = self.original_stdout
         except Exception as e:
-            error = f'{repr(e)}'
+            error = f"{repr(e)}"
             logger.warning(f"Failed to get output, {repr(e)}")
         return output, error

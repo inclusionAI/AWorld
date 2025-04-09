@@ -7,12 +7,13 @@ from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 
 from pydantic import BaseModel
 
-from aworld.config.conf import ToolConfig, load_config
-from aworld.core.envs.tool_action import ToolAction
+from aworld.config.conf import ToolConfig, load_config, ConfigDict
+from aworld.config.tool_action import ToolAction
 from aworld.core.envs.action_factory import ActionFactory
-from aworld.core.common import Observation, ActionModel, ActionResult, Tools
+from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
+from aworld.utils.common import convert_to_snake
 
 AgentInput = TypeVar("AgentInput")
 ToolInput = TypeVar("ToolInput")
@@ -25,17 +26,25 @@ class Tool(Generic[AgentInput, ToolInput]):
     """
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, conf: Union[Dict[str, Any], BaseModel], **kwargs) -> None:
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         self.conf = conf
-        if isinstance(conf, BaseModel):
-            self.dict_conf = conf.model_dump()
+        if isinstance(conf, ConfigDict):
+            pass
+        elif isinstance(conf, Dict):
+            self.conf = ConfigDict(conf)
+        elif isinstance(conf, ToolConfig):
+            # To add flexibility
+            self.conf = ConfigDict(conf.model_dump())
         else:
-            self.dict_conf = conf
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-        self._name = self.dict_conf.get("name", self.__class__.__name__)
+            logger.warning(f"Unknown conf type: {type(conf)}")
+        self._finished = False
+
+        self._name = kwargs.pop('name', self.conf.get("name", convert_to_snake(self.__class__.__name__)))
         action_executor.register(name=self.name(), tool=self)
         self.action_executor = action_executor
+
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
     def name(self):
         """Tool unique name."""
@@ -56,9 +65,10 @@ class Tool(Generic[AgentInput, ToolInput]):
             Quintuple，key information: AgentInput and extended info dict.
         """
 
-    @abc.abstractmethod
+    @property
     def finished(self) -> bool:
         """The final execution status of the task from agent instructions."""
+        return self._finished
 
     @abc.abstractmethod
     def close(self) -> None:
@@ -76,14 +86,21 @@ class AsyncTool(Generic[AgentInput, ToolInput]):
     """
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, conf: Union[Dict[str, Any], BaseModel], **kwargs) -> None:
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         self.conf = conf
-        if isinstance(conf, BaseModel):
-            self.dict_conf = conf.model_dump()
+        if isinstance(conf, ConfigDict):
+            pass
+        elif isinstance(conf, Dict):
+            self.conf = ConfigDict(conf)
+        elif isinstance(conf, ToolConfig):
+            # To add flexibility
+            self.conf = ConfigDict(conf.model_dump())
         else:
-            self.dict_conf = conf
+            logger.warning(f"Unknown conf type: {type(conf)}")
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self._finished = False
+
         action_executor.register(name=self.name(), tool=self)
         self.action_executor = action_executor
 
@@ -106,9 +123,10 @@ class AsyncTool(Generic[AgentInput, ToolInput]):
             Quintuple，key information: AgentInput and extended info dict.
         """
 
-    @abc.abstractmethod
+    @property
     async def finished(self) -> bool:
         """The final execution status of the task from agent instructions."""
+        return self._finished
 
     @abc.abstractmethod
     async def close(self) -> None:
@@ -124,6 +142,7 @@ class ToolsManager(Factory):
         super(ToolsManager, self).__init__(type_name)
         self._tool_with_action = {}
         self._tool_conf = {}
+        self._tool_instance = {}
 
     def __call__(self, name: str = None, *args, **kwargs):
         if name is None:
@@ -150,16 +169,19 @@ class ToolsManager(Factory):
 
         # must is a dict
         conf['name'] = name
+        conf = ConfigDict(conf)
+
+        if kwargs.get("reuse", conf.get('reuse', False)) is True and name in self._tool_instance:
+            return self._tool_instance[name]
+
         if name in self._cls:
             tool = self._cls[name](conf=conf, **kwargs)
+            self._tool_instance[name] = tool
         else:
             # default browser env tool
             logger.warning("Empty tool name, default use 'browser'")
             asyn = kwargs.get('async', False)
-            if asyn:
-                name = "async_" + Tools.BROWSER.value
-            else:
-                name = Tools.BROWSER.value
+            name = "async_browser" if asyn else "browser"
             tool = self._cls[name](conf=conf, **kwargs)
         action_executor.register(name, tool)
         return tool
@@ -169,7 +191,7 @@ class ToolsManager(Factory):
             tool = "async_" + tool
         return self._tool_with_action.get(tool)
 
-    def register(self, name: str, desc: str, supported_action: ToolAction, conf_file_name: str = None, **kwargs):
+    def register(self, name: str, desc: str, supported_action: ToolAction = None, conf_file_name: str = None, **kwargs):
         """Register a tool to tool factory.
 
         Args:
@@ -241,9 +263,12 @@ class ToolActionExecutor(object):
 
             try:
                 action_result, ctx = self.do_act(action, tool, **kwargs)
-                action_results.append(action_result)
             except:
                 logger.warning(traceback.format_exc())
+                action_result = ActionResult(error=traceback.format_exc(), success=False)
+            action_result.action_name = action.action_name
+            action_result.tool_name = action.tool_name
+            action_results.append(action_result)
         return action_results, ctx
 
     async def async_execute_env_action(self,
@@ -266,9 +291,12 @@ class ToolActionExecutor(object):
                     self.tools[tool_name] = tool
             try:
                 action_result, ctx = await self.async_do_act(action, tool, **kwargs)
-                action_results.append(action_result)
             except:
                 logger.warning(traceback.format_exc())
+                action_result = ActionResult(error=traceback.format_exc(), success=False)
+            action_result.action_name = action.action_name
+            action_result.tool_name = action.tool_name
+            action_results.append(action_result)
         return action_results, ctx
 
     def do_act(self, action_model: ActionModel, tool: Tool[Observation, List[ActionModel]], **kwargs):
@@ -276,11 +304,11 @@ class ToolActionExecutor(object):
         if action_name not in ActionFactory:
             action_name = action_model.tool_name + action_model.action_name
             if action_name not in ActionFactory:
-                raise ValueError(f'Action {action_name} not found in ActionFactory')
+                raise ValueError(f'Action {action_model.action_name} not found in ActionFactory')
 
         action = ActionFactory(action_name)
         action_result, page = action.act(action_model, tool=tool, **kwargs)
-        logger.info(f"{tool.name()}-{action_name} execute finished")
+        logger.info(f"{tool.name()}-{action_model.action_name} execute finished")
         return action_result, page
 
     async def async_do_act(self, action_model: ActionModel, tool: Tool[Observation, List[ActionModel]],
@@ -289,11 +317,11 @@ class ToolActionExecutor(object):
         if action_name not in ActionFactory:
             action_name = action_model.tool_name + action_model.action_name
             if action_name not in ActionFactory:
-                raise ValueError(f'Action {action_name} not found in ActionFactory')
+                raise ValueError(f'Action {action_model.action_name} not found in ActionFactory')
 
         action = ActionFactory(action_name)
         action_result, page = await action.async_act(action_model, tool=tool, **kwargs)
-        logger.info(f"{tool.name()}-{action_name} execute finished")
+        logger.info(f"{tool.name()}-{action_model.action_name} execute finished")
         return action_result, page
 
 

@@ -4,13 +4,15 @@
 import traceback
 from typing import Any, Tuple, List, Dict
 
-from aworld.core.envs.tool_action import AndroidAction
-from aworld.core.common import ActionModel, Observation, ActionResult, Tools
+from aworld.config.common import Tools
+from aworld.config.tool_action import AndroidAction
+from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.logs.util import logger
 from aworld.virtual_environments.android.action.adb_controller import ADBController
 from aworld.virtual_environments.android.action.executor import AndroidToolActionExecutor
 from aworld.virtual_environments.conf import AndroidToolConfig
 from aworld.core.envs.tool import ToolFactory, Tool
+from aworld.virtual_environments.utils import build_observation
 
 ALL_UNICODE_CHARS = frozenset(chr(i) for i in range(0x10FFFF + 1))
 
@@ -23,11 +25,11 @@ class AndroidTool(Tool[Observation, List[ActionModel]]):
 
     def __init__(self, conf: AndroidToolConfig, **kwargs):
         super(AndroidTool, self).__init__(conf, **kwargs)
-        self.controller = ADBController(avd_name=self.dict_conf.get('avd_name'),
-                                        adb_path=self.dict_conf.get('adb_path'),
-                                        emulator_path=self.dict_conf.get('emulator_path'))
+        self.controller = ADBController(avd_name=self.conf.get('avd_name'),
+                                        adb_path=self.conf.get('adb_path'),
+                                        emulator_path=self.conf.get('emulator_path'))
 
-        if self.dict_conf.get("custom_executor"):
+        if self.conf.get("custom_executor"):
             self.action_executor = AndroidToolActionExecutor(self.controller)
 
     def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
@@ -38,7 +40,11 @@ class AndroidTool(Tool[Observation, List[ActionModel]]):
         # snapshot screen and annotate
         xml, pic_base64 = self.get_observation()
         action_result_list = [ActionResult(content='start', keep=True)]
-        return Observation(dom_tree=xml, image=pic_base64, action_result=action_result_list), {}
+        return build_observation(observer=self.name(),
+                                 ability='',
+                                 dom_tree=xml,
+                                 image=pic_base64,
+                                 action_result=action_result_list), {}
 
     def step(self, action_list: List[ActionModel], **kwargs) -> Tuple[
         Observation, float, bool, bool, Dict[str, Any]]:
@@ -61,9 +67,14 @@ class AndroidTool(Tool[Observation, List[ActionModel]]):
                     self._finish = True
 
         info = {"exception": fail_error}
+        info.update(kwargs)
         xml, pic_base64 = self.get_observation()
 
-        return (Observation(dom_tree=xml, image=pic_base64, action_result=action_result_list),
+        return (build_observation(observer=self.name(),
+                                  ability=action_list[-1].action_name,
+                                  dom_tree=xml,
+                                  image=pic_base64,
+                                  action_result=action_result_list),
                 exec_state,
                 terminated,
                 kwargs.get("truncated", False),

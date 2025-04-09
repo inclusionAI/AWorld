@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+from aworld.logs.util import logger
+
 
 class InheritanceSingleton(object):
     _instance = {}
@@ -25,8 +27,7 @@ class InheritanceSingleton(object):
         if base not in cls._instance:
             cls._instance[base] = super(InheritanceSingleton, cls).__new__(cls)
         else:
-            got_instance = cls._instance[base]
-            raise ValueError("Singleton error: %s has been created", got_instance)
+            logger.warning(f"{base} has been created!")
         return cls._instance[base]
 
     @classmethod

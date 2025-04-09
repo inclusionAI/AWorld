@@ -19,9 +19,10 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 
 from typing import (
     Any,
-    Optional,
+    Optional, Union,
 )
 
+from aworld.config import ConfigDict
 from aworld.config.conf import AgentConfig
 from aworld.env_secrets import secrets
 from aworld.logs.util import logger
@@ -38,7 +39,7 @@ class DeepSeekR1ChatOpenAI(ChatOpenAI):
 
     async def ainvoke(
             self,
-            input: LanguageModelInput,
+            messages: LanguageModelInput,
             config: Optional[RunnableConfig] = None,
             *,
             stop: Optional[list[str]] = None,
@@ -64,7 +65,7 @@ class DeepSeekR1ChatOpenAI(ChatOpenAI):
 
     def invoke(
             self,
-            input: LanguageModelInput,
+            messages: LanguageModelInput,
             config: Optional[RunnableConfig] = None,
             *,
             stop: Optional[list[str]] = None,
@@ -124,34 +125,27 @@ class DeepSeekR1ChatOllama(ChatOllama):
         return AIMessage(content=content, reasoning_content=reasoning_content)
 
 
-PROVIDER_DISPLAY_NAMES = {
-    "openai": "OpenAI",
-    "azure_openai": "Azure OpenAI",
-    "anthropic": "Anthropic",
-    "deepseek": "DeepSeek",
-    "google": "Google",
-    "alibaba": "Alibaba",
-    "moonshot": "MoonShot"
-}
-
-
-def get_llm_model(conf: AgentConfig, **kwargs):
+def get_llm_model(conf: Union[ConfigDict, AgentConfig], **kwargs):
     provider = conf.llm_provider
+    if not provider:
+        raise ValueError("no provider")
     if provider not in ["ollama"]:
         env_var = f"{provider.upper()}_API_KEY"
         # special process
         env_key = os.getenv(env_var, "")
         if not env_key and env_var == 'CHATOPENAI_API_KEY':
-            env_key = os.getenv('CHATOPENAI_API_KEY', "")
+            env_var = 'OPENAI_API_KEY'
+            env_key = os.getenv('OPENAI_API_KEY', "")
 
         api_key = conf.llm_api_key if conf.llm_api_key else env_key
         if not api_key:
-            raise ValueError(f"Can not found {provider} api key! Please set the `{env_var}` "
-                             f"environment variable or provide it in the UI.")
+            raise ValueError(f"Can not found {provider} api key! "
+                             f"Please set the `{env_var}` environment variable or set `llm_api_key` in AgentConfig.")
         kwargs["api_key"] = api_key
         kwargs['base_url'] = conf.llm_base_url
+        kwargs['model_name'] = conf.llm_model_name
 
-    if provider == "anthropic":
+    if provider == "chatanthropic":
         if not kwargs.get("base_url", ""):
             base_url = "https://api.anthropic.com"
         else:
@@ -163,7 +157,7 @@ def get_llm_model(conf: AgentConfig, **kwargs):
             base_url=base_url,
             api_key=api_key or secrets.claude_api_key,
         )
-    elif provider == 'mistral':
+    elif provider == 'chatmistral':
         if not kwargs.get("base_url", ""):
             base_url = os.getenv("MISTRAL_ENDPOINT", "https://api.mistral.ai/v1")
         else:
@@ -179,31 +173,27 @@ def get_llm_model(conf: AgentConfig, **kwargs):
             base_url=base_url,
             api_key=api_key or secrets.mistral_api_key,
         )
-    elif provider == "openai":
+    elif "openai" in provider:
         if not kwargs.get("base_url", ""):
-            base_url = os.getenv("OPENAI_ENDPOINT")
+            base_url = os.getenv("OPENAI_ENDPOINT", "https://api.openai.com/v1")
         else:
             base_url = kwargs.get("base_url")
 
-        return OpenAI(
-            timeout=kwargs.get("timeout", 180),
-            max_retries=kwargs.get("max_retries", 3),
-            base_url=base_url,
-            api_key=api_key,
-        )
-    elif provider == "chatopenai":
-        if not kwargs.get("base_url", ""):
-            base_url = os.getenv("OPENAI_ENDPOINT")
+        if provider.startswith("chat"):
+            return ChatOpenAI(
+                model=kwargs.get("model_name", "gpt-4o"),
+                temperature=kwargs.get("temperature", 0.0),
+                base_url=base_url,
+                api_key=api_key or secrets.openai_api_key,
+            )
         else:
-            base_url = kwargs.get("base_url")
-
-        return ChatOpenAI(
-            model=kwargs.get("model_name", "gpt-4o"),
-            temperature=kwargs.get("temperature", 0.0),
-            base_url=base_url,
-            api_key=api_key or secrets.openai_api_key,
-        )
-    elif provider == "deepseek":
+            return OpenAI(
+                timeout=kwargs.get("timeout", 180),
+                max_retries=kwargs.get("max_retries", 3),
+                base_url=base_url,
+                api_key=api_key,
+            )
+    elif "deepseek" in provider:
         if not kwargs.get("base_url", ""):
             base_url = os.getenv("DEEPSEEK_ENDPOINT", "")
         else:
@@ -217,12 +207,18 @@ def get_llm_model(conf: AgentConfig, **kwargs):
                 api_key=api_key or secrets.deep_seek_api_key,
             )
         else:
-            return ChatOpenAI(
-                model=kwargs.get("model_name", "deepseek-chat"),
-                temperature=kwargs.get("temperature", 0.0),
-                base_url=base_url,
-                api_key=api_key or secrets.deep_seek_api_key,
-            )
+            if provider.startswith("chat"):
+                return ChatOpenAI(
+                    model=kwargs.get("model_name", "deepseek-chat"),
+                    temperature=kwargs.get("temperature", 0.0),
+                    base_url=base_url,
+                    api_key=api_key or secrets.deep_seek_api_key,
+                )
+            else:
+                return OpenAI(
+                    base_url=base_url,
+                    api_key=api_key or secrets.deep_seek_api_key,
+                )
     elif provider == "google":
         return ChatGoogleGenerativeAI(
             model=kwargs.get("model_name", "gemini-2.0-flash-exp"),
@@ -263,36 +259,36 @@ def get_llm_model(conf: AgentConfig, **kwargs):
             azure_endpoint=base_url,
             api_key=api_key or secrets.azure_openai_api_key,
         )
-    elif provider == "alibaba":
+    elif "alibaba" in provider:
         if not kwargs.get("base_url", ""):
             base_url = os.getenv("ALIBABA_ENDPOINT", "https://dashscope.aliyuncs.com/compatible-mode/v1")
         else:
             base_url = kwargs.get("base_url")
 
-        return ChatOpenAI(
-            model=kwargs.get("model_name", "qwen-plus"),
-            temperature=kwargs.get("temperature", 0.0),
-            base_url=base_url,
-            api_key=api_key or secrets.qwen_api_key,
-        )
-
-    elif provider == "moonshot":
-        return ChatOpenAI(
-            model=kwargs.get("model_name", "moonshot-v1-32k-vision-preview"),
-            temperature=kwargs.get("temperature", 0.0),
-            base_url=os.getenv("MOONSHOT_ENDPOINT"),
-            api_key=os.getenv("MOONSHOT_API_KEY") or secrets.moonshot_api_key,
-        )
+        if provider.startswith("chat"):
+            return ChatOpenAI(
+                model=kwargs.get("model_name", "qwen-plus"),
+                temperature=kwargs.get("temperature", 0.0),
+                base_url=base_url,
+                api_key=api_key or secrets.qwen_api_key,
+            )
+        else:
+            return OpenAI(
+                base_url=base_url,
+                api_key=api_key or secrets.qwen_api_key,
+            )
+    elif "moonshot" in provider:
+        if provider.startswith("chat"):
+            return ChatOpenAI(
+                model=kwargs.get("model_name", "moonshot-v1-32k-vision-preview"),
+                temperature=kwargs.get("temperature", 0.0),
+                base_url=os.getenv("MOONSHOT_ENDPOINT"),
+                api_key=os.getenv("MOONSHOT_API_KEY") or secrets.moonshot_api_key,
+            )
+        else:
+            return OpenAI(
+                base_url=os.getenv("MOONSHOT_ENDPOINT"),
+                api_key=os.getenv("MOONSHOT_API_KEY") or secrets.moonshot_api_key,
+            )
     else:
         raise ValueError(f"Unsupported provider: {provider}")
-
-
-# Predefined model names for common providers
-model_names = {
-    "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
-    "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini"],
-    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-    "ollama": ["qwen2.5:7b", "qwen2.5:14b", "qwen2.5:32b", "qwen2.5-coder:14b", "qwen2.5-coder:32b", "llama2:7b",
-               "deepseek-r1:14b", "deepseek-r1:32b"],
-    "alibaba": ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-long"],
-}

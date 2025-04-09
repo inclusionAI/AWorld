@@ -8,7 +8,7 @@ Most of the time, we directly use existing tools to build different types of age
 using frameworks makes it easy to write various agents.
 
 Detailed steps for building an agent:
-1. Register your agent to agent factory, and inherit `BaseAgent`
+1. Register your agent to agent factory, and inherit `Agent`
 2. Build tools with the description of their actions in __init__, such as variable `self.tool_desc` represents.
 3. Implement the `name` method as a name identifier for the agent
 4. Build roles messages for LLM input, variable `messages` represents in policy method.
@@ -24,8 +24,8 @@ import json
 from typing import Dict, Any, List, Union
 
 from aworld.config.conf import AgentConfig
-from aworld.core.agent.base import AgentFactory, BaseAgent
-from aworld.core.common import Agents, Observation, ActionModel, Tools
+from aworld.core.agent.base import AgentFactory, Agent
+from aworld.core.common import Observation, ActionModel
 from aworld.core.envs.tool_desc import get_tool_desc_by_name
 from aworld.models.utils import tool_desc_transform
 
@@ -55,7 +55,7 @@ Your output should be like the followings (at most 3 relevant pages from coa):
 
 # Step1
 @AgentFactory.register(name=Agents.SEARCH.value, desc="search agent")
-class SearchAgent(BaseAgent):
+class SearchAgent(Agent):
 
     def __init__(self, conf: AgentConfig, **kwargs):
         super(SearchAgent, self).__init__(conf, **kwargs)
@@ -131,8 +131,8 @@ On the basis of the above agent(SearchAgent), we provide a multi-agent example:
 from typing import Dict, Any, List, Union
 
 from aworld.config.conf import AgentConfig
-from aworld.core.agent.base import AgentFactory, BaseAgent
-from aworld.core.common import Agents, Observation, ActionModel
+from aworld.core.agent.base import AgentFactory, Agent
+from aworld.core.common import Observation, ActionModel
 
 summary_sys_prompt = "You are a helpful general summary agent."
 
@@ -147,7 +147,7 @@ Here are the content:
 
 # Step 1
 @AgentFactory.register(name=Agents.SUMMARY.value, desc="summary agent")
-class SummaryAgent(BaseAgent):
+class SummaryAgent(Agent):
 
     def __init__(self, conf: AgentConfig, **kwargs):
         super(SummaryAgent, self).__init__(conf, **kwargs)
@@ -195,7 +195,7 @@ The OPENAI_API_KEY and OPENAI_ENDPOINT can be used as a parameter, example in th
 
 from aworld.config.conf import AgentConfig
 from aworld.core.client import Client
-from aworld.core.swarm import Swarm
+from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 
 if __name__ == '__main__':

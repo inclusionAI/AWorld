@@ -13,12 +13,15 @@ from datetime import date, datetime
 from pydantic import BaseModel
 
 from aworld.config import ToolConfig
-from aworld.core.envs.tool_action import DocumentExecuteAction
-from aworld.core.common import Tools, Observation, ActionModel, ActionResult
+from aworld.config.common import Tools
+from aworld.config.tool_action import DocumentExecuteAction
+from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.envs.tool import ToolFactory, Tool
 from aworld.logs.util import logger
 from aworld.virtual_environments.document.utils import encode_image_from_file, encode_image_from_url
 from aworld.utils import import_package, import_packages
+from aworld.virtual_environments.utils import build_observation
+
 
 class InputDocument(BaseModel):
     document_path: str | None = None
@@ -56,18 +59,11 @@ class DocumentTool(Tool[Observation, ActionModel]):
 
         self.close()
         self.step_finished = True
-        return self._get_observation(), {}
+        return build_observation(observer=self.name(),
+                                 ability=DocumentExecuteAction.DOCUMENT_ANALYSIS.value.name), {}
 
     def init(self) -> None:
         self.initialized = True
-
-    def _get_observation(self):
-        return Observation(**{
-            'dom_tree': '',
-            'image': '',
-            'action_result': [],
-            'info': {}
-        })
 
     def close(self) -> None:
         if hasattr(self, 'context') and self.context:
@@ -80,7 +76,8 @@ class DocumentTool(Tool[Observation, ActionModel]):
         self.step_finished = False
         reward = 0.
         fail_error = ""
-        observation = self._get_observation()
+        observation = build_observation(observer=self.name(),
+                                        ability=DocumentExecuteAction.DOCUMENT_ANALYSIS.value.name)
         info = {}
         try:
             if not actions:
@@ -104,6 +101,7 @@ class DocumentTool(Tool[Observation, ActionModel]):
         finally:
             self.step_finished = True
         info["exception"] = fail_error
+        info.update(kwargs)
         return (observation, reward, kwargs.get("terminated", False),
                 kwargs.get("truncated", False), info)
 
@@ -126,7 +124,6 @@ class DocumentTool(Tool[Observation, ActionModel]):
                 else:
                     base64_image = encode_image_from_url(document_path)
                 self.content = f"data:image/jpeg;base64,{base64_image}"
-
 
             if any(document_path.endswith(ext) for ext in ["xls", "xlsx"]):
                 try:
@@ -327,7 +324,7 @@ class DocumentTool(Tool[Observation, ActionModel]):
                             return self.content, self.keyframes, error
                     except Exception as size_error:
                         logger.warning(f"Cannot get file size: {str(size_error)}")
-                    
+
                     try:
                         # Import required libraries
                         from pptx import Presentation
@@ -336,14 +333,14 @@ class DocumentTool(Tool[Observation, ActionModel]):
                     except ImportError as import_error:
                         error = f"Missing required libraries: {str(import_error)}. Please install: pip install python-pptx Pillow"
                         return self.content, self.keyframes, error
-                    
+
                     # Create temporary directory for images
                     try:
                         temp_dir = tempfile.mkdtemp()
                     except Exception as temp_dir_error:
                         error = f"Failed to create temporary directory: {str(temp_dir_error)}"
                         return self.content, self.keyframes, error
-                    
+
                     # Open presentation
                     try:
                         presentation = Presentation(document_path)
@@ -353,13 +350,13 @@ class DocumentTool(Tool[Observation, ActionModel]):
                         if total_slides == 0:
                             error = "PPTX file does not contain any slides"
                             return self.content, self.keyframes, error
-                        
+
                         # Process each slide
                         for i, slide in enumerate(presentation.slides):
 
                             # Generate temporary file path for current slide
-                            img_path = os.path.join(temp_dir, f"slide_{i+1}.jpg")
-                            
+                            img_path = os.path.join(temp_dir, f"slide_{i + 1}.jpg")
+
                             # Get slide dimensions
                             try:
                                 slide_width = presentation.slide_width
@@ -370,11 +367,11 @@ class DocumentTool(Tool[Observation, ActionModel]):
                                 # Convert to pixels (assuming 96 DPI)
                                 slide_width_px = int(slide_width / 914400 * 96 * 10)
                                 slide_height_px = int(slide_height / 914400 * 96 * 10)
-                                
+
                                 # Ensure dimensions are reasonable positive integers
                                 slide_width_px = max(1, min(slide_width_px, 4000))  # Limit max width to 4000px
                                 slide_height_px = max(1, min(slide_height_px, 3000))  # Limit max height to 3000px
-                                
+
                             except Exception as size_error:
                                 # Use default dimensions
                                 slide_width_px = 960  # Default width 960px
@@ -389,27 +386,29 @@ class DocumentTool(Tool[Observation, ActionModel]):
                                     slide_img = Image.new('RGB', (slide_width_px, slide_height_px), 'white')
                                     draw = ImageDraw.Draw(slide_img)
                                 except Exception as img_create_error:
-                                    logger.error(f"Slide {i+1} blank image creation failed: {str(img_create_error) or 'Unknown error'}")
+                                    logger.error(
+                                        f"Slide {i + 1} blank image creation failed: {str(img_create_error) or 'Unknown error'}")
                                     raise
-                                
+
                                 # Draw slide number
                                 try:
                                     font = ImageFont.load_default()
-                                    draw.text((20, 20), f"Slide {i+1}/{total_slides}", fill="black", font=font)
+                                    draw.text((20, 20), f"Slide {i + 1}/{total_slides}", fill="black", font=font)
                                 except Exception as font_error:
                                     logger.warning(f"Failed to draw slide number: {str(font_error) or 'Unknown error'}")
-                                
+
                                 # Record shape count
                                 try:
                                     shape_count = len(slide.shapes)
                                 except Exception as shape_count_error:
-                                    logger.warning(f"Failed to get slide {i+1} shape count: {str(shape_count_error) or 'Unknown error'}")
+                                    logger.warning(
+                                        f"Failed to get slide {i + 1} shape count: {str(shape_count_error) or 'Unknown error'}")
                                     shape_count = 0
-                                
+
                                 # Try to render shapes on image
                                 shape_success_count = 0
                                 shape_fail_count = 0
-                                
+
                                 try:
                                     for j, shape in enumerate(slide.shapes):
                                         try:
@@ -421,45 +420,53 @@ class DocumentTool(Tool[Observation, ActionModel]):
                                                     # Extract image from shape
                                                     image_stream = io.BytesIO(shape.image.blob)
                                                     img = Image.open(image_stream)
-                                                    
+
                                                     # Calculate position
                                                     left = shape.left
                                                     top = shape.top
-                                                    
+
                                                     # Paste image onto slide
                                                     slide_img.paste(img, (left, top))
                                                     shape_success_count += 1
                                                 except Exception as img_error:
-                                                    logger.warning(f"Failed to process image {j+1} in slide {i+1}: {str(img_error) or 'Unknown error'}")
+                                                    logger.warning(
+                                                        f"Failed to process image {j + 1} in slide {i + 1}: {str(img_error) or 'Unknown error'}")
                                                     if not str(img_error):
                                                         import traceback
-                                                        logger.warning(f"Image processing stack: {traceback.format_exc()}")
+                                                        logger.warning(
+                                                            f"Image processing stack: {traceback.format_exc()}")
                                                     shape_fail_count += 1
-                                            
+
                                             # Process text
                                             elif hasattr(shape, 'text') and shape.text:
                                                 try:
-                                                    text = shape.text[:30] + "..." if len(shape.text) > 30 else shape.text
+                                                    text = shape.text[:30] + "..." if len(
+                                                        shape.text) > 30 else shape.text
                                                     # Simple text rendering
                                                     text_left = shape.left
                                                     text_top = shape.top
-                                                    draw.text((text_left, text_top), shape.text, fill="black", font=font)
+                                                    draw.text((text_left, text_top), shape.text, fill="black",
+                                                              font=font)
                                                     shape_success_count += 1
                                                 except Exception as text_error:
-                                                    logger.warning(f"Failed to process text {j+1} in slide {i+1}: {str(text_error) or 'Unknown error'}")
+                                                    logger.warning(
+                                                        f"Failed to process text {j + 1} in slide {i + 1}: {str(text_error) or 'Unknown error'}")
                                                     if not str(text_error):
                                                         import traceback
-                                                        logger.warning(f"Text processing stack: {traceback.format_exc()}")
+                                                        logger.warning(
+                                                            f"Text processing stack: {traceback.format_exc()}")
                                                     shape_fail_count += 1
                                             else:
-                                                logger.info(f"Shape {j+1} in slide {i+1} is neither image nor text, skipping")
+                                                logger.info(
+                                                    f"Shape {j + 1} in slide {i + 1} is neither image nor text, skipping")
                                         except Exception as shape_error:
                                             if not str(shape_error):
                                                 import traceback
                                                 logger.warning(f"Shape processing stack: {traceback.format_exc()}")
                                             shape_fail_count += 1
                                 except Exception as shapes_iteration_error:
-                                    logger.error(f"Failed while iterating through shapes in slide {i+1}: {str(shapes_iteration_error) or 'Unknown error'}")
+                                    logger.error(
+                                        f"Failed while iterating through shapes in slide {i + 1}: {str(shapes_iteration_error) or 'Unknown error'}")
                                     if not str(shapes_iteration_error):
                                         import traceback
                                         logger.error(f"Shape iteration stack: {traceback.format_exc()}")
@@ -471,10 +478,11 @@ class DocumentTool(Tool[Observation, ActionModel]):
                                     # Check if image was saved successfully
                                     if not os.path.exists(img_path):
                                         raise ValueError(f"Saved image file does not exist: {img_path}")
-                                    
+
                                     file_size = os.path.getsize(img_path)
                                     if file_size == 0:
-                                        raise ValueError(f"Saved image file is empty: {img_path}, size: {file_size} bytes")
+                                        raise ValueError(
+                                            f"Saved image file is empty: {img_path}, size: {file_size} bytes")
 
                                     # Convert to base64
                                     try:
@@ -486,24 +494,24 @@ class DocumentTool(Tool[Observation, ActionModel]):
                                             import traceback
                                             logger.error(f"Base64 conversion stack: {traceback.format_exc()}")
                                         raise ValueError(f"Base64 conversion error: {error_msg}")
-                                    
+
                                 except Exception as save_error:
                                     error_msg = str(save_error) or "Unknown save error"
-                                    logger.error(f"Failed to save slide {i+1} as image: {error_msg}")
+                                    logger.error(f"Failed to save slide {i + 1} as image: {error_msg}")
                                     if not str(save_error):
                                         import traceback
                                         logger.error(f"Image save stack: {traceback.format_exc()}")
                                     raise ValueError(f"Image save error: {error_msg}")
-                                
+
                             except Exception as slide_render_error:
                                 error_msg = str(slide_render_error) or "Unknown rendering error"
-                                logger.error(f"Failed to render slide {i+1}: {error_msg}")
+                                logger.error(f"Failed to render slide {i + 1}: {error_msg}")
                                 if not str(slide_render_error):
                                     import traceback
                                     logger.error(f"Slide rendering stack: {traceback.format_exc()}")
                                 # Continue processing next slide, don't interrupt the entire process
                                 continue
-                        
+
                     except Exception as pptx_error:
                         error = f"Failed to process PPTX file: {str(pptx_error)}"
                         import traceback
@@ -519,13 +527,13 @@ class DocumentTool(Tool[Observation, ActionModel]):
                         os.rmdir(temp_dir)
                     except Exception as cleanup_error:
                         logger.warning(f"Failed to clean up temporary files: {str(cleanup_error)}")
-                    
+
                     if len(self.content) > 0:
                         logger.info(f"Extracted {len(self.content)} slides")
                     else:
                         error = error or "Could not extract any slides from PPTX file"
                         logger.error(error)
-                    
+
                 except Exception as outer_error:
                     error = f"Error occurred during PPTX file processing: {str(outer_error)}"
                     import traceback

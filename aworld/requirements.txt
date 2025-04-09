@@ -11,7 +11,6 @@ langchain-mistralai~=0.2.7
 langchain-google-genai~=2.1.0
 numpy~=2.2.3
 pandas~=2.2.3
-gradio~=5.20.1
 pydantic_settings~=2.8.0
 
 ######### [optional] #########
@@ -27,3 +26,5 @@ xls2xlsx~=0.2.0
 wikipedia~=1.4.0
 duckduckgo_search~=7.5.2
 langchain-experimental~=0.3.4
+mcp[cli]~=1.6.0
+baidusearch~=1.0.3

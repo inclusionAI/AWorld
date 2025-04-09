@@ -30,6 +30,10 @@ class BrowserToolConfig(ToolConfig):
     enable_recording: bool = False
     sleep_after_init: float = 0
     max_retry: int = 3
+    llm_config: ModelConfig = ModelConfig()
+    max_extract_content_input_tokens: int = 64000
+    max_extract_content_output_tokens: int = 5000
+    reuse: bool = True
 
 
 class AndroidToolConfig(ToolConfig):

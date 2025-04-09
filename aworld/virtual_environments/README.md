@@ -20,9 +20,10 @@ We provide a simple example for writing a tool:
 ```python
 from typing import List, Tuple, Dict, Any
 
-from aworld.core.common import ActionModel, Observation, Tools
+from aworld.config.common import Tools
+from aworld.config.tool_action import GymAction
+from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import ActionFactory, Tool, ToolFactory, ToolInput, AgentInput
-from aworld.core.envs.tool_action import GymAction
 from aworld.virtual_environments.action import ExecutableAction
 
 

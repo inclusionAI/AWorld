@@ -21,3 +21,4 @@ working_dir:
 enable_recording: False
 sleep_after_init: 0
 max_retry: 3
+reuse: True

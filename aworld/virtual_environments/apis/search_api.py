@@ -4,17 +4,19 @@
 import json
 from typing import List, Tuple, Dict, Any
 
+from aworld.config.common import Tools
 from aworld.config.conf import ToolConfig
 from aworld.core.envs.tool import Tool, ToolFactory
-from aworld.core.envs.tool_action import SearchAction
-from aworld.core.common import Observation, ActionModel, Tools, ActionResult
+from aworld.config.tool_action import SearchAction
+from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
+from aworld.virtual_environments.utils import build_observation
 
 
 @ToolFactory.register(name=Tools.SEARCH_API.value,
                       desc="search tool",
                       supported_action=SearchAction,
-                      conf_file_name=f'{Tools.SEARCH_API.value}_tool.yaml',)
+                      conf_file_name=f'{Tools.SEARCH_API.value}_tool.yaml')
 class SearchTool(Tool[Observation, List[ActionModel]]):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
         super(SearchTool, self).__init__(conf, **kwargs)
@@ -22,7 +24,9 @@ class SearchTool(Tool[Observation, List[ActionModel]]):
     def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         Observation, dict[str, Any]]:
         # from options obtain user query
-        return Observation(content=options.get("query", None) if options else None), {}
+        return build_observation(observer=self.name(),
+                                 ability='',
+                                 content=options.get("query", None) if options else None), {}
 
     def step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         reward = 0
@@ -54,13 +58,16 @@ class SearchTool(Tool[Observation, List[ActionModel]]):
                     self._finish = True
 
         info = {"exception": fail_error}
+        info.update(kwargs)
         if resp:
             resp = json.dumps(resp)
         else:
             resp = action_result[0].content
 
         action_result = [ActionResult(content=resp, keep=True, is_done=True)]
-        observation = Observation(content=resp)
+        observation = build_observation(observer=self.name(),
+                                        ability=action[-1].action_name,
+                                        content=resp)
         observation.action_result = action_result
         return (observation,
                 reward,

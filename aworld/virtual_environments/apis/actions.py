@@ -7,9 +7,10 @@ import requests
 
 from typing import Tuple, Any, List, Dict
 
-from aworld.core.envs.tool_action import SearchAction
+from aworld.config.common import Tools
+from aworld.config.tool_action import SearchAction
 from aworld.core.envs.action_factory import ActionFactory
-from aworld.core.common import ActionModel, ActionResult, Tools
+from aworld.core.common import ActionModel, ActionResult
 from aworld.logs.util import logger
 from aworld.virtual_environments.action import ExecutableAction
 
@@ -214,6 +215,34 @@ class SearchGoogle(ExecutableAction):
         except Exception as e:
             logger.error(f"Google search failed with error: {e}")
             responses.append({"error": f"google search failed with error: {e}"})
+
+        if len(responses) == 0:
+            responses.append(
+                "No relevant webpages found. Please simplify your query and expand the search space as much as you can, then try again.")
+        logger.debug(f"search result: {responses}")
+        responses.append(
+            "If the search result does not contain the information you want, please make reflection on your query: what went well, what didn't, then refine your search plan.")
+        return ActionResult(content=json.dumps(responses), keep=True, is_done=True), None
+
+
+@ActionFactory.register(name=SearchAction.BAIDU.value.name,
+                        desc=SearchAction.BAIDU.value.desc,
+                        tool_name=Tools.SEARCH_API.value)
+class SearchBaidu(ExecutableAction):
+    def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
+        from baidusearch.baidusearch import search
+
+        query = action.params.get("query")
+        num_results = action.params.get("num_results", 6)
+        num_results = int(num_results)
+        logger.debug(f"Calling search_baidu with query: {query}")
+
+        responses = []
+        try:
+            responses = search(query, num_results=num_results)
+        except Exception as e:
+            logger.error(f"Baidu search failed with error: {e}")
+            responses.append({"error": f"baidu search failed with error: {e}"})
 
         if len(responses) == 0:
             responses.append(

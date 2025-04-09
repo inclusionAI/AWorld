@@ -4,19 +4,21 @@
 import re
 import time
 import traceback
-from typing import Dict, Any, Optional, List, Union
+import json
+from typing import Dict, Any, Optional, List, Union, Tuple
 from dataclasses import dataclass, field
 
 from langchain_core.messages import HumanMessage, BaseMessage, AIMessage, ToolMessage
 from pydantic import ValidationError
 
-from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult
+from aworld.config.common import Agents, Tools
+from aworld.core.agent.base import AgentFactory, Agent, AgentResult
 from aworld.agents.browser.prompts import SystemPrompt
 from aworld.agents.browser.utils import convert_input_messages, extract_json_from_model_output, estimate_messages_tokens
 from aworld.agents.browser.common import AgentState, AgentStepInfo, AgentHistory, PolicyMetadata, AgentBrain
-from aworld.config.conf import AgentConfig
-from aworld.core.envs.tool_action import BrowserAction
-from aworld.core.common import Observation, ActionModel, Tools, ToolActionInfo, Agents, ActionResult
+from aworld.config.conf import AgentConfig, ConfigDict
+from aworld.config.tool_action import BrowserAction
+from aworld.core.common import Observation, ActionModel, ToolActionInfo, ActionResult
 from aworld.logs.util import logger
 from aworld.agents.browser.prompts import AgentMessagePrompt
 
@@ -24,26 +26,40 @@ from aworld.agents.browser.prompts import AgentMessagePrompt
 @dataclass
 class Trajectory:
     """A class to store agent history records, including all observations, info and AgentResult"""
-    history: List[tuple[Observation, Dict[str, Any], AgentResult]] = field(default_factory=list)
+    history: List[tuple[List[BaseMessage], Observation, Dict[str, Any], AIMessage, AgentResult]] = field(
+        default_factory=list)
 
-    def add_step(self, observation: Observation, info: Dict[str, Any], agent_result: AgentResult):
+    def add_step(self, input_messages: List[BaseMessage], observation: Observation, info: Dict[str, Any],
+                 output_message: AIMessage, agent_result: AgentResult):
         """Add a step to the history"""
-        self.history.append((observation, info, agent_result))
+        self.history.append((input_messages, observation, info, output_message, agent_result))
 
-    def get_history(self) -> List[tuple[Observation, Dict[str, Any], AgentResult]]:
+    def get_history(self) -> List[tuple[List[BaseMessage], Observation, Dict[str, Any], AIMessage, AgentResult]]:
         """Get the complete history"""
         return self.history
 
+    def save_history(self, file_path: str):
+        his_li = []
+        for input_messages, observation, info, output_message, agent_result in self.get_history():
+            llm_input = [{"type": input_message.type, "content": input_message.content} for input_message in
+                         input_messages]
+            llm_output = output_message.content
+            his_li.append({"llm_input": llm_input, "llm_output": llm_output})
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(his_li, f, ensure_ascii=False, indent=4)
+
 
 @AgentFactory.register(name=Agents.BROWSER.value, desc="browser agent")
-class BrowserAgent(BaseAgent):
-    def __init__(self, conf: AgentConfig, **kwargs):
+class BrowserAgent(Agent):
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(BrowserAgent, self).__init__(conf, **kwargs)
         self.state = AgentState()
-        self.settings = conf.model_dump()
-        if conf.llm_provider == 'openai':
-            conf.llm_provider = 'chatopenai'
+        self.settings = self.conf
+        provider = self.conf.llm_config.llm_provider if self.conf.llm_config.llm_provider else self.conf.llm_provider
+        self.conf.llm_config.llm_provider = "chat" + provider
 
+        self.save_file_path = self.conf.save_file_path
+        self.available_actions = self._build_action_prompt()
         # Note: Removed _message_manager initialization as it's no longer used
         # Initialize trajectory
         self.trajectory = Trajectory()
@@ -59,9 +75,6 @@ class BrowserAgent(BaseAgent):
         # _estimate_tokens_for_messages method now directly uses functions from utils.py
 
         self._init = True
-
-    def name(self) -> str:
-        return Agents.BROWSER.value
 
     def _build_action_prompt(self) -> str:
         def _prompt(info: ToolActionInfo) -> str:
@@ -109,6 +122,9 @@ class BrowserAgent(BaseAgent):
                     args = str(tool_call.get('args', {}))[:1000]
                     logger.info(f"[agent] Tool args: {args}...")
 
+    def save_process(self, file_path: str):
+        self.trajectory.save_history(file_path)
+
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None, **kwargs) -> Union[List[ActionModel], None]:
@@ -134,11 +150,12 @@ class BrowserAgent(BaseAgent):
         tokens = self._estimate_tokens_for_messages(input_messages)
 
         llm_result = None
+        output_message = None
         try:
             # Log the message sequence
             self._log_message_sequence(input_messages)
 
-            llm_result = self._do_policy(input_messages)
+            output_message, llm_result = self._do_policy(input_messages)
 
             if not llm_result:
                 logger.error("[agent] ❌ Failed to parse LLM response")
@@ -156,7 +173,7 @@ class BrowserAgent(BaseAgent):
             tool_action = llm_result.actions
 
             # Add the current step to the trajectory
-            self.trajectory.add_step(observation, info, llm_result)
+            self.trajectory.add_step(input_messages, observation, info, output_message, llm_result)
 
         except Exception as e:
             logger.warning(traceback.format_exc())
@@ -169,20 +186,18 @@ class BrowserAgent(BaseAgent):
                 current_state=AgentBrain(
                     evaluation_previous_goal="Failed due to error",
                     memory=f"Error occurred: {str(e)}",
+                    thought="Recover from error",
                     next_goal="Recover from error"
                 ),
                 actions=[]  # Empty actions list
             )
 
             # Add the error state to the trajectory
-            self.trajectory.add_step(observation, info, error_result)
+            self.trajectory.add_step(input_messages, observation, info, output_message, error_result)
 
             raise RuntimeError("Browser agent encountered exception while making the policy.", e)
         finally:
             if llm_result:
-                # Remove duplicate trajectory addition, as it's already been added in the try block
-                # self.trajectory.add_step(observation, info, llm_result) - Already executed in try block
-
                 # Only keep the history_item creation part
                 metadata = PolicyMetadata(
                     number=self.state.n_steps,
@@ -196,7 +211,7 @@ class BrowserAgent(BaseAgent):
 
         return tool_action
 
-    def _do_policy(self, input_messages: list[BaseMessage]) -> AgentResult:
+    def _do_policy(self, input_messages: list[BaseMessage]) -> Tuple[AIMessage, AgentResult]:
         THINK_TAGS = re.compile(r'<think>.*?</think>', re.DOTALL)
 
         def _remove_think_tags(text: str) -> str:
@@ -211,8 +226,9 @@ class BrowserAgent(BaseAgent):
 
             if not output_message or not output_message.content:
                 logger.warning("[agent] LLM returned empty response")
-                return AgentResult(current_state=AgentBrain(evaluation_previous_goal="", memory="", next_goal=""),
-                                   actions=[ActionModel(tool_name=Tools.BROWSER.value, action_name="stop")])
+                return output_message, AgentResult(
+                    current_state=AgentBrain(evaluation_previous_goal="", memory="", thought="", next_goal=""),
+                    actions=[ActionModel(tool_name=Tools.BROWSER.value, action_name="stop")])
         except:
             logger.error(f"[agent] Response content: {output_message}")
             raise RuntimeError('call llm fail, please check llm conf and network.')
@@ -220,7 +236,50 @@ class BrowserAgent(BaseAgent):
         if self.model_name == 'deepseek-reasoner':
             output_message.content = _remove_think_tags(output_message.content)
         try:
-            parsed_json = extract_json_from_model_output(output_message.content)
+            # Get max retries from config
+            max_retries = self.settings.get('max_llm_json_retries', 3)
+            retry_count = 0
+            json_parse_error = None
+
+            while retry_count < max_retries:
+                try:
+                    parsed_json = extract_json_from_model_output(output_message.content)
+                    # If parsing succeeds, break out of the retry loop
+                    json_parse_error = None
+                    break
+                except ValueError as e:
+                    # Store the error and retry
+                    json_parse_error = e
+                    retry_count += 1
+                    logger.warning(f"[agent] Failed to parse JSON (attempt {retry_count}/{max_retries}): {str(e)}")
+
+                    if retry_count < max_retries:
+                        # Add a reminder message about JSON format with specific structure guidance
+                        format_reminder = HumanMessage(
+                            content="Your responses must be always JSON with the specified format. Make sure your response includes a 'current_state' object with 'evaluation_previous_goal', 'memory', and 'next_goal' fields, and an 'action' array with the actions to perform. Do not include any explanatory text, only return the raw JSON.")
+                        retry_messages = input_messages.copy()
+                        retry_messages.append(format_reminder)
+
+                        # Retry with the updated messages
+                        logger.info(
+                            f"[agent] Retrying LLM invocation ({retry_count}/{max_retries}) with format reminder")
+                        output_message = self.llm.invoke(retry_messages)
+
+                        # Check for empty response during retry
+                        if not output_message or not output_message.content:
+                            logger.warning(
+                                f"[agent] LLM returned empty response on retry attempt {retry_count}/{max_retries}")
+                            # Continue to next retry instead of immediately returning
+                            continue
+
+                        if self.model_name == 'deepseek-reasoner':
+                            output_message.content = _remove_think_tags(output_message.content)
+
+            # If all retries failed, raise the last error
+            if json_parse_error:
+                logger.error(f"[agent] ❌ All {max_retries} attempts to parse JSON failed")
+                raise json_parse_error
+
             logger.info((f"llm response: {parsed_json}"))
             agent_brain = AgentBrain(**parsed_json['current_state'])
             actions = parsed_json.get('action')
@@ -229,9 +288,9 @@ class BrowserAgent(BaseAgent):
                 actions = parsed_json.get("actions")
             if not actions:
                 logger.warning("agent not policy  an action.")
-                return AgentResult(current_state=agent_brain,
-                                   actions=[ActionModel(tool_name=Tools.BROWSER.value,
-                                                        action_name="done")])
+                return output_message, AgentResult(current_state=agent_brain,
+                                                   actions=[ActionModel(tool_name=Tools.BROWSER.value,
+                                                                        action_name="done")])
 
             for action in actions:
                 if "action_name" in action:
@@ -251,7 +310,9 @@ class BrowserAgent(BaseAgent):
 
                         action_model = ActionModel(tool_name=Tools.BROWSER.value, action_name=k, params=v)
                         result.append(action_model)
-            return AgentResult(current_state=agent_brain, actions=result)
+                        if k == "done":
+                            self._finished = True
+            return output_message, AgentResult(current_state=agent_brain, actions=result)
         except (ValueError, ValidationError) as e:
             logger.warning(f'Failed to parse model output: {output_message} {str(e)}')
             raise ValueError('Could not parse response.')
@@ -283,6 +344,24 @@ class BrowserAgent(BaseAgent):
 
         self.state.history.history.append(history_item)
 
+    def _process_action_result(self, action_result, messages, tool_call=None):
+        """Helper method to process an action result and add appropriate messages"""
+        if action_result.content is not None:
+            messages.append(HumanMessage(content='Action result: ' + action_result.content))
+        elif action_result.error is not None:
+            # Assemble error message when error information exists
+            messages.append(HumanMessage(content='Action result: ' + action_result.error))
+            if tool_call is not None:
+                logger.warning(f"Action {tool_call} failed: {action_result.error}")
+            else:
+                logger.warning(f"Action failed: {action_result.error}")
+            # If there is an error but success is true, log the error and terminate the program as the result is invalid
+            if action_result.success is True:
+                error_msg = f"Invalid result: success=True but error message exists: {action_result.error}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+        return action_result.error is not None
+
     def build_messages_from_trajectory_and_observation(self, observation: Optional[Observation] = None) -> List[
         BaseMessage]:
         """
@@ -292,19 +371,26 @@ class BrowserAgent(BaseAgent):
             observation: Current observation object, if None current observation won't be added
         """
         messages = []
-
         # Add system message
         system_message = SystemPrompt(
-            action_description=self._build_action_prompt(),
             max_actions_per_step=self.settings.get('max_actions_per_step')
         ).get_system_message()
         if isinstance(system_message, tuple):
             system_message = system_message[0]
         messages.append(system_message)
 
+        tool_calling_method = self.settings.get("tool_calling_method")
+        llm_provider = self.settings.get("llm_provider")
+
+        if tool_calling_method == 'raw' or (tool_calling_method == 'auto' and (
+                llm_provider == 'deepseek-reasoner' or llm_provider.startswith('deepseek-r1'))):
+            message_context = f'\n\nAvailable actions: {self.available_actions}'
+        else:
+            message_context = None
+
         # Add task context (if any)
-        if self.settings.get('message_context'):
-            context_message = HumanMessage(content='Context for the task' + self.settings.message_context)
+        if message_context:
+            context_message = HumanMessage(content='Context for the task' + message_context)
             messages.append(context_message)
 
         # Add task message
@@ -325,6 +411,7 @@ class BrowserAgent(BaseAgent):
                     'current_state': {
                         'evaluation_previous_goal': 'Success - I opend the first page',
                         'memory': 'Starting with the new task. I have completed 1/10 steps',
+                        'thought': 'From the current page I can get information about all the companies.',
                         'next_goal': 'Click on company a',
                     },
                     'action': [{'click_element': {'index': 0}}],
@@ -350,29 +437,33 @@ class BrowserAgent(BaseAgent):
             filepaths_msg = HumanMessage(
                 content=f'Here are file paths you can use: {self.settings.get("available_file_paths")}')
             messages.append(filepaths_msg)
-
+        previous_action_entries = []
         # Add messages from the history trajectory
-        for obs, info, result in self.trajectory.get_history():
-            # Add observation message
-            step_info = AgentStepInfo(number=len(messages) - 7, max_steps=self.conf.max_steps)
-
-            # Build observation message
-            if hasattr(obs, 'dom_tree') and obs.dom_tree:
-                state_message = AgentMessagePrompt(
-                    obs,
-                    obs.action_result,
-                    include_attributes=self.settings.get('include_attributes'),
-                    step_info=step_info,
-                ).get_user_message(self.settings.get('use_vision'))
-                messages.append(state_message)
-            elif obs.content:
-                messages.append(HumanMessage(content=obs.content))
+        for input_msgs, obs, info, output_msg, llm_result in self.trajectory.get_history():
+            # Check the previous step's actionResult
+            has_error = False
+            if obs.action_result is not None:
+                # The previous action entries should match with action results
+                if len(previous_action_entries) == 0:
+                    # if previous_action_entries is empty，process action_result directly
+                    logger.info(
+                        f"History item with action_result count ({len(obs.action_result)}) with empty previous actions - skipping count check")
+                elif len(previous_action_entries) == len(obs.action_result):
+                    for i, one_action_result in enumerate(obs.action_result):
+                        has_error = self._process_action_result(one_action_result, messages,
+                                                                previous_action_entries[i]) or has_error
+                else:
+                    # If sizes don't match, this is a critical error
+                    error_msg = f"Action results count ({len(obs.action_result)}) doesn't match action entries count ({len(previous_action_entries)})"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
 
             # Add agent response
-            if result:
+            if llm_result:
                 # Create AI message
-                output_data = result.model_dump(mode='json', exclude_unset=True)
-                output_data["action"] = [{action.action_name: action.params} for action in result.actions]
+                output_data = llm_result.model_dump(mode='json', exclude_unset=True)
+                action_entries = [{action.action_name: action.params} for action in llm_result.actions]
+                output_data["action"] = action_entries
                 if "actions" in output_data:
                     del output_data["actions"]
 
@@ -386,7 +477,7 @@ class BrowserAgent(BaseAgent):
                         'type': 'tool_call',
                     }
                 ]
-
+                previous_action_entries = action_entries
                 ai_message = AIMessage(
                     content='',
                     tool_calls=tool_calls,
@@ -398,17 +489,40 @@ class BrowserAgent(BaseAgent):
 
         # Add current observation - using the passed observation parameter instead of self.state.current_observation
         if observation:
-            step_info = AgentStepInfo(number=self.state.n_steps, max_steps=self.conf.max_steps)
-            if hasattr(observation, 'dom_tree') and observation.dom_tree:
-                state_message = AgentMessagePrompt(
-                    observation,
-                    self.state.last_result,
-                    include_attributes=self.settings.get('include_attributes'),
-                    step_info=step_info,
-                ).get_user_message(self.settings.get('use_vision'))
-                messages.append(state_message)
-            elif observation.content:
+            # Check if the current observation has an action_result with error
+            has_error = False
+            if hasattr(observation, 'action_result') and observation.action_result is not None:
+                # Match action results with previous actions
+                if len(previous_action_entries) == 0:
+                    # if previous_action_entries is empty，process action_result directly
+                    logger.info(
+                        f"Current observation with action_result count ({len(observation.action_result)}) with empty previous actions - skipping count check")
+                elif len(previous_action_entries) == len(observation.action_result):
+                    for i, one_action_result in enumerate(observation.action_result):
+                        has_error = self._process_action_result(one_action_result, messages,
+                                                                previous_action_entries[i]) or has_error
+                else:
+                    # If sizes don't match, this is a critical error
+                    error_msg = f"Action results count ({len(observation.action_result)}) doesn't match action entries count ({len(previous_action_entries)})"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+
+            # If there's an error, append observation content outside the loop
+            if has_error and observation.content:
                 messages.append(HumanMessage(content=observation.content))
+            # If no error, process the observation normally
+            elif not has_error:
+                step_info = AgentStepInfo(number=self.state.n_steps, max_steps=self.conf.max_steps)
+                if hasattr(observation, 'dom_tree') and observation.dom_tree:
+                    state_message = AgentMessagePrompt(
+                        observation,
+                        self.state.last_result,
+                        include_attributes=self.settings.get('include_attributes'),
+                        step_info=step_info,
+                    ).get_user_message(self.settings.get('use_vision'))
+                    messages.append(state_message)
+                elif observation.content:
+                    messages.append(HumanMessage(content=observation.content))
 
         # Add special message for the last step
         # Note: Moved here from policy method to centralize all message building logic

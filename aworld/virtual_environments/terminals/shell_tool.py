@@ -7,11 +7,13 @@ import signal
 import sys
 from typing import Any, Dict, Tuple, List
 
+from aworld.config.common import Tools
 from aworld.config.conf import ToolConfig
-from aworld.core.envs.tool_action import ShellAction
-from aworld.core.common import ActionModel, Observation, ActionResult, Tools
+from aworld.config.tool_action import ShellAction
+from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.core.envs.tool import Tool, AgentInput, ToolFactory
 from aworld.logs.util import logger
+from aworld.virtual_environments.utils import build_observation
 
 
 @ToolFactory.register(name=Tools.SHELL.value,
@@ -32,10 +34,9 @@ class ShellTool(Tool[Observation, List[ActionModel]]):
         """
         super(ShellTool, self).__init__(conf, **kwargs)
         self.type = "function"
-        self.working_dir = self.dict_conf.get('working_dir')
-        self.env = self.dict_conf.get('env') if self.dict_conf.get('env') else os.environ.copy()
+        self.working_dir = self.conf.get('working_dir')
+        self.env = self.conf.get('env') if self.conf.get('env') else os.environ.copy()
         self.processes = []
-        self.step_finished = True
 
     def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         AgentInput, dict[str, Any]]:
@@ -51,18 +52,9 @@ class ShellTool(Tool[Observation, List[ActionModel]]):
         self.working_dir = None
         self.env = os.environ.copy()
         self.processes = []
-        self.step_finished = True
-        return None, {}
-
-    def finished(self) -> bool:
-        """
-        Check if the executor is finished
-        Args:
-            -
-        Returns:
-            bool: True if finished, False otherwise
-        """
-        return self.step_finished
+        self._finished = False
+        return build_observation(observer=self.name(),
+                                 ability=ShellAction.EXECUTE_SCRIPT.value.name), {}
 
     def close(self) -> None:
         """
@@ -87,7 +79,7 @@ class ShellTool(Tool[Observation, List[ActionModel]]):
         finally:
             # Clear process list
             self.processes = []
-            self.step_finished = True
+            self._finished = True
 
     def step(self,
              actions: list[ActionModel],
@@ -100,15 +92,11 @@ class ShellTool(Tool[Observation, List[ActionModel]]):
         Returns:
             Observation, float, bool, bool, dict[str, Any]: -
         """
-        self.step_finished = False
+        self._finished = False
         reward = 0
         fail_error = ""
-        observation: 'Observation' = Observation(**{
-            'dom_tree': '',
-            'image': '',
-            'action_result': [],
-            'info': {}
-        })
+        observation = build_observation(observer=self.name(),
+                                        ability=ShellAction.EXECUTE_SCRIPT.value.name)
         try:
             if not actions:
                 return (observation, reward,
@@ -116,11 +104,13 @@ class ShellTool(Tool[Observation, List[ActionModel]]):
                                    False), kwargs.get("truncated", False), {
                             "exception": "actions is empty"
                         })
+
             for action in actions:
                 cmd_string = action.params.get("command", "")
                 if not cmd_string:
                     continue
                 _, output, error = self.execute(cmd_string)
+
                 observation.content = output
                 observation.action_result.append(
                     ActionResult(is_done=True,
@@ -132,12 +122,15 @@ class ShellTool(Tool[Observation, List[ActionModel]]):
         except Exception as e:
             fail_error = str(e)
         finally:
-            self.step_finished = True
+            self._finished = True
 
-        return (observation, reward, kwargs.get("terminated", False),
-                kwargs.get("truncated", False), {
-                    "exception": fail_error
-                })
+        info = {"exception": fail_error}
+        info.update(kwargs)
+        return (observation,
+                reward,
+                kwargs.get("terminated", False),
+                kwargs.get("truncated", False),
+                info)
 
     def execute(self, script: str, capture_output: bool = True, timeout: int = 5):
         """

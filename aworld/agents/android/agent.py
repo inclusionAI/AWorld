@@ -4,47 +4,50 @@
 import json
 import time
 import traceback
-from typing import Dict, Any, Optional, List, Union
+from typing import Any, Dict, List, Optional, Union
 
-from langchain_core.messages import HumanMessage, BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from aworld.agents.android.prompts import SYSTEM_PROMPT, LAST_STEP_PROMPT
+from aworld.agents.android.prompts import LAST_STEP_PROMPT, SYSTEM_PROMPT
 from aworld.agents.android.utils import (
-    AgentState,
-    AgentSettings,
+    ActionResult,
+    AgentBrain,
     AgentHistory,
     AgentHistoryList,
-    ActionResult,
+    AgentSettings,
+    AgentState,
     PolicyMetadata,
-    AgentBrain,
     Trajectory,
 )
 from aworld.agents.browser.common import AgentStepInfo
-from aworld.config.conf import AgentConfig
-from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult
-from aworld.core.common import Observation, ActionModel, Tools, ToolActionInfo, Agents
-from aworld.core.envs.tool_action import AndroidAction
+from aworld.config.common import Agents, Tools
+from aworld.config.conf import AgentConfig, ConfigDict
+from aworld.config.tool_action import AndroidAction
+from aworld.core.agent.base import Agent, AgentFactory, AgentResult
+from aworld.core.common import ActionModel, Observation, ToolActionInfo
 from aworld.logs.util import logger
 
 
 @AgentFactory.register(name=Agents.ANDROID.value, desc="android agent")
-class AndroidAgent(BaseAgent):
-    def __init__(self, conf: AgentConfig, **kwargs):
+class AndroidAgent(Agent):
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(AndroidAgent, self).__init__(conf, **kwargs)
-        if self.conf.llm_provider == "openai":
-            self.conf.llm_provider = "chatopenai"
+        provider = (
+            self.conf.llm_config.llm_provider
+            if self.conf.llm_config.llm_provider
+            else self.conf.llm_provider
+        )
+        if provider == "openai":
+            self.conf.llm_config.llm_provider = "chatopenai"
         self._build_prompt()
         self.available_actions_desc = self._build_action_prompt()
         # Settings
-        self.settings = AgentSettings(**conf.model_dump())
+        self.settings = AgentSettings(**conf)
         # State
         self.state = AgentState()
         # History
         self.history = AgentHistoryList(history=[])
         self.trajectory = Trajectory(history=[])
-
-    def name(self) -> str:
-        return Agents.ANDROID.value
 
     def _build_action_prompt(self) -> str:
         def _prompt(info: ToolActionInfo) -> str:
@@ -77,6 +80,8 @@ class AndroidAgent(BaseAgent):
         last_step_msg = None
         if step_info and step_info.is_last_step():
             # Add last step warning if needed
+            last_step_msg = HumanMessage(content=LAST_STEP_PROMPT)
+            logger.info("Last step finishing up")
             last_step_msg = HumanMessage(content=LAST_STEP_PROMPT)
             logger.info("Last step finishing up")
 

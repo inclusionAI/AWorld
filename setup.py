@@ -220,7 +220,8 @@ setup(
             'virtual_environments/browsers/script/*.js',
             'dataset/gaia/gaia.npy',
             'requirements.txt',
-            'config/*.yaml'
+            'config/*.yaml',
+            'config/*.json'
         ]
     },
     license='MIT',

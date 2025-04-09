@@ -60,7 +60,7 @@ def _agent_desc():
         ability_dict["params"]["info"] = {
             "desc": "Some extended information provided to the agent for decision-making.",
             "type": "str",
-            "required": True
+            "required": False
         }
         abilities.append(ability_dict)
         agent_val_dict["abilities"] = abilities

@@ -3,12 +3,13 @@
 
 from typing import Dict, Any, Tuple, SupportsFloat, List, Union
 
-from pydantic import BaseModel
-
-from aworld.core.envs.tool_action import GymAction
-from aworld.core.common import Tools, Observation, ActionModel
+from aworld.config import ConfigDict, ToolConfig
+from aworld.config.common import Tools
+from aworld.config.tool_action import GymAction
+from aworld.core.common import Observation, ActionModel
 from aworld.core.envs.tool import Tool, ToolFactory
 from aworld.utils import import_package
+from aworld.virtual_environments.utils import build_observation
 
 
 class ActionType(object):
@@ -19,9 +20,9 @@ class ActionType(object):
 @ToolFactory.register(name=Tools.GYM.value,
                       desc="gym classic control game",
                       supported_action=GymAction,
-                      conf_file_name=f'{Tools.GYM.value}_tool.yaml',)
+                      conf_file_name=f'{Tools.GYM.value}_tool.yaml')
 class OpenAIGym(Tool[Observation, List[ActionModel]]):
-    def __init__(self, conf: Union[Dict[str, Any], BaseModel], **kwargs) -> None:
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         """Gym environment constructor.
 
         Args:
@@ -30,11 +31,11 @@ class OpenAIGym(Tool[Observation, List[ActionModel]]):
         """
         import_package('gymnasium')
         super(OpenAIGym, self).__init__(conf, **kwargs)
-        self.env_id = self.dict_conf.get("env_id")
-        self._render = self.dict_conf.get('render', True)
+        self.env_id = self.conf.get("env_id")
+        self._render = self.conf.get('render', True)
         if self._render:
-            kwargs['render_mode'] = self.dict_conf.get('render_mode', 'human')
-        self.env = self._gym_env_wrappers(self.env_id, self.dict_conf.get("wrappers", []), **kwargs)
+            kwargs['render_mode'] = self.conf.get('render_mode', 'human')
+        self.env = self._gym_env_wrappers(self.env_id, self.conf.get("wrappers", []), **kwargs)
         self.action_space = self.env.action_space
 
     def step(self, action: List[ActionModel], **kwargs) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
@@ -43,9 +44,15 @@ class OpenAIGym(Tool[Observation, List[ActionModel]]):
         action = action[0].params['result']
         action = OpenAIGym.transform_action(action=action)
         state, reward, terminal, truncate, info = self.env.step(action)
-        info['env_id'] = self.env_id
+        info.update(kwargs)
         self._finished = terminal
-        return (Observation(content=OpenAIGym.transform_state(state=state)),
+
+        return (build_observation(observer=self.name(),
+                                  ability=GymAction.PLAY.value.name,
+                                  content=OpenAIGym.transform_state(state=state),
+                                  env_id=self.env_id,
+                                  done=terminal,
+                                  **kwargs),
                 reward,
                 terminal,
                 truncate,
@@ -61,7 +68,11 @@ class OpenAIGym(Tool[Observation, List[ActionModel]]):
 
     def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[Any, Dict[str, Any]]:
         state = self.env.reset()
-        return Observation(content=OpenAIGym.transform_state(state=state)), {"env_id": self.env_id}
+        return build_observation(observer=self.name(),
+                                 ability=GymAction.PLAY.value.name,
+                                 content=OpenAIGym.transform_state(state=state),
+                                 env_id=self.env_id,
+                                 done=False), {}
 
     def _action_dim(self):
         from gymnasium import spaces

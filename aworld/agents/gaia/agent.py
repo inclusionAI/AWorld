@@ -5,33 +5,28 @@ import copy
 import json
 import time
 import traceback
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Union
 
-from aworld.core.agent.base import BaseAgent, AgentFactory
-from aworld.core.mcp.utils import mcp_tool_desc_transform
-from aworld.models.utils import tool_desc_transform
-from aworld.config.conf import AgentConfig
-from aworld.core.common import Observation, ActionModel, Agents, Tools
-from aworld.logs.util import logger
-from aworld.core.envs.tool_desc import get_tool_desc
 from aworld.agents.gaia.prompts import *
 from aworld.agents.gaia.utils import extract_pattern
+from aworld.config.common import Agents
+from aworld.config.conf import AgentConfig, ConfigDict
+from aworld.core.agent.base import Agent, AgentFactory, BaseAgent
+from aworld.core.common import ActionModel, Observation
+from aworld.core.envs.tool_desc import get_tool_desc
+from aworld.core.mcp.utils import mcp_tool_desc_transform
+from aworld.logs.util import logger
+from aworld.models.utils import tool_desc_transform
 
 
 @AgentFactory.register(name=Agents.EXECUTE.value, desc="execute agent")
-class ExecuteAgent(BaseAgent):
-    def __init__(self, conf: AgentConfig, **kwargs):
+class ExecuteAgent(Agent):
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(ExecuteAgent, self).__init__(conf, **kwargs)
         self.has_summary = False
         self.tools = tool_desc_transform(
             get_tool_desc(), tools=self.tool_names if self.tool_names else []
         )
-        # mcp
-        self.mcp_tools = asyncio.run(mcp_tool_desc_transform(self.mcp_servers))
-        self.tools = self.mcp_tools + self.tools
-
-    def name(self) -> str:
-        return Agents.EXECUTE.value
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
@@ -124,7 +119,10 @@ class ExecuteAgent(BaseAgent):
                 params = json.loads(tool_call.function.arguments)
                 res.append(
                     ActionModel(
-                        tool_name=tool_name, action_name=action_name, params=params,is_mcp=is_mcp
+                        tool_name=tool_name,
+                        action_name=action_name,
+                        params=params,
+                        is_mcp=is_mcp,
                     )
                 )
 
@@ -157,12 +155,9 @@ class ExecuteAgent(BaseAgent):
 
 
 @AgentFactory.register(name=Agents.PLAN.value, desc="plan agent")
-class PlanAgent(BaseAgent):
-    def __init__(self, conf: AgentConfig, **kwargs):
+class PlanAgent(Agent):
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(PlanAgent, self).__init__(conf, **kwargs)
-
-    def name(self) -> str:
-        return Agents.PLAN.value
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""

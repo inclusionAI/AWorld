@@ -9,8 +9,9 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Dict, Tuple, List
 
-from aworld.core.envs.tool_action import BrowserAction
-from aworld.core.common import Observation, ActionModel, ActionResult, Tools
+from aworld.config.common import Tools
+from aworld.config.tool_action import BrowserAction
+from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
 from aworld.core.envs.tool import action_executor, ToolFactory, AsyncTool
 from aworld.virtual_environments.browsers.action.executor import BrowserToolActionExecutor
@@ -18,6 +19,7 @@ from aworld.virtual_environments.browsers.util.dom import DomTree
 from aworld.virtual_environments.conf import BrowserToolConfig
 from aworld.virtual_environments.browsers.util.dom_build import async_build_dom_tree
 from aworld.utils import import_package
+from aworld.virtual_environments.utils import build_observation
 
 URL_MAX_LENGTH = 4096
 UTF8 = "".join(chr(x) for x in range(0, 55290))
@@ -35,8 +37,8 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
 
         self.initialized = False
         self._finish = False
-        self.record_trace = self.dict_conf.get("working_dir", False)
-        self.sleep_after_init = self.dict_conf.get("sleep_after_init", False)
+        self.record_trace = self.conf.get("working_dir", False)
+        self.sleep_after_init = self.conf.get("sleep_after_init", False)
         self.js_code = resources.read_text('virtual_environments.browsers.script', 'buildDomTree.js')
         self.cur_observation = None
         import_package("playwright")
@@ -54,17 +56,17 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
             await self.context.tracing.start(screenshots=True, snapshots=True)
 
         self.page = await self.context.new_page()
-        if self.dict_conf.get("custom_executor"):
+        if self.conf.get("custom_executor"):
             self.action_executor = BrowserToolActionExecutor(self)
         else:
             self.action_executor = action_executor
         self.initialized = True
 
     async def _create_browser(self):
-        browse_name = self.dict_conf.get("browse_name", "chromium")
+        browse_name = self.conf.get("browse_name", "chromium")
         browse = getattr(self.playwright, browse_name)
-        cdp_url = self.dict_conf.get("cdp_url")
-        wss_url = self.dict_conf.get("wss_url")
+        cdp_url = self.conf.get("cdp_url")
+        wss_url = self.conf.get("wss_url")
         if cdp_url:
             if browse_name != "chromium":
                 logger.warning(f"{browse_name} unsupported CDP, will use chromium browser")
@@ -75,10 +77,10 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
             logger.info(f"Connecting to remote browser via wss {wss_url}")
             browser = await browse.connect(wss_url)
         else:
-            headless = self.dict_conf.get("headless", False)
-            slow_mo = self.dict_conf.get("slow_mo", 0)
+            headless = self.conf.get("headless", False)
+            slow_mo = self.conf.get("slow_mo", 0)
             disable_security_args = []
-            if self.dict_conf.get('disable_security', False):
+            if self.conf.get('disable_security', False):
                 disable_security_args = ['--disable-web-security',
                                          '--disable-site-isolation-trials',
                                          '--disable-features=IsolateOrigins,site-per-process']
@@ -101,7 +103,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
                 headless=headless,
                 slow_mo=slow_mo,
                 args=args,
-                proxy=self.dict_conf.get('proxy'),
+                proxy=self.conf.get('proxy'),
             )
         return browser
 
@@ -110,39 +112,39 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
         from playwright.async_api import ViewportSize
 
         browser = self.browser
-        if self.dict_conf.get("cdp_url") and len(browser.contexts) > 0:
+        if self.conf.get("cdp_url") and len(browser.contexts) > 0:
             context = browser.contexts[0]
         else:
-            viewport_size = ViewportSize(width=self.dict_conf.get("width", 1280),
-                                         height=self.dict_conf.get("height", 720))
-            disable_security = self.dict_conf.get('disable_security', False)
+            viewport_size = ViewportSize(width=self.conf.get("width", 1280),
+                                         height=self.conf.get("height", 720))
+            disable_security = self.conf.get('disable_security', False)
 
             context = await browser.new_context(viewport=viewport_size,
                                                 no_viewport=False,
-                                                user_agent=self.dict_conf.get('user_agent'),
+                                                user_agent=self.conf.get('user_agent'),
                                                 java_script_enabled=True,
                                                 bypass_csp=disable_security,
                                                 ignore_https_errors=disable_security,
-                                                record_video_dir=self.dict_conf.get('working_dir'),
+                                                record_video_dir=self.conf.get('working_dir'),
                                                 record_video_size=viewport_size,
-                                                locale=self.dict_conf.get('locale'),
-                                                storage_state=self.dict_conf.get("storage_state", None),
-                                                geolocation=self.dict_conf.get("geolocation", None),
+                                                locale=self.conf.get('locale'),
+                                                storage_state=self.conf.get("storage_state", None),
+                                                geolocation=self.conf.get("geolocation", None),
                                                 device_scale_factor=1)
-            if "chromium" == self.dict_conf.get("browse_name", "chromium"):
+            if "chromium" == self.conf.get("browse_name", "chromium"):
                 await context.grant_permissions(['camera', 'microphone'])
 
-        if self.dict_conf.get('trace_path'):
+        if self.conf.get('trace_path'):
             await context.tracing.start(screenshots=True, snapshots=True, sources=True)
 
-        cookie_file = self.dict_conf.get('cookies_file')
+        cookie_file = self.conf.get('cookies_file')
         if cookie_file and os.path.exists(cookie_file):
             with open(cookie_file, 'r') as read:
                 cookies = json.loads(read.read())
                 await context.add_cookies(cookies)
                 logger.info(f'Cookies load from {cookie_file} finished')
 
-        if self.dict_conf.get('private'):
+        if self.conf.get('private'):
             js = resources.read_text("virtual_environments.browsers.script", "stealth.min.js")
             await context.add_init_script(js)
 
@@ -185,13 +187,13 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
         info = {"pixels_above": pixels_above,
                 "pixels_below": pixels_below,
                 "url": self.page.url}
-        return Observation(dom_tree=dom_tree, image=image, info=info)
+        return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
 
     async def _parse_dom_tree(self) -> DomTree:
         args = {
-            'doHighlightElements': self.dict_conf.get("do_highlight", True),
-            'focusHighlightIndex': self.dict_conf.get("focus_highlight", -1),
-            'viewportExpansion': self.dict_conf.get("viewport_expansion", 0),
+            'doHighlightElements': self.conf.get("do_highlight", True),
+            'focusHighlightIndex': self.conf.get("focus_highlight", -1),
+            'viewportExpansion': self.conf.get("viewport_expansion", 0),
             'debugMode': logger.getEffectiveLevel() == 10,
         }
         element_tree, element_map = await async_build_dom_tree(self.page, self.js_code, args)
@@ -218,6 +220,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
 
         observation = await self._get_observation()
         observation.action_result = [ActionResult(content='start', keep=True)]
+        observation.ability = ''
         self.cur_observation = observation
         return observation, {}
 
@@ -242,6 +245,10 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
         if not self.initialized:
             raise RuntimeError("Call init first before calling step.")
 
+        if not action:
+            logger.warning(f"{self.name()} has no action")
+            return build_observation(observer=self.name(), ability='', content='no action'), 0., False, False, {}
+
         reward = 0
         fail_error = ""
         action_result = None
@@ -259,6 +266,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
         try:
             action_result, self.page = await self.action_executor.async_execute_action(action,
                                                                                        observation=self.cur_observation,
+                                                                                       llm_config=self.conf.llm_config
                                                                                        **kwargs)
             reward = 1
         except Exception as e:
@@ -295,6 +303,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
             # normal observation
             observation = await self._get_observation()
             observation.action_result = action_result
+            observation.ability = action[-1].action_name
             self.cur_observation = observation
             return (observation,
                     reward,

@@ -15,51 +15,36 @@ class ActionResult(BaseModel):
     content: str = None
     error: str = None
     keep: bool = False
-
-
-# 在现有的 Tools 枚举类中添加 VIDEO_ANALYSIS
-class Tools(Enum):
-    """Tool list supported in the framework."""
-
-    BROWSER = "browser"
-    ANDROID = "android"
-    GYM = "openai_gym"
-    SEARCH_API = "search_api"
-    SHELL = "shell"
-    PYTHON_EXECUTE = "python_execute"
-    CODE_EXECUTE = "code_execute"
-    FILE = "file"
-    IMAGE_ANALYSIS = "image_analysis"
-    AUDIO_ANALYSIS = "audio_analysis"
-    VIDEO_ANALYSIS = "video_analysis"
-    DOCUMENT_ANALYSIS = "document_analysis"
-
-
-class Agents(Enum):
-    """Tool list supported in the framework."""
-
-    BROWSER = "browser_agent"
-    ANDROID = "android_agent"
-    SEARCH = "search_agent"
-    CODE_EXECUTE = "code_execute_agent"
-    FILE = "file_agent"
-    IMAGE_ANALYSIS = "image_analysis_agent"
-    SHELL = "shell_agent"
-    DOCUMENT = "document_agent"
-    GYM = "gym_agent"
-    PLAN = "plan_agent"
-    EXECUTE = "execute_agent"
-    SUMMARY = "summary_agent"
+    action_name: str = None
+    tool_name: str = None
 
 
 class Observation(BaseModel):
+    """Observation information obtained from the tools.
+
+    It can be an agent(as a tool) in the swarm or a tool in the virtual environment.
+    """
+
+    # default is None, means the main virtual environment or swarm
+    container_id: str = None
+    # Observer who obtains observation, default is None for compatible, means an agent name or a tool name
+    observer: str = None
+    # default is None for compatible, means with its action/ability name of an agent or a tool
+    # NOTE: The only ability of an agent as a tool is handoffs
+    ability: str = None
+    # The agent wants the observation to be created, default is None for compatible.
+    from_agent_name: str = None
+    # To which agent should the observation be given, default is None for compatible.
+    to_agent_name: str = None
+    # general info for agent
+    content: Any = None
     # dom_tree is a str or DomTree object
     dom_tree: Union[str, Any] = None
     image: str = None  # base64
-    content: Any = None
-    action_result: List[ActionResult] = None
-    info: Dict[str, Any] = None
-    key_frame: List[str] = []
+    action_result: List[ActionResult] = []
+    # for video or image list
+    images: List[str] = []
+    info: Dict[str, Any] = {}
 
 
 class ParamInfo(BaseModel):
@@ -77,8 +62,6 @@ class ToolActionInfo(BaseModel):
 
 
 class ActionModel(BaseModel):
-    """The unified model of BaseAgent response can be provided to the agent, or tool actions in environmental."""
-
     tool_name: str = None
     # agent name
     agent_name: str = None
@@ -86,4 +69,14 @@ class ActionModel(BaseModel):
     action_name: str = None
     params: Dict[str, Any] = {}
     policy_info: Any = None
-    is_mcp: bool = False
+
+
+class AgentPolicy(BaseModel):
+    """The unified model of Agent response can be provided to the agent, or tool actions in environmental."""
+
+    # decision to agent policy
+    actions: List[ActionModel]
+    # which agent made the policy
+    name: str
+    # belongs to which swarm
+    swarm_id: str = None
