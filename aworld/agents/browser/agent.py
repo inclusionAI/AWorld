@@ -146,6 +146,7 @@ class BrowserAgent(BaseAgent):
                 raise RuntimeError('call llm fail, please check llm conf and network.')
             finally:
                 self.save_process(self.save_file_path)
+                self._init = False
 
         start_time = time.time()
 
@@ -316,6 +317,19 @@ class BrowserAgent(BaseAgent):
                 output_data = result.model_dump(mode='json', exclude_unset=True)
                 messages.append(HumanMessage(content=f"history step {his_step+1}:\n"+json.dumps(output_data, indent=4)))
                 his_step+=1
+        # Add current observation - using the passed observation parameter instead of self.state.current_observation
+        if observation:
+            step_info = AgentStepInfo(number=self.state.n_steps, max_steps=self.conf.max_steps)
+            if hasattr(observation, 'dom_tree') and observation.dom_tree:
+                state_message = AgentMessagePrompt(
+                    observation,
+                    self.state.last_result,
+                    include_attributes=self.settings.get('include_attributes'),
+                    step_info=step_info,
+                ).get_user_message(self.settings.get('use_vision'))
+                messages.append(state_message)
+            elif observation.content:
+                messages.append(HumanMessage(content=observation.content))
 
         return messages
 
