@@ -136,34 +136,34 @@ if __name__ == '__main__':
         try:
             result = client.submit(task=[task])
             answer = result['task_0']['answer']
+            logger.info(f"Task completed: {result['success']}")
+            logger.info(f"Time cost: {result['time_cost']}")
+            logger.info(f"Task Answer: {answer}")
+            _result_info = {
+                "task_id": sample["task_id"],
+                "question": sample["Question"],
+                "level": sample["Level"],
+                "model_answer": answer,
+                "ground_truth": sample["Final answer"],
+                "score": question_scorer(answer, sample["Final answer"]),
+            }
+            _results.append(_result_info)
+            logger.info(_result_info)
         except Exception as e:
             logger.info(f"Task failed: {e}")
         finally:
             browser_tool.close()
 
-        # logger.info(f"Task completed: {result['success']}")
-        # logger.info(f"Time cost: {result['time_cost']}")
-        # logger.info(f"Task Answer: {answer}")
-
-
-        # # 记录结果
-        # _result_info = {
-        #     "task_id": sample["task_id"],
-        #     "question": sample["Question"],
-        #     "level": sample["Level"],
-        #     "model_answer": answer,
-        #     "ground_truth": sample["Final answer"],
-        #     "score": question_scorer(answer, sample["Final answer"]),
-        # }
-        # _results.append(_result_info)
-        # logger.info(_result_info)
+        
+        # 记录结果
+        
         if idx>=2:
             break
-        # with open(save_path, 'w') as f:
-        #     json.dump(_results, f, indent=4, ensure_ascii=False)
+        with open(save_path, 'w') as f:
+            json.dump(_results, f, indent=4, ensure_ascii=False)
 
 
-    # score_dict = _generate_summary(_results)
-    # print(score_dict)
-    # with open(save_score_path, 'w') as f:
-    #     json.dump(score_dict, f, indent=4, ensure_ascii=False)
+    score_dict = _generate_summary(_results)
+    print(score_dict)
+    with open(save_score_path, 'w') as f:
+        json.dump(score_dict, f, indent=4, ensure_ascii=False)
