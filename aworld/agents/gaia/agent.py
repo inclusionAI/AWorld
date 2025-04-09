@@ -4,17 +4,17 @@ import copy
 import json
 import time
 import traceback
-from typing import Dict, Any, List, Union
+from typing import Any, Dict, List, Union
 
-from aworld.config.common import Agents
-from aworld.core.agent.base import Agent, AgentFactory
-from aworld.models.utils import tool_desc_transform
-from aworld.config.conf import AgentConfig, ConfigDict
-from aworld.core.common import Observation, ActionModel
-from aworld.logs.util import logger
-from aworld.core.envs.tool_desc import get_tool_desc
 from aworld.agents.gaia.prompts import *
 from aworld.agents.gaia.utils import extract_pattern
+from aworld.config.common import Agents
+from aworld.config.conf import AgentConfig, ConfigDict
+from aworld.core.agent.base import Agent, AgentFactory
+from aworld.core.common import ActionModel, Observation
+from aworld.core.envs.tool_desc import get_tool_desc
+from aworld.logs.util import logger
+from aworld.models.utils import tool_desc_transform
 
 
 @AgentFactory.register(name=Agents.EXECUTE.value, desc="execute agent")
@@ -22,8 +22,7 @@ class ExecuteAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(ExecuteAgent, self).__init__(conf, **kwargs)
         self.has_summary = False
-        self.tools = tool_desc_transform(get_tool_desc(),
-                                         tools=self.tool_names if self.tool_names else [])
+        self.desc_transform()
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
@@ -31,38 +30,46 @@ class ExecuteAgent(Agent):
         self.trajectory = []
         self.system_prompt = execute_system_prompt.format(task=self.task)
 
-    def policy(self,
-               observation: Observation,
-               info: Dict[str, Any] = None,
-               **kwargs) -> List[ActionModel] | None:
-        start_time = time.time()
+    def policy(
+        self, observation: Observation, info: Dict[str, Any] = None, **kwargs
+    ) -> List[ActionModel] | None:
         content = observation.content
 
         llm_result = None
-        ## build input of llm
+        # build input of llm
         input_content = [
-            {'role': 'system', 'content': self.system_prompt},
+            {"role": "system", "content": self.system_prompt},
         ]
         for traj in self.trajectory:
             input_content.append(traj[0].content)
             if traj[-1].choices[0].message.tool_calls is not None:
                 input_content.append(
-                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].choices[0].message.tool_calls})
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": traj[-1].choices[0].message.tool_calls,
+                    }
+                )
             else:
-                input_content.append({'role': 'assistant', 'content': traj[-1].choices[0].message.content})
+                input_content.append(
+                    {
+                        "role": "assistant",
+                        "content": traj[-1].choices[0].message.content,
+                    }
+                )
 
         if content is None:
             content = observation.action_result[0].error
         if not self.trajectory:
-            message = {'role': 'user', 'content': content}
+            message = {"role": "user", "content": content}
         else:
             tool_id = None
             if self.trajectory[-1][-1].choices[0].message.tool_calls:
                 tool_id = self.trajectory[-1][-1].choices[0].message.tool_calls[0].id
             if tool_id:
-                message = {'role': 'tool', 'content': content, 'tool_call_id': tool_id}
+                message = {"role": "tool", "content": content, "tool_call_id": tool_id}
             else:
-                message = {'role': 'user', 'content': content}
+                message = {"role": "user", "content": content}
         input_content.append(message)
 
         tool_calls = []
@@ -70,7 +77,7 @@ class ExecuteAgent(Agent):
             llm_result = self.llm.chat.completions.create(
                 messages=input_content,
                 model=self.model_name,
-                **{'temperature': 0, 'tools': self.tools},
+                **{"temperature": 0, "tools": self.tools},
             )
             logger.info(f"Execute response: {llm_result.choices[0].message}")
             content = llm_result.choices[0].message.content
@@ -97,7 +104,11 @@ class ExecuteAgent(Agent):
                 tool_name = tool_action_name.split("__")[0]
                 action_name = tool_action_name.split("__")[1]
                 params = json.loads(tool_call.function.arguments)
-                res.append(ActionModel(tool_name=tool_name, action_name=action_name, params=params))
+                res.append(
+                    ActionModel(
+                        tool_name=tool_name, action_name=action_name, params=params
+                    )
+                )
 
         if res:
             res[0].policy_info = content
@@ -107,12 +118,20 @@ class ExecuteAgent(Agent):
             if self.has_summary:
                 policy_info = extract_pattern(content, "final_answer")
                 if policy_info:
-                    res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=policy_info))
+                    res.append(
+                        ActionModel(
+                            agent_name=Agents.PLAN.value, policy_info=policy_info
+                        )
+                    )
                     self._finished = True
                 else:
-                    res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=content))
+                    res.append(
+                        ActionModel(agent_name=Agents.PLAN.value, policy_info=content)
+                    )
             else:
-                res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=content))
+                res.append(
+                    ActionModel(agent_name=Agents.PLAN.value, policy_info=content)
+                )
                 self.has_summary = True
 
         logger.info(f">>> execute result: {res}")
@@ -134,29 +153,38 @@ class PlanAgent(Agent):
         self.first_prompt = init_prompt
         self.first = True
 
-    def policy(self,
-               observation: Observation,
-               info: Dict[str, Any] = None,
-               **kwargs) -> List[ActionModel] | None:
+    def policy(
+        self, observation: Observation, info: Dict[str, Any] = None, **kwargs
+    ) -> List[ActionModel] | None:
         llm_result = None
         input_content = [
-            {'role': 'system', 'content': self.system_prompt},
+            {"role": "system", "content": self.system_prompt},
         ]
         # build input of llm based history
         for traj in self.trajectory:
-            input_content.append({'role': 'user', 'content': traj[0].content})
+            input_content.append({"role": "user", "content": traj[0].content})
             if traj[-1].choices[0].message.tool_calls is not None:
                 input_content.append(
-                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].choices[0].message.tool_calls})
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": traj[-1].choices[0].message.tool_calls,
+                    }
+                )
             else:
-                input_content.append({'role': 'assistant', 'content': traj[-1].choices[0].message.content})
+                input_content.append(
+                    {
+                        "role": "assistant",
+                        "content": traj[-1].choices[0].message.content,
+                    }
+                )
 
         message = observation.content
         if self.first_prompt:
             message = self.first_prompt
             self.first_prompt = None
 
-        input_content.append({'role': 'user', 'content': message})
+        input_content.append({"role": "user", "content": message})
         try:
             llm_result = self.llm.chat.completions.create(
                 messages=input_content,
@@ -186,5 +214,4 @@ class PlanAgent(Agent):
 
         self.first = False
         logger.info(f">>> plan result: {content}")
-        return [ActionModel(agent_name=Agents.EXECUTE.value,
-                            policy_info=content)]
+        return [ActionModel(agent_name=Agents.EXECUTE.value, policy_info=content)]
