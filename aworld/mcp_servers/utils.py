@@ -127,3 +127,12 @@ def handle_llm_response(response_content: str, result_key: str) -> str:
     if not result:
         raise ValueError(f"No {result_key} in response.")
     return json.dumps(result, ensure_ascii=False)
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    from aworld.mcp.utils import mcp_tool_desc_transform
+
+    mcp_tools = asyncio.run(mcp_tool_desc_transform(["image"]))
+    logger.success(f"{json.dumps(mcp_tools, indent=4, ensure_ascii=False)}")

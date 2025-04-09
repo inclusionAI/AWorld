@@ -98,7 +98,7 @@ if __name__ == "__main__":
                 "video",
                 "document",
                 "search",
-                # "playwright",
+                "playwright",
             ],
         )
 
