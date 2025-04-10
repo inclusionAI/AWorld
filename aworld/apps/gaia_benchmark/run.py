@@ -22,6 +22,8 @@ from aworld.core.common import Agents, Tools
 import os
 GOOGLE_API_KEY = ""
 GOOGLE_ENGINE_ID = ""
+GOOGLE_API_KEY="AIzaSyBz68rKBQNmUV-0zM8KMqiK6qrhF-JuK_k" ## zhuige
+GOOGLE_ENGINE_ID="c790a773fba27404b"
 os.environ['GOOGLE_API_KEY'] = GOOGLE_API_KEY
 os.environ['GOOGLE_ENGINE_ID'] = GOOGLE_ENGINE_ID
 llm_api_key="dummy-key"
@@ -38,7 +40,7 @@ if __name__ == '__main__':
     dataset = GAIABenchmark(gaia_dir).load()['valid']
 
     # 读取json直接获取数据
-    path = '~/doc_code_gaia.json'
+    path = '/Users/zhuige/Documents/llm/agent/projects/web_understanding/datasets/GAIA/other_zhuige_0_50.json'
     with open(path, 'r') as f:
         dataset = json.load(f)
 
@@ -130,7 +132,7 @@ if __name__ == '__main__':
 
         # Create swarm for multi-agents
         # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
-        swarm = Swarm((agent1, agent2), (agent2, browser_agent))
+        swarm = Swarm((agent1, agent2), (agent2, browser_agent),max_steps=45)
         browser_tool = ToolFactory(Tools.BROWSER.value, conf=browser_tool_config)
         task = Task(input=question, swarm=swarm, conf=TaskConfig(),tools=[browser_tool])
 

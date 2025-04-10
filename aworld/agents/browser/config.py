@@ -22,3 +22,4 @@ class BrowserAgentConfig(AgentConfig):
 	override_system_message: Optional[str] = None
 	extend_system_message: Optional[str] = None
 	tool_calling_method: Optional[ToolCallingMethod] = 'auto'
+	save_file_path: Optional[str] = None

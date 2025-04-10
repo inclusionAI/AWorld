@@ -51,7 +51,7 @@ class BrowserAgent(BaseAgent):
         super(BrowserAgent, self).__init__(conf, **kwargs)
         self.state = AgentState()
         self.settings = conf.model_dump()
-        self.save_file_path=kwargs.get("save_file_path", "browser_agent_history3.json")
+        self.save_file_path=self.settings.get("save_file_path", "browser_agent_history.json")
         if conf.llm_provider == 'openai':
             conf.llm_provider = 'chatopenai'
         # raw actions list
@@ -60,7 +60,6 @@ class BrowserAgent(BaseAgent):
         # Initialize trajectory
         self.trajectory = Trajectory()
         self._init = False
-        self._finished=True
 
     def reset(self, options: Dict[str, Any]):
         super(BrowserAgent, self).reset(options)
@@ -71,7 +70,7 @@ class BrowserAgent(BaseAgent):
 
         # Note: Removed _message_manager initialization as it's no longer used
         # _estimate_tokens_for_messages method now directly uses functions from utils.py
-
+        self._finished=True
         self._init = True
 
     def name(self) -> str:

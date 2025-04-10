@@ -101,8 +101,8 @@ class GymAction(ToolAction):
 
 class BrowserAction(ToolAction):
     """Definition of Browser tool supported action."""
-    NONE = ToolActionInfo(name="none",
-                          desc="Do nothing")
+    # NONE = ToolActionInfo(name="none",
+    #                       desc="Do nothing")
     GO_TO_URL = ToolActionInfo(name="go_to_url",
                                input_params={"url": ParamInfo(name="url",
                                                               type="str",
@@ -141,8 +141,8 @@ class BrowserAction(ToolAction):
                                    desc="Search the query in Google in the current tab, the query should be a search query like humans search in Google, concrete and not vague or super long. More the single most important items. ")
     GO_BACK = ToolActionInfo(name="go_back",
                              desc="Go back")
-    GO_FORWARD = ToolActionInfo(name="go_forward",
-                                desc="Go forward")
+    # GO_FORWARD = ToolActionInfo(name="go_forward",
+    #                             desc="Go forward")
     SCROLL_DOWN = ToolActionInfo(name="scroll_down",
                                  input_params={"amount": ParamInfo(name="amount",
                                                                    type="str",
@@ -161,7 +161,7 @@ class BrowserAction(ToolAction):
                                                                     required=True,
                                                                     desc="Index of click element in page on browser.")},
                                    desc="Click element")
-    SAYING = ToolActionInfo(name="saying")
+    # SAYING = ToolActionInfo(name="saying")
     NEW_TAB = ToolActionInfo(name="new_tab",
                              input_params={"url": ParamInfo(name="url",
                                                             type="str",
@@ -174,12 +174,12 @@ class BrowserAction(ToolAction):
                                                                    required=True,
                                                                    desc="Switch tab by page id on browser.")},
                                 desc="Switch tab")
-    OPEN_NEW_TAB = ToolActionInfo(name="open_new_tab",
-                                  input_params={"url": ParamInfo(name="url",
-                                                                 type="str",
-                                                                 required=True,
-                                                                 desc="Open url in new tab on browser.")},
-                                  desc="Open url in new tab")
+    # OPEN_NEW_TAB = ToolActionInfo(name="open_new_tab",
+    #                               input_params={"url": ParamInfo(name="url",
+    #                                                              type="str",
+    #                                                              required=True,
+    #                                                              desc="Open url in new tab on browser.")},
+    #                               desc="Open url in new tab")
     WAIT = ToolActionInfo(name="wait",
                           input_params={"seconds": ParamInfo(name="seconds",
                                                              type="str",

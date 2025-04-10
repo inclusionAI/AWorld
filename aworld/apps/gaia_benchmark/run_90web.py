@@ -1,12 +1,24 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import os
+from datetime import datetime
+cur_time=datetime.now().strftime("%Y%m%d_%H%M%S")
+
+working_dir = os.path.join("/Users/zhuige/Documents/llm/agent/projects/web_understanding/eval_results", cur_time)
+if not os.path.exists(working_dir):
+    os.makedirs(working_dir)
+
+import logging
+from aworld.logs.util import logger
+file_handler = logging.FileHandler(os.path.join(working_dir,"log.txt"))
+file_handler.setLevel(logging.INFO)  
+file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+logger.addHandler(file_handler)
 
 import json
-import os
 from aworld.agents.browser.agent import BrowserAgent
 from aworld.agents.browser.config import BrowserAgentConfig
 from aworld.core.envs.tool import ToolFactory
-from aworld.logs.util import logger
 from typing import Any, Dict, List, Literal, Optional, Union, Tuple
 
 from aworld.core.client import Client
@@ -19,14 +31,14 @@ from aworld.dataset.gaia_benchmark import GAIABenchmark
 from aworld.apps.gaia_benchmark.utils import _check_task_completed, question_scorer, _generate_summary
 from aworld.core.common import Agents, Tools
 
-import os
+
 # GOOGLE_API_KEY = ""
 # GOOGLE_ENGINE_ID = ""
 GOOGLE_API_KEY="AIzaSyBz68rKBQNmUV-0zM8KMqiK6qrhF-JuK_k" ## zhuige
 GOOGLE_ENGINE_ID="c790a773fba27404b"
 os.environ['GOOGLE_API_KEY'] = GOOGLE_API_KEY
 os.environ['GOOGLE_ENGINE_ID'] = GOOGLE_ENGINE_ID
-llm_api_key="dummy-key",
+llm_api_key="dummy-key"
 llm_base_url="http://localhost:5000"
 
 
@@ -58,13 +70,19 @@ if __name__ == '__main__':
         llm_base_url=llm_base_url)
 
     # Define a task
-    save_path = 'result.json'
-    save_score_path = 'score.json'
-    if os.path.exists(save_path):
-        with open(save_path, 'r') as f:
+    save_path = os.path.join(working_dir,'browser_results')
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+    save_score_file = os.path.join(working_dir,'score.json')
+    total_res_file = os.path.join(working_dir,'total_res.json')
+    bug_task_file= os.path.join(working_dir,'bug_task.json')
+    if os.path.exists(total_res_file):
+        with open(total_res_file, 'r') as f:
             _results = json.load(f)
     else:
         _results = []
+    bug_tasks=[]
     for idx, sample in enumerate(dataset):
         logger.info(f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. ")
         # if sample["task_id"] != "df6561b2-7ee5-4540-baab-5095f742716a":
@@ -80,7 +98,7 @@ if __name__ == '__main__':
         logger.info(f'question: {question}')
 
         # debug
-        question = "打开wikipedia"
+        # question = "打开wikipedia"
         # question = "What is the surname of the horse doctor mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
         # end debug
 
@@ -107,7 +125,8 @@ if __name__ == '__main__':
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
             max_actions_per_step=10,
-            max_steps=15
+            max_steps=15,
+            save_file_path=os.path.join(save_path,f"{sample['task_id']}.json")
         )
 
         browser_agent=BrowserAgent(conf=browser_agent_config)
@@ -127,7 +146,7 @@ if __name__ == '__main__':
 
         # Create swarm for multi-agents
         # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
-        swarm = Swarm((agent1, agent2), (agent2, browser_agent))
+        swarm = Swarm((agent1, agent2), (agent2, browser_agent),max_steps=100)
         # swarm = Swarm(browser_agent)
         browser_tool = ToolFactory(Tools.BROWSER.value, conf=browser_tool_config)
         task = Task(input=question, swarm=swarm, conf=TaskConfig(),tools=[browser_tool])
@@ -150,20 +169,23 @@ if __name__ == '__main__':
             _results.append(_result_info)
             logger.info(_result_info)
         except Exception as e:
-            logger.info(f"Task failed: {e}")
+            bug_tasks.append(sample["task_id"])
+            logger.info(f"Task {sample['task_id']} failed: {e}")
         finally:
             browser_tool.close()
 
         
         # 记录结果
-        
-        if idx>=2:
-            break
-        with open(save_path, 'w') as f:
+        with open(total_res_file, 'w') as f:
             json.dump(_results, f, indent=4, ensure_ascii=False)
+        with open(bug_task_file, 'w') as f:
+            json.dump(bug_tasks, f, indent=4, ensure_ascii=False)
+
+        # if idx>=2:
+        #     break
 
 
     score_dict = _generate_summary(_results)
     print(score_dict)
-    with open(save_score_path, 'w') as f:
+    with open(save_score_file, 'w') as f:
         json.dump(score_dict, f, indent=4, ensure_ascii=False)
