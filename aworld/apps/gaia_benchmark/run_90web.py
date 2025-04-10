@@ -162,8 +162,7 @@ if __name__ == '__main__':
                 "task_id": sample["task_id"],
                 "question": sample["Question"],
                 "level": sample["Level"],
-                "gaia_recommend_tools": sample["Tools"],
-                "aworld_used_browser": True if browser_agent.reset_cnt>1 else False,
+                "aworld_used_browser": True if browser_agent.do_policy_cnt>1 else False,
                 "model_answer": answer,
                 "ground_truth": sample["Final answer"],
                 "score": question_scorer(answer, sample["Final answer"])

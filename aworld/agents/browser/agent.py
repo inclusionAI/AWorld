@@ -60,7 +60,7 @@ class BrowserAgent(BaseAgent):
         # Initialize trajectory
         self.trajectory = Trajectory()
         self._init = False
-        self.reset_cnt=0
+        self.do_policy_cnt=0
 
     def reset(self, options: Dict[str, Any]):
         super(BrowserAgent, self).reset(options)
@@ -73,19 +73,25 @@ class BrowserAgent(BaseAgent):
         # _estimate_tokens_for_messages method now directly uses functions from utils.py
         self._finished=True
         self._init = True
-        self.reset_cnt+=1
 
     def name(self) -> str:
         return Agents.BROWSER.value
 
     def _build_action_prompt(self) -> str:
         def _prompt(info: ToolActionInfo) -> str:
+            # 将工具的描述信息添加到字符串中
             s = f'{info.desc}: \n'
+            # 将工具的名称添加到字符串中
             s += '{' + str(info.name) + ': '
+            # 如果工具有输入参数
             if info.input_params:
+                # 将输入参数的名称和类型添加到字符串中
                 s += str({k: {"title": k, "type": v.type} for k, v in info.input_params.items()})
+            # 添加右花括号
             s += '}'
+            # 返回生成的提示字符串
             return s
+
 
         val = "\n".join([_prompt(v.value) for k, v in BrowserAction.__members__.items()])
         return val
@@ -131,7 +137,7 @@ class BrowserAgent(BaseAgent):
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None, **kwargs) -> Union[List[ActionModel], None]:
-        
+        self.do_policy_cnt+=1
         if observation.content=="done":
             self._finished=True
             input_messages = self.build_summary_messages_from_trajectory(observation=observation)

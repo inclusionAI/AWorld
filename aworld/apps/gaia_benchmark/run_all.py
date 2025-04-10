@@ -98,7 +98,7 @@ if __name__ == '__main__':
         logger.info(f'question: {question}')
 
         # debug
-        # question = "打开wikipedia"
+        # question = "使用百度查询谁是姚明的妻子"
         # question = "What is the surname of the horse doctor mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
         # end debug
 
@@ -162,12 +162,12 @@ if __name__ == '__main__':
                 "task_id": sample["task_id"],
                 "question": sample["Question"],
                 "level": sample["Level"],
-                "gaia_recommend_tools": sample["Tools"],
-                "aworld_used_browser": True if browser_agent.reset_cnt>1 else False,
+                "aworld_used_browser": True if browser_agent.do_policy_cnt>1 else False,
                 "model_answer": answer,
                 "ground_truth": sample["Final answer"],
                 "score": question_scorer(answer, sample["Final answer"])
             }
+            logger.info(f"browser_agent.do_policy_cnt {browser_agent.do_policy_cnt}")
             _results.append(_result_info)
             logger.info(_result_info)
         except Exception as e:
