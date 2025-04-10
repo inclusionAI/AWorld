@@ -30,11 +30,27 @@ class ExaSearchResult(BaseModel):
         return v
 
     class Config:
+        json_schema_extra = {
+            "example": {
+                "id": "123",
+                "title": "Sample Title",
+                "url": "https://example.com",
+                "publishedDate": "2023-01-01",
+                "author": "John Doe",
+                "score": "0.95",
+                "text": "Sample text",
+                "image": "https://example.com/image.jpg",
+                "favicon": "https://example.com/favicon.ico",
+            }
+        }
         json_encoders = {
             "publishedDate": lambda v: (
                 v.isoformat() if hasattr(v, "isoformat") else str(v)
             )
         }
+        populate_by_name = True
+        validate_assignment = True
+        arbitrary_types_allowed = True
 
 
 def mcpsearchquery(
@@ -51,7 +67,11 @@ def mcpsearchquery(
         logger.success(f"Search ends for query: {query}")
 
         results = build_response(search_results)
-        return json.dumps([result.model_dump_json() for result in results])
+        # Convert Pydantic models to dictionaries before JSON serialization
+        serializable_results = [
+            result.model_dump() for result in results[: min(10, len(results))]
+        ]
+        return json.dumps(serializable_results)
 
     except Exception as e:
         logger.error(f"Search error: {str(e)}")
@@ -134,7 +154,7 @@ def mcpsearch(
 
         results = build_response(search_results)
         logger.success(f"Search successfully for query: {query}")
-        return [result.model_dump_json() for result in results]
+        return [result.model_dump_json() for result in results[: min(10, len(results))]]
 
     except Exception as e:
         logger.error(f"Search error: {str(e)}")

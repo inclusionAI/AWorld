@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import copy
 import json
+import math
 import traceback
 from enum import Enum
 from typing import Any, Dict, List, Tuple, Union
@@ -387,6 +388,8 @@ class GaiaExecuteAgent(Agent):
                 completions = self.llm.chat.completions.create(
                     messages=messages,
                     model=self.model_name,
+                    temperature=0,
+                    tools=self.tools,
                 )
             except Exception as e:
                 logger.error(f"LLM query failed: {traceback.format_exc()}")
@@ -544,7 +547,9 @@ class GaiaExecuteAgent(Agent):
             results = []
             # Handle empty completions
             if not completions or not completions.choices:
-                logger.warning(f"Empty LLM result for input: {observation.content}")
+                logger.warning(
+                    f"Empty LLM result for input: {observation.content[:min(30, len(observation.content))]}"
+                )
                 return AgentResult(actions=[], current_state=None)
 
             is_call_tool = False
@@ -570,7 +575,8 @@ class GaiaExecuteAgent(Agent):
                     # Parse tool name and action with error handling
                     try:
                         # Try MCP tools format first
-                        _, tool_name, action_name = full_name.split("__")
+                        mcp_identifier, tool_name, action_name = full_name.split("__")
+                        tool_action_name = "__".join([tool_name, action_name])
                     except ValueError:
                         # Fall back to standard format
                         try:
@@ -581,13 +587,13 @@ class GaiaExecuteAgent(Agent):
 
                     # Create action model for tool
                     action_model_for_tool = ActionModel(
-                        tool_name=tool_name,
-                        action_name=action_name,
+                        tool_name=mcp_identifier,
+                        action_name=tool_action_name,
                         params=params,
                         policy_info=content,
                     )
                     logger.debug(
-                        f"Tool call: {tool_call}, Action model: {action_model_for_tool}"
+                        f"Tool call: {tool_call}, Action model: {action_model_for_tool.tool_name}-{action_model_for_tool.action_name}-{action_model_for_tool.params}"
                     )
                     results.append(action_model_for_tool)
 

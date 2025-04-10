@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import math
 import time
 import traceback
 import uuid
@@ -186,7 +187,6 @@ class Task(object):
 
                 if self.tools is None:
                     self.tools = {}
-                logger.critical(f"policy: {policy}")
                 if self.is_agent(policy[0]):
                     # only one agent, and get agent from policy
                     policy_for_agent = policy[0]
@@ -310,7 +310,7 @@ class Task(object):
                     break
 
                 if not swarm_resp:
-                    logger.warning(f"Step: {step} swarm no valid response")
+                    logger.warning(f"Step: {step} sarm no valid response")
                     break
 
                 observation = result_dict.get("observation")
@@ -354,11 +354,6 @@ class Task(object):
             }
 
     def is_agent(self, policy: ActionModel):
-        logger.info(f"policy.tool_name: {policy.tool_name}")
-        logger.info(f"policy.action_name: {policy.action_name}")
-        logger.info(
-            f"is_agent_by_name(policy.tool_name): {is_agent_by_name(policy.tool_name)}"
-        )
         return (
             policy.tool_name is None and policy.action_name is None
         ) or is_agent_by_name(policy.tool_name)
@@ -483,9 +478,6 @@ class Task(object):
                             tool_name
                         ].step(action)
 
-                        logger.success(
-                            f"{action} state: {observation}; reward: {reward}"
-                        )
                         # Check if there's an exception in info
                         if info.get("exception"):
                             color_log(

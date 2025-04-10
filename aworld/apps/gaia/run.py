@@ -4,7 +4,7 @@
 import json
 import os
 
-from aworld.agents.gaia.agent import ExecuteAgent, PlanAgent
+from aworld.agents.gaia.gaia_agent import GaiaAgents, GaiaExecuteAgent, GaiaPlanAgent
 from aworld.apps.gaia.utils import (
     _check_task_completed,
     _generate_summary,
@@ -86,11 +86,13 @@ if __name__ == "__main__":
         # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
         # swarm = Swarm((agent1, agent2))
 
-        planner = PlanAgent(
-            conf=AgentConfig(name=Agents.PLAN.value, llm_config=model_config)
+        planner = GaiaPlanAgent(
+            conf=AgentConfig(name=GaiaAgents.GAIA_PLAN.value, llm_config=model_config)
         )
-        executor = ExecuteAgent(
-            conf=AgentConfig(name=Agents.EXECUTE.value, llm_config=model_config),
+        executor = GaiaExecuteAgent(
+            conf=AgentConfig(
+                name=GaiaAgents.GAIA_EXECUTE.value, llm_config=model_config
+            ),
             tool_names=[],
             mcp_servers=[
                 "image",
@@ -102,7 +104,7 @@ if __name__ == "__main__":
             ],
         )
 
-        swarm = Swarm((planner, executor))
+        swarm = Swarm((planner, executor), sequence=False)
         task = Task(input=question, swarm=swarm, conf=TaskConfig())
         result = client.submit(task=[task])
 
