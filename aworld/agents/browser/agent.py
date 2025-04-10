@@ -60,6 +60,7 @@ class BrowserAgent(BaseAgent):
         # Initialize trajectory
         self.trajectory = Trajectory()
         self._init = False
+        self.reset_cnt=0
 
     def reset(self, options: Dict[str, Any]):
         super(BrowserAgent, self).reset(options)
@@ -72,6 +73,7 @@ class BrowserAgent(BaseAgent):
         # _estimate_tokens_for_messages method now directly uses functions from utils.py
         self._finished=True
         self._init = True
+        self.reset_cnt+=1
 
     def name(self) -> str:
         return Agents.BROWSER.value
