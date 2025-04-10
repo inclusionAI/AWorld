@@ -186,13 +186,14 @@ class Task(object):
 
                 if self.tools is None:
                     self.tools = {}
-
+                logger.critical(f"policy: {policy}")
                 if self.is_agent(policy[0]):
                     # only one agent, and get agent from policy
                     policy_for_agent = policy[0]
                     cur_agent: Agent = self.swarm.agents.get(
                         policy_for_agent.agent_name
                     )
+                    logger.critical(f"Execute agent: {cur_agent.name()}")
                     if not cur_agent:
                         raise RuntimeError(
                             f"Can not find {policy_for_agent.agent_name} agent in swarm."
@@ -259,6 +260,7 @@ class Task(object):
 
                     for tool_name, action in tool_mapping.items():
                         # Execute action using browser tool and unpack all return values
+                        logger.critical(f"Execute tool: {tool_name}-{action}")
                         observation, reward, terminated, _, info = self.tools[
                             tool_name
                         ].step(action)
@@ -352,6 +354,11 @@ class Task(object):
             }
 
     def is_agent(self, policy: ActionModel):
+        logger.info(f"policy.tool_name: {policy.tool_name}")
+        logger.info(f"policy.action_name: {policy.action_name}")
+        logger.info(
+            f"is_agent_by_name(policy.tool_name): {is_agent_by_name(policy.tool_name)}"
+        )
         return (
             policy.tool_name is None and policy.action_name is None
         ) or is_agent_by_name(policy.tool_name)

@@ -44,9 +44,9 @@ def check_file_readable(document_path: str) -> str:
 
 
 def mcpreadtext(
-    document_path: str = Field(description="The input text file path."),
+    document_path: str = Field(description="The input local text file path."),
 ) -> str:
-    """Read and return content from text file."""
+    """Read and return content from local text file. Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})
@@ -60,13 +60,13 @@ def mcpreadtext(
 
 
 def mcpreadjson(
-    document_path: str = Field(description="Path to JSON or JSONL file"),
+    document_path: str = Field(description="Local path to JSON or JSONL file"),
     is_jsonl: bool = Field(
         default=False,
         description="Whether the file is in JSONL format (one JSON object per line)",
     ),
 ) -> str:
-    """Read and parse JSON or JSONL file, return the parsed content."""
+    """Read and parse JSON or JSONL file, return the parsed content. Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})
@@ -125,9 +125,9 @@ def mcpreadjson(
 
 
 def mcpreadxml(
-    document_path: str = Field(description="The input XML file path."),
+    document_path: str = Field(description="The local input XML file path."),
 ) -> str:
-    """Read and return content from XML file."""
+    """Read and return content from XML file. Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})
@@ -143,9 +143,9 @@ def mcpreadxml(
 
 
 def mcpreadpdf(
-    document_path: str = Field(description="The input PDF file path."),
+    document_path: str = Field(description="The local input PDF file path."),
 ) -> str:
-    """Read and return content from PDF file."""
+    """Read and return content from PDF file. Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})
@@ -162,9 +162,9 @@ def mcpreadpdf(
 
 
 def mcpreaddocx(
-    document_path: str = Field(description="The input Word file path."),
+    document_path: str = Field(description="The local input Word file path."),
 ) -> str:
-    """Read and return content from Word file."""
+    """Read and return content from Word file. Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})
@@ -184,9 +184,9 @@ def mcpreaddocx(
 
 
 def mcpreadexcel(
-    document_path: str = Field(description="The input Excel file path."),
+    document_path: str = Field(description="The local input Excel file path."),
 ) -> str:
-    """Read and return content from Excel file."""
+    """Read and return content from Excel file. Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})
@@ -209,9 +209,9 @@ def mcpreadexcel(
 
 
 def mcpreadpptx(
-    document_path: str = Field(description="The input PowerPoint file path."),
+    document_path: str = Field(description="The local input PowerPoint file path."),
 ) -> str:
-    """Read and convert PowerPoint slides to base64 encoded images."""
+    """Read and convert PowerPoint slides to base64 encoded images. Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})
@@ -308,7 +308,7 @@ def mcpreadsourcecode(
         description="Source code file path, supports various programming languages."
     ),
 ) -> str:
-    """Read and analyze source code file, return code content and basic structure information."""
+    """Read and analyze source code file, return code content and basic structure information.  Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})

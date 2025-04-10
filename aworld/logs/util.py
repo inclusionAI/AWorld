@@ -57,6 +57,6 @@ def color_log(value, color: Color = Color.blue, hightlight_key=None):
         hightlight_key: Color segment key.
     """
     if hightlight_key is None:
-        logging.info(f"{color} {value}")
+        logger.info(f"{color} {value}")
     else:
-        logging.info(f"{color} {hightlight_key}: {Color.reset} {value}")
+        logger.info(f"{color} {hightlight_key}: {Color.reset} {value}")

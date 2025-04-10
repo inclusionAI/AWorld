@@ -8,20 +8,21 @@ import time
 import traceback
 from importlib import resources
 from pathlib import Path
-from typing import Any, Dict, Tuple, List, Union
+from typing import Any, Dict, List, Tuple, Union
 
 from aworld.config import ConfigDict
 from aworld.config.common import Tools
 from aworld.config.tool_action import BrowserAction
-from aworld.core.common import Observation, ActionModel, ActionResult
+from aworld.core.common import ActionModel, ActionResult, Observation
+from aworld.core.envs.tool import Tool, ToolFactory, action_executor
 from aworld.logs.util import logger
-from aworld.core.envs.tool import action_executor, ToolFactory
-from aworld.core.envs.tool import Tool
-from aworld.virtual_environments.browsers.action.executor import BrowserToolActionExecutor
-from aworld.virtual_environments.browsers.util.dom import DomTree
-from aworld.virtual_environments.conf import BrowserToolConfig
-from aworld.virtual_environments.browsers.util.dom_build import build_dom_tree
 from aworld.utils import import_package
+from aworld.virtual_environments.browsers.action.executor import (
+    BrowserToolActionExecutor,
+)
+from aworld.virtual_environments.browsers.util.dom import DomTree
+from aworld.virtual_environments.browsers.util.dom_build import build_dom_tree
+from aworld.virtual_environments.conf import BrowserToolConfig
 from aworld.virtual_environments.utils import build_observation
 
 URL_MAX_LENGTH = 4096
@@ -29,10 +30,12 @@ UTF8 = "".join(chr(x) for x in range(0, 55290))
 ASCII = "".join(chr(x) for x in range(32, 128))
 
 
-@ToolFactory.register(name=Tools.BROWSER.value,
-                      desc="browser",
-                      supported_action=BrowserAction,
-                      conf_file_name=f'{Tools.BROWSER.value}_tool.yaml')
+@ToolFactory.register(
+    name=Tools.BROWSER.value,
+    desc="browser",
+    supported_action=BrowserAction,
+    conf_file_name=f"{Tools.BROWSER.value}_tool.yaml",
+)
 class BrowserTool(Tool[Observation, List[ActionModel]]):
     def __init__(self, conf: Union[ConfigDict, BrowserToolConfig], **kwargs) -> None:
         super(BrowserTool, self).__init__(conf, **kwargs)
@@ -42,13 +45,14 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         self.record_trace = self.conf.get("enable_recording", False)
         self.sleep_after_init = self.conf.get("sleep_after_init", False)
 
-        dom_js_path = self.conf.get('dom_js_path')
+        dom_js_path = self.conf.get("dom_js_path")
         if dom_js_path and os.path.exists(dom_js_path):
-            with open(dom_js_path, 'r') as read:
+            with open(dom_js_path, "r") as read:
                 self.js_code = read.read()
         else:
-            self.js_code = resources.read_text('aworld.virtual_environments.browsers.script',
-                                               'buildDomTree.js')
+            self.js_code = resources.read_text(
+                "aworld.virtual_environments.browsers.script", "buildDomTree.js"
+            )
         self.cur_observation = None
         import_package("playwright")
 
@@ -80,7 +84,9 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         wss_url = self.conf.get("wss_url")
         if cdp_url:
             if browse_name != "chromium":
-                logger.warning(f"{browse_name} unsupported CDP, will use chromium browser")
+                logger.warning(
+                    f"{browse_name} unsupported CDP, will use chromium browser"
+                )
                 browse = self.playwright.chromium
             logger.info(f"Connecting to remote browser via CDP {cdp_url}")
             browser = browse.connect_over_cdp(cdp_url)
@@ -91,30 +97,34 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             headless = self.conf.get("headless", False)
             slow_mo = self.conf.get("slow_mo", 0)
             disable_security_args = []
-            if self.conf.get('disable_security', False):
-                disable_security_args = ['--disable-web-security',
-                                         '--disable-site-isolation-trials',
-                                         '--disable-features=IsolateOrigins,site-per-process']
-            args = ['--no-sandbox',
-                    '--disable-crash-reporte',
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-infobars',
-                    '--disable-background-timer-throttling',
-                    '--disable-popup-blocking',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-renderer-backgrounding',
-                    '--disable-window-activation',
-                    '--disable-focus-on-load',
-                    '--no-first-run',
-                    '--no-default-browser-check',
-                    '--no-startup-window',
-                    '--window-position=0,0',
-                    '--window-size=1280,720'] + disable_security_args
+            if self.conf.get("disable_security", False):
+                disable_security_args = [
+                    "--disable-web-security",
+                    "--disable-site-isolation-trials",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                ]
+            args = [
+                "--no-sandbox",
+                "--disable-crash-reporte",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--disable-background-timer-throttling",
+                "--disable-popup-blocking",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-window-activation",
+                "--disable-focus-on-load",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--no-startup-window",
+                "--window-position=0,0",
+                "--window-size=1280,720",
+            ] + disable_security_args
             browser = browse.launch(
                 headless=headless,
                 slow_mo=slow_mo,
                 args=args,
-                proxy=self.conf.get('proxy'),
+                proxy=self.conf.get("proxy"),
             )
         return browser
 
@@ -126,37 +136,42 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         if self.conf.get("cdp_url") and len(browser.contexts) > 0:
             context = browser.contexts[0]
         else:
-            viewport_size = ViewportSize(width=self.conf.get("width", 1280),
-                                         height=self.conf.get("height", 720))
-            disable_security = self.conf.get('disable_security', False)
+            viewport_size = ViewportSize(
+                width=self.conf.get("width", 1280), height=self.conf.get("height", 720)
+            )
+            disable_security = self.conf.get("disable_security", False)
 
-            context = browser.new_context(viewport=viewport_size,
-                                          no_viewport=False,
-                                          user_agent=self.conf.get('user_agent'),
-                                          java_script_enabled=True,
-                                          bypass_csp=disable_security,
-                                          ignore_https_errors=disable_security,
-                                          record_video_dir=self.conf.get('working_dir'),
-                                          record_video_size=viewport_size,
-                                          locale=self.conf.get('locale'),
-                                          storage_state=self.conf.get("storage_state", None),
-                                          geolocation=self.conf.get("geolocation", None),
-                                          device_scale_factor=1)
+            context = browser.new_context(
+                viewport=viewport_size,
+                no_viewport=False,
+                user_agent=self.conf.get("user_agent"),
+                java_script_enabled=True,
+                bypass_csp=disable_security,
+                ignore_https_errors=disable_security,
+                record_video_dir=self.conf.get("working_dir"),
+                record_video_size=viewport_size,
+                locale=self.conf.get("locale"),
+                storage_state=self.conf.get("storage_state", None),
+                geolocation=self.conf.get("geolocation", None),
+                device_scale_factor=1,
+            )
             if "chromium" == self.conf.get("browse_name", "chromium"):
-                context.grant_permissions(['camera', 'microphone'])
+                context.grant_permissions(["camera", "microphone"])
 
-        if self.conf.get('working_dir'):
+        if self.conf.get("working_dir"):
             context.tracing.start(screenshots=True, snapshots=True, sources=True)
 
-        cookie_file = self.conf.get('cookies_file')
+        cookie_file = self.conf.get("cookies_file")
         if cookie_file and os.path.exists(cookie_file):
-            with open(cookie_file, 'r') as read:
+            with open(cookie_file, "r") as read:
                 cookies = json.loads(read.read())
                 context.add_cookies(cookies)
-                logger.info(f'Cookies load from {cookie_file} finished')
+                logger.info(f"Cookies load from {cookie_file} finished")
 
-        if self.conf.get('private'):
-            js = resources.read_text("aworld.virtual_environments.browsers.script", "stealth.min.js")
+        if self.conf.get("private"):
+            js = resources.read_text(
+                "aworld.virtual_environments.browsers.script", "stealth.min.js"
+            )
             context.add_init_script(js)
 
         return context
@@ -183,12 +198,10 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             pass
 
         screenshot = page.screenshot(
-            full_page=full_page,
-            animations='disabled',
-            timeout=600000
+            full_page=full_page, animations="disabled", timeout=600000
         )
         logger.info("page screenshot finished")
-        screenshot_base64 = base64.b64encode(screenshot).decode('utf-8')
+        screenshot_base64 = base64.b64encode(screenshot).decode("utf-8")
         return screenshot_base64
 
     def _get_observation(self, fail_error: str = None) -> Observation:
@@ -199,20 +212,28 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             dom_tree = self._parse_dom_tree()
             image = self.screenshot()
             pixels_above, pixels_below = self._scroll_info()
-            info = {"pixels_above": pixels_above,
-                    "pixels_below": pixels_below,
-                    "url": self.page.url}
-            return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
+            info = {
+                "pixels_above": pixels_above,
+                "pixels_below": pixels_below,
+                "url": self.page.url,
+            }
+            return Observation(
+                observer=self.name(), dom_tree=dom_tree, image=image, info=info
+            )
         except Exception as e:
             try:
                 self.page.go_back()
                 dom_tree = self._parse_dom_tree()
                 image = self.screenshot()
                 pixels_above, pixels_below = self._scroll_info()
-                info = {"pixels_above": pixels_above,
-                        "pixels_below": pixels_below,
-                        "url": self.page.url}
-                return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
+                info = {
+                    "pixels_above": pixels_above,
+                    "pixels_below": pixels_below,
+                    "url": self.page.url,
+                }
+                return Observation(
+                    observer=self.name(), dom_tree=dom_tree, image=image, info=info
+                )
             except:
                 logger.warning(f"build observation fail, {traceback.format_exc()}")
                 fail_error = str(e)
@@ -220,29 +241,30 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
 
     def _parse_dom_tree(self) -> DomTree:
         args = {
-            'doHighlightElements': self.conf.get("do_highlight", True),
-            'focusHighlightIndex': self.conf.get("focus_highlight", -1),
-            'viewportExpansion': self.conf.get("viewport_expansion", 0),
-            'debugMode': logger.getEffectiveLevel() == 10,
+            "doHighlightElements": self.conf.get("do_highlight", True),
+            "focusHighlightIndex": self.conf.get("focus_highlight", -1),
+            "viewportExpansion": self.conf.get("viewport_expansion", 0),
+            "debugMode": False,
         }
         element_tree, element_map = build_dom_tree(self.page, self.js_code, args)
         return DomTree(element_tree=element_tree, element_map=element_map)
 
     def _scroll_info(self) -> tuple[int, int]:
         """Get scroll position information for the current page."""
-        scroll_y = self.page.evaluate('window.scrollY')
-        viewport_height = self.page.evaluate('window.innerHeight')
-        total_height = self.page.evaluate('document.documentElement.scrollHeight')
+        scroll_y = self.page.evaluate("window.scrollY")
+        viewport_height = self.page.evaluate("window.innerHeight")
+        total_height = self.page.evaluate("document.documentElement.scrollHeight")
         pixels_above = scroll_y
         pixels_below = total_height - (scroll_y + viewport_height)
         return pixels_above, pixels_below
 
-    def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
-        Observation, Dict[str, Any]]:
+    def reset(
+        self, *, seed: int | None = None, options: Dict[str, str] | None = None
+    ) -> Tuple[Observation, Dict[str, Any]]:
         super().reset(seed=seed, options=options)
         if self.initialized:
             observation = self._get_observation()
-            observation.action_result = [ActionResult(content='start', keep=True)]
+            observation.action_result = [ActionResult(content="start", keep=True)]
             self.cur_observation = observation
             return observation, {}
 
@@ -253,7 +275,7 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             time.sleep(self.sleep_after_init)
 
         observation = self._get_observation()
-        observation.action_result = [ActionResult(content='start', keep=True)]
+        observation.action_result = [ActionResult(content="start", keep=True)]
         self.cur_observation = observation
         return observation, {}
 
@@ -266,23 +288,33 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             self.context.tracing.stop(path=trace_path)
 
     def close(self) -> None:
-        if hasattr(self, 'context') and self.context:
+        if hasattr(self, "context") and self.context:
             self.context.close()
-        if hasattr(self, 'browser') and self.browser:
+        if hasattr(self, "browser") and self.browser:
             self.browser.close()
-        if hasattr(self, 'playwright') and self.playwright:
+        if hasattr(self, "playwright") and self.playwright:
             self.playwright.stop()
 
         if self.initialized:
             self.context_manager.__exit__()
 
-    def step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+    def step(
+        self, action: List[ActionModel], **kwargs
+    ) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         if not self.initialized:
             raise RuntimeError("Call init first before calling step.")
 
         if not action:
             logger.warning(f"{self.name()} has no action")
-            return build_observation(observer=self.name(), ability='', content='no action'), 0., False, False, {}
+            return (
+                build_observation(
+                    observer=self.name(), ability="", content="no action"
+                ),
+                0.0,
+                False,
+                False,
+                {},
+            )
 
         reward = 0
         fail_error = ""
@@ -299,10 +331,12 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
                 action[i] = None
 
         try:
-            action_result, self.page = self.action_executor.execute_action(action,
-                                                                           observation=self.cur_observation,
-                                                                           llm_config=self.conf.llm_config,
-                                                                           **kwargs)
+            action_result, self.page = self.action_executor.execute_action(
+                action,
+                observation=self.cur_observation,
+                llm_config=self.conf.llm_config,
+                **kwargs,
+            )
             reward = 1
         except Exception as e:
             fail_error = str(e)
@@ -318,32 +352,42 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
 
         info = {"exception": fail_error}
 
-        contains_write_to_file = any(act.action_name == BrowserAction.WRITE_TO_FILE.value.name for act in action if act)
+        contains_write_to_file = any(
+            act.action_name == BrowserAction.WRITE_TO_FILE.value.name
+            for act in action
+            if act
+        )
         if contains_write_to_file:
             msg = ""
             for action_result_elem in action_result:
                 msg = action_result_elem.content
             # write_to_file observation
-            return (Observation(content=msg, action_result=action_result, info=info),
-                    reward,
-                    terminated,
-                    kwargs.get("truncated", False),
-                    info)
+            return (
+                Observation(content=msg, action_result=action_result, info=info),
+                reward,
+                terminated,
+                kwargs.get("truncated", False),
+                info,
+            )
         elif fail_error:
             # failed error observation
-            return (Observation(),
-                    reward,
-                    terminated,
-                    kwargs.get("truncated", False),
-                    info)
+            return (
+                Observation(),
+                reward,
+                terminated,
+                kwargs.get("truncated", False),
+                info,
+            )
         else:
             # normal observation
             observation = self._get_observation(fail_error)
             observation.ability = action[-1].action_name
             observation.action_result = action_result
             self.cur_observation = observation
-            return (observation,
-                    reward,
-                    terminated,
-                    kwargs.get("truncated", False),
-                    info)
+            return (
+                observation,
+                reward,
+                terminated,
+                kwargs.get("truncated", False),
+                info,
+            )

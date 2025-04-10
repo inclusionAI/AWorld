@@ -134,5 +134,5 @@ if __name__ == "__main__":
 
     from aworld.mcp.utils import mcp_tool_desc_transform
 
-    mcp_tools = asyncio.run(mcp_tool_desc_transform(["image"]))
+    mcp_tools = asyncio.run(mcp_tool_desc_transform(["search"]))
     logger.success(f"{json.dumps(mcp_tools, indent=4, ensure_ascii=False)}")
