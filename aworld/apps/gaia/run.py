@@ -29,6 +29,9 @@ if __name__ == "__main__":
     # Create agents
     llm_api_key = os.getenv("LLM_API_KEY", "")
     llm_base_url = os.getenv("LLM_BASE_URL", "")
+    logger.success(
+        f"\n>>> llm_api_key: {llm_api_key}\n>>> llm_base_url: {llm_base_url}"
+    )
     model_config = ModelConfig(
         llm_provider="openai",
         llm_model_name="gpt-4o",
@@ -60,6 +63,9 @@ if __name__ == "__main__":
 
         question = sample["Question"]
         question = "A paper about AI regulation that was originally submitted to arXiv.org in June 2022 shows a figure with three axes, where each axis has a label word at both ends. Which of these words is used to describe a type of society in a Physics and Society article submitted to arXiv.org on August 11, 2016?"  # 一定要删掉
+        question = (
+            "What animal is in the picture? The file path is /Users/arac/Desktop/qw.jpg"
+        )
         logger.info(f"question: {question}")
 
         # debug

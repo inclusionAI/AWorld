@@ -302,7 +302,7 @@ class Task(object):
                 results.append(result_dict)
 
                 swarm_resp = result_dict.get("response")
-                logger.info(f"Step: {step} response:\n {result_dict}")
+                logger.info(f"Step: {step} response:\n {swarm_resp}")
 
                 step += 1
                 if self.swarm.finished:

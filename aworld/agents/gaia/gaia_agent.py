@@ -2,7 +2,6 @@
 # Copyright (c) 2025 inclusionAI.
 import copy
 import json
-import math
 import traceback
 from enum import Enum
 from typing import Any, Dict, List, Tuple, Union
@@ -49,7 +48,9 @@ class GaiaPlanAgent(Agent):
             super(GaiaPlanAgent, self).__init__(conf, **kwargs)
             self.desc_transform()
         except Exception as e:
-            logger.error(f"Failed to initialize GaiaPlanAgent: {str(e)}")
+            logger.error(
+                f"Failed to initialize GaiaPlanAgent: {str(e)}\n{traceback.format_exc()}"
+            )
             raise
 
     def reset(self, options: Dict[str, Any]):
@@ -83,7 +84,9 @@ class GaiaPlanAgent(Agent):
             self._finished = False
             self.trajectory = []
         except Exception as e:
-            logger.error(f"Failed to reset GaiaPlanAgent: {str(e)}")
+            logger.error(
+                f"Failed to reset GaiaPlanAgent: {str(e)}\n{traceback.format_exc()}"
+            )
             raise
 
     def policy(
@@ -131,7 +134,7 @@ class GaiaPlanAgent(Agent):
             self.first = False
             return results.actions
         except Exception as e:
-            logger.error(f"Policy execution failed: {str(e)}")
+            logger.error(f"Policy execution failed: {str(e)}\n{traceback.format_exc()}")
             raise
 
     def _transform_messages(
@@ -198,7 +201,9 @@ class GaiaPlanAgent(Agent):
 
             return messages, current_observation
         except Exception as e:
-            logger.error(f"Message transformation failed: {str(e)}")
+            logger.error(
+                f"Message transformation failed: {str(e)}\n{traceback.format_exc()}"
+            )
             raise ValueError(f"Failed to transform messages: {str(e)}")
 
     def _parse_completions(
@@ -298,7 +303,9 @@ class GaiaPlanAgent(Agent):
 
             return agent_result
         except Exception as e:
-            logger.error(f"Completion parsing failed: {str(e)}")
+            logger.error(
+                f"Completion parsing failed: {str(e)}\n{traceback.format_exc()}"
+            )
             return AgentResult(actions=[], current_state=completions)
 
 
@@ -328,7 +335,9 @@ class GaiaExecuteAgent(Agent):
             self.has_summary = False
             self.first = False
         except Exception as e:
-            logger.error(f"Failed to initialize GaiaExecuteAgent: {str(e)}")
+            logger.error(
+                f"Failed to initialize GaiaExecuteAgent: {str(e)}\n{traceback.format_exc()}"
+            )
             raise
 
     def reset(self, options: Dict[str, Any]):
@@ -359,7 +368,9 @@ class GaiaExecuteAgent(Agent):
             self.has_summary = False
             self.trajectory = []
         except Exception as e:
-            logger.error(f"Failed to reset GaiaExecuteAgent: {str(e)}")
+            logger.error(
+                f"Failed to reset GaiaExecuteAgent: {str(e)}\n{traceback.format_exc()}"
+            )
             raise
 
     def policy(
@@ -408,7 +419,7 @@ class GaiaExecuteAgent(Agent):
             self.first = False
             return results.actions
         except Exception as e:
-            logger.error(f"Policy execution failed: {str(e)}")
+            logger.error(f"Policy execution failed: {str(e)}\n{traceback.format_exc()}")
             raise
 
     def _transform_messages(
@@ -523,7 +534,9 @@ class GaiaExecuteAgent(Agent):
 
             return messages, current_observation
         except Exception as e:
-            logger.error(f"Message transformation failed: {str(e)}")
+            logger.error(
+                f"Message transformation failed: {str(e)}\n{traceback.format_exc()}"
+            )
             raise ValueError(f"Failed to transform messages: {str(e)}")
 
     def _parse_completions(
@@ -550,7 +563,15 @@ class GaiaExecuteAgent(Agent):
                 logger.warning(
                     f"Empty LLM result for input: {observation.content[:min(30, len(observation.content))]}"
                 )
-                return AgentResult(actions=[], current_state=None)
+                return AgentResult(
+                    actions=[
+                        ActionModel(
+                            agent_name=GaiaAgents.GAIA_PLAN.value,
+                            policy_info=observation.content,
+                        )
+                    ],
+                    current_state=completions,
+                )
 
             is_call_tool = False
             content = completions.choices[0].message.content
@@ -649,5 +670,7 @@ class GaiaExecuteAgent(Agent):
 
             return agent_result
         except Exception as e:
-            logger.error(f"Completion parsing failed: {str(e)}")
+            logger.error(
+                f"Completion parsing failed: {str(e)}\n {traceback.format_exc()}"
+            )
             return AgentResult(actions=[], current_state=completions)
