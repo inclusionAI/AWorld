@@ -15,11 +15,27 @@
     "search": {
       "url": "http://localhost:5555/sse"
     },
+    "download": {
+      "url": "http://localhost:6666/sse"
+    },
     "playwright": {
       "url": "http://localhost:8931/sse"
     },
     "amap-amap-sse": {
       "url": "https://mcp.amap.com/sse?key="
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/arac/Desktop",
+        "/Users/arac/Desktop/mcp_cache"
+      ]
+    },
+    "fetch": {
+      "command": "python",
+      "args": ["-m", "mcp_server_fetch"]
     }
   } 
 }
