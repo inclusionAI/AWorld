@@ -1,6 +1,6 @@
 import json
 import os
-from typing import List
+from typing import List, Optional
 
 from exa_py import Exa
 from exa_py.api import ResultWithText, SearchResponse
@@ -69,7 +69,7 @@ def mcpsearchquery(
         results = build_response(search_results)
         # Convert Pydantic models to dictionaries before JSON serialization
         serializable_results = [
-            result.model_dump() for result in results[: min(10, len(results))]
+            result.model_dump() for result in results[: min(3, len(results))]
         ]
         return json.dumps(serializable_results)
 
@@ -81,29 +81,31 @@ def mcpsearchquery(
 def mcpsearch(
     query: str = Field(..., description="The query string."),
     num_results: str = Field(
-        "20", description="Number of search results to return (default 10)."
+        "5", description="Number of search results to return (default 10)."
     ),
     include_domains: List[str] = Field(
-        "", description="Domains to include in the search."
+        None, description="Domains to include in the search."
     ),
     exclude_domains: List[str] = Field(
-        "", description="Domains to exclude from the search."
+        None, description="Domains to exclude from the search."
     ),
     start_crawl_date: str = Field(
-        "", description="Only links crawled after this date."
+        None, description="Only links crawled after this date."
     ),
-    end_crawl_date: str = Field("", description="Only links crawled before this date."),
+    end_crawl_date: str = Field(
+        None, description="Only links crawled before this date."
+    ),
     start_published_date: str = Field(
-        "", description="Only links published after this date."
+        None, description="Only links published after this date."
     ),
     end_published_date: str = Field(
-        "", description="Only links published before this date."
+        None, description="Only links published before this date."
     ),
     include_text: List[str] = Field(
-        [], description="Strings that must appear in the page text."
+        None, description="Strings that must appear in the page text."
     ),
     exclude_text: List[str] = Field(
-        [], description="Strings that must not appear in the page text."
+        None, description="Strings that must not appear in the page text."
     ),
     use_autoprompt: bool = Field(
         False, description="Convert query to Exa (default False)."
@@ -112,7 +114,7 @@ def mcpsearch(
         "neural", description="'keyword' or 'neural' (default 'neural')."
     ),
     category: str = Field("", description="e.g. 'company'"),
-    flags: List[str] = Field([], description="Experimental flags for Exa usage."),
+    flags: List[str] = Field(None, description="Experimental flags for Exa usage."),
     moderation: bool = Field(
         False, description="If True, the search results will be moderated for safety."
     ),
@@ -153,8 +155,9 @@ def mcpsearch(
         )
 
         results = build_response(search_results)
-        logger.success(f"Search successfully for query: {query}")
-        return [result.model_dump_json() for result in results[: min(10, len(results))]]
+        # Convert Pydantic models to dictionaries before JSON serialization
+        serializable_results = [result.model_dump() for result in results]
+        return json.dumps(serializable_results)
 
     except Exception as e:
         logger.error(f"Search error: {str(e)}")
@@ -184,4 +187,4 @@ def build_response(results: SearchResponse[ResultWithText]) -> List[ExaSearchRes
 
 
 if __name__ == "__main__":
-    run_mcp_server("Search Server", funcs=[mcpsearchquery], port=5555)
+    run_mcp_server("Search Server", funcs=[mcpsearch], port=5555)

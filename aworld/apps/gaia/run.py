@@ -4,6 +4,7 @@
 import json
 import os
 
+from aworld.agents.gaia.agent import ExecuteAgent, PlanAgent
 from aworld.agents.gaia.gaia_agent import GaiaAgents, GaiaExecuteAgent, GaiaPlanAgent
 from aworld.apps.gaia.utils import (
     _check_task_completed,
@@ -35,8 +36,10 @@ if __name__ == "__main__":
     model_config = ModelConfig(
         llm_provider="openai",
         llm_model_name="gpt-4o",
-        llm_api_key=llm_api_key,
-        llm_base_url=llm_base_url,
+        llm_api_key="dummy-key",
+        llm_base_url="http://localhost:3456",
+        # llm_api_key=llm_api_key,
+        # llm_base_url=llm_base_url,
         llm_temperature=0.0,
     )
 
@@ -62,10 +65,11 @@ if __name__ == "__main__":
             continue
 
         question = sample["Question"]
-        question = "A paper about AI regulation that was originally submitted to arXiv.org in June 2022 shows a figure with three axes, where each axis has a label word at both ends. Which of these words is used to describe a type of society in a Physics and Society article submitted to arXiv.org on August 11, 2016?"  # 一定要删掉
-        question = (
-            "What animal is in the picture? The file path is /Users/arac/Desktop/qw.jpg"
-        )
+        # question = "A paper about AI regulation that was originally submitted to arXiv.org in June 2022 shows a figure with three axes, where each axis has a label word at both ends. Which of these words is used to describe a type of society in a Physics and Society article submitted to arXiv.org on August 11, 2016?"
+        # question = (
+        #     "What animal is in the picture? The file path is /Users/arac/Desktop/qw.jpg"
+        # )
+        # sample["Final answer"] = "cat"
         logger.info(f"question: {question}")
 
         # debug
@@ -92,13 +96,29 @@ if __name__ == "__main__":
         # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
         # swarm = Swarm((agent1, agent2))
 
-        planner = GaiaPlanAgent(
-            conf=AgentConfig(name=GaiaAgents.GAIA_PLAN.value, llm_config=model_config)
+        # planner = GaiaPlanAgent(
+        #     conf=AgentConfig(name=GaiaAgents.GAIA_PLAN.value, llm_config=model_config)
+        # )
+        # executor = GaiaExecuteAgent(
+        #     conf=AgentConfig(
+        #         name=GaiaAgents.GAIA_EXECUTE.value, llm_config=model_config
+        #     ),
+        #     tool_names=[],
+        #     mcp_servers=[
+        #         "image",
+        #         "audio",
+        #         "video",
+        #         "document",
+        #         "search",
+        #         "playwright",
+        #     ],
+        # )
+
+        planner = PlanAgent(
+            conf=AgentConfig(name=Agents.PLAN.value, llm_config=model_config)
         )
-        executor = GaiaExecuteAgent(
-            conf=AgentConfig(
-                name=GaiaAgents.GAIA_EXECUTE.value, llm_config=model_config
-            ),
+        executor = ExecuteAgent(
+            conf=AgentConfig(name=Agents.EXECUTE.value, llm_config=model_config),
             tool_names=[],
             mcp_servers=[
                 "image",
@@ -106,7 +126,10 @@ if __name__ == "__main__":
                 "video",
                 "document",
                 "search",
+                "download",
                 "playwright",
+                # "filesystem",
+                # "fetch",
             ],
         )
 
@@ -132,8 +155,6 @@ if __name__ == "__main__":
         # break
         with open(save_path, "w") as f:
             json.dump(_results, f, indent=4, ensure_ascii=False)
-
-        break
 
     score_dict = _generate_summary(_results)
     print(score_dict)

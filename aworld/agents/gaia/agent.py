@@ -22,9 +22,7 @@ class ExecuteAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(ExecuteAgent, self).__init__(conf, **kwargs)
         self.has_summary = False
-        self.tools = tool_desc_transform(
-            get_tool_desc(), tools=self.tool_names if self.tool_names else []
-        )
+        self.desc_transform()
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
@@ -45,7 +43,10 @@ class ExecuteAgent(Agent):
         ]
         for traj in self.trajectory:
             input_content.append(traj[0].content)
-            if traj[-1].choices[0].message.tool_calls is not None:
+            if (
+                traj[-1].choices is not None
+                and traj[-1].choices[0].message.tool_calls is not None
+            ):
                 input_content.append(
                     {
                         "role": "assistant",
@@ -86,8 +87,8 @@ class ExecuteAgent(Agent):
             content = llm_result.choices[0].message.content
             tool_calls = llm_result.choices[0].message.tool_calls
         except Exception as e:
-            logger.warn(traceback.format_exc())
-            raise e
+            logger.warning(traceback.format_exc())
+            # raise e
         finally:
             if llm_result:
                 if llm_result.choices is None:
@@ -96,7 +97,7 @@ class ExecuteAgent(Agent):
                 ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warn("no result to record!")
+                logger.warning("no result to record!")
 
         res = []
         if tool_calls:
@@ -105,7 +106,7 @@ class ExecuteAgent(Agent):
                 if not tool_action_name:
                     continue
                 tool_name = tool_action_name.split("__")[0]
-                action_name = tool_action_name.split("__")[1]
+                action_name = "__".join(tool_action_name.split("__")[1:])
                 params = json.loads(tool_call.function.arguments)
                 res.append(
                     ActionModel(
@@ -195,7 +196,7 @@ class PlanAgent(Agent):
             )
             logger.info(f"Plan response: {llm_result.choices[0].message}")
         except Exception as e:
-            logger.warn(traceback.format_exc())
+            logger.warning(traceback.format_exc())
             raise e
         finally:
             if llm_result:
@@ -205,7 +206,7 @@ class PlanAgent(Agent):
                 ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warn("no result to record!")
+                logger.warning("no result to record!")
         content = llm_result.choices[0].message.content
         if "TASK_DONE" not in content:
             content += self.done_prompt

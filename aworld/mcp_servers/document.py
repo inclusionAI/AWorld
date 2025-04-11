@@ -14,6 +14,7 @@ from aworld.mcp_servers.utils import run_mcp_server
 from aworld.utils import import_package, import_packages
 
 import_package("cv2", install_name="opencv-python")
+import_package("fitz", install_name="PyMuPDF")
 import_packages(["xmltodict", "pandas", "docx2markdown", "PyPDF2"])
 
 
@@ -144,19 +145,93 @@ def mcpreadxml(
 
 def mcpreadpdf(
     document_path: str = Field(description="The local input PDF file path."),
+    extract_images: bool = Field(
+        default=False, description="Whether to extract images from PDF (default: False)"
+    ),
 ) -> str:
-    """Read and return content from PDF file. Cannot process https://URLs files."""
+    """Read and return content from PDF file with optional image extraction. Cannot process https://URLs files."""
     error = check_file_readable(document_path)
     if error:
         return json.dumps({"error": error})
 
     try:
+        import fitz  # PyMuPDF
         from PyPDF2 import PdfReader
 
         with open(document_path, "rb") as f:
             reader = PdfReader(f)
             content = " ".join(page.extract_text() for page in reader.pages)
-        return json.dumps({"content": content})
+
+            result = {"content": content}
+
+            # Extract images if requested
+            if extract_images:
+                images_data = []
+                temp_dir = tempfile.mkdtemp()
+
+                try:
+                    # Open PDF with PyMuPDF
+                    pdf_document = fitz.open(document_path)
+
+                    # Iterate through each page
+                    for page_index in range(len(pdf_document)):
+                        page = pdf_document[page_index]
+
+                        # Get image list
+                        image_list = page.get_images(full=True)
+
+                        # Process each image
+                        for img_index, img in enumerate(image_list):
+                            # Extract image information
+                            xref = img[0]
+                            base_image = pdf_document.extract_image(xref)
+                            image_bytes = base_image["image"]
+                            image_ext = base_image["ext"]
+
+                            # Save image to temporary file
+                            img_filename = (
+                                f"pdf_image_p{page_index+1}_{img_index+1}.{image_ext}"
+                            )
+                            img_path = os.path.join(temp_dir, img_filename)
+
+                            with open(img_path, "wb") as img_file:
+                                img_file.write(image_bytes)
+
+                            # Convert to base64
+                            base64_image = encode_image_from_file(img_path)
+
+                            # Get image dimensions
+                            with Image.open(img_path) as img:
+                                width, height = img.size
+
+                            # Add to results
+                            images_data.append(
+                                {
+                                    "page": page_index + 1,
+                                    "format": image_ext,
+                                    "width": width,
+                                    "height": height,
+                                    "image": f"data:image/{image_ext};base64,{base64_image}",
+                                }
+                            )
+
+                    result["images"] = images_data
+                    result["image_count"] = len(images_data)
+
+                finally:
+                    # Clean up temporary files
+                    try:
+                        for file in os.listdir(temp_dir):
+                            os.remove(os.path.join(temp_dir, file))
+                        os.rmdir(temp_dir)
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            f"Error cleaning up temporary files: {str(cleanup_error)}"
+                        )
+            # Return results
+            ret = json.dumps(result)
+            # logger.success(f"PDF file reading ends for {document_path}\n{ret}")
+            return ret
     except Exception as e:
         return handle_error(e, "PDF file reading")
 
