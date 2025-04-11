@@ -40,7 +40,7 @@ if __name__ == "__main__":
         llm_base_url="http://localhost:3456",
         # llm_api_key=llm_api_key,
         # llm_base_url=llm_base_url,
-        llm_temperature=0.3,
+        llm_temperature=0,
     )
 
     # Define a task
@@ -51,12 +51,10 @@ if __name__ == "__main__":
             _results = json.load(f)
     else:
         _results = []
-    for idx, sample in enumerate(dataset):
+    for idx, sample in enumerate(dataset[1:2]):
         logger.info(
             f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. "
         )
-        # if sample["task_id"] != "32102e3e-d12a-4209-9163-7b3a104efe5d":
-        # continue
 
         if _check_task_completed(sample["task_id"], _results):
             logger.info(
@@ -65,55 +63,7 @@ if __name__ == "__main__":
             continue
 
         question = sample["Question"]
-        # question = "A paper about AI regulation that was originally submitted to arXiv.org in June 2022 shows a figure with three axes, where each axis has a label word at both ends. Which of these words is used to describe a type of society in a Physics and Society article submitted to arXiv.org on August 11, 2016?"
-        # question = (
-        #     "What animal is in the picture? The file path is /Users/arac/Desktop/qw.jpg"
-        # )
-        # sample["Final answer"] = "cat"
-        question = "Open Goolge website and serach the newest B&O headphones and report the corresponding price in the browser"
         logger.info(f"question: {question}")
-
-        # debug
-        # question = "What is the surname of the equine veterinarian mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
-        # question = "What is the surname of the horse doctor mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
-        # end debug
-
-        # agent1 = PlanAgent(conf=agent_config)
-        # agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
-        #                                                     Tools.PYTHON_EXECUTE.value,
-        #                                                     Tools.IMAGE_ANALYSIS.value,
-        #                                                     Tools.SEARCH_API.value,
-        #                                                     Tools.BROWSER.value])
-        # agent2 = ExecuteAgent(
-        #     conf=agent_config,
-        #     tool_names=[
-        #         Tools.DOCUMENT_ANALYSIS.value,
-        #         Tools.PYTHON_EXECUTE.value,
-        #         Tools.IMAGE_ANALYSIS.value,
-        #     ],
-        # )
-
-        # Create swarm for multi-agents
-        # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
-        # swarm = Swarm((agent1, agent2))
-
-        # planner = GaiaPlanAgent(
-        #     conf=AgentConfig(name=GaiaAgents.GAIA_PLAN.value, llm_config=model_config)
-        # )
-        # executor = GaiaExecuteAgent(
-        #     conf=AgentConfig(
-        #         name=GaiaAgents.GAIA_EXECUTE.value, llm_config=model_config
-        #     ),
-        #     tool_names=[],
-        #     mcp_servers=[
-        #         "image",
-        #         "audio",
-        #         "video",
-        #         "document",
-        #         "search",
-        #         "playwright",
-        #     ],
-        # )
 
         planner = PlanAgent(
             conf=AgentConfig(name=Agents.PLAN.value, llm_config=model_config)
@@ -143,7 +93,6 @@ if __name__ == "__main__":
         logger.info(f"Time cost: {result['time_cost']}")
         logger.info(f"Task Answer: {answer}")
 
-        # 记录结果
         _result_info = {
             "task_id": sample["task_id"],
             "question": sample["Question"],
@@ -153,7 +102,6 @@ if __name__ == "__main__":
             "score": question_scorer(answer, sample["Final answer"]),
         }
         _results.append(_result_info)
-        # break
         with open(save_path, "w") as f:
             json.dump(_results, f, indent=4, ensure_ascii=False)
 
