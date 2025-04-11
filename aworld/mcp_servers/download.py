@@ -1,7 +1,7 @@
 import os
 import urllib.parse
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Union
 
 import requests
 from pydantic import BaseModel, Field
@@ -21,27 +21,59 @@ class DownloadResult(BaseModel):
     error: Optional[str] = None
 
 
+class DownloadResults(BaseModel):
+    """Download results model for multiple files"""
+
+    results: List[DownloadResult]
+    success_count: int
+    failed_count: int
+
+
 def mcpdownload(
-    url: str = Field(..., description="The URL of the file to download."),
-    output_dir: str = Field(
-        "/tmp", description="Directory to save the downloaded file (default: /tmp)."
+    urls: List[str] = Field(
+        ..., description="The URLs of the files to download. Must be a list of URLs."
     ),
-    filename: str = Field(
-        "", description="Custom filename for the downloaded file (optional)."
+    output_dir: str = Field(
+        "/tmp/mcp_downloads",
+        description="Directory to save the downloaded files (default: /tmp/mcp_downloads).",
     ),
     timeout: int = Field(60, description="Download timeout in seconds (default: 60)."),
 ) -> str:
-    """Download a file from a URL and save it to the local filesystem.
+    """Download files from URLs and save to the local filesystem.
 
     Args:
-        url: The URL of the file to download
-        output_dir: Directory to save the downloaded file
-        filename: Custom filename for the downloaded file (if empty, derived from URL)
+        urls: The URLs of the files to download, must be a list of URLs
+        output_dir: Directory to save the downloaded files
         timeout: Download timeout in seconds
 
     Returns:
-        JSON string with download result information
+        JSON string with download results information
     """
+    results = []
+    success_count = 0
+    failed_count = 0
+
+    for single_url in urls:
+        result_json = _download_single_file(single_url, output_dir, "", timeout)
+        result = DownloadResult.model_validate_json(result_json)
+        results.append(result)
+
+        if result.success:
+            success_count += 1
+        else:
+            failed_count += 1
+
+    batch_results = DownloadResults(
+        results=results, success_count=success_count, failed_count=failed_count
+    )
+
+    return batch_results.model_dump_json()
+
+
+def _download_single_file(
+    url: str, output_dir: str, filename: str, timeout: int
+) -> str:
+    """Download a single file from URL and save it to the local filesystem."""
     try:
         # Validate URL
         if not url.startswith(("http://", "https://")):
