@@ -113,10 +113,16 @@ def mcpsearch(
     type: str = Field(
         "neural", description="'keyword' or 'neural' (default 'neural')."
     ),
-    category: str = Field("", description="e.g. 'company'"),
+    category: str = Field(
+        "",
+        description="available options: (company, research paper, news, pdf, github, tweet, personal site, linkedin profile, financial report)",
+    ),
     flags: List[str] = Field(None, description="Experimental flags for Exa usage."),
     moderation: bool = Field(
         False, description="If True, the search results will be moderated for safety."
+    ),
+    text: bool = Field(
+        False, description="Whether to include webpage contents in results."
     ),
 ) -> List[str]:
     """Search the web using Exa with a query to retrieve relevant results."""
@@ -152,6 +158,7 @@ def mcpsearch(
             category=category,
             flags=flags,
             moderation=moderation,
+            text=text,
         )
 
         results = build_response(search_results)
