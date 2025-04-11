@@ -67,21 +67,21 @@ def encode_image_from_url(image_url: str) -> str:
     return img_str
 
 
-def encode_image_from_file(image_path):
+def encode_image_from_file(image_path: str) -> str:
     """Read image from local file and encode to base64 format."""
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode()
 
 
-def encode_image(image_url: str, with_header: bool = True) -> str:
+def encode_images(image_urls: List[str], with_header: bool = True) -> List[str]:
     """Encode image to base64 format
 
     Args:
-        image_url (str): URL or local file path of the image
+        image_urls (List[str]): URL or local file path of the image, or a list of URLs/paths
         with_header (bool, optional): Whether to include MIME type header. Defaults to True.
 
     Returns:
-        str: Base64 encoded image string, with MIME type prefix if with_header is True
+        List[str]: Base64 encoded image string(s), with MIME type prefix if with_header is True
 
     Raises:
         ValueError: When image URL is empty or image format is not supported
@@ -95,51 +95,59 @@ def encode_image(image_url: str, with_header: bool = True) -> str:
         ".webp": "image/webp",
     }
 
-    if not image_url:
-        raise ValueError("Image URL cannot be empty")
+    if not image_urls:
+        raise ValueError("Image URLs cannot be empty")
 
-    if not any(image_url.endswith(ext) for ext in mime_types):
-        raise ValueError(
-            f"Unsupported image format. Supported formats: {', '.join(mime_types)}"
+    images = []
+    for image_url in image_urls:
+        if not any(image_url.endswith(ext) for ext in mime_types):
+            raise ValueError(
+                f"Unsupported image format. Supported formats: {', '.join(mime_types)}"
+            )
+        parsed_url = urlparse(image_url)
+        is_url = all([parsed_url.scheme, parsed_url.netloc])
+        if not is_url:
+            image_base64 = encode_image_from_file(image_url)
+        else:
+            image_base64 = encode_image_from_url(image_url)
+
+        mime_type = mime_types.get(os.path.splitext(image_url)[1], "image/jpeg")
+        final_image = (
+            f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
         )
-    parsed_url = urlparse(image_url)
-    is_url = all([parsed_url.scheme, parsed_url.netloc])
-    if not is_url:
-        image_base64 = encode_image_from_file(image_url)
-    else:
-        image_base64 = encode_image_from_url(image_url)
-
-    mime_type = mime_types.get(os.path.splitext(image_url)[1], "image/jpeg")
-    final_image = (
-        f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
-    )
-    return final_image
+        images.append(final_image)
+    return images
 
 
-def create_image_content(prompt: str, image_base64: str) -> List[Dict[str, Any]]:
+def create_image_contents(prompt: str, image_base64: List[str]) -> List[Dict[str, Any]]:
     """Create uniform image format for querying llm."""
-    return [
+    content = [
         {"type": "text", "text": prompt},
-        {"type": "image_url", "image_url": {"url": image_base64}},
     ]
+    content.extend(
+        [{"type": "image_url", "image_url": {"url": url}} for url in image_base64]
+    )
+    return content
 
 
 def mcpocr(
-    image_url: str = Field(description="The input image in given filepath or url."),
+    image_urls: List[str] = Field(
+        description="The input image in given a list of filepaths or urls."
+    ),
 ) -> str:
-    """read text (if present) from the given image in given filepath or url."""
+    """read text (if present) from the given image in given a list of filepaths or urls."""
     llm = get_llm_model(llm_config)
 
     inputs = []
     try:
-        image_base64 = encode_image(image_url)
-        content = create_image_content(IMAGE_OCR, image_base64)
+        image_base64 = encode_images(image_urls)
+        content = create_image_contents(IMAGE_OCR, image_base64)
         inputs.append({"role": "user", "content": content})
 
         response = llm.chat.completions.create(
             messages=inputs,
             model="gpt-4o",
-            **{"temperature": 0.7},
+            temperature=0,
         )
         image_text = handle_llm_response(
             response.choices[0].message.content, "image_text"
@@ -154,24 +162,24 @@ def mcpocr(
 
 
 def mcpreasoning(
-    image_url: str = Field(description="The input image in given filepath or url."),
+    image_urls: List[str] = Field(
+        description="The input image(s) in given a list of filepaths or urls."
+    ),
     question: str = Field(description="The question to ask."),
 ) -> str:
-    """solve the question by careful reasoning given the image in given filepath or url."""
+    """solve the question by careful reasoning given the image(s) in given filepath or url."""
     llm = get_llm_model(llm_config)
 
     inputs = []
     try:
-        image_base64 = encode_image(image_url)
-        content = create_image_content(
-            IMAGE_REASONING.format(task=question), image_base64
-        )
+        reasoning_prompt = IMAGE_REASONING.format(task=question)
+        image_base64 = encode_images(image_urls)
+        content = create_image_contents(reasoning_prompt, image_base64)
         inputs.append({"role": "user", "content": content})
-
         response = llm.chat.completions.create(
             messages=inputs,
             model="gpt-4o",
-            **{"temperature": 0.7},
+            temperature=0,
         )
         image_reasoning_result = handle_llm_response(
             response.choices[0].message.content, "image_reasoning_result"
@@ -188,4 +196,11 @@ def mcpreasoning(
 
 
 if __name__ == "__main__":
-    run_mcp_server("Image Server", funcs=[mcpocr, mcpreasoning], port=1111)
+    run_mcp_server(
+        "Image Server",
+        funcs=[
+            # mcpocr,
+            mcpreasoning
+        ],
+        port=1111,
+    )

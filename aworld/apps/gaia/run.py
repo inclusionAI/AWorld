@@ -40,12 +40,12 @@ if __name__ == "__main__":
         llm_base_url="http://localhost:3456",
         # llm_api_key=llm_api_key,
         # llm_base_url=llm_base_url,
-        llm_temperature=0.0,
+        llm_temperature=0.3,
     )
 
     # Define a task
-    save_path = "result.json"
-    save_score_path = "score.json"
+    save_path = "/Users/arac/Desktop/gaia/result.json"
+    save_score_path = "/Users/arac/Desktop/gaia/score.json"
     if os.path.exists(save_path):
         with open(save_path, "r") as f:
             _results = json.load(f)
@@ -70,6 +70,7 @@ if __name__ == "__main__":
         #     "What animal is in the picture? The file path is /Users/arac/Desktop/qw.jpg"
         # )
         # sample["Final answer"] = "cat"
+        question = "Open Goolge website and serach the newest B&O headphones and report the corresponding price in the browser"
         logger.info(f"question: {question}")
 
         # debug

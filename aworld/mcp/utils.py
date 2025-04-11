@@ -1,9 +1,11 @@
-import logging
-from typing import List, Dict, Any
 import json
 import os
-from pathlib import Path
+import traceback
 from contextlib import AsyncExitStack
+from pathlib import Path
+from typing import Any, Dict, List
+
+from loguru import logger as logging
 
 from aworld.mcp.server import MCPServer, MCPServerSse
 
@@ -20,59 +22,73 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                     required = tool.inputSchema.get("required", [])
                     _properties = tool.inputSchema["properties"]
                     for param_name, param_info in _properties.items():
-                        param_type = param_info["type"] if param_info["type"] != "str" else "string"
-                        param_desc = param_info["description"] if param_info["description"] else ""
-                        
+                        param_type = (
+                            param_info["type"]
+                            if param_info["type"] != "str"
+                            else "string"
+                        )
+                        param_desc = (
+                            param_info["description"]
+                            if param_info["description"]
+                            else ""
+                        )
+
                         if param_type == "array":
                             # Handle array type parameters
-                            item_type = param_info.get("items", {}).get("type", "string")
+                            item_type = param_info.get("items", {}).get(
+                                "type", "string"
+                            )
                             if item_type == "str":
                                 item_type = "string"
                             properties[param_name] = {
                                 "description": param_desc,
                                 "type": param_type,
-                                "items": {
-                                    "type": item_type
-                                }
+                                "items": {"type": item_type},
                             }
                         else:
                             # Handle non-array type parameters
                             properties[param_name] = {
                                 "description": param_desc,
-                                "type": param_type
+                                "type": param_type,
                             }
-                        
+
                         if param_info.get("required", False):
                             required.append(param_name)
 
                 openai_function_schema = {
-                    "name": f'{server.name}__{tool.name}',
+                    "name": f"{server.name}__{tool.name}",
                     "description": tool.description,
                     "parameters": {
                         "type": "object",
                         "properties": properties,
-                        "required": required
-                    }
+                        "required": required,
+                    },
                 }
-                openai_tools.append({
-                    "type": "function",
-                    "function": openai_function_schema,
-                    #"is_mcp": "true"
-                })
-            logging.info(f"✅ server #{i + 1} ({server.name}) connected success，tools: {len(tools)}")
+                openai_tools.append(
+                    {
+                        "type": "function",
+                        "function": openai_function_schema,
+                        # "is_mcp": "true"
+                    }
+                )
+            logging.info(
+                f"✅ server #{i + 1} ({server.name}) connected success，tools: {len(tools)}"
+            )
 
         except Exception as e:
             logging.error(f"❌ server #{i+1} ({server.name}) connect fail: {e}")
+            logging.error(traceback.format_exc())
             return []
 
     return openai_tools
+
 
 async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any]]:
     """Default implement transform framework standard protocol to openai protocol of tool description."""
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.normpath(os.path.join(current_dir, "../config/mcp.json"))
-    
+
     if not os.path.exists(config_path):
         logging.info(f"mcp config is not exist: {config_path}")
         return []
@@ -89,10 +105,9 @@ async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any
     server_configs = []
     for server_name, server_config in mcp_servers_config.items():
         if tools is None or server_name in tools:
-            server_configs.append({
-                "name": "mcp__"+server_name,
-                "params": {"url": server_config["url"]}
-            })
+            server_configs.append(
+                {"name": "mcp__" + server_name, "params": {"url": server_config["url"]}}
+            )
 
     if not server_configs:
         logging.info("not match mcp server")
@@ -102,11 +117,10 @@ async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any
         servers = []
         for server_config in server_configs:
             server = MCPServerSse(
-                name=server_config["name"],
-                params=server_config["params"]
+                name=server_config["name"], params=server_config["params"]
             )
             server = await stack.enter_async_context(server)
             servers.append(server)
-        openai_tools =  await run(servers)
+        openai_tools = await run(servers)
 
     return openai_tools

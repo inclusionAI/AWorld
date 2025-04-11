@@ -167,7 +167,17 @@ def mcpreadpdf(
             # Extract images if requested
             if extract_images:
                 images_data = []
-                temp_dir = tempfile.mkdtemp()
+                # Use /tmp directory for storing images
+                output_dir = "/tmp/pdf_images"
+
+                # Create output directory if it doesn't exist
+                os.makedirs(output_dir, exist_ok=True)
+
+                # Generate a unique subfolder based on filename to avoid conflicts
+                pdf_name = os.path.splitext(os.path.basename(document_path))[0]
+                timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                image_dir = os.path.join(output_dir, f"{pdf_name}_{timestamp}")
+                os.makedirs(image_dir, exist_ok=True)
 
                 try:
                     # Open PDF with PyMuPDF
@@ -188,50 +198,42 @@ def mcpreadpdf(
                             image_bytes = base_image["image"]
                             image_ext = base_image["ext"]
 
-                            # Save image to temporary file
+                            # Save image to file in /tmp directory
                             img_filename = (
                                 f"pdf_image_p{page_index+1}_{img_index+1}.{image_ext}"
                             )
-                            img_path = os.path.join(temp_dir, img_filename)
+                            img_path = os.path.join(image_dir, img_filename)
 
                             with open(img_path, "wb") as img_file:
                                 img_file.write(image_bytes)
-
-                            # Convert to base64
-                            base64_image = encode_image_from_file(img_path)
+                                logger.success(f"Image saved: {img_path}")
 
                             # Get image dimensions
                             with Image.open(img_path) as img:
                                 width, height = img.size
 
-                            # Add to results
+                            # Add to results with file path instead of base64
                             images_data.append(
                                 {
                                     "page": page_index + 1,
                                     "format": image_ext,
                                     "width": width,
                                     "height": height,
-                                    "image": f"data:image/{image_ext};base64,{base64_image}",
+                                    "path": img_path,
                                 }
                             )
 
                     result["images"] = images_data
                     result["image_count"] = len(images_data)
+                    result["image_dir"] = image_dir
 
-                finally:
-                    # Clean up temporary files
-                    try:
-                        for file in os.listdir(temp_dir):
-                            os.remove(os.path.join(temp_dir, file))
-                        os.rmdir(temp_dir)
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            f"Error cleaning up temporary files: {str(cleanup_error)}"
-                        )
+                except Exception as img_error:
+                    logger.error(f"Error extracting images: {str(img_error)}")
+                    # Don't clean up on error so we can keep any successfully extracted images
+                    result["error"] = str(img_error)
+
             # Return results
-            ret = json.dumps(result)
-            # logger.success(f"PDF file reading ends for {document_path}\n{ret}")
-            return ret
+            return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return handle_error(e, "PDF file reading")
 
