@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 from urllib.parse import urlparse
 
@@ -70,24 +71,28 @@ def encode_audio(audio_url: str, with_header: bool = True) -> str:
 
 
 def mcptranscribe(
-    audio_url: str = Field(description="The input audio in given filepath or url."),
+    audio_urls: str = Field(
+        description="The input audio in given a list of filepaths or urls."
+    ),
 ) -> str:
-    """transcribe the given audio in given filepath or url."""
+    """transcribe the given audio in a list of filepaths or urls."""
     llm = get_llm_model(llm_config)
 
+    transcriptions = []
     try:
-        with open(audio_url, "rb") as audio_file:
-            transcription = llm.audio.transcriptions.create(
-                file=audio_file,
-                model="gpt-4o-transcribe",
-                response_format="text",
-            )
+        for audio_url in audio_urls:
+            with open(audio_url, "rb") as audio_file:
+                transcription = llm.audio.transcriptions.create(
+                    file=audio_file,
+                    model="gpt-4o-transcribe",
+                    response_format="text",
+                )
+                transcriptions.append(transcription)
     except (ValueError, IOError, RuntimeError) as e:
-        transcription = ""
         logger.error(f"audio_transcribe-Execute error: {str(e)}")
 
-    logger.info(f"---get_text_by_transcribe-transcription:{transcription}")
-    return transcription
+    logger.info(f"---get_text_by_transcribe-transcription:{transcriptions}")
+    return json.dumps(transcriptions, ensure_ascii=False)
 
 
 if __name__ == "__main__":

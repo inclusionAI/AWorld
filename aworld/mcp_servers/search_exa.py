@@ -81,7 +81,7 @@ def mcpsearchquery(
 def mcpsearch(
     query: str = Field(..., description="The query string."),
     num_results: str = Field(
-        "5", description="Number of search results to return (default 10)."
+        "20", description="Number of search results to return (default 20)."
     ),
     include_domains: List[str] = Field(
         None, description="Domains to include in the search."
