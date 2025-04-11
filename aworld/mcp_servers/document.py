@@ -144,7 +144,7 @@ def mcpreadxml(
 
 
 def mcpreadpdf(
-    document_path: str = Field(description="The local input PDF file path."),
+    document_paths: List[str] = Field(description="The local input PDF file paths."),
     extract_images: bool = Field(
         default=False, description="Whether to extract images from PDF (default: False)"
     ),
@@ -158,80 +158,80 @@ def mcpreadpdf(
         import fitz  # PyMuPDF
         from PyPDF2 import PdfReader
 
-        with open(document_path, "rb") as f:
-            reader = PdfReader(f)
-            content = " ".join(page.extract_text() for page in reader.pages)
+        results = []
+        for document_path in document_paths:
+            with open(document_path, "rb") as f:
+                reader = PdfReader(f)
+                content = " ".join(page.extract_text() for page in reader.pages)
 
-            result = {"content": content}
+                result = {"content": content}
 
-            # Extract images if requested
-            if extract_images:
-                images_data = []
-                # Use /tmp directory for storing images
-                output_dir = "/tmp/pdf_images"
+                # Extract images if requested
+                if extract_images:
+                    images_data = []
+                    # Use /tmp directory for storing images
+                    output_dir = "/tmp/pdf_images"
 
-                # Create output directory if it doesn't exist
-                os.makedirs(output_dir, exist_ok=True)
+                    # Create output directory if it doesn't exist
+                    os.makedirs(output_dir, exist_ok=True)
 
-                # Generate a unique subfolder based on filename to avoid conflicts
-                pdf_name = os.path.splitext(os.path.basename(document_path))[0]
-                timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                image_dir = os.path.join(output_dir, f"{pdf_name}_{timestamp}")
-                os.makedirs(image_dir, exist_ok=True)
+                    # Generate a unique subfolder based on filename to avoid conflicts
+                    pdf_name = os.path.splitext(os.path.basename(document_path))[0]
+                    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                    image_dir = os.path.join(output_dir, f"{pdf_name}_{timestamp}")
+                    os.makedirs(image_dir, exist_ok=True)
 
-                try:
-                    # Open PDF with PyMuPDF
-                    pdf_document = fitz.open(document_path)
+                    try:
+                        # Open PDF with PyMuPDF
+                        pdf_document = fitz.open(document_path)
 
-                    # Iterate through each page
-                    for page_index in range(len(pdf_document)):
-                        page = pdf_document[page_index]
+                        # Iterate through each page
+                        for page_index in range(len(pdf_document)):
+                            page = pdf_document[page_index]
 
-                        # Get image list
-                        image_list = page.get_images(full=True)
+                            # Get image list
+                            image_list = page.get_images(full=True)
 
-                        # Process each image
-                        for img_index, img in enumerate(image_list):
-                            # Extract image information
-                            xref = img[0]
-                            base_image = pdf_document.extract_image(xref)
-                            image_bytes = base_image["image"]
-                            image_ext = base_image["ext"]
+                            # Process each image
+                            for img_index, img in enumerate(image_list):
+                                # Extract image information
+                                xref = img[0]
+                                base_image = pdf_document.extract_image(xref)
+                                image_bytes = base_image["image"]
+                                image_ext = base_image["ext"]
 
-                            # Save image to file in /tmp directory
-                            img_filename = (
-                                f"pdf_image_p{page_index+1}_{img_index+1}.{image_ext}"
-                            )
-                            img_path = os.path.join(image_dir, img_filename)
+                                # Save image to file in /tmp directory
+                                img_filename = f"pdf_image_p{page_index+1}_{img_index+1}.{image_ext}"
+                                img_path = os.path.join(image_dir, img_filename)
 
-                            with open(img_path, "wb") as img_file:
-                                img_file.write(image_bytes)
-                                logger.success(f"Image saved: {img_path}")
+                                with open(img_path, "wb") as img_file:
+                                    img_file.write(image_bytes)
+                                    logger.success(f"Image saved: {img_path}")
 
-                            # Get image dimensions
-                            with Image.open(img_path) as img:
-                                width, height = img.size
+                                # Get image dimensions
+                                with Image.open(img_path) as img:
+                                    width, height = img.size
 
-                            # Add to results with file path instead of base64
-                            images_data.append(
-                                {
-                                    "page": page_index + 1,
-                                    "format": image_ext,
-                                    "width": width,
-                                    "height": height,
-                                    "path": img_path,
-                                }
-                            )
+                                # Add to results with file path instead of base64
+                                images_data.append(
+                                    {
+                                        "page": page_index + 1,
+                                        "format": image_ext,
+                                        "width": width,
+                                        "height": height,
+                                        "path": img_path,
+                                    }
+                                )
 
-                    result["images"] = images_data
-                    result["image_count"] = len(images_data)
-                    result["image_dir"] = image_dir
+                        result["images"] = images_data
+                        result["image_count"] = len(images_data)
+                        result["image_dir"] = image_dir
 
-                except Exception as img_error:
-                    logger.error(f"Error extracting images: {str(img_error)}")
-                    # Don't clean up on error so we can keep any successfully extracted images
-                    result["error"] = str(img_error)
-
+                    except Exception as img_error:
+                        logger.error(f"Error extracting images: {str(img_error)}")
+                        # Don't clean up on error so we can keep any successfully extracted images
+                        result["error"] = str(img_error)
+                results.append(result)
             # Return results
             return json.dumps(result, ensure_ascii=False)
     except Exception as e:
