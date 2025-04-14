@@ -191,8 +191,13 @@ class PythonTool(Tool[Observation, List[ActionModel]]):
                 if not code:
                     logger.warning(f"{action} no code to execute.")
                     continue
-                _, output, error = self.execute(code)
-                observation.content = output
+                try:
+                    _, output, error = self.execute(code)
+                    observation.content = output
+                except Exception as e:
+                    error = str(e)
+                    output = error
+
                 observation.action_result.append(
                     ActionResult(is_done=True,
                                  success=False if error else True,
