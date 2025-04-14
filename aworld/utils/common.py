@@ -41,18 +41,29 @@ def _walk_to_root(path: str) -> Iterator[str]:
         last_dir, current_dir = current_dir, parent_dir
 
 
-def find_file(filename, usecwd: bool = True) -> str:
-    def _is_interactive():
+def find_file(filename: str) -> str:
+    """Find file from the folders for the given file.
+
+    NOTE: Current running path priority, followed by the execution file path, and finally the aworld package path.
+
+    Args:
+        filename: The file name that you want to search.
+    """
+
+    def run_dir():
         try:
             main = __import__('__main__', None, None, fromlist=['__file__'])
+            return os.path.dirname(main.__file__)
         except ModuleNotFoundError:
-            return False
-        return not hasattr(main, '__file__')
+            return os.getcwd()
 
-    if usecwd or _is_interactive() or getattr(sys, 'frozen', False):
+    path = os.getcwd()
+    if os.path.exists(os.path.join(path, filename)):
         path = os.getcwd()
+    elif os.path.exists(os.path.join(run_dir(), filename)):
+        path = run_dir()
     else:
-        frame = sys._getframe()
+        frame = inspect.currentframe()
         current_file = __file__
 
         while frame.f_code.co_filename == current_file or not os.path.exists(

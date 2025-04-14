@@ -7,7 +7,7 @@ import json
 
 from typing import Dict, Any, Tuple, Optional
 
-from aworld.core.async_func import async_func
+from aworld.utils.async_func import async_func
 from aworld.virtual_environments.browsers.util.dom import DOMElementNode, DOMBaseNode, DOMTextNode, ViewportInfo
 from aworld.logs.util import logger
 
