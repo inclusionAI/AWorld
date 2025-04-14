@@ -197,7 +197,10 @@ def _get_install_command(installer: str, package_name: str, version: str = "") -
     """
     if installer == 'pip':
         # Use sys.executable to ensure the right Python interpreter is used
-        cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade']
+        pytho3 = sys.executable
+        if pytho3[-1] == 'n':
+            pytho3 += '3'
+        cmd = [pytho3, '-m', 'pip', 'install', '--upgrade']
         if version:
             cmd.append(f'{package_name}=={version}')
         else:
