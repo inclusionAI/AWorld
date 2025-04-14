@@ -223,8 +223,8 @@ def mcpsearchgoogle(
         if not cse_id:
             raise ValueError("GOOGLE_CSE_ID environment variable not set")
 
-        # Ensure num_results is within valid range (1-10)
-        num_results = max(1, min(10, num_results))
+        # Ensure num_results is within valid range
+        num_results = max(1, num_results)
 
         # Build the Google Custom Search API URL
         url = "https://www.googleapis.com/customsearch/v1"

@@ -22,21 +22,41 @@ Main functions:
 - read_llm_config_from_yaml: Reads LLM configuration from YAML files
 """
 
-import inspect
+import asyncio
 import json
 import os
 import random
 import re
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+import magic
 import requests
-import yaml
 from mcp.server import FastMCP
 
-from aworld.config import ModelConfig
 from aworld.logs.util import logger
+from aworld.mcp.utils import mcp_tool_desc_transform
+
+
+def get_llm_config_from_os_environ(llm_model_name="gpt-4o", **kwargs) -> Dict[str, str]:
+    """
+    Get LLM configuration from environment variables
+    Returns:
+        Dict[str, str]: Dictionary containing LLM configuration
+    """
+    config = {
+        "llm_provider": "openai",
+        "llm_model_name": llm_model_name,
+        "llm_base_url": os.environ.get("LLM_BASE_URL"),
+        "llm_api_key": os.environ.get("LLM_API_KEY"),
+        "temperature": os.environ.get("LLM_TEMPERATURE", 0.1),
+    }
+    for k, v in kwargs.items():
+        if v:
+            config[k] = v
+    logger.success(f"llm_config: {json.dumps(config, indent=4, ensure_ascii=False)}")
+    return config
 
 
 def run_mcp_server(
@@ -58,74 +78,6 @@ def run_mcp_server(
     mcp.settings.port = port
     mcp.run(transport="sse")
     return mcp
-
-
-def get_current_filename_without_extension() -> str:
-    """
-    Get the current file name without extension and path from caller's file
-
-    Returns:
-        str: Current file name without extension
-    """
-    caller_frame = inspect.stack()[1]
-    caller_filename = caller_frame.filename
-    base_filename = os.path.basename(caller_filename)
-    filename_without_extension = os.path.splitext(base_filename)[0]
-    return filename_without_extension
-
-
-def read_config_from_yaml(filepath: str) -> Dict[str, Any]:
-    """
-    Read YAML configuration file and return as dictionary
-
-    Args:
-        filepath: Relative or absolute path to YAML file
-
-    Returns:
-        Dict[str, Any]: Dictionary containing configuration data
-
-    Raises:
-        FileNotFoundError: When file does not exist
-        yaml.YAMLError: When YAML parsing fails
-    """
-    if not os.path.isabs(filepath):
-        project_root = os.path.dirname((os.path.dirname(__file__)))
-        config_dir = os.path.join(project_root, "config")
-        filepath = os.path.join(config_dir, filepath)
-        logger.debug(f"Resolved config path: {filepath}")
-
-    if not os.path.exists(filepath):
-        logger.error(f"Configuration file not found: {filepath}")
-        raise FileNotFoundError(f"Configuration file not found: {filepath}")
-
-    try:
-        with open(filepath, "r", encoding="utf-8") as file:
-            logger.info(f"Reading configuration from: {filepath}")
-            config_data = yaml.safe_load(file)
-        return config_data
-    except yaml.YAMLError as e:
-        logger.error(f"YAML parsing error: {str(e)}")
-        raise yaml.YAMLError(f"YAML parsing error: {str(e)}")
-
-
-def read_llm_config_from_yaml(filepath: str) -> ModelConfig:
-    """
-    Read LLM configuration from YAML file and return as ModelConfig
-
-    Args:
-        filepath: Relative or absolute path to YAML file
-
-    Returns:
-        ModelConfig: Configuration for LLM model
-
-    Raises:
-        KeyError: When llm_config section is missing
-    """
-    config = read_config_from_yaml(filepath)
-    if "llm_config" not in config:
-        logger.error(f"No llm_config section found in {filepath}")
-        raise KeyError(f"No llm_config section found in {filepath}")
-    return ModelConfig(**config["llm_config"])
 
 
 def handle_llm_response(response_content: str, result_key: str) -> str:
@@ -170,11 +122,9 @@ def get_mime_type(file_path: str, default_mime: Optional[str] = None) -> str:
     """
     # Try using python-magic for accurate MIME type detection
     try:
-        import magic
-
         mime = magic.Magic(mime=True)
         return mime.from_file(file_path)
-    except (ImportError, AttributeError, IOError):
+    except (AttributeError, IOError):
         # Fallback to extension-based detection
         extension_mime_map = {
             # Audio formats
@@ -321,9 +271,5 @@ def get_file_from_source(
 
 
 if __name__ == "__main__":
-    import asyncio
-
-    from aworld.mcp.utils import mcp_tool_desc_transform
-
     mcp_tools = asyncio.run(mcp_tool_desc_transform(["search"]))
     logger.success(f"{json.dumps(mcp_tools, indent=4, ensure_ascii=False)}")

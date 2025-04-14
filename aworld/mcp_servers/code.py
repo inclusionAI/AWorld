@@ -26,17 +26,12 @@ from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
 from aworld.mcp_servers.utils import (
-    get_current_filename_without_extension,
-    read_llm_config_from_yaml,
     run_mcp_server,
+    get_llm_config_from_os_environ,
 )
 from aworld.models.llm import get_llm_model
 
-
-# Read LLM configuration
-filename = get_current_filename_without_extension()
-llm_config = read_llm_config_from_yaml(f"{filename}_llm_config.yaml")
-
+llm_config=get_llm_config_from_os_environ(llm_mode_name="gpt-4o")
 
 class CodeGenerationResult(BaseModel):
     """Model representing the result of code generation"""

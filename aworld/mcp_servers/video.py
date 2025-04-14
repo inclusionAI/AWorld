@@ -22,16 +22,14 @@ from pydantic import Field
 
 from aworld.logs.util import logger
 from aworld.mcp_servers.utils import (
-    get_current_filename_without_extension,
     get_file_from_source,
+    get_llm_config_from_os_environ,
     handle_llm_response,
-    read_llm_config_from_yaml,
     run_mcp_server,
 )
 from aworld.models.llm import get_llm_model
 
-filename = get_current_filename_without_extension()
-llm_config = read_llm_config_from_yaml(f"{filename}_analysis_tool.yaml")
+llm_config = get_llm_config_from_os_environ(llm_model_name="gpt-4o")
 
 VIDEO_ANALYZE = (
     "Input is a sequence of video frames. Given user's task: {task}, "

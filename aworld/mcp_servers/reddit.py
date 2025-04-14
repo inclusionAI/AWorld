@@ -16,6 +16,7 @@ Main functions:
 """
 
 import json
+import os
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -116,30 +117,26 @@ def handle_error(e: Exception, operation_type: str) -> str:
     return error.model_dump_json()
 
 
-def get_reddit_instance(
-    client_id: str,
-    client_secret: str,
-    user_agent: str = "AWorld Reddit MCP Server",
-) -> praw.Reddit:
+def get_reddit_instance() -> praw.Reddit:
     """
     Create and return a Reddit API instance.
 
     Args:
-        client_id: Reddit API client ID
-        client_secret: Reddit API client secret
         user_agent: User agent string for API requests
 
     Returns:
         Authenticated Reddit instance
     """
     return praw.Reddit(
-        client_id=client_id, client_secret=client_secret, user_agent=user_agent
+        client_id=os.environ.get("REDDIT_CLIENT_ID"),
+        client_secret=os.environ.get("REDDIT_CLIENT_SECRET"),
+        user_name=os.environ.get("REDDIT_USER_NAME"),
+        password=os.environ.get("REDDIT_PASSWORD"),
+        user_agent="AWorld Reddit MCP Server",
     )
 
 
 def mcpgethotposts(
-    client_id: str = Field(description="Reddit API client ID"),
-    client_secret: str = Field(description="Reddit API client secret"),
     subreddit: str = Field(description="Subreddit name (without r/)"),
     limit: int = Field(default=10, description="Number of posts to retrieve (max 100)"),
     time_filter: str = Field(
@@ -150,8 +147,6 @@ def mcpgethotposts(
     Get hot posts from a subreddit.
 
     Args:
-        client_id: Reddit API client ID
-        client_secret: Reddit API client secret
         subreddit: Subreddit name (without r/)
         limit: Number of posts to retrieve (max 100)
         time_filter: Time filter for posts
@@ -166,7 +161,7 @@ def mcpgethotposts(
             logger.warning("Limit capped at 100 posts")
 
         # Initialize Reddit API
-        reddit = get_reddit_instance(client_id, client_secret)
+        reddit = get_reddit_instance()
 
         # Get subreddit
         subreddit_obj = reddit.subreddit(subreddit)
@@ -208,8 +203,6 @@ def mcpgethotposts(
 
 
 def mcpsearchreddit(
-    client_id: str = Field(description="Reddit API client ID"),
-    client_secret: str = Field(description="Reddit API client secret"),
     query: str = Field(description="Search query"),
     subreddit: Optional[str] = Field(
         default=None, description="Limit search to specific subreddit (optional)"
@@ -229,8 +222,6 @@ def mcpsearchreddit(
     Search Reddit for posts matching a query.
 
     Args:
-        client_id: Reddit API client ID
-        client_secret: Reddit API client secret
         query: Search query
         subreddit: Limit search to specific subreddit (optional)
         sort: Sort method for results
@@ -247,7 +238,7 @@ def mcpsearchreddit(
             logger.warning("Limit capped at 100 results")
 
         # Initialize Reddit API
-        reddit = get_reddit_instance(client_id, client_secret)
+        reddit = get_reddit_instance()
 
         # Perform search
         if subreddit:
@@ -292,8 +283,6 @@ def mcpsearchreddit(
 
 
 def mcpgetpostcomments(
-    client_id: str = Field(description="Reddit API client ID"),
-    client_secret: str = Field(description="Reddit API client secret"),
     post_id: str = Field(description="Reddit post ID"),
     limit: int = Field(
         default=25, description="Number of comments to retrieve (max 100)"
@@ -307,8 +296,6 @@ def mcpgetpostcomments(
     Get comments for a specific Reddit post.
 
     Args:
-        client_id: Reddit API client ID
-        client_secret: Reddit API client secret
         post_id: Reddit post ID
         limit: Number of comments to retrieve (max 100)
         sort: Sort method for comments
@@ -323,7 +310,7 @@ def mcpgetpostcomments(
             logger.warning("Limit capped at 100 comments")
 
         # Initialize Reddit API
-        reddit = get_reddit_instance(client_id, client_secret)
+        reddit = get_reddit_instance()
 
         # Get submission
         submission = reddit.submission(id=post_id)
@@ -387,16 +374,12 @@ def mcpgetpostcomments(
 
 
 def mcpgetsubredditinfo(
-    client_id: str = Field(description="Reddit API client ID"),
-    client_secret: str = Field(description="Reddit API client secret"),
     subreddit: str = Field(description="Subreddit name (without r/)"),
 ) -> str:
     """
     Get information about a subreddit.
 
     Args:
-        client_id: Reddit API client ID
-        client_secret: Reddit API client secret
         subreddit: Subreddit name (without r/)
 
     Returns:
@@ -404,7 +387,7 @@ def mcpgetsubredditinfo(
     """
     try:
         # Initialize Reddit API
-        reddit = get_reddit_instance(client_id, client_secret)
+        reddit = get_reddit_instance()
 
         # Get subreddit
         subreddit_obj = reddit.subreddit(subreddit)
@@ -429,8 +412,6 @@ def mcpgetsubredditinfo(
 
 
 def mcpgetuserinfo(
-    client_id: str = Field(description="Reddit API client ID"),
-    client_secret: str = Field(description="Reddit API client secret"),
     username: str = Field(description="Reddit username"),
 ) -> str:
     """
@@ -446,7 +427,7 @@ def mcpgetuserinfo(
     """
     try:
         # Initialize Reddit API
-        reddit = get_reddit_instance(client_id, client_secret)
+        reddit = get_reddit_instance()
 
         # Get user
         user = reddit.redditor(username)
@@ -469,8 +450,6 @@ def mcpgetuserinfo(
 
 
 def mcpgetuserposts(
-    client_id: str = Field(description="Reddit API client ID"),
-    client_secret: str = Field(description="Reddit API client secret"),
     username: str = Field(description="Reddit username"),
     limit: int = Field(default=25, description="Number of posts to retrieve (max 100)"),
     sort: str = Field(
@@ -501,7 +480,7 @@ def mcpgetuserposts(
             logger.warning("Limit capped at 100 posts")
 
         # Initialize Reddit API
-        reddit = get_reddit_instance(client_id, client_secret)
+        reddit = get_reddit_instance()
 
         # Get user
         user = reddit.redditor(username)
@@ -557,8 +536,6 @@ def mcpgetuserposts(
 
 
 def mcpgettopsubreddits(
-    client_id: str = Field(description="Reddit API client ID"),
-    client_secret: str = Field(description="Reddit API client secret"),
     limit: int = Field(
         default=25, description="Number of subreddits to retrieve (max 100)"
     ),
@@ -570,8 +547,6 @@ def mcpgettopsubreddits(
     Get list of top/popular subreddits.
 
     Args:
-        client_id: Reddit API client ID
-        client_secret: Reddit API client secret
         limit: Number of subreddits to retrieve (max 100)
         include_nsfw: Whether to include NSFW subreddits
 
@@ -585,7 +560,7 @@ def mcpgettopsubreddits(
             logger.warning("Limit capped at 100 subreddits")
 
         # Initialize Reddit API
-        reddit = get_reddit_instance(client_id, client_secret)
+        reddit = get_reddit_instance()
 
         # Get popular subreddits
         subreddits = []

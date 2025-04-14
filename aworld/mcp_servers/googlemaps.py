@@ -18,6 +18,7 @@ Main functions:
 """
 
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
@@ -30,6 +31,8 @@ from aworld.utils import import_package
 # Import googlemaps package, install if not available
 import_package("googlemaps")
 import googlemaps
+
+API_KEY = os.environ.get("GOOGLE_MAPS_SECRET")
 
 
 # Define model classes for different Google Maps API responses
@@ -179,7 +182,6 @@ def handle_error(e: Exception, error_type: str) -> str:
 
 def mcpgeocode(
     address: str = Field(description="Address or place name to geocode"),
-    api_key: str = Field(description="Google Maps API key"),
     language: str = Field(
         default="en", description="Language for results (default: en)"
     ),
@@ -190,7 +192,6 @@ def mcpgeocode(
 
     Args:
         address: The address or place name to geocode
-        api_key: Your Google Maps API key
         language: Language code for results (e.g., 'en', 'zh-CN')
         region: Region bias for results (e.g., 'us', 'cn')
 
@@ -199,7 +200,7 @@ def mcpgeocode(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Call geocoding API
         geocode_result = gmaps.geocode(
@@ -240,7 +241,6 @@ def mcpdistancematrix(
     destinations: List[str] = Field(
         description="List of destination addresses or coordinates"
     ),
-    api_key: str = Field(description="Google Maps API key"),
     mode: str = Field(
         default="driving",
         description="Travel mode (driving, walking, bicycling, transit)",
@@ -263,7 +263,6 @@ def mcpdistancematrix(
     Args:
         origins: List of addresses or coordinates as origins
         destinations: List of addresses or coordinates as destinations
-        api_key: Your Google Maps API key
         mode: Travel mode (driving, walking, bicycling, transit)
         language: Language code for results
         units: Units system for distances (metric, imperial)
@@ -275,7 +274,7 @@ def mcpdistancematrix(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Process departure_time
         departure_time_param = None
@@ -336,7 +335,6 @@ def mcpdistancematrix(
 def mcpdirections(
     origin: str = Field(description="Origin address or coordinates"),
     destination: str = Field(description="Destination address or coordinates"),
-    api_key: str = Field(description="Google Maps API key"),
     mode: str = Field(
         default="driving",
         description="Travel mode (driving, walking, bicycling, transit)",
@@ -368,7 +366,6 @@ def mcpdirections(
     Args:
         origin: Starting point address or coordinates
         destination: Ending point address or coordinates
-        api_key: Your Google Maps API key
         mode: Travel mode (driving, walking, bicycling, transit)
         waypoints: Optional list of waypoints
         alternatives: Whether to return alternative routes
@@ -383,7 +380,7 @@ def mcpdirections(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Process departure_time
         departure_time_param = None
@@ -460,7 +457,6 @@ def mcpdirections(
 
 def mcpplacesearch(
     query: str = Field(description="Search query (e.g., 'restaurants in New York')"),
-    api_key: str = Field(description="Google Maps API key"),
     location: Optional[str] = Field(
         default=None,
         description="Location bias as 'lat,lng' (e.g., '40.7128,-74.0060')",
@@ -485,7 +481,6 @@ def mcpplacesearch(
 
     Args:
         query: Text search query
-        api_key: Your Google Maps API key
         location: Location bias as 'lat,lng'
         radius: Search radius in meters (max 50000)
         language: Language code for results
@@ -499,7 +494,7 @@ def mcpplacesearch(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Process location parameter
         location_param = None
@@ -554,7 +549,6 @@ def mcpplacesearch(
 
 def mcpplacedetails(
     place_id: str = Field(description="Google Place ID"),
-    api_key: str = Field(description="Google Maps API key"),
     language: str = Field(default="en", description="Language for results"),
     fields: Optional[List[str]] = Field(
         default=None, description="List of place data fields to return"
@@ -574,7 +568,7 @@ def mcpplacedetails(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Default fields if none provided
         if not fields:
@@ -629,7 +623,6 @@ def mcptimezone(
     location: str = Field(
         description="Location as 'lat,lng' (e.g., '40.7128,-74.0060')"
     ),
-    api_key: str = Field(description="Google Maps API key"),
     timestamp: Optional[str] = Field(
         default=None, description="Timestamp (format: YYYY-MM-DD HH:MM:SS or 'now')"
     ),
@@ -639,7 +632,6 @@ def mcptimezone(
 
     Args:
         location: Location as 'lat,lng'
-        api_key: Your Google Maps API key
         timestamp: Timestamp for timezone calculation
 
     Returns:
@@ -647,7 +639,7 @@ def mcptimezone(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Process location parameter
         try:
@@ -686,7 +678,6 @@ def mcptimezone(
 
 def mcpelevation(
     locations: List[str] = Field(description="List of locations as 'lat,lng'"),
-    api_key: str = Field(description="Google Maps API key"),
 ) -> str:
     """
     Get elevation data for locations.
@@ -700,7 +691,7 @@ def mcpelevation(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Process locations
         locations_param = []
@@ -726,7 +717,6 @@ def mcpelevation(
 
 def mcpgetlatlng(
     address: str = Field(description="Address to convert to latitude and longitude"),
-    api_key: str = Field(description="Google Maps API key"),
     language: str = Field(default="en", description="Language for results"),
     region: Optional[str] = Field(
         default=None, description="Region bias (e.g., 'us', 'cn')"
@@ -737,7 +727,6 @@ def mcpgetlatlng(
 
     Args:
         address: The address to convert to coordinates
-        api_key: Your Google Maps API key
         language: Language code for results
         region: Region bias for results
 
@@ -746,7 +735,7 @@ def mcpgetlatlng(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Call geocoding API
         geocode_result = gmaps.geocode(
@@ -780,7 +769,6 @@ def mcpgetpostcode(
     address: str = Field(
         description="Address or 'lat,lng' coordinates to get postcode for"
     ),
-    api_key: str = Field(description="Google Maps API key"),
     language: str = Field(default="en", description="Language for results"),
 ) -> str:
     """
@@ -788,7 +776,6 @@ def mcpgetpostcode(
 
     Args:
         address: Address or 'lat,lng' coordinates
-        api_key: Your Google Maps API key
         language: Language code for results
 
     Returns:
@@ -796,7 +783,7 @@ def mcpgetpostcode(
     """
     try:
         # Initialize Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
+        gmaps = googlemaps.Client(key=API_KEY)
 
         # Check if input is coordinates
         is_coords = False
