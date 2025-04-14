@@ -1,20 +1,8 @@
 # coding: utf-8
 
 from aworld.agents.travel.prompts import write_prompt, write_sys_prompt, write_output_prompt
-from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.agent.base import Agent
-
-model_config = ModelConfig(
-    llm_provider="openai",
-    llm_model_name="gpt-4o",
-    llm_temperature=1,
-    # need to set llm_api_key for use LLM
-    llm_api_key=""
-)
-agent_config = AgentConfig(
-    llm_config=model_config,
-    # use_vision=False
-)
+from examples.travel.conf import agent_config
 
 write = Agent(
     conf=agent_config,

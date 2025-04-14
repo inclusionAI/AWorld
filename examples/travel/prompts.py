@@ -55,8 +55,6 @@ Please act as a write agent, constructing appropriate keywords and searach terms
 
 Here are the write task: {task}
 
-Here is the reference information: {reference}
-
 pleas only use one action complete this task.
 """
 
