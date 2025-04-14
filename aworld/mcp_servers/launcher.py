@@ -31,19 +31,19 @@ from aworld.logs.util import logger
 
 # Define the list of MCP servers to launch
 MCP_SERVERS = [
-    "arxiv.py",
-    "audio.py",
-    "code.py",
-    "document.py",
-    "download.py",
-    "filesystem.py",
-    "googlemaps.py",
-    "image.py",
-    "math.py",
-    "reddit.py",
-    "search.py",
-    "sympy.py",
-    "video.py",
+    "arxiv_server.py",
+    "audio_server.py",
+    "code_server.py",
+    "document_server.py",
+    "download_server.py",
+    "filesystem_server.py",
+    "googlemaps_server.py",
+    "image_server.py",
+    "math_server.py",
+    "reddit_server.py",
+    "search_server.py",
+    "sympy_server.py",
+    "video_server.py",
 ]
 
 # Special case for Playwright MCP
