@@ -2,10 +2,11 @@ import logging
 from typing import List, Dict, Any
 import json
 import os
-from pathlib import Path
 from contextlib import AsyncExitStack
 
+from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
+from aworld.utils.common import find_file
 
 
 async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
@@ -69,11 +70,11 @@ async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any
     """Default implement transform framework standard protocol to openai protocol of tool description."""
 
     # Priority given to the running path.
-    if os.path.exists(os.path.join(os.getcwd(), "mcp.json")):
-        config_path = os.path.join(os.getcwd(), "mcp.json")
-    else:
+    config_path = find_file(filename='mcp.json')
+    if not os.path.exists(config_path):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.normpath(os.path.join(current_dir, "../config/mcp.json"))
+    logger.info(f"mcp conf path: {config_path}")
 
     if not os.path.exists(config_path):
         logging.info(f"mcp config is not exist: {config_path}")

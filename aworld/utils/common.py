@@ -2,12 +2,13 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import inspect
+import os
 import pkgutil
 import re
 import sys
 import threading
 from types import FunctionType
-from typing import Callable, Any, Tuple, List
+from typing import Callable, Any, Tuple, List, Iterator
 
 
 def convert_to_snake(name: str) -> str:
@@ -22,6 +23,54 @@ def is_abstract_method(cls, method_name):
     return (hasattr(method, '__isabstractmethod__') and method.__isabstractmethod__) or (
             isinstance(method, FunctionType) and hasattr(
         method, '__abstractmethods__') and method in method.__abstractmethods__)
+
+
+def _walk_to_root(path: str) -> Iterator[str]:
+    """Yield directories starting from the given directory up to the root."""
+    if not os.path.exists(path):
+        yield ''
+
+    if os.path.isfile(path):
+        path = os.path.dirname(path)
+
+    last_dir = None
+    current_dir = os.path.abspath(path)
+    while last_dir != current_dir:
+        yield current_dir
+        parent_dir = os.path.abspath(os.path.join(current_dir, os.path.pardir))
+        last_dir, current_dir = current_dir, parent_dir
+
+
+def find_file(filename, usecwd: bool = True) -> str:
+    def _is_interactive():
+        try:
+            main = __import__('__main__', None, None, fromlist=['__file__'])
+        except ModuleNotFoundError:
+            return False
+        return not hasattr(main, '__file__')
+
+    if usecwd or _is_interactive() or getattr(sys, 'frozen', False):
+        path = os.getcwd()
+    else:
+        frame = sys._getframe()
+        current_file = __file__
+
+        while frame.f_code.co_filename == current_file or not os.path.exists(
+                frame.f_code.co_filename
+        ):
+            assert frame.f_back is not None
+            frame = frame.f_back
+        frame_filename = frame.f_code.co_filename
+        path = os.path.dirname(os.path.abspath(frame_filename))
+
+    for dirname in _walk_to_root(path):
+        if not dirname:
+            continue
+        check_path = os.path.join(dirname, filename)
+        if os.path.isfile(check_path):
+            return check_path
+
+    return ''
 
 
 def search_in_module(module: object, base_classes: List[type]) -> List[Tuple[str, type]]:

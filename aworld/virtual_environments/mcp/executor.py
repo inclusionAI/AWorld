@@ -1,5 +1,5 @@
 import json
-import logging
+
 import os
 import traceback
 
@@ -9,8 +9,9 @@ from mcp.types import TextContent
 
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.envs.tool import ToolActionExecutor, Tool
+from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
-from aworld.utils.common import sync_exec
+from aworld.utils.common import sync_exec, find_file
 
 
 class MCPToolExecutor(ToolActionExecutor):
@@ -27,12 +28,12 @@ class MCPToolExecutor(ToolActionExecutor):
         """Load MCP server configurations from config file."""
         try:
             # Priority given to the running path.
-            if os.path.exists(os.path.join(os.getcwd(), "mcp.json")):
-                config_path = os.path.join(os.getcwd(), "mcp.json")
-            else:
+            config_path = find_file(filename='mcp.json')
+            if not os.path.exists(config_path):
                 # Use relative path for config file
                 current_dir = os.path.dirname(os.path.abspath(__file__))
                 config_path = os.path.normpath(os.path.join(current_dir, "../../config/mcp.json"))
+            logger.info(f"mcp conf path: {config_path}")
 
             with open(config_path, "r") as f:
                 config_data = json.load(f)
@@ -68,7 +69,7 @@ class MCPToolExecutor(ToolActionExecutor):
             
             self.initialized = True
         except Exception as e:
-            logging.error(f"Failed to load MCP config: {traceback.format_exc()}")
+            logger.error(f"Failed to load MCP config: {traceback.format_exc()}")
 
     async def _get_or_create_server(self, server_name: str) -> MCPServer:
         """Get an existing MCP server instance or create a new one."""
@@ -161,7 +162,7 @@ class MCPToolExecutor(ToolActionExecutor):
             except Exception as e:
                 # Create an error action result
                 error_msg = str(e)
-                logging.error(f"Error executing MCP action: {error_msg}")
+                logger.error(f"Error executing MCP action: {error_msg}")
                 break
 
         return results, None
@@ -173,7 +174,7 @@ class MCPToolExecutor(ToolActionExecutor):
                 try:
                     await server_info["instance"].cleanup()
                 except Exception as e:
-                    logging.error(f"Error cleaning up MCP server {server_name}: {e}")
+                    logger.error(f"Error cleaning up MCP server {server_name}: {e}")
 
     def execute_action(self, actions: List[ActionModel], **kwargs) -> Tuple[
         List[ActionResult], Any]:
