@@ -51,6 +51,14 @@ class GotoUrl(ExecutableAction):
 
         params = action.params
         url = params.get("url")
+        if not url:
+            logger.warning("empty url, go to nothing.")
+            return ActionResult(content="empty url", keep=True), page
+        items = url.split('://')
+        if len(items) == 1:
+            if items[0][0] != '/':
+                url = "file://" + os.path.join(os.getcwd(), url)
+
         page.goto(url, timeout=60000)
         page.wait_for_load_state()
         msg = f'Navigated to {url}'
@@ -68,6 +76,11 @@ class GotoUrl(ExecutableAction):
         if not url:
             logger.warning("empty url, go to nothing.")
             return ActionResult(content="empty url", keep=True), page
+
+        items = url.split('://')
+        if len(items) == 1:
+            if items[0][0] != '/':
+                url = "file://" + os.path.join(os.getcwd(), url)
 
         await page.goto(url, timeout=60000)
         await page.wait_for_load_state()
@@ -88,7 +101,7 @@ class InputText(ExecutableAction):
             return ActionResult(content="input text no page", keep=True), page
 
         params = action.params
-        index = params.get("index")
+        index = params.get("index", 0)
         # compatible with int and str datatype
         index = int(index)
         input = params.get("text", "")
@@ -406,16 +419,47 @@ class ExtractContent(ExecutableAction):
             return ActionResult(content="extract content no page", keep=True), page
 
         goal = action.params.get("goal")
-        llm_config=kwargs.get("llm_config")
-        if llm_config:
+        llm_config = kwargs.get("llm_config")
+        if llm_config and llm_config.llm_api_key:
             llm = get_llm_model(llm_config)
+        max_extract_content_output_tokens = kwargs.get("max_extract_content_output_tokens")
+        max_extract_content_input_tokens = kwargs.get("max_extract_content_input_tokens")
+
         content = markdownify.markdownify(page.content())
 
+        # Truncate content if it exceeds max input tokens
+        if max_extract_content_input_tokens and len(content) > max_extract_content_input_tokens:
+            logger.warning(
+                f"Content length ({len(content)}) exceeds max input tokens ({max_extract_content_input_tokens}). Truncating content.")
+            content = content[:max_extract_content_input_tokens]
+
         prompt = 'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Just extract the key pieces of information that are relevant to the goal. If the information is long, summarize it. Keep the output to less than 3000 words. Respond in json format. Extraction goal: {goal}, Page: {page}'
+        prompt_with_outputlimit = 'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format. Extraction goal: {goal}, Page: {page} \n\n#The length of the returned result must be less than {max_extract_content_output_tokens} characters.'
         template = PromptTemplate(input_variables=['goal', 'page'], template=prompt)
+
         try:
+            # extract content without length limit to maintain the original content
             output = llm.invoke(template.format(goal=goal, page=content))
-            msg = f'Extracted from page\n: {output.content}\n'
+            result_content = output.content
+
+            # Check if output exceeds the token limit and retry with length-limited prompt if needed
+            if max_extract_content_output_tokens and len(result_content) > max_extract_content_output_tokens:
+                logger.warning(
+                    f"Output exceeds maximum length ({len(result_content)} > {max_extract_content_output_tokens}). Retrying with limited prompt.")
+                template_with_limit = PromptTemplate(
+                    input_variables=['goal', 'page', 'max_extract_content_output_tokens'],
+                    template=prompt_with_outputlimit
+                )
+                # extract content with length limit
+                output = llm.invoke(template_with_limit.format(
+                    goal=goal,
+                    page=content,
+                    max_extract_content_output_tokens=max_extract_content_output_tokens,
+                    max_tokens=max_extract_content_output_tokens
+                ))
+                result_content = output.content
+
+            msg = f'Extracted from page\n: {result_content}\n'
             logger.info(msg)
             return ActionResult(content=msg, keep=True), page
         except Exception as e:
@@ -434,14 +478,44 @@ class ExtractContent(ExecutableAction):
             return ActionResult(content="extract content no page", keep=True), page
 
         goal = action.params.get("goal")
-        llm = kwargs.get("llm")
+        llm_config = kwargs.get("llm_config")
+        if llm_config and llm_config.llm_api_key:
+            llm = get_llm_model(llm_config)
         content = markdownify.markdownify(page.content())
+        max_extract_content_output_tokens = kwargs.get("max_extract_content_output_tokens")
+        max_extract_content_input_tokens = kwargs.get("max_extract_content_input_tokens")
+
+        # Truncate content if it exceeds max input tokens
+        if max_extract_content_input_tokens and len(content) > max_extract_content_input_tokens:
+            logger.warning(
+                f"Content length ({len(content)}) exceeds max input tokens ({max_extract_content_input_tokens}). Truncating content.")
+            content = content[:max_extract_content_input_tokens]
 
         prompt = 'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format. Extraction goal: {goal}, Page: {page}'
+        prompt_with_outputlimit = 'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format. Extraction goal: {goal}, Page: {page} \n\n#The length of the returned result must be less than {max_extract_content_output_tokens} characters.'
         template = PromptTemplate(input_variables=['goal', 'page'], template=prompt)
+
         try:
             output = llm.invoke(template.format(goal=goal, page=content))
-            msg = f'Extracted from page\n: {output.content}\n'
+            result_content = output.content
+
+            # Check if output exceeds the token limit and retry with length-limited prompt if needed
+            if max_extract_content_output_tokens and len(result_content) > max_extract_content_output_tokens:
+                logger.info(
+                    f"Output exceeds maximum length ({len(result_content)} > {max_extract_content_output_tokens}). Retrying with limited prompt.")
+                template_with_limit = PromptTemplate(
+                    input_variables=['goal', 'page', 'max_extract_content_output_tokens'],
+                    template=prompt_with_outputlimit
+                )
+                output = llm.invoke(template_with_limit.format(
+                    goal=goal,
+                    page=content,
+                    max_extract_content_output_tokens=max_extract_content_output_tokens,
+                    max_tokens=max_extract_content_output_tokens
+                ))
+                result_content = output.content
+
+            msg = f'Extracted from page\n: {result_content}\n'
             logger.info(msg)
             return ActionResult(content=msg, keep=True), page
         except Exception as e:
@@ -496,7 +570,7 @@ class ScrollDown(ExecutableAction):
             logger.warning(f"{BrowserAction.SCROLL_DOWN.name} page is none")
             return ActionResult(content="scroll no page", keep=True), page
 
-        amount = action.params.get("amount")
+        amount = int(action.params.get("amount"))
         if not amount:
             page.evaluate('window.scrollBy(0, window.innerHeight);')
         else:
@@ -514,7 +588,7 @@ class ScrollDown(ExecutableAction):
             logger.warning(f"{BrowserAction.SCROLL_DOWN.name} page is none")
             return ActionResult(content="scroll no page", keep=True), page
 
-        amount = action.params.get("amount")
+        amount = int(action.params.get("amount"))
         if not amount:
             await page.evaluate('window.scrollBy(0, window.innerHeight);')
         else:
@@ -537,7 +611,7 @@ class ScrollUp(ExecutableAction):
             logger.warning(f"{BrowserAction.SCROLL_UP.name} page is none")
             return ActionResult(content="scroll no page", keep=True), page
 
-        amount = action.params.get("amount")
+        amount = int(action.params.get("amount"))
         if not amount:
             page.evaluate('window.scrollBy(0, -window.innerHeight);')
         else:
@@ -555,7 +629,7 @@ class ScrollUp(ExecutableAction):
             logger.warning(f"{BrowserAction.SCROLL_UP.name} page is none")
             return ActionResult(content="scroll no page", keep=True), page
 
-        amount = action.params.get("amount")
+        amount = int(action.params.get("amount"))
         if not amount:
             await page.evaluate('window.scrollBy(0, -window.innerHeight);')
         else:
@@ -574,14 +648,15 @@ class Wait(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         seconds = action.params.get("seconds")
         if not seconds:
-            seconds = action.params.get("duration")
+            seconds = action.params.get("duration",0)
+        seconds = int(seconds)
         msg = f'Waiting for {seconds} seconds'
         logger.info(msg)
         time.sleep(seconds)
         return ActionResult(content=msg, keep=True), kwargs.get('page')
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
-        seconds = action.params.get("seconds")
+        seconds = int(action.params.get("seconds"),0)
         msg = f'Waiting for {seconds} seconds'
         logger.info(msg)
         await asyncio.sleep(seconds)
@@ -599,7 +674,7 @@ class SwitchTab(ExecutableAction):
             logger.warning(f"{BrowserAction.SWITCH_TAB.name} browser context is none")
             return ActionResult(content="switch tab no browser context", keep=True), get_page(**kwargs)
 
-        page_id = action.params.get("page_id")
+        page_id = int(action.params.get("page_id", 0))
         pages = browser.pages
 
         if page_id >= len(pages):
@@ -619,7 +694,7 @@ class SwitchTab(ExecutableAction):
             logger.warning(f"{BrowserAction.SWITCH_TAB.name} browser context is none")
             return ActionResult(content="switch tab no browser context", keep=True), get_page(**kwargs)
 
-        page_id = action.params.get("page_id")
+        page_id = int(action.params.get("page_id", 0))
         pages = browser.pages
 
         if page_id >= len(pages):

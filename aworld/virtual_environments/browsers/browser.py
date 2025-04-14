@@ -7,6 +7,7 @@ import os
 import time
 from importlib import resources
 from pathlib import Path
+import traceback
 from typing import Any, Dict, Tuple, List, Union
 
 from aworld.config import ConfigDict
@@ -249,6 +250,7 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         if self.sleep_after_init > 0:
             time.sleep(self.sleep_after_init)
 
+        self.context.set_default_timeout(60000)
         observation = self._get_observation()
         observation.action_result = [ActionResult(content='start', keep=True)]
         self.cur_observation = observation

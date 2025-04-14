@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+      "browserbase": {
+        "command": "node",
+        "args": ["path/to/mcp-server-browserbase/browserbase/dist/index.js"],
+        "env": {
+          "BROWSERBASE_API_KEY": "bb_live_vJjHJoasAmFjWLu_P3JsxKTmOtE",
+          "BROWSERBASE_PROJECT_ID": "7bb9d903-6cbc-442b-b4a3-604a07882f07"
+        }
+      }
+    }
+  }

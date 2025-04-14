@@ -95,6 +95,16 @@ class BrowserAgent(BaseAgent):
         val = "\n".join([_prompt(v.value) for k, v in BrowserAction.__members__.items()])
         return val
 
+    # def _build_action_prompt(self) -> str:
+
+    #     # val = "\n".join([_prompt(v.value) for k, v in BrowserAction.__members__.items()])
+    #     self.desc_transform()
+    #     val = json.dumps(self.tools)
+    #     print(val)
+    #     exit(0)
+    #     return val
+
+
     def _log_message_sequence(self, input_messages: List[BaseMessage]) -> None:
         """Log the sequence of messages for debugging purposes"""
         logger.info(f"[agent] 🔍 Invoking LLM with {len(input_messages)} messages")

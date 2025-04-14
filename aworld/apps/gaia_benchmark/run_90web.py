@@ -91,19 +91,19 @@ if __name__ == '__main__':
         logger.info(f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. ")
         # if sample["task_id"] != "df6561b2-7ee5-4540-baab-5095f742716a":
             # continue
-        if sample["task_id"] != "04a04a9b-226c-43fd-b319-d5e89743676f":
-            continue
+        # if sample["task_id"] != "04a04a9b-226c-43fd-b319-d5e89743676f":
+        #     continue
 
-        if _check_task_completed(sample["task_id"], _results):
-            logger.info(f"The following task is already completed:\n task id: {sample['task_id']}, question: {sample['Question']}")
-            continue
+        # if _check_task_completed(sample["task_id"], _results):
+        #     logger.info(f"The following task is already completed:\n task id: {sample['task_id']}, question: {sample['Question']}")
+        #     continue
 
         question = sample['Question']
         logger.info(f'question: {question}')
 
         # debug
         # question = "打开wikipedia"
-        # question = "使用浏览器打开wiki页面，姚明的妻子叫什么名字"
+        question = "使用浏览器打开wiki页面，姚明的妻子叫什么名字"
         # question = "使用google搜索姚明的妻子叫什么名字"
         # question = "What is the surname of the horse doctor mentioned in 1.E Exercises from the chemistry materials licensed by Marisa Alviar-Agnew & Henry Agnew under the CK-12 license in LibreText's Introductory Chemistry materials as compiled 08/21/2023?"
         # end debug
@@ -118,7 +118,7 @@ if __name__ == '__main__':
 
         browser_tool_config = BrowserToolConfig(width=1280,
                                                 height=720,
-                                                headless=True,
+                                                headless=False,
                                                 keep_browser_open=True,
                                                 llm_config=inner_llm_model_config)
         browser_agent_config = BrowserAgentConfig(
@@ -135,7 +135,8 @@ if __name__ == '__main__':
             save_file_path=os.path.join(save_path,f"{sample['task_id']}.json")
         )
 
-        browser_agent=BrowserAgent(conf=browser_agent_config)
+        # browser_agent=BrowserAgent(conf=browser_agent_config,mcp_servers=['browserbase'])
+        browser_agent=BrowserAgent(conf=browser_agent_config,tool_names=[Tools.BROWSER.value])
 
         agent1 = PlanAgent(conf=agent_config)
         # agent2 = ExecuteAgent(conf=agent_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value,
@@ -192,8 +193,8 @@ if __name__ == '__main__':
         with open(bug_task_file, 'w') as f:
             json.dump(bug_tasks, f, indent=4, ensure_ascii=False)
 
-        # if idx>=2:
-        #     break
+        if idx>=2:
+            break
 
 
     score_dict = _generate_summary(_results)
