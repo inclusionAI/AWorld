@@ -293,6 +293,7 @@ class BrowserAgent(Agent):
                 logger.warning("agent not policy  an action.")
                 return output_message, AgentResult(current_state=agent_brain,
                                                    actions=[ActionModel(tool_name=Tools.BROWSER.value,
+                                                                        agent_name=self.name(),
                                                                         action_name="done")])
 
             for action in actions:
