@@ -1,16 +1,31 @@
+"""
+Image MCP Server
+
+This module provides MCP server functionality for image processing and analysis.
+It handles image encoding, optimization, and various image analysis tasks such as
+OCR (Optical Character Recognition) and visual reasoning.
+
+The server supports both local image files and remote image URLs with proper validation
+and handles various image formats including JPEG, PNG, GIF, and others.
+
+Main functions:
+- encode_images: Encodes images to base64 format with optimization
+- optimize_image: Resizes and optimizes images for better performance
+- Various MCP tools for image analysis and processing
+"""
+
 import base64
 import os
 from io import BytesIO
 from typing import Any, Dict, List
-from urllib.parse import urlparse
 
-import requests
 from PIL import Image
 from pydantic import Field
 
 from aworld.logs.util import logger
 from aworld.mcp_servers.utils import (
     get_current_filename_without_extension,
+    get_file_from_source,
     handle_llm_response,
     read_llm_config_from_yaml,
     run_mcp_server,
@@ -38,84 +53,90 @@ IMAGE_REASONING = (
 )
 
 
-def encode_image_from_url(image_url: str) -> str:
-    """Fetch an image from URL and encode it to base64
+def optimize_image(image_data: bytes, max_size: int = 1024) -> bytes:
+    """
+    Optimize image by resizing if needed
 
     Args:
-        image_url: URL of the image
+        image_data: Raw image data
+        max_size: Maximum dimension size in pixels
 
     Returns:
-        str: base64 encoded image string
+        bytes: Optimized image data
 
     Raises:
-        requests.RequestException: When failed to fetch the image
-        PIL.UnidentifiedImageError: When image format cannot be identified
+        ValueError: When image cannot be processed
     """
-    response = requests.get(image_url, timeout=10)
-    image = Image.open(BytesIO(response.content))
+    try:
+        image = Image.open(BytesIO(image_data))
 
-    max_size = 1024
-    if max(image.size) > max_size:
-        ratio = max_size / max(image.size)
-        new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
-        image = image.resize(new_size, Image.Resampling.LANCZOS)
+        # Resize if image is too large
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
 
-    buffered = BytesIO()
-    image_format = image.format if image.format else "JPEG"
-    image.save(buffered, format=image_format)
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    return img_str
+        # Save to buffer
+        buffered = BytesIO()
+        image_format = image.format if image.format else "JPEG"
+        image.save(buffered, format=image_format)
+        return buffered.getvalue()
 
-
-def encode_image_from_file(image_path: str) -> str:
-    """Read image from local file and encode to base64 format."""
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode()
+    except Exception as e:
+        logger.warning(f"Failed to optimize image: {str(e)}")
+        return image_data  # Return original data if optimization fails
 
 
-def encode_images(image_urls: List[str], with_header: bool = True) -> List[str]:
-    """Encode image to base64 format
+def encode_images(image_sources: List[str], with_header: bool = True) -> List[str]:
+    """
+    Encode images to base64 format with robust file handling
 
     Args:
-        image_urls (List[str]): URL or local file path of the image, or a list of URLs/paths
-        with_header (bool, optional): Whether to include MIME type header. Defaults to True.
+        image_sources: List of URLs or local file paths of images
+        with_header: Whether to include MIME type header
 
     Returns:
-        List[str]: Base64 encoded image string(s), with MIME type prefix if with_header is True
+        List[str]: Base64 encoded image strings, with MIME type prefix if with_header is True
 
     Raises:
-        ValueError: When image URL is empty or image format is not supported
+        ValueError: When image source is invalid or image format is not supported
     """
-    # extension: MIME type
-    mime_types = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-    }
-
-    if not image_urls:
-        raise ValueError("Image URLs cannot be empty")
+    if not image_sources:
+        raise ValueError("Image sources cannot be empty")
 
     images = []
-    for image_url in image_urls:
-        if not any(image_url.endswith(ext) for ext in mime_types):
-            raise ValueError(
-                f"Unsupported image format. Supported formats: {', '.join(mime_types)}"
+    for image_source in image_sources:
+        try:
+            # Get file with validation (only image files allowed)
+            file_path, mime_type, content = get_file_from_source(
+                image_source,
+                allowed_mime_prefixes=["image/"],
+                max_size_mb=10.0,  # 10MB limit for images
             )
-        parsed_url = urlparse(image_url)
-        is_url = all([parsed_url.scheme, parsed_url.netloc])
-        if not is_url:
-            image_base64 = encode_image_from_file(image_url)
-        else:
-            image_base64 = encode_image_from_url(image_url)
 
-        mime_type = mime_types.get(os.path.splitext(image_url)[1], "image/jpeg")
-        final_image = (
-            f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
-        )
-        images.append(final_image)
+            # Optimize image
+            optimized_content = optimize_image(content)
+
+            # Encode to base64
+            image_base64 = base64.b64encode(optimized_content).decode()
+
+            # Format with header if requested
+            final_image = (
+                f"data:{mime_type};base64,{image_base64}"
+                if with_header
+                else image_base64
+            )
+
+            images.append(final_image)
+
+            # Clean up temporary file if it was created for a URL
+            if file_path != os.path.abspath(image_source) and os.path.exists(file_path):
+                os.unlink(file_path)
+
+        except Exception as e:
+            logger.error(f"Error encoding image from {image_source}: {str(e)}")
+            raise
+
     return images
 
 

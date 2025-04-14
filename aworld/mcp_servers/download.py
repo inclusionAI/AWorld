@@ -1,7 +1,24 @@
+"""
+Download MCP Server
+
+This module provides MCP server functionality for downloading files from URLs.
+It handles various download scenarios with proper validation, error handling,
+and progress tracking.
+
+Key features:
+- File downloading from HTTP/HTTPS URLs
+- Download progress tracking
+- File validation
+- Safe file saving
+
+Main functions:
+- mcpdownload: Downloads files from URLs to local filesystem
+"""
+
 import os
 import urllib.parse
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional
 
 import requests
 from pydantic import BaseModel, Field

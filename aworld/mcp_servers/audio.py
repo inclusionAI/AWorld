@@ -1,13 +1,27 @@
+"""
+Audio MCP Server
+
+This module provides MCP (Model-Controller-Processor) server functionality for audio processing.
+It includes tools for audio transcription and encoding audio files to base64 format.
+The server handles both local audio files and remote audio URLs with proper validation
+and supports various audio formats.
+
+Main functions:
+- encode_audio: Encodes audio files to base64 format
+- mcptranscribe: Transcribes audio content using LLM models
+"""
+
 import base64
 import json
 import os
-from urllib.parse import urlparse
+from typing import List
 
 from pydantic import Field
 
 from aworld.logs.util import logger
 from aworld.mcp_servers.utils import (
     get_current_filename_without_extension,
+    get_file_from_source,
     read_llm_config_from_yaml,
     run_mcp_server,
 )
@@ -23,73 +37,91 @@ AUDIO_TRANSCRIBE = (
 )
 
 
-def encode_audio_from_url(audio_url: str) -> str:
-    """Fetch an audio from URL and encode it to base64"""
-    response = requests.get(audio_url, timeout=10)
-    audio_bytes = response.content
-    audio_base64 = base64.b64encode(audio_bytes).decode()
-    return audio_base64
+def encode_audio(audio_source: str, with_header: bool = True) -> str:
+    """
+    Encode audio to base64 format with robust file handling
 
+    Args:
+        audio_source: URL or local file path of the audio
+        with_header: Whether to include MIME type header
 
-def encode_audio_from_file(audio_path: str) -> str:
-    """Read audio from local file and encode to base64 format."""
-    with open(audio_path, "rb") as audio_file:
-        return base64.b64encode(audio_file.read()).decode()
+    Returns:
+        str: Base64 encoded audio string, with MIME type prefix if with_header is True
 
+    Raises:
+        ValueError: When audio source is invalid or audio format is not supported
+        IOError: When audio file cannot be read
+    """
+    if not audio_source:
+        raise ValueError("Audio source cannot be empty")
 
-def encode_audio(audio_url: str, with_header: bool = True) -> str:
-    """Encode audio to base64 format"""
-    mime_types = {
-        ".mp3": "audio/mpeg",
-        ".wav": "audio/wav",
-        ".ogg": "audio/ogg",
-        ".m4a": "audio/mp4",
-        ".flac": "audio/flac",
-    }
-
-    if not audio_url:
-        raise ValueError("Audio URL cannot be empty")
-
-    if not any(audio_url.endswith(ext) for ext in mime_types):
-        raise ValueError(
-            f"Unsupported audio format. Supported formats: {', '.join(mime_types)}"
+    try:
+        # Get file with validation (only audio files allowed)
+        file_path, mime_type, content = get_file_from_source(
+            audio_source,
+            allowed_mime_prefixes=["audio/"],
+            max_size_mb=25.0,  # 25MB limit for audio files
         )
 
-    parsed_url = urlparse(audio_url)
-    is_url = all([parsed_url.scheme, parsed_url.netloc])
-    if not is_url:
-        audio_base64 = encode_audio_from_file(audio_url)
-    else:
-        audio_base64 = encode_audio_from_url(audio_url)
+        # Encode to base64
+        audio_base64 = base64.b64encode(content).decode()
 
-    ext = os.path.splitext(audio_url)[1].lower()
-    mime_type = mime_types.get(ext, "audio/mpeg")
-    final_audio = (
-        f"data:{mime_type};base64,{audio_base64}" if with_header else audio_base64
-    )
-    return final_audio
+        # Format with header if requested
+        final_audio = (
+            f"data:{mime_type};base64,{audio_base64}" if with_header else audio_base64
+        )
+
+        # Clean up temporary file if it was created for a URL
+        if file_path != os.path.abspath(audio_source) and os.path.exists(file_path):
+            os.unlink(file_path)
+
+        return final_audio
+
+    except Exception as e:
+        logger.error(f"Error encoding audio from {audio_source}: {str(e)}")
+        raise
 
 
 def mcptranscribe(
-    audio_urls: str = Field(
+    audio_urls: List[str] = Field(
         description="The input audio in given a list of filepaths or urls."
     ),
 ) -> str:
-    """transcribe the given audio in a list of filepaths or urls."""
+    """
+    Transcribe the given audio in a list of filepaths or urls.
+
+    Args:
+        audio_urls: List of audio file paths or URLs
+
+    Returns:
+        str: JSON string containing transcriptions
+    """
     llm = get_llm_model(llm_config)
 
     transcriptions = []
-    try:
-        for audio_url in audio_urls:
-            with open(audio_url, "rb") as audio_file:
+    for audio_url in audio_urls:
+        try:
+            # Get file with validation (only audio files allowed)
+            file_path, _, _ = get_file_from_source(
+                audio_url, allowed_mime_prefixes=["audio/"], max_size_mb=25.0
+            )
+
+            # Use the file for transcription
+            with open(file_path, "rb") as audio_file:
                 transcription = llm.audio.transcriptions.create(
                     file=audio_file,
                     model="gpt-4o-transcribe",
                     response_format="text",
                 )
                 transcriptions.append(transcription)
-    except (ValueError, IOError, RuntimeError) as e:
-        logger.error(f"audio_transcribe-Execute error: {str(e)}")
+
+            # Clean up temporary file if it was created for a URL
+            if file_path != os.path.abspath(audio_url) and os.path.exists(file_path):
+                os.unlink(file_path)
+
+        except Exception as e:
+            logger.error(f"Error transcribing {audio_url}: {str(e)}")
+            transcriptions.append(f"Error: {str(e)}")
 
     logger.info(f"---get_text_by_transcribe-transcription:{transcriptions}")
     return json.dumps(transcriptions, ensure_ascii=False)
