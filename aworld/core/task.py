@@ -143,14 +143,7 @@ class Task(object):
         else:
             observation = Observation(content=self.input)
 
-        self.swarm.reset(self.tool_names)
-        for agent in self.swarm.agents.values():
-            agent.reset({"task": observation.content,
-                         "tool_names": agent.tool_names,
-                         "agent_names": agent.handoffs,
-                         "mcp_servers": agent.mcp_servers})
-            # global tools
-            agent.tool_names.extend(self.tool_names)
+        self.swarm.reset(observation.content, self.tool_names)
 
         if self.swarm.topology_type == 'social':
             return self._social_process(observation, info)

@@ -83,7 +83,7 @@ class Swarm(object):
         if self.sequence:
             self.topology_type = 'sequence'
 
-    def reset(self, tools: List[str] = []):
+    def reset(self, content: str, tools: List[str] = []):
         """Resets the initial internal state, and init supported tools in agent in swarm.
 
         Args:
@@ -98,6 +98,15 @@ class Swarm(object):
             return
 
         self.cur_agent = self.communicate_agent
+
+        for agent in self.agents.values():
+            if agent.need_reset:
+                agent.reset({"task": content,
+                             "tool_names": agent.tool_names,
+                             "agent_names": agent.handoffs,
+                             "mcp_servers": agent.mcp_servers})
+            # global tools
+            agent.tool_names.extend(self.tools)
         self.initialized = True
 
     def _check(self):

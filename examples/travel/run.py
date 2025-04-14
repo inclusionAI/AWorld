@@ -31,7 +31,7 @@ if __name__ == '__main__':
 
     # set GOOGLE_API_KEY and GOOGLE_ENGINE_ID in .env file.
 
-    browser_agent = BrowserAgent(name='browser_agent', conf=browser_agent_config, tool_names=["browser"])
+    browser_agent = BrowserAgent(name='browser_agent', conf=browser_agent_config, tool_names=["browser"], need_reset=False)
     browser_tool = BrowserToolConfig(width=800, height=720, keep_browser_open=True, llm_config=llm_config)
 
     swarm = Swarm(plan, search, plan, browser_agent, plan, write)

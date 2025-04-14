@@ -162,6 +162,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
         self.output_prompt: str = kwargs.get("output_prompt") if kwargs.get("output_prompt") else conf.output_prompt
 
+        self.need_reset = kwargs.get('need_reset', True)
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = kwargs.get("black_tool_actions") if kwargs.get(
             "black_tool_actions") else self.conf.get('black_tool_actions', {})
