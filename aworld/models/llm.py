@@ -135,7 +135,7 @@ PROVIDER_DISPLAY_NAMES = {
 }
 
 
-def get_llm_model(conf: AgentConfig, **kwargs):
+def get_llm_model(conf, **kwargs):
     provider = conf.llm_provider
     if provider not in ["ollama"]:
         env_var = f"{provider.upper()}_API_KEY"

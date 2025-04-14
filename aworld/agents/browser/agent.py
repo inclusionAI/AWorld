@@ -52,8 +52,7 @@ class BrowserAgent(BaseAgent):
         self.state = AgentState()
         self.settings = conf.model_dump()
         self.save_file_path=self.settings.get("save_file_path", "browser_agent_history.json")
-        if conf.llm_provider == 'openai':
-            conf.llm_provider = 'chatopenai'
+        conf.llm_provider = 'chat' + conf.llm_provider
         # raw actions list
         self.available_actions = self._build_action_prompt()
         # Note: Removed _message_manager initialization as it's no longer used
