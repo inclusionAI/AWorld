@@ -176,7 +176,7 @@ class ToolsManager(Factory):
             tool = "async_" + tool
         return self._tool_with_action.get(tool)
 
-    def register(self, name: str, desc: str, supported_action: ToolAction, conf_file_name: str = None, **kwargs):
+    def register(self, name: str, desc: str, supported_action: ToolAction = None, conf_file_name: str = None, **kwargs):
         """Register a tool to tool factory.
 
         Args:
