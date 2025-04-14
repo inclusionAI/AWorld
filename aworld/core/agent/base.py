@@ -68,7 +68,7 @@ class MemoryModel(BaseModel):
     content: Any = None
 
 
-class BaseAgent(Generic[INPUT, OUTPUT]):
+class Agent(Generic[INPUT, OUTPUT]):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
@@ -148,7 +148,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._finished
 
 
-class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
+class BaseAgent(Agent[Observation, Union[List[ActionModel], None]]):
     """Basic agent for unified protocol within the framework."""
 
     def __init__(self,
@@ -163,13 +163,13 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             executor: The agent special executor.
             resp_parse_func: Response parse function for the agent standard output.
         """
-        super(Agent, self).__init__(conf, **kwargs)
-        self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
+        super(BaseAgent, self).__init__(conf, **kwargs)
+        self.model_name = conf.llm_model_name
         self._llm = None
         self.memory = []
-        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
-        self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
-        self.output_prompt: str = kwargs.get("output_prompt") if kwargs.get("output_prompt") else conf.output_prompt
+        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else None
+        self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else None
+        self.output_prompt: str = kwargs.get("output_prompt") if kwargs.get("output_prompt") else None
 
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
         self.executor = executor if executor else agent_executor
@@ -179,7 +179,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
     def llm(self):
         # lazy
         if self._llm is None:
-            conf = self.conf.llm_config if self.conf.llm_config.llm_provider else self.conf
+            conf = self.conf
             self._llm = get_llm_model(conf)
         return self._llm
 
