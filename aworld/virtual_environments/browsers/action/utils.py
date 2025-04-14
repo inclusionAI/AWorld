@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 import re
+import time
 import traceback
 from typing import Optional
 
@@ -189,6 +190,168 @@ class DomUtil:
         except Exception as e:
             logger.error(f'Failed to locate element: {str(e)}')
             return None
+
+    @staticmethod
+    def wait_for_stable_network(page, **kwargs):
+        pending_requests = set()
+        last_activity = time.time()
+
+        # Define relevant resource types and content types
+        RELEVANT_RESOURCE_TYPES = {
+            'document',
+            'stylesheet',
+            'image',
+            'font',
+            'script',
+            'iframe',
+        }
+
+        RELEVANT_CONTENT_TYPES = {
+            'text/html',
+            'text/css',
+            'application/javascript',
+            'image/',
+            'font/',
+            'application/json',
+        }
+
+        # Additional patterns to filter out
+        IGNORED_URL_PATTERNS = {
+            # Analytics and tracking
+            'analytics',
+            'tracking',
+            'telemetry',
+            'beacon',
+            'metrics',
+            # Ad-related
+            'doubleclick',
+            'adsystem',
+            'adserver',
+            'advertising',
+            # Social media widgets
+            'facebook.com/plugins',
+            'platform.twitter',
+            'linkedin.com/embed',
+            # Live chat and support
+            'livechat',
+            'zendesk',
+            'intercom',
+            'crisp.chat',
+            'hotjar',
+            # Push notifications
+            'push-notifications',
+            'onesignal',
+            'pushwoosh',
+            # Background sync/heartbeat
+            'heartbeat',
+            'ping',
+            'alive',
+            # WebRTC and streaming
+            'webrtc',
+            'rtmp://',
+            'wss://',
+            # Common CDNs for dynamic content
+            'cloudfront.net',
+            'fastly.net',
+        }
+
+        def on_request(request):
+            # Filter by resource type
+            if request.resource_type not in RELEVANT_RESOURCE_TYPES:
+                return
+
+            # Filter out streaming, websocket, and other real-time requests
+            if request.resource_type in {
+                'websocket',
+                'media',
+                'eventsource',
+                'manifest',
+                'other',
+            }:
+                return
+
+            # Filter out by URL patterns
+            url = request.url.lower()
+            if any(pattern in url for pattern in IGNORED_URL_PATTERNS):
+                return
+
+            # Filter out data URLs and blob URLs
+            if url.startswith(('data:', 'blob:')):
+                return
+
+            # Filter out requests with certain headers
+            headers = request.headers
+            if headers.get('purpose') == 'prefetch' or headers.get('sec-fetch-dest') in [
+                'video',
+                'audio',
+            ]:
+                return
+
+            nonlocal last_activity
+            pending_requests.add(request)
+            last_activity = time.time()
+
+        def on_response(response):
+            request = response.request
+            if request not in pending_requests:
+                return
+
+            # Filter by content type if available
+            content_type = response.headers.get('content-type', '').lower()
+
+            # Skip if content type indicates streaming or real-time data
+            if any(t in content_type
+                   for t in [
+                       'streaming',
+                       'video',
+                       'audio',
+                       'webm',
+                       'mp4',
+                       'event-stream',
+                       'websocket',
+                       'protobuf']):
+                pending_requests.remove(request)
+                return
+
+            # Only process relevant content types
+            if not any(ct in content_type for ct in RELEVANT_CONTENT_TYPES):
+                pending_requests.remove(request)
+                return
+
+            # Skip if response is too large (likely not essential for page load)
+            content_length = response.headers.get('content-length')
+            if content_length and int(content_length) > 5 * 1024 * 1024:  # 5MB
+                pending_requests.remove(request)
+                return
+
+            nonlocal last_activity
+            pending_requests.remove(request)
+            last_activity = time.time()
+
+        # Attach event listeners
+        page.on('request', on_request)
+        page.on('response', on_response)
+
+        try:
+            start_time = time.time()
+            while True:
+                time.sleep(0.1)
+                now = time.time()
+
+                if len(pending_requests) == 0 and (now - last_activity) >= kwargs.get('idle_wait_time', 0.5):
+                    break
+                if now - start_time > kwargs.get('max_wait_time', 5):
+                    logger.debug(
+                        f'Network timeout after {kwargs.get("max_wait_time", 5)}s with {len(pending_requests)} '
+                        f'pending requests: {[r.url for r in pending_requests]}'
+                    )
+                    break
+
+        finally:
+            # Clean up event listeners
+            page.remove_listener('request', on_request)
+            page.remove_listener('response', on_response)
+        logger.debug(f'Network stabilized for {kwargs.get("idle_wait_time", 0.5)} seconds')
 
     @staticmethod
     def _enhanced_css_selector_for_element(element: DOMElementNode, include_dynamic_attributes: bool = True) -> str:

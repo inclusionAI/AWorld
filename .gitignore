@@ -101,3 +101,7 @@ data/processed/
 *.temp
 .*.swp
 .*.swo
+
+aworld/apps/gaia_benchmark/run_batch/*
+aworld/apps/gaia_benchmark/*.py
+aworld/apps/gaia_benchmark/*.sh

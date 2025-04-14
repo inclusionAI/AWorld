@@ -20,10 +20,9 @@ from aworld.apps.gaia_benchmark.utils import _check_task_completed, question_sco
 from aworld.core.common import Agents, Tools
 
 import os
-# GOOGLE_API_KEY = ""
-# GOOGLE_ENGINE_ID = ""
-GOOGLE_API_KEY="AIzaSyBz68rKBQNmUV-0zM8KMqiK6qrhF-JuK_k" ## zhuige
-GOOGLE_ENGINE_ID="c790a773fba27404b"
+GOOGLE_API_KEY = ""
+GOOGLE_ENGINE_ID = ""
+
 os.environ['GOOGLE_API_KEY'] = GOOGLE_API_KEY
 os.environ['GOOGLE_ENGINE_ID'] = GOOGLE_ENGINE_ID
 

@@ -32,10 +32,9 @@ from aworld.apps.gaia_benchmark.utils import _check_task_completed, question_sco
 from aworld.core.common import Agents, Tools
 
 
-# GOOGLE_API_KEY = ""
-# GOOGLE_ENGINE_ID = ""
-GOOGLE_API_KEY="AIzaSyBz68rKBQNmUV-0zM8KMqiK6qrhF-JuK_k" ## zhuige
-GOOGLE_ENGINE_ID="c790a773fba27404b"
+GOOGLE_API_KEY = ""
+GOOGLE_ENGINE_ID = ""
+
 os.environ['GOOGLE_API_KEY'] = GOOGLE_API_KEY
 os.environ['GOOGLE_ENGINE_ID'] = GOOGLE_ENGINE_ID
 llm_api_key="dummy-key"
@@ -66,6 +65,7 @@ if __name__ == '__main__':
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="gpt-4o",
+        llm_temperature=0.0,
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url)
 
@@ -87,8 +87,8 @@ if __name__ == '__main__':
         logger.info(f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. ")
         # if sample["task_id"] != "df6561b2-7ee5-4540-baab-5095f742716a":
             # continue
-        # if sample["task_id"] != "8e867cd7-cff9-4e6c-867a-ff5ddc2550be":
-        #     continue
+        if sample["task_id"] != "04a04a9b-226c-43fd-b319-d5e89743676f":
+            continue
 
         if _check_task_completed(sample["task_id"], _results):
             logger.info(f"The following task is already completed:\n task id: {sample['task_id']}, question: {sample['Question']}")
@@ -105,14 +105,14 @@ if __name__ == '__main__':
         inner_llm_model_config = ModelConfig(
             llm_provider="openai",
             llm_model_name="gpt-4o",
-            llm_temperature=0.3,
+            llm_temperature=0.0,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
             max_input_tokens = 128000)
 
         browser_tool_config = BrowserToolConfig(width=1280,
                                                 height=720,
-                                                headless=False,
+                                                headless=True,
                                                 keep_browser_open=True,
                                                 llm_config=inner_llm_model_config)
         browser_agent_config = BrowserAgentConfig(
@@ -121,7 +121,7 @@ if __name__ == '__main__':
             llm_provider="openai",
             llm_model_name="gpt-4o",
             llm_num_ctx=32000,
-            llm_temperature=1,
+            llm_temperature=0.0,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
             max_actions_per_step=10,

@@ -51,7 +51,7 @@ class GotoUrl(ExecutableAction):
 
         params = action.params
         url = params.get("url")
-        page.goto(url, timeout=120000)
+        page.goto(url, timeout=60000)
         page.wait_for_load_state()
         msg = f'Navigated to {url}'
         logger.info(msg)
@@ -306,7 +306,7 @@ class Search(ExecutableAction):
         engine = params.get("engine", "")
         url = SEARCH_ENGINE.get(engine)
         query = params.get("query")
-        page.goto(f'{url}{query}')
+        page.goto(f'{url}{query}', timeout=60000)
         page.wait_for_load_state()
         msg = f'Searched for "{query}" in {url}'
         logger.info(msg)
@@ -323,7 +323,7 @@ class Search(ExecutableAction):
         engine = params.get("engine", "")
         url = SEARCH_ENGINE.get(engine)
         query = params.get("query")
-        await page.goto(f'{url}{query}')
+        await page.goto(f'{url}{query}', timeout=60000)
         await page.wait_for_load_state()
         msg = f'Searched for "{query}" in {url}'
         logger.info(msg)
@@ -342,7 +342,7 @@ class SearchGoogle(ExecutableAction):
             return ActionResult(content="search no page", keep=True), page
 
         query = action.params.get("query")
-        page.goto(f'{SEARCH_ENGINE.get("")}{query}')
+        page.goto(f'{SEARCH_ENGINE.get("")}{query}', timeout=60000)
         page.wait_for_load_state()
         msg = f'Searched for "{query}" in Google'
         logger.info(msg)
@@ -356,7 +356,7 @@ class SearchGoogle(ExecutableAction):
             return ActionResult(content="search no page", keep=True), page
 
         query = action.params.get("query")
-        await page.goto(f'{SEARCH_ENGINE.get("")}{query}')
+        await page.goto(f'{SEARCH_ENGINE.get("")}{query}', timeout=60000)
         await page.wait_for_load_state()
         msg = f'Searched for "{query}" in Google'
         logger.info(msg)
@@ -464,7 +464,7 @@ class NewTab(ExecutableAction):
         new_page.wait_for_load_state()
 
         if url:
-            new_page.goto(url)
+            new_page.goto(url, timeout=60000)
             DomUtil.wait_for_stable_network(new_page)
 
         msg = f'Opened new tab with {url}'
@@ -479,7 +479,7 @@ class NewTab(ExecutableAction):
         await new_page.wait_for_load_state()
 
         if url:
-            await new_page.goto(url)
+            await new_page.goto(url, timeout=60000)
             DomUtil.wait_for_stable_network(new_page)
         msg = f'Opened new tab with {url}'
         logger.debug(msg)

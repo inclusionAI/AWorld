@@ -22,8 +22,7 @@ from aworld.core.common import Agents, Tools
 import os
 GOOGLE_API_KEY = ""
 GOOGLE_ENGINE_ID = ""
-GOOGLE_API_KEY="AIzaSyBz68rKBQNmUV-0zM8KMqiK6qrhF-JuK_k" ## zhuige
-GOOGLE_ENGINE_ID="c790a773fba27404b"
+
 os.environ['GOOGLE_API_KEY'] = GOOGLE_API_KEY
 os.environ['GOOGLE_ENGINE_ID'] = GOOGLE_ENGINE_ID
 llm_api_key="dummy-key"

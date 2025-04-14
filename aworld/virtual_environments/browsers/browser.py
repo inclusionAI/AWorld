@@ -20,6 +20,7 @@ from aworld.virtual_environments.browsers.util.dom import DomTree
 from aworld.virtual_environments.conf import BrowserToolConfig
 from aworld.virtual_environments.browsers.util.dom_build import build_dom_tree
 from aworld.utils import import_package
+from aworld.virtual_environments.utils import build_observation
 
 URL_MAX_LENGTH = 4096
 UTF8 = "".join(chr(x) for x in range(0, 55290))
@@ -51,7 +52,10 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
 
     def init(self) -> None:
         from playwright.sync_api import sync_playwright
-            
+
+        if self.initialized:
+            return
+
         self.context_manager = sync_playwright()
         self.playwright = self.context_manager.start()
         self.browser = self._create_browser()
@@ -185,14 +189,31 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         screenshot_base64 = base64.b64encode(screenshot).decode('utf-8')
         return screenshot_base64
 
-    def _get_observation(self) -> Observation:
-        dom_tree = self._parse_dom_tree()
-        image = self.screenshot()
-        pixels_above, pixels_below = self._scroll_info()
-        info = {"pixels_above": pixels_above,
-                "pixels_below": pixels_below,
-                "url": self.page.url}
-        return Observation(dom_tree=dom_tree, image=image, info=info)
+    def _get_observation(self, fail_error: str = None) -> Observation:
+        if fail_error:
+            return Observation(observer=self.name(), action_result=[ActionResult(error=fail_error)])
+
+        try:
+            dom_tree = self._parse_dom_tree()
+            image = self.screenshot()
+            pixels_above, pixels_below = self._scroll_info()
+            info = {"pixels_above": pixels_above,
+                    "pixels_below": pixels_below,
+                    "url": self.page.url}
+            return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
+        except Exception as e:
+            try:
+                self.page.go_back()
+                dom_tree = self._parse_dom_tree()
+                image = self.screenshot()
+                pixels_above, pixels_below = self._scroll_info()
+                info = {"pixels_above": pixels_above,
+                        "pixels_below": pixels_below,
+                        "url": self.page.url}
+                return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
+            except Exception as e:
+                logger.warning(f"build observation fail, {traceback.format_exc()}")
+                return Observation(observer=self.name(), action_result=[ActionResult(error=traceback.format_exc())])
 
     def _parse_dom_tree(self) -> DomTree:
         args = {
@@ -256,6 +277,10 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         if not self.initialized:
             raise RuntimeError("Call init first before calling step.")
 
+        if not action:
+            logger.warning(f"{self.name()} has no action")
+            return build_observation(observer=self.name(), ability='', content='no action'), 0., False, False, {}
+
         reward = 0
         fail_error = ""
         action_result = None
@@ -285,6 +310,8 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
                 if res.is_done:
                     terminated = res.is_done
                     self._finish = True
+                if res.error:
+                    fail_error += res.error
 
         info = {"exception": fail_error}
 
@@ -308,7 +335,7 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
                     info)
         else:
             # normal observation
-            observation = self._get_observation()
+            observation = self._get_observation(fail_error)
             observation.action_result = action_result
             observation.content=action_result[0].content
             self.cur_observation = observation
