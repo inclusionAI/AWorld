@@ -1,28 +1,24 @@
 import os
+from typing import Any, AsyncGenerator, Dict, Generator, List, Optional, Union
 
-from typing import (
-    Any,
-    Optional,
-    List,
-    Dict,
-    Union,
-    Generator,
-    AsyncGenerator,
-)
 from langchain_openai import ChatOpenAI
+
 from aworld.config import ConfigDict
 from aworld.config.conf import AgentConfig
 from aworld.env_secrets import secrets
 from aworld.logs.util import logger
-
-from aworld.models.llm_provider_base import LLMProviderBase
-from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
 from aworld.models.anthropic_provider import AnthropicProvider
+from aworld.models.llm_provider_base import LLMProviderBase
 from aworld.models.model_response import ModelResponse
+from aworld.models.openai_provider import AzureOpenAIProvider, OpenAIProvider
 
 # Predefined model names for common providers
 MODEL_NAMES = {
-    "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
+    "anthropic": [
+        "claude-3-5-sonnet-20241022",
+        "claude-3-5-sonnet-20240620",
+        "claude-3-opus-20240229",
+    ],
     "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini"],
     "azure_openai": ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-35-turbo"],
 }
@@ -43,10 +39,14 @@ PROVIDER_CLASSES = {
 
 
 class LLMModel:
-    """Unified large model interface, encapsulates different model implementations, provides a unified completion method.
-    """
+    """Unified large model interface, encapsulates different model implementations, provides a unified completion method."""
 
-    def __init__(self, conf: Union[ConfigDict, AgentConfig] = None, custom_provider: LLMProviderBase = None, **kwargs):
+    def __init__(
+        self,
+        conf: Union[ConfigDict, AgentConfig] = None,
+        custom_provider: LLMProviderBase = None,
+        **kwargs,
+    ):
         """Initialize unified model interface.
 
         Args:
@@ -62,12 +62,14 @@ class LLMModel:
         # If custom_provider instance is provided, use it directly
         if custom_provider is not None:
             if not isinstance(custom_provider, LLMProviderBase):
-                raise TypeError("custom_provider must be an instance of LLMProviderBase")
+                raise TypeError(
+                    "custom_provider must be an instance of LLMProviderBase"
+                )
             self.provider_name = "custom"
             self.provider = custom_provider
             return
 
-        conf = conf.llm_config if conf.llm_config.llm_api_key or conf.llm_config.llm_base_url else conf
+        # conf = conf.llm_config if conf.llm_config.llm_api_key or conf.llm_config.llm_base_url else conf
         # Get basic parameters
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
         model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
@@ -81,13 +83,15 @@ class LLMModel:
         self.provider_name = self._identify_provider(llm_provider, base_url, model_name)
 
         # Fill basic parameters
-        kwargs['base_url'] = base_url
-        kwargs['model_name'] = model_name
+        kwargs["base_url"] = base_url
+        kwargs["model_name"] = model_name
 
         # Create model provider based on provider_name
         self._create_provider(**kwargs)
 
-    def _identify_provider(self, provider: str = None, base_url: str = None, model_name: str = None) -> str:
+    def _identify_provider(
+        self, provider: str = None, base_url: str = None, model_name: str = None
+    ) -> str:
         """Identify LLM provider.
 
         Identification logic:
@@ -112,19 +116,27 @@ class LLMModel:
             for p, patterns in ENDPOINT_PATTERNS.items():
                 if any(pattern in base_url for pattern in patterns):
                     identified_provider = p
-                    logger.info(f"Identified provider: {identified_provider} based on base_url: {base_url}")
+                    logger.info(
+                        f"Identified provider: {identified_provider} based on base_url: {base_url}"
+                    )
                     return identified_provider
 
         # Identify provider based on model_name
         if model_name and not base_url:
             for p, models in MODEL_NAMES.items():
-                if model_name in models or any(model_name.startswith(model) for model in models):
+                if model_name in models or any(
+                    model_name.startswith(model) for model in models
+                ):
                     identified_provider = p
-                    logger.info(f"Identified provider: {identified_provider} based on model_name: {model_name}")
+                    logger.info(
+                        f"Identified provider: {identified_provider} based on model_name: {model_name}"
+                    )
                     break
 
         if identified_provider and provider and identified_provider != provider:
-            logger.warning(f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider")
+            logger.warning(
+                f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider"
+            )
             identified_provider = provider
 
         return identified_provider
@@ -160,12 +172,14 @@ class LLMModel:
             kwargs["model_name"] = kwargs.get("model_name", self.provider.model_name)
             self.provider = PROVIDER_CLASSES[self.provider_name](**kwargs)
 
-    async def acompletion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> ModelResponse:
+    async def acompletion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> ModelResponse:
         """Asynchronously call model to generate response.
 
         Args:
@@ -184,15 +198,17 @@ class LLMModel:
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         )
 
-    def completion(self,
-                   messages: List[Dict[str, str]],
-                   temperature: float = 0.0,
-                   max_tokens: int = None,
-                   stop: List[str] = None,
-                   **kwargs) -> ModelResponse:
+    def completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> ModelResponse:
         """Synchronously call model to generate response.
 
         Args:
@@ -211,15 +227,17 @@ class LLMModel:
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         )
 
-    def stream_completion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> Generator[ModelResponse, None, None]:
+    def stream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> Generator[ModelResponse, None, None]:
         """Synchronously call model to generate streaming response.
 
         Args:
@@ -238,15 +256,17 @@ class LLMModel:
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         )
 
-    async def astream_completion(self,
-                                 messages: List[Dict[str, str]],
-                                 temperature: float = 0.0,
-                                 max_tokens: int = None,
-                                 stop: List[str] = None,
-                                 **kwargs) -> AsyncGenerator[ModelResponse, None]:
+    async def astream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> AsyncGenerator[ModelResponse, None]:
         """Asynchronously call model to generate streaming response.
 
         Args:
@@ -268,7 +288,7 @@ class LLMModel:
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         ):
             yield chunk
 
@@ -285,7 +305,11 @@ def register_llm_provider(provider: str, provider_class: type):
     PROVIDER_CLASSES[provider] = provider_class
 
 
-def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None, custom_provider: LLMProviderBase = None, **kwargs) -> Union[LLMModel, ChatOpenAI]:
+def get_llm_model(
+    conf: Union[ConfigDict, AgentConfig] = None,
+    custom_provider: LLMProviderBase = None,
+    **kwargs,
+) -> Union[LLMModel, ChatOpenAI]:
     """Get a unified LLM model instance.
 
     Args:
@@ -302,7 +326,7 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None, custom_provider: 
     """
     # Create and return LLMModel instance directly
     llm_provider = conf.llm_provider if conf else None
-    if (llm_provider == "chatopenai"):
+    if llm_provider == "chatopenai":
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
         model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
         api_key = kwargs.get("api_key") or (conf.llm_api_key if conf else None)
@@ -318,13 +342,13 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None, custom_provider: 
 
 
 def call_llm_model(
-        llm_model: LLMModel,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.0,
-        max_tokens: int = None,
-        stop: List[str] = None,
-        stream: bool = False,
-        **kwargs
+    llm_model: LLMModel,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.0,
+    max_tokens: int = None,
+    stop: List[str] = None,
+    stream: bool = False,
+    **kwargs,
 ) -> Union[ModelResponse, Generator[ModelResponse, None, None]]:
     """Convenience function to call LLM model.
 
@@ -346,7 +370,7 @@ def call_llm_model(
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         )
     else:
         return llm_model.completion(
@@ -354,18 +378,18 @@ def call_llm_model(
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         )
 
 
 async def acall_llm_model(
-        llm_model: LLMModel,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.0,
-        max_tokens: int = None,
-        stop: List[str] = None,
-        stream: bool = False,
-        **kwargs
+    llm_model: LLMModel,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.0,
+    max_tokens: int = None,
+    stop: List[str] = None,
+    stream: bool = False,
+    **kwargs,
 ) -> Union[ModelResponse, AsyncGenerator[ModelResponse, None]]:
     """Convenience function to asynchronously call LLM model.
 
@@ -382,13 +406,14 @@ async def acall_llm_model(
         Model response or response generator.
     """
     if stream:
+
         async def _stream_wrapper():
             async for chunk in llm_model.astream_completion(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
-                **kwargs
+                **kwargs,
             ):
                 yield chunk
 
@@ -399,5 +424,5 @@ async def acall_llm_model(
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
-            **kwargs
+            **kwargs,
         )
