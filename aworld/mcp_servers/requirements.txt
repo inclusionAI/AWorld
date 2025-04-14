@@ -1,0 +1,13 @@
+pydantic
+requests
+sympy
+arxiv
+bs4
+exa_py
+PyMuPDF
+PyPDF2
+docx2markdown
+Pillow
+fastapi
+googlemaps
+praw
