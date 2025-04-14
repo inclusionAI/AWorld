@@ -13,7 +13,7 @@ from mcp.types import TextContent
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.envs.tool import ToolActionExecutor, Tool
 from aworld.mcp.server import MCPServer, MCPServerSse
-from aworld.utils.common import sync_exec
+from aworld.utils import sync_exec
 
 
 class MCPToolExecutor(ToolActionExecutor):

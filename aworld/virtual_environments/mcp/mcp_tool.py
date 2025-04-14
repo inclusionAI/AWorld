@@ -6,16 +6,37 @@
 
 from typing import Any, Dict, Tuple, List, Union
 
-from aworld.config.common import Tools
 from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import Tool, ToolFactory
 from aworld.logs.util import logger
 from aworld.virtual_environments.mcp.executor import MCPToolExecutor
-from aworld.virtual_environments.utils import build_observation
+
+from typing import Any, List
+
+from aworld.core.common import ActionResult, Observation
+
+DEFAULT_VIRTUAL_ENV_ID = "env_0"
 
 
-@ToolFactory.register(name=Tools.MCP.value,
+def build_observation(observer: str,
+                      ability: str,
+                      container_id: str = None,
+                      content: Any = None,
+                      dom_tree: Any = None,
+                      action_result: List[ActionResult] = [],
+                      image: str = '',
+                      images: List[str] = [],
+                      **kwargs):
+    return Observation(
+                       content=content,
+                       action_result=action_result,
+                       dom_tree=dom_tree,
+                       image=image,
+                       info=kwargs)
+
+
+@ToolFactory.register(name="mcp",
                       desc="mcp execute tool")
 class McpTool(Tool[Observation, List[ActionModel]]):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
@@ -64,7 +85,7 @@ class McpTool(Tool[Observation, List[ActionModel]]):
         mcp_actions = []
         for action in actions:
             tool_name = action.tool_name
-            if Tools.MCP.value != tool_name:
+            if 'mcp' != tool_name:
                 logger.warning(f"Unsupported tool: {tool_name}")
                 continue
             full_tool_name = action.action_name
