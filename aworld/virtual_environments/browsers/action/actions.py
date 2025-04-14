@@ -475,7 +475,10 @@ class ExtractContent(ExecutableAction):
 
         messages = [{'role': 'user', 'content': template.format(goal=goal, page=content)}]
         try:
-            output = call_llm_model(llm, messages)
+            output = call_llm_model(llm,
+                                    messages=messages,
+                                    model=llm_config.llm_model_name,
+                                    temperature=llm_config.llm_temperature)
             result_content = output.content
 
             # Check if output exceeds the token limit and retry with length-limited prompt if needed
@@ -493,7 +496,10 @@ class ExtractContent(ExecutableAction):
                     max_tokens=max_extract_content_output_tokens
                 )}]
                 # extract content with length limit
-                output = call_llm_model(llm, messages)
+                output = call_llm_model(llm,
+                                        messages=messages,
+                                        model=llm_config.llm_model_name,
+                                        temperature=llm_config.llm_temperature)
                 result_content = output.content
 
             msg = f'Extracted from page\n: {result_content}\n'
@@ -534,7 +540,10 @@ class ExtractContent(ExecutableAction):
 
         messages = [{'role': 'user', 'content': template.format(goal=goal, page=content)}]
         try:
-            output = call_llm_model(llm, messages)
+            output = call_llm_model(llm,
+                                    messages=messages,
+                                    model=llm_config.llm_model_name,
+                                    temperature=llm_config.llm_temperature)
             result_content = output.content
 
             # Check if output exceeds the token limit and retry with length-limited prompt if needed
@@ -552,7 +561,10 @@ class ExtractContent(ExecutableAction):
                     max_tokens=max_extract_content_output_tokens
                 )}]
                 # extract content with length limit
-                output = call_llm_model(llm, messages)
+                output = call_llm_model(llm,
+                                        messages=messages,
+                                        model=llm_config.llm_model_name,
+                                        temperature=llm_config.llm_temperature)
                 result_content = output.content
 
             msg = f'Extracted from page\n: {result_content}\n'

@@ -385,7 +385,7 @@ class Task(object):
                     # clear observation
                     observation = None
                 elif is_tool_by_name(policy[0].tool_name):
-                    status, info = self._social_tool_call(policy, step)
+                    status, terminated, info = self._social_tool_call(policy, step)
                     if status == 'normal':
                         observation = info
                 else:
@@ -513,7 +513,7 @@ class Task(object):
         tmp_name = policy[0].agent_name
         if self.swarm.cur_agent.name() == self.swarm.communicate_agent.name() and (
                 len(self.swarm.agents) == 1 or tmp_name is None or self.swarm.cur_agent.name() == tmp_name):
-            return "break", True
+            return "break", terminated, True
         elif policy[0].agent_name:
             policy_for_agent = policy[0]
             cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
@@ -530,4 +530,4 @@ class Task(object):
             if cur_agent.finished:
                 cur_agent._finished = False
                 logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
-        return "normal", observation
+        return "normal", terminated, observation
