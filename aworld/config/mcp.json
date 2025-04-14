@@ -1,25 +1,46 @@
 {
   "mcpServers": {
-    "image": {
-      "url": "http://localhost:1111/sse"
+    "arxiv": {
+      "url": "https://localhost:2000/sse"
     },
     "audio": {
-      "url": "http://localhost:2222/sse"
+      "url": "https://localhost:2001/sse"
     },
-    "video": {
-      "url": "http://localhost:3333/sse"
+    "code": {
+      "url": "https://localhost:2002/sse"
     },
     "document": {
-      "url": "http://localhost:4444/sse"
-    },
-    "search": {
-      "url": "http://localhost:5555/sse"
+      "url": "https://localhost:2003/sse"
     },
     "download": {
-      "url": "http://localhost:6666/sse"
+      "url": "https://localhost:2004/sse"
+    },
+    "filesystem": {
+      "url": "https://localhost:2005/sse"
+    },
+    "googlemaps": {
+      "url": "https://localhost:2006/sse"
+    },
+    "image": {
+      "url": "https://localhost:2007/sse"
+    },
+    "math": {
+      "url": "https://localhost:2008/sse"
+    },
+    "reddit": {
+      "url": "https://localhost:2009/sse"
+    },
+    "search": {
+      "url": "https://localhost:2010/sse"
+    },
+    "sympy": {
+      "url": "https://localhost:2011/sse"
+    },
+    "video": {
+      "url": "https://localhost:2012/sse"
     },
     "playwright": {
-      "url": "http://localhost:8931/sse"
+      "url": "https://localhost:2013/sse"
     },
     "amap-amap-sse": {
       "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",

@@ -235,5 +235,5 @@ if __name__ == "__main__":
     run_mcp_server(
         "Video Server",
         funcs=[mcpanalyzevideo, mcpextractvideosubtitles, mcpsummarizevideo],
-        port=3333,
+        port=2012,
     )

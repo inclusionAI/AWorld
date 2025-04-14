@@ -191,7 +191,7 @@ class PlanAgent(Agent):
                 ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warn("no result to record!")
+                logger.warning("no result to record!")
         content = llm_result.content
         if "TASK_DONE" not in content:
             content += self.done_prompt

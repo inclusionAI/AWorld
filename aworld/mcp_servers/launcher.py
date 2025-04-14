@@ -24,7 +24,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from typing import Callable, Dict, List
 
 from aworld.logs.util import logger
@@ -114,10 +113,10 @@ PLAYWRIGHT_PORT: int = 8931  # Default port for Playwright MCP
 
 # Create mapping from server names to functions
 SERVER_FUNCTIONS: Dict[str, List[Callable]] = {
-    "Arxiv Server": [mcpdownloadarxivpaper, mcpsearcharxivpaper],
-    "Audio Server": [mcptranscribeaudio],
-    "Code Server": [mcpexecutecode, mcpgeneratecode],
-    "Document Server": [
+    "arxiv": [mcpdownloadarxivpaper, mcpsearcharxivpaper],
+    "audio": [mcptranscribeaudio],
+    "code": [mcpexecutecode, mcpgeneratecode],
+    "document": [
         mcpreaddocx,
         mcpreadexcel,
         mcpreadjson,
@@ -127,8 +126,8 @@ SERVER_FUNCTIONS: Dict[str, List[Callable]] = {
         mcpreadtext,
         mcpreadxml,
     ],
-    "Download Server": [mcpdownloadfiles],
-    "Filesystem Server": [
+    "download": [mcpdownloadfiles],
+    "filesystem": [
         mcpchangepermissions,
         mcpcheckpath,
         mcpcompressfiles,
@@ -145,7 +144,7 @@ SERVER_FUNCTIONS: Dict[str, List[Callable]] = {
         mcpsearchfiles,
         mcpwritefile,
     ],
-    "Googlemaps Server": [
+    "googlemaps": [
         mcpdirections,
         mcpdistancematrix,
         mcpelevation,
@@ -156,8 +155,8 @@ SERVER_FUNCTIONS: Dict[str, List[Callable]] = {
         mcpplacesearch,
         mcptimezone,
     ],
-    "Image Server": [mcpreasoningimage],
-    "Math Server": [
+    "image": [mcpreasoningimage],
+    "math": [
         mcpbasicmath,
         mcpconversion,
         mcpgeometry,
@@ -166,7 +165,7 @@ SERVER_FUNCTIONS: Dict[str, List[Callable]] = {
         mcpstatistics,
         mcptrigonometry,
     ],
-    "Reddit Server": [
+    "reddit": [
         mcpgethotposts,
         mcpgetpostcomments,
         mcpgetsubredditinfo,
@@ -175,8 +174,8 @@ SERVER_FUNCTIONS: Dict[str, List[Callable]] = {
         mcpgetuserposts,
         mcpsearchreddit,
     ],
-    "Search Server": [mcpsearchduckduckgo, mcpsearchexa, mcpsearchgoogle],
-    "Sympy Server": [
+    "search": [mcpsearchduckduckgo, mcpsearchexa, mcpsearchgoogle],
+    "sympy": [
         mcpalgebraic,
         mcpcalculus,
         mcpmatrix,
@@ -184,7 +183,7 @@ SERVER_FUNCTIONS: Dict[str, List[Callable]] = {
         mcpsolvelinear,
         mcpsolveode,
     ],
-    "Video Server": [
+    "video": [
         mcpanalyzevideo,
         mcpextractvideosubtitles,
         mcpsummarizevideo,
@@ -340,9 +339,22 @@ def main():
     parser = argparse.ArgumentParser(
         description="Launch MCP servers with random port allocation"
     )
+    parser.add_argument(
+        "--server_name",
+        type=str,
+        help=f"Available servers: {', '.join(SERVER_FUNCTIONS.keys())}",
+        choices=SERVER_FUNCTIONS.keys(),
+        default=None,
+    )
     args = parser.parse_args()
 
-    launcher = MCPLauncher(SERVER_FUNCTIONS)
+    if args.server_name:
+        launcher = MCPLauncher({args.server_name: SERVER_FUNCTIONS[args.server_name]})
+        logger.success(f"Launching server: {args.server_name}")
+    else:
+        launcher = MCPLauncher(SERVER_FUNCTIONS)
+        logger.success("Launching all servers")
+
     launcher.start()
 
 

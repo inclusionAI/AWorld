@@ -128,4 +128,4 @@ def mcptranscribeaudio(
 
 
 if __name__ == "__main__":
-    run_mcp_server("Audio Server", funcs=[mcptranscribeaudio], port=2222)
+    run_mcp_server("Audio Server", funcs=[mcptranscribeaudio], port=2001)

@@ -1524,5 +1524,5 @@ if __name__ == "__main__":
             mcpchangepermissions,
             mcpgetdiskusage,
         ],
-        port=5556,
+        port=2005,
     )

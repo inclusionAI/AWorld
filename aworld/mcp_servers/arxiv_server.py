@@ -290,5 +290,5 @@ def mcpdownloadarxivpaper(
 
 if __name__ == "__main__":
     run_mcp_server(
-        "arXiv Server", funcs=[mcpsearcharxivpaper, mcpdownloadarxivpaper], port=7777
+        "arXiv Server", funcs=[mcpsearcharxivpaper, mcpdownloadarxivpaper], port=2000
     )

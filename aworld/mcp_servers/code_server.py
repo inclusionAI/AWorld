@@ -299,5 +299,5 @@ if __name__ == "__main__":
     run_mcp_server(
         "Code Generation and Execution Server",
         funcs=[mcpgeneratecode, mcpexecutecode],
-        port=8888,
+        port=2002,
     )

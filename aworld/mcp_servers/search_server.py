@@ -386,5 +386,5 @@ if __name__ == "__main__":
     run_mcp_server(
         "Search Server",
         funcs=[mcpsearchgoogle, mcpsearchduckduckgo, mcpsearchexa],
-        port=5555,
+        port=2010,
     )

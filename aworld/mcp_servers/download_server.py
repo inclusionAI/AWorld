@@ -161,4 +161,4 @@ def _download_single_file(
 
 
 if __name__ == "__main__":
-    run_mcp_server("Download Server", funcs=[mcpdownloadfiles], port=6666)
+    run_mcp_server("Download Server", funcs=[mcpdownloadfiles], port=2004)

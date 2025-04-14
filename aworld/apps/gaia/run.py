@@ -40,7 +40,7 @@ if __name__ == "__main__":
         llm_base_url="http://localhost:3456",
         # llm_api_key=llm_api_key,
         # llm_base_url=llm_base_url,
-        llm_temperature=0.6,
+        llm_temperature=0.0,
     )
 
     # Define a task
@@ -51,7 +51,7 @@ if __name__ == "__main__":
             _results = json.load(f)
     else:
         _results = []
-    for idx, sample in enumerate(dataset):
+    for idx, sample in enumerate(dataset[:1]):
         logger.info(
             f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. "
         )
@@ -72,15 +72,20 @@ if __name__ == "__main__":
             conf=AgentConfig(name=Agents.EXECUTE.value, llm_config=model_config),
             tool_names=[],
             mcp_servers=[
-                "image",
+                "arxiv",
                 "audio",
-                "video",
+                "code",
                 "document",
-                "search",
                 "download",
+                "filesystem",
+                "googlemaps",
+                "image",
+                "math",
+                "reddit",
+                "search",
+                "sympy",
+                "video",
                 "playwright",
-                # "filesystem",
-                # "fetch",
             ],
         )
 
@@ -102,10 +107,10 @@ if __name__ == "__main__":
             "score": question_scorer(answer, sample["Final answer"]),
         }
         _results.append(_result_info)
-        with open(save_path, "w") as f:
-            json.dump(_results, f, indent=4, ensure_ascii=False)
+    #     with open(save_path, "w") as f:
+    #         json.dump(_results, f, indent=4, ensure_ascii=False)
 
     score_dict = _generate_summary(_results)
     print(score_dict)
-    with open(save_score_path, "w") as f:
-        json.dump(score_dict, f, indent=4, ensure_ascii=False)
+    # with open(save_score_path, "w") as f:
+    #     json.dump(score_dict, f, indent=4, ensure_ascii=False)

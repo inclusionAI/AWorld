@@ -28,39 +28,33 @@ import os
 import random
 import re
 import tempfile
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import magic
 import requests
 from mcp.server import FastMCP
 
+from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.logs.util import logger
 from aworld.mcp.utils import mcp_tool_desc_transform
 
 
-def get_llm_config_from_os_environ(llm_model_name="gpt-4o", **kwargs) -> Dict[str, str]:
+def get_llm_config_from_os_environ(llm_model_name="gpt-4o", **kwargs) -> AgentConfig:
     """
     Get LLM configuration from environment variables
     Returns:
-        Dict[str, str]: Dictionary containing LLM configuration
+        AgentConfig: corresponding AgentConfig object
     """
-    config = {
-        "llm_provider": "openai",
-        "llm_model_name": llm_model_name,
-        "llm_base_url": os.environ.get("LLM_BASE_URL"),
-        "llm_api_key": os.environ.get("LLM_API_KEY"),
-        "temperature": os.environ.get("LLM_TEMPERATURE", 0.1),
-    }
-    for k, v in kwargs.items():
-        if v:
-            config[k] = v
-    if "server_name" in kwargs:
-        server_name = kwargs["server_name"]
-    logger.success(
-        f"{server_name}'s llm_config: {json.dumps(config, indent=4, ensure_ascii=False)}"
+    return AgentConfig(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name=llm_model_name,
+            llm_base_url=os.environ.get("LLM_BASE_URL"),
+            llm_api_key=os.environ.get("LLM_API_KEY"),
+            temperature=os.environ.get("LLM_TEMPERATURE", 0.0),
+        )
     )
-    return config
 
 
 def run_mcp_server(

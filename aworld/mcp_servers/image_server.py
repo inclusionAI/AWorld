@@ -223,5 +223,5 @@ if __name__ == "__main__":
             # mcpocr,
             mcpreasoningimage
         ],
-        port=1111,
+        port=2007,
     )
