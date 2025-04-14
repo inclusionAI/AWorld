@@ -40,7 +40,7 @@ if __name__ == "__main__":
         llm_base_url="http://localhost:3456",
         # llm_api_key=llm_api_key,
         # llm_base_url=llm_base_url,
-        llm_temperature=0,
+        llm_temperature=0.6,
     )
 
     # Define a task
@@ -51,7 +51,7 @@ if __name__ == "__main__":
             _results = json.load(f)
     else:
         _results = []
-    for idx, sample in enumerate(dataset[1:2]):
+    for idx, sample in enumerate(dataset):
         logger.info(
             f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. "
         )

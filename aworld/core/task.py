@@ -292,7 +292,7 @@ class Task(object):
         start = time.time()
 
         step = 0
-        max_steps = self.conf.get("max_steps", 100)
+        max_steps = self.conf.get("max_steps", 10)
         results = []
         swarm_resp = None
         try:
