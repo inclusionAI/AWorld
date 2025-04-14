@@ -33,8 +33,10 @@ class AndroidAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(AndroidAgent, self).__init__(conf, **kwargs)
         provider = self.conf.llm_config.llm_provider if self.conf.llm_config.llm_provider else self.conf.llm_provider
-        if provider == 'openai':
-            self.conf.llm_config.llm_provider = 'chatopenai'
+        if self.conf.llm_config.llm_provider:
+            self.conf.llm_config.llm_provider = "chat" + provider
+        else:
+            self.conf.llm_provider = "chat" + provider
         self._build_prompt()
         self.available_actions_desc = self._build_action_prompt()
         # Settings

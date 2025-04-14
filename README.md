@@ -39,7 +39,7 @@ if __name__ == '__main__':
 
         # Set via environment variable or direct configuration
         llm_api_key="YOUR_API_KEY", 
-        llm_base_url="http://localhost:5080"
+        llm_base_url="https://api.openai.com/v1"
     )
 
     search_sys_prompt = "You are a helpful agent."
@@ -51,7 +51,7 @@ if __name__ == '__main__':
     )
 
     # Define a task
-    task = Task(input="杭州西湖最近1公里的酒店", agent=search, conf=TaskConfig())
+    task = Task(input="Hotels within 1 kilometer of West Lake in Hangzhou", agent=search, conf=TaskConfig())
     task.run()
 ```
 Configure MCP servers by updating the configuration file: [`aworld/config/mcp.json`](aworld/config/mcp.json)

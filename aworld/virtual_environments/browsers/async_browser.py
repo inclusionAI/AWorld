@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import os
+import traceback
 from importlib import resources
 from pathlib import Path
 from typing import Any, Dict, Tuple, List
@@ -180,14 +181,31 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
         screenshot_base64 = base64.b64encode(screenshot).decode('utf-8')
         return screenshot_base64
 
-    async def _get_observation(self) -> Observation:
-        dom_tree = await self._parse_dom_tree()
-        image = await self.screenshot()
-        pixels_above, pixels_below = await self._scroll_info()
-        info = {"pixels_above": pixels_above,
-                "pixels_below": pixels_below,
-                "url": self.page.url}
-        return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
+    async def _get_observation(self, fail_error: str = None) -> Observation:
+        if fail_error:
+            return Observation(observer=self.name(), action_result=[ActionResult(error=fail_error)])
+
+        try:
+            dom_tree = await self._parse_dom_tree()
+            image = await self.screenshot()
+            pixels_above, pixels_below = await self._scroll_info()
+            info = {"pixels_above": pixels_above,
+                    "pixels_below": pixels_below,
+                    "url": self.page.url}
+            return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
+        except Exception as e:
+            try:
+                await self.page.go_back()
+                dom_tree = await self._parse_dom_tree()
+                image = await self.screenshot()
+                pixels_above, pixels_below = await self._scroll_info()
+                info = {"pixels_above": pixels_above,
+                        "pixels_below": pixels_below,
+                        "url": self.page.url}
+                return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
+            except Exception as e:
+                logger.warning(f"build observation fail, {traceback.format_exc()}")
+                return Observation(observer=self.name(), action_result=[ActionResult(error=traceback.format_exc())])
 
     async def _parse_dom_tree(self) -> DomTree:
         args = {
@@ -278,6 +296,8 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
                 if res.is_done:
                     terminated = res.is_done
                     self._finish = True
+                if res.error:
+                    fail_error += res.error
 
         info = {"exception": fail_error}
 
@@ -301,7 +321,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
                     info)
         else:
             # normal observation
-            observation = await self._get_observation()
+            observation = await self._get_observation(fail_error)
             observation.action_result = action_result
             observation.ability = action[-1].action_name
             self.cur_observation = observation

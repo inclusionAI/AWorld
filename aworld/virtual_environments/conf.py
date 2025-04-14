@@ -26,7 +26,7 @@ class BrowserToolConfig(ToolConfig):
     wss_url: str = None
     proxy: str = None
     cookies_file: str = None
-    working_dir: str = ""
+    working_dir: str = None
     enable_recording: bool = False
     sleep_after_init: float = 0
     max_retry: int = 3

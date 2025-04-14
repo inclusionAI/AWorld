@@ -1,9 +1,9 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import Dict, Any, List
+from typing import Dict, List
 
 from aworld.core.agent.agent_desc import agent_handoffs_desc
-from aworld.core.agent.base import Agent, Agent
+from aworld.core.agent.base import Agent, AgentFactory
 from aworld.core.common import ActionModel, Observation
 from aworld.logs.util import logger
 
@@ -11,7 +11,7 @@ from aworld.logs.util import logger
 class Swarm(object):
     """Simple implementation of interactive collaboration between multi-agent and supported env tools."""
 
-    def __init__(self, *args, root_agent: Agent = None, sequence: bool=True, **kwargs):
+    def __init__(self, *args, root_agent: Agent = None, sequence: bool=True, max_steps: int = 1, **kwargs):
         self.communicate_agent = root_agent
         if root_agent and root_agent not in args:
             self._topology = [root_agent] + list(args)
@@ -19,6 +19,7 @@ class Swarm(object):
             self._topology = args
         self._ext_params = kwargs
         self.sequence = sequence
+        self.max_steps = max_steps
         self.initialized = False
 
     def _init(self, **kwargs):
@@ -60,13 +61,20 @@ class Swarm(object):
 
             if pair[0] not in self.agents:
                 self.agents[pair[0].name()] = pair[0]
-                pair[0].tool_names.extend(self.tools)
+            if pair[0].name() not in AgentFactory:
+                AgentFactory._cls[pair[0].name()] = pair[0].__class__
+                AgentFactory._desc[pair[0].name()] = pair[0].desc()
+                AgentFactory._agent_conf[pair[0].name()] = pair[0].conf
+
             if len(pair) == 1:
                 continue
 
             if pair[1] not in self.agents:
                 self.agents[pair[1].name()] = pair[1]
-                pair[1].tool_names.extend(self.tools)
+                if pair[1].name() not in AgentFactory:
+                    AgentFactory._cls[pair[1].name()] = pair[1].__class__
+                    AgentFactory._desc[pair[1].name()] = pair[1].desc()
+                    AgentFactory._agent_conf[pair[1].name()] = pair[1].conf
 
             if self.topology_type == 'social':
                 # need to explicitly set handoffs in the agent
@@ -133,7 +141,9 @@ class Swarm(object):
                 res = Observation(content=policy_info)
             else:
                 res = observation[-1]
-                res.content = policy_info if policy_info else res.content
+                if res.content is None:
+                    res.content = ''
+                res.content += policy_info if policy_info else ''
             return res
         else:
             logger.warning(f"{strategy} not supported now.")

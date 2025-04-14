@@ -12,6 +12,8 @@ langchain-google-genai~=2.1.0
 numpy~=2.2.3
 pandas~=2.2.3
 pydantic_settings~=2.8.0
+mcp[cli]~=1.6.0
+python-dotenv~=1.0.1
 
 ######### [optional] #########
 # optional requirements will also be installed by all extensions,
@@ -25,6 +27,8 @@ openpyxl~=3.1.5
 xls2xlsx~=0.2.0
 wikipedia~=1.4.0
 duckduckgo_search~=7.5.2
-langchain-experimental~=0.3.4
-mcp[cli]~=1.6.0
 baidusearch~=1.0.3
+langchain-experimental~=0.3.4
+prometheus_client~=0.21.1
+opentelemetry-sdk~=1.31.1
+opentelemetry-api~=1.31.1

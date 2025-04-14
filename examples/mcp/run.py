@@ -18,9 +18,10 @@ if __name__ == '__main__':
         conf=agent_config,
         name="search_agent",
         system_prompt=search_sys_prompt,
-        mcp_servers=["amap-amap-sse"] # MCP server name for agent to use
+        mcp_servers=["amap-amap-sse"]  # MCP server name for agent to use
     )
 
     # Define a task
-    task = Task(input="杭州西湖最近1公里的酒店", agent=search, conf=TaskConfig())
-    task.run()
+    Task(
+        input="Hotels within 1 kilometer of West Lake in Hangzhou", agent=search, conf=TaskConfig()
+    ).run()

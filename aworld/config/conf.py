@@ -90,6 +90,7 @@ class AgentConfig(BaseModel):
     llm_base_url: str = None
     llm_api_key: str = None
 
+    use_vision: bool = True
     max_steps: int = 10
     max_input_tokens: int = 128000
     max_actions_per_step: int = 10

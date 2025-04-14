@@ -35,7 +35,6 @@ logs/
 logging/
 
 # Environment and virtual environments
-.env
 .venv
 env/
 venv/

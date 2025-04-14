@@ -1,54 +1,59 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import abc
+from typing import List
+
 
 class Message:
     id: str
 
 
 class Messageable(object):
+    __metaclass__ = abc.ABCMeta
+
     def __init__(self, conf, **kwargs):
         self.conf = conf
 
-    def send(self, ):
+    def send(self, messages: List[Message], **kwargs):
         pass
 
-    def receive(self, ):
+    def receive(self, messages: List[Message], **kwargs):
         pass
 
-    def transform(self, messages):
+    def transform(self, messages: List[Message], **kwargs):
         pass
 
-    async def async_send(self, ):
+    async def async_send(self, messages: List[Message], **kwargs):
         pass
 
-    async def async_receive(self, ):
+    async def async_receive(self, messages: List[Message], **kwargs):
         pass
 
-    async def async_transform(self, messages, **kwargs):
+    async def async_transform(self, messages: List[Message], **kwargs):
         pass
 
 
 class Recordable(Messageable):
-    def send(self, ):
-        return self.write()
+    def send(self, messages: List[Message], **kwargs):
+        return self.write(messages, **kwargs)
 
-    def receive(self, ):
-        return self.read()
+    def receive(self, messages: List[Message], **kwargs):
+        return self.read(messages, **kwargs)
 
-    async def async_send(self, ):
-        return self.async_write()
+    async def async_send(self, messages: List[Message], **kwargs):
+        return self.async_write(messages, **kwargs)
 
-    async def async_receive(self, ):
+    async def async_receive(self, messages: List[Message], **kwargs):
+        return self.async_read(messages, **kwargs)
+
+    def read(self, messages: List[Message], **kwargs):
         pass
 
-    def read(self):
+    def write(self, messages: List[Message], **kwargs):
         pass
 
-    def write(self):
+    def async_read(self, messages: List[Message], **kwargs):
         pass
 
-    def async_read(self):
-        pass
-
-    def async_write(self):
+    def async_write(self, messages: List[Message], **kwargs):
         pass

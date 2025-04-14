@@ -178,7 +178,6 @@ def import_package(
     except ImportError as e:
         error_msg = f"Failed to import {package_name} even after installation of {real_install_name}: {str(e)}"
         logger.error(error_msg)
-        raise ImportError(error_msg)
 
 
 def _get_install_command(installer: str, package_name: str, version: str = "") -> list:

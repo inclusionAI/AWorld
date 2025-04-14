@@ -48,9 +48,7 @@ def main():
     agent = AgentFactory(Agents.GYM.value, conf=AgentConfig())
 
     # can run tasks like this:
-    client = Client()
-    task = Task(agent=agent, tools=[gym_tool])
-    res = client.submit([task], parallel=False)
+    res = Task(agent=agent, tools=[gym_tool]).run()
     return res
 
 

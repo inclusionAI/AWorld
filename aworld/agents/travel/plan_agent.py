@@ -200,13 +200,12 @@ class TravelPlanAgent(Agent):
             if not actions:
                 logger.warning("agent not policy an action.")
                 return AgentResult(current_state=agent_brain,
-                                   actions=[ActionModel(tool_name=None,
+                                   actions=[ActionModel(agent_name=self.name(),
                                                         action_name="done")])
 
             for action in actions:
                 if "action_name" in action:
                     action_name = action['action_name']
-                    # browser_action = BrowserAction.get_value_by_name(action_name)
                     # if not browser_action:
                     if action_name not in ("", "", "", ""):
                         logger.warning(f"Unsupported action: {action_name}")
@@ -216,9 +215,6 @@ class TravelPlanAgent(Agent):
                     result.append(action_model)
                 else:
                     for k, v in action.items():
-                        # browser_action = BrowserAction.get_value_by_name(k)
-                        # if not browser_action:
-                        #     logger.warning(f"Unsupported action: {k}")
                         action_model = ActionModel(agent_name=k, params=v)
                         # action_model = ActionModel(tool_name=Tools.BROWSER.value, action_name=k, params=v)
                         result.append(action_model)

@@ -8,7 +8,7 @@ from aworld.agents.gym.agent import GymDemoAgent as GymAgent
 from aworld.core.agent.base import AgentFactory
 
 
-def _agent_desc():
+def agent_desc():
     """Utility method of generate description of agents.
 
     The agent can also serve as a tool to be called.
@@ -65,6 +65,3 @@ def _agent_desc():
         abilities.append(ability_dict)
         agent_val_dict["abilities"] = abilities
     return descs
-
-
-agent_desc = _agent_desc()

@@ -57,7 +57,7 @@ if __name__ == "__main__":
         agent_prompt=summary_prompt
     )
     # default is sequence swarm mode
-    swarm = Swarm(search, summary)
+    swarm = Swarm(search, summary, max_steps=1)
 
     prefix = ""
     # can special search google, wiki, duck go, or baidu. such as:

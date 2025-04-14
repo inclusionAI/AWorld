@@ -114,6 +114,7 @@ class AWorldInstaller(install):
             subprocess.check_call('playwright install', shell=True, timeout=60)
         except Exception as e:
             logger.error(f"Fail to execute playwright install\n {e}")
+        logger.info(f"Successfully installed aworld-{aworld.__version__}")
 
     def _contains_module(self, module):
         if self._extra is None:

@@ -43,7 +43,7 @@ def color_value(value, color: Color = Color.blue, hightlight_key=None):
         hightlight_key: Color segment key.
     """
     if hightlight_key is None:
-        print(f"{color} {value}")
+        print(f"{color} {value} {Color.reset}")
     else:
         print(f"{color} {hightlight_key}: {Color.reset} {value}")
 
@@ -57,6 +57,6 @@ def color_log(value, color: Color = Color.blue, hightlight_key=None):
         hightlight_key: Color segment key.
     """
     if hightlight_key is None:
-        logger.info(f"{color} {value}")
+        logger.info(f"{color} {value} {Color.reset}")
     else:
         logger.info(f"{color} {hightlight_key}: {Color.reset} {value}")

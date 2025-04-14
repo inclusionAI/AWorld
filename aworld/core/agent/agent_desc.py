@@ -7,7 +7,7 @@ from aworld.logs.util import logger
 
 def get_agent_desc() -> Dict[str, dict]:
     from aworld.agents import agent_desc
-    return agent_desc
+    return agent_desc()
 
 
 def get_agent_desc_by_name(name: str) -> Dict[str, Any]:

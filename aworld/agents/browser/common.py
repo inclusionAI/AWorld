@@ -30,7 +30,7 @@ class AgentBrain(BaseModel):
     """Current state of the agent"""
     evaluation_previous_goal: str
     memory: str
-    thought: str
+    thought: str = None
     next_goal: str
 
 

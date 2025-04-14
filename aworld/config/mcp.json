@@ -22,20 +22,16 @@
       "url": "http://localhost:8931/sse"
     },
     "amap-amap-sse": {
-      "url": "https://mcp.amap.com/sse?key="
+      "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",
+      "timeout": 5.0,
+      "sse_read_timeout": 300.0
     },
-    "filesystem": {
+    "tavily-mcp": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/Users/arac/Desktop",
-        "/Users/arac/Desktop/mcp_cache"
-      ]
-    },
-    "fetch": {
-      "command": "python",
-      "args": ["-m", "mcp_server_fetch"]
+      "args": ["-y", "tavily-mcp@0.1.2"],
+      "env": {
+        "TAVILY_API_KEY": "YOUR_API_KEY"
+      }
     }
   } 
 }

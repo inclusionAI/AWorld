@@ -166,6 +166,7 @@ class ToolsManager(Factory):
                 conf.update(user_conf)
             else:
                 logger.warning(f"Unknown conf type: {type(user_conf)}, ignored!")
+        self._tool_conf[name] = conf
 
         # must is a dict
         conf['name'] = name

@@ -26,7 +26,7 @@ from aworld.logs.util import logger
 from aworld.core.envs.tool import ToolFactory
 
 
-def tool_desc():
+def tool_action_desc():
     """Utility method of generate description of tools and their actions.
 
     The standard protocol can be transformed based on the API of different llm.
@@ -94,6 +94,3 @@ def tool_desc():
             logger.warning(f"{tool} no action!")
         tool_val_dict["actions"] = actions
     return descs
-
-
-tool_action_desc_dict = tool_desc()

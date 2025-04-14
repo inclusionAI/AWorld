@@ -206,7 +206,9 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
 
     def _get_observation(self, fail_error: str = None) -> Observation:
         if fail_error:
-            return Observation(observer=self.name(), info={"exception": fail_error})
+            return Observation(
+                observer=self.name(), action_result=[ActionResult(error=fail_error)]
+            )
 
         try:
             dom_tree = self._parse_dom_tree()
@@ -234,10 +236,12 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
                 return Observation(
                     observer=self.name(), dom_tree=dom_tree, image=image, info=info
                 )
-            except:
+            except Exception as e:
                 logger.warning(f"build observation fail, {traceback.format_exc()}")
-                fail_error = str(e)
-                return Observation(observer=self.name(), info={"exception": fail_error})
+                return Observation(
+                    observer=self.name(),
+                    action_result=[ActionResult(error=traceback.format_exc())],
+                )
 
     def _parse_dom_tree(self) -> DomTree:
         args = {

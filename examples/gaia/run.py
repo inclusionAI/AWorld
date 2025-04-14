@@ -27,8 +27,8 @@ def main():
         llm_provider="openai",
         llm_model_name="gpt-4o",
         llm_temperature=1,
-        llm_api_key="your own key",
-        llm_base_url="http://localhost:5080"  ## paste your own llm server address
+        # llm_api_key="your own key",
+        # llm_base_url="http://localhost:5080"  ## paste your own llm server address
     )
 
     agent1_config = AgentConfig(

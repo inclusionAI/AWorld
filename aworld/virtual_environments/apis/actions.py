@@ -44,11 +44,9 @@ class SearchWiki(ExecutableAction):
                 f"{query}, please specify another word to describe the"
                 " entity to be searched."
             )
-        except wikipedia.exceptions.WikipediaException as e:
-            result = f"An exception occurred during the search: {e}"
         except Exception as e:
             logger.error(f"An exception occurred during the search: {e}")
-            raise e
+            result = f"An exception occurred during the search: {e}"
         logger.debug(f"wiki result: {result}")
         return ActionResult(content=result, keep=True, is_done=True), None
 
@@ -92,7 +90,7 @@ class Duckduckgo(ExecutableAction):
         if source == "text":
             try:
                 results = ddgs.text(keywords=query, max_results=max_results)
-            except RequestException as e:
+            except Exception as e:
                 # Handle specific exceptions or general request exceptions
                 responses.append({"error": f"duckduckgo search failed.{e}"})
                 return ActionResult(content="duckduckgo search failed", keep=True), responses
@@ -109,7 +107,7 @@ class Duckduckgo(ExecutableAction):
         elif source == "images":
             try:
                 results = ddgs.images(keywords=query, max_results=max_results)
-            except RequestException as e:
+            except Exception as e:
                 # Handle specific exceptions or general request exceptions
                 responses.append({"error": f"duckduckgo search failed.{e}"})
                 return ActionResult(content="duckduckgo search failed", keep=True), responses
@@ -128,7 +126,7 @@ class Duckduckgo(ExecutableAction):
         elif source == "videos":
             try:
                 results = ddgs.videos(keywords=query, max_results=max_results)
-            except RequestException as e:
+            except Exception as e:
                 # Handle specific exceptions or general request exceptions
                 responses.append({"error": f"duckduckgo search failed.{e}"})
                 return ActionResult(content="duckduckgo search failed", keep=True), responses

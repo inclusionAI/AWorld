@@ -5,14 +5,16 @@ import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Union
 
 from pydantic import BaseModel
 
-from aworld.core.agent.base import Agent, agent_executor, is_agent_by_name
+from aworld.config import ConfigDict
+from aworld.config.conf import AgentConfig
+from aworld.core.agent.base import Agent, AgentFactory, agent_executor, is_agent_by_name
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import Tool, ToolFactory
+from aworld.core.envs.tool_desc import is_tool_by_name
 from aworld.logs.util import color_log, logger
 
 
@@ -23,6 +25,9 @@ class TaskModel:
     conf: Union[Dict[str, Any], BaseModel] = None
     tools: List[Tool] = field(default_factory=list)
     tool_names: List[str] = field(default_factory=list)
+    tools_conf: Dict[str, Union[Dict[str, Any], ConfigDict, AgentConfig]] = field(
+        default_factory=dict
+    )
     swarm: Swarm = None
     agent: Agent = None
 
@@ -38,6 +43,7 @@ class Task(object):
         conf: Union[Dict[str, Any], BaseModel] = {},
         tools: List[Tool] = [],
         tool_names: List[str] = [],
+        tools_conf: Dict[str, Union[Dict[str, Any], ConfigDict, AgentConfig]] = {},
         *args,
         **kwargs,
     ):
@@ -90,6 +96,7 @@ class Task(object):
         tool_names.extend(self.tools.keys())
         # lazy load
         self.tool_names = tool_names
+        self.tools_conf = tools_conf
 
         self.daemon_target = kwargs.pop("daemon_target", None)
         self._use_demon = False if not conf else conf.get("use_demon", False)
@@ -154,10 +161,17 @@ class Task(object):
 
         if self.swarm.topology_type == "social":
             return self._social_process(observation, info)
-        else:
+        elif self.swarm.topology_type == "sequence":
             return self._sequence_process(observation, info)
 
     def _sequence_process(self, observation: Observation, info: Dict[str, Any]):
+        """Multi-agent sequence general process workflow.
+
+        NOTE: Use the agent‘s finished state(no tool calls) to control the inner loop.
+        Args:
+            observation: Observation based on env
+            info: Extend info by env
+        """
         if not observation:
             raise RuntimeError("no observation, check run process")
 
@@ -166,118 +180,57 @@ class Task(object):
         max_steps = self.conf.get("max_steps", 100)
         msg = None
 
-        for agent in self.swarm.ordered_agents:
-            observations = [observation]
-            policy = None
-            while step < max_steps:
-                terminated = False
+        for i in range(self.swarm.max_steps):
+            for idx, agent in enumerate(self.swarm.ordered_agents):
+                observations = [observation]
+                policy = None
+                cur_agent = agent
+                while step < max_steps:
+                    terminated = False
 
-                observation = self.swarm.action_to_observation(policy, observations)
-                policy: List[ActionModel] = agent_executor.execute_agent(
-                    observation, agent=agent, conf=agent.conf, step=step
-                )
-                if not policy:
-                    logger.warning(f"current agent {agent.name()} no policy to use.")
-                    return {
-                        "msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
-                        "steps": step,
-                        "success": False,
-                        "time_cost": (time.time() - start),
-                    }
-
-                if self.tools is None:
-                    self.tools = {}
-                if self.is_agent(policy[0]):
-                    # only one agent, and get agent from policy
-                    policy_for_agent = policy[0]
-                    cur_agent: Agent = self.swarm.agents.get(
-                        policy_for_agent.agent_name
+                    observation = self.swarm.action_to_observation(policy, observations)
+                    policy: List[ActionModel] = cur_agent.executor.execute_agent(
+                        observation, agent=cur_agent, conf=cur_agent.conf, step=step
                     )
-                    logger.critical(f"Execute agent: {cur_agent.name()}")
-                    if not cur_agent:
-                        raise RuntimeError(
-                            f"Can not find {policy_for_agent.agent_name} agent in swarm."
+                    observation.content = None
+                    color_log(f"{cur_agent.name()} policy: {policy}")
+                    if not policy:
+                        logger.warning(
+                            f"current agent {cur_agent.name()} no policy to use."
                         )
-                    if cur_agent.name() == agent.name():
-                        # Current agent is entrance agent, means need to exit to the outer loop
-                        logger.warning("Exit the loop")
-                        observation = self.swarm.action_to_observation(
-                            policy, observations
-                        )
-                        break
-
-                    if (
-                        agent.handoffs
-                        and policy_for_agent.agent_name not in agent.handoffs
-                    ):
-                        # Unable to hand off, exit to the outer loop
                         return {
-                            "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
-                            f"by {cur_agent.name()} agent.",
-                            "response": policy[0].policy_info if policy else "",
+                            "msg": f"current agent {cur_agent.name()} no policy to use.",
+                            "steps": step,
+                            "success": False,
+                            "time_cost": (time.time() - start),
+                        }
+
+                    if self.is_agent(policy[0]):
+                        status, info = self._agent(agent, observation, policy, step)
+                        if status == "normal":
+                            if info:
+                                observations.append(observation)
+                        elif status == "break":
+                            observation = self.swarm.action_to_observation(
+                                policy, observations
+                            )
+                            break
+                        elif status == "return":
+                            return info
+                    elif is_tool_by_name(policy[0].tool_name):
+                        self._tool_call(policy, observations, step)
+                    else:
+                        logger.warning(f"Unrecognized policy: {policy[0]}")
+                        return {
+                            "msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
+                            "response": "",
                             "steps": step,
                             "success": False,
                         }
-                    # Check if current agent done
-                    if cur_agent.finished:
-                        cur_agent._finished = False
-                        logger.info(
-                            f"{cur_agent.name()} agent be be handed off, so finished state reset to False."
-                        )
-
-                    if observation:
-                        observation.content = policy_for_agent.policy_info
-                    else:
-                        observation = Observation(content=policy_for_agent.policy_info)
-                    policy = agent_executor.execute_agent(
-                        observation, agent=cur_agent, conf=cur_agent.conf, step=step
-                    )
-
-                    if not policy:
-                        logger.warning(
-                            f"{observation} can not get the valid policy in {policy_for_agent.agent_name}, exit task!"
-                        )
-                        msg = f"{policy_for_agent.agent_name} invalid policy"
+                    step += 1
+                    if terminated and agent.finished:
+                        logger.info("swarm finished")
                         break
-                    # clear observation
-                    observation = None
-                else:
-                    # group action by tool name
-                    tool_mapping = dict()
-                    # Directly use or use tools after creation.
-                    for act in policy:
-                        if not self.tools or (
-                            self.tools and act.tool_name not in self.tools
-                        ):
-                            # dynamic only use default config in module.
-                            tool = ToolFactory(act.tool_name)
-                            tool.reset()
-                            tool_mapping[act.tool_name] = []
-                            self.tools[act.tool_name] = tool
-                        if act.tool_name not in tool_mapping:
-                            tool_mapping[act.tool_name] = []
-                        tool_mapping[act.tool_name].append(act)
-
-                    for tool_name, action in tool_mapping.items():
-                        # Execute action using browser tool and unpack all return values
-                        logger.critical(f"Execute tool: {tool_name}-{action}")
-                        observation, reward, terminated, _, info = self.tools[
-                            tool_name
-                        ].step(action)
-                        observations.append(observation)
-
-                        logger.info(f"{action} state: {observation}; reward: {reward}")
-                        # Check if there's an exception in info
-                        if info.get("exception"):
-                            color_log(
-                                f"Step {step} failed with exception: {info['exception']}"
-                            )
-                            msg = f"Step {step} failed with exception: {info['exception']}"
-                        logger.info(f"step: {step} finished by tool action.")
-                step += 1
-                if terminated and agent.finished:
-                    logger.info("swarm finished")
-                    break
         return {
             "steps": step,
             "answer": observation.content,
@@ -285,6 +238,89 @@ class Task(object):
             "msg": msg,
             "success": True if not msg else False,
         }
+
+    def _agent(
+        self,
+        agent: Agent,
+        observation: Observation,
+        policy: List[ActionModel],
+        step: int,
+    ):
+        # only one agent, and get agent from policy
+        policy_for_agent = policy[0]
+        cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
+        if not cur_agent:
+            raise RuntimeError(
+                f"Can not find {policy_for_agent.agent_name} agent in swarm."
+            )
+
+        status = "normal"
+        if cur_agent.name() == agent.name():
+            # Current agent is entrance agent, means need to exit to the outer loop
+            logger.warning(f"{cur_agent.name()} exit the loop")
+            status = "break"
+            return status, None
+
+        if agent.handoffs and policy_for_agent.agent_name not in agent.handoffs:
+            # Unable to hand off, exit to the outer loop
+            status = "return"
+            return status, {
+                "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+                f"by {agent.name()} agent.",
+                "response": policy[0].policy_info if policy else "",
+                "steps": step,
+                "success": False,
+            }
+        # Check if current agent done
+        if cur_agent.finished:
+            cur_agent._finished = False
+            logger.info(
+                f"{cur_agent.name()} agent be be handed off, so finished state reset to False."
+            )
+
+        con = policy_for_agent.policy_info
+        if policy_for_agent.params and "content" in policy_for_agent.params:
+            con = policy_for_agent.params["content"]
+        if observation:
+            observation.content = con
+        else:
+            observation = Observation(content=con)
+            return status, observation
+        return status, None
+
+    def _tool_call(
+        self, policy: List[ActionModel], observations: List[Observation], step: int
+    ):
+        msg = None
+        # group action by tool name
+        tool_mapping = dict()
+        # Directly use or use tools after creation.
+        for act in policy:
+            if not self.tools or (self.tools and act.tool_name not in self.tools):
+                # dynamic only use default config in module.
+                conf = self.tools_conf.get(act.tool_name)
+                tool = ToolFactory(act.tool_name, conf=conf)
+                tool.reset()
+                tool_mapping[act.tool_name] = []
+                self.tools[act.tool_name] = tool
+            if act.tool_name not in tool_mapping:
+                tool_mapping[act.tool_name] = []
+            tool_mapping[act.tool_name].append(act)
+
+        for tool_name, action in tool_mapping.items():
+            # Execute action using browser tool and unpack all return values
+            observation, reward, terminated, _, info = self.tools[tool_name].step(
+                action
+            )
+            observations.append(observation)
+
+            logger.info(f"{action} state: {observation}; reward: {reward}")
+            # Check if there's an exception in info
+            if info.get("exception"):
+                color_log(f"Step {step} failed with exception: {info['exception']}")
+                msg = f"Step {step} failed with exception: {info['exception']}"
+            logger.info(f"step: {step} finished by tool action.")
+        return msg
 
     def _social_process(
         self, observation: Observation, info: Dict[str, Any]
@@ -354,9 +390,9 @@ class Task(object):
             }
 
     def is_agent(self, policy: ActionModel):
-        return (
-            policy.tool_name is None and policy.action_name is None
-        ) or is_agent_by_name(policy.tool_name)
+        return is_agent_by_name(policy.tool_name) or (
+            not policy.tool_name and not policy.action_name
+        )
 
     def _process(self, observation, info) -> Dict[str, Any]:
         """Multi-agent general process workflow.
@@ -373,14 +409,13 @@ class Task(object):
         step = 0
         max_steps = self.conf.get("max_steps", 100)
         self.swarm.cur_agent = self.swarm.communicate_agent
-        # use entry agent every time
-        policy: List[ActionModel] = agent_executor.execute_agent(
+        # use communicate agent every time
+        policy: List[ActionModel] = self.swarm.cur_agent.executor.execute_agent(
             observation,
             agent=self.swarm.cur_agent,
             conf=self.swarm.cur_agent.conf,
             step=step,
         )
-        # policy: List[ActionModel] = self.swarm.cur_agent.policy(observation, info)
         if not policy:
             logger.warning(
                 f"current agent {self.swarm.cur_agent.name()} no policy to use."
@@ -392,9 +427,6 @@ class Task(object):
                 "time_cost": (time.time() - start),
             }
 
-        if self.tools is None:
-            self.tools = {}
-
         msg = None
         response = None
         return_entry = False
@@ -404,129 +436,32 @@ class Task(object):
             while step < max_steps:
                 terminated = False
                 if self.is_agent(policy[0]):
-                    # only one agent, and get agent from policy
-                    policy_for_agent = policy[0]
-                    cur_agent: Agent = self.swarm.agents.get(
-                        policy_for_agent.agent_name
-                    )
-                    if not cur_agent:
-                        raise RuntimeError(
-                            f"Can not find {policy_for_agent.agent_name} agent in swarm."
+                    status, info = self._social_agent(policy, step)
+                    if status == "normal":
+                        self.swarm.cur_agent = self.swarm.agents.get(
+                            policy[0].agent_name
                         )
-                    if cur_agent.name() == self.swarm.communicate_agent.name():
-                        # Current agent is entrance agent, means need to exit to the outer loop
-                        logger.warning("Exit to the outer loop")
-                        return_entry = True
-                        break
-
-                    if (
-                        self.swarm.cur_agent.handoffs
-                        and policy_for_agent.agent_name
-                        not in self.swarm.cur_agent.handoffs
-                    ):
-                        # Unable to hand off, exit to the outer loop
-                        return {
-                            "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
-                            f"by {cur_agent.name()} agent.",
-                            "response": policy[0].policy_info if policy else "",
-                            "steps": step,
-                            "success": False,
-                        }
-                    # Check if current agent done
-                    if cur_agent.finished:
-                        cur_agent._finished = False
-                        logger.info(
-                            f"{cur_agent.name()} agent be be handed off, so finished state reset to False."
-                        )
-
-                    observation = Observation(content=policy_for_agent.policy_info)
-                    agent_policy = agent_executor.execute_agent(
-                        observation, agent=cur_agent, conf=cur_agent.conf, step=step
-                    )
-                    # agent_policy = cur_agent.policy(observation, info=info)
-                    if not agent_policy:
-                        logger.warning(
-                            f"{observation} can not get the valid policy in {policy_for_agent.agent_name}, exit task!"
-                        )
-                        msg = f"{policy_for_agent.agent_name} invalid policy"
-                        break
-                    self.swarm.cur_agent = cur_agent
-                    policy = agent_policy
+                        policy = info
                     # clear observation
                     observation = None
+                elif is_tool_by_name(policy[0].tool_name):
+                    status, info = self._social_tool_call(policy, step)
+                    if status == "normal":
+                        observation = info
                 else:
-                    # group action by tool name
-                    tool_mapping = dict()
-                    # Directly use or use tools after creation.
-                    for act in policy:
-                        if not self.tools or (
-                            self.tools and act.tool_name not in self.tools
-                        ):
-                            # dynamic only use default config in module.
-                            tool = ToolFactory(act.tool_name)
-                            tool.reset()
-                            tool_mapping[act.tool_name] = []
-                            self.tools[act.tool_name] = tool
-                        if act.tool_name not in tool_mapping:
-                            tool_mapping[act.tool_name] = []
-                        tool_mapping[act.tool_name].append(act)
+                    logger.warning(f"Unrecognized policy: {policy[0]}")
+                    return {
+                        "msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
+                        "response": "",
+                        "steps": step,
+                        "success": False,
+                    }
 
-                    for tool_name, action in tool_mapping.items():
-                        # Execute action using browser tool and unpack all return values
-                        logger.info(f"execute tool action: {tool_name}-{action}")
-                        observation, reward, terminated, _, info = self.tools[
-                            tool_name
-                        ].step(action)
-
-                        # Check if there's an exception in info
-                        if info.get("exception"):
-                            color_log(
-                                f"Step {step} failed with exception: {info['exception']}"
-                            )
-                            msg = info.get("exception")
-                        logger.info(f"step: {step} finished by tool action.")
-
-                    # The tool results give itself, exit; give to other agents, continue
-                    tmp_name = policy[0].agent_name
-                    if (
-                        self.swarm.cur_agent.name()
-                        == self.swarm.communicate_agent.name()
-                        and (
-                            len(self.swarm.agents) == 1
-                            or tmp_name is None
-                            or self.swarm.cur_agent.name() == tmp_name
-                        )
-                    ):
-                        return_entry = True
-                        break
-                    elif policy[0].agent_name:
-                        policy_for_agent = policy[0]
-                        cur_agent: Agent = self.swarm.agents.get(
-                            policy_for_agent.agent_name
-                        )
-                        if not cur_agent:
-                            raise RuntimeError(
-                                f"Can not find {policy_for_agent.agent_name} agent in swarm."
-                            )
-                        if (
-                            self.swarm.cur_agent.handoffs
-                            and policy_for_agent.agent_name
-                            not in self.swarm.cur_agent.handoffs
-                        ):
-                            # Unable to hand off, exit to the outer loop
-                            return {
-                                "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
-                                f"by {cur_agent.name()} agent.",
-                                "response": policy[0].policy_info if policy else "",
-                                "steps": step,
-                                "success": False,
-                            }
-                        # Check if current agent done
-                        if cur_agent.finished:
-                            cur_agent._finished = False
-                            logger.info(
-                                f"{cur_agent.name()} agent be be handed off, so finished state reset to False."
-                            )
+                if status == "break":
+                    return_entry = info
+                    break
+                elif status == "return":
+                    return info
 
                 step += 1
                 if terminated and self.swarm.cur_agent.finished:
@@ -576,3 +511,117 @@ class Task(object):
                 "steps": step,
                 "success": False,
             }
+
+    def _social_agent(self, policy: List[ActionModel], step):
+        # only one agent, and get agent from policy
+        policy_for_agent = policy[0]
+        cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
+        if not cur_agent:
+            raise RuntimeError(
+                f"Can not find {policy_for_agent.agent_name} agent in swarm."
+            )
+
+        if cur_agent.name() == self.swarm.communicate_agent.name():
+            # Current agent is entrance agent, means need to exit to the outer loop
+            logger.warning("Exit to the outer loop")
+            return "break", True
+
+        if (
+            self.swarm.cur_agent.handoffs
+            and policy_for_agent.agent_name not in self.swarm.cur_agent.handoffs
+        ):
+            # Unable to hand off, exit to the outer loop
+            return "return", {
+                "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+                f"by {cur_agent.name()} agent.",
+                "response": policy[0].policy_info if policy else "",
+                "steps": step,
+                "success": False,
+            }
+        # Check if current agent done
+        if cur_agent.finished:
+            cur_agent._finished = False
+            logger.info(
+                f"{cur_agent.name()} agent be be handed off, so finished state reset to False."
+            )
+
+        observation = Observation(content=policy_for_agent.policy_info)
+        agent_policy = cur_agent.executor.execute_agent(
+            observation, agent=cur_agent, conf=cur_agent.conf, step=step
+        )
+
+        if not agent_policy:
+            logger.warning(
+                f"{observation} can not get the valid policy in {policy_for_agent.agent_name}, exit task!"
+            )
+            return "return", {
+                "msg": f"{policy_for_agent.agent_name} invalid policy",
+                "response": "",
+                "steps": step,
+                "success": False,
+            }
+        return "normal", agent_policy
+
+    def _social_tool_call(self, policy: List[ActionModel], step: int):
+        observation = None
+        # group action by tool name
+        tool_mapping = dict()
+        # Directly use or use tools after creation.
+        for act in policy:
+            if not self.tools or (self.tools and act.tool_name not in self.tools):
+                # dynamic only use default config in module.
+                conf = self.tools_conf.get(act.tool_name)
+                tool = ToolFactory(act.tool_name, conf=conf)
+                tool.reset()
+                tool_mapping[act.tool_name] = []
+                self.tools[act.tool_name] = tool
+            if act.tool_name not in tool_mapping:
+                tool_mapping[act.tool_name] = []
+            tool_mapping[act.tool_name].append(act)
+
+        for tool_name, action in tool_mapping.items():
+            # Execute action using browser tool and unpack all return values
+            observation, reward, terminated, _, info = self.tools[tool_name].step(
+                action
+            )
+
+            logger.info(f"{action} state: {observation}; reward: {reward}")
+            # Check if there's an exception in info
+            if info.get("exception"):
+                color_log(f"Step {step} failed with exception: {info['exception']}")
+            logger.info(f"step: {step} finished by tool action.")
+
+        # The tool results give itself, exit; give to other agents, continue
+        tmp_name = policy[0].agent_name
+        if self.swarm.cur_agent.name() == self.swarm.communicate_agent.name() and (
+            len(self.swarm.agents) == 1
+            or tmp_name is None
+            or self.swarm.cur_agent.name() == tmp_name
+        ):
+            return "break", True
+        elif policy[0].agent_name:
+            policy_for_agent = policy[0]
+            cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
+            if not cur_agent:
+                raise RuntimeError(
+                    f"Can not find {policy_for_agent.agent_name} agent in swarm."
+                )
+            if (
+                self.swarm.cur_agent.handoffs
+                and policy_for_agent.agent_name not in self.swarm.cur_agent.handoffs
+            ):
+                # Unable to hand off, exit to the outer loop
+                return "return", {
+                    "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+                    f"by {cur_agent.name()} agent.",
+                    "response": policy[0].policy_info if policy else "",
+                    "steps": step,
+                    "success": False,
+                }
+            # Check if current agent done
+            if cur_agent.finished:
+                cur_agent._finished = False
+                logger.info(
+                    f"{cur_agent.name()} agent be be handed off, so finished state reset to False."
+                )
+        return "normal", observation
