@@ -68,7 +68,7 @@ class MemoryModel(BaseModel):
     content: Any = None
 
 
-class BaseAgent(Generic[INPUT, OUTPUT]):
+class Agent(Generic[INPUT, OUTPUT]):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
@@ -148,7 +148,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._finished
 
 
-class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
+class BaseAgent(Agent[Observation, Union[List[ActionModel], None]]):
     """Basic agent for unified protocol within the framework."""
 
     def __init__(self,
@@ -163,7 +163,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             executor: The agent special executor.
             resp_parse_func: Response parse function for the agent standard output.
         """
-        super(Agent, self).__init__(conf, **kwargs)
+        super(BaseAgent, self).__init__(conf, **kwargs)
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
         self._llm = None
         self.memory = []
