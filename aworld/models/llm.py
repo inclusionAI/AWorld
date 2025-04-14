@@ -67,7 +67,6 @@ class LLMModel:
             self.provider = custom_provider
             return
 
-        conf = conf.llm_config if conf.llm_config.llm_api_key or conf.llm_config.llm_base_url else conf
         # Get basic parameters
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
         model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
@@ -308,8 +307,8 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None, custom_provider: 
         api_key = kwargs.get("api_key") or (conf.llm_api_key if conf else None)
 
         return ChatOpenAI(
-            model=kwargs.get("model_name", "gpt-4o"),
-            temperature=kwargs.get("temperature", 0.0),
+            model=model_name,
+            temperature=kwargs.get("temperature", conf.llm_temperature),
             base_url=base_url,
             api_key=api_key,
         )

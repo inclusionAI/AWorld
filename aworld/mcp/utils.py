@@ -118,7 +118,6 @@ async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any
                 })
 
     if not server_configs:
-        logging.info("not match mcp server")
         return []
 
     async with AsyncExitStack() as stack:

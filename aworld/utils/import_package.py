@@ -111,9 +111,9 @@ def import_package(
 
     # Try to import the module first
     try:
-        logger.info(f"Attempting to import {package_name}")
+        logger.debug(f"Attempting to import {package_name}")
         module = importlib.import_module(package_name)
-        logger.info(f"Successfully imported {package_name}")
+        logger.debug(f"Successfully imported {package_name}")
 
         # If we successfully imported the module, check version if specified
         if version:
@@ -171,9 +171,9 @@ def import_package(
 
     # Try importing after installation
     try:
-        logger.info(f"Attempting to import {package_name} after installation")
+        logger.debug(f"Attempting to import {package_name} after installation")
         module = importlib.import_module(package_name)
-        logger.info(f"Successfully imported {package_name}")
+        logger.debug(f"Successfully imported {package_name}")
         return ModuleAlias(module) if alias else module
     except ImportError as e:
         error_msg = f"Failed to import {package_name} even after installation of {real_install_name}: {str(e)}"

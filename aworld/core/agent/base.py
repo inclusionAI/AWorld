@@ -162,6 +162,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
         self.output_prompt: str = kwargs.get("output_prompt") if kwargs.get("output_prompt") else conf.output_prompt
 
+        # tool_name: [tool_action1, tool_action2, ...]
+        self.black_tool_actions: Dict[str, List[str]] = kwargs.get("black_tool_actions") if kwargs.get(
+            "black_tool_actions") else self.conf.get('black_tool_actions', {})
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
         self.executor = executor if executor else agent_executor
         agent_executor.register(self.name(), self)
@@ -177,7 +180,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
     def env_tool(self):
         """Description of agent as tool."""
         return tool_desc_transform(get_tool_desc(),
-                                   tools=self.tool_names if self.tool_names else [])
+                                   tools=self.tool_names if self.tool_names else [],
+                                   black_tool_actions=self.black_tool_actions)
 
     def handoffs_agent_as_tool(self):
         """Description of agent as tool."""
@@ -196,8 +200,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
 
         # Stateless tool
-        self.tools = tool_desc_transform(get_tool_desc(),
-                                         tools=self.tool_names if self.tool_names else [])
+        self.tools = self.env_tool()
         # Agents as tool
         self.tools.extend(self.handoffs_agent_as_tool())
         # MCP servers are tools
@@ -245,10 +248,11 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         # query from memory, TODO: memory.query()
         histories = self.memory[-max_step:]
         if histories:
+            # default use the first tool call
             for history in histories:
                 messages.append(history.message)
                 if history.tool_calls:
-                    messages.append({'role': 'assistant', 'content': '', 'tool_calls': history.tool_calls})
+                    messages.append({'role': 'assistant', 'content': '', 'tool_calls': [history.tool_calls[0]]})
                 else:
                     messages.append({'role': 'assistant', 'content': history.content})
 
@@ -275,7 +279,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             return AgentResult(actions=[], current_state=None)
 
         is_call_tool = False
-        content = resp.content
+        content = '' if resp.content is None else resp.content
         if resp.tool_calls:
             is_call_tool = True
             for tool_call in resp.tool_calls:
@@ -288,7 +292,10 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(tool_name):
-                    results.append(ActionModel(agent_name=tool_name, params=params, policy_info=content))
+                    param_info = params.get('content', "") + ' ' + params.get('info', '')
+                    results.append(ActionModel(agent_name=tool_name,
+                                               params=params,
+                                               policy_info=content + param_info))
                 else:
                     action_name = '__'.join(names[1:]) if len(names) > 1 else None
                     results.append(ActionModel(tool_name=tool_name,

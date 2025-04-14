@@ -374,6 +374,7 @@ class Task(object):
                     "steps": step,
                     "success": False,
                     "time_cost": (time.time() - start)}
+        color_log(f"{self.swarm.cur_agent.name()} policy: {policy}")
 
         msg = None
         response = None
@@ -419,6 +420,7 @@ class Task(object):
                                                           agent=cur_agent,
                                                           conf=cur_agent.conf,
                                                           step=step)
+                    color_log(f"{cur_agent.name()} policy: {policy}")
 
             if policy:
                 response = policy[0].policy_info if policy[0].policy_info else policy[0].action_name
@@ -454,9 +456,9 @@ class Task(object):
         if not cur_agent:
             raise RuntimeError(f"Can not find {policy_for_agent.agent_name} agent in swarm.")
 
-        if cur_agent.name() == self.swarm.communicate_agent.name():
+        if cur_agent.name() == self.swarm.communicate_agent.name() or cur_agent.name() == self.swarm.cur_agent.name():
             # Current agent is entrance agent, means need to exit to the outer loop
-            logger.warning("Exit to the outer loop")
+            logger.warning(f"{cur_agent.name()} exit to the outer loop")
             return 'break', True
 
         if self.swarm.cur_agent.handoffs and policy_for_agent.agent_name not in self.swarm.cur_agent.handoffs:
@@ -484,6 +486,7 @@ class Task(object):
                               "response": "",
                               "steps": step,
                               "success": False}
+        color_log(f"{cur_agent.name()} policy: {agent_policy}")
         return 'normal', agent_policy
 
     def _social_tool_call(self, policy: List[ActionModel], step: int):
