@@ -16,7 +16,6 @@ Main functions:
 - main: Entry point for launching all MCP servers
 - MCPLauncher class: Manages the lifecycle of MCP server processes
 """
-
 import argparse
 import atexit
 import os
@@ -24,30 +23,173 @@ import random
 import signal
 import subprocess
 import sys
+import threading
 import time
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 from aworld.logs.util import logger
-
-# Define the list of MCP servers to launch
-MCP_SERVERS = [
-    "arxiv_server.py",
-    "audio_server.py",
-    "code_server.py",
-    "document_server.py",
-    "download_server.py",
-    "filesystem_server.py",
-    "googlemaps_server.py",
-    "image_server.py",
-    "math_server.py",
-    "reddit_server.py",
-    "search_server.py",
-    "sympy_server.py",
-    "video_server.py",
-]
+from aworld.mcp_servers.arxiv_server import mcpdownloadarxivpaper, mcpsearcharxivpaper
+from aworld.mcp_servers.audio_server import mcptranscribeaudio
+from aworld.mcp_servers.code_server import mcpexecutecode, mcpgeneratecode
+from aworld.mcp_servers.document_server import (
+    mcpreaddocx,
+    mcpreadexcel,
+    mcpreadjson,
+    mcpreadpdf,
+    mcpreadpptx,
+    mcpreadsourcecode,
+    mcpreadtext,
+    mcpreadxml,
+)
+from aworld.mcp_servers.download_server import mcpdownloadfiles
+from aworld.mcp_servers.filesystem_server import (
+    mcpchangepermissions,
+    mcpcheckpath,
+    mcpcompressfiles,
+    mcpcopypath,
+    mcpcreatedirectory,
+    mcpdeletepath,
+    mcpextractarchive,
+    mcpfindduplicates,
+    mcpgetdiskusage,
+    mcpgetfileinfo,
+    mcplistdir,
+    mcpmovepath,
+    mcpreadfile,
+    mcpsearchfiles,
+    mcpwritefile,
+)
+from aworld.mcp_servers.googlemaps_server import (
+    mcpdirections,
+    mcpdistancematrix,
+    mcpelevation,
+    mcpgeocode,
+    mcpgetlatlng,
+    mcpgetpostcode,
+    mcpplacedetails,
+    mcpplacesearch,
+    mcptimezone,
+)
+from aworld.mcp_servers.image_server import mcpreasoningimage
+from aworld.mcp_servers.math_server import (
+    mcpbasicmath,
+    mcpconversion,
+    mcpgeometry,
+    mcprandom,
+    mcpsolveequation,
+    mcpstatistics,
+    mcptrigonometry,
+)
+from aworld.mcp_servers.reddit_server import (
+    mcpgethotposts,
+    mcpgetpostcomments,
+    mcpgetsubredditinfo,
+    mcpgettopsubreddits,
+    mcpgetuserinfo,
+    mcpgetuserposts,
+    mcpsearchreddit,
+)
+from aworld.mcp_servers.search_server import (
+    mcpsearchduckduckgo,
+    mcpsearchexa,
+    mcpsearchgoogle,
+)
+from aworld.mcp_servers.sympy_server import (
+    mcpalgebraic,
+    mcpcalculus,
+    mcpmatrix,
+    mcpsolve,
+    mcpsolvelinear,
+    mcpsolveode,
+)
+from aworld.mcp_servers.utils import run_mcp_server
+from aworld.mcp_servers.video_server import (
+    mcpanalyzevideo,
+    mcpextractvideosubtitles,
+    mcpsummarizevideo,
+)
 
 # Special case for Playwright MCP
-PLAYWRIGHT_PORT = 8931  # Default port for Playwright MCP
+PLAYWRIGHT_PORT: int = 8931  # Default port for Playwright MCP
+
+# Create mapping from server names to functions
+SERVER_FUNCTIONS: Dict[str, List[Callable]] = {
+    "Arxiv Server": [mcpdownloadarxivpaper, mcpsearcharxivpaper],
+    "Audio Server": [mcptranscribeaudio],
+    "Code Server": [mcpexecutecode, mcpgeneratecode],
+    "Document Server": [
+        mcpreaddocx,
+        mcpreadexcel,
+        mcpreadjson,
+        mcpreadpdf,
+        mcpreadpptx,
+        mcpreadsourcecode,
+        mcpreadtext,
+        mcpreadxml,
+    ],
+    "Download Server": [mcpdownloadfiles],
+    "Filesystem Server": [
+        mcpchangepermissions,
+        mcpcheckpath,
+        mcpcompressfiles,
+        mcpcopypath,
+        mcpcreatedirectory,
+        mcpdeletepath,
+        mcpextractarchive,
+        mcpfindduplicates,
+        mcpgetdiskusage,
+        mcpgetfileinfo,
+        mcplistdir,
+        mcpmovepath,
+        mcpreadfile,
+        mcpsearchfiles,
+        mcpwritefile,
+    ],
+    "Googlemaps Server": [
+        mcpdirections,
+        mcpdistancematrix,
+        mcpelevation,
+        mcpgeocode,
+        mcpgetlatlng,
+        mcpgetpostcode,
+        mcpplacedetails,
+        mcpplacesearch,
+        mcptimezone,
+    ],
+    "Image Server": [mcpreasoningimage],
+    "Math Server": [
+        mcpbasicmath,
+        mcpconversion,
+        mcpgeometry,
+        mcprandom,
+        mcpsolveequation,
+        mcpstatistics,
+        mcptrigonometry,
+    ],
+    "Reddit Server": [
+        mcpgethotposts,
+        mcpgetpostcomments,
+        mcpgetsubredditinfo,
+        mcpgettopsubreddits,
+        mcpgetuserinfo,
+        mcpgetuserposts,
+        mcpsearchreddit,
+    ],
+    "Search Server": [mcpsearchduckduckgo, mcpsearchexa, mcpsearchgoogle],
+    "Sympy Server": [
+        mcpalgebraic,
+        mcpcalculus,
+        mcpmatrix,
+        mcpsolve,
+        mcpsolvelinear,
+        mcpsolveode,
+    ],
+    "Video Server": [
+        mcpanalyzevideo,
+        mcpextractvideosubtitles,
+        mcpsummarizevideo,
+    ],
+}
 
 
 class MCPLauncher:
@@ -56,13 +198,16 @@ class MCPLauncher:
     """
 
     def __init__(
-        self, servers: List[str], base_port: int = 2000, port_range: int = 8000
+        self,
+        servers: Dict[str, List[Callable]],
+        base_port: int = 2000,
+        port_range: int = 8000,
     ):
         """
         Initialize the MCP launcher.
 
         Args:
-            servers: List of server script filenames to launch
+            servers: Dictionary of server-tools to launch
             base_port: Starting port number for random allocation
             port_range: Range of ports to allocate from
         """
@@ -70,6 +215,7 @@ class MCPLauncher:
         self.base_port = base_port
         self.port_range = port_range
         self.processes: Dict[str, subprocess.Popen] = {}
+        self.threads: Dict[str, threading.Thread] = {}
         self.ports: Dict[str, int] = {}
 
         # Register shutdown handler
@@ -80,7 +226,6 @@ class MCPLauncher:
     def _signal_handler(self, sig, frame):
         """Handle termination signals by shutting down gracefully."""
         logger.info(f"\nReceived signal {sig}, shutting down...")
-        self.shutdown()
         sys.exit(0)
 
     def _generate_ports(self) -> None:
@@ -88,10 +233,10 @@ class MCPLauncher:
         available_ports = list(range(self.base_port, self.base_port + self.port_range))
         random.shuffle(available_ports)
 
-        for server in self.servers:
+        for server, _ in self.servers.items():
             self.ports[server] = available_ports.pop()
 
-    def start(self, debug: bool = False) -> None:
+    def start(self) -> None:
         """
         Start all MCP servers with allocated ports.
 
@@ -106,71 +251,86 @@ class MCPLauncher:
         # Get the directory of this script
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Start each Python server
-        for server in self.servers:
-            server_path = os.path.join(script_dir, server)
-            port = self.ports[server]
+        # Start each server
+        for server_name, funcs in self.servers.items():
+            port = self.ports[server_name]
 
-            # Prepare environment with port
-            env = os.environ.copy()
-            env["MCP_PORT"] = str(port)
+            if not funcs:
+                logger.warning(f"No functions found for {server_name}, skipping...")
+                continue
 
-            # Start the process
-            logger.info(f"Starting {server} on port {port}...")
-            process = subprocess.Popen(
-                [sys.executable, server_path],
-                env=env,
-                stdout=subprocess.PIPE if not debug else None,
-                stderr=subprocess.PIPE if not debug else None,
-                text=True,
-                cwd=script_dir,
+            # Use threads to start servers to avoid blocking the main thread
+            logger.info(f"Starting {server_name} on port {port}")
+            thread = threading.Thread(
+                target=run_mcp_server,
+                args=(server_name, funcs, port),
+                daemon=True,
             )
-            self.processes[server] = process
+            thread.start()
+
+            # Store threads instead of processes
+            self.threads[server_name] = thread
 
         # Start Playwright MCP
-        logger.info(f"Starting Playwright MCP on port {PLAYWRIGHT_PORT}...")
-        playwright_process = subprocess.Popen(
-            f"yes | npx @playwright/mcp@latest --port {PLAYWRIGHT_PORT}",
-            shell=True,
-            stdout=subprocess.PIPE if not debug else None,
-            stderr=subprocess.PIPE if not debug else None,
-            text=True,
-            cwd=script_dir,
-        )
-        self.processes["playwright"] = playwright_process
+        # logger.info(f"Starting Playwright MCP on port {PLAYWRIGHT_PORT}...")
+        # playwright_process = subprocess.Popen(
+        #     f"yes | npx @playwright/mcp@latest --port {PLAYWRIGHT_PORT}",
+        #     shell=True,
+        #     stdout=subprocess.PIPE if not debug else None,
+        #     stderr=subprocess.PIPE if not debug else None,
+        #     text=True,
+        #     cwd=script_dir,
+        # )
+        # self.processes["playwright"] = playwright_process
 
         logger.success("All MCP servers started successfully!")
         logger.success("Press Ctrl+C to stop all servers")
 
-        # Keep the main process running
-        try:
-            while all(p.poll() is None for p in self.processes.values()):
-                time.sleep(1)
+        while True:
+            try:
+                pass
+            except KeyboardInterrupt as e:
+                logger.info("\nShutting down...")
+                sys.exit(0)
 
-            # Check if any process exited unexpectedly
-            for server, process in self.processes.items():
-                if process.poll() is not None:
-                    logger.warning(
-                        f"WARNING: {server} exited unexpectedly with code {process.returncode}"
-                    )
-        except KeyboardInterrupt:
-            logger.info("\nShutting down...")
+        # Keep the main process running
+        # try:
+        #     # For threads, we can't use poll(), so we only check the playwright process
+        #     while playwright_process.poll() is None:
+        #         time.sleep(1)
+
+        #     # If playwright process exits, log a warning
+        #     if playwright_process.poll() is not None:
+        #         logger.warning(
+        #             f"WARNING: playwright exited unexpectedly with code {playwright_process.returncode}"
+        #         )
+        # except KeyboardInterrupt:
+        #     logger.info("\nShutting down...")
 
     def shutdown(self) -> None:
         """Gracefully shut down all running MCP server processes."""
         logger.info("Shutting down MCP servers...")
 
-        for server, process in self.processes.items():
-            if process.poll() is None:  # Process is still running
-                logger.info(f"Stopping {server}...")
+        # Shutdown playwright process
+        if "playwright" in self.processes:
+            process = self.processes["playwright"]
+            if (
+                hasattr(process, "poll") and process.poll() is None
+            ):  # Is a process and still running
+                logger.info("Stopping playwright...")
                 try:
                     # Try to terminate gracefully first
                     process.terminate()
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     # Force kill if it doesn't respond
-                    logger.warning(f"Force killing {server}...")
+                    logger.warning("Force killing playwright...")
                     process.kill()
+
+        # Threads are daemon threads and will terminate with the main program
+        # We just need to log
+        for server in [s for s in self.threads if s != "playwright"]:
+            logger.info(f"Stopping {server}...")
 
         logger.success("All MCP servers stopped")
 
@@ -180,13 +340,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Launch MCP servers with random port allocation"
     )
-    parser.add_argument(
-        "--debug", action="store_true", help="Run in debug mode (show server output)"
-    )
     args = parser.parse_args()
 
-    launcher = MCPLauncher(MCP_SERVERS)
-    launcher.start(debug=args.debug)
+    launcher = MCPLauncher(SERVER_FUNCTIONS)
+    launcher.start()
 
 
 if __name__ == "__main__":

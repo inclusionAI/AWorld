@@ -38,7 +38,7 @@ from pptx import Presentation
 from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
-from aworld.mcp_servers.image import encode_image_from_file
+from aworld.mcp_servers.image_server import encode_images
 from aworld.mcp_servers.utils import run_mcp_server
 from aworld.utils import import_package, import_packages
 
@@ -812,7 +812,7 @@ def mcpreadpptx(
             slide_img.save(img_path, "JPEG")
 
             # Convert to base64
-            base64_image = encode_image_from_file(img_path)
+            base64_image = encode_images(img_path)
             slides_data.append(
                 PowerPointSlide(
                     slide_number=i + 1, image=f"data:image/jpeg;base64,{base64_image}"

@@ -36,12 +36,9 @@ from sympy import (
     Symbol,
     det,
     diff,
-    eigenvals,
-    eigenvects,
     expand,
     factor,
     integrate,
-    inv,
     latex,
     limit,
     pretty,
@@ -418,14 +415,14 @@ def mcpmatrix(
 
         elif operation == "inverse":
             if sym_matrix.is_square:
-                result = inv(sym_matrix)
+                result = sym_matrix.inv()
                 description = "Inverse of the matrix"
             else:
                 raise ValueError("Matrix must be square to compute its inverse")
 
         elif operation == "eigenvalues":
             if sym_matrix.is_square:
-                result = eigenvals(sym_matrix)
+                result = sym_matrix.eigenvals()
                 # Convert dictionary to a more JSON-friendly format
                 result = {str(k): v for k, v in result.items()}
                 description = "Eigenvalues of the matrix"
@@ -434,7 +431,7 @@ def mcpmatrix(
 
         elif operation == "eigenvectors":
             if sym_matrix.is_square:
-                result = eigenvects(sym_matrix)
+                result = sym_matrix.eigenvects()
                 # Convert to a more readable format
                 formatted_result = []
                 for eigenvalue, multiplicity, eigenvectors in result:

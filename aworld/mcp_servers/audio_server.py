@@ -26,7 +26,9 @@ from aworld.mcp_servers.utils import (
 )
 from aworld.models.llm import get_llm_model
 
-llm_config = get_llm_config_from_os_environ(llm_model_name="gpt-4o-transcribe")
+llm_config = get_llm_config_from_os_environ(
+    llm_model_name="gpt-4o-transcribe", server_name="Audio Server"
+)
 
 AUDIO_TRANSCRIBE = (
     "Input is a base64 encoded audio. Transcribe the audio content. "
@@ -80,7 +82,7 @@ def encode_audio(audio_source: str, with_header: bool = True) -> str:
         raise
 
 
-def mcptranscribe(
+def mcptranscribeaudio(
     audio_urls: List[str] = Field(
         description="The input audio in given a list of filepaths or urls."
     ),
@@ -126,4 +128,4 @@ def mcptranscribe(
 
 
 if __name__ == "__main__":
-    run_mcp_server("Audio Server", funcs=[mcptranscribe], port=2222)
+    run_mcp_server("Audio Server", funcs=[mcptranscribeaudio], port=2222)

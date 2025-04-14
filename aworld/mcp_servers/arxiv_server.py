@@ -85,7 +85,7 @@ def _convert_result_to_model(result: arxiv.Result) -> ArxivArticle:
     )
 
 
-def mcpsearch(
+def mcpsearcharxivpaper(
     query: str = Field(..., description="Search query for arXiv articles"),
     max_results: int = Field(
         10, description="Maximum number of results to return (default: 10)"
@@ -172,7 +172,7 @@ def mcpsearch(
         return json.dumps({"error": error_msg})
 
 
-def mcpdownload(
+def mcpdownloadarxivpaper(
     article_ids: List[str] = Field(
         ...,
         description="List of arXiv article IDs to download (e.g., ['2307.09288', '2103.00020'])",
@@ -289,4 +289,6 @@ def mcpdownload(
 
 
 if __name__ == "__main__":
-    run_mcp_server("arXiv Server", funcs=[mcpsearch, mcpdownload], port=7777)
+    run_mcp_server(
+        "arXiv Server", funcs=[mcpsearcharxivpaper, mcpdownloadarxivpaper], port=7777
+    )

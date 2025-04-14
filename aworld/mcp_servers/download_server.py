@@ -46,7 +46,7 @@ class DownloadResults(BaseModel):
     failed_count: int
 
 
-def mcpdownload(
+def mcpdownloadfiles(
     urls: List[str] = Field(
         ..., description="The URLs of the files to download. Must be a list of URLs."
     ),
@@ -161,4 +161,4 @@ def _download_single_file(
 
 
 if __name__ == "__main__":
-    run_mcp_server("Download Server", funcs=[mcpdownload], port=6666)
+    run_mcp_server("Download Server", funcs=[mcpdownloadfiles], port=6666)

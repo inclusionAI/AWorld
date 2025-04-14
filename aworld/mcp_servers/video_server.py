@@ -29,7 +29,9 @@ from aworld.mcp_servers.utils import (
 )
 from aworld.models.llm import get_llm_model
 
-llm_config = get_llm_config_from_os_environ(llm_model_name="gpt-4o")
+llm_config = get_llm_config_from_os_environ(
+    llm_model_name="gpt-4o", server_name="Video Server"
+)
 
 VIDEO_ANALYZE = (
     "Input is a sequence of video frames. Given user's task: {task}, "
@@ -137,7 +139,7 @@ def create_video_content(
     return content
 
 
-def mcpanalyze(
+def mcpanalyzevideo(
     video_url: str = Field(description="The input video in given filepath or url."),
     question: str = Field(description="The question to analyze."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
@@ -171,7 +173,7 @@ def mcpanalyze(
     return video_analysis_result
 
 
-def mcpextractsubtitles(
+def mcpextractvideosubtitles(
     video_url: str = Field(description="The input video in given filepath or url."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
 ) -> str:
@@ -200,7 +202,7 @@ def mcpextractsubtitles(
     return video_subtitles
 
 
-def mcpsummarize(
+def mcpsummarizevideo(
     video_url: str = Field(description="The input video in given filepath or url."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
 ) -> str:
@@ -231,5 +233,7 @@ def mcpsummarize(
 
 if __name__ == "__main__":
     run_mcp_server(
-        "Video Server", funcs=[mcpanalyze, mcpextractsubtitles, mcpsummarize], port=3333
+        "Video Server",
+        funcs=[mcpanalyzevideo, mcpextractvideosubtitles, mcpsummarizevideo],
+        port=3333,
     )

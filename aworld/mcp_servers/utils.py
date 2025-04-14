@@ -55,7 +55,11 @@ def get_llm_config_from_os_environ(llm_model_name="gpt-4o", **kwargs) -> Dict[st
     for k, v in kwargs.items():
         if v:
             config[k] = v
-    logger.success(f"llm_config: {json.dumps(config, indent=4, ensure_ascii=False)}")
+    if "server_name" in kwargs:
+        server_name = kwargs["server_name"]
+    logger.success(
+        f"{server_name}'s llm_config: {json.dumps(config, indent=4, ensure_ascii=False)}"
+    )
     return config
 
 

@@ -31,7 +31,9 @@ from aworld.mcp_servers.utils import (
 )
 from aworld.models.llm import get_llm_model
 
-llm_config = get_llm_config_from_os_environ(llm_model_name="gpt-4o")
+llm_config = get_llm_config_from_os_environ(
+    llm_model_name="gpt-4o", server_name="Image Server"
+)
 
 IMAGE_OCR = (
     "Input is a base64 encoded image. Read text from image if present. "
@@ -180,7 +182,7 @@ def mcpocr(
     return image_text
 
 
-def mcpreasoning(
+def mcpreasoningimage(
     image_urls: List[str] = Field(
         description="The input image(s) in given a list of filepaths or urls."
     ),
@@ -219,7 +221,7 @@ if __name__ == "__main__":
         "Image Server",
         funcs=[
             # mcpocr,
-            mcpreasoning
+            mcpreasoningimage
         ],
         port=1111,
     )
