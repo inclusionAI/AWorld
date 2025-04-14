@@ -8,7 +8,7 @@ from aworld.core.common import ActionModel
 
 from aworld.core.envs.tool import ToolFactory
 from aworld.logs.util import logger
-from aworld.virtual_environments.gym.openai_gym import OpenAIGym
+from aworld.virtual_environments.gym_tool.openai_gym import OpenAIGym
 
 
 class OpenAIGymTest(unittest.TestCase):
