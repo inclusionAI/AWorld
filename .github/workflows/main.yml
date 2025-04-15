@@ -5,13 +5,11 @@ on:
     branches:
       - main
       - release-[0-9]+.[0-9]+
-      - travel_agent
 
   pull_request:
     branches:
       - main
       - release-[0-9]+.[0-9]+
-      - travel_agent
 
 permissions:
   contents: read
