@@ -29,9 +29,6 @@ jobs:
         python-version: "3.11"
     - name: Install dependencies
       run: |
-        export PATH=/home/runner/work/:$PATH
-        echo "PATH is "
-        echo $PATH
         python -m pip install --upgrade pip==25.0.1
         pip install flake8 pytest
 #        if [ -f aworld/requirements.txt ]; then pip install -r aworld/requirements.txt; fi
