@@ -14,7 +14,7 @@ class TestBrowserTool(unittest.TestCase):
     def setUp(self):
         self.browser_tool = BrowserTool(BrowserToolConfig(width=1280,
                                                           height=720,
-                                                          headless=False,
+                                                          headless=True,
                                                           keep_browser_open=True), name="browser")
         self.browser_tool.reset()
 
