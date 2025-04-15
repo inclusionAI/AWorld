@@ -137,12 +137,11 @@ def get_orcid_api():
     if client_id and client_secret:
         # Use member API if credentials are available
         member_api = orcid.MemberAPI(client_id, client_secret, sandbox=False)
-        public_api = orcid.PublicAPI(sandbox=False)
-        return member_api, public_api
+        return member_api, None
     else:
         # Use public API only if no credentials
         logger.warning("No ORCID credentials found. Using public API with rate limits.")
-        public_api = orcid.PublicAPI(sandbox=False)
+        public_api = orcid.PublicAPI(client_id, client_secret, sandbox=False)
         return None, public_api
 
 
