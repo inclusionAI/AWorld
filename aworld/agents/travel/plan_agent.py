@@ -3,7 +3,7 @@
 import re
 import time
 import traceback
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Tuple
 
 from langchain_core.messages import HumanMessage, BaseMessage, AIMessage, ToolMessage, SystemMessage
 from pydantic import ValidationError
@@ -103,15 +103,16 @@ class TravelPlanAgent(Agent):
         tokens = self._estimate_tokens_for_messages(input_messages)
 
         llm_result = None
+        output_message = None
         try:
             # Log the message sequence
             self._log_message_sequence(input_messages)
 
-            llm_result = self._do_policy(input_messages)
+            output_message, llm_result = self._do_policy(input_messages)
 
             if not llm_result:
                 logger.error("[agent] ❌ Failed to parse LLM response")
-                return [ActionModel(tool_name=None, action_name="stop")]  ## tmp stop
+                return [ActionModel(agent_name=self.name())]  ## tmp stop
 
             self.state.n_steps += 1
 
@@ -120,12 +121,12 @@ class TravelPlanAgent(Agent):
 
             if self.state.stopped or self.state.paused:
                 logger.info('Browser gent paused after getting state')
-                return [ActionModel(tool_name=None, action_name="stop")]  ## tmp stop
+                return [ActionModel(agent_name=self.name())]  ## tmp stop
 
             tool_action = llm_result.actions
 
             # Add the current step to the trajectory
-            self.trajectory.add_step(observation, info, llm_result)
+            self.trajectory.add_step(input_messages, observation, info, output_message, llm_result)
 
         except Exception as e:
             logger.warning(traceback.format_exc())
@@ -144,7 +145,7 @@ class TravelPlanAgent(Agent):
             )
 
             # Add the error state to the trajectory
-            self.trajectory.add_step(observation, info, error_result)
+            self.trajectory.add_step(input_messages, observation, info, output_message, error_result)
 
             return [ActionModel(tool_name=Tools.BROWSER.value, action_name="stop")]
         finally:
@@ -165,7 +166,7 @@ class TravelPlanAgent(Agent):
 
         return tool_action
 
-    def _do_policy(self, input_messages: list[BaseMessage]) -> AgentResult:
+    def _do_policy(self, input_messages: list[BaseMessage]) -> Tuple[AIMessage, AgentResult]:
         THINK_TAGS = re.compile(r'<think>.*?</think>', re.DOTALL)
 
         def _remove_think_tags(text: str) -> str:
@@ -182,8 +183,9 @@ class TravelPlanAgent(Agent):
                 logger.warning("[agent] LLM returned empty response")
                 # return AgentResult(current_state=AgentBrain(evaluation_previous_goal="", memory="", next_goal=""),
                 #                    actions=[ActionModel(tool_name=Tools.BROWSER.value, action_name="stop")])
-                return AgentResult(current_state=AgentBrain(evaluation_previous_goal="", memory="", next_goal=""),
-                                   actions=[ActionModel(tool_name=None, action_name="stop")])
+                return output_message, AgentResult(
+                    current_state=AgentBrain(evaluation_previous_goal="", memory="", next_goal=""),
+                    actions=[ActionModel(agent_name=self.name())])
         except:
             logger.error(f"[agent] Response content: {output_message}")
 
@@ -199,9 +201,9 @@ class TravelPlanAgent(Agent):
                 actions = parsed_json.get("actions")
             if not actions:
                 logger.warning("agent not policy an action.")
-                return AgentResult(current_state=agent_brain,
-                                   actions=[ActionModel(agent_name=self.name(),
-                                                        action_name="done")])
+                return output_message, AgentResult(current_state=agent_brain,
+                                                   actions=[ActionModel(agent_name=self.name(),
+                                                                        action_name="done")])
 
             for action in actions:
                 if "action_name" in action:
@@ -218,7 +220,7 @@ class TravelPlanAgent(Agent):
                         action_model = ActionModel(agent_name=k, params=v)
                         # action_model = ActionModel(tool_name=Tools.BROWSER.value, action_name=k, params=v)
                         result.append(action_model)
-            return AgentResult(current_state=agent_brain, actions=result)
+            return output_message, AgentResult(current_state=agent_brain, actions=result)
         except (ValueError, ValidationError) as e:
             logger.warning(f'Failed to parse model output: {output_message} {str(e)}')
             raise ValueError('Could not parse response.')
