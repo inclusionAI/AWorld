@@ -13,8 +13,7 @@ from examples.travel.prompts import *
 
 model_config = ModelConfig(
     llm_provider="openai",
-    # llm_model_name="gpt-4o",
-    llm_model_name="openrouterproxy.openai/gpt-4o",
+    llm_model_name="gpt-4o",
     llm_api_key="",
     llm_base_url=""
 )
