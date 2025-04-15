@@ -1,5 +1,5 @@
-import dotenv
 import os
+import abc
 from typing import (
     Any,
     Optional,
@@ -10,13 +10,13 @@ from typing import (
     AsyncGenerator,
 )
 
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import ModelResponse, LLMResponseError
 
 
-class LLMProviderBase:
+class LLMProviderBase(abc.ABC):
     """Base class for large language model providers, defines unified interface."""
 
-    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None, sync_able: bool = None, async_able: bool = None, **kwargs):
+    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None, sync_enabled: bool = None, async_enabled: bool = None, **kwargs):
         """Initialize provider.
 
         Args:
@@ -30,20 +30,19 @@ class LLMProviderBase:
         self.model_name = model_name
         self.kwargs = kwargs
         # Determine whether to initialize sync and async providers
-        self.need_sync = sync_able if sync_able is not None else async_able is not True
-        self.need_async = async_able if async_able is not None else sync_able is not True
+        self.need_sync = sync_enabled if sync_enabled is not None else async_enabled is not True
+        self.need_async = async_enabled if async_enabled is not None else sync_enabled is not True
 
         # Initialize providers based on flags
         self.provider = self._init_provider() if self.need_sync else None
         self.async_provider = self._init_async_provider() if self.need_async else None
 
-
+    @abc.abstractmethod
     def _init_provider(self):
         """Initialize specific provider instance, to be implemented by subclasses.
         Returns:
             Provider instance.
         """
-        raise NotImplementedError("Subclasses must implement _init_provider method")
 
     def _init_async_provider(self):
         """Initialize async provider instance. Optional for subclasses that don't need async support.
@@ -54,6 +53,10 @@ class LLMProviderBase:
         """
         return None
 
+    @classmethod
+    def supported_models(cls) -> list[str]:
+        return []
+
     def preprocess_messages(self, messages: List[Dict[str, str]]) -> Any:
         """Preprocess messages, convert OpenAI format messages to specific provider required format.
 
@@ -63,8 +66,9 @@ class LLMProviderBase:
         Returns:
             Converted messages, format determined by specific provider.
         """
-        raise NotImplementedError("Subclasses must implement preprocess_messages method")
+        return messages
 
+    @abc.abstractmethod
     def postprocess_response(self, response: Any) -> ModelResponse:
         """Post-process response, convert provider response to unified ModelResponse.
 
@@ -73,8 +77,10 @@ class LLMProviderBase:
 
         Returns:
             ModelResponse: Unified format response object.
+            
+        Raises:
+            LLMResponseError: When LLM response error occurs.
         """
-        raise NotImplementedError("Subclasses must implement postprocess_response method")
 
     def postprocess_stream_response(self, chunk: Any) -> ModelResponse:
         """Post-process streaming response chunk, convert provider chunk to unified ModelResponse.
@@ -84,11 +90,13 @@ class LLMProviderBase:
             
         Returns:
             ModelResponse: Unified format response object for the chunk.
+            
+        Raises:
+            LLMResponseError: When LLM response error occurs.
         """
-        raise NotImplementedError("Subclasses must implement postprocess_stream_response method")
+        return None
 
-    
-    async def acompletion(self, 
+    async def acompletion(self,
                     messages: List[Dict[str, str]], 
                     temperature: float = 0.0, 
                     max_tokens: int = None, 
@@ -105,12 +113,17 @@ class LLMProviderBase:
 
         Returns:
             ModelResponse: Unified model response object.
+            
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+            RuntimeError: When async provider is not initialized.
         """
         if not self.async_provider:
-            raise RuntimeError("Async provider not initialized. Make sure 'async_able' parameter is set to True in initialization.")
+            raise RuntimeError("Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
-        raise NotImplementedError("Subclasses must implement acompletion method")
+        return None
 
+    @abc.abstractmethod
     def completion(self, 
                 messages: List[Dict[str, str]], 
                 temperature: float = 0.0, 
@@ -128,13 +141,13 @@ class LLMProviderBase:
 
         Returns:
             ModelResponse: Unified model response object.
+            
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+            RuntimeError: When sync provider is not initialized.
         """
-        if not self.provider:
-            raise RuntimeError("Sync provider not initialized. Make sure 'sync_able' parameter is set to True in initialization.")
 
-        raise NotImplementedError("Subclasses must implement completion method")
-
-    def stream_completion(self, 
+    def stream_completion(self,
                      messages: List[Dict[str, str]], 
                      temperature: float = 0.0, 
                      max_tokens: int = None, 
@@ -151,8 +164,12 @@ class LLMProviderBase:
 
         Returns:
             Generator yielding ModelResponse chunks.
+            
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+            RuntimeError: When sync provider is not initialized.
         """
-        raise NotImplementedError("Subclasses must implement stream_completion method")
+        return None
 
     async def astream_completion(self,
                                  messages: List[Dict[str, str]],
@@ -171,5 +188,9 @@ class LLMProviderBase:
 
         Returns:
             AsyncGenerator yielding ModelResponse chunks.
+            
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+            RuntimeError: When async provider is not initialized.
         """
-        raise NotImplementedError("Subclasses must implement astream_completion method") 
+        return None

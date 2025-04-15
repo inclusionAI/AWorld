@@ -162,7 +162,7 @@ class CodeArtifact(Artifact):
         try:
             import mistune
         except ImportError:
-            # try install mistune
+            # install mistune
             import subprocess
             subprocess.run(["pip", "install", "mistune>=3.0.0"], check=True)
             import mistune

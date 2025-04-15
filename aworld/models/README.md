@@ -113,13 +113,15 @@ asyncio.run(main())
 ### Selective Sync/Async Initialization
 
 For performance optimization, you can control whether to initialize synchronous or asynchronous providers:
+By default, both `sync_enabled` and `async_enabled` are set to `True`, which means both synchronous and asynchronous providers will be initialized.
 
 ```python
 # Initialize only synchronous provider
 model = get_llm_model(
     llm_provider="openai",
     model_name="gpt-4o",
-    async_able=False,  # Don't initialize async provider
+    sync_enabled=True,    # Initialize sync provider
+    async_enabled=False,  # Don't initialize async provider
     api_key="your_api_key"
 )
 
@@ -127,7 +129,8 @@ model = get_llm_model(
 model = get_llm_model(
     llm_provider="anthropic",
     model_name="claude-3-5-sonnet-20241022",
-    sync_able=False,  # Don't initialize sync provider
+    sync_enabled=False,   # Don't initialize sync provider
+    async_enabled=True,   # Initialize async provider
     api_key="your_api_key"
 )
 
@@ -135,10 +138,48 @@ model = get_llm_model(
 model = get_llm_model(
     llm_provider="openai",
     model_name="gpt-4o",
-    sync_able=True,
-    async_able=True
+    sync_enabled=True,
+    async_enabled=True
 )
 ```
+
+### HTTP Client Mode
+
+You can use direct HTTP requests instead of the SDK by specifying `client_type=ClientType.HTTP` parameter:
+
+```python
+from aworld.config.conf import AgentConfig, ClientType
+from aworld.models.llm import get_llm_model, call_llm_model
+
+# Initialize model with HTTP client mode
+model = get_llm_model(
+    llm_provider="openai",
+    model_name="gpt-4o",
+    api_key="your_api_key",
+    base_url="https://api.openai.com/v1",
+    client_type=ClientType.HTTP  # Use HTTP client instead of SDK
+)
+
+# Use it exactly the same way as SDK mode
+messages = [
+    {"role": "system", "content": "You are a helpful AI assistant."},
+    {"role": "user", "content": "Tell me a short joke."}
+]
+
+# The model uses HTTP requests under the hood
+response = call_llm_model(model, messages)
+print(response.content)
+
+# Streaming also works with HTTP client
+for chunk in call_llm_model(model, messages, stream=True):
+    if chunk.content:
+        print(chunk.content, end="", flush=True)
+```
+
+This approach can be useful when:
+- You need more control over the HTTP requests
+- You have compatibility issues with the official SDK
+- You're using a model that follows OpenAI API protocol but isn't fully compatible with the SDK
 
 ### Tool Calls Support
 
@@ -358,12 +399,3 @@ Keys are retrieved in this order:
 3. System environment variable
 
 Example for OpenAI: `OPENAI_API_KEY` in parameters → `.env` → system env
-
-## Examples
-
-See `aworld/models/examples.py` for complete examples including:
-- Synchronous and asynchronous calls
-- Streaming responses
-- Custom provider implementation
-- Tool calls
-- Selective sync/async initialization 

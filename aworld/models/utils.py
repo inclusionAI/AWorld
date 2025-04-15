@@ -29,6 +29,7 @@ def agent_desc_transform(agent_dict: Dict[str, Any],
                 continue
 
             for action in agent_info["abilities"]:
+                # Build parameter properties
                 properties = {}
                 required = []
                 for param_name, param_info in action["params"].items():
@@ -87,6 +88,7 @@ def tool_desc_transform(tool_dict: Dict[str, Any],
             for action in tool_info["actions"]:
                 if action['name'] in black_actions:
                     continue
+                # Build parameter properties
                 properties = {}
                 required = []
                 for param_name, param_info in action["params"].items():
