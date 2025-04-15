@@ -24,9 +24,11 @@ class TestBrowserTool(unittest.TestCase):
         self.browser_tool.close()
 
     def test_new_tab(self):
+        current_dir = Path(__file__).parent.absolute()
+        url = "file://" + os.path.join(current_dir, 'test.json')
         action = [ActionModel(tool_name=Tools.BROWSER.value,
                               action_name=BrowserAction.NEW_TAB.value.name,
-                              params={"url": "https://www.baidu.com"})]
+                              params={"url": url})]
         ob, _, _, _, info = self.browser_tool.step(action)
         self.assertEqual(info, {'exception': ''})
 
