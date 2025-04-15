@@ -83,9 +83,27 @@ class MCPToolExecutor(ToolActionExecutor):
 
         server_info = self.mcp_servers[server_name]
 
-        # 如果已经有实例，先检查它是否可用，如果可用则重用
+        # If an instance already exists, check if it's available
         if server_info.get("instance"):
-            return server_info["instance"]
+            try:
+                # Try listing tools to check if the server connection is healthy
+                await server_info["instance"].list_tools()
+                return server_info["instance"]
+            except (asyncio.InvalidStateError, RuntimeError) as e:
+                # Connection might be closed or there's an event loop issue
+                logging.warning(f"Server '{server_name}' instance exists but has issues: {e}. Creating new instance.")
+                try:
+                    # Try to clean up the existing instance
+                    await server_info["instance"].cleanup()
+                except Exception as cleanup_error:
+                    logging.warning(f"Error cleaning up old server instance: {cleanup_error}")
+                
+                # Remove existing instance reference, prepare to create a new one
+                server_info["instance"] = None
+            except Exception as e:
+                logging.warning(f"Error checking server '{server_name}' availability: {e}")
+                # Continue using the existing instance, assuming it's still valid
+                return server_info["instance"]
 
         server_type = server_info.get("type", "sse")
 
@@ -121,20 +139,70 @@ class MCPToolExecutor(ToolActionExecutor):
             else:
                 raise ValueError(f"Unsupported MCP server type: {server_type}")
 
-            # 尝试连接，特别处理取消异常
-            try:
-                await server.connect()
-            except asyncio.CancelledError:
-                # 当任务被取消时，确保资源被清理
-                logging.warning(f"Connection to server '{server_name}' was cancelled")
-                await server.cleanup()
-                raise
+            # Try connecting and handle various exceptions
+            max_retries = 2  # Maximum retry count for connection failures
+            for retry in range(max_retries + 1):
+                try:
+                    await server.connect()
+                    break  # Connection successful, exit retry loop
+                except asyncio.CancelledError:
+                    # When the task is cancelled, ensure resources are cleaned up
+                    logging.warning(f"Connection to server '{server_name}' was cancelled")
+                    await server.cleanup()
+                    raise
+                except asyncio.InvalidStateError as e:
+                    if retry < max_retries:
+                        logging.warning(f"Event loop issue during connection to '{server_name}'. Retrying... ({retry+1}/{max_retries})")
+                        # Try resetting the event loop
+                        try:
+                            # Create a new event loop
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            logging.info(f"Created new event loop for retry {retry+1}")
+                        except Exception as loop_error:
+                            logging.error(f"Error recreating event loop: {loop_error}")
+                        
+                        # Clean up resources from the previous attempt
+                        try:
+                            await server.cleanup()
+                        except Exception as cleanup_error:
+                            logging.warning(f"Error cleaning up during retry: {cleanup_error}")
+                        
+                        # For stdio servers, recreate the instance
+                        if server_type == "stdio":
+                            server = MCPServerStdio(
+                                server_params, cache_tools_list=True, name=server_name
+                            )
+                        # For SSE servers, recreate the instance
+                        else:
+                            server = MCPServerSse(
+                                server_params, cache_tools_list=True, name=server_name
+                            )
+                    else:
+                        # Maximum retries reached
+                        logging.error(f"Failed to connect to MCP server '{server_name}' after {max_retries} retries: {e}")
+                        raise
+                except Exception as e:
+                    if retry < max_retries:
+                        logging.warning(f"Error connecting to '{server_name}'. Retrying... ({retry+1}/{max_retries}): {e}")
+                        # Clean up resources from the previous attempt
+                        try:
+                            await server.cleanup()
+                        except Exception as cleanup_error:
+                            logging.warning(f"Error cleaning up during retry: {cleanup_error}")
+                        
+                        # Brief delay before retrying
+                        await asyncio.sleep(0.5)
+                    else:
+                        # Maximum retries reached
+                        logging.error(f"Failed to connect to MCP server '{server_name}' after {max_retries} retries: {e}")
+                        raise
 
             server_info["instance"] = server
             return server
 
         except asyncio.CancelledError:
-            # 传递取消异常，让上层处理
+            # Pass the cancellation exception for upper-level handling
             raise
         except Exception as e:
             logging.error(f"Failed to connect to MCP server '{server_name}': {e}")
@@ -158,9 +226,26 @@ class MCPToolExecutor(ToolActionExecutor):
         if not actions:
             return [], None
 
+        # Check if the event loop is closed, recreate if necessary
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                # Current loop is closed, need to create a new one
+                loop = None
+        except RuntimeError:
+            # No running loop, need to create a new one
+            pass
+
+        if loop is None:
+            # Create a new event loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            logging.info("Created a new event loop for MCP execution")
+
         results = []
         for action in actions:
-            # 获取服务器和操作信息
+            # Get server and operation information
             server_name = action.tool_name
             if not server_name:
                 raise ValueError("Missing tool_name in action model")
@@ -172,10 +257,10 @@ class MCPToolExecutor(ToolActionExecutor):
             params = action.params or {}
 
             try:
-                # 获取或创建MCP服务器
+                # Get or create MCP server
                 server = await self._get_or_create_server(server_name)
 
-                # 调用工具并处理结果
+                # Call the tool and process results
                 try:
                     result = await server.call_tool(action_name, params)
 
@@ -186,7 +271,7 @@ class MCPToolExecutor(ToolActionExecutor):
                             )
                             results.append(action_result)
                 except asyncio.CancelledError:
-                    # 记录取消异常，重置服务器连接以避免异步上下文混乱
+                    # Log cancellation exception, reset server connection to avoid async context confusion
                     logging.warning(
                         f"Tool call to {action_name} on {server_name} was cancelled"
                     )
@@ -200,16 +285,40 @@ class MCPToolExecutor(ToolActionExecutor):
                             logging.error(
                                 f"Error cleaning up server after cancellation: {cleanup_error}"
                             )
-                    # 重新抛出异常以通知上层调用者
+                    # Re-raise exception to notify upper-level caller
                     raise
-
+                except asyncio.InvalidStateError as e:
+                    # Handle invalid event loop state error
+                    logging.error(f"Invalid event loop state: {e}")
+                    # Try to reset and reconnect
+                    if server_name in self.mcp_servers:
+                        try:
+                            if self.mcp_servers[server_name].get("instance"):
+                                await self.mcp_servers[server_name]["instance"].cleanup()
+                            self.mcp_servers[server_name]["instance"] = None
+                            # Recreate server connection
+                            server = await self._get_or_create_server(server_name)
+                            # Retry the call
+                            result = await server.call_tool(action_name, params)
+                            if result and result.content:
+                                if isinstance(result.content[0], TextContent):
+                                    action_result = ActionResult(
+                                        content=result.content[0].text, keep=True
+                                    )
+                                    results.append(action_result)
+                        except Exception as retry_error:
+                            error_msg = f"Error retrying MCP action after loop reset: {retry_error}"
+                            logging.error(error_msg)
+                            action_result = ActionResult(
+                                content=f"Error executing tool: {error_msg}", keep=True
+                            )
+                            results.append(action_result)
             except asyncio.CancelledError:
-                # 传递取消异常
+                # Pass cancellation exception
                 logging.warning("Async execution was cancelled")
                 raise
-
             except Exception as e:
-                # 处理一般错误
+                # Handle general errors
                 error_msg = str(e)
                 logging.error(f"Error executing MCP action: {error_msg}")
                 action_result = ActionResult(
@@ -221,12 +330,38 @@ class MCPToolExecutor(ToolActionExecutor):
 
     async def cleanup(self) -> None:
         """Clean up all MCP server connections."""
+        cleanup_errors = []
+        
+        # Ensure there is a running event loop
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                logging.warning("Event loop is closed during cleanup, creating new one")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            # No running event loop
+            logging.info("No running event loop during cleanup, creating new one")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
         for server_name, server_info in self.mcp_servers.items():
             if server_info.get("instance"):
                 try:
                     await server_info["instance"].cleanup()
+                    server_info["instance"] = None
+                except asyncio.CancelledError:
+                    logging.warning(f"Cleanup for {server_name} was cancelled")
+                    cleanup_errors.append(f"Cleanup for {server_name} was cancelled")
                 except Exception as e:
-                    logging.error(f"Error cleaning up MCP server {server_name}: {e}")
+                    error_msg = f"Error cleaning up MCP server {server_name}: {e}"
+                    logging.error(error_msg)
+                    cleanup_errors.append(error_msg)
+        
+        if cleanup_errors:
+            logging.error(f"Cleanup completed with {len(cleanup_errors)} errors")
+        else:
+            logging.info("All MCP servers cleaned up successfully")
 
     def execute_action(
         self, actions: List[ActionModel], **kwargs
