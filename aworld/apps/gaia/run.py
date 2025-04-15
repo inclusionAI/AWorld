@@ -34,7 +34,7 @@ if __name__ == "__main__":
         f"\n>>> llm_api_key: {llm_api_key}\n>>> llm_base_url: {llm_base_url}"
     )
     model_config = ModelConfig(
-        llm_provider="openai",
+        llm_provider="chatopenai",
         llm_model_name="gpt-4o",
         llm_api_key="dummy-key",
         llm_base_url="http://localhost:3456",
@@ -51,7 +51,7 @@ if __name__ == "__main__":
             _results = json.load(f)
     else:
         _results = []
-    for idx, sample in enumerate(dataset):
+    for idx, sample in enumerate(dataset[:1]):
         logger.info(
             f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. "
         )

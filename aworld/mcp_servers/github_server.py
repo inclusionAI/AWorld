@@ -31,7 +31,7 @@ from aworld.mcp_servers.utils import run_mcp_server
 from aworld.utils import import_package
 
 # Import PyGithub package, install if not available
-import_package("PyGithub")
+import_package("github", install_name="PyGithub")
 
 from github import Github, GithubException
 from github.ContentFile import ContentFile

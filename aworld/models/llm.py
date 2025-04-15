@@ -326,7 +326,7 @@ def get_llm_model(
     """
     # Create and return LLMModel instance directly
     llm_provider = conf.llm_provider if conf else None
-    if llm_provider == "chatopenai" or "openai" in llm_provider:
+    if llm_provider == "chatopenai":
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
         model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
         api_key = kwargs.get("api_key") or (conf.llm_api_key if conf else None)
