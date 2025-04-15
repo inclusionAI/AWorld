@@ -89,6 +89,7 @@ class MathError(BaseModel):
 def handle_error(e: Exception, operation_type: str) -> str:
     """Unified error handling and return standard format error message"""
     error_msg = f"{operation_type} error: {str(e)}"
+    logger.error(f"{operation_type} operation failed: {str(e)}")
     logger.error(traceback.format_exc())
 
     error = MathError(error=error_msg, operation=operation_type)
@@ -98,7 +99,7 @@ def handle_error(e: Exception, operation_type: str) -> str:
 
 def mcpbasicmath(
     operation: str = Field(
-        description="Mathematical operation (add, subtract, multiply, divide, power, sqrt, log, factorial)"
+        description="Mathematical operation (add, subtract, multiply, divide, power, sqrt, log, factorial, round, floor, ceil, abs, mod)"
     ),
     a: float = Field(description="First number"),
     b: Optional[float] = Field(
@@ -106,6 +107,9 @@ def mcpbasicmath(
     ),
     base: Optional[float] = Field(
         default=None, description="Base for logarithm (default is natural log)"
+    ),
+    digits: Optional[int] = Field(
+        default=None, description="Number of decimal places for rounding"
     ),
 ) -> str:
     """
@@ -116,10 +120,14 @@ def mcpbasicmath(
         a: First number
         b: Second number (optional for some operations)
         base: Base for logarithm (default is natural log)
+        digits: Number of decimal places for rounding (optional)
 
     Returns:
         JSON string containing the result
     """
+    logger.info(
+        f"Performing basic math operation: {operation} with a={a}, b={b}, base={base}, digits={digits}"
+    )
     try:
         result = 0.0
         description = ""
@@ -182,17 +190,48 @@ def mcpbasicmath(
             result = math.factorial(int(a))
             description = f"Factorial of {int(a)}"
 
+        elif operation == "round":
+            if digits is not None:
+                result = round(a, digits)
+                description = f"Value of {a} rounded to {digits} decimal places"
+            else:
+                result = round(a)
+                description = f"Value of {a} rounded to nearest integer"
+
+        elif operation == "floor":
+            result = math.floor(a)
+            description = f"Floor value (largest integer not greater than) of {a}"
+
+        elif operation == "ceil":
+            result = math.ceil(a)
+            description = f"Ceiling value (smallest integer not less than) of {a}"
+
+        elif operation == "abs":
+            result = abs(a)
+            description = f"Absolute value of {a}"
+
+        elif operation == "mod":
+            if b is None:
+                raise ValueError("Second number is required for modulo operation")
+            if b == 0:
+                raise ValueError("Modulo by zero is not allowed")
+            result = a % b
+            description = f"Remainder of {a} divided by {b}"
+
         else:
             raise ValueError(f"Unknown operation: {operation}")
 
         # Create result object
         math_result = BasicMathResult(
             operation=operation,
-            inputs={"a": a, "b": b, "base": base},
+            inputs={"a": a, "b": b, "base": base, "digits": digits},
             result=result,
             description=description,
         )
 
+        logger.info(
+            f"Basic math operation {operation} completed successfully with result: {result}"
+        )
         return math_result.model_dump_json()
 
     except Exception as e:
@@ -219,6 +258,9 @@ def mcpstatistics(
     Returns:
         JSON string containing the statistical results
     """
+    logger.info(
+        f"Performing statistics operation: {operation} on dataset of {len(data)} elements"
+    )
     try:
         if not data:
             raise ValueError("Data list cannot be empty")
@@ -307,6 +349,7 @@ def mcpstatistics(
             operation=operation, data=data, result=results, description=description
         )
 
+        logger.info(f"Statistics operation {operation} completed successfully")
         return stats_result.model_dump_json()
 
     except Exception as e:
@@ -331,6 +374,9 @@ def mcpgeometry(
     Returns:
         JSON string containing geometric calculations
     """
+    logger.info(
+        f"Performing geometry calculation for shape: {shape} with parameters: {parameters}"
+    )
     try:
         results = {}
         description = ""
@@ -451,6 +497,7 @@ def mcpgeometry(
             shape=shape, parameters=parameters, results=results, description=description
         )
 
+        logger.info(f"Geometry calculation for {shape} completed successfully")
         return geometry_result.model_dump_json()
 
     except Exception as e:
@@ -475,6 +522,7 @@ def mcptrigonometry(
     Returns:
         JSON string containing the trigonometric calculation
     """
+    logger.info(f"Performing trigonometry calculation: {function} of {angle} {unit}")
     try:
         # Validate unit
         if unit not in ["radians", "degrees"]:
@@ -537,6 +585,9 @@ def mcptrigonometry(
             description=description,
         )
 
+        logger.info(
+            f"Trigonometry calculation {function} completed successfully with result: {result}"
+        )
         return trig_result.model_dump_json()
 
     except Exception as e:
@@ -557,6 +608,7 @@ def mcpsolveequation(
     Returns:
         JSON string containing the solutions
     """
+    logger.info(f"Solving {equation_type} equation with coefficients: {coefficients}")
     try:
         solutions = []
         description = ""
@@ -638,6 +690,9 @@ def mcpsolveequation(
             description=description,
         )
 
+        logger.info(
+            f"Equation solving for {equation_type} completed successfully with {len(solutions)} solution(s)"
+        )
         return equation_result.model_dump_json()
 
     except Exception as e:
@@ -674,6 +729,7 @@ def mcprandom(
     Returns:
         JSON string containing random results
     """
+    logger.info(f"Performing random operation: {operation} with count={count}")
     try:
         result = None
         description = ""
@@ -734,6 +790,7 @@ def mcprandom(
             "description": description,
         }
 
+        logger.info(f"Random operation {operation} completed successfully")
         return json.dumps(random_result)
 
     except Exception as e:
@@ -760,6 +817,7 @@ def mcpconversion(
     Returns:
         JSON string containing conversion result
     """
+    logger.info(f"Converting {value} from {from_unit} to {to_unit} ({unit_type})")
     try:
         # Define conversion factors to SI units
         conversion_factors = {
@@ -882,6 +940,8 @@ if __name__ == "__main__":
         help=f"Listening to port. Must be specified.",
     )
     args = parser.parse_args()
+
+    logger.info("Starting Math Server")
     run_mcp_server(
         "Math Server",
         funcs=[

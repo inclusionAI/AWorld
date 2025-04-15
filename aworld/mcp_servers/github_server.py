@@ -33,7 +33,7 @@ from aworld.utils import import_package
 # Import PyGithub package, install if not available
 import_package("github", install_name="PyGithub")
 
-from github import Github, GithubException
+from github import Github, GithubException, Label
 from github.ContentFile import ContentFile
 from github.Repository import Repository
 
@@ -205,63 +205,6 @@ def mcpgetrepository(
 
     except Exception as e:
         return handle_error(e, "Get Repository")
-
-
-def mcpgetfilecontent(
-    repo_full_name: str = Field(description="Repository full name (owner/repo)"),
-    file_path: str = Field(description="Path to file within repository"),
-    ref: str = Field(default="", description="Branch, tag, or commit SHA (optional)"),
-) -> str:
-    """
-    Get content of a file from a GitHub repository.
-
-    Args:
-        repo_full_name: Repository full name in format "owner/repo"
-        file_path: Path to file within repository
-        ref: Branch, tag, or commit SHA (optional)
-
-    Returns:
-        JSON string containing file content and metadata
-    """
-    try:
-        # Initialize GitHub API
-        github = get_github_instance()
-
-        # Get repository
-        repo = github.get_repo(repo_full_name)
-
-        # Get file content
-        if ref:
-            file_content = repo.get_contents(file_path, ref=ref)
-        else:
-            file_content = repo.get_contents(file_path)
-
-        # Handle directory case
-        if isinstance(file_content, list):
-            raise ValueError(f"Path {file_path} is a directory, not a file")
-
-        # Decode content if it's base64 encoded
-        content = None
-        if file_content.encoding == "base64" and file_content.content:
-            content = base64.b64decode(file_content.content).decode("utf-8")
-
-        # Create file object
-        file_obj = GitHubFile(
-            name=file_content.name,
-            path=file_content.path,
-            sha=file_content.sha,
-            size=file_content.size,
-            url=file_content.url,
-            html_url=file_content.html_url,
-            type="file",
-            content=content,
-            encoding=file_content.encoding,
-        )
-
-        return file_obj.model_dump_json()
-
-    except Exception as e:
-        return handle_error(e, "Get File Content")
 
 
 def mcplistrepositorycontents(
@@ -604,13 +547,17 @@ def mcpgetuserrepositories(
 
 def mcpgetissues(
     repo_full_name: str = Field(description="Repository full name (owner/repo)"),
-    state: str = Field(default="open", description="Issue state (open, closed, all)"),
+    state: str = Field(default="open", description="Issue state (open, closed)"),
+    filter_labels: List[Label] = Field(
+        default=[],
+        description="Filter issues by labels, apply `and` logic for multiple labels",
+    ),
     sort: str = Field(
         default="created", description="Sort method (created, updated, comments)"
     ),
     direction: str = Field(default="desc", description="Sort direction (asc, desc)"),
     limit: int = Field(
-        default=30, description="Number of issues to retrieve (max 100)"
+        default=375, description="Number of issues to retrieve (max 1024)"
     ),
 ) -> str:
     """
@@ -618,19 +565,20 @@ def mcpgetissues(
 
     Args:
         repo_full_name: Repository full name in format "owner/repo"
-        state: Issue state (open, closed, all)
+        state: Issue state (open, closed)
         sort: Sort method for issues
         direction: Sort direction (asc, desc)
-        limit: Number of issues to retrieve (max 100)
+        limit: Number of issues to retrieve (max 1024)
+        filter_labels: Filter issues by labels, always validate labels existing before passing
 
     Returns:
         JSON string containing repository issues
     """
     try:
         # Validate input
-        if limit > 100:
-            limit = 100
-            logger.warning("Limit capped at 100 issues")
+        if limit > 1024:
+            limit = 1024
+            logger.warning("Limit capped at 1024 issues")
 
         # Initialize GitHub API
         github = get_github_instance()
@@ -639,11 +587,14 @@ def mcpgetissues(
         repo = github.get_repo(repo_full_name)
 
         # Get issues
-        issues = repo.get_issues(state=state, sort=sort, direction=direction)
+        issues = repo.get_issues(
+            state=state, sort=sort, direction=direction, labels=filter_labels
+        )
 
         # Process issues
         issue_list = []
         count = 0
+
         for issue in issues:
             if count >= limit:
                 break
@@ -675,12 +626,59 @@ def mcpgetissues(
             "repository": repo_full_name,
             "issues": [issue.model_dump() for issue in issue_list],
             "count": len(issue_list),
+            "filter_applied": len(filter_labels) > 0,
         }
 
         return json.dumps(result)
 
     except Exception as e:
         return handle_error(e, "Get Issues")
+
+
+def mcpgetlabels(
+    repo_full_name: str = Field(description="Repository full name (owner/repo)"),
+) -> str:
+    """
+    Get all labels from a GitHub repository.
+
+    Args:
+        repo_full_name: Repository full name in format "owner/repo"
+
+    Returns:
+        JSON string containing repository labels
+    """
+    try:
+        # Initialize GitHub API
+        github = get_github_instance()
+
+        # Get repository
+        repo = github.get_repo(repo_full_name)
+
+        # Get labels
+        labels = repo.get_labels()
+
+        # Process labels
+        label_list = []
+        for label in labels:
+            label_obj = {
+                "name": label.name,
+                "description": label.description or "",
+                "color": label.color,
+                "url": label.url,
+            }
+            label_list.append(label_obj)
+
+        # Create result
+        result = {
+            "repository": repo_full_name,
+            "labels": label_list,
+            "count": len(label_list),
+        }
+
+        return json.dumps(result)
+
+    except Exception as e:
+        return handle_error(e, "Get Labels")
 
 
 # Main function
@@ -700,12 +698,11 @@ if __name__ == "__main__":
         "GitHub Server",
         funcs=[
             mcpgetrepository,
-            mcpgetfilecontent,
-            mcplistrepositorycontents,
             mcpsearchrepositories,
             mcpsearchcode,
             mcpgetuser,
             mcpgetuserrepositories,
+            mcpgetlabels,
             mcpgetissues,
         ],
         port=args.port,

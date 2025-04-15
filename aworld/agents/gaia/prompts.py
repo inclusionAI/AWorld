@@ -1,5 +1,5 @@
 init_prompt = f"""
-Please give me clear step-by-step instructions to complete the entire task. If the task needs any special knowledge, let me know which tools I should use to help me get it done.
+Please give me clear step-by-step instructions to complete the entire task. Always utilize search tools to gather general information for proper plans. If the task needs any special knowledge, let me know which tools I should use to help me get it done.
 """
 
 execute_system_prompt = """
@@ -30,7 +30,7 @@ Our overall task may be complicated. Here are tips to help you:
 - Validate your answers by cross-checking them through different methods.
 - If a tool or code fails, do not assume its result is correct. Investigate the problem, fix it, and try again.
 - Search results rarely provide exact answers. Use simple search queries to find sources, then process them further (e.g., by extracting webpage data).
-- For downloading files, either use a browser simulation tool or write code to download them.
+- Make sure select only one tool at a time.
 - Pay ATTENTION to the detail requirements of the task: {task}
 </tips>
 
@@ -57,6 +57,7 @@ Here are some tips to help you give better instructions:
 - If the task involves a YouTube video, I will need to process the content of the video.
 - For file downloads, use web browser tools or write code (e.g., download from a GitHub link).
 - Feel free to write code to solve tasks like Excel-related tasks.
+- If relevant tools all failed to provide the answer, try to find the answer through static analyzing the problem thoroughly.
 </tips>
 
 Now, here is the overall task: <task>{task}</task>. Stay focused on the task!

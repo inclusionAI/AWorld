@@ -113,9 +113,20 @@ def _download_single_file(
         file_path = os.path.join(output_path, filename)
 
         logger.info(f"Downloading file from {url} to {file_path}")
-
         # Download the file with progress tracking
-        response = requests.get(url, stream=True, timeout=timeout)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AWorld/1.0 (https://github.com/inclusionAI/AWorld; qintong.wqt@antgroup.com) "
+                "Python/requests "
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml,application/pdf;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+        }
+
+        response = requests.get(url, headers=headers, stream=True, timeout=timeout)
         response.raise_for_status()
 
         # Get content type and size

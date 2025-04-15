@@ -20,6 +20,19 @@ from aworld.dataset.gaia.benchmark import GAIABenchmark
 from aworld.logs.util import logger
 
 if __name__ == "__main__":
+    # import anyio.streams.memory
+
+    # original_create_memory_object_stream = (
+    #     anyio.streams.memory.create_memory_object_stream
+    # )
+
+    # def patched_create_memory_object_stream(max_buffer_size=50000, *args, **kwargs):
+    #     return original_create_memory_object_stream(max_buffer_size, *args, **kwargs)
+
+    # anyio.streams.memory.create_memory_object_stream = (
+    #     patched_create_memory_object_stream
+    # )
+
     # Initialize client
     client = Client()
 
@@ -33,15 +46,6 @@ if __name__ == "__main__":
     logger.success(
         f"\n>>> llm_api_key: {llm_api_key}\n>>> llm_base_url: {llm_base_url}"
     )
-    model_config = ModelConfig(
-        llm_provider="chatopenai",
-        llm_model_name="gpt-4o",
-        llm_api_key="dummy-key",
-        llm_base_url="http://localhost:3456",
-        # llm_api_key=llm_api_key,
-        # llm_base_url=llm_base_url,
-        llm_temperature=0.0,
-    )
 
     # Define a task
     save_path = "/Users/arac/Desktop/gaia/result.json"
@@ -51,7 +55,7 @@ if __name__ == "__main__":
             _results = json.load(f)
     else:
         _results = []
-    for idx, sample in enumerate(dataset[:1]):
+    for idx, sample in enumerate(dataset):
         logger.info(
             f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. "
         )
@@ -66,10 +70,28 @@ if __name__ == "__main__":
         logger.info(f"question: {question}")
 
         planner = PlanAgent(
-            conf=AgentConfig(name=Agents.PLAN.value, llm_config=model_config)
+            conf=AgentConfig(
+                name=Agents.PLAN.value,
+                llm_provider="openai",
+                llm_model_name="gpt-4o",
+                llm_base_url="http://localhost:3456",
+                llm_api_key="dummy-key",
+                # llm_api_key=llm_api_key,
+                # llm_base_url=llm_base_url,
+                llm_temperature=0.1,
+            )
         )
         executor = ExecuteAgent(
-            conf=AgentConfig(name=Agents.EXECUTE.value, llm_config=model_config),
+            conf=AgentConfig(
+                name=Agents.EXECUTE.value,
+                llm_provider="openai",
+                llm_model_name="gpt-4o",
+                llm_base_url="http://localhost:3456",
+                llm_api_key="dummy-key",
+                # llm_base_url=llm_base_url,D
+                # llm_api_key=llm_api_key,
+                llm_temperature=0.1,
+            ),
             tool_names=[],
             mcp_servers=[
                 "arxiv",
@@ -78,6 +100,7 @@ if __name__ == "__main__":
                 "document",
                 "download",
                 "filesystem",
+                "github",
                 "googlemaps",
                 "image",
                 "math",
@@ -86,6 +109,7 @@ if __name__ == "__main__":
                 # "sympy",
                 "video",
                 "playwright",
+                "wikipedia",
             ],
         )
 

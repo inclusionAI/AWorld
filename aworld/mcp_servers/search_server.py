@@ -395,6 +395,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     run_mcp_server(
         "Search Server",
-        funcs=[mcpsearchgoogle, mcpsearchduckduckgo, mcpsearchexa],
+        funcs=[
+            mcpsearchgoogle,
+            # mcpsearchexa
+        ],
         port=args.port,
     )

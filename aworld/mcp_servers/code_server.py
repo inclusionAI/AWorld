@@ -24,6 +24,7 @@ import uuid
 from typing import Dict, List, Optional
 
 import pyglove as pg
+from langchain_core.language_models.llms import LLM
 from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
@@ -56,22 +57,19 @@ class CodeExecutionResult(BaseModel):
 def mcpgeneratecode(
     prompt: str = Field(..., description="Description of the code to be generated"),
     language: str = Field(
-        "python", description="Programming language (default: python)"
+        "python",
+        description="Programming language (default: python). Choices: python, javascript, bash",
     ),
     context: Optional[str] = Field(
         None, description="Additional context or existing code"
     ),
-    max_tokens: int = Field(
-        2000, description="Maximum number of tokens for the generated code"
-    ),
 ) -> str:
-    """Generate code using LLM based on the provided prompt and context
+    """Generate code using LLM based on the provided prompt and context, ONLY support python, javascript, and bash languages
 
     Args:
         prompt: Description of the code to be generated
         language: Programming language for the generated code
         context: Additional context or existing code to consider
-        max_tokens: Maximum number of tokens for the generated code
 
     Returns:
         JSON string with the generated code and explanation
@@ -101,14 +99,13 @@ def mcpgeneratecode(
             {"role": "user", "content": user_prompt},
         ]
 
-        response = llm.chat.completions.create(
+        response = llm.completion(
             messages=messages,
-            model="gpt-4o",
-            max_tokens=max_tokens,
-            temperature=0.0,
+            temperature=0.1,
+            # max_tokens=16 * 1024,
         )
 
-        generated_code = response.choices[0].message.content.strip()
+        generated_code = response.content.strip() if response.content else ""
 
         # Extract code from markdown code blocks if present
         if generated_code.startswith("```") and generated_code.endswith("```"):
@@ -117,12 +114,8 @@ def mcpgeneratecode(
             if len(code_lines) > 2:
                 generated_code = "\n".join(code_lines[1:-1])
 
-        # Generate explanation using PyGlove
-        explanation = pg.explore(
-            lambda: _analyze_code(generated_code, language),
-            search="random",
-            num_examples=1,
-        )[0]
+        # Generate explanation directly without using pg.explore
+        explanation = _analyze_code(generated_code, language)
 
         # Create result
         result = CodeGenerationResult(
@@ -191,7 +184,8 @@ def _analyze_code(code: str, language: str) -> str:
 def mcpexecutecode(
     code: str = Field(..., description="Code to execute in the sandbox environment"),
     language: str = Field(
-        "python", description="Programming language of the code (default: python)"
+        "python",
+        description="Programming language of the code (default: python). Choices: python, javascript, bash",
     ),
     timeout: int = Field(
         30, description="Maximum execution time in seconds (default: 30)"
@@ -203,7 +197,7 @@ def mcpexecutecode(
         {}, description="Environment variables for execution"
     ),
 ) -> str:
-    """Execute code in a sandbox environment and return the results
+    """Execute code in a sandbox environment and return the results, ONLY support python, javascript, and bash languages
 
     Args:
         code: Code to execute

@@ -166,14 +166,11 @@ def mcpocr(
         content = create_image_contents(IMAGE_OCR, image_base64)
         inputs.append({"role": "user", "content": content})
 
-        response = llm.chat.completions.create(
+        response = llm.completion(
             messages=inputs,
-            model="gpt-4o",
             temperature=0,
         )
-        image_text = handle_llm_response(
-            response.choices[0].message.content, "image_text"
-        )
+        image_text = handle_llm_response(response.content, "image_text")
     except (ValueError, IOError, RuntimeError) as e:
         logger.error(f"image_text-Execute error: {traceback.format_exc()}")
         image_text = ""
@@ -198,13 +195,12 @@ def mcpreasoningimage(
         image_base64 = encode_images(image_urls)
         content = create_image_contents(reasoning_prompt, image_base64)
         inputs.append({"role": "user", "content": content})
-        response = llm.chat.completions.create(
+        response = llm.completion(
             messages=inputs,
-            model="gpt-4o",
             temperature=0,
         )
         image_reasoning_result = handle_llm_response(
-            response.choices[0].message.content, "image_reasoning_result"
+            response.content, "image_reasoning_result"
         )
     except (ValueError, IOError, RuntimeError) as e:
         image_reasoning_result = ""

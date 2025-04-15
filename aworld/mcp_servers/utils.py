@@ -47,13 +47,11 @@ def get_llm_config_from_os_environ(llm_model_name="gpt-4o", **kwargs) -> AgentCo
         AgentConfig: corresponding AgentConfig object
     """
     return AgentConfig(
-        model_config=ModelConfig(
-            llm_provider="chatopenai",
-            llm_model_name=llm_model_name,
-            llm_base_url=os.environ.get("LLM_BASE_URL"),
-            llm_api_key=os.environ.get("LLM_API_KEY"),
-            temperature=os.environ.get("LLM_TEMPERATURE", 0.0),
-        )
+        llm_provider="openai",
+        llm_model_name=llm_model_name,
+        llm_base_url="http://localhost:3457",
+        llm_api_key="dummy-key",
+        llm_temperature=0.0,
     )
 
 

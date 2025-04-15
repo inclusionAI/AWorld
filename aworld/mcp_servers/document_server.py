@@ -46,6 +46,8 @@ from aworld.utils import import_package, import_packages
 import_package("cv2", install_name="opencv-python")
 import_package("fitz", install_name="PyMuPDF")
 import_packages(["xmltodict", "pandas", "docx2markdown", "PyPDF2"])
+import_package("bs4", install_name="beautifulsoup4")
+import_package("html2text", install_name="html2text")
 
 
 # Define model classes for different document types
@@ -57,6 +59,22 @@ class TextDocument(BaseModel):
     file_name: str
     file_size: int
     last_modified: str
+
+
+class HtmlDocument(BaseModel):
+    """Model representing an HTML document"""
+
+    content: str  # Extracted text content
+    html_content: str  # Original HTML content
+    file_path: str
+    file_name: str
+    file_size: int
+    last_modified: str
+    title: Optional[str] = None
+    links: Optional[List[Dict[str, str]]] = None
+    images: Optional[List[Dict[str, str]]] = None
+    tables: Optional[List[str]] = None
+    markdown: Optional[str] = None  # HTML converted to Markdown format
 
 
 class JsonDocument(BaseModel):
@@ -934,6 +952,100 @@ def mcpreadsourcecode(
         return handle_error(e, "Source code file reading")
 
 
+def mcpreadhtmltext(
+    document_path: str = Field(description="Local HTML file path or Web URL."),
+    extract_links: bool = Field(
+        default=True, description="Whether to extract link information"
+    ),
+    extract_images: bool = Field(
+        default=True, description="Whether to extract image information"
+    ),
+    extract_tables: bool = Field(
+        default=True, description="Whether to extract table information"
+    ),
+    convert_to_markdown: bool = Field(
+        default=True, description="Whether to convert HTML to Markdown format"
+    ),
+) -> str:
+    """Read HTML file and extract text content, optionally extract links, images, and table information, and convert to Markdown format."""
+    error = check_file_readable(document_path)
+    if error:
+        return DocumentError(error=error, file_path=document_path).model_dump_json()
+
+    try:
+        import html2text
+        from bs4 import BeautifulSoup
+
+        # Read HTML file
+        with open(document_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+
+        # Parse HTML using BeautifulSoup
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        # Extract text content (remove script and style content)
+        for script in soup(["script", "style"]):
+            script.extract()
+        text_content = soup.get_text(separator="\n", strip=True)
+
+        # Extract title
+        title = soup.title.string if soup.title else None
+
+        # Initialize result object
+        result = HtmlDocument(
+            content=text_content,
+            html_content=html_content,
+            file_path=document_path,
+            file_name=os.path.basename(document_path),
+            file_size=os.path.getsize(document_path),
+            last_modified=datetime.fromtimestamp(
+                os.path.getmtime(document_path)
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+            title=title,
+        )
+
+        # Extract links
+        if extract_links:
+            links = []
+            for link in soup.find_all("a"):
+                href = link.get("href")
+                text = link.get_text(strip=True)
+                if href:
+                    links.append({"url": href, "text": text})
+            result.links = links
+
+        # Extract images
+        if extract_images:
+            images = []
+            for img in soup.find_all("img"):
+                src = img.get("src")
+                alt = img.get("alt", "")
+                if src:
+                    images.append({"src": src, "alt": alt})
+            result.images = images
+
+        # Extract tables
+        if extract_tables:
+            tables = []
+            for table in soup.find_all("table"):
+                tables.append(str(table))
+            result.tables = tables
+
+        # Convert to Markdown
+        if convert_to_markdown:
+            h = html2text.HTML2Text()
+            h.ignore_links = False
+            h.ignore_images = False
+            h.ignore_tables = False
+            markdown_content = h.handle(html_content)
+            result.markdown = markdown_content
+
+        return result.model_dump_json()
+
+    except Exception as e:
+        return handle_error(e, "HTML file reading", document_path)
+
+
 # Main function
 if __name__ == "__main__":
     import argparse
@@ -958,6 +1070,7 @@ if __name__ == "__main__":
             mcpreadexcel,
             mcpreadpptx,
             mcpreadsourcecode,
+            mcpreadhtmltext,
         ],
         port=args.port,
     )

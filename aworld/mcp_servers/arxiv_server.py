@@ -86,8 +86,10 @@ def _convert_result_to_model(result: arxiv.Result) -> ArxivArticle:
     )
 
 
-def mcpsearcharxivpaper(
-    query: str = Field(..., description="Search query for arXiv articles"),
+def mcpsearcharxivpaperbytitleorids(
+    article_title: str = Field(
+        ..., description="Search exact title for arXiv articles"
+    ),
     article_ids: List[str] = Field(
         [],
         description="A list of arXiv article IDs to which to limit the search.",
@@ -104,10 +106,11 @@ def mcpsearcharxivpaper(
         description="Sort direction: 'descending' (default) or 'ascending'",
     ),
 ) -> str:
-    """Search for articles on arXiv based on the provided query and filters
+    """Search for articles on arXiv based on the exact article title or article ID
 
     Args:
-        query: Search query string
+        article_title: Search exact article title
+        article_ids: A list of arXiv article IDs to which to limit the search
         max_results: Maximum number of results to return
         sort_by: Sort order (relevance, lastUpdatedDate, submittedDate)
         sort_order: Sort direction (descending, ascending)
@@ -145,7 +148,7 @@ def mcpsearcharxivpaper(
 
         # Build search query
         search = arxiv.Search(
-            query=query,
+            query=article_title,
             id_list=article_ids,
             max_results=max_results,
             sort_by=sort_criteria_map[sort_by],
@@ -153,7 +156,7 @@ def mcpsearcharxivpaper(
         )
 
         # Execute search
-        logger.info(f"Searching arXiv for: {query} and {article_ids}")
+        logger.info(f"Searching arXiv for: title={article_title} and ids={article_ids}")
         results = list(client.results(search))
 
         # Convert results to our model
@@ -302,6 +305,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     run_mcp_server(
         "arXiv Server",
-        funcs=[mcpsearcharxivpaper, mcpdownloadarxivpaper],
+        funcs=[mcpsearcharxivpaperbytitleorids, mcpdownloadarxivpaper],
         port=args.port,
     )

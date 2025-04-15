@@ -156,13 +156,12 @@ def mcpanalyzevideo(
         )
         inputs.append({"role": "user", "content": content})
 
-        response = llm.chat.completions.create(
+        response = llm.completion(
             messages=inputs,
-            model="gpt-4o",
-            **{"temperature": 0.7},
+            temperature=0,
         )
         video_analysis_result = handle_llm_response(
-            response.choices[0].message.content, "video_analysis_result"
+            response.content, "video_analysis_result"
         )
     except (ValueError, IOError, RuntimeError) as e:
         video_analysis_result = ""
@@ -187,14 +186,11 @@ def mcpextractvideosubtitles(
         content = create_video_content(VIDEO_EXTRACT_SUBTITLES, video_frames)
         inputs.append({"role": "user", "content": content})
 
-        response = llm.chat.completions.create(
+        response = llm.completion(
             messages=inputs,
-            model="gpt-4o",
-            **{"temperature": 0.7},
+            temperature=0,
         )
-        video_subtitles = handle_llm_response(
-            response.choices[0].message.content, "video_subtitles"
-        )
+        video_subtitles = handle_llm_response(response.content, "video_subtitles")
     except (ValueError, IOError, RuntimeError) as e:
         video_subtitles = ""
         logger.error(f"video_subtitles-Execute error: {traceback.format_exc()}")
@@ -216,14 +212,11 @@ def mcpsummarizevideo(
         content = create_video_content(VIDEO_SUMMARIZE, video_frames)
         inputs.append({"role": "user", "content": content})
 
-        response = llm.chat.completions.create(
+        response = llm.completion(
             messages=inputs,
-            model="gpt-4o",
-            **{"temperature": 0.7},
+            temperature=0,
         )
-        video_summary = handle_llm_response(
-            response.choices[0].message.content, "video_summary"
-        )
+        video_summary = handle_llm_response(response.content, "video_summary")
     except (ValueError, IOError, RuntimeError) as e:
         video_summary = ""
         logger.error(f"video_summary-Execute error: {traceback.format_exc()}")

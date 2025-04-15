@@ -5,13 +5,16 @@ import asyncio
 import logging
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired, TypedDict
 
+import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from mcp import ClientSession, StdioServerParameters, Tool as MCPTool, stdio_client
+from mcp import ClientSession, StdioServerParameters
+from mcp import Tool as MCPTool
+from mcp import stdio_client
 from mcp.client.sse import sse_client
 from mcp.types import CallToolResult, JSONRPCMessage
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 
 class MCPServer(abc.ABC):
@@ -44,7 +47,9 @@ class MCPServer(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None) -> CallToolResult:
+    async def call_tool(
+        self, tool_name: str, arguments: dict[str, Any] | None
+    ) -> CallToolResult:
         """Invoke a tool on the server."""
         pass
 
@@ -62,14 +67,13 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             server will not change its tools list, because it can drastically improve latency
             (by avoiding a round-trip to the server every time).
         """
-        self.session: ClientSession | None = None
-        self.exit_stack: AsyncExitStack = AsyncExitStack()
-        self._cleanup_lock: asyncio.Lock = asyncio.Lock()
-        self.cache_tools_list = cache_tools_list
-
-        # The cache is always dirty at startup, so that we fetch tools at least once
-        self._cache_dirty = True
+        self._cache_tools_list = cache_tools_list
         self._tools_list: list[MCPTool] | None = None
+        self._cache_dirty = False
+        self.session: ClientSession | None = None
+        self.exit_stack = AsyncExitStack()
+        self._cleanup_lock = asyncio.Lock()
+        self._call_tool_lock = asyncio.Lock()
 
     @abc.abstractmethod
     def create_streams(
@@ -100,7 +104,9 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             self.exit_stack = AsyncExitStack()
             transport = await self.exit_stack.enter_async_context(self.create_streams())
             read, write = transport
-            session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+            session = await self.exit_stack.enter_async_context(
+                ClientSession(read, write)
+            )
             await session.initialize()
             self.session = session
         except Exception as e:
@@ -111,10 +117,12 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
     async def list_tools(self) -> list[MCPTool]:
         """List the tools available on the server."""
         if not self.session:
-            raise RuntimeError("Server not initialized. Make sure you call `connect()` first.")
+            raise RuntimeError(
+                "Server not initialized. Make sure you call `connect()` first."
+            )
 
         # Return from cache if caching is enabled, we have tools, and the cache is not dirty
-        if self.cache_tools_list and not self._cache_dirty and self._tools_list:
+        if self._cache_tools_list and not self._cache_dirty and self._tools_list:
             return self._tools_list
 
         # Reset the cache dirty to False
@@ -124,12 +132,20 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         self._tools_list = (await self.session.list_tools()).tools
         return self._tools_list
 
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None) -> CallToolResult:
+    async def call_tool(
+        self, tool_name: str, arguments: dict[str, Any] | None
+    ) -> CallToolResult:
         """Invoke a tool on the server."""
         if not self.session:
-            raise RuntimeError("Server not initialized. Make sure you call `connect()` first.")
+            raise RuntimeError(
+                "Server not initialized. Make sure you call `connect()` first."
+            )
 
-        return await self.session.call_tool(tool_name, arguments)
+        async with self._call_tool_lock:
+            try:
+                return await self.session.call_tool(tool_name, arguments)
+            except (anyio.WouldBlock, asyncio.exceptions.CancelledError) as e:
+                logging.error(f"Error calling tool {tool_name}: {str(e)}")
 
     async def cleanup(self):
         """Cleanup the server."""

@@ -99,6 +99,7 @@ def mcptranscribeaudio(
         str: JSON string containing transcriptions
     """
     llm = get_llm_model(llm_config)
+    real_llm = llm.provider
 
     transcriptions = []
     for audio_url in audio_urls:
@@ -110,7 +111,7 @@ def mcptranscribeaudio(
 
             # Use the file for transcription
             with open(file_path, "rb") as audio_file:
-                transcription = llm.audio.transcriptions.create(
+                transcription = real_llm.audio.transcriptions.create(
                     file=audio_file,
                     model="gpt-4o-transcribe",
                     response_format="text",
