@@ -24,7 +24,7 @@ if __name__ == "__main__":
     client = Client()
 
     # One sample for example
-    gaia_dir = os.path.expanduser("~/gaia-benchmark/GAIA")
+    gaia_dir = os.path.expanduser("~/Desktop/gaia-benchmark/GAIA")
     dataset = GAIABenchmark(gaia_dir).load()["valid"]
 
     # Create agents
