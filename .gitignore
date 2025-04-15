@@ -100,6 +100,7 @@ data/processed/
 .*.swo
 *.webm
 *.mp4
+*.mp3
 *.avi
 *.mov
 *.flv
