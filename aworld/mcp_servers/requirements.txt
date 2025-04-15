@@ -1,13 +1,38 @@
+# Core dependencies
 pydantic
+fastapi
 requests
+loguru
+
+# Math and symbolic computation
 sympy
-arxiv
-bs4
-exa_py
+numpy
+pandas
+
+# Document processing
 PyMuPDF
 PyPDF2
 docx2markdown
+python-docx
+openpyxl
+python-pptx
+beautifulsoup4
+html2text
+xmltodict
+
+# Media processing
 Pillow
-fastapi
-googlemaps
+opencv-python
+python-magic
+
+# API integrations
+arxiv
+wikipedia
 praw
+googlemaps
+exa_py
+PyGithub
+
+# Utilities
+pyglove
+langchain-core
