@@ -172,7 +172,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         agent_executor.register(self.name(), self)
 
     def reset(self, options: Dict[str, Any]):
-        super().__init__(options)
+        super().reset(options)
         self.memory = []
 
     @property
