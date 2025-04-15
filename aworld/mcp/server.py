@@ -5,16 +5,15 @@ import asyncio
 import logging
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal
 
-import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp import ClientSession, StdioServerParameters
 from mcp import Tool as MCPTool
 from mcp import stdio_client
 from mcp.client.sse import sse_client
 from mcp.types import CallToolResult, JSONRPCMessage
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 
 class MCPServer(abc.ABC):
@@ -67,13 +66,14 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             server will not change its tools list, because it can drastically improve latency
             (by avoiding a round-trip to the server every time).
         """
-        self._cache_tools_list = cache_tools_list
-        self._tools_list: list[MCPTool] | None = None
-        self._cache_dirty = False
         self.session: ClientSession | None = None
-        self.exit_stack = AsyncExitStack()
-        self._cleanup_lock = asyncio.Lock()
-        self._call_tool_lock = asyncio.Lock()
+        self.exit_stack: AsyncExitStack = AsyncExitStack()
+        self._cleanup_lock: asyncio.Lock = asyncio.Lock()
+        self.cache_tools_list = cache_tools_list
+
+        # The cache is always dirty at startup, so that we fetch tools at least once
+        self._cache_dirty = True
+        self._tools_list: list[MCPTool] | None = None
 
     @abc.abstractmethod
     def create_streams(
@@ -101,7 +101,16 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
     async def connect(self):
         """Connect to the server."""
         try:
+            # 确保先关闭之前的exit_stack，避免嵌套的异步上下文
+            if hasattr(self, "exit_stack") and self.exit_stack:
+                try:
+                    await self.exit_stack.aclose()
+                except Exception as e:
+                    logging.error(f"Error closing previous exit stack: {e}")
+
             self.exit_stack = AsyncExitStack()
+
+            # 使用单一任务上下文来创建连接
             transport = await self.exit_stack.enter_async_context(self.create_streams())
             read, write = transport
             session = await self.exit_stack.enter_async_context(
@@ -111,6 +120,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             self.session = session
         except Exception as e:
             logging.error(f"Error initializing MCP server: {e}")
+            # 如果失败，确保资源被清理
             await self.cleanup()
             raise
 
@@ -122,7 +132,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             )
 
         # Return from cache if caching is enabled, we have tools, and the cache is not dirty
-        if self._cache_tools_list and not self._cache_dirty and self._tools_list:
+        if self.cache_tools_list and not self._cache_dirty and self._tools_list:
             return self._tools_list
 
         # Reset the cache dirty to False
@@ -141,21 +151,32 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
                 "Server not initialized. Make sure you call `connect()` first."
             )
 
-        async with self._call_tool_lock:
-            try:
-                return await self.session.call_tool(tool_name, arguments)
-            except (anyio.WouldBlock, asyncio.exceptions.CancelledError) as e:
-                logging.error(f"Error calling tool {tool_name}: {str(e)}")
+        return await self.session.call_tool(tool_name, arguments)
 
     async def cleanup(self):
         """Cleanup the server."""
         async with self._cleanup_lock:
             try:
-                await asyncio.sleep(0.1)
-                await self.exit_stack.aclose()
-                self.session = None
+                # 确保在同一个任务上下文中进行清理操作
+                session = self.session
+                self.session = None  # 先解除引用
+
+                # 先等待短暂时间确保任何挂起的操作完成
+                try:
+                    await asyncio.sleep(0.1)
+                except asyncio.CancelledError:
+                    # 忽略取消异常，继续清理资源
+                    pass
+
+                # 清理exit_stack，确保所有资源被正确关闭
+                exit_stack = self.exit_stack
+                if exit_stack:
+                    try:
+                        await exit_stack.aclose()
+                    except Exception as e:
+                        logging.error(f"Error closing exit stack during cleanup: {e}")
             except Exception as e:
-                logging.error(f"Error cleaning up server: {e}")
+                logging.error(f"Error during server cleanup: {e}")
 
 
 class MCPServerStdioParams(TypedDict):

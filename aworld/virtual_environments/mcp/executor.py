@@ -1,14 +1,14 @@
+import asyncio
 import json
 import logging
 import os
 import traceback
-
 from typing import Any, Dict, List, Tuple
 
 from mcp.types import TextContent
 
 from aworld.core.common import ActionModel, ActionResult, Observation
-from aworld.core.envs.tool import ToolActionExecutor, Tool
+from aworld.core.envs.tool import Tool, ToolActionExecutor
 from aworld.mcp.server import MCPServer, MCPServerSse
 from aworld.utils.common import sync_exec
 
@@ -32,7 +32,9 @@ class MCPToolExecutor(ToolActionExecutor):
             else:
                 # Use relative path for config file
                 current_dir = os.path.dirname(os.path.abspath(__file__))
-                config_path = os.path.normpath(os.path.join(current_dir, "../../config/mcp.json"))
+                config_path = os.path.normpath(
+                    os.path.join(current_dir, "../../config/mcp.json")
+                )
 
             with open(config_path, "r") as f:
                 config_data = json.load(f)
@@ -42,16 +44,18 @@ class MCPToolExecutor(ToolActionExecutor):
                 # Skip disabled servers
                 if server_config.get("disabled", False):
                     continue
-                    
+
                 # Handle SSE server
                 if "url" in server_config:
                     self.mcp_servers[server_name] = {
                         "type": "sse",
                         "url": server_config["url"],
                         "instance": None,
-                        "timeout": server_config.get('timeout', 5.),
-                        "sse_read_timeout": server_config.get('sse_read_timeout', 300.0),
-                        "headers": server_config.get('headers')
+                        "timeout": server_config.get("timeout", 5.0),
+                        "sse_read_timeout": server_config.get(
+                            "sse_read_timeout", 300.0
+                        ),
+                        "headers": server_config.get("headers"),
                     }
                 # Handle stdio server
                 elif "command" in server_config:
@@ -62,10 +66,12 @@ class MCPToolExecutor(ToolActionExecutor):
                         "env": server_config.get("env", {}),
                         "cwd": server_config.get("cwd"),
                         "encoding": server_config.get("encoding", "utf-8"),
-                        "encoding_error_handler": server_config.get("encoding_error_handler", "strict"),
-                        "instance": None
+                        "encoding_error_handler": server_config.get(
+                            "encoding_error_handler", "strict"
+                        ),
+                        "instance": None,
                     }
-            
+
             self.initialized = True
         except Exception as e:
             logging.error(f"Failed to load MCP config: {traceback.format_exc()}")
@@ -76,47 +82,73 @@ class MCPToolExecutor(ToolActionExecutor):
             raise ValueError(f"MCP server '{server_name}' not found in configuration")
 
         server_info = self.mcp_servers[server_name]
+
+        # 如果已经有实例，先检查它是否可用，如果可用则重用
+        if server_info.get("instance"):
+            return server_info["instance"]
+
         server_type = server_info.get("type", "sse")
 
-        if server_type == "sse":
-            # Create new SSE server instance
-            server_params = {
-                "url": server_info["url"],
-                "timeout": server_info['timeout'],
-                "sse_read_timeout": server_info['sse_read_timeout'],
-                "headers": server_info['headers']
-            }
+        try:
+            if server_type == "sse":
+                # Create new SSE server instance
+                server_params = {
+                    "url": server_info["url"],
+                    "timeout": server_info["timeout"],
+                    "sse_read_timeout": server_info["sse_read_timeout"],
+                    "headers": server_info["headers"],
+                }
 
-            server = MCPServerSse(server_params, cache_tools_list=True, name=server_name)
-        elif server_type == "stdio":
-            # Create new stdio server instance
-            server_params = {
-                "command": server_info["command"],
-                "args": server_info["args"],
-                "env": server_info["env"],
-                "cwd": server_info.get("cwd"),
-                "encoding": server_info["encoding"],
-                "encoding_error_handler": server_info["encoding_error_handler"]
-            }
+                server = MCPServerSse(
+                    server_params, cache_tools_list=True, name=server_name
+                )
+            elif server_type == "stdio":
+                # Create new stdio server instance
+                server_params = {
+                    "command": server_info["command"],
+                    "args": server_info["args"],
+                    "env": server_info["env"],
+                    "cwd": server_info.get("cwd"),
+                    "encoding": server_info["encoding"],
+                    "encoding_error_handler": server_info["encoding_error_handler"],
+                }
 
-            from aworld.mcp.server import MCPServerStdio
-            server = MCPServerStdio(server_params, cache_tools_list=True, name=server_name)
-        else:
-            raise ValueError(f"Unsupported MCP server type: {server_type}")
+                from aworld.mcp.server import MCPServerStdio
 
-        await server.connect()
-        server_info["instance"] = server
+                server = MCPServerStdio(
+                    server_params, cache_tools_list=True, name=server_name
+                )
+            else:
+                raise ValueError(f"Unsupported MCP server type: {server_type}")
 
-        return server
+            # 尝试连接，特别处理取消异常
+            try:
+                await server.connect()
+            except asyncio.CancelledError:
+                # 当任务被取消时，确保资源被清理
+                logging.warning(f"Connection to server '{server_name}' was cancelled")
+                await server.cleanup()
+                raise
 
-    async def async_execute_action(self, actions: List[ActionModel], **kwargs) -> Tuple[
-        List[ActionResult], Any]:
+            server_info["instance"] = server
+            return server
+
+        except asyncio.CancelledError:
+            # 传递取消异常，让上层处理
+            raise
+        except Exception as e:
+            logging.error(f"Failed to connect to MCP server '{server_name}': {e}")
+            raise
+
+    async def async_execute_action(
+        self, actions: List[ActionModel], **kwargs
+    ) -> Tuple[List[ActionResult], Any]:
         """Execute actions using the MCP server.
-        
+
         Args:
             actions: A list of action models to execute
             **kwargs: Additional arguments
-            
+
         Returns:
             A list of action results
         """
@@ -128,41 +160,62 @@ class MCPToolExecutor(ToolActionExecutor):
 
         results = []
         for action in actions:
-            # Check if this is an MCP action
-            # if not action.is_mcp:
-            #     raise ValueError(f"Action {action.action_name} is not an MCP action")
-
-            # Get the server name from tool_name
+            # 获取服务器和操作信息
             server_name = action.tool_name
             if not server_name:
                 raise ValueError("Missing tool_name in action model")
 
-            # Get the action name
             action_name = action.action_name
             if not action_name:
                 raise ValueError("Missing action_name in action model")
 
-            # Get parameters
             params = action.params or {}
+
             try:
-                # Get or create the MCP server
+                # 获取或创建MCP服务器
                 server = await self._get_or_create_server(server_name)
 
-                # Call the tool on the server
-                result = await server.call_tool(action_name, params)
-                if result and result.content:
-                    if isinstance(result.content[0], TextContent):
-                        action_result = ActionResult(
-                            content=result.content[0].text,
-                            keep=True
-                        )
-                        results.append(action_result)
+                # 调用工具并处理结果
+                try:
+                    result = await server.call_tool(action_name, params)
+
+                    if result and result.content:
+                        if isinstance(result.content[0], TextContent):
+                            action_result = ActionResult(
+                                content=result.content[0].text, keep=True
+                            )
+                            results.append(action_result)
+                except asyncio.CancelledError:
+                    # 记录取消异常，重置服务器连接以避免异步上下文混乱
+                    logging.warning(
+                        f"Tool call to {action_name} on {server_name} was cancelled"
+                    )
+                    if server_name in self.mcp_servers and self.mcp_servers[
+                        server_name
+                    ].get("instance"):
+                        try:
+                            await self.mcp_servers[server_name]["instance"].cleanup()
+                            self.mcp_servers[server_name]["instance"] = None
+                        except Exception as cleanup_error:
+                            logging.error(
+                                f"Error cleaning up server after cancellation: {cleanup_error}"
+                            )
+                    # 重新抛出异常以通知上层调用者
+                    raise
+
+            except asyncio.CancelledError:
+                # 传递取消异常
+                logging.warning("Async execution was cancelled")
+                raise
 
             except Exception as e:
-                # Create an error action result
+                # 处理一般错误
                 error_msg = str(e)
                 logging.error(f"Error executing MCP action: {error_msg}")
-                break
+                action_result = ActionResult(
+                    content=f"Error executing tool: {error_msg}", keep=True
+                )
+                results.append(action_result)
 
         return results, None
 
@@ -175,6 +228,7 @@ class MCPToolExecutor(ToolActionExecutor):
                 except Exception as e:
                     logging.error(f"Error cleaning up MCP server {server_name}: {e}")
 
-    def execute_action(self, actions: List[ActionModel], **kwargs) -> Tuple[
-        List[ActionResult], Any]:
+    def execute_action(
+        self, actions: List[ActionModel], **kwargs
+    ) -> Tuple[List[ActionResult], Any]:
         return sync_exec(self.async_execute_action, actions, **kwargs)

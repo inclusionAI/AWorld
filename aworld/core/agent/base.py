@@ -223,7 +223,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         try:
             return sync_exec(mcp_tool_desc_transform, self.mcp_servers)
         except Exception as e:
-            logger.error(f"mcp_is_tool error: {e}")
+            import traceback
+
+            logger.error(f"mcp_is_tool error: {traceback.format_exc()}")
             return []
 
     def desc_transform(self):
