@@ -460,7 +460,8 @@ class BrowserAgent(Agent):
                     # If sizes don't match, this is a critical error
                     error_msg = f"Action results count ({len(obs.action_result)}) doesn't match action entries count ({len(previous_action_entries)})"
                     logger.error(error_msg)
-                    raise ValueError(error_msg)
+                    has_error = True
+                    # raise ValueError(error_msg)
 
             # Add agent response
             if llm_result:
