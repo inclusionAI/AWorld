@@ -20,19 +20,6 @@ from aworld.dataset.gaia.benchmark import GAIABenchmark
 from aworld.logs.util import logger
 
 if __name__ == "__main__":
-    # import anyio.streams.memory
-
-    # original_create_memory_object_stream = (
-    #     anyio.streams.memory.create_memory_object_stream
-    # )
-
-    # def patched_create_memory_object_stream(max_buffer_size=50000, *args, **kwargs):
-    #     return original_create_memory_object_stream(max_buffer_size, *args, **kwargs)
-
-    # anyio.streams.memory.create_memory_object_stream = (
-    #     patched_create_memory_object_stream
-    # )
-
     # Initialize client
     client = Client()
 
@@ -110,6 +97,7 @@ if __name__ == "__main__":
                 "video",
                 "playwright",
                 "wikipedia",
+                "orcid",
             ],
         )
 
