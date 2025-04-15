@@ -9,5 +9,5 @@ write = Agent(
     name="example_write_agent",
     system_prompt=write_sys_prompt,
     agent_prompt=write_prompt,
-    tool_names=["write_tool"]
+    tool_names=["html"]
 )

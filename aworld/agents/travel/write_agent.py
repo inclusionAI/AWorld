@@ -12,7 +12,7 @@ from aworld.core.common import Observation, ActionModel
 class WriteAgent(Agent):
     def __init__(self, conf: AgentConfig, **kwargs):
         super(WriteAgent, self).__init__(conf, **kwargs)
-        self.tool_names.append('write_tool')
+        self.tool_names.append('html')
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
         List[ActionModel], None]:

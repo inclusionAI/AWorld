@@ -27,7 +27,7 @@ class HtmlTool(Tool[Observation, List[ActionModel]]):
 
         invalid_acts: List[int] = []
         for i, act in enumerate(action):
-            if act.tool_name != "write_tool":
+            if act.tool_name != Tools.HTML.value:
                 logger.warning(f"tool {act.tool_name} is not a write tool!")
                 invalid_acts.append(i)
 
@@ -37,7 +37,9 @@ class HtmlTool(Tool[Observation, List[ActionModel]]):
 
         resp = ""
         try:
-            action_result, resp = self.action_executor.execute_action(action, **kwargs)
+            action_result, resp = self.action_executor.execute_action(action,
+                                                                      llm_config=self.conf.llm_config,
+                                                                      **kwargs)
             reward = 1
         except Exception as e:
             fail_error = str(e)

@@ -211,6 +211,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         self.tools.extend(self.handoffs_agent_as_tool())
         # MCP servers are tools
         self.tools.extend(self.mcp_is_tool())
+        return self.tools
 
     async def async_desc_transform(self):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
