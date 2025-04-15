@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import tempfile
+import traceback
 import uuid
 from typing import Dict, List, Optional
 
@@ -104,7 +105,7 @@ def mcpgeneratecode(
             messages=messages,
             model="gpt-4o",
             max_tokens=max_tokens,
-            temperature=0.2,  # Lower temperature for more deterministic code generation
+            temperature=0.0,
         )
 
         generated_code = response.choices[0].message.content.strip()
@@ -132,7 +133,7 @@ def mcpgeneratecode(
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Code generation error: {error_msg}")
+        logger.error(f"Code generation error: {traceback.format_exc()}")
         return json.dumps({"error": error_msg})
 
 
@@ -182,7 +183,7 @@ def _analyze_code(code: str, language: str) -> str:
         return explanation
 
     except Exception as e:
-        logger.warning(f"Code analysis error: {str(e)}")
+        logger.warning(f"Code analysis error: {traceback.format_exc()}")
         line_count = len(code.split("\n"))
         return f"Generated {language} code with {line_count} lines."
 
@@ -291,13 +292,24 @@ def mcpexecutecode(
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Code execution error: {error_msg}")
+        logger.error(f"Code execution error: {traceback.format_exc()}")
         return json.dumps({"error": error_msg})
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
         "Code Generation and Execution Server",
         funcs=[mcpgeneratecode, mcpexecutecode],
-        port=2002,
+        port=args.port,
     )

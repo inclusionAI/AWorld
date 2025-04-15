@@ -17,6 +17,7 @@ Main functions:
 
 import json
 import os
+import traceback
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -27,6 +28,7 @@ from aworld.utils import import_package
 
 # Import PRAW package, install if not available
 import_package("praw")
+
 import praw
 
 
@@ -110,7 +112,7 @@ class RedditError(BaseModel):
 def handle_error(e: Exception, operation_type: str) -> str:
     """Unified error handling and return standard format error message"""
     error_msg = f"{operation_type} error: {str(e)}"
-    logger.error(error_msg)
+    logger.error(traceback.format_exc())
 
     error = RedditError(error=error_msg, operation=operation_type)
 
@@ -601,6 +603,17 @@ def mcpgettopsubreddits(
 
 # Main function
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
         "Reddit Server",
         funcs=[
@@ -612,5 +625,5 @@ if __name__ == "__main__":
             mcpgetuserposts,
             mcpgettopsubreddits,
         ],
-        port=2009,
+        port=args.port,
     )

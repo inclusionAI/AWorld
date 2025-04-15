@@ -78,7 +78,9 @@ def encode_audio(audio_source: str, with_header: bool = True) -> str:
         return final_audio
 
     except Exception as e:
-        logger.error(f"Error encoding audio from {audio_source}: {str(e)}")
+        logger.error(
+            f"Error encoding audio from {audio_source}: {traceback.format_exc()}"
+        )
         raise
 
 
@@ -120,7 +122,7 @@ def mcptranscribeaudio(
                 os.unlink(file_path)
 
         except Exception as e:
-            logger.error(f"Error transcribing {audio_url}: {str(e)}")
+            logger.error(f"Error transcribing {audio_url}: {traceback.format_exc()}")
             transcriptions.append(f"Error: {str(e)}")
 
     logger.info(f"---get_text_by_transcribe-transcription:{transcriptions}")
@@ -128,4 +130,15 @@ def mcptranscribeaudio(
 
 
 if __name__ == "__main__":
-    run_mcp_server("Audio Server", funcs=[mcptranscribeaudio], port=2001)
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
+    run_mcp_server("Audio Server", funcs=[mcptranscribeaudio], port=args.port)

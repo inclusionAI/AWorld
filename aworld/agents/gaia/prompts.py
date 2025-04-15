@@ -57,7 +57,6 @@ Here are some tips to help you give better instructions:
 - If the task involves a YouTube video, I will need to process the content of the video.
 - For file downloads, use web browser tools or write code (e.g., download from a GitHub link).
 - Feel free to write code to solve tasks like Excel-related tasks.
-- Verify EXACTLY ONCE for the anwser, and you should use search, calculation, or other tools to verify the answer.
 </tips>
 
 Now, here is the overall task: <task>{task}</task>. Stay focused on the task!

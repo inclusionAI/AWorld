@@ -19,6 +19,7 @@ Main functions:
 
 import json
 import os
+import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
@@ -173,7 +174,7 @@ class GoogleMapsError(BaseModel):
 def handle_error(e: Exception, error_type: str) -> str:
     """Unified error handling and return standard format error message"""
     error_msg = f"{error_type} error: {str(e)}"
-    logger.error(error_msg)
+    logger.error(traceback.format_exc())
 
     error = GoogleMapsError(error=error_msg, status="ERROR")
 
@@ -843,6 +844,17 @@ def mcpgetpostcode(
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
         "Google Maps Server",
         funcs=[
@@ -856,5 +868,5 @@ if __name__ == "__main__":
             mcpgetlatlng,
             mcpgetpostcode,
         ],
-        port=2006,
+        port=args.port,
     )

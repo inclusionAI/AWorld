@@ -16,6 +16,7 @@ Main functions:
 
 import base64
 import os
+import traceback
 from io import BytesIO
 from typing import Any, Dict, List
 
@@ -174,7 +175,7 @@ def mcpocr(
             response.choices[0].message.content, "image_text"
         )
     except (ValueError, IOError, RuntimeError) as e:
-        logger.error(f"image_text-Execute error: {str(e)}")
+        logger.error(f"image_text-Execute error: {traceback.format_exc()}")
         image_text = ""
 
     logger.info(f"---get_text_by_ocr-image_text:{image_text}")
@@ -207,7 +208,7 @@ def mcpreasoningimage(
         )
     except (ValueError, IOError, RuntimeError) as e:
         image_reasoning_result = ""
-        logger.error(f"image_reasoning_result-Execute error: {str(e)}")
+        logger.error(f"image_reasoning_result-Execute error: {traceback.format_exc()}")
 
     logger.info(
         f"---get_reasoning_by_image-image_reasoning_result:{image_reasoning_result}"
@@ -217,11 +218,22 @@ def mcpreasoningimage(
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
         "Image Server",
         funcs=[
             # mcpocr,
             mcpreasoningimage
         ],
-        port=2007,
+        port=args.port,
     )

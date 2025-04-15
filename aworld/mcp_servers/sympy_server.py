@@ -20,6 +20,7 @@ Main functions:
 """
 
 import json
+import traceback
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -107,7 +108,7 @@ class SymPyError(BaseModel):
 def handle_error(e: Exception, operation_type: str) -> str:
     """Unified error handling and return standard format error message"""
     error_msg = f"{operation_type} error: {str(e)}"
-    logger.error(error_msg)
+    logger.error(traceback.format_exc())
 
     error = SymPyError(error=error_msg, operation=operation_type)
 
@@ -665,6 +666,17 @@ def mcpsolvelinear(
 
 # Main function
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
         "SymPy Server",
         funcs=[
@@ -675,5 +687,5 @@ if __name__ == "__main__":
             mcpsolveode,
             mcpsolvelinear,
         ],
-        port=2011,
+        port=args.port,
     )

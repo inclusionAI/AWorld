@@ -16,6 +16,7 @@ Main functions:
 """
 
 import os
+import traceback
 import urllib.parse
 from pathlib import Path
 from typing import List, Optional
@@ -146,7 +147,7 @@ def _download_single_file(
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Download error: {error_msg}")
+        logger.error(f"Download error: {traceback.format_exc()}")
 
         result = DownloadResult(
             file_path="",
@@ -161,4 +162,15 @@ def _download_single_file(
 
 
 if __name__ == "__main__":
-    run_mcp_server("Download Server", funcs=[mcpdownloadfiles], port=2004)
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
+    run_mcp_server("Download Server", funcs=[mcpdownloadfiles], port=args.port)

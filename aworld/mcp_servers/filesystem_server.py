@@ -30,6 +30,7 @@ import glob
 import os
 import shutil
 import stat
+import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -160,7 +161,7 @@ def get_file_info(path: str) -> FileInfo:
             mime_type=mime_type,
         )
     except Exception as e:
-        logger.error(f"Error getting file info for {path}: {str(e)}")
+        logger.error(f"Error getting file info for {path}: {traceback.format_exc()}")
         raise
 
 
@@ -274,7 +275,7 @@ def mcplistdir(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error listing directory {path}: {str(e)}")
+        logger.error(f"Error listing directory {path}: {traceback.format_exc()}")
         return DirectoryContents(
             path=path, files=[], count=0, total_size=0, error=str(e)
         ).model_dump_json()
@@ -390,7 +391,7 @@ def mcpreadfile(
             error=f"File is not valid {encoding} encoded text",
         ).model_dump_json()
     except Exception as e:
-        logger.error(f"Error reading file {path}: {str(e)}")
+        logger.error(f"Error reading file {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="read", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -445,7 +446,7 @@ def mcpwritefile(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error writing to file {path}: {str(e)}")
+        logger.error(f"Error writing to file {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="write", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -493,7 +494,7 @@ def mcpcreatedirectory(
             error=f"Directory already exists: {path}",
         ).model_dump_json()
     except Exception as e:
-        logger.error(f"Error creating directory {path}: {str(e)}")
+        logger.error(f"Error creating directory {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="create_directory", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -566,7 +567,7 @@ def mcpdeletepath(
                 operation="delete", path=path, success=False, error=str(e)
             ).model_dump_json()
     except Exception as e:
-        logger.error(f"Error deleting {path}: {str(e)}")
+        logger.error(f"Error deleting {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="delete", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -654,7 +655,9 @@ def mcpcopypath(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error copying {source} to {destination}: {str(e)}")
+        logger.error(
+            f"Error copying {source} to {destination}: {traceback.format_exc()}"
+        )
         return FileOperation(
             operation="copy", path=source, success=False, error=str(e)
         ).model_dump_json()
@@ -729,7 +732,9 @@ def mcpmovepath(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error moving {source} to {destination}: {str(e)}")
+        logger.error(
+            f"Error moving {source} to {destination}: {traceback.format_exc()}"
+        )
         return FileOperation(
             operation="move", path=source, success=False, error=str(e)
         ).model_dump_json()
@@ -879,7 +884,7 @@ def mcpsearchfiles(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error searching in {path}: {str(e)}")
+        logger.error(f"Error searching in {path}: {traceback.format_exc()}")
         return DirectoryContents(
             path=path, files=[], count=0, total_size=0, error=str(e)
         ).model_dump_json()
@@ -936,7 +941,7 @@ def mcpgetfileinfo(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error getting info for {path}: {str(e)}")
+        logger.error(f"Error getting info for {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="get_info", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -997,7 +1002,7 @@ def mcpcheckpath(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error checking path {path}: {str(e)}")
+        logger.error(f"Error checking path {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="check", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -1139,7 +1144,7 @@ def mcpfindduplicates(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error finding duplicates in {path}: {str(e)}")
+        logger.error(f"Error finding duplicates in {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="find_duplicates", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -1230,7 +1235,9 @@ def mcpcompressfiles(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error compressing {source} to {destination}: {str(e)}")
+        logger.error(
+            f"Error compressing {source} to {destination}: {traceback.format_exc()}"
+        )
         return FileOperation(
             operation="compress", path=source, success=False, error=str(e)
         ).model_dump_json()
@@ -1337,7 +1344,9 @@ def mcpextractarchive(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error extracting {source} to {destination}: {str(e)}")
+        logger.error(
+            f"Error extracting {source} to {destination}: {traceback.format_exc()}"
+        )
         return FileOperation(
             operation="extract", path=source, success=False, error=str(e)
         ).model_dump_json()
@@ -1404,7 +1413,7 @@ def mcpchangepermissions(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error changing permissions for {path}: {str(e)}")
+        logger.error(f"Error changing permissions for {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="chmod", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -1497,7 +1506,7 @@ def mcpgetdiskusage(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Error getting disk usage for {path}: {str(e)}")
+        logger.error(f"Error getting disk usage for {path}: {traceback.format_exc()}")
         return FileOperation(
             operation="disk_usage", path=path, success=False, error=str(e)
         ).model_dump_json()
@@ -1505,6 +1514,17 @@ def mcpgetdiskusage(
 
 # Main function
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
         "Filesystem Server",
         funcs=[
@@ -1524,5 +1544,5 @@ if __name__ == "__main__":
             mcpchangepermissions,
             mcpgetdiskusage,
         ],
-        port=2005,
+        port=args.port,
     )

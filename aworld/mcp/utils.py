@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from loguru import logger as logging
 
+from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
 
 
@@ -22,11 +23,18 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                     required = tool.inputSchema.get("required", [])
                     _properties = tool.inputSchema["properties"]
                     for param_name, param_info in _properties.items():
-                        param_type = (
-                            param_info["type"]
-                            if param_info["type"] != "str"
-                            else "string"
-                        )
+                        # Handle Option param wrapper
+                        if "anyOf" in param_info:
+                            for t in param_info["anyOf"]:
+                                if t["type"] == "null":
+                                    continue
+                                param_type = t["type"]
+                        else:
+                            param_type = (
+                                param_info["type"]
+                                if param_info["type"] != "str"
+                                else "string"
+                            )
                         param_desc = (
                             param_info["description"]
                             if param_info["description"]

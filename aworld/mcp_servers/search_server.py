@@ -17,6 +17,7 @@ Main functions:
 
 import os
 import re
+import traceback
 from typing import List, Optional
 
 import requests
@@ -184,7 +185,7 @@ def mcpsearchexa(
                 flags=flags,
                 moderation=moderation,
                 text=text,
-            )
+            ).results
         ]
         search_response = SearchResponse(
             query=query, results=search_results, count=len(search_results), source="exa"
@@ -192,7 +193,7 @@ def mcpsearchexa(
         return search_response.model_dump_json()
 
     except Exception as e:
-        logger.error(f"Exa search error: {str(e)}")
+        logger.error(f"Exa search error: {traceback.format_exc()}")
         return SearchResponse(
             query=query, results=[], count=0, source="exa", error=str(e)
         ).model_dump_json()
@@ -270,7 +271,7 @@ def mcpsearchgoogle(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"Google search error: {str(e)}")
+        logger.error(f"Google search error: {traceback.format_exc()}")
         return SearchResponse(
             query=query, results=[], count=0, source="google", error=str(e)
         ).model_dump_json()
@@ -287,9 +288,7 @@ def mcpsearchduckduckgo(
     safe_search: bool = Field(
         True, description="Whether to enable safe search filtering."
     ),
-    time_period: Optional[str] = Field(
-        None, description="Time period for results (d, w, m, y)."
-    ),
+    time_period: str = Field("", description="Time period for results (d, w, m, y)."),
 ) -> str:
     """
     Search the web using DuckDuckGo API.
@@ -376,15 +375,26 @@ def mcpsearchduckduckgo(
         ).model_dump_json()
 
     except Exception as e:
-        logger.error(f"DuckDuckGo search error: {str(e)}")
+        logger.error(f"DuckDuckGo search error: {traceback.format_exc()}")
         return SearchResponse(
             query=query, results=[], count=0, source="duckduckgo", error=str(e)
         ).model_dump_json()
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
         "Search Server",
         funcs=[mcpsearchgoogle, mcpsearchduckduckgo, mcpsearchexa],
-        port=2010,
+        port=args.port,
     )

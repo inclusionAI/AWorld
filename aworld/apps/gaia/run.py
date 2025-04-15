@@ -51,7 +51,7 @@ if __name__ == "__main__":
             _results = json.load(f)
     else:
         _results = []
-    for idx, sample in enumerate(dataset[:1]):
+    for idx, sample in enumerate(dataset):
         logger.info(
             f">>> Progress bar: {str(idx)}/{len(dataset)}. Current task {sample['task_id']}. "
         )
@@ -83,7 +83,7 @@ if __name__ == "__main__":
                 "math",
                 "reddit",
                 "search",
-                "sympy",
+                # "sympy",
                 "video",
                 "playwright",
             ],
@@ -107,10 +107,10 @@ if __name__ == "__main__":
             "score": question_scorer(answer, sample["Final answer"]),
         }
         _results.append(_result_info)
-    #     with open(save_path, "w") as f:
-    #         json.dump(_results, f, indent=4, ensure_ascii=False)
+        with open(save_path, "w") as f:
+            json.dump(_results, f, indent=4, ensure_ascii=False)
 
     score_dict = _generate_summary(_results)
     print(score_dict)
-    # with open(save_score_path, "w") as f:
-    #     json.dump(score_dict, f, indent=4, ensure_ascii=False)
+    with open(save_score_path, "w") as f:
+        json.dump(score_dict, f, indent=4, ensure_ascii=False)

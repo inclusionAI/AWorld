@@ -15,6 +15,7 @@ Main functions:
 
 import base64
 import os
+import traceback
 from typing import Any, Dict, List
 
 import cv2
@@ -165,7 +166,7 @@ def mcpanalyzevideo(
         )
     except (ValueError, IOError, RuntimeError) as e:
         video_analysis_result = ""
-        logger.error(f"video_analysis-Execute error: {str(e)}")
+        logger.error(f"video_analysis-Execute error: {traceback.format_exc()}")
 
     logger.info(
         f"---get_analysis_by_video-video_analysis_result:{video_analysis_result}"
@@ -196,7 +197,7 @@ def mcpextractvideosubtitles(
         )
     except (ValueError, IOError, RuntimeError) as e:
         video_subtitles = ""
-        logger.error(f"video_subtitles-Execute error: {str(e)}")
+        logger.error(f"video_subtitles-Execute error: {traceback.format_exc()}")
 
     logger.info(f"---get_subtitles_from_video-video_subtitles:{video_subtitles}")
     return video_subtitles
@@ -225,15 +226,26 @@ def mcpsummarizevideo(
         )
     except (ValueError, IOError, RuntimeError) as e:
         video_summary = ""
-        logger.error(f"video_summary-Execute error: {str(e)}")
+        logger.error(f"video_summary-Execute error: {traceback.format_exc()}")
 
     logger.info(f"---get_summary_from_video-video_summary:{video_summary}")
     return video_summary
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
         "Video Server",
         funcs=[mcpanalyzevideo, mcpextractvideosubtitles, mcpsummarizevideo],
-        port=2012,
+        port=args.port,
     )

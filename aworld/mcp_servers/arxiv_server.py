@@ -17,6 +17,7 @@ Main functions:
 
 import json
 import os
+import traceback
 from pathlib import Path
 from typing import List, Optional
 
@@ -87,6 +88,10 @@ def _convert_result_to_model(result: arxiv.Result) -> ArxivArticle:
 
 def mcpsearcharxivpaper(
     query: str = Field(..., description="Search query for arXiv articles"),
+    article_ids: List[str] = Field(
+        [],
+        description="A list of arXiv article IDs to which to limit the search.",
+    ),
     max_results: int = Field(
         10, description="Maximum number of results to return (default: 10)"
     ),
@@ -98,10 +103,6 @@ def mcpsearcharxivpaper(
         "descending",
         description="Sort direction: 'descending' (default) or 'ascending'",
     ),
-    categories: List[str] = Field(
-        [],
-        description="List of arXiv categories to filter by (e.g., 'cs.AI', 'math.CO')",
-    ),
 ) -> str:
     """Search for articles on arXiv based on the provided query and filters
 
@@ -110,7 +111,6 @@ def mcpsearcharxivpaper(
         max_results: Maximum number of results to return
         sort_by: Sort order (relevance, lastUpdatedDate, submittedDate)
         sort_order: Sort direction (descending, ascending)
-        categories: List of arXiv categories to filter by
 
     Returns:
         JSON string with search results
@@ -146,14 +146,14 @@ def mcpsearcharxivpaper(
         # Build search query
         search = arxiv.Search(
             query=query,
+            id_list=article_ids,
             max_results=max_results,
             sort_by=sort_criteria_map[sort_by],
             sort_order=sort_order_map[sort_order],
-            categories=categories if categories else None,
         )
 
         # Execute search
-        logger.info(f"Searching arXiv for: {query}")
+        logger.info(f"Searching arXiv for: {query} and {article_ids}")
         results = list(client.results(search))
 
         # Convert results to our model
@@ -168,7 +168,7 @@ def mcpsearcharxivpaper(
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"arXiv search error: {error_msg}")
+        logger.error(f"arXiv search error: {traceback.format_exc()}")
         return json.dumps({"error": error_msg})
 
 
@@ -258,7 +258,7 @@ def mcpdownloadarxivpaper(
 
             except Exception as article_error:
                 # Handle individual article download errors
-                error_msg = str(article_error)
+                error_msg = traceback.format_exc()
                 logger.error(f"Error downloading article {article_id}: {error_msg}")
 
                 result = ArxivDownloadResult(
@@ -284,11 +284,24 @@ def mcpdownloadarxivpaper(
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"arXiv download error: {error_msg}")
+        logger.error(f"arXiv download error: {traceback.format_exc()}")
         return json.dumps({"error": error_msg})
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Launch MCP servers with random port allocation"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Listening to port. Must be specified.",
+    )
+    args = parser.parse_args()
     run_mcp_server(
-        "arXiv Server", funcs=[mcpsearcharxivpaper, mcpdownloadarxivpaper], port=2000
+        "arXiv Server",
+        funcs=[mcpsearcharxivpaper, mcpdownloadarxivpaper],
+        port=args.port,
     )
