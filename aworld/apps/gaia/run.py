@@ -35,8 +35,8 @@ if __name__ == "__main__":
     )
 
     # Define a task
-    save_path = "/Users/arac/Desktop/gaia/result.json"
-    save_score_path = "/Users/arac/Desktop/gaia/score.json"
+    save_path = os.path.expanduser("~/Desktop/gaia/result.json")
+    save_score_path = os.path.expanduser("~/Desktop/gaia/score.json")
     if os.path.exists(save_path):
         with open(save_path, "r") as f:
             _results = json.load(f)
