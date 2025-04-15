@@ -32,9 +32,9 @@ jobs:
           echo "PATH is "
           echo $PATH
           python -m pip install --upgrade pip==25.0.1
-          pip install flake8 pytest
-          if [ -f aworld/requirements.txt ]; then pip install -r aworld/requirements.txt; fi
-          pip install .
+          python -m pip install flake8 pytest
+#          if [ -f aworld/requirements.txt ]; then pip install -r aworld/requirements.txt; fi
+          python setup.py install
       #    - name: Lint with flake8
       #      run: |
       #        # stop the build if there are Python syntax errors or undefined names
