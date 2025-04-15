@@ -61,7 +61,7 @@ search_output_prompt = """
 write_sys_prompt = "You are a helpful write agent."
 
 write_prompt = """
-Please act as a write agent, constructing appropriate keywords and searach terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
+Please act as a write agent, constructing appropriate keywords and search terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
 
 Here are the write task: {task}
 

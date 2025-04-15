@@ -1,7 +1,5 @@
 import os
 import dotenv
-import json
-import asyncio
 from typing import Any, Dict, List, Generator, AsyncGenerator
 from openai import OpenAI, AsyncOpenAI
 from langchain_openai import AzureChatOpenAI
@@ -25,14 +23,18 @@ class OpenAIProvider(LLMProviderBase):
         api_key = self.api_key
         if not api_key:
             env_var = "OPENAI_API_KEY"
-            api_key = dotenv.get_key(".env", env_var) or os.getenv(env_var, "")
+            api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
                     f"OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters")
 
+        base_url = self.base_url
+        if not base_url:
+            env_var = "OPENAI_ENDPOINT"
+            base_url = os.getenv(env_var, "https://api.openai.com/v1")
         return OpenAI(
             api_key=api_key,
-            base_url=self.base_url or "https://api.openai.com/v1",
+            base_url=base_url,
             timeout=self.kwargs.get("timeout", 180),
             max_retries=self.kwargs.get("max_retries", 3)
         )
@@ -47,14 +49,18 @@ class OpenAIProvider(LLMProviderBase):
         api_key = self.api_key
         if not api_key:
             env_var = "OPENAI_API_KEY"
-            api_key = dotenv.get_key(".env", env_var) or os.getenv(env_var, "")
+            api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
                     f"OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters")
+        base_url = self.base_url
+        if not base_url:
+            env_var = "OPENAI_ENDPOINT"
+            base_url = os.getenv(env_var, "https://api.openai.com/v1")
 
         return AsyncOpenAI(
             api_key=api_key,
-            base_url=self.base_url or "https://api.openai.com/v1",
+            base_url=base_url,
             timeout=self.kwargs.get("timeout", 180),
             max_retries=self.kwargs.get("max_retries", 3)
         )

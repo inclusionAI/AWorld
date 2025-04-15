@@ -75,7 +75,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             logger.warning(f"Unknown conf type: {type(conf)}")
 
         self._name = kwargs.pop("name", self.conf.get("name", convert_to_snake(self.__class__.__name__)))
-        self._desc = kwargs.pop("desc") if kwargs.get("desc") else ' '.join(self._name.split('_'))
+        self._desc = kwargs.pop("desc") if kwargs.get("desc") else self.conf.get('desc', '')
         # Unique flag based agent name
         self.id = f"{self.name()}_{uuid.uuid1().hex[0:6]}"
         self.task = None
@@ -304,7 +304,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                                                params=params,
                                                policy_info=content + param_info))
                 else:
-                    action_name = '__'.join(names[1:]) if len(names) > 1 else None
+                    action_name = '__'.join(names[1:]) if len(names) > 1 else ''
                     results.append(ActionModel(tool_name=tool_name,
                                                action_name=action_name,
                                                params=params,
@@ -347,6 +347,7 @@ class AgentManager(Factory):
     def __init__(self, type_name: str = None):
         super(AgentManager, self).__init__(type_name)
         self._agent_conf = {}
+        self._agent_instance = {}
 
     def __call__(self, name: str = None, *args, **kwargs):
         if name is None:
@@ -372,9 +373,16 @@ class AgentManager(Factory):
         conf = ConfigDict(conf)
         if name in self._cls:
             agent = self._cls[name](conf=conf, **kwargs)
+            self._agent_instance[name] = agent
         else:
             raise ValueError(f"Can not find {name} agent!")
         return agent
+
+    def desc(self, name: str) -> str:
+        if self._agent_instance.get(name, None) and self._agent_instance[name].desc:
+            print("------------", self._agent_instance[name].desc)
+            return self._agent_instance[name].desc
+        return self._desc.get(name, "")
 
     def register(self, name: str, desc: str, conf_file_name: str = None, **kwargs):
         """Register a tool to tool factory.
@@ -417,6 +425,38 @@ class AgentExecutor(object):
         """"""
         return await self.async_execute_agent(observation, self.agent, **kwargs)
 
+    def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """Log the sequence of messages for debugging purposes"""
+        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
+        for i, msg in enumerate(messages):
+            prefix = msg.get('role')
+            logger.info(f"[agent] Message {i + 1}: {prefix} ===================================")
+            if isinstance(msg['content'], list):
+                for item in msg['content']:
+                    if item.get('type') == 'text':
+                        logger.info(f"[agent] Text content: {item.get('text')}")
+                    elif item.get('type') == 'image_url':
+                        image_url = item.get('image_url', {}).get('url', '')
+                        if image_url.startswith('data:image'):
+                            logger.info(f"[agent] Image: [Base64 image data]")
+                        else:
+                            logger.info(f"[agent] Image URL: {image_url[:30]}...")
+            else:
+                content = str(msg['content'])
+                chunk_size = 500
+                for j in range(0, len(content), chunk_size):
+                    chunk = content[j:j + chunk_size]
+                    if j == 0:
+                        logger.info(f"[agent] Content: {chunk}")
+                    else:
+                        logger.info(f"[agent] Content (continued): {chunk}")
+
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                for tool_call in msg.get('tool_calls'):
+                    logger.info(f"[agent] Tool call: {tool_call.get('name')} - ID: {tool_call.get('id')}")
+                    args = str(tool_call.get('args', {}))[:1000]
+                    logger.info(f"[agent] Tool args: {args}...")
+
     def execute_agent(self,
                       observation: Observation,
                       agent: Agent,
@@ -439,6 +479,9 @@ class AgentExecutor(object):
                                                 sys_prompt=agent.system_prompt,
                                                 agent_prompt=agent.agent_prompt,
                                                 output_prompt=agent.output_prompt)
+
+            self._log_messages(messages)
+
             llm_response = None
             try:
                 llm_response = call_llm_model(

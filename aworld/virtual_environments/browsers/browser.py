@@ -206,6 +206,10 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         except Exception as e:
             try:
                 self.page.go_back()
+            except:
+                logger.warning("current page abnormal, new page to use.")
+                self.page = self.context.new_page()
+            try:
                 dom_tree = self._parse_dom_tree()
                 image = self.screenshot()
                 pixels_above, pixels_below = self._scroll_info()

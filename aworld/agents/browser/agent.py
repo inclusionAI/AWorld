@@ -284,7 +284,10 @@ class BrowserAgent(Agent):
                 raise json_parse_error
 
             logger.info((f"llm response: {parsed_json}"))
-            agent_brain = AgentBrain(**parsed_json['current_state'])
+            try:
+                agent_brain = AgentBrain(**parsed_json['current_state'])
+            except:
+                agent_brain = None
             actions = parsed_json.get('action')
             result = []
             if not actions:

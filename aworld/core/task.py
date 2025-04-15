@@ -8,6 +8,8 @@ import uuid
 from typing import Union, Dict, Any, List
 from dataclasses import dataclass, field
 
+from pygame.transform import threshold
+
 from aworld.config.conf import AgentConfig
 from pydantic import BaseModel
 
@@ -283,6 +285,44 @@ class Task(object):
             logger.info(f"step: {step} finished by tool action.")
         return msg
 
+    def _loop_detect(self):
+        if not self.loop_detect:
+            return False
+
+        threshold = 3
+        last_agent_name = self.swarm.communicate_agent.name()
+        count = 1
+        for i in range(len(self.loop_detect) - 2, -1, -1):
+            if last_agent_name == self.loop_detect[i]:
+                count += 1
+            else:
+                last_agent_name = self.loop_detect[i]
+                count = 1
+
+            if count >= threshold:
+                logger.warning("detect loop, will exit the loop.")
+                return True
+
+        if len(self.loop_detect) > 6:
+            last_agent_name = None
+            # latest
+            for j in range(1, 3):
+                for i in range(len(self.loop_detect) - j, 0, -2):
+                    if last_agent_name and last_agent_name == (self.loop_detect[i], self.loop_detect[i - 1]):
+                        count += 1
+                    elif last_agent_name is None:
+                        last_agent_name = (self.loop_detect[i], self.loop_detect[i - 1])
+                        count = 1
+                    else:
+                        last_agent_name = None
+                        break
+
+                    if count >= threshold:
+                        logger.warning(f"detect loop: {last_agent_name}, will exit the loop.")
+                        return True
+
+        return False
+
     def _social_process(self,
                         observation: Observation,
                         info: Dict[str, Any]) -> Dict[str, Any]:
@@ -292,6 +332,7 @@ class Task(object):
         max_steps = self.conf.get("max_steps", 100)
         results = []
         swarm_resp = None
+        self.loop_detect = []
         try:
             while step < max_steps:
                 # Loose protocol
@@ -302,7 +343,7 @@ class Task(object):
                 logger.info(f"Step: {step} response:\n {result_dict}")
 
                 step += 1
-                if self.swarm.finished:
+                if self.swarm.finished or self._loop_detect():
                     logger.info("task done!")
                     break
 
@@ -403,7 +444,7 @@ class Task(object):
 
                 step += 1
                 if terminated and self.swarm.cur_agent.finished:
-                    logger.info("swarm finished")
+                    logger.info(f"{self.swarm.cur_agent.name()} finished")
                     break
 
                 if observation:
@@ -452,6 +493,7 @@ class Task(object):
         if cur_agent.name() == self.swarm.communicate_agent.name() or cur_agent.name() == self.swarm.cur_agent.name():
             # Current agent is entrance agent, means need to exit to the outer loop
             logger.warning(f"{cur_agent.name()} exit to the outer loop")
+            self.loop_detect.append(cur_agent.name())
             return 'break', True
 
         if self.swarm.cur_agent.handoffs and policy_for_agent.agent_name not in self.swarm.cur_agent.handoffs:
@@ -467,6 +509,7 @@ class Task(object):
             logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
 
         observation = Observation(content=policy_for_agent.policy_info)
+        self.loop_detect.append(cur_agent.name())
         if cur_agent.step_reset:
             cur_agent.reset({"task": observation.content,
                              "tool_names": cur_agent.tool_names,
