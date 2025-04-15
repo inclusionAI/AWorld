@@ -33,7 +33,6 @@ from aworld.utils import import_package
 import_package("orcid", install_name="orcid-python")
 
 import orcid
-from orcid.rest import ApiException
 
 
 # Define model classes for different ORCID API responses

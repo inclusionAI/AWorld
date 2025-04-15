@@ -46,7 +46,10 @@
       "url": "http://localhost:2014/sse"
     },
     "wikipedia": {
-      "url": "http://localhost:2014/sse"
+      "url": "http://localhost:2015/sse"
+    },
+    "orcid": {
+      "url": "http://localhost:2016/sse"
     },
     "amap-amap-sse": {
       "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",
