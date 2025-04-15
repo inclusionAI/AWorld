@@ -509,7 +509,7 @@ class BrowserAgent(Agent):
                     # If sizes don't match, this is a critical error
                     error_msg = f"Action results count ({len(observation.action_result)}) doesn't match action entries count ({len(previous_action_entries)})"
                     logger.error(error_msg)
-                    raise ValueError(error_msg)
+                    has_error = True
 
             # If there's an error, append observation content outside the loop
             if has_error and observation.content:

@@ -29,8 +29,6 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: |
-          echo "PATH is "
-          echo $PATH
           python -m pip install --upgrade pip==25.0.1
           python -m pip install flake8 pytest
           python setup.py install

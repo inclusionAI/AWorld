@@ -90,6 +90,9 @@ class AgentConfig(BaseModel):
     llm_base_url: str = None
     llm_api_key: str = None
 
+    # default reset init in first
+    need_reset: bool = True
+    # use vision model
     use_vision: bool = True
     max_steps: int = 10
     max_input_tokens: int = 128000

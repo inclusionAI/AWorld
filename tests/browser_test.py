@@ -1,6 +1,8 @@
 # # coding: utf-8
 # # Copyright (c) 2025 inclusionAI.
+import os
 import unittest
+from pathlib import Path
 
 from aworld.virtual_environments.browsers.browser import BrowserTool
 
@@ -29,9 +31,11 @@ class TestBrowserTool(unittest.TestCase):
         self.assertEqual(info, {'exception': ''})
 
     def test_goto_url(self):
+        current_dir = Path(__file__).parent.absolute()
+        url = "file://" + os.path.join(current_dir, 'test.json')
         action = [ActionModel(tool_name=Tools.BROWSER.value,
                               action_name=BrowserAction.GO_TO_URL.value.name,
-                              params={"url": "test.json"})]
+                              params={"url": url})]
         ob, _, _, _, info = self.browser_tool.step(action)
         self.assertEqual(info, {'exception': ''})
         import time
