@@ -163,12 +163,17 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         self.output_prompt: str = kwargs.get("output_prompt") if kwargs.get("output_prompt") else conf.output_prompt
 
         self.need_reset = kwargs.get('need_reset', True)
+        self.step_reset = kwargs.get('step_reset', False)
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = kwargs.get("black_tool_actions") if kwargs.get(
             "black_tool_actions") else self.conf.get('black_tool_actions', {})
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
         self.executor = executor if executor else agent_executor
         agent_executor.register(self.name(), self)
+
+    def reset(self, options: Dict[str, Any]):
+        super().__init__(options)
+        self.memory = []
 
     @property
     def llm(self):

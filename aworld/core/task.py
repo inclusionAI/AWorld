@@ -467,6 +467,11 @@ class Task(object):
             logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
 
         observation = Observation(content=policy_for_agent.policy_info)
+        if cur_agent.step_reset:
+            cur_agent.reset({"task": observation.content,
+                             "tool_names": cur_agent.tool_names,
+                             "agent_names": cur_agent.handoffs,
+                             "mcp_servers": cur_agent.mcp_servers})
         agent_policy = cur_agent.executor.execute_agent(observation,
                                                         agent=cur_agent,
                                                         conf=cur_agent.conf,
