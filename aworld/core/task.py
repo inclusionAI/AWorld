@@ -8,8 +8,6 @@ import uuid
 from typing import Union, Dict, Any, List
 from dataclasses import dataclass, field
 
-from pygame.transform import threshold
-
 from aworld.config.conf import AgentConfig
 from pydantic import BaseModel
 
