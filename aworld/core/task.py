@@ -466,10 +466,12 @@ class Task(object):
                 terminated = False
                 if self.is_agent(policy[0]):
                     status, info = self._social_agent(policy, step)
+                    agent_name = policy[0].agent_name
+                    if not agent_name:
+                        agent_name = policy[0].tool_name
                     if status == "normal":
-                        self.swarm.cur_agent = self.swarm.agents.get(
-                            policy[0].agent_name
-                        )
+                        self.swarm.cur_agent = self.swarm.agents.get(agent_name)
+
                         policy = info
                     # clear observation
                     observation = None
