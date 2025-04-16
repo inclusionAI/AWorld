@@ -136,6 +136,7 @@ class BrowserAgent(Agent):
         if self._init is False:
             self.reset({"task": observation.content})
 
+        self._finished = False
         # Save current observation to state for message construction
         self.state.last_result = observation.action_result
 

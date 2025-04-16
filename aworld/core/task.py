@@ -581,6 +581,7 @@ class Task(object):
         observation = Observation(content=policy_for_agent.policy_info)
         self.loop_detect.append(cur_agent.name())
         if cur_agent.step_reset:
+            logger.warning(f"{cur_agent.name()} reset status.")
             cur_agent.reset({"task": observation.content,
                              "tool_names": cur_agent.tool_names,
                              "agent_names": cur_agent.handoffs,

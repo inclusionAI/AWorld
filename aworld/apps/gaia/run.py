@@ -68,7 +68,8 @@ if __name__ == "__main__":
                 # llm_api_key=llm_api_key,
                 # llm_base_url=llm_base_url,
                 llm_temperature=0.1,
-            )
+            ),
+            step_reset=False
         )
         executor = ExecuteAgent(
             conf=AgentConfig(
@@ -81,6 +82,7 @@ if __name__ == "__main__":
                 # llm_api_key=llm_api_key,
                 llm_temperature=0.1,
             ),
+            step_reset=False,
             tool_names=[],
             mcp_servers=[
                 "arxiv",

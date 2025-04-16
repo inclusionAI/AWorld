@@ -83,9 +83,6 @@ class Swarm(object):
             if self.topology_type == 'social':
                 # need to explicitly set handoffs in the agent
                 pair[0].handoffs.append(pair[1].name())
-                if pair[0].name() != pair[1].name():
-                    # agent as tool, default reset one step in workflow
-                    pair[1].step_reset = True
 
         if self.sequence:
             self.topology_type = 'sequence'

@@ -35,13 +35,13 @@ def main():
         name=Agents.PLAN.value,
         llm_config=model_config
     )
-    agent1 = PlanAgent(conf=agent1_config)
+    agent1 = PlanAgent(conf=agent1_config, step_reset=False)
 
     agent2_config = AgentConfig(
         name=Agents.EXECUTE.value,
         llm_config=model_config
     )
-    agent2 = ExecuteAgent(conf=agent2_config, tool_names=[Tools.DOCUMENT_ANALYSIS.value])
+    agent2 = ExecuteAgent(conf=agent2_config, step_reset=False, tool_names=[Tools.DOCUMENT_ANALYSIS.value])
 
     # Create swarm for multi-agents
     # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph

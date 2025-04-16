@@ -111,7 +111,6 @@ class ExecuteAgent(Agent):
 
         if res:
             res[0].policy_info = content
-            self._finished = False
         elif content:
             policy_info = extract_pattern(content, "final_answer")
             if policy_info:
