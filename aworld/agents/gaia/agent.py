@@ -23,7 +23,6 @@ class ExecuteAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(ExecuteAgent, self).__init__(conf, **kwargs)
         self.has_summary = False
-        self.desc_transform()
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
@@ -35,6 +34,7 @@ class ExecuteAgent(Agent):
         self, observation: Observation, info: Dict[str, Any] = None, **kwargs
     ) -> List[ActionModel] | None:
         start_time = time.time()
+        self.desc_transform()
         content = observation.content
 
         llm_result = None
@@ -154,6 +154,7 @@ class PlanAgent(Agent):
         self, observation: Observation, info: Dict[str, Any] = None, **kwargs
     ) -> List[ActionModel] | None:
         llm_result = None
+        self.desc_transform()
         input_content = [
             {"role": "system", "content": self.system_prompt},
         ]

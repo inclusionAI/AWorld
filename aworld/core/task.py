@@ -238,10 +238,13 @@ class Task(object):
     ):
         # only one agent, and get agent from policy
         policy_for_agent = policy[0]
-        cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
+        agent_name = policy_for_agent.agent_name
+        if not agent_name:
+            agent_name = policy_for_agent.tool_name
+        cur_agent: Agent = self.swarm.agents.get(agent_name)
         if not cur_agent:
             raise RuntimeError(
-                f"Can not find {policy_for_agent.agent_name} agent in swarm."
+                f"Can not find {agent_name} agent in swarm."
             )
 
         status = "normal"
@@ -251,11 +254,11 @@ class Task(object):
             status = "break"
             return status, None
 
-        if agent.handoffs and policy_for_agent.agent_name not in agent.handoffs:
+        if agent.handoffs and agent_name not in agent.handoffs:
             # Unable to hand off, exit to the outer loop
             status = "return"
             return status, {
-                "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+                "msg": f"Can not handoffs {agent_name} agent "
                 f"by {agent.name()} agent.",
                 "response": policy[0].policy_info if policy else "",
                 "steps": step,
