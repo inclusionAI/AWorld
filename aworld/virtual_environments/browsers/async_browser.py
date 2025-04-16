@@ -40,12 +40,21 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
         self._finish = False
         self.record_trace = self.conf.get("working_dir", False)
         self.sleep_after_init = self.conf.get("sleep_after_init", False)
-        self.js_code = resources.read_text('virtual_environments.browsers.script', 'buildDomTree.js')
+        dom_js_path = self.conf.get('dom_js_path')
+        if dom_js_path and os.path.exists(dom_js_path):
+            with open(dom_js_path, 'r') as read:
+                self.js_code = read.read()
+        else:
+            self.js_code = resources.read_text('virtual_environments.browsers.script',
+                                               'buildDomTree.js')
         self.cur_observation = None
         import_package("playwright")
 
     async def init(self) -> None:
         from playwright.async_api import async_playwright
+
+        if self.initialized:
+            return
 
         self.context_manager = async_playwright()
         self.playwright = await self.context_manager.start()
@@ -195,7 +204,11 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
             return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
         except Exception as e:
             try:
-                await self.page.go_back()
+                try:
+                    await self.page.go_back()
+                except:
+                    logger.warning("current page abnormal, new page to use.")
+                    self.page = await self.context.new_page()
                 dom_tree = await self._parse_dom_tree()
                 image = await self.screenshot()
                 pixels_above, pixels_below = await self._scroll_info()
@@ -229,6 +242,11 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         Observation, Dict[str, Any]]:
         await super().reset(seed=seed, options=options)
+        if self.initialized:
+            observation = await self._get_observation()
+            observation.action_result = [ActionResult(content='start', keep=True)]
+            self.cur_observation = observation
+            return observation, {}
 
         await self.close()
         await self.init()
@@ -255,6 +273,8 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
             await self.context.close()
         if hasattr(self, 'browser') and self.browser:
             await self.browser.close()
+        if hasattr(self, 'playwright') and self.playwright:
+            await self.playwright.stop()
         if self.initialized:
             await self.context_manager.__aexit__()
 
@@ -285,7 +305,7 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
             action_result, self.page = await self.action_executor.async_execute_action(action,
                                                                                        observation=self.cur_observation,
                                                                                        llm_config=self.conf.llm_config
-                                                                                       **kwargs)
+                                                                                                  ** kwargs)
             reward = 1
         except Exception as e:
             fail_error = str(e)

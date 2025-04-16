@@ -1,25 +1,30 @@
 import uuid
 from datetime import datetime
 from enum import Enum, auto
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, ClassVar
+from pydantic import Field, field_validator, model_validator
 
-from aworld.output.agent_output import AgentOutput
+from aworld.output.base import Output
 
 
 class ArtifactType(Enum):
     """Defines supported artifact types"""
-    DIR = "dir"
-    TEXT = "text"
-    CODE = "code"
-    MARKDOWN = "markdown"
-    HTML = "html"
-    SVG = "svg"
-    JSON = "json"
-    CSV = "csv"
-    TABLE = "table"
-    CHART = "chart"
-    DIAGRAM = "diagram"
-    CUSTOM = "custom"
+    TEXT = "TEXT"
+    CODE = "CODE"
+    MARKDOWN = "MARKDOWN"
+    HTML = "HTML"
+    SVG = "SVG"
+    JSON = "JSON"
+    CSV = "CSV"
+    TABLE = "TABLE"
+    CHART = "CHART"
+    DIAGRAM = "DIAGRAM"
+    MCP_CALL = "MCP_CALL"
+    TOOL_CALL = "TOOL_CALL"
+    LLM_OUTPUT = "LLM_OUTPUT"
+    WEB_PAGES = "WEB_PAGES"
+    DIR = "DIR"
+    CUSTOM = "CUSTOM"
 
 
 
@@ -30,7 +35,7 @@ class ArtifactStatus(Enum):
     EDITED = auto()     # Edited status
     ARCHIVED = auto()   # Archived status
 
-class Artifact(AgentOutput):
+class Artifact(Output):
     """
     Represents a specific content generation result (artifact)
     
@@ -38,29 +43,32 @@ class Artifact(AgentOutput):
     Can be code, markdown, charts, and various other formats
     """
 
-    def __init__(
-        self,
-        artifact_type: ArtifactType,
-        content: Any,
-        metadata: Optional[Dict[str, Any]] = None,
-        artifact_id: Optional[str] = None,
-        render_type: Optional[str] = None,
-        create_file: bool = False,
-        **kwargs
-    ):
-        self.artifact_id = artifact_id or str(uuid.uuid4())
-        self.artifact_type = artifact_type
-        self.content = content
-        self.metadata = metadata or {}
-        self.render_type = render_type or artifact_type.value
-        self.created_at = datetime.now().isoformat()
-        self.updated_at = self.created_at
-        self.status = ArtifactStatus.DRAFT
-        self.version_history = []
-        self.create_file = create_file
+    artifact_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique identifier for the artifact")
+    artifact_type: ArtifactType = Field(..., description="Type of the artifact")
+    content: Any = Field(..., description="Content of the artifact")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata associated with the artifact")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Creation timestamp")
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Last updated timestamp")
+    status: ArtifactStatus = Field(default=ArtifactStatus.ARCHIVED, description="Current status of the artifact")
+    current_version: str = Field(default="", description="Current version of the artifact")
+    version_history: list = Field(default_factory=list, description="History of versions for the artifact")
+    create_file: bool = Field(default=False, description="Flag to indicate if a file should be created")
 
-        # Record initial version
-        self._record_version("Initial version")
+    # Use model_validator for initialization logic
+    @model_validator(mode='after')
+    def setup_artifact(self):
+        """Initialize the artifact after validation"""
+        # Ensure artifact_id is always a valid string
+        if not self.artifact_id:
+            self.artifact_id = str(uuid.uuid4())
+            
+        # Reset status to DRAFT for new artifacts
+        if not self.version_history:
+            self.status = ArtifactStatus.DRAFT
+            # Record initial version
+            self._record_version("Initial version")
+        
+        return self
 
     def _record_version(self, description: str) -> None:
         """Record current state as a new version"""
@@ -128,7 +136,6 @@ class Artifact(AgentOutput):
             "artifact_type": self.artifact_type.value,
             "content": self.content,
             "metadata": self.metadata,
-            "render_type": self.render_type,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "status": self.status.name,
@@ -143,8 +150,7 @@ class Artifact(AgentOutput):
             artifact_type=artifact_type,
             content=data["content"],
             metadata=data["metadata"],
-            artifact_id=data["artifact_id"],
-            render_type=data["render_type"]
+            artifact_id=data.get("artifact_id", str(uuid.uuid4()))
         )
         artifact.created_at = data["created_at"]
         artifact.updated_at = data["updated_at"]

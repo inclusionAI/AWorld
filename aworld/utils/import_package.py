@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
+import os.path
 import time
 import sys
 import importlib
@@ -111,9 +111,9 @@ def import_package(
 
     # Try to import the module first
     try:
-        logger.info(f"Attempting to import {package_name}")
+        logger.debug(f"Attempting to import {package_name}")
         module = importlib.import_module(package_name)
-        logger.info(f"Successfully imported {package_name}")
+        logger.debug(f"Successfully imported {package_name}")
 
         # If we successfully imported the module, check version if specified
         if version:
@@ -171,9 +171,9 @@ def import_package(
 
     # Try importing after installation
     try:
-        logger.info(f"Attempting to import {package_name} after installation")
+        logger.debug(f"Attempting to import {package_name} after installation")
         module = importlib.import_module(package_name)
-        logger.info(f"Successfully imported {package_name}")
+        logger.debug(f"Successfully imported {package_name}")
         return ModuleAlias(module) if alias else module
     except ImportError as e:
         error_msg = f"Failed to import {package_name} even after installation of {real_install_name}: {str(e)}"
@@ -197,7 +197,8 @@ def _get_install_command(installer: str, package_name: str, version: str = "") -
     """
     if installer == 'pip':
         # Use sys.executable to ensure the right Python interpreter is used
-        cmd = [sys.executable, '-m', 'pip', 'install', '--upgrade']
+        pytho3 = os.path.basename(sys.executable)
+        cmd = [pytho3, '-m', 'pip', 'install', '--upgrade']
         if version:
             cmd.append(f'{package_name}=={version}')
         else:

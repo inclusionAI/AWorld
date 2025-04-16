@@ -12,7 +12,7 @@ from aworld.config.conf import AgentConfig
 from aworld.logs.util import logger
 from aworld.core.envs.tool import AsyncTool, ToolFactory
 from aworld.core.task import Task
-from aworld.virtual_environments.gym.async_openai_gym import OpenAIGym as AOpenAIGym
+from aworld.virtual_environments.gym_tool.async_openai_gym import OpenAIGym as AOpenAIGym
 
 
 async def async_run_gym_game(agent: Agent, tool: AsyncTool):

@@ -30,17 +30,27 @@ Previous steps
 - Don't hallucinate actions
 - Make sure you include everything you found out for the ultimate task in the done text parameter. Do not just say you are done, but include the requested information of the task. 
 """
+# 6. Output Format:
+# - You need first evaluate previous goal, and then save important things into memory, then give the next goal and use tool call to execute task.
+# 'current_state': {
+#                         'evaluation_previous_goal': 'Success - I completed search and gets the url',
+#                         'memory': 'search compeleted and gets url',
+#                         'next_goal': 'extract information from the related url',
+#                     },
+#
+# 7. You need execute task step by step, so that you can only give one simple action per time. do not search much more info one times. (you can search, extract, search, extract, ..., write)
+# """
 
-plan_prompt = """Your ultimate task is: {task}. If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual."""
+plan_prompt = """Your ultimate task is: {task}. If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual. 
+You should break down the retrieval task into small atomic granularities, search small and extract, and then search next. you should only take one action / function call once per time. 
+"""
 
-search_sys_prompt = "You are a helpful search agent."
+search_sys_prompt = "You are a helpful search agent. please only use one action complete this task (only search once), at least results 6 pages."
 
 search_prompt = """
-Please act as a search agent, constructing appropriate keywords and searach terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
+Please act as a search agent, constructing appropriate keywords and search terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
 
 Here are the question: {task}
-
-pleas only use one action complete this task, at least results 6 pages.
 """
 
 search_output_prompt = """
@@ -51,15 +61,13 @@ search_output_prompt = """
 write_sys_prompt = "You are a helpful write agent."
 
 write_prompt = """
-Please act as a write agent, constructing appropriate keywords and searach terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
+Please act as a write agent, constructing appropriate keywords and search terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
 
 Here are the write task: {task}
 
-Here is the reference information: {reference}
-
-pleas only use one action complete this task.
+please only use one action complete this task.
 """
-
+# Here is the reference information: {reference}
 write_output_prompt = """
 1. RESPONSE FORMAT: You must ALWAYS respond with valid JSON in this exact format:
 {"action":[{{"one_action_name": {{// action-specific parameter}}}}, // ... more actions in sequence]}

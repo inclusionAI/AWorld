@@ -77,7 +77,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
 
     @abc.abstractmethod
     def create_streams(
-        self,
+            self,
     ) -> AbstractAsyncContextManager[
         tuple[
             MemoryObjectReceiveStream[JSONRPCMessage | Exception],
@@ -101,8 +101,8 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
     async def connect(self):
         """Connect to the server."""
         try:
-            # 确保先关闭之前的exit_stack，避免嵌套的异步上下文
-            if hasattr(self, "exit_stack") and self.exit_stack:
+            # Ensure closing previous exit_stack to avoid nested async contexts
+            if hasattr(self, 'exit_stack') and self.exit_stack:
                 try:
                     await self.exit_stack.aclose()
                 except Exception as e:
@@ -110,7 +110,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
 
             self.exit_stack = AsyncExitStack()
 
-            # 使用单一任务上下文来创建连接
+            # Use a single task context to create the connection
             transport = await self.exit_stack.enter_async_context(self.create_streams())
             read, write = transport
             session = await self.exit_stack.enter_async_context(
@@ -120,7 +120,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             self.session = session
         except Exception as e:
             logging.error(f"Error initializing MCP server: {e}")
-            # 如果失败，确保资源被清理
+            # Ensure resources are cleaned up if connection fails
             await self.cleanup()
             raise
 
@@ -157,18 +157,18 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         """Cleanup the server."""
         async with self._cleanup_lock:
             try:
-                # 确保在同一个任务上下文中进行清理操作
+                # Ensure cleanup operations occur in the same task context
                 session = self.session
-                self.session = None  # 先解除引用
+                self.session = None  # Remove reference first
 
-                # 先等待短暂时间确保任何挂起的操作完成
+                # Wait briefly to ensure any pending operations complete
                 try:
                     await asyncio.sleep(0.1)
                 except asyncio.CancelledError:
-                    # 忽略取消异常，继续清理资源
+                    # Ignore cancellation exceptions, continue cleaning resources
                     pass
 
-                # 清理exit_stack，确保所有资源被正确关闭
+                # Clean up exit_stack, ensuring all resources are properly closed
                 exit_stack = self.exit_stack
                 if exit_stack:
                     try:
@@ -215,10 +215,10 @@ class MCPServerStdio(_MCPServerWithClientSession):
     """
 
     def __init__(
-        self,
-        params: MCPServerStdioParams,
-        cache_tools_list: bool = False,
-        name: str | None = None,
+            self,
+            params: MCPServerStdioParams,
+            cache_tools_list: bool = False,
+            name: str | None = None,
     ):
         """Create a new MCP server based on the stdio transport.
 
@@ -250,7 +250,7 @@ class MCPServerStdio(_MCPServerWithClientSession):
         self._name = name or f"stdio: {self.params.command}"
 
     def create_streams(
-        self,
+            self,
     ) -> AbstractAsyncContextManager[
         tuple[
             MemoryObjectReceiveStream[JSONRPCMessage | Exception],
@@ -289,10 +289,10 @@ class MCPServerSse(_MCPServerWithClientSession):
     """
 
     def __init__(
-        self,
-        params: MCPServerSseParams,
-        cache_tools_list: bool = False,
-        name: str | None = None,
+            self,
+            params: MCPServerSseParams,
+            cache_tools_list: bool = False,
+            name: str | None = None,
     ):
         """Create a new MCP server based on the HTTP with SSE transport.
 
@@ -317,7 +317,7 @@ class MCPServerSse(_MCPServerWithClientSession):
         self._name = name or f"sse: {self.params['url']}"
 
     def create_streams(
-        self,
+            self,
     ) -> AbstractAsyncContextManager[
         tuple[
             MemoryObjectReceiveStream[JSONRPCMessage | Exception],

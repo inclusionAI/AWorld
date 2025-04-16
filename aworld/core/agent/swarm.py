@@ -11,7 +11,7 @@ from aworld.logs.util import logger
 class Swarm(object):
     """Simple implementation of interactive collaboration between multi-agent and supported env tools."""
 
-    def __init__(self, *args, root_agent: Agent = None, sequence: bool=True, max_steps: int = 1, **kwargs):
+    def __init__(self, *args, root_agent: Agent = None, sequence: bool = True, max_steps: int = 1, **kwargs):
         self.communicate_agent = root_agent
         if root_agent and root_agent not in args:
             self._topology = [root_agent] + list(args)
@@ -32,7 +32,7 @@ class Swarm(object):
                 if len(pair) != 2:
                     raise RuntimeError(f"{pair} is not a pair value, please check it.")
                 elif not isinstance(pair[0], Agent) or not isinstance(pair[1], Agent):
-                        raise RuntimeError(f"agent in {pair} is not a base agent instance, please check it.")
+                    raise RuntimeError(f"agent in {pair} is not a base agent instance, please check it.")
                 valid_agent_pair.append(pair)
             else:
                 # agent
@@ -65,6 +65,8 @@ class Swarm(object):
                 AgentFactory._cls[pair[0].name()] = pair[0].__class__
                 AgentFactory._desc[pair[0].name()] = pair[0].desc()
                 AgentFactory._agent_conf[pair[0].name()] = pair[0].conf
+            elif pair[0].desc():
+                AgentFactory._desc[pair[0].name()] = pair[0].desc()
 
             if len(pair) == 1:
                 continue
@@ -75,15 +77,20 @@ class Swarm(object):
                     AgentFactory._cls[pair[1].name()] = pair[1].__class__
                     AgentFactory._desc[pair[1].name()] = pair[1].desc()
                     AgentFactory._agent_conf[pair[1].name()] = pair[1].conf
+                elif pair[1].desc():
+                    AgentFactory._desc[pair[1].name()] = pair[1].desc()
 
             if self.topology_type == 'social':
                 # need to explicitly set handoffs in the agent
                 pair[0].handoffs.append(pair[1].name())
+                if pair[0].name() != pair[1].name():
+                    # agent as tool, default reset one step in workflow
+                    pair[1].step_reset = True
 
         if self.sequence:
             self.topology_type = 'sequence'
 
-    def reset(self, tools: List[str] = []):
+    def reset(self, content: str, tools: List[str] = []):
         """Resets the initial internal state, and init supported tools in agent in swarm.
 
         Args:
@@ -98,6 +105,15 @@ class Swarm(object):
             return
 
         self.cur_agent = self.communicate_agent
+
+        for agent in self.agents.values():
+            if agent.need_reset:
+                agent.reset({"task": content,
+                             "tool_names": agent.tool_names,
+                             "agent_names": agent.handoffs,
+                             "mcp_servers": agent.mcp_servers})
+            # global tools
+            agent.tool_names.extend(self.tools)
         self.initialized = True
 
     def _check(self):
@@ -143,7 +159,9 @@ class Swarm(object):
                 res = observation[-1]
                 if res.content is None:
                     res.content = ''
-                res.content += policy_info if policy_info else ''
+
+                if policy_info:
+                    res.content += policy_info
             return res
         else:
             logger.warning(f"{strategy} not supported now.")

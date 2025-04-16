@@ -147,18 +147,7 @@ class Task(object):
         else:
             observation = Observation(content=self.input)
 
-        self.swarm.reset(self.tool_names)
-        for agent in self.swarm.agents.values():
-            agent.reset(
-                {
-                    "task": observation.content,
-                    "tool_names": agent.tool_names,
-                    "agent_names": agent.handoffs,
-                    "mcp_servers": agent.mcp_servers,
-                }
-            )
-            # global tools
-            agent.tool_names.extend(self.tool_names)
+        self.swarm.reset(observation.content, self.tool_names)
 
         if self.swarm.topology_type == "social":
             return self._social_process(observation, info)
@@ -323,15 +312,54 @@ class Task(object):
             logger.info(f"step: {step} finished by tool action.")
         return msg
 
-    def _social_process(
-        self, observation: Observation, info: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _loop_detect(self):
+        if not self.loop_detect:
+            return False
+
+        threshold = 3
+        last_agent_name = self.swarm.communicate_agent.name()
+        count = 1
+        for i in range(len(self.loop_detect) - 2, -1, -1):
+            if last_agent_name == self.loop_detect[i]:
+                count += 1
+            else:
+                last_agent_name = self.loop_detect[i]
+                count = 1
+
+            if count >= threshold:
+                logger.warning("detect loop, will exit the loop.")
+                return True
+
+        if len(self.loop_detect) > 6:
+            last_agent_name = None
+            # latest
+            for j in range(1, 3):
+                for i in range(len(self.loop_detect) - j, 0, -2):
+                    if last_agent_name and last_agent_name == (self.loop_detect[i], self.loop_detect[i - 1]):
+                        count += 1
+                    elif last_agent_name is None:
+                        last_agent_name = (self.loop_detect[i], self.loop_detect[i - 1])
+                        count = 1
+                    else:
+                        last_agent_name = None
+                        break
+
+                    if count >= threshold:
+                        logger.warning(f"detect loop: {last_agent_name}, will exit the loop.")
+                        return True
+
+        return False
+
+    def _social_process(self,
+                        observation: Observation,
+                        info: Dict[str, Any]) -> Dict[str, Any]:
         start = time.time()
 
         step = 0
         max_steps = self.conf.get("max_steps", 10)
         results = []
         swarm_resp = None
+        self.loop_detect = []
         try:
             while step < max_steps:
                 # Loose protocol
@@ -342,7 +370,7 @@ class Task(object):
                 logger.info(f"Step: {step} response:\n {swarm_resp}")
 
                 step += 1
-                if self.swarm.finished:
+                if self.swarm.finished or self._loop_detect():
                     logger.info("task done!")
                     break
 
@@ -418,15 +446,12 @@ class Task(object):
             step=step,
         )
         if not policy:
-            logger.warning(
-                f"current agent {self.swarm.cur_agent.name()} no policy to use."
-            )
-            return {
-                "msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
-                "steps": step,
-                "success": False,
-                "time_cost": (time.time() - start),
-            }
+            logger.warning(f"current agent {self.swarm.cur_agent.name()} no policy to use.")
+            return {"msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
+                    "steps": step,
+                    "success": False,
+                    "time_cost": (time.time() - start)}
+        color_log(f"{self.swarm.cur_agent.name()} policy: {policy}")
 
         msg = None
         response = None
@@ -446,8 +471,8 @@ class Task(object):
                     # clear observation
                     observation = None
                 elif is_tool_by_name(policy[0].tool_name):
-                    status, info = self._social_tool_call(policy, step)
-                    if status == "normal":
+                    status, terminated, info = self._social_tool_call(policy, step)
+                    if status == 'normal':
                         observation = info
                 else:
                     logger.warning(f"Unrecognized policy: {policy[0]}")
@@ -466,15 +491,17 @@ class Task(object):
 
                 step += 1
                 if terminated and self.swarm.cur_agent.finished:
-                    logger.info("swarm finished")
+                    logger.info(f"{self.swarm.cur_agent.name()} finished")
                     break
 
                 if observation:
                     if cur_agent is None:
                         cur_agent = self.swarm.cur_agent
-                    policy = agent_executor.execute_agent(
-                        observation, agent=cur_agent, conf=cur_agent.conf, step=step
-                    )
+                    policy = agent_executor.execute_agent(observation,
+                                                          agent=cur_agent,
+                                                          conf=cur_agent.conf,
+                                                          step=step)
+                    color_log(f"{cur_agent.name()} policy: {policy}")
 
             if policy:
                 response = (
@@ -522,10 +549,11 @@ class Task(object):
                 f"Can not find {policy_for_agent.agent_name} agent in swarm."
             )
 
-        if cur_agent.name() == self.swarm.communicate_agent.name():
+        if cur_agent.name() == self.swarm.communicate_agent.name() or cur_agent.name() == self.swarm.cur_agent.name():
             # Current agent is entrance agent, means need to exit to the outer loop
-            logger.warning("Exit to the outer loop")
-            return "break", True
+            logger.warning(f"{cur_agent.name()} exit to the outer loop")
+            self.loop_detect.append(cur_agent.name())
+            return 'break', True
 
         if (
             self.swarm.cur_agent.handoffs
@@ -547,24 +575,30 @@ class Task(object):
             )
 
         observation = Observation(content=policy_for_agent.policy_info)
-        agent_policy = cur_agent.executor.execute_agent(
-            observation, agent=cur_agent, conf=cur_agent.conf, step=step
-        )
+        self.loop_detect.append(cur_agent.name())
+        if cur_agent.step_reset:
+            cur_agent.reset({"task": observation.content,
+                             "tool_names": cur_agent.tool_names,
+                             "agent_names": cur_agent.handoffs,
+                             "mcp_servers": cur_agent.mcp_servers})
+        agent_policy = cur_agent.executor.execute_agent(observation,
+                                                        agent=cur_agent,
+                                                        conf=cur_agent.conf,
+                                                        step=step)
 
         if not agent_policy:
             logger.warning(
-                f"{observation} can not get the valid policy in {policy_for_agent.agent_name}, exit task!"
-            )
-            return "return", {
-                "msg": f"{policy_for_agent.agent_name} invalid policy",
-                "response": "",
-                "steps": step,
-                "success": False,
-            }
-        return "normal", agent_policy
+                f"{observation} can not get the valid policy in {policy_for_agent.agent_name}, exit task!")
+            return "return", {"msg": f"{policy_for_agent.agent_name} invalid policy",
+                              "response": "",
+                              "steps": step,
+                              "success": False}
+        color_log(f"{cur_agent.name()} policy: {agent_policy}")
+        return 'normal', agent_policy
 
     def _social_tool_call(self, policy: List[ActionModel], step: int):
         observation = None
+        terminated = False
         # group action by tool name
         tool_mapping = dict()
         # Directly use or use tools after creation.
@@ -595,11 +629,8 @@ class Task(object):
         # The tool results give itself, exit; give to other agents, continue
         tmp_name = policy[0].agent_name
         if self.swarm.cur_agent.name() == self.swarm.communicate_agent.name() and (
-            len(self.swarm.agents) == 1
-            or tmp_name is None
-            or self.swarm.cur_agent.name() == tmp_name
-        ):
-            return "break", True
+                len(self.swarm.agents) == 1 or tmp_name is None or self.swarm.cur_agent.name() == tmp_name):
+            return "break", terminated, True
         elif policy[0].agent_name:
             policy_for_agent = policy[0]
             cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
@@ -622,7 +653,5 @@ class Task(object):
             # Check if current agent done
             if cur_agent.finished:
                 cur_agent._finished = False
-                logger.info(
-                    f"{cur_agent.name()} agent be be handed off, so finished state reset to False."
-                )
-        return "normal", observation
+                logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
+        return "normal", terminated, observation

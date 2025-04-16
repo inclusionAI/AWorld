@@ -284,7 +284,10 @@ class BrowserAgent(Agent):
                 raise json_parse_error
 
             logger.info((f"llm response: {parsed_json}"))
-            agent_brain = AgentBrain(**parsed_json['current_state'])
+            try:
+                agent_brain = AgentBrain(**parsed_json['current_state'])
+            except:
+                agent_brain = None
             actions = parsed_json.get('action')
             result = []
             if not actions:
@@ -293,6 +296,7 @@ class BrowserAgent(Agent):
                 logger.warning("agent not policy  an action.")
                 return output_message, AgentResult(current_state=agent_brain,
                                                    actions=[ActionModel(tool_name=Tools.BROWSER.value,
+                                                                        agent_name=self.name(),
                                                                         action_name="done")])
 
             for action in actions:
@@ -459,7 +463,8 @@ class BrowserAgent(Agent):
                     # If sizes don't match, this is a critical error
                     error_msg = f"Action results count ({len(obs.action_result)}) doesn't match action entries count ({len(previous_action_entries)})"
                     logger.error(error_msg)
-                    raise ValueError(error_msg)
+                    has_error = True
+                    # raise ValueError(error_msg)
 
             # Add agent response
             if llm_result:
@@ -508,7 +513,7 @@ class BrowserAgent(Agent):
                     # If sizes don't match, this is a critical error
                     error_msg = f"Action results count ({len(observation.action_result)}) doesn't match action entries count ({len(previous_action_entries)})"
                     logger.error(error_msg)
-                    raise ValueError(error_msg)
+                    has_error = True
 
             # If there's an error, append observation content outside the loop
             if has_error and observation.content:

@@ -1,29 +1,14 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from aworld.virtual_environments.android.android import AndroidTool
-from aworld.virtual_environments.apis.search_api import SearchTool
-from aworld.virtual_environments.browsers.browser import BrowserTool
-from aworld.virtual_environments.browsers.async_browser import BrowserTool as ABrowserTool
-from aworld.virtual_environments.document.document import DocumentTool
-from aworld.virtual_environments.gym.openai_gym import OpenAIGym
-from aworld.virtual_environments.gym.async_openai_gym import OpenAIGym as AOpenAIGym
-from aworld.virtual_environments.interpreters.python_tool import PythonTool
-from aworld.virtual_environments.terminals.shell_tool import ShellTool
-from aworld.virtual_environments.travel.html import HtmlTool
-from aworld.virtual_environments.mcp.mcp_tool import McpTool
-
-from aworld.virtual_environments.android.action.actions import *
-from aworld.virtual_environments.apis.actions import *
-from aworld.virtual_environments.browsers.action.actions import *
-from aworld.virtual_environments.document.actions import *
-from aworld.virtual_environments.gym.actions import *
-from aworld.virtual_environments.terminals.actions import *
-from aworld.virtual_environments.travel.actions import *
-
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.logs.util import logger
-from aworld.core.envs.tool import ToolFactory
+from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
+from aworld.virtual_environments.action import ExecutableAction
+from aworld.utils.common import scan_packages
+
+scan_packages("aworld.virtual_environments", [Tool, AsyncTool])
+scan_packages("aworld.virtual_environments", [ExecutableAction])
 
 
 def tool_action_desc():
@@ -91,6 +76,7 @@ def tool_action_desc():
                 action_dict = process(info.value)
                 actions.append(action_dict)
         else:
-            logger.warning(f"{tool} no action!")
+            if tool != 'mcp':
+                logger.warning(f"{tool} no action!")
         tool_val_dict["actions"] = actions
     return descs

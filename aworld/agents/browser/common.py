@@ -28,10 +28,10 @@ class PolicyMetadata(BaseModel):
 
 class AgentBrain(BaseModel):
     """Current state of the agent"""
-    evaluation_previous_goal: str
-    memory: str
+    evaluation_previous_goal: str = None
+    memory: str = None
     thought: str = None
-    next_goal: str
+    next_goal: str = None
 
 
 class AgentHistory(BaseModel):

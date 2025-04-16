@@ -3,14 +3,17 @@ import json
 import logging
 import os
 import traceback
+import asyncio
+
 from typing import Any, Dict, List, Tuple
 
 from mcp.types import TextContent
 
 from aworld.core.common import ActionModel, ActionResult, Observation
-from aworld.core.envs.tool import Tool, ToolActionExecutor
+from aworld.core.envs.tool import ToolActionExecutor, Tool
+from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
-from aworld.utils.common import sync_exec
+from aworld.utils.common import sync_exec, find_file
 
 
 class MCPToolExecutor(ToolActionExecutor):
@@ -27,14 +30,12 @@ class MCPToolExecutor(ToolActionExecutor):
         """Load MCP server configurations from config file."""
         try:
             # Priority given to the running path.
-            if os.path.exists(os.path.join(os.getcwd(), "mcp.json")):
-                config_path = os.path.join(os.getcwd(), "mcp.json")
-            else:
+            config_path = find_file(filename='mcp.json')
+            if not os.path.exists(config_path):
                 # Use relative path for config file
                 current_dir = os.path.dirname(os.path.abspath(__file__))
-                config_path = os.path.normpath(
-                    os.path.join(current_dir, "../../config/mcp.json")
-                )
+                config_path = os.path.normpath(os.path.join(current_dir, "../../config/mcp.json"))
+            logger.info(f"mcp conf path: {config_path}")
 
             with open(config_path, "r") as f:
                 config_data = json.load(f)
@@ -74,7 +75,7 @@ class MCPToolExecutor(ToolActionExecutor):
 
             self.initialized = True
         except Exception as e:
-            logging.error(f"Failed to load MCP config: {traceback.format_exc()}")
+            logger.error(f"Failed to load MCP config: {traceback.format_exc()}")
 
     async def _get_or_create_server(self, server_name: str) -> MCPServer:
         """Get an existing MCP server instance or create a new one."""
@@ -97,7 +98,7 @@ class MCPToolExecutor(ToolActionExecutor):
                     await server_info["instance"].cleanup()
                 except Exception as cleanup_error:
                     logging.warning(f"Error cleaning up old server instance: {cleanup_error}")
-                
+
                 # Remove existing instance reference, prepare to create a new one
                 server_info["instance"] = None
             except Exception as e:
@@ -112,14 +113,12 @@ class MCPToolExecutor(ToolActionExecutor):
                 # Create new SSE server instance
                 server_params = {
                     "url": server_info["url"],
-                    "timeout": server_info["timeout"],
-                    "sse_read_timeout": server_info["sse_read_timeout"],
-                    "headers": server_info["headers"],
+                    "timeout": server_info['timeout'],
+                    "sse_read_timeout": server_info['sse_read_timeout'],
+                    "headers": server_info['headers']
                 }
 
-                server = MCPServerSse(
-                    server_params, cache_tools_list=True, name=server_name
-                )
+                server = MCPServerSse(server_params, cache_tools_list=True, name=server_name)
             elif server_type == "stdio":
                 # Create new stdio server instance
                 server_params = {
@@ -161,13 +160,13 @@ class MCPToolExecutor(ToolActionExecutor):
                             logging.info(f"Created new event loop for retry {retry+1}")
                         except Exception as loop_error:
                             logging.error(f"Error recreating event loop: {loop_error}")
-                        
+
                         # Clean up resources from the previous attempt
                         try:
                             await server.cleanup()
                         except Exception as cleanup_error:
                             logging.warning(f"Error cleaning up during retry: {cleanup_error}")
-                        
+
                         # For stdio servers, recreate the instance
                         if server_type == "stdio":
                             server = MCPServerStdio(
@@ -190,7 +189,7 @@ class MCPToolExecutor(ToolActionExecutor):
                             await server.cleanup()
                         except Exception as cleanup_error:
                             logging.warning(f"Error cleaning up during retry: {cleanup_error}")
-                        
+
                         # Brief delay before retrying
                         await asyncio.sleep(0.5)
                     else:
@@ -267,7 +266,8 @@ class MCPToolExecutor(ToolActionExecutor):
                     if result and result.content:
                         if isinstance(result.content[0], TextContent):
                             action_result = ActionResult(
-                                content=result.content[0].text, keep=True
+                                content=result.content[0].text,
+                                keep=True
                             )
                             results.append(action_result)
                 except asyncio.CancelledError:
@@ -331,7 +331,7 @@ class MCPToolExecutor(ToolActionExecutor):
     async def cleanup(self) -> None:
         """Clean up all MCP server connections."""
         cleanup_errors = []
-        
+
         # Ensure there is a running event loop
         try:
             loop = asyncio.get_running_loop()
@@ -344,7 +344,7 @@ class MCPToolExecutor(ToolActionExecutor):
             logging.info("No running event loop during cleanup, creating new one")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        
+
         for server_name, server_info in self.mcp_servers.items():
             if server_info.get("instance"):
                 try:
@@ -357,7 +357,7 @@ class MCPToolExecutor(ToolActionExecutor):
                     error_msg = f"Error cleaning up MCP server {server_name}: {e}"
                     logging.error(error_msg)
                     cleanup_errors.append(error_msg)
-        
+
         if cleanup_errors:
             logging.error(f"Cleanup completed with {len(cleanup_errors)} errors")
         else:

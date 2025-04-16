@@ -29,7 +29,7 @@ def agent_desc_transform(agent_dict: Dict[str, Any],
                 continue
 
             for action in agent_info["abilities"]:
-                # 构建参数属性
+                # Build parameter properties
                 properties = {}
                 required = []
                 for param_name, param_info in action["params"].items():
@@ -59,6 +59,7 @@ def agent_desc_transform(agent_dict: Dict[str, Any],
 
 def tool_desc_transform(tool_dict: Dict[str, Any],
                         tools: List[str] = None,
+                        black_tool_actions: Dict[str, List[str]] = {},
                         provider: str = 'openai',
                         strategy: str = 'min') -> List[Dict[str, Any]]:
     """Default implement transform framework standard protocol to openai protocol of tool description.
@@ -74,14 +75,20 @@ def tool_desc_transform(tool_dict: Dict[str, Any],
     if not tools and strategy == 'min':
         return openai_tools
 
+    if black_tool_actions is None:
+        black_tool_actions = {}
+
     if provider and 'openai' in provider:
         for tool_name, tool_info in tool_dict.items():
             if tools and tool_name not in tools:
                 logger.debug(f"{tool_name} can not supported in {tools}, you can set `tools` params to support it.")
                 continue
 
+            black_actions = black_tool_actions.get(tool_name, [])
             for action in tool_info["actions"]:
-                # 构建参数属性
+                if action['name'] in black_actions:
+                    continue
+                # Build parameter properties
                 properties = {}
                 required = []
                 for param_name, param_info in action["params"].items():
