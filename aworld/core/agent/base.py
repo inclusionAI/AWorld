@@ -89,7 +89,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # all tools that the agent can use. note: string name/id only
         self._tools = []
         self.state = AgentStatus.START
-        self._finished = False
+        self._finished = True
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -163,7 +163,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         self.output_prompt: str = kwargs.get("output_prompt") if kwargs.get("output_prompt") else conf.output_prompt
 
         self.need_reset = kwargs.get('need_reset') if kwargs.get('need_reset') else conf.need_reset
-        self.step_reset = kwargs.get('step_reset') if kwargs.get('step_reset') else False
+        self.step_reset = kwargs.get('step_reset') if kwargs.get('step_reset') else True
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = kwargs.get("black_tool_actions") if kwargs.get(
             "black_tool_actions") else self.conf.get('black_tool_actions', {})
@@ -468,7 +468,7 @@ class AgentExecutor(object):
             agent: The special agent instance.
         """
         agent = self._get_or_create_agent(observation.to_agent_name, agent, kwargs.get('conf'))
-
+        agent._finished = False
         if is_abstract_method(agent, 'policy'):
             agent.desc_transform()
             images = observation.images if agent.conf.use_vision else None
@@ -530,7 +530,7 @@ class AgentExecutor(object):
             agent: The special agent instance.
         """
         agent = self._get_or_create_agent(observation.to_agent_name, agent, kwargs.get('conf'))
-
+        agent._finished = False
         if is_abstract_method(agent, 'async_policy'):
             await agent.async_desc_transform()
             images = observation.images
