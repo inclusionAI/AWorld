@@ -14,6 +14,7 @@ pandas~=2.2.3
 pydantic_settings~=2.8.0
 mcp[cli]~=1.6.0
 python-dotenv~=1.0.1
+aiohttp~=3.11.16
 
 ######### [optional] #########
 # optional requirements will also be installed by all extensions,
