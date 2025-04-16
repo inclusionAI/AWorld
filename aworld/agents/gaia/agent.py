@@ -98,8 +98,10 @@ class ExecuteAgent(Agent):
                 tool_action_name: str = tool_call.function.name
                 if not tool_action_name:
                     continue
-                tool_name = tool_action_name.split("__")[0]
-                action_name = "__".join(tool_action_name.split("__")[1:])
+
+                names = tool_action_name.split("__")
+                tool_name = names[0]
+                action_name = '__'.join(names[1:]) if len(names) > 1 else ''
                 params = json.loads(tool_call.function.arguments)
                 res.append(
                     ActionModel(
@@ -113,16 +115,10 @@ class ExecuteAgent(Agent):
         elif content:
             policy_info = extract_pattern(content, "final_answer")
             if policy_info:
-                res.append(
-                    ActionModel(
-                        agent_name=Agents.PLAN.value, policy_info=policy_info
-                    )
-                )
+                res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=policy_info))
                 self._finished = True
             else:
-                res.append(
-                    ActionModel(agent_name=Agents.PLAN.value, policy_info=content)
-                )
+                res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=content))
 
         logger.info(f">>> execute result: {res}")
         return res
