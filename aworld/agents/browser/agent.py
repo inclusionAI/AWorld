@@ -429,6 +429,7 @@ class BrowserAgent(Agent):
         """
 
         if observation.content == 'done':
+            logger.info("browser agent done, will summary...")
             return self.build_summary_messages_from_trajectory(observation)
 
         messages = []
