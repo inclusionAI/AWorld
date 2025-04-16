@@ -305,6 +305,9 @@ class BrowserAgent(Agent):
                     browser_action = BrowserAction.get_value_by_name(action_name)
                     if not browser_action:
                         logger.warning(f"Unsupported action: {action_name}")
+
+                    if action_name == 'done':
+                        self._finished = True
                     action_model = ActionModel(tool_name=Tools.BROWSER.value,
                                                action_name=action_name,
                                                params=action.get('params', {}))
