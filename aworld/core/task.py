@@ -32,6 +32,7 @@ class TaskModel:
     tools_conf: Dict[str, Union[Dict[str, Any], ConfigDict, AgentConfig]] = field(default_factory=dict)
     swarm: Swarm = None
     agent: Agent = None
+    endless_threshold: int = 3
 
 
 class Task(object):
@@ -45,6 +46,7 @@ class Task(object):
                  tools: List[Tool] = [],
                  tool_names: List[str] = [],
                  tools_conf: Dict[str, Union[Dict[str, Any], ConfigDict, AgentConfig]] = {},
+                 endless_threshold: int = 3,
                  *args,
                  **kwargs):
         """Task instance init.
@@ -67,6 +69,7 @@ class Task(object):
             conf = task.conf
             tools = task.tools
             tool_names = task.tool_names
+            endless_threshold = task.endless_threshold
             if tools is None:
                 tools = []
             if tool_names is None:
@@ -97,6 +100,7 @@ class Task(object):
         # lazy load
         self.tool_names = tool_names
         self.tools_conf = tools_conf
+        self.endless_threshold = endless_threshold
 
         self.daemon_target = kwargs.pop('daemon_target', None)
         self._use_demon = False if not conf else conf.get('use_demon', False)
@@ -201,7 +205,7 @@ class Task(object):
                         elif status == 'return':
                             return info
                     elif is_tool_by_name(policy[0].tool_name):
-                        self._tool_call(policy, observations, step)
+                        msg, terminated = self._tool_call(policy, observations, step)
                     else:
                         logger.warning(f"Unrecognized policy: {policy[0]}")
                         return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
@@ -260,6 +264,7 @@ class Task(object):
 
     def _tool_call(self, policy: List[ActionModel], observations: List[Observation], step: int):
         msg = None
+        terminated = False
         # group action by tool name
         tool_mapping = dict()
         # Directly use or use tools after creation.
@@ -286,13 +291,13 @@ class Task(object):
                 color_log(f"Step {step} failed with exception: {info['exception']}")
                 msg = f"Step {step} failed with exception: {info['exception']}"
             logger.info(f"step: {step} finished by tool action.")
-        return msg
+        return msg, terminated
 
     def _loop_detect(self):
         if not self.loop_detect:
             return False
 
-        threshold = 3
+        threshold = self.endless_threshold
         last_agent_name = self.swarm.communicate_agent.name()
         count = 1
         for i in range(len(self.loop_detect) - 2, -1, -1):
