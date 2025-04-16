@@ -108,8 +108,6 @@ class ExecuteAgent(Agent):
                         tool_name=tool_name, action_name=action_name, params=params
                     )
                 )
-                # only use one tool
-                break
 
         if res:
             res[0].policy_info = content
