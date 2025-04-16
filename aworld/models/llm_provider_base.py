@@ -194,3 +194,47 @@ class LLMProviderBase(abc.ABC):
             RuntimeError: When async provider is not initialized.
         """
         return None
+
+    def speech_to_text(self, 
+                        audio_file: str, 
+                        language: str = None, 
+                        prompt: str = None, 
+                        **kwargs) -> ModelResponse:
+        """Convert speech to text.
+        
+        Args:
+            audio_file: Path to audio file or file object.
+            language: Audio language, optional.
+            prompt: Transcription prompt, optional.
+            **kwargs: Other parameters.
+            
+        Returns:
+            ModelResponse: Unified model response object, with content field containing the transcription result.
+            
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+            NotImplementedError: When provider does not support speech to text conversion.
+        """
+        raise NotImplementedError("This provider does not support speech to text conversion.")
+        
+    async def aspeech_to_text(self, 
+                               audio_file: str, 
+                               language: str = None, 
+                               prompt: str = None, 
+                               **kwargs) -> ModelResponse:
+        """Asynchronously convert speech to text.
+        
+        Args:
+            audio_file: Path to audio file or file object.
+            language: Audio language, optional.
+            prompt: Transcription prompt, optional.
+            **kwargs: Other parameters.
+            
+        Returns:
+            ModelResponse: Unified model response object, with content field containing the transcription result.
+            
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+            NotImplementedError: When provider does not support speech to text conversion.
+        """
+        raise NotImplementedError("This provider does not support asynchronous speech to text conversion.")
