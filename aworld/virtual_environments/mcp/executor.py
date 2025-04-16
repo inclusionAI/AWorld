@@ -204,7 +204,7 @@ class MCPToolExecutor(ToolActionExecutor):
             # Pass the cancellation exception for upper-level handling
             raise
         except Exception as e:
-            logging.error(f"Failed to connect to MCP server '{server_name}': {e}")
+            logger.error(f"Failed to connect to MCP server '{server_name}': {e}")
             raise
 
     async def async_execute_action(
@@ -272,20 +272,14 @@ class MCPToolExecutor(ToolActionExecutor):
                             results.append(action_result)
                 except asyncio.CancelledError:
                     # Log cancellation exception, reset server connection to avoid async context confusion
-                    logging.warning(
-                        f"Tool call to {action_name} on {server_name} was cancelled"
-                    )
-                    if server_name in self.mcp_servers and self.mcp_servers[
-                        server_name
-                    ].get("instance"):
+                    logger.warning(f"Tool call to {action_name} on {server_name} was cancelled")
+                    if server_name in self.mcp_servers and self.mcp_servers[server_name].get("instance"):
                         try:
                             await self.mcp_servers[server_name]["instance"].cleanup()
                             self.mcp_servers[server_name]["instance"] = None
                         except Exception as cleanup_error:
-                            logging.error(
-                                f"Error cleaning up server after cancellation: {cleanup_error}"
-                            )
-                    # Re-raise exception to notify upper-level caller
+                            logger.error(f"Error cleaning up server after cancellation: {cleanup_error}")
+                    # Re-raise exception to notify upper level caller
                     raise
                 except asyncio.InvalidStateError as e:
                     # Handle invalid event loop state error
@@ -315,12 +309,12 @@ class MCPToolExecutor(ToolActionExecutor):
                             results.append(action_result)
             except asyncio.CancelledError:
                 # Pass cancellation exception
-                logging.warning("Async execution was cancelled")
+                logger.warning("Async execution was cancelled")
                 raise
             except Exception as e:
                 # Handle general errors
                 error_msg = str(e)
-                logging.error(f"Error executing MCP action: {error_msg}")
+                logger.error(f"Error executing MCP action: {error_msg}")
                 action_result = ActionResult(
                     content=f"Error executing tool: {error_msg}", keep=True
                 )

@@ -560,18 +560,13 @@ class Task(object):
             self.loop_detect.append(cur_agent.name())
             return 'break', True
 
-        if (
-            self.swarm.cur_agent.handoffs
-            and agent_name not in self.swarm.cur_agent.handoffs
-        ):
+        if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
             # Unable to hand off, exit to the outer loop
-            return "return", {
-                "msg": f"Can not handoffs {agent_name} agent "
-                f"by {cur_agent.name()} agent.",
-                "response": policy[0].policy_info if policy else "",
-                "steps": step,
-                "success": False,
-            }
+            return "return", {"msg": f"Can not handoffs {agent_name} agent "
+                                     f"by {cur_agent.name()} agent.",
+                              "response": policy[0].policy_info if policy else "",
+                              "steps": step,
+                              "success": False}
         # Check if current agent done
         if cur_agent.finished:
             cur_agent._finished = False
@@ -643,21 +638,14 @@ class Task(object):
                 agent_name = policy_for_agent.tool_name
             cur_agent: Agent = self.swarm.agents.get(agent_name)
             if not cur_agent:
-                raise RuntimeError(
-                    f"Can not find {policy_for_agent.agent_name} agent in swarm."
-                )
-            if (
-                self.swarm.cur_agent.handoffs
-                and policy_for_agent.agent_name not in self.swarm.cur_agent.handoffs
-            ):
+                raise RuntimeError(f"Can not find {agent_name} agent in swarm.")
+            if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
                 # Unable to hand off, exit to the outer loop
-                return "return", {
-                    "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
-                    f"by {cur_agent.name()} agent.",
-                    "response": policy[0].policy_info if policy else "",
-                    "steps": step,
-                    "success": False,
-                }
+                return "return", {"msg": f"Can not handoffs {agent_name} agent "
+                                         f"by {cur_agent.name()} agent.",
+                                  "response": policy[0].policy_info if policy else "",
+                                  "steps": step,
+                                  "success": False}
             # Check if current agent done
             if cur_agent.finished:
                 cur_agent._finished = False
