@@ -306,12 +306,11 @@ class Task(object):
             )
             observations.append(observation)
 
-            logger.info(f"{action} state: {observation}; reward: {reward}")
             # Check if there's an exception in info
             if info.get("exception"):
                 color_log(f"Step {step} failed with exception: {info['exception']}")
                 msg = f"Step {step} failed with exception: {info['exception']}"
-            logger.info(f"step: {step} finished by tool action.")
+            logger.info(f"step: {step} finished by tool action {action}.")
         return msg, terminated
 
     def _loop_detect(self):
@@ -620,11 +619,10 @@ class Task(object):
                 action
             )
 
-            logger.info(f"{action} state: {observation}; reward: {reward}")
             # Check if there's an exception in info
             if info.get("exception"):
                 color_log(f"Step {step} failed with exception: {info['exception']}")
-            logger.info(f"step: {step} finished by tool action.")
+            logger.info(f"step: {step} finished by tool action {action}.")
 
         # The tool results give itself, exit; give to other agents, continue
         tmp_name = policy[0].agent_name

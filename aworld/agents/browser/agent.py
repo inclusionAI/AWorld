@@ -226,7 +226,7 @@ class BrowserAgent(Agent):
         try:
 
             output_message = self.llm.invoke(input_messages)
-
+            logger.info(f"llm response: {output_message}")
             if not output_message or not output_message.content:
                 logger.warning("[agent] LLM returned empty response")
                 return output_message, AgentResult(
@@ -319,9 +319,10 @@ class BrowserAgent(Agent):
                             logger.warning(f"Unsupported action: {k}")
 
                         action_model = ActionModel(tool_name=Tools.BROWSER.value, action_name=k, params=v)
-                        result.append(action_model)
                         if k == "done":
+                            action_model.policy_info = v.get('text', None)
                             self._finished = True
+                        result.append(action_model)
             return output_message, AgentResult(current_state=agent_brain, actions=result)
         except (ValueError, ValidationError) as e:
             logger.warning(f'Failed to parse model output: {output_message} {str(e)}')
@@ -426,10 +427,6 @@ class BrowserAgent(Agent):
         Args:
             observation: Current observation object, if None current observation won't be added
         """
-
-        if observation.content == 'done':
-            logger.info("browser agent done, will summary...")
-            return self.build_summary_messages_from_trajectory(observation)
 
         messages = []
         # Add system message
