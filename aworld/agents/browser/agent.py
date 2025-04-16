@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from aworld.config.common import Agents, Tools
 from aworld.core.agent.base import AgentFactory, Agent, AgentResult
-from aworld.agents.browser.prompts import SystemPrompt
+from aworld.agents.browser.prompts import SystemPrompt, SummaryPrompt
 from aworld.agents.browser.utils import convert_input_messages, extract_json_from_model_output, estimate_messages_tokens
 from aworld.agents.browser.common import AgentState, AgentStepInfo, AgentHistory, PolicyMetadata, AgentBrain
 from aworld.config.conf import AgentConfig, ConfigDict
@@ -373,6 +373,52 @@ class BrowserAgent(Agent):
                 raise ValueError(error_msg)
         return action_result.error is not None
 
+    def build_summary_messages_from_trajectory(self, observation: Optional[Observation] = None) -> List[
+        BaseMessage]:
+        messages = []
+        system_message = SummaryPrompt().get_message()
+        messages.append(system_message)
+        task_message = HumanMessage(
+            content=f'Your ultimate task is: """{self.task}""". If you achieved your ultimate task, stop everything and use the done action in the next step to complete the task. If not, continue as usual.'
+        )
+        messages.append(task_message)
+        messages.append(HumanMessage(content='[Your process history starts here]'))
+        his_step = 0
+        for input_msgs, obs, info, output_msg, result in self.trajectory.get_history():
+            # 添加判断上一步的actionResult
+            last_action_result = obs.action_result
+            if last_action_result is not None:
+                for one_action_result in last_action_result:
+                    if one_action_result.content is not None:
+                        messages.append(HumanMessage(content='Action result: ' + one_action_result.content))
+                    elif one_action_result.error is not None:
+                        messages.append(HumanMessage(content='Action result: ' + one_action_result.error))
+                    elif one_action_result.success is False:
+                        logger.error(f"Action {one_action_result} failed: {one_action_result.error}")
+
+            # Add agent response
+            if result:
+                # Create AI message
+                output_data = result.model_dump(mode='json', exclude_unset=True)
+                messages.append(
+                    HumanMessage(content=f"history step {his_step + 1}:\n" + json.dumps(output_data, indent=4)))
+                his_step += 1
+        # Add current observation - using the passed observation parameter instead of self.state.current_observation
+        if observation:
+            step_info = AgentStepInfo(number=self.state.n_steps, max_steps=self.conf.max_steps)
+            if hasattr(observation, 'dom_tree') and observation.dom_tree:
+                state_message = AgentMessagePrompt(
+                    observation,
+                    self.state.last_result,
+                    include_attributes=self.settings.get('include_attributes'),
+                    step_info=step_info,
+                ).get_user_message(self.settings.get('use_vision'))
+                messages.append(state_message)
+            elif observation.content:
+                messages.append(HumanMessage(content=observation.content))
+
+        return messages
+
     def build_messages_from_trajectory_and_observation(self, observation: Optional[Observation] = None) -> List[
         BaseMessage]:
         """
@@ -381,6 +427,10 @@ class BrowserAgent(Agent):
         Args:
             observation: Current observation object, if None current observation won't be added
         """
+
+        if observation.content == 'done':
+            return self.build_summary_messages_from_trajectory(observation)
+
         messages = []
         # Add system message
         system_message = SystemPrompt(

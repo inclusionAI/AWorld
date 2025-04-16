@@ -210,3 +210,14 @@ Ignore the other AI messages output structures.
 don't forget the index param for input_text action.
 Keep your responses concise and focused on actionable insights."""
         )
+
+
+class SummaryPrompt:
+    def __init__(self):
+        self.prompt = """You are a summarization agent, and your goal is: given the ultimate task, summarize or answer the current task based on your historical process of thinking and acting.
+- If the ultimate task is an action command, you need to summarize the entire action.
+- If the ultimate task is a question, you need to answer that question."""
+
+    def get_message(self) -> str:
+        return SystemMessage(content=self.prompt)
+
