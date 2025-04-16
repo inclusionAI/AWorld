@@ -127,7 +127,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.handoffs = options.get("agent_names", [])
         self.mcp_servers = options.get("mcp_servers", [])
         self.trajectory = []
-        self._finished = False
+        self._finished = True
 
     async def async_reset(self, options: Dict[str, Any]):
         """Clean agent instance state and reset."""
@@ -163,6 +163,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         self.output_prompt: str = kwargs.get("output_prompt") if kwargs.get("output_prompt") else conf.output_prompt
 
         self.need_reset = kwargs.get('need_reset') if kwargs.get('need_reset') else conf.need_reset
+        # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = kwargs.get('step_reset') if kwargs.get('step_reset') else True
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = kwargs.get("black_tool_actions") if kwargs.get(
