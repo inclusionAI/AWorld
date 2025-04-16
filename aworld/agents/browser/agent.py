@@ -294,6 +294,7 @@ class BrowserAgent(Agent):
                 actions = parsed_json.get("actions")
             if not actions:
                 logger.warning("agent not policy  an action.")
+                self._finished = True
                 return output_message, AgentResult(current_state=agent_brain,
                                                    actions=[ActionModel(tool_name=Tools.BROWSER.value,
                                                                         agent_name=self.name(),
