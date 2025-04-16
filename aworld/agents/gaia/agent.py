@@ -48,7 +48,7 @@ class ExecuteAgent(Agent):
                     {
                         "role": "assistant",
                         "content": "",
-                        "tool_calls": traj[-1].serialize_tool_calls(),
+                        "tool_calls": traj[-1].tool_calls,
                     }
                 )
             else:
