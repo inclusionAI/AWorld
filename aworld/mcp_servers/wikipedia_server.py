@@ -18,10 +18,14 @@ Main functions:
 - mcpwikirandom: Retrieves random Wikipedia articles
 - mcpwikicategories: Gets categories for a Wikipedia article
 - mcpwikilinks: Gets links from a Wikipedia article
+- mcpwikihistory: Gets historical version of a Wikipedia page closest to the specified date
 """
 
 import traceback
 from typing import Dict, List, Optional, Union
+import calendar
+from datetime import datetime
+import requests
 
 import wikipedia
 from pydantic import BaseModel, Field
@@ -52,6 +56,14 @@ class WikipediaArticle(BaseModel):
     links: Optional[List[str]] = None
     references: Optional[List[str]] = None
     sections: Optional[List[Dict[str, str]]] = None
+    # History-specific fields
+    original_query: Optional[str] = None
+    requested_date: Optional[str] = None
+    actual_date: Optional[str] = None
+    is_exact_date: Optional[bool] = None
+    is_redirect: Optional[bool] = None
+    editor: Optional[str] = None
+    edit_comment: Optional[str] = None
 
 
 class WikipediaResponse(BaseModel):
@@ -107,8 +119,8 @@ def mcpwikisearch(
         f"Performing Wikipedia search for query: '{query}' in language: {language}"
     )
     try:
-        # Set Wikipedia language
-        wikipedia.set_lang(language)
+        # Set Wikipedia language - ensure language is a string
+        wikipedia.set_lang(str(language))
 
         # Search Wikipedia
         search_results = wikipedia.search(query, results=limit)
@@ -425,6 +437,120 @@ def mcpwikilinks(
         return handle_error(e, "Links Retrieval", title)
 
 
+def mcpwikihistory(
+    title: str = Field(..., description="Title of the Wikipedia article"),
+    date: str = Field(..., description="Target date in YYYY/MM/DD format. If day is omitted, last day of month will be used"),
+    language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
+    auto_suggest: bool = Field(True, description="Whether to use Wikipedia's auto-suggest feature and handle redirects"),
+) -> str:
+    """
+    Get historical version of a Wikipedia page closest to the specified date.
+    If exact date version is not available, returns the closest version before that date.
+    Supports auto-suggestion and redirects to handle company name changes or variations.
+    
+    Args:
+        title: The title of the Wikipedia page
+        date: Target date in YYYY/MM/DD format
+        language: Language code for Wikipedia
+        auto_suggest: Whether to use Wikipedia's auto-suggest and handle redirects
+        
+    Returns:
+        JSON string containing the historical content and metadata
+    """
+    try:
+        # Set Wikipedia language
+        wikipedia.set_lang(str(language))
+        
+        # First try to find the correct page title using search and auto-suggest
+        actual_title = title
+        if auto_suggest:
+            try:
+                # Search for the page and get the actual title
+                search_results = wikipedia.search(title, results=1)
+                if search_results:
+                    # Get the page to handle redirects and get the canonical title
+                    page = wikipedia.page(search_results[0], auto_suggest=True, redirect=True)
+                    actual_title = page.title
+                    logger.info(f"Found matching page: {actual_title} for query: {title}")
+            except Exception as e:
+                logger.warning(f"Auto-suggest failed for {title}: {str(e)}")
+        
+        # Parse the date
+        date_parts = date.split('/')
+        year = int(date_parts[0])
+        month = int(date_parts[1])
+        day = int(date_parts[2]) if len(date_parts) > 2 else calendar.monthrange(year, month)[1]
+        
+        target_date = datetime(year, month, day)
+        
+        # Get page revisions
+        params = {
+            'action': 'query',
+            'prop': 'revisions',
+            'titles': actual_title,
+            'rvprop': 'ids|timestamp|user|comment|content',
+            'rvlimit': 1,
+            'rvdir': 'older',
+            'rvstart': target_date.isoformat(),
+            'format': 'json'
+        }
+        
+        # Make API request
+        API_URL = f'https://{language}.wikipedia.org/w/api.php'
+        response = requests.get(API_URL, params=params)
+        data = response.json()
+        
+        # Process response
+        page = next(iter(data['query']['pages'].values()))
+        if 'revisions' in page:
+            revision = page['revisions'][0]
+            actual_date = datetime.fromisoformat(revision['timestamp'])
+            
+            # Create URL for this version
+            page_id = page['pageid']
+            rev_id = revision['revid']
+            url = f"https://{language}.wikipedia.org/w/index.php?oldid={rev_id}"
+            
+            # Create article object
+            article = WikipediaArticle(
+                title=actual_title,
+                pageid=page_id,
+                url=url,
+                content=revision['*'],
+                summary=f"Historical version from {actual_date.strftime('%Y/%m/%d')}",
+                images=[],  # Historical versions don't include images
+                categories=[],
+                links=[],
+                references=[],
+                sections=[]
+            )
+            
+            # Add metadata as custom fields
+            article.original_query = title
+            article.requested_date = target_date.strftime('%Y/%m/%d')
+            article.actual_date = actual_date.strftime('%Y/%m/%d')
+            article.is_exact_date = actual_date.date() == target_date.date()
+            article.is_redirect = actual_title != title
+            article.editor = revision['user']
+            article.edit_comment = revision.get('comment', '')
+            
+            return WikipediaResponse(
+                query=title,
+                results=article,
+                count=1,
+                language=language
+            ).model_dump_json()
+            
+        return WikipediaError(
+            error=f"No revision found for {actual_title} (original query: {title}) before {date}",
+            operation="History",
+            query=title
+        ).model_dump_json()
+            
+    except Exception as e:
+        return handle_error(e, "History", title)
+
+
 # Main function
 if __name__ == "__main__":
     import argparse
@@ -449,6 +575,7 @@ if __name__ == "__main__":
             mcpwikirandom,
             mcpwikicategories,
             mcpwikilinks,
+            mcpwikihistory,
         ],
         port=args.port,
     )
