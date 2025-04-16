@@ -95,6 +95,8 @@ class ExecuteAgent(Agent):
                 action_name = '__'.join(names[1:]) if len(names) > 1 else ''
                 params = json.loads(tool_call.function.arguments)
                 res.append(ActionModel(tool_name=tool_name, action_name=action_name, params=params))
+                # use the first tool
+                break
 
         if res:
             res[0].policy_info = content
