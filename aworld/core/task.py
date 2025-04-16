@@ -546,10 +546,14 @@ class Task(object):
     def _social_agent(self, policy: List[ActionModel], step):
         # only one agent, and get agent from policy
         policy_for_agent = policy[0]
-        cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
+
+        agent_name = policy_for_agent.agent_name
+        if not agent_name:
+            agent_name = policy_for_agent.tool_name
+        cur_agent: Agent = self.swarm.agents.get(agent_name)
         if not cur_agent:
             raise RuntimeError(
-                f"Can not find {policy_for_agent.agent_name} agent in swarm."
+                f"Can not find {agent_name} agent in swarm."
             )
 
         if cur_agent.name() == self.swarm.communicate_agent.name() or cur_agent.name() == self.swarm.cur_agent.name():
@@ -560,11 +564,11 @@ class Task(object):
 
         if (
             self.swarm.cur_agent.handoffs
-            and policy_for_agent.agent_name not in self.swarm.cur_agent.handoffs
+            and agent_name not in self.swarm.cur_agent.handoffs
         ):
             # Unable to hand off, exit to the outer loop
             return "return", {
-                "msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+                "msg": f"Can not handoffs {agent_name} agent "
                 f"by {cur_agent.name()} agent.",
                 "response": policy[0].policy_info if policy else "",
                 "steps": step,
@@ -591,8 +595,8 @@ class Task(object):
 
         if not agent_policy:
             logger.warning(
-                f"{observation} can not get the valid policy in {policy_for_agent.agent_name}, exit task!")
-            return "return", {"msg": f"{policy_for_agent.agent_name} invalid policy",
+                f"{observation} can not get the valid policy in {agent_name}, exit task!")
+            return "return", {"msg": f"{agent_name} invalid policy",
                               "response": "",
                               "steps": step,
                               "success": False}
