@@ -23,7 +23,6 @@ class ExecuteAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(ExecuteAgent, self).__init__(conf, **kwargs)
         self.has_summary = False
-        self.desc_transform()
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
@@ -35,6 +34,7 @@ class ExecuteAgent(Agent):
         self, observation: Observation, info: Dict[str, Any] = None, **kwargs
     ) -> List[ActionModel] | None:
         start_time = time.time()
+        self.desc_transform()
         content = observation.content
 
         llm_result = None
@@ -79,7 +79,8 @@ class ExecuteAgent(Agent):
                 temperature=0,
             )
             logger.info(f"Execute response: {llm_result.message}")
-            content = llm_result.content
+            res = self.response_parse(llm_result)
+            content = res.actions[0].policy_info
             tool_calls = llm_result.tool_calls
         except Exception as e:
             logger.warning(traceback.format_exc())
@@ -154,6 +155,7 @@ class PlanAgent(Agent):
         self, observation: Observation, info: Dict[str, Any] = None, **kwargs
     ) -> List[ActionModel] | None:
         llm_result = None
+        self.desc_transform()
         input_content = [
             {"role": "system", "content": self.system_prompt},
         ]
@@ -192,7 +194,8 @@ class PlanAgent(Agent):
                 self.trajectory.append((ob, info, llm_result))
             else:
                 logger.warning("no result to record!")
-        content = llm_result.content
+        res = self.response_parse(llm_result)
+        content = res.actions[0].policy_info
         if "TASK_DONE" not in content:
             content += self.done_prompt
         else:
