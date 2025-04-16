@@ -71,7 +71,8 @@ class ExecuteAgent(Agent):
             llm_result = call_llm_model(self.llm, input_content, model=self.model_name,
                                         tools=self.tools, temperature=0)
             logger.info(f"Execute response: {llm_result.message}")
-            content = llm_result.content
+            res = self.response_parse(llm_result)
+            content = res.actions[0].policy_info
             tool_calls = llm_result.tool_calls
         except Exception as e:
             logger.warn(traceback.format_exc())
@@ -166,7 +167,8 @@ class PlanAgent(Agent):
                 self.trajectory.append((ob, info, llm_result))
             else:
                 logger.warn("no result to record!")
-        content = llm_result.content
+        res = self.response_parse(llm_result)
+        content = res.actions[0].policy_info
         if "TASK_DONE" not in content:
             content += self.done_prompt
         else:

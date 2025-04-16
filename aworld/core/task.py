@@ -221,9 +221,12 @@ class Task(object):
     def _agent(self, agent: Agent, observation: Observation, policy: List[ActionModel], step: int):
         # only one agent, and get agent from policy
         policy_for_agent = policy[0]
-        cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
+        agent_name = policy_for_agent.agent_name
+        if not agent_name:
+            agent_name = policy_for_agent.tool_name
+        cur_agent: Agent = self.swarm.agents.get(agent_name)
         if not cur_agent:
-            raise RuntimeError(f"Can not find {policy_for_agent.agent_name} agent in swarm.")
+            raise RuntimeError(f"Can not find {agent_name} agent in swarm.")
 
         status = "normal"
         if cur_agent.name() == agent.name():
@@ -232,10 +235,10 @@ class Task(object):
             status = "break"
             return status, None
 
-        if agent.handoffs and policy_for_agent.agent_name not in agent.handoffs:
+        if agent.handoffs and agent_name not in agent.handoffs:
             # Unable to hand off, exit to the outer loop
             status = "return"
-            return status, {"msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+            return status, {"msg": f"Can not handoffs {agent_name} agent "
                                    f"by {agent.name()} agent.",
                             "response": policy[0].policy_info if policy else "",
                             "steps": step,
@@ -486,9 +489,12 @@ class Task(object):
     def _social_agent(self, policy: List[ActionModel], step):
         # only one agent, and get agent from policy
         policy_for_agent = policy[0]
-        cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
+        agent_name = policy_for_agent.agent_name
+        if not agent_name:
+            agent_name = policy_for_agent.tool_name
+        cur_agent: Agent = self.swarm.agents.get(agent_name)
         if not cur_agent:
-            raise RuntimeError(f"Can not find {policy_for_agent.agent_name} agent in swarm.")
+            raise RuntimeError(f"Can not find {agent_name} agent in swarm.")
 
         if cur_agent.name() == self.swarm.communicate_agent.name() or cur_agent.name() == self.swarm.cur_agent.name():
             # Current agent is entrance agent, means need to exit to the outer loop
@@ -496,9 +502,9 @@ class Task(object):
             self.loop_detect.append(cur_agent.name())
             return 'break', True
 
-        if self.swarm.cur_agent.handoffs and policy_for_agent.agent_name not in self.swarm.cur_agent.handoffs:
+        if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
             # Unable to hand off, exit to the outer loop
-            return "return", {"msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+            return "return", {"msg": f"Can not handoffs {agent_name} agent "
                                      f"by {cur_agent.name()} agent.",
                               "response": policy[0].policy_info if policy else "",
                               "steps": step,
@@ -565,12 +571,15 @@ class Task(object):
             return "break", terminated, True
         elif policy[0].agent_name:
             policy_for_agent = policy[0]
-            cur_agent: Agent = self.swarm.agents.get(policy_for_agent.agent_name)
+            agent_name = policy_for_agent.agent_name
+            if not agent_name:
+                agent_name = policy_for_agent.tool_name
+            cur_agent: Agent = self.swarm.agents.get(agent_name)
             if not cur_agent:
-                raise RuntimeError(f"Can not find {policy_for_agent.agent_name} agent in swarm.")
-            if self.swarm.cur_agent.handoffs and policy_for_agent.agent_name not in self.swarm.cur_agent.handoffs:
+                raise RuntimeError(f"Can not find {agent_name} agent in swarm.")
+            if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
                 # Unable to hand off, exit to the outer loop
-                return "return", {"msg": f"Can not handoffs {policy_for_agent.agent_name} agent "
+                return "return", {"msg": f"Can not handoffs {agent_name} agent "
                                          f"by {cur_agent.name()} agent.",
                                   "response": policy[0].policy_info if policy else "",
                                   "steps": step,
