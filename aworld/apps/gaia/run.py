@@ -4,8 +4,10 @@
 import json
 import os
 
+from aworld.agents.browser.agent import BrowserAgent
+from aworld.agents.browser.config import BrowserAgentConfig
+
 from aworld.agents.gaia.agent import ExecuteAgent, PlanAgent
-from aworld.agents.gaia.gaia_agent import GaiaAgents, GaiaExecuteAgent, GaiaPlanAgent
 from aworld.apps.gaia.utils import (
     _check_task_completed,
     _generate_summary,
@@ -101,7 +103,21 @@ if __name__ == "__main__":
             ],
         )
 
-        swarm = Swarm((planner, executor), sequence=False)
+        browser = BrowserAgent(
+            conf=BrowserAgentConfig(
+                name=Agents.BROWSER.value,
+                llm_provider="openai",
+                llm_model_name="gpt-4o",
+                llm_base_url="http://localhost:3456",
+                llm_api_key="dummy-key",
+                # llm_base_url=llm_base_url,D
+                # llm_api_key=llm_api_key,
+                llm_temperature=0.1,
+            ),
+            tool_names=[Tools.BROWSER.value],
+        )
+
+        swarm = Swarm((planner, executor), (executor, browser), sequence=False)
         task = Task(input=question, swarm=swarm, conf=TaskConfig())
         result = client.submit(task=[task])
 
