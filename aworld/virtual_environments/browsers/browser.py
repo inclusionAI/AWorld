@@ -342,7 +342,7 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
             action_result, self.page = self.action_executor.execute_action(
                 action,
                 observation=self.cur_observation,
-                llm_config=self.conf.llm_config,
+                llm_config=self.conf.get('llm_config', None),
                 **kwargs,
             )
             reward = 1

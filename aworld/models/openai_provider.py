@@ -186,7 +186,7 @@ class OpenAIProvider(LLMProviderBase):
             if (hasattr(response, 'code') and response.code != 0) or (
                     isinstance(response, dict) and response.get("code", 0) != 0):
                 error_msg = getattr(response, 'msg', 'Unknown error')
-                logger.warn(f"API Error: {error_msg}")
+                logger.warning(f"API Error: {error_msg}")
                 raise LLMResponseError(error_msg, kwargs.get("model_name", self.model_name or "unknown"), response)
 
             if not response:
@@ -196,7 +196,7 @@ class OpenAIProvider(LLMProviderBase):
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e
-            logger.warn(f"Error in OpenAI completion: {e}")
+            logger.warning(f"Error in OpenAI completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
     def stream_completion(self,
@@ -240,7 +240,7 @@ class OpenAIProvider(LLMProviderBase):
                 yield self.postprocess_stream_response(chunk)
 
         except Exception as e:
-            logger.warn(f"Error in stream_completion: {e}")
+            logger.warning(f"Error in stream_completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
     async def astream_completion(self,
@@ -287,7 +287,7 @@ class OpenAIProvider(LLMProviderBase):
                     yield self.postprocess_stream_response(chunk)
 
         except Exception as e:
-            logger.warn(f"Error in astream_completion: {e}")
+            logger.warning(f"Error in astream_completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
     async def acompletion(self,
@@ -327,7 +327,7 @@ class OpenAIProvider(LLMProviderBase):
             if (hasattr(response, 'code') and response.code != 0) or (
                     isinstance(response, dict) and response.get("code", 0) != 0):
                 error_msg = getattr(response, 'msg', 'Unknown error')
-                logger.warn(f"API Error: {error_msg}")
+                logger.warning(f"API Error: {error_msg}")
                 raise LLMResponseError(error_msg, kwargs.get("model_name", self.model_name or "unknown"), response)
 
             if not response:
@@ -337,7 +337,7 @@ class OpenAIProvider(LLMProviderBase):
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e
-            logger.warn(f"Error in acompletion: {e}")
+            logger.warning(f"Error in acompletion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
     def get_openai_params(self,
