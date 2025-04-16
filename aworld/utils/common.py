@@ -153,12 +153,5 @@ def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
         result = thread.result
 
     else:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(async_func(*args, **kwargs))
-        except Exception as e:
-            raise e
-        finally:
-            loop.close()
+        result = asyncio.run(async_func(*args, **kwargs))
     return result
