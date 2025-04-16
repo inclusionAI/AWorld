@@ -532,6 +532,7 @@ class Task(object):
 
     def _social_tool_call(self, policy: List[ActionModel], step: int):
         observation = None
+        terminated = False
         # group action by tool name
         tool_mapping = dict()
         # Directly use or use tools after creation.
