@@ -289,7 +289,7 @@ class Task(object):
                 color_log(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
                 msg = f"Step {step} failed with exception: {info['exception']}"
             logger.info(f"step: {step} finished by tool action.")
-            log_ob = Observation(content=observation.content,
+            log_ob = Observation(content='' if observation.content is None else observation.content,
                                  action_result=observation.action_result)
             color_log(f"{tool_name} observation: {log_ob}", color=Color.green)
         return msg, terminated
@@ -568,7 +568,7 @@ class Task(object):
             if info.get("exception"):
                 color_log(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
             logger.info(f"step: {step} finished by tool action {action}.")
-            log_ob = Observation(content=observation.content,
+            log_ob = Observation(content='' if observation.content is None else observation.content,
                                  action_result=observation.action_result)
             color_log(f"{tool_name} observation: {log_ob}", color=Color.green)
 
