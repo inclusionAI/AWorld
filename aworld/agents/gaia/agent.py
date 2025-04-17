@@ -13,7 +13,7 @@ from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.base import Agent, AgentFactory
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool_desc import get_tool_desc
-from aworld.logs.util import logger
+from aworld.logs.util import logger, color_log, Color
 from aworld.models.llm import call_llm_model
 from aworld.models.utils import tool_desc_transform
 
@@ -105,6 +105,7 @@ class ExecuteAgent(Agent):
                 raise ValueError(error_msg)
 
         tool_calls = []
+        color_log(f'execute_agent LLM input content: {input_content}', color=Color.pink)
         try:
             llm_result = call_llm_model(
                 self.llm,
@@ -113,7 +114,7 @@ class ExecuteAgent(Agent):
                 tools=self.tools,
                 temperature=0,
             )
-            logger.info(f"Execute response: {llm_result.message}")
+            logger.info(f"execute_agent response: {llm_result.message}")
             res = self.response_parse(llm_result)
             content = res.actions[0].policy_info
             tool_calls = llm_result.tool_calls
@@ -199,11 +200,12 @@ class PlanAgent(Agent):
             self.first_prompt = None
 
         input_content.append({"role": "user", "content": message})
+        color_log(f'plan_agent LLM input content: {input_content}', color=Color.pink)
         try:
             llm_result = call_llm_model(
                 self.llm, messages=input_content, model=self.model_name
             )
-            logger.info(f"Plan response: {llm_result.message}")
+            logger.info(f"plan_agent response: {llm_result.message}")
         except Exception as e:
             logger.warning(traceback.format_exc())
             raise e
