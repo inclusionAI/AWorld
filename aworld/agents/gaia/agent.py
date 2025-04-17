@@ -42,7 +42,12 @@ class ExecuteAgent(Agent):
             {"role": "system", "content": self.system_prompt},
         ]
         for traj in self.trajectory:
-            input_content.append(traj[0].content)
+            # Handle multiple messages in content
+            if isinstance(traj[0].content, list):
+                input_content.extend(traj[0].content)
+            else:
+                input_content.append(traj[0].content)
+                
             if traj[-1].tool_calls is not None:
                 input_content.append(
                     {
@@ -57,16 +62,47 @@ class ExecuteAgent(Agent):
         if content is None:
             content = observation.action_result[0].error
         if not self.trajectory:
-            message = {"role": "user", "content": content}
+            new_messages = [{"role": "user", "content": content}]
+            input_content.extend(new_messages)
         else:
-            tool_id = None
-            if self.trajectory[-1][-1].tool_calls:
-                tool_id = self.trajectory[-1][-1].tool_calls[0].id
-            if tool_id:
-                message = {"role": "tool", "content": content, "tool_call_id": tool_id}
-            else:
-                message = {"role": "user", "content": content}
-        input_content.append(message)
+            # Collect existing tool_call_ids from input_content
+            existing_tool_call_ids = {
+                msg.get("tool_call_id") for msg in input_content 
+                if msg.get("role") == "tool" and msg.get("tool_call_id")
+            }
+            
+            new_messages = []
+            for traj in self.trajectory:
+                if traj[-1].tool_calls is not None:
+                    # Handle multiple tool calls
+                    for tool_call in traj[-1].tool_calls:
+                        # Only add if this tool_call_id doesn't exist in input_content
+                        if tool_call.id not in existing_tool_call_ids:
+                            new_messages.append({
+                                "role": "tool",
+                                "content": content,
+                                "tool_call_id": tool_call.id
+                            })
+            input_content.extend(new_messages)
+
+            # Validate tool_calls and tool messages pairing
+            assistant_tool_calls = []
+            tool_responses = []
+            for msg in input_content:
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    assistant_tool_calls.extend(msg["tool_calls"])
+                elif msg.get("role") == "tool":
+                    tool_responses.append(msg.get("tool_call_id"))
+
+            # Check if all tool_calls have corresponding responses
+            tool_call_ids = {call.id for call in assistant_tool_calls}
+            tool_response_ids = set(tool_responses)
+            if tool_call_ids != tool_response_ids:
+                missing_calls = tool_call_ids - tool_response_ids
+                extra_responses = tool_response_ids - tool_call_ids
+                error_msg = f"Tool calls and responses mismatch. Missing responses for tool_calls: {missing_calls}, Extra responses: {extra_responses}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
         tool_calls = []
         try:
@@ -87,7 +123,7 @@ class ExecuteAgent(Agent):
         finally:
             if llm_result:
                 ob = copy.deepcopy(observation)
-                ob.content = message
+                ob.content = new_messages
                 self.trajectory.append((ob, info, llm_result))
             else:
                 logger.warning("no result to record!")
