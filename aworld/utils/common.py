@@ -144,7 +144,15 @@ def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
     if not asyncio.iscoroutinefunction(async_func):
         return async_func(*args, **kwargs)
 
-    loop = asyncio.get_event_loop()
-    result = loop.run_until_complete(async_func(*args, **kwargs))
+    loop = asyncio_loop()
+    if loop and loop.is_running():
+        thread = ReturnThread(async_func, *args, **kwargs)
+        thread.setDaemon(True)
+        thread.start()
+        thread.join()
+        result = thread.result
+    else:
+        loop = asyncio.get_event_loop()
+        result = loop.run_until_complete(async_func(*args, **kwargs))
 
     return result
