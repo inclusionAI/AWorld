@@ -12,6 +12,7 @@ from aworld.config.tool_action import SearchAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
 from aworld.logs.util import logger
+from aworld.utils import import_package
 from aworld.virtual_environments.action import ExecutableAction
 
 
@@ -19,6 +20,9 @@ from aworld.virtual_environments.action import ExecutableAction
                         desc=SearchAction.WIKI.value.desc,
                         tool_name=Tools.SEARCH_API.value)
 class SearchWiki(ExecutableAction):
+    def __init__(self):
+        import_package("wikipedia")
+
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         import wikipedia
 
@@ -55,6 +59,9 @@ class SearchWiki(ExecutableAction):
                         desc=SearchAction.DUCK_GO.value.desc,
                         tool_name=Tools.SEARCH_API.value)
 class Duckduckgo(ExecutableAction):
+    def __init__(self):
+        import_package("duckduckgo_search")
+
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         r"""Use DuckDuckGo search engine to search information for
         the given query.
@@ -227,6 +234,9 @@ class SearchGoogle(ExecutableAction):
                         desc=SearchAction.BAIDU.value.desc,
                         tool_name=Tools.SEARCH_API.value)
 class SearchBaidu(ExecutableAction):
+    def __init__(self):
+        import_package("baidusearch")
+
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         from baidusearch.baidusearch import search
 
