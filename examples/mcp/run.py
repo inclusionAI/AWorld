@@ -13,15 +13,17 @@ if __name__ == '__main__':
         llm_base_url="http://localhost:5080"
     )
 
-    search_sys_prompt = "You are a helpful agent."
+    search_sys_prompt = "You can use tools to calculate numbers and answer questions"
     search = Agent(
         conf=agent_config,
         name="search_agent",
         system_prompt=search_sys_prompt,
-        mcp_servers=["amap-amap-sse"]  # MCP server name for agent to use
+        #mcp_servers=["amap-amap-sse"],  # MCP server name for agent to use
+        mcp_servers = ["simple-calculator"]  # MCP server name for agent to use
     )
 
     # Define a task
     Task(
-        input="Hotels within 1 kilometer of West Lake in Hangzhou", agent=search, conf=TaskConfig()
+        #input="Hotels within 1 kilometer of West Lake in Hangzhou", agent=search, conf=TaskConfig()
+        input="30,000 divided by 1.2 ", agent=search, conf=TaskConfig()
     ).run()
