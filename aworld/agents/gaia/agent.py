@@ -34,6 +34,7 @@ class ExecuteAgent(Agent):
         self, observation: Observation, info: Dict[str, Any] = None, **kwargs
     ) -> List[ActionModel] | None:
         start_time = time.time()
+        self._finished = False
         self.desc_transform()
         content = observation.content
 
@@ -178,6 +179,7 @@ class PlanAgent(Agent):
         self, observation: Observation, info: Dict[str, Any] = None, **kwargs
     ) -> List[ActionModel] | None:
         llm_result = None
+        self._finished = False
         self.desc_transform()
         input_content = [
             {"role": "system", "content": self.system_prompt},
