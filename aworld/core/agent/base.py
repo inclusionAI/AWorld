@@ -180,7 +180,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
     def llm(self):
         # lazy
         if self._llm is None:
-            conf = self.conf.llm_config if self.conf.llm_config.llm_base_url or self.conf.llm_config.llm_api_key else self.conf
+            llm_config = self.conf.llm_config or None
+            conf = llm_config if llm_config and (llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
             self._llm = get_llm_model(conf)
         return self._llm
 
