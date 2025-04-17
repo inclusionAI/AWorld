@@ -10,7 +10,7 @@ from aworld.config.common import Tools
 from aworld.config.tool_action import GymAction
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import AsyncTool, ToolFactory
-from aworld.utils import import_package
+from aworld.utils.import_package import import_packages
 
 
 class ActionType(object):
@@ -27,7 +27,7 @@ class OpenAIGym(AsyncTool[Observation, List[ActionModel]]):
             env_id: gym environment full name
             wrappers: gym environment wrapper list
         """
-        import_package('gymnasium')
+        import_packages(['pygame', 'gymnasium'])
         super(OpenAIGym, self).__init__(conf, **kwargs)
         self.env_id = self.conf.get("env_id")
         self._render = self.conf.get('render', True)

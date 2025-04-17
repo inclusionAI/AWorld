@@ -4,6 +4,7 @@
 import base64
 import json
 import os
+import subprocess
 import time
 import traceback
 from importlib import resources
@@ -14,8 +15,10 @@ from aworld.config import ConfigDict
 from aworld.config.common import Tools
 from aworld.config.tool_action import BrowserAction
 from aworld.core.common import ActionModel, ActionResult, Observation
-from aworld.core.envs.tool import Tool, ToolFactory, action_executor
 from aworld.logs.util import logger
+from aworld.core.envs.tool import action_executor, ToolFactory
+from aworld.core.envs.tool import Tool
+from aworld.utils.import_package import is_package_installed
 from aworld.utils import import_package
 from aworld.virtual_environments.browsers.action.executor import (
     BrowserToolActionExecutor,
@@ -54,7 +57,13 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
                 "aworld.virtual_environments.browsers.script", "buildDomTree.js"
             )
         self.cur_observation = None
-        import_package("playwright")
+        if not is_package_installed('playwright'):
+            import_package("playwright")
+            logger.info("playwright install...")
+            try:
+                subprocess.check_call('playwright install', shell=True, timeout=300)
+            except Exception as e:
+                logger.error(f"Fail to auto execute playwright install, you can install manually\n {e}")
 
     def init(self) -> None:
         from playwright.sync_api import sync_playwright

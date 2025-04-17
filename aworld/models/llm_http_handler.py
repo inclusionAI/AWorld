@@ -7,10 +7,9 @@ when direct SDK usage is not desired.
 import json
 import asyncio
 from typing import Any, Dict, List, Optional, Union, Generator, AsyncGenerator
-import aiohttp
 import requests
 from aworld.logs.util import logger
-
+from aworld.utils import import_package
 
 class LLMHTTPHandler:
     """HTTP handler for LLM providers.
@@ -38,6 +37,7 @@ class LLMHTTPHandler:
             timeout: Request timeout in seconds.
             max_retries: Maximum number of retries for failed requests.
         """
+        import_package("aiohttp")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model_name = model_name
@@ -141,6 +141,7 @@ class LLMHTTPHandler:
         Raises:
             aiohttp.ClientError: If the request fails.
         """
+        import aiohttp
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         
         # Create an independent session and keep it open
@@ -184,6 +185,7 @@ class LLMHTTPHandler:
         Raises:
             aiohttp.ClientError: If the request fails.
         """
+        import aiohttp
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         
         async with aiohttp.ClientSession() as session:
@@ -225,6 +227,7 @@ class LLMHTTPHandler:
         Returns:
             Response data.
         """
+        import aiohttp
         logger.info(f"async_call request data: {data}")
 
         retries = 0
@@ -274,6 +277,7 @@ class LLMHTTPHandler:
         Yields:
             Response chunks.
         """
+        import aiohttp
         data["stream"] = True
         logger.info(f"async_stream_call request data: {data}")
 

@@ -131,7 +131,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.handoffs = options.get("agent_names", [])
         self.mcp_servers = options.get("mcp_servers", [])
         self.trajectory = []
-        self._finished = False
+        self._finished = True
 
     async def async_reset(self, options: Dict[str, Any]):
         """Clean agent instance state and reset."""
@@ -185,6 +185,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         )
 
         self.need_reset = kwargs.get('need_reset') if kwargs.get('need_reset') else conf.need_reset
+        # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = kwargs.get('step_reset') if kwargs.get('step_reset') else True
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = kwargs.get("black_tool_actions") if kwargs.get(
@@ -201,7 +202,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
     def llm(self):
         # lazy
         if self._llm is None:
-            conf = self.conf.llm_config if self.conf.llm_config.llm_base_url or self.conf.llm_config.llm_api_key else self.conf
+            llm_config = self.conf.llm_config or None
+            conf = llm_config if llm_config and (llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
             self._llm = get_llm_model(conf)
         return self._llm
 
@@ -500,12 +502,9 @@ class AgentExecutor(object):
             observation: Observation source from a tool or an agent.
             agent: The special agent instance.
         """
-        agent = self._get_or_create_agent(
-            observation.to_agent_name, agent, kwargs.get("conf")
-        )
+        agent = self._get_or_create_agent(observation.to_agent_name, agent, kwargs.get('conf'))
         agent._finished = False
-
-        if is_abstract_method(agent, "policy"):
+        if is_abstract_method(agent, 'policy'):
             agent.desc_transform()
             images = observation.images if agent.conf.use_vision else None
             if agent.conf.use_vision and not images and observation.image:
@@ -568,11 +567,9 @@ class AgentExecutor(object):
             observation: Observation source from a tool or an agent.
             agent: The special agent instance.
         """
-        agent = self._get_or_create_agent(
-            observation.to_agent_name, agent, kwargs.get("conf")
-        )
-
-        if is_abstract_method(agent, "async_policy"):
+        agent = self._get_or_create_agent(observation.to_agent_name, agent, kwargs.get('conf'))
+        agent._finished = False
+        if is_abstract_method(agent, 'async_policy'):
             await agent.async_desc_transform()
             images = observation.images
             if not images and observation.image:

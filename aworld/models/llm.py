@@ -19,8 +19,6 @@ MODEL_NAMES = {
     ],
     "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini"],
     "azure_openai": ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-35-turbo"],
-    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-    "qwen": ["qwq-plus", "qwen-plus", "qwen-max"]
 }
 
 # Endpoint patterns for identifying providers

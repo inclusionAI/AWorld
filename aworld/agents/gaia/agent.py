@@ -25,9 +25,10 @@ class ExecuteAgent(Agent):
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
-        self.task = options.get("task")
-        self.trajectory = []
+        super().reset(options)
+
         self.system_prompt = execute_system_prompt.format(task=self.task)
+        self.step_reset = False
 
     def policy(
         self, observation: Observation, info: Dict[str, Any] = None, **kwargs
@@ -50,12 +51,7 @@ class ExecuteAgent(Agent):
                 
             if traj[-1].tool_calls is not None:
                 input_content.append(
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": traj[-1].tool_calls,
-                    }
-                )
+                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].tool_calls})
             else:
                 input_content.append({"role": "assistant", "content": traj[-1].content})
 
@@ -166,13 +162,14 @@ class PlanAgent(Agent):
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
-        self.task = options.get("task")
-        self.trajectory = []
+        super().reset(options)
+
         self.system_prompt = plan_system_prompt.format(task=self.task)
         self.done_prompt = plan_done_prompt.format(task=self.task)
         self.postfix_prompt = plan_postfix_prompt.format(task=self.task)
         self.first_prompt = init_prompt
         self.first = True
+        self.step_reset = False
 
     def policy(
         self, observation: Observation, info: Dict[str, Any] = None, **kwargs
@@ -187,12 +184,7 @@ class PlanAgent(Agent):
             input_content.append({"role": "user", "content": traj[0].content})
             if traj[-1].tool_calls is not None:
                 input_content.append(
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": traj[-1].serialize_tool_calls(),
-                    }
-                )
+                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].tool_calls})
             else:
                 input_content.append({"role": "assistant", "content": traj[-1].content})
 

@@ -27,7 +27,8 @@ plan = Agent(
     name="example_plan_agent",
     system_prompt=plan_sys_prompt,
     agent_prompt=plan_prompt,
-    agent_names=['browser_agent']
+    agent_names=['browser_agent'],
+    step_reset=False
 )
 
 search = Agent(

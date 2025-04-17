@@ -32,3 +32,4 @@ langchain-experimental~=0.3.4
 prometheus_client~=0.21.1
 opentelemetry-sdk~=1.31.1
 opentelemetry-api~=1.31.1
+aiohttp~=3.11.16
