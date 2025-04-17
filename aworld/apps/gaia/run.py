@@ -120,7 +120,7 @@ if __name__ == "__main__":
         )
 
         swarm = Swarm((planner, executor), (executor, browser), sequence=False)
-        task = Task(input=question, swarm=swarm, conf=TaskConfig())
+        task = Task(input=question, swarm=swarm, conf=TaskConfig(), endless_threshold=10)
         result = client.submit(task=[task])
 
         answer = result["task_0"]["answer"]
