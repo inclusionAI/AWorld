@@ -79,7 +79,10 @@ class ExecuteAgent(Agent):
                                 "content": content,
                                 "tool_call_id": tool_call.id
                             })
-            input_content.extend(new_messages)
+            if new_messages:
+                input_content.extend(new_messages)
+            else:
+                input_content.append({"role": "user", "content": content})
 
             # Validate tool_calls and tool messages pairing
             assistant_tool_calls = []
