@@ -300,6 +300,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--port",
         type=int,
+        default=20000,
         help=f"Listening to port. Must be specified.",
     )
     args = parser.parse_args()

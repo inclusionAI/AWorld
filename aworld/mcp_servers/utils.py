@@ -31,7 +31,6 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-import magic
 import requests
 from mcp.server import FastMCP
 
@@ -117,6 +116,8 @@ def get_mime_type(file_path: str, default_mime: Optional[str] = None) -> str:
         str: Detected MIME type
     """
     # Try using python-magic for accurate MIME type detection
+    import magic
+
     try:
         mime = magic.Magic(mime=True)
         return mime.from_file(file_path)
