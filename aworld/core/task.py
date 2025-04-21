@@ -169,6 +169,7 @@ class Task(object):
                 logger.error(f"Unknown topology type: {self.swarm.topology_type}")
         finally:
             color_log(f"{self.name} task token usage: {self.token_usage}", color=Color.pink)
+            self.traject.append(self.tools.keys())
             # resources clean
             if self.tools:
                 for _, tool in self.tools.items():
