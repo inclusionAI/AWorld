@@ -183,6 +183,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             if kwargs.get("output_prompt")
             else conf.output_prompt
         )
+        self.token_count = 0
 
         self.need_reset = kwargs.get('need_reset') if kwargs.get('need_reset') else conf.need_reset
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
@@ -310,6 +311,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
     def response_parse(self, resp: ModelResponse) -> AgentResult:
         """Default parse response by LLM."""
+        self.token_count = 0
         results = []
         if not resp:
             logger.warning("LLM no valid response!")
@@ -344,6 +346,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 content = content.replace("```json", "").replace("```", "")
             # no tool call, agent name is itself.
             results.append(ActionModel(agent_name=self.name(), policy_info=content))
+
+        self.token_count = resp.usage.get('total_tokens', 0)
         return AgentResult(
             actions=results, current_state=None, is_call_tool=is_call_tool
         )

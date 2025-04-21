@@ -152,6 +152,8 @@ class BrowserAgent(Agent):
 
         # Estimate token count
         tokens = self._estimate_tokens_for_messages(input_messages)
+        self.token_count = tokens
+
 
         llm_result = None
         output_message = None
