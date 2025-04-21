@@ -44,6 +44,7 @@ class Task(object):
                  tools: List[Tool] = [],
                  tool_names: List[str] = [],
                  tools_conf: Dict[str, Union[Dict[str, Any], ConfigDict, AgentConfig]] = {},
+                 mcp_servers_conf: Dict[str, Union[Dict[str, Any], ConfigDict, AgentConfig]] = {},
                  endless_threshold: int = 3,
                  *args,
                  **kwargs):
@@ -98,6 +99,9 @@ class Task(object):
         # lazy load
         self.tool_names = tool_names
         self.tools_conf = tools_conf
+        # mcp tool conf
+        if mcp_servers_conf:
+            self.tools_conf['mcp'] = mcp_servers_conf
         self.endless_threshold = endless_threshold
 
         self.daemon_target = kwargs.pop("daemon_target", None)
@@ -150,10 +154,21 @@ class Task(object):
 
         self.swarm.reset(observation.content, self.tool_names)
 
-        if self.swarm.topology_type == "social":
-            return self._social_process(observation, info)
-        elif self.swarm.topology_type == "sequence":
-            return self._sequence_process(observation, info)
+        try:
+            if self.swarm.topology_type == "social":
+                return self._social_process(observation, info)
+            elif self.swarm.topology_type == "sequence":
+                return self._sequence_process(observation, info)
+            else:
+                logger.error(f"Unknown topology type: {self.swarm.topology_type}")
+        finally:
+            # resources clean
+            if self.tools:
+                for _, tool in self.tools.items():
+                    try:
+                        tool.close()
+                    except:
+                        logger.warning(f"{tool.name()} close fail.")
 
     def _sequence_process(self, observation: Observation, info: Dict[str, Any]):
         """Multi-agent sequence general process workflow.

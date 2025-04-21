@@ -12,8 +12,8 @@ from mcp.types import TextContent
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.envs.tool import ToolActionExecutor, Tool
 from aworld.logs.util import logger
-from aworld.mcp.server import MCPServer, MCPServerSse
-from aworld.utils.common import sync_exec, find_file
+from aworld.mcp.server import MCPServer, MCPServerSse, MCPServerStdio
+from aworld.utils.common import sync_exec, find_file, asyncio_loop
 
 
 class MCPToolExecutor(ToolActionExecutor):
@@ -25,6 +25,8 @@ class MCPToolExecutor(ToolActionExecutor):
         self.initialized = False
         self.mcp_servers: Dict[str, MCPServer] = {}
         self._load_mcp_config()
+        # {"server name": {tool config}}, used to more refined configuration
+        self.servers_conf = self.tool.conf
 
     def _load_mcp_config(self) -> None:
         """Load MCP server configurations from config file."""
@@ -130,8 +132,6 @@ class MCPToolExecutor(ToolActionExecutor):
                     "encoding_error_handler": server_info["encoding_error_handler"],
                 }
 
-                from aworld.mcp.server import MCPServerStdio
-
                 server = MCPServerStdio(
                     server_params, cache_tools_list=True, name=server_name
                 )
@@ -226,16 +226,7 @@ class MCPToolExecutor(ToolActionExecutor):
             return [], None
 
         # Check if the event loop is closed, recreate if necessary
-        loop = None
-        try:
-            loop = asyncio.get_running_loop()
-            if loop.is_closed():
-                # Current loop is closed, need to create a new one
-                loop = None
-        except RuntimeError:
-            # No running loop, need to create a new one
-            pass
-
+        loop = asyncio_loop()
         if loop is None:
             # Create a new event loop
             loop = asyncio.new_event_loop()
@@ -327,15 +318,9 @@ class MCPToolExecutor(ToolActionExecutor):
         cleanup_errors = []
 
         # Ensure there is a running event loop
-        try:
-            loop = asyncio.get_running_loop()
-            if loop.is_closed():
-                logging.warning("Event loop is closed during cleanup, creating new one")
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        except RuntimeError:
-            # No running event loop
-            logging.info("No running event loop during cleanup, creating new one")
+        loop = asyncio_loop()
+        if loop is None:
+            logging.warning("Event loop is closed during cleanup, creating new one")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
