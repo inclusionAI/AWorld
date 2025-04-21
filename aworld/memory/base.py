@@ -22,7 +22,7 @@ class MemoryItem(BaseModel):
         if "id" not in data:
             data["id"] = str(uuid.uuid4())
         if "hash" not in data:
-            data["hash"] = hashlib.md5(data.get("content", "").encode()).hexdigest()
+            data["hash"] = hashlib.md5((data.get("content") or "").encode()).hexdigest()
         if "created_at" not in data:
             data["created_at"] = datetime.datetime.now().isoformat()
         if "updated_at" not in data:

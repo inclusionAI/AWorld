@@ -167,7 +167,12 @@ class MCPToolExecutor(ToolActionExecutor):
 
                 # Call the tool and process results
                 try:
-                    result = await server.call_tool(action_name, params)
+                    if self.mcp_servers[server_name]["instance"]:
+                        result = await self.mcp_servers[server_name]["instance"].call_tool(action_name, params)
+                    else:
+                        server = await self._get_or_create_server(server_name)
+                        # Call the tool on the server
+                        result = await server.call_tool(action_name, params)
 
                     if result and result.content:
                         if isinstance(result.content[0], TextContent):
