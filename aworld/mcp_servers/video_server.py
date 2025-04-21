@@ -21,7 +21,7 @@ from typing import Any, Dict, List
 import cv2
 from pydantic import Field
 
-from aworld.logs.util import logger
+from aworld.logs.util import logger, color_log
 from aworld.mcp_servers.utils import (
     get_file_from_source,
     get_llm_config_from_os_environ,
@@ -160,6 +160,8 @@ def mcpanalyzevideo(
             messages=inputs,
             temperature=0,
         )
+
+        color_log(f"video server exec: {question}, token usage: {response.usage}")
         video_analysis_result = handle_llm_response(
             response.content, "video_analysis_result"
         )

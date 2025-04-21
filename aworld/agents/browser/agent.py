@@ -21,6 +21,7 @@ from aworld.config.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ToolActionInfo, ActionResult
 from aworld.logs.util import logger
 from aworld.agents.browser.prompts import AgentMessagePrompt
+from aworld.models.model_response import TOKEN_USAGE
 
 
 @dataclass
@@ -132,6 +133,7 @@ class BrowserAgent(Agent):
                observation: Observation,
                info: Dict[str, Any] = None, **kwargs) -> Union[List[ActionModel], None]:
         start_time = time.time()
+        self.token_usage = TOKEN_USAGE
 
         if self._init is False:
             self.reset({"task": observation.content})
@@ -152,7 +154,7 @@ class BrowserAgent(Agent):
 
         # Estimate token count
         tokens = self._estimate_tokens_for_messages(input_messages)
-        self.token_count = tokens
+        self.token_usage['total_tokens'] = tokens
 
 
         llm_result = None

@@ -23,7 +23,7 @@ from typing import Any, Dict, List
 from PIL import Image
 from pydantic import Field
 
-from aworld.logs.util import logger
+from aworld.logs.util import logger, color_log
 from aworld.mcp_servers.utils import (
     get_file_from_source,
     get_llm_config_from_os_environ,
@@ -199,6 +199,8 @@ def mcpreasoningimage(
             messages=inputs,
             temperature=0,
         )
+
+        color_log(f"image server token usage: {response.usage}")
         image_reasoning_result = handle_llm_response(
             response.content, "image_reasoning_result"
         )

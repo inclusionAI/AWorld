@@ -2,6 +2,12 @@ from typing import Any, Dict, List, Optional
 import json
 from pydantic import BaseModel
 
+TOKEN_USAGE = {
+    "completion_tokens": 0,
+    "prompt_tokens": 0,
+    "total_tokens": 0
+}
+
 
 class LLMResponseError(Exception):
     """Represents an error in LLM response.
@@ -141,11 +147,7 @@ class ModelResponse:
         self.model = model
         self.content = content
         self.tool_calls = tool_calls
-        self.usage = usage or {
-            "completion_tokens": 0,
-            "prompt_tokens": 0,
-            "total_tokens": 0
-        }
+        self.usage = usage or TOKEN_USAGE
         self.error = error
         self.raw_response = raw_response
 

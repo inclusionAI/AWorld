@@ -17,7 +17,7 @@ from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.mcp.utils import mcp_tool_desc_transform
 from aworld.models.llm import call_llm_model, get_llm_model
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import ModelResponse, TOKEN_USAGE
 from aworld.models.utils import agent_desc_transform, tool_desc_transform
 from aworld.utils.common import convert_to_snake, is_abstract_method, sync_exec
 
@@ -183,9 +183,11 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             if kwargs.get("output_prompt")
             else conf.output_prompt
         )
-        self.token_count = 0
 
-        self.need_reset = kwargs.get('need_reset') if kwargs.get('need_reset') else conf.need_reset
+        self.token_usage = TOKEN_USAGE
+        self.need_reset = (
+            kwargs.get("need_reset") if kwargs.get("need_reset") else conf.need_reset
+        )
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = kwargs.get('step_reset') if kwargs.get('step_reset') else True
         # tool_name: [tool_action1, tool_action2, ...]
@@ -311,7 +313,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
     def response_parse(self, resp: ModelResponse) -> AgentResult:
         """Default parse response by LLM."""
-        self.token_count = 0
+        self.token_usage = TOKEN_USAGE
         results = []
         if not resp:
             logger.warning("LLM no valid response!")
@@ -346,8 +348,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 content = content.replace("```json", "").replace("```", "")
             # no tool call, agent name is itself.
             results.append(ActionModel(agent_name=self.name(), policy_info=content))
-
-        self.token_count = resp.usage.get('total_tokens', 0)
+        self.token_usage = resp.usage
         return AgentResult(
             actions=results, current_state=None, is_call_tool=is_call_tool
         )

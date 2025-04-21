@@ -21,13 +21,14 @@ import subprocess
 import tempfile
 import traceback
 import uuid
+from collections import Counter
 from typing import Dict, List, Optional
 
 import pyglove as pg
 from langchain_core.language_models.llms import LLM
 from pydantic import BaseModel, Field
 
-from aworld.logs.util import logger
+from aworld.logs.util import logger, color_log
 from aworld.mcp_servers.utils import get_llm_config_from_os_environ, run_mcp_server
 from aworld.models.llm import get_llm_model
 
@@ -104,7 +105,7 @@ def mcpgeneratecode(
             temperature=0.1,
             # max_tokens=16 * 1024,
         )
-
+        color_log(f"code server token usage: {response.usage}")
         generated_code = response.content.strip() if response.content else ""
 
         # Extract code from markdown code blocks if present
