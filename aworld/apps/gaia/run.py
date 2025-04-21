@@ -135,6 +135,7 @@ if __name__ == "__main__":
             "model_answer": answer,
             "ground_truth": sample["Final answer"],
             "score": question_scorer(answer, sample["Final answer"]),
+            "traject": task.traject
         }
         _results.append(_result_info)
         with open(save_path, "w") as f:

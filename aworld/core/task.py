@@ -108,6 +108,8 @@ class Task(object):
 
         self.token_usage: dict[str, int] = TOKEN_USAGE
 
+        self.traject = []
+
         self.daemon_target = kwargs.pop("daemon_target", None)
         self._use_demon = False if not conf else conf.get("use_demon", False)
         self._exception = None
@@ -476,6 +478,7 @@ class Task(object):
                     "success": False,
                     "time_cost": (time.time() - start)}
         color_log(f"{self.swarm.cur_agent.name()} policy: {policy}")
+        self.traject.append(policy)
 
         msg = None
         response = None
@@ -511,6 +514,7 @@ class Task(object):
 
                 if status == "break":
                     return_entry = info
+                    self.traject.append(info)
                     break
                 elif status == "return":
                     return info
@@ -528,7 +532,7 @@ class Task(object):
                                                           conf=cur_agent.conf,
                                                           step=step)
                     color_log(f"{cur_agent.name()} policy: {policy}")
-                    self.token_count += cur_agent.token_count
+                    self.token_usage = dict(Counter(cur_agent.token_usage) + Counter(self.token_usage))
 
             if policy:
                 response = (
