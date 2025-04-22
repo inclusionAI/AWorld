@@ -64,10 +64,7 @@ class ShangshuProvider(LLMProviderBase):
             "visitBiz": "BU_general_gpt4",
             "visitBizLine": "BU_general_gpt4_wuman",
             "cacheInterval": "-1",
-            "queryConditions": {
-                "url": "https://zdfmng.alipay.com/commonQuery/queryData",
-                # "messageKey": message_key_str
-            }
+            "queryConditions": {}
         }
         return self.http_provider
 
@@ -181,7 +178,7 @@ class ShangshuProvider(LLMProviderBase):
             self.model_name or "unknown"
         )
 
-    def preprocess_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def preprocess_message_with_args(self, messages: List[Dict[str, str]], ext_params: Dict[str, Any]) -> List[Dict[str, str]]:
         """Preprocess messages, use Shangshu format directly.
 
         Args:
@@ -190,9 +187,7 @@ class ShangshuProvider(LLMProviderBase):
         Returns:
             Processed message list.
         """
-        # url = f"{self.base_url}/{self.endpoint.lstrip('/')}"
         query_conditions = {
-            # "url": url,
             "model": self.model_name,
             "n": "1",
             "api_key": self.api_key,
@@ -204,8 +199,10 @@ class ShangshuProvider(LLMProviderBase):
         param["serviceName"] = "asyn_chatgpt_prompts_completions_query_dataview"
         param["queryConditions"].update(query_conditions)
 
-        url = 'https://zdfmng.alipay.com/commonQuery/queryData'
-        # data = json.dumps(param) % url.encode('utf8')
+        for k in ext_params.keys():
+            if k not in param["queryConditions"]:
+                param["queryConditions"][k] = ext_params[k]
+
         data = json.dumps(param)
         encrypted_param = self.aes_encrypt(data, self.aes_key)
         return [{"encryptedParam": encrypted_param}]
@@ -291,7 +288,7 @@ class ShangshuProvider(LLMProviderBase):
         self.message_key = f"llm_call_{timestamp}"
         message_key_literal = self.message_key
         self.aes_key = kwargs.get("aes_key", self.aes_key)
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_message_with_args(messages, self.build_openai_params(temperature, max_tokens, stop, **kwargs))
         if not processed_messages:
             raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
 
@@ -346,7 +343,7 @@ class ShangshuProvider(LLMProviderBase):
         
         # Add streaming parameter
         kwargs["stream"] = True
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_message_with_args(messages, self.build_openai_params(temperature, max_tokens, stop, **kwargs))
         if not processed_messages:
             raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
 
@@ -411,7 +408,7 @@ class ShangshuProvider(LLMProviderBase):
         message_key_literal = self.message_key  # Ensure it's a direct string literal
         self.aes_key = kwargs.get("aes_key", self.aes_key)
         
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_message_with_args(messages, self.build_openai_params(temperature, max_tokens, stop, **kwargs))
         if not processed_messages:
             raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
 
@@ -470,7 +467,7 @@ class ShangshuProvider(LLMProviderBase):
         
         # Add streaming parameter
         kwargs["stream"] = True
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_message_with_args(messages, self.build_openai_params(temperature, max_tokens, stop, **kwargs))
         if not processed_messages:
             raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
 
@@ -508,3 +505,29 @@ class ShangshuProvider(LLMProviderBase):
                 raise e
             logger.warn(f"Error in async Shangshu stream completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+
+    def build_openai_params(self,
+                          messages: List[Dict[str, str]],
+                          temperature: float = 0.0,
+                          max_tokens: int = None,
+                          stop: List[str] = None,
+                          **kwargs) -> Dict[str, Any]:
+        openai_params = {
+            "model": kwargs.get("model_name", self.model_name or ""),
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stop": stop
+        }
+
+        supported_params = [
+            "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
+            "presence_penalty", "response_format", "seed", "stream", "top_p",
+            "user", "function_call", "functions", "tools", "tool_choice"
+        ]
+
+        for param in supported_params:
+            if param in kwargs:
+                openai_params[param] = kwargs[param]
+
+        return openai_params
