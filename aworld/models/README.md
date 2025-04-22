@@ -16,6 +16,7 @@ A unified interface for interacting with various LLM providers through a consist
 - `openai`: Models supporting OpenAI API protocol (OpenAI, compatible models)
 - `anthropic`: Models supporting Anthropic API protocol (Claude models)
 - `azure_openai`: Azure OpenAI service
+- `shangshu`: Shangshu internal service with AES encryption support
 
 ## Basic Usage
 
@@ -180,6 +181,76 @@ This approach can be useful when:
 - You need more control over the HTTP requests
 - You have compatibility issues with the official SDK
 - You're using a model that follows OpenAI API protocol but isn't fully compatible with the SDK
+
+### Shangshu Provider
+
+Shangshu provider requires special configuration with AES encryption:
+
+```python
+from aworld.config.conf import AgentConfig
+from aworld.models.llm import get_llm_model, call_llm_model
+
+# Initialize with Shangshu provider
+config = AgentConfig(
+    llm_provider="shangshu",
+    llm_model_name="gpt-4o",  # Use appropriate model name
+    llm_temperature=0.0,
+    llm_base_url="https://your-shangshu-endpoint.example.com",
+    llm_api_key="your_shangshu_api_key"  # Will fallback to SHANGSHU_API_KEY env var
+)
+
+# Initialize the model
+model = get_llm_model(config)
+
+# Prepare messages
+messages = [
+    {"role": "system", "content": "You are a helpful AI assistant."},
+    {"role": "user", "content": "Explain Python in three sentences."}
+]
+
+# Make call with AES key (required for Shangshu)
+# If AES key is not provided, will use SHANGSHU_AES_KEY env var
+response = call_llm_model(model, messages, aes_key="your_aes_encryption_key", response_timeout=30)
+print(response.content)
+```
+
+Asynchronous calls with Shangshu:
+
+```python
+import asyncio
+from aworld.models.llm import get_llm_model, acall_llm_model
+
+async def main():
+    # Initialize model
+    model = get_llm_model(
+        llm_provider="shangshu", 
+        model_name="gpt-4o",
+        api_key="your_shangshu_api_key", 
+        base_url="https://your-shangshu-endpoint.example.com"
+    )
+    
+    # Prepare messages
+    messages = [
+        {"role": "user", "content": "Explain machine learning briefly."}
+    ]
+    
+    # Async call with required Shangshu parameters
+    response = await acall_llm_model(
+        model, 
+        messages, 
+        aes_key="your_aes_encryption_key", 
+        response_timeout=30
+    )
+    print(response.content)
+
+# Run async function
+asyncio.run(main())
+```
+
+Shangshu environment variables:
+- `SHANGSHU_API_KEY`: API key for authentication
+- `SHANGSHU_ENDPOINT`: Base URL for Shangshu API 
+- `SHANGSHU_AES_KEY`: AES encryption key for request encryption
 
 ### Tool Calls Support
 
