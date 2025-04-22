@@ -1,10 +1,13 @@
 import os
+import dotenv
+import json
+import asyncio
 from typing import Any, Dict, List, Generator, AsyncGenerator
 from anthropic import Anthropic, AsyncAnthropic
 
 from aworld.logs.util import logger
 from aworld.models.llm_provider_base import LLMProviderBase
-from aworld.models.model_response import ModelResponse, LLMResponseError
+from aworld.models.model_response import ModelResponse
 from aworld.env_secrets import secrets
 
 
@@ -22,7 +25,7 @@ class AnthropicProvider(LLMProviderBase):
         api_key = self.api_key
         if not api_key:
             env_var = "ANTHROPIC_API_KEY"
-            api_key = os.getenv(env_var, "") or secrets.claude_api_key
+            api_key = dotenv.get_key(".env", env_var) or os.getenv(env_var, "") or secrets.claude_api_key
             if not api_key:
                 raise ValueError(
                     f"Anthropic API key not found, please set {env_var} environment variable or provide it in the parameters")
@@ -42,7 +45,7 @@ class AnthropicProvider(LLMProviderBase):
         api_key = self.api_key
         if not api_key:
             env_var = "ANTHROPIC_API_KEY"
-            api_key = os.getenv(env_var, "") or secrets.claude_api_key
+            api_key = dotenv.get_key(".env", env_var) or os.getenv(env_var, "") or secrets.claude_api_key
             if not api_key:
                 raise ValueError(
                     f"Anthropic API key not found, please set {env_var} environment variable or provide it in the parameters")
@@ -51,10 +54,6 @@ class AnthropicProvider(LLMProviderBase):
             api_key=api_key,
             base_url=self.base_url
         )
-
-    @classmethod
-    def supported_models(cls) -> list[str]:
-        return [r"claude-3-.*"]
 
     def preprocess_messages(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
         """Preprocess messages, convert OpenAI format to Anthropic format.
@@ -92,15 +91,7 @@ class AnthropicProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
-        Raises:
-            LLMResponseError: When LLM response error occurs.
         """
-        # Check if response is empty or contains error
-        if not response or (isinstance(response, dict) and response.get('error')):
-            error_msg = response.get('error', 'Unknown error') if isinstance(response, dict) else 'Empty response'
-            raise LLMResponseError(error_msg, self.model_name or "claude", response)
-        
         return ModelResponse.from_anthropic_response(response)
 
     def postprocess_stream_response(self, chunk: Any) -> ModelResponse:
@@ -111,15 +102,7 @@ class AnthropicProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
-        Raises:
-            LLMResponseError: When LLM response error occurs.
         """
-        # Check if chunk is empty or contains error
-        if not chunk or (isinstance(chunk, dict) and chunk.get('error')):
-            error_msg = chunk.get('error', 'Unknown error') if isinstance(chunk, dict) else 'Empty response'
-            raise LLMResponseError(error_msg, self.model_name or "claude", chunk)
-            
         return ModelResponse.from_anthropic_stream_chunk(chunk)
 
     def completion(self, 
@@ -141,20 +124,56 @@ class AnthropicProvider(LLMProviderBase):
             ModelResponse object.
         """
         if not self.provider:
-            raise RuntimeError("Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+            raise RuntimeError("Sync provider not initialized. Make sure 'sync_able' parameter is set to True in initialization.")
 
         try:
             processed_data = self.preprocess_messages(messages)
-            processed_messages = processed_data["messages"]
-            system_content = processed_data["system"]
-            anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
-                                                         stop, **kwargs)
+
+            if "tools" in kwargs:
+                openai_tools = kwargs["tools"]
+                claude_tools = []
+
+                for tool in openai_tools:
+                    if tool["type"] == "function":
+                        claude_tool = {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "input_schema": {
+                                "type": "object",
+                                "properties": tool["parameters"]["properties"],
+                                "required": tool["parameters"].get("required", [])
+                            }
+                        }
+                        claude_tools.append(claude_tool)
+
+                kwargs["tools"] = claude_tools
+
+            anthropic_params = {
+                "model": kwargs.get("model_name", self.model_name or "claude-3-5-sonnet-20241022"),
+                "messages": processed_data["messages"],
+                "system": processed_data["system"],
+                "temperature": temperature,
+                "max_tokens": max_tokens or 4096,
+                "stop_sequences": stop,
+            }
+
+            if "tools" in kwargs and kwargs["tools"]:
+                anthropic_params["tools"] = kwargs["tools"]
+                anthropic_params["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+            for param in ["top_p", "top_k", "metadata", "stream"]:
+                if param in kwargs:
+                    anthropic_params[param] = kwargs[param]
+
             response = self.provider.messages.create(**anthropic_params)
 
             return self.postprocess_response(response)
         except Exception as e:
             logger.warn(f"Error in Anthropic completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "claude"))
+            return ModelResponse.from_error(
+                str(e),
+                kwargs.get("model_name", self.model_name or "claude-3-5-sonnet-20241022")
+            ) 
     
     def stream_completion(self, 
                      messages: List[Dict[str, str]], 
@@ -175,15 +194,48 @@ class AnthropicProvider(LLMProviderBase):
             Generator yielding ModelResponse chunks.
         """
         if not self.provider:
-            raise RuntimeError("Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+            raise RuntimeError("Sync provider not initialized. Make sure 'sync_able' parameter is set to True in initialization.")
 
         try:
             processed_data = self.preprocess_messages(messages)
-            processed_messages = processed_data["messages"]
-            system_content = processed_data["system"]
-            anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
-                                                         stop, **kwargs)
-            anthropic_params["stream"] = True
+
+            if "tools" in kwargs:
+                openai_tools = kwargs["tools"]
+                claude_tools = []
+
+                for tool in openai_tools:
+                    if tool["type"] == "function":
+                        claude_tool = {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "input_schema": {
+                                "type": "object",
+                                "properties": tool["parameters"]["properties"],
+                                "required": tool["parameters"].get("required", [])
+                            }
+                        }
+                        claude_tools.append(claude_tool)
+
+                kwargs["tools"] = claude_tools
+
+            anthropic_params = {
+                "model": kwargs.get("model_name", self.model_name or "claude-3-5-sonnet-20241022"),
+                "messages": processed_data["messages"],
+                "system": processed_data["system"],
+                "temperature": temperature,
+                "max_tokens": max_tokens or 4096,
+                "stop_sequences": stop,
+                "stream": True  # Enable streaming
+            }
+
+            if "tools" in kwargs and kwargs["tools"]:
+                anthropic_params["tools"] = kwargs["tools"]
+                anthropic_params["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+            for param in ["top_p", "top_k", "metadata"]:
+                if param in kwargs:
+                    anthropic_params[param] = kwargs[param]
+
             response_stream = self.provider.messages.create(**anthropic_params)
 
             for chunk in response_stream:
@@ -194,7 +246,10 @@ class AnthropicProvider(LLMProviderBase):
 
         except Exception as e:
             logger.warn(f"Error in Anthropic stream_completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "claude"))
+            yield ModelResponse.from_error(
+                str(e),
+                kwargs.get("model_name", self.model_name or "claude-3-5-sonnet-20241022")
+            )
 
     async def astream_completion(self, 
                            messages: List[Dict[str, str]], 
@@ -215,15 +270,48 @@ class AnthropicProvider(LLMProviderBase):
             AsyncGenerator yielding ModelResponse chunks.
         """
         if not self.async_provider:
-            raise RuntimeError("Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+            raise RuntimeError("Async provider not initialized. Make sure 'async_able' parameter is set to True in initialization.")
 
         try:
             processed_data = self.preprocess_messages(messages)
-            processed_messages = processed_data["messages"]
-            system_content = processed_data["system"]
-            anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
-                                                         stop, **kwargs)
-            anthropic_params["stream"] = True
+
+            if "tools" in kwargs:
+                openai_tools = kwargs["tools"]
+                claude_tools = []
+
+                for tool in openai_tools:
+                    if tool["type"] == "function":
+                        claude_tool = {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "input_schema": {
+                                "type": "object",
+                                "properties": tool["parameters"]["properties"],
+                                "required": tool["parameters"].get("required", [])
+                            }
+                        }
+                        claude_tools.append(claude_tool)
+
+                kwargs["tools"] = claude_tools
+
+            anthropic_params = {
+                "model": kwargs.get("model_name", self.model_name or "claude-3-5-sonnet-20241022"),
+                "messages": processed_data["messages"],
+                "system": processed_data["system"],
+                "temperature": temperature,
+                "max_tokens": max_tokens or 4096,
+                "stop_sequences": stop,
+                "stream": True  # Enable streaming
+            }
+
+            if "tools" in kwargs and kwargs["tools"]:
+                anthropic_params["tools"] = kwargs["tools"]
+                anthropic_params["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+            for param in ["top_p", "top_k", "metadata"]:
+                if param in kwargs:
+                    anthropic_params[param] = kwargs[param]
+
             response_stream = await self.async_provider.messages.create(**anthropic_params)
 
             async for chunk in response_stream:
@@ -234,7 +322,10 @@ class AnthropicProvider(LLMProviderBase):
 
         except Exception as e:
             logger.warn(f"Error in Anthropic astream_completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "claude"))
+            yield ModelResponse.from_error(
+                str(e),
+                kwargs.get("model_name", self.model_name or "claude-3-5-sonnet-20241022")
+            )
 
     async def acompletion(self, 
                     messages: List[Dict[str, str]], 
@@ -255,61 +346,53 @@ class AnthropicProvider(LLMProviderBase):
             ModelResponse object.
         """
         if not self.async_provider:
-            raise RuntimeError("Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+            raise RuntimeError("Async provider not initialized. Make sure 'async_able' parameter is set to True in initialization.")
 
         try:
             processed_data = self.preprocess_messages(messages)
-            processed_messages = processed_data["messages"]
-            system_content = processed_data["system"]
-            anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens, stop, **kwargs)
+
+            if "tools" in kwargs:
+                openai_tools = kwargs["tools"]
+                claude_tools = []
+
+                for tool in openai_tools:
+                    if tool["type"] == "function":
+                        claude_tool = {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "input_schema": {
+                                "type": "object",
+                                "properties": tool["parameters"]["properties"],
+                                "required": tool["parameters"].get("required", [])
+                            }
+                        }
+                        claude_tools.append(claude_tool)
+
+                kwargs["tools"] = claude_tools
+
+            anthropic_params = {
+                "model": kwargs.get("model_name", self.model_name or "claude-3-5-sonnet-20241022"),
+                "messages": processed_data["messages"],
+                "system": processed_data["system"],
+                "temperature": temperature,
+                "max_tokens": max_tokens or 4096,
+                "stop_sequences": stop,
+            }
+
+            if "tools" in kwargs and kwargs["tools"]:
+                anthropic_params["tools"] = kwargs["tools"]
+                anthropic_params["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+            for param in ["top_p", "top_k", "metadata", "stream"]:
+                if param in kwargs:
+                    anthropic_params[param] = kwargs[param]
+
             response = await self.async_provider.messages.create(**anthropic_params)
 
             return self.postprocess_response(response)
         except Exception as e:
             logger.warn(f"Error in Anthropic acompletion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "claude"))
-
-    def get_anthropic_params(self,
-                           messages: List[Dict[str, str]],
-                           system: str = None,
-                           temperature: float = 0.0,
-                           max_tokens: int = None,
-                           stop: List[str] = None,
-                           **kwargs) -> Dict[str, Any]:
-        if "tools" in kwargs:
-            openai_tools = kwargs["tools"]
-            claude_tools = []
-
-            for tool in openai_tools:
-                if tool["type"] == "function":
-                    claude_tool = {
-                        "name": tool["name"],
-                        "description": tool["description"],
-                        "input_schema": {
-                            "type": "object",
-                            "properties": tool["parameters"]["properties"],
-                            "required": tool["parameters"].get("required", [])
-                        }
-                    }
-                    claude_tools.append(claude_tool)
-
-            kwargs["tools"] = claude_tools
-
-        anthropic_params = {
-            "model": kwargs.get("model_name", self.model_name or ""),
-            "messages": messages,
-            "system": system,
-            "temperature": temperature,
-            "max_tokens": max_tokens or 4096,
-            "stop_sequences": stop,
-        }
-
-        if "tools" in kwargs and kwargs["tools"]:
-            anthropic_params["tools"] = kwargs["tools"]
-            anthropic_params["tool_choice"] = kwargs.get("tool_choice", "auto")
-
-        for param in ["top_p", "top_k", "metadata", "stream"]:
-            if param in kwargs:
-                anthropic_params[param] = kwargs[param]
-
-        return anthropic_params
+            return ModelResponse.from_error(
+                str(e),
+                kwargs.get("model_name", self.model_name or "claude-3-5-sonnet-20241022")
+            ) 

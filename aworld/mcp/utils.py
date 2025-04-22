@@ -2,27 +2,36 @@ import logging
 from typing import List, Dict, Any
 import json
 import os
+from pathlib import Path
 from contextlib import AsyncExitStack
 
-from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
-from aworld.utils.common import find_file
 
 
 async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
     openai_tools = []
+
     for i, server in enumerate(mcp_servers):
         try:
             tools = await server.list_tools()
+
             for tool in tools:
                 required = []
                 properties = {}
+
                 if tool.inputSchema and tool.inputSchema.get("properties"):
                     required = tool.inputSchema.get("required", [])
                     _properties = tool.inputSchema["properties"]
                     for param_name, param_info in _properties.items():
-                        param_type = param_info.get("type") if param_info.get("type") != "str" else "string"
-                        param_desc = param_info.get("description", "")
+                        # param_type = param_info["type"] if param_info["type"] != "str" else "string"
+                        if param_info.get("type") != "str" and param_info.get("type") is not None:
+                            param_type = param_info["type"]
+                        else:
+                            param_type = param_info.get("type", "string")
+
+                        # param_desc = param_info["description"] if param_info["description"] else ""
+                        param_desc = param_info.get("description", "") or "" # yingyu
+
                         if param_type == "array":
                             # Handle array type parameters
                             item_type = param_info.get("items", {}).get("type", "string")
@@ -41,8 +50,9 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                                 "description": param_desc,
                                 "type": param_type
                             }
-                        if param_info.get("required", False):
-                            required.append(param_name)
+                        # if param_info.get("required", False):
+                            # required.append(param_name)
+                            # required.append(param_info.get("required")) # yingyu
 
                 openai_function_schema = {
                     "name": f'{server.name}__{tool.name}',
@@ -57,6 +67,7 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                     "type": "function",
                     "function": openai_function_schema,
                 })
+            
             logging.info(f"✅ server #{i + 1} ({server.name}) connected success，tools: {len(tools)}")
 
         except Exception as e:
@@ -68,13 +79,13 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
 
 async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any]]:
     """Default implement transform framework standard protocol to openai protocol of tool description."""
-
+    
     # Priority given to the running path.
-    config_path = find_file(filename='mcp.json')
-    if not os.path.exists(config_path):
+    if os.path.exists(os.path.join(os.getcwd(), "mcp.json")):
+        config_path = os.path.join(os.getcwd(), "mcp.json")
+    else:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.normpath(os.path.join(current_dir, "../config/mcp.json"))
-    logger.info(f"mcp conf path: {config_path}")
 
     if not os.path.exists(config_path):
         logging.info(f"mcp config is not exist: {config_path}")
@@ -119,6 +130,7 @@ async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any
                 })
 
     if not server_configs:
+        logging.info("not match mcp server")
         return []
 
     async with AsyncExitStack() as stack:

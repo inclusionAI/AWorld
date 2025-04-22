@@ -1,16 +1,9 @@
 {
   "mcpServers": {
     "amap-amap-sse": {
-      "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",
+      "url": "https://mcp.amap.com/sse?key=85492a3fd797b1b3f1435f29b1cd9577",
       "timeout": 5.0,
       "sse_read_timeout": 300.0
-    },
-    "tavily-mcp": {
-      "command": "npx",
-      "args": ["-y", "tavily-mcp@0.1.2"],
-      "env": {
-        "TAVILY_API_KEY": "YOUR_API_KEY"
-      }
     }
   }
 }

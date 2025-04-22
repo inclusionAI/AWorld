@@ -10,7 +10,7 @@ from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
 from aworld.logs.util import logger
 from aworld.virtual_environments.action import ExecutableAction
-from aworld.models.llm import get_llm_model, call_llm_model
+from aworld.models.llm import get_llm_model
 
 
 @ActionFactory.register(name="write_html",
@@ -45,12 +45,9 @@ class WriteHTML(ExecutableAction):
         messages = [{'role': 'system', 'content': sys_prompt},
                     {'role': 'user', 'content': prompt.format(goal=goal, information=information)}]
 
-        output = call_llm_model(llm,
-                                messages=messages,
-                                model=llm_conf.llm_model_name,
-                                temperature=llm_conf.llm_temperature)
+        content = llm.invoke(input=messages, temperature=0.8)
 
-        content = output.content
+        content = content.content
         html_pattern = re.compile(r'<html.*?>.*?</html>', re.DOTALL)
         matches = html_pattern.findall(content)
 

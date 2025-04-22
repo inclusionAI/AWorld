@@ -1,0 +1,69 @@
+{
+    "mcpServers": {
+        "e2b-server": {
+            "command": "npx",
+            "args": ["-y", "@e2b/mcp-server"],
+            "env": { "E2B_API_KEY": "e2b_425d6730de1d9f1fab0afabac373dca6f829d196" }
+        },
+        "playwright": {
+            "command": "npx",
+            "args": ["-y", "@executeautomation/playwright-mcp-server"]
+        },
+        "filesystem": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "/Users/yuchengyue/AWorld_mcp/gaia/gaia_dataset/2023/validation"
+            ]
+        },
+        "terminal-controller": {
+            "command": "python",
+            "args": ["-m", "terminal_controller"]
+        },
+        "calculator": {
+            "command": "python",
+            "args": ["-m", "mcp_server_calculator"]
+        },
+        "excel": {
+            "url": "http://localhost:8000/sse",
+            "env": {
+              "EXCEL_FILES_PATH": "/Users/yuchengyue/AWorld_mcp/gaia/gaia_dataset/2023/validation"
+            }
+        },
+        "google-search": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@adenot/mcp-google-search"
+            ],
+            "env": {
+                "GOOGLE_API_KEY": "AIzaSyCvnJqo67NdiIWsXzx7QGSc5kjyf7CtqTk",
+                "GOOGLE_SEARCH_ENGINE_ID": "038388dcda86e4e0a"
+            }
+        },
+        "ms-playwright": {
+            "command": "npx",
+            "args": [
+              "@playwright/mcp@latest"
+            ],
+            "env": {
+              "PLAYWRIGHT_TIMEOUT": "120000"
+            }
+        },
+        "audio_server": {
+            "command": "python",
+            "args": ["-m", "mcp_servers.audio_server"]
+        },
+        "image_server": {
+            "command": "python",
+            "args": ["-m", "mcp_servers.image_server"]
+        },
+        "ms-playwright-8931": {
+            "url": "http://localhost:8931/sse"
+        },
+        "ms-playwright-8932": {
+            "url": "http://localhost:8932/sse"
+        }
+    }
+}

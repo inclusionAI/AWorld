@@ -2,35 +2,22 @@ import os
 import traceback
 import uuid
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Callable
 
-from pydantic import BaseModel, Field, ConfigDict
-
+from aworld.output.agent_output import AgentOutput
 from aworld.output.artifact import ArtifactType, Artifact
 from aworld.output.code_artifact import CodeArtifact
-from aworld.output.storage.artifact_repository import ArtifactRepository, LocalArtifactRepository
+from aworld.output.storage.artifact_repository import LocalArtifactRepository
 from aworld.output.observer import WorkspaceObserver, get_observer
 
 
-class WorkSpace(BaseModel):
+class WorkSpace(AgentOutput):
     """
     Artifact workspace, managing a group of related artifacts
     
     Provides collaborative editing features, supporting version management, update notifications, etc. for multiple Artifacts
     """
 
-    workspace_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="unique identifier for the workspace")
-    name: str = Field(default="", description="name of the workspace")
-    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
-    metadata: Dict[str, Any] = Field(default={}, description="metadata")
-    artifacts: List[Artifact] = Field(default=[], description="list of artifacts")
-
-    observers: Optional[List[WorkspaceObserver]] = Field(default=[], description="list of observers", exclude=True)
-    repository: Optional[ArtifactRepository] = Field(default=None, description="local artifact repository", exclude=True)
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    
     def __init__(
             self,
             workspace_id: Optional[str] = None,
@@ -40,7 +27,6 @@ class WorkSpace(BaseModel):
             use_default_observer: bool = True,
             clear_existing: bool = False
     ):
-        super().__init__()
         self.workspace_id = workspace_id or str(uuid.uuid4())
         self.name = name or f"Workspace-{self.workspace_id[:8]}"
         self.created_at = datetime.now().isoformat()
@@ -159,21 +145,22 @@ class WorkSpace(BaseModel):
         )
         return workspace
 
-    async def create_artifact(
+    def create_artifact(
             self,
             artifact_type: Union[ArtifactType, str],
             artifact_id: Optional[str] = None,
             content: Optional[Any] = None,
-            metadata: Optional[Dict[str, Any]] = None
+            metadata: Optional[Dict[str, Any]] = None,
+            render_type: Optional[str] = None
     ) -> List[Artifact]:
         """
-        Create a new artifact
+        Create a new artifact in the workspace
         
         Args:
-            artifact_type: Artifact type (enum or string)
-            artifact_id: Optional artifact ID (will be generated if not provided)
+            artifact_type: Artifact type
             content: Artifact content
-            metadata: Metadata dictionary
+            metadata: Artifact metadata
+            render_type: Rendering type
             
         Returns:
             List of created artifact objects
@@ -185,14 +172,6 @@ class WorkSpace(BaseModel):
         # Create new artifacts
         artifacts = []
 
-        # Ensure metadata is a dictionary
-        if metadata is None:
-            metadata = {}
-            
-        # Ensure artifact_id is a valid string
-        if artifact_id is None:
-            artifact_id = str(uuid.uuid4())
-
         if artifact_type == ArtifactType.CODE:
             artifacts = CodeArtifact.from_code_content(artifact_type, content)
         else:
@@ -200,7 +179,8 @@ class WorkSpace(BaseModel):
                 artifact_id=artifact_id,
                 artifact_type=artifact_type,
                 content=content,
-                metadata=metadata
+                metadata=metadata,
+                render_type=render_type
             )
             artifacts.append(artifact)  # Add single artifact to the list
 
@@ -218,7 +198,7 @@ class WorkSpace(BaseModel):
 
         # Notify observers
         for artifact in artifacts:
-            await self._notify_observers("create", artifact)
+            self._notify_observers("create", artifact)
 
         return artifacts  # Return the list of created artifacts
 
@@ -229,15 +209,7 @@ class WorkSpace(BaseModel):
                 return artifact
         return None
 
-
-    def get_terminal(self) -> str:
-        pass
-
-    def get_webpage_groups(self) -> list[Any] | None:
-        return self.list_artifacts(ArtifactType.WEB_PAGES)
-
-
-    async def update_artifact(
+    def update_artifact(
             self,
             artifact_id: str,
             content: Any,
@@ -265,12 +237,12 @@ class WorkSpace(BaseModel):
             self.updated_at = datetime.now().isoformat()
 
             # Notify observers
-            await self._notify_observers("update", artifact)
+            self._notify_observers("update", artifact)
 
             return artifact
         return None
 
-    async def delete_artifact(self, artifact_id: str) -> bool:
+    def delete_artifact(self, artifact_id: str) -> bool:
         """
         Delete an artifact from the workspace
         
@@ -296,7 +268,7 @@ class WorkSpace(BaseModel):
                 self.save()
 
                 # Notify observers
-                await self._notify_observers("delete", artifact)
+                self._notify_observers("delete", artifact)
                 return True
         return False
 
@@ -330,35 +302,18 @@ class WorkSpace(BaseModel):
         if observer in self.observers:
             self.observers.remove(observer)
 
-    async def _notify_observers(self, operation: str, artifact: Artifact) -> List[Any]:
-        """
-        Notify all observers of workspace changes
-        
-        Args:
-            operation: Type of operation (create, update, delete)
-            artifact: Affected artifact
-            
-        Returns:
-            List of results from handlers
-        """
-        results = []
+    def _notify_observers(self, operation: str, artifact: Artifact) -> None:
+        """Notify all observers of workspace changes"""
         for observer in self.observers:
             try:
                 if operation == "create":
-                    result = await observer.on_create(workspace_id=self.workspace_id, artifact=artifact)
-                    if result:
-                        results.append(result)
+                    observer.on_create(artifact)
                 elif operation == "update":
-                    result = await observer.on_update(workspace_id=self.workspace_id, artifact=artifact)
-                    if result:
-                        results.append(result)
+                    observer.on_update(artifact)
                 elif operation == "delete":
-                    result = await observer.on_delete(workspace_id=self.workspace_id, artifact=artifact)
-                    if result:
-                        results.append(result)
+                    observer.on_delete(artifact)
             except Exception as e:
                 print(f"Observer notification failed: {e}")
-        return results
 
     def _store_artifact(self, artifact: Artifact) -> None:
         """Store artifact in repository"""
@@ -397,7 +352,8 @@ class WorkSpace(BaseModel):
                     "artifact_id": a.artifact_id,
                     "type": str(a.artifact_type),
                     "metadata": a.metadata,
-                    # "version": a.current_version
+                    "render_type": a.render_type,
+                    "version": a.current_version
                 } for a in self.artifacts
             ]
         }

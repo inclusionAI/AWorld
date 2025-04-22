@@ -1,5 +1,4 @@
 name: "browser_agent"
-need_reset: False
 llm_config: 
   llm_provider: openai
   llm_model_name: gpt-4o

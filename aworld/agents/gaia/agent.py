@@ -22,21 +22,21 @@ from aworld.agents.gaia.utils import extract_pattern
 class ExecuteAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(ExecuteAgent, self).__init__(conf, **kwargs)
+        self.has_summary = False
+        self.tools = tool_desc_transform(get_tool_desc(),
+                                         tools=self.tool_names if self.tool_names else [])
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
-        super().reset(options)
-
+        self.task = options.get("task")
+        self.trajectory = []
         self.system_prompt = execute_system_prompt.format(task=self.task)
-        self.step_reset = False
 
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None,
                **kwargs) -> List[ActionModel] | None:
         start_time = time.time()
-        self._finished = False
-        self.desc_transform()
         content = observation.content
 
         llm_result = None
@@ -45,83 +45,44 @@ class ExecuteAgent(Agent):
             {'role': 'system', 'content': self.system_prompt},
         ]
         for traj in self.trajectory:
-            # Handle multiple messages in content
-            if isinstance(traj[0].content, list):
-                input_content.extend(traj[0].content)
-            else:
-                input_content.append(traj[0].content)
-
+            input_content.append(traj[0].content)
             if traj[-1].tool_calls is not None:
                 input_content.append(
-                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].tool_calls})
+                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].serialize_tool_calls()})
             else:
                 input_content.append({'role': 'assistant', 'content': traj[-1].content})
 
         if content is None:
             content = observation.action_result[0].error
         if not self.trajectory:
-            new_messages = [{"role": "user", "content": content}]
-            input_content.extend(new_messages)
+            message = {'role': 'user', 'content': content}
         else:
-            # Collect existing tool_call_ids from input_content
-            existing_tool_call_ids = {
-                msg.get("tool_call_id") for msg in input_content
-                if msg.get("role") == "tool" and msg.get("tool_call_id")
-            }
-
-            new_messages = []
-            for traj in self.trajectory:
-                if traj[-1].tool_calls is not None:
-                    # Handle multiple tool calls
-                    for tool_call in traj[-1].tool_calls:
-                        # Only add if this tool_call_id doesn't exist in input_content
-                        if tool_call.id not in existing_tool_call_ids:
-                            new_messages.append({
-                                "role": "tool",
-                                "content": content,
-                                "tool_call_id": tool_call.id
-                            })
-            if new_messages:
-                input_content.extend(new_messages)
+            tool_id = None
+            if self.trajectory[-1][-1].tool_calls:
+                tool_id = self.trajectory[-1][-1].tool_calls[0].id
+            if tool_id:
+                message = {'role': 'tool', 'content': content, 'tool_call_id': tool_id}
             else:
-                input_content.append({"role": "user", "content": content})
-
-            # Validate tool_calls and tool messages pairing
-            assistant_tool_calls = []
-            tool_responses = []
-            for msg in input_content:
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    assistant_tool_calls.extend(msg["tool_calls"])
-                elif msg.get("role") == "tool":
-                    tool_responses.append(msg.get("tool_call_id"))
-
-            # Check if all tool_calls have corresponding responses
-            tool_call_ids = {call.id for call in assistant_tool_calls}
-            tool_response_ids = set(tool_responses)
-            if tool_call_ids != tool_response_ids:
-                missing_calls = tool_call_ids - tool_response_ids
-                extra_responses = tool_response_ids - tool_call_ids
-                error_msg = f"Tool calls and responses mismatch. Missing responses for tool_calls: {missing_calls}, Extra responses: {extra_responses}"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
+                message = {'role': 'user', 'content': content}
+        input_content.append(message)
 
         tool_calls = []
         try:
             llm_result = call_llm_model(self.llm, input_content, model=self.model_name,
                                         tools=self.tools, temperature=0)
             logger.info(f"Execute response: {llm_result.message}")
-            res = self.response_parse(llm_result)
-            content = res.actions[0].policy_info
+            content = llm_result.content
             tool_calls = llm_result.tool_calls
         except Exception as e:
-            logger.warning(traceback.format_exc())
+            logger.warn(traceback.format_exc())
+            raise e
         finally:
             if llm_result:
                 ob = copy.deepcopy(observation)
-                ob.content = new_messages
+                ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warning("no result to record!")
+                logger.warn("no result to record!")
 
         res = []
         if tool_calls:
@@ -129,23 +90,26 @@ class ExecuteAgent(Agent):
                 tool_action_name: str = tool_call.function.name
                 if not tool_action_name:
                     continue
-
-                names = tool_action_name.split("__")
-                tool_name = names[0]
-                action_name = '__'.join(names[1:]) if len(names) > 1 else ''
+                tool_name = tool_action_name.split("__")[0]
+                action_name = tool_action_name.split("__")[1]
                 params = json.loads(tool_call.function.arguments)
                 res.append(ActionModel(tool_name=tool_name, action_name=action_name, params=params))
 
         if res:
             res[0].policy_info = content
             self._finished = False
+            self.has_summary = False
         elif content:
-            policy_info = extract_pattern(content, "final_answer")
-            if policy_info:
-                res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=policy_info))
-                self._finished = True
+            if self.has_summary:
+                policy_info = extract_pattern(content, "final_answer")
+                if policy_info:
+                    res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=policy_info))
+                    self._finished = True
+                else:
+                    res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=content))
             else:
                 res.append(ActionModel(agent_name=Agents.PLAN.value, policy_info=content))
+                self.has_summary = True
 
         logger.info(f">>> execute result: {res}")
         return res
@@ -158,48 +122,42 @@ class PlanAgent(Agent):
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
-        super().reset(options)
-
+        self.task = options.get("task")
+        self.trajectory = []
         self.system_prompt = plan_system_prompt.format(task=self.task)
         self.done_prompt = plan_done_prompt.format(task=self.task)
         self.postfix_prompt = plan_postfix_prompt.format(task=self.task)
         self.first_prompt = init_prompt
         self.first = True
-        self.step_reset = False
 
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None,
                **kwargs) -> List[ActionModel] | None:
         llm_result = None
-        self._finished = False
-        self.desc_transform()
         input_content = [
             {'role': 'system', 'content': self.system_prompt},
         ]
         # build input of llm based history
         for traj in self.trajectory:
             input_content.append({'role': 'user', 'content': traj[0].content})
-            # if traj[-1].tool_calls is not None:
-            #     input_content.append(
-            #         {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].tool_calls})
-            # else:
-            #     input_content.append({'role': 'assistant', 'content': traj[-1].content})
-
-            # plan agent no tool to call, use content
-            input_content.append({'role': 'assistant', 'content': traj[-1].content})
+            if traj[-1].tool_calls is not None:
+                input_content.append(
+                    {'role': 'assistant', 'content': '', 'tool_calls': traj[-1].serialize_tool_calls()})
+            else:
+                input_content.append({'role': 'assistant', 'content': traj[-1].content})
 
         message = observation.content
         if self.first_prompt:
             message = self.first_prompt
             self.first_prompt = None
 
-        input_content.append({"role": "user", "content": message})
+        input_content.append({'role': 'user', 'content': message})
         try:
             llm_result = call_llm_model(self.llm, messages=input_content, model=self.model_name)
             logger.info(f"Plan response: {llm_result.message}")
         except Exception as e:
-            logger.warning(traceback.format_exc())
+            logger.warn(traceback.format_exc())
             raise e
         finally:
             if llm_result:
@@ -207,9 +165,8 @@ class PlanAgent(Agent):
                 ob.content = message
                 self.trajectory.append((ob, info, llm_result))
             else:
-                logger.warning("no result to record!")
-        res = self.response_parse(llm_result)
-        content = res.actions[0].policy_info
+                logger.warn("no result to record!")
+        content = llm_result.content
         if "TASK_DONE" not in content:
             content += self.done_prompt
         else:
@@ -220,4 +177,5 @@ class PlanAgent(Agent):
 
         self.first = False
         logger.info(f">>> plan result: {content}")
-        return [ActionModel(agent_name=Agents.EXECUTE.value, policy_info=content)]
+        return [ActionModel(agent_name=Agents.EXECUTE.value,
+                            policy_info=content)]

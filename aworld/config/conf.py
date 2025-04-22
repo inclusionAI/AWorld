@@ -8,7 +8,6 @@ from typing import Optional, List, Dict, Any
 
 import yaml
 from pydantic import BaseModel
-from enum import Enum
 
 from aworld.logs.util import logger
 
@@ -71,9 +70,6 @@ def wipe_secret_info(config: Dict[str, Any], keys: List[str]) -> Dict[str, Any]:
         return config
     return _wipe_secret(config)
 
-class ClientType(Enum):
-    SDK = "sdk"
-    HTTP = "http"
 
 class ModelConfig(BaseModel):
     llm_provider: str = None
@@ -81,9 +77,6 @@ class ModelConfig(BaseModel):
     llm_temperature: float = 1.
     llm_base_url: str = None
     llm_api_key: str = None
-    llm_client_type: ClientType = ClientType.SDK
-    llm_sync_enabled: bool = True
-    llm_async_enabled: bool = True
 
 
 class AgentConfig(BaseModel):
@@ -96,13 +89,7 @@ class AgentConfig(BaseModel):
     llm_temperature: float = 1.
     llm_base_url: str = None
     llm_api_key: str = None
-    llm_client_type: ClientType = ClientType.SDK
-    llm_sync_enabled: bool = True
-    llm_async_enabled: bool = True
 
-    # default reset init in first
-    need_reset: bool = True
-    # use vision model
     use_vision: bool = True
     max_steps: int = 10
     max_input_tokens: int = 128000

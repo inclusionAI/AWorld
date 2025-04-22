@@ -26,8 +26,8 @@ Key features of workspaces:
 Below is a basic example of workspace usage:
 
 ```python
-from aworld.output.artifact import ArtifactType
-from aworld.output.workspace import WorkSpace
+from aworld.workspace.artifact import ArtifactType
+from aworld.workspace.workspace import WorkSpace
 
 # Create workspace
 workspace = WorkSpace(name="Example Workspace")

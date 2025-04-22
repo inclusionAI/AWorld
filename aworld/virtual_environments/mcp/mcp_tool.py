@@ -32,7 +32,7 @@ class McpTool(Tool[Observation, List[ActionModel]]):
     def close(self) -> None:
         self._finished = True
 
-    def step(self,
+    async def step(self,
              actions: list[ActionModel],
              **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
         """Step of tool.
@@ -43,6 +43,7 @@ class McpTool(Tool[Observation, List[ActionModel]]):
         Returns:
             Observation, float, bool, bool, dict[str, Any]: -
         """
+        
         self._finished = False
         reward = 0
         fail_error = ""
@@ -84,13 +85,19 @@ class McpTool(Tool[Observation, List[ActionModel]]):
 
         action_results = None
         try:
-            action_results, ignore = self.action_executor.execute_action(mcp_actions)
+            action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
+            # action_results, server, ignore = self.action_executor.execute_action(mcp_actions)
+            # self.server = server
+            # action_results, ignore = await self.action_executor.execute_action(mcp_actions)
             reward = 1
         except Exception as e:
             fail_error = str(e)
         finally:
             self._finished = True
 
+        # yingyu
+        # 当有多个action时，要返回所有action的结果
+        
         observation = build_observation(observer=self.name(),
                                         ability=actions[-1].action_name)
         if action_results:

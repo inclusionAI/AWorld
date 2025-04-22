@@ -1,30 +1,7 @@
 from typing import Any, Dict, List, Optional
 import json
 from pydantic import BaseModel
-
-
-class LLMResponseError(Exception):
-    """Represents an error in LLM response.
-    
-    Attributes:
-        message: Error message
-        model: Model name
-        response: Original response object
-    """
-
-    def __init__(self, message: str, model: str = "unknown", response: Any = None):
-        """
-        Initialize LLM response error
-        
-        Args:
-            message: Error message
-            model: Model name
-            response: Original response object
-        """
-        self.message = message
-        self.model = model
-        self.response = response
-        super().__init__(f"LLM Error ({model}): {message}")
+from dataclasses import dataclass
 
 
 class Function(BaseModel):
@@ -34,7 +11,6 @@ class Function(BaseModel):
     name: str
     arguments: str = None
 
-
 class ToolCall(BaseModel):
     """
     Represents a tool call made by a model
@@ -43,7 +19,6 @@ class ToolCall(BaseModel):
     id: str
     type: str = "function"
     function: Function = None
-
     # name: str = None
     # arguments: str = None
 
@@ -82,6 +57,22 @@ class ToolCall(BaseModel):
             # arguments=arguments,
         )
 
+    def dict(self) -> dict[str, Any]:
+        """
+                Convert ToolCall to dictionary representation
+
+                Returns:
+                    Dictionary representation
+                """
+        return {
+            'id': self.id,
+            'type': self.type,
+            'function': {
+                'name': self.function.name,
+                'arguments': self.function.arguments
+            }
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         """
         Convert ToolCall to dictionary representation
@@ -98,14 +89,44 @@ class ToolCall(BaseModel):
             }
         }
 
+    def __json__(self):
+        """
+        Make ToolCall JSON serializable
+        """
+        return self.to_dict()
+
     def __repr__(self):
         return json.dumps(self.to_dict())
+
+    def toJSON(self):
+        """
+        Convert to JSON serializable format
+        """
+        return self.to_dict()
 
     def __iter__(self):
         """
         Make ToolCall dict-like for JSON serialization
         """
         yield from self.to_dict().items()
+
+    def __getstate__(self):
+        """
+        Return state for pickle serialization (also used by json serialization)
+        """
+        return self.to_dict()
+
+    def to_json(self):
+        """
+        Convert to JSON string
+        """
+        return json.dumps(self.to_dict())
+
+    def default(self):
+        """
+        Support for json.dumps default parameter
+        """
+        return self.to_dict()
 
 
 class ModelResponse:
@@ -114,15 +135,15 @@ class ModelResponse:
     """
 
     def __init__(
-            self,
-            id: str,
-            model: str,
-            content: str = None,
-            tool_calls: List[ToolCall] = None,
-            usage: Dict[str, int] = None,
-            error: str = None,
-            raw_response: Any = None,
-            message: Dict[str, Any] = None
+        self,
+        id: str,
+        model: str,
+        content: str = None,
+        tool_calls: List[ToolCall] = None,
+        usage: Dict[str, int] = None,
+        error: str = None,
+        raw_response: Any = None,
+        message: Dict[str, Any] = None
     ):
         """
         Initialize ModelResponse object
@@ -171,17 +192,15 @@ class ModelResponse:
 
         Returns:
             ModelResponse object
-            
-        Raises:
-            LLMResponseError: When LLM response error occurs
         """
         # Handle error cases
         if hasattr(response, 'error') or (isinstance(response, dict) and response.get('error')):
             error_msg = response.error if hasattr(response, 'error') else response.get('error', 'Unknown error')
-            raise LLMResponseError(
-                error_msg,
-                response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
-                response
+            return cls(
+                id=response.id if hasattr(response, 'id') else response.get('id', 'error'),
+                model=response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
+                error=error_msg,
+                raw_response=response
             )
 
         # Normal case
@@ -192,10 +211,11 @@ class ModelResponse:
             message = response['choices'][0].get('message', {})
 
         if not message:
-            raise LLMResponseError(
-                "No message found in response",
-                response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
-                response
+            return cls(
+                id=response.id if hasattr(response, 'id') else response.get('id', 'unknown'),
+                model=response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
+                error="No message found in response",
+                raw_response=response
             )
 
         # Extract usage information
@@ -271,17 +291,15 @@ class ModelResponse:
 
         Returns:
             ModelResponse object
-            
-        Raises:
-            LLMResponseError: When LLM response error occurs
         """
         # Handle error cases
         if hasattr(chunk, 'error') or (isinstance(chunk, dict) and chunk.get('error')):
             error_msg = chunk.error if hasattr(chunk, 'error') else chunk.get('error', 'Unknown error')
-            raise LLMResponseError(
-                error_msg,
-                chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
-                chunk
+            return cls(
+                id=chunk.id if hasattr(chunk, 'id') else chunk.get('id', 'error'),
+                model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
+                error=error_msg,
+                raw_response=chunk
             )
 
         # Handle finish reason chunk (end of stream)
@@ -327,8 +345,6 @@ class ModelResponse:
                         processed_tool_calls.append(ToolCall.from_dict(tool_call_dict))
         elif isinstance(chunk, dict) and chunk.get('choices'):
             delta = chunk['choices'][0].get('delta', {})
-            if not delta:
-                delta = chunk['choices'][0].get('message', {})
             content = delta.get('content')
             raw_tool_calls = delta.get('tool_calls')
             if raw_tool_calls:
@@ -363,18 +379,12 @@ class ModelResponse:
 
         Returns:
             ModelResponse object
-            
-        Raises:
-            LLMResponseError: When LLM response error occurs
         """
         try:
             # Handle error cases
             if not chunk or (isinstance(chunk, dict) and chunk.get('error')):
                 error_msg = chunk.get('error', 'Unknown error') if isinstance(chunk, dict) else 'Empty response'
-                raise LLMResponseError(
-                    error_msg,
-                    chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
-                    chunk)
+                return cls.from_error(error_msg, "claude")
 
             # Handle stop reason (end of stream)
             if hasattr(chunk, 'stop_reason') and chunk.stop_reason:
@@ -426,12 +436,7 @@ class ModelResponse:
             )
 
         except Exception as e:
-            if isinstance(e, LLMResponseError):
-                raise e
-            raise LLMResponseError(
-                f"Error processing Anthropic stream chunk: {str(e)}",
-                chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
-                chunk)
+            return cls.from_error(f"Error processing Anthropic stream chunk: {str(e)}", "claude")
 
     @classmethod
     def from_anthropic_response(cls, response: Any) -> 'ModelResponse':
@@ -443,18 +448,12 @@ class ModelResponse:
 
         Returns:
             ModelResponse object
-            
-        Raises:
-            LLMResponseError: When LLM response error occurs
         """
         try:
             # Handle error cases
             if not response or (isinstance(response, dict) and response.get('error')):
                 error_msg = response.get('error', 'Unknown error') if isinstance(response, dict) else 'Empty response'
-                raise LLMResponseError(
-                    error_msg,
-                    response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
-                    response)
+                return cls.from_error(error_msg, "claude")
 
             # Build message content
             message = {
@@ -513,12 +512,7 @@ class ModelResponse:
                 message=message
             )
         except Exception as e:
-            if isinstance(e, LLMResponseError):
-                raise e
-            raise LLMResponseError(
-                f"Error processing Anthropic response: {str(e)}",
-                response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
-                response)
+            return cls.from_error(f"Error processing Anthropic response: {str(e)}", "claude")
 
     @classmethod
     def from_error(cls, error_msg: str, model: str = "unknown") -> 'ModelResponse':
@@ -589,8 +583,24 @@ class ModelResponse:
                 result.append(str(tool_call))
         return result
 
-    def __repr__(self):
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=None,
+    def to_json(self) -> str:
+        """
+        Convert ModelResponse to JSON string representation
+
+        Returns:
+            str: JSON string
+        """
+        json_dict = {
+            "id": self.id,
+            "model": self.model,
+            "content": self.content,
+            "tool_calls": self.serialize_tool_calls(),
+            "usage": self.usage,
+            "error": self.error,
+            "message": self._serialize_message()
+        }
+
+        return json.dumps(json_dict, ensure_ascii=False, indent=None,
                           default=lambda obj: obj.to_dict() if hasattr(obj, 'to_dict') else str(obj))
 
     def _serialize_message(self) -> Dict[str, Any]:
