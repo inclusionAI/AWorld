@@ -316,7 +316,7 @@ class ShangshuProvider(LLMProviderBase):
             response = self.http_provider.sync_call(processed_messages[0], endpoint="commonQuery/queryData")
 
             # Call query_response_data with string literal, set timeout to 120 seconds or get from kwargs
-            timeout = kwargs.get("response_timeout", 10)
+            timeout = kwargs.get("response_timeout", self.kwargs.get("timeout", 180))
             raw_output = self.query_response_data(message_key_literal, timeout=timeout)
             logger.debug(f"llm raw_output is: {raw_output}")
             logger.info(f"completion cost time: {time.time() - start_time}s.")
@@ -371,7 +371,7 @@ class ShangshuProvider(LLMProviderBase):
             response = self.http_provider.sync_call(processed_messages[0], endpoint="commonQuery/queryData")
             
             # Get timeout value from kwargs or use default
-            timeout = kwargs.get("response_timeout", 10)
+            timeout = kwargs.get("response_timeout", self.kwargs.get("timeout", 180))
             raw_output = self.query_response_data(message_key_literal, timeout=timeout)
             logger.debug(f"llm raw_output is: {raw_output}")
             
@@ -436,7 +436,7 @@ class ShangshuProvider(LLMProviderBase):
             response = await self.http_provider.async_call(processed_messages[0], endpoint="commonQuery/queryData")
             
             # Get timeout value from kwargs or use default
-            timeout = kwargs.get("response_timeout", 10)
+            timeout = kwargs.get("response_timeout", self.kwargs.get("timeout", 180))
             
             # For async version, we need to implement an async version of query_response_data
             # Since we don't have that yet, we'll use the synchronous version in an async wrapper
@@ -495,7 +495,7 @@ class ShangshuProvider(LLMProviderBase):
             response = await self.http_provider.async_call(processed_messages[0], endpoint="commonQuery/queryData")
             
             # Get timeout value from kwargs or use default
-            timeout = kwargs.get("response_timeout", 10)
+            timeout = kwargs.get("response_timeout", self.kwargs.get("timeout", 180))
             
             # For async version, we need to implement an async version of query_response_data
             # Since we don't have that yet, we'll use the synchronous version in an async wrapper

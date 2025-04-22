@@ -224,7 +224,7 @@ class LLMHTTPHandler:
         Returns:
             Response data.
         """
-        logger.info(f"sync_call request data: {data}")
+        logger.debug(f"sync_call request data: {data}")
 
         if not endpoint:
             endpoint = "chat/completions"
