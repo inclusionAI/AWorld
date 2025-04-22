@@ -1,7 +1,6 @@
 import os
 from typing import Any, Dict, List, Generator, AsyncGenerator
 
-from Crypto.Cipher import AES
 from binascii import b2a_hex, a2b_hex
 import ast
 import requests
@@ -20,9 +19,26 @@ from typing import (
 from aworld.config.conf import ClientType
 from aworld.models.llm_provider_base import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
-from aworld.models.model_response import ModelResponse, LLMResponseError
-from aworld.env_secrets import secrets
+from aworld.models.model_response import ModelResponse, LLMResponseError, ToolCall
 from aworld.logs.util import logger
+from aworld.utils import import_package
+
+
+# Custom JSON encoder to handle ToolCall and other special types
+class CustomJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle ToolCall objects and other special types."""
+    
+    def default(self, obj):
+        # Handle objects with to_dict method
+        if hasattr(obj, 'to_dict') and callable(obj.to_dict):
+            return obj.to_dict()
+            
+        # Handle objects with __dict__ attribute (most custom classes)
+        if hasattr(obj, '__dict__'):
+            return obj.__dict__
+            
+        # Let the base class handle it (will raise TypeError if not serializable)
+        return super().default(obj)
 
 
 class ShangshuProvider(LLMProviderBase):
@@ -35,6 +51,7 @@ class ShangshuProvider(LLMProviderBase):
         Returns:
             Shangshu provider instance.
         """
+        import_package("Crypto.Cipher.AES")
         # Get API key
         api_key = self.api_key
         if not api_key:
@@ -93,6 +110,8 @@ class ShangshuProvider(LLMProviderBase):
         Returns:
             Encrypted data
         """
+        from Crypto.Cipher import AES
+
         iv = "1234567890123456"
         cipher = AES.new(key.encode('utf-8'), AES.MODE_CBC, iv.encode('utf-8'))
         block_size = AES.block_size
@@ -128,7 +147,7 @@ class ShangshuProvider(LLMProviderBase):
         param["queryConditions"]["messageKey"] = message_key_str
 
         url = 'commonQuery/queryData'
-        data = json.dumps(param)
+        data = json.dumps(param, cls=CustomJSONEncoder)
         encryptedParam = self.aes_encrypt(data, self.aes_key)
         post_data = {
             "encryptedParam": encryptedParam
@@ -203,7 +222,7 @@ class ShangshuProvider(LLMProviderBase):
             if k not in param["queryConditions"]:
                 param["queryConditions"][k] = ext_params[k]
 
-        data = json.dumps(param)
+        data = json.dumps(param, cls=CustomJSONEncoder)
         encrypted_param = self.aes_encrypt(data, self.aes_key)
         return [{"encryptedParam": encrypted_param}]
 
