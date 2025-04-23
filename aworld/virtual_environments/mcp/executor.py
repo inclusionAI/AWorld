@@ -30,7 +30,7 @@ class MCPToolExecutor(ToolActionExecutor):
                 if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
                     env_var_name = value[2:-1]
                     config[key] = os.getenv(env_var_name, value)
-                    print(f"Replaced {value} with {config[key]}")
+                    logging.info(f"Replaced {value} with {config[key]}")
                 elif isinstance(value, dict) or isinstance(value, list):
                     self._replace_env_variables(value)
         elif isinstance(config, list):
@@ -38,7 +38,7 @@ class MCPToolExecutor(ToolActionExecutor):
                 if isinstance(item, str) and item.startswith("${") and item.endswith("}"):
                     env_var_name = item[2:-1]
                     config[index] = os.getenv(env_var_name, item)
-                    print(f"Replaced {item} with {config[index]}")
+                    logging.info(f"Replaced {item} with {config[index]}")
                 elif isinstance(item, dict) or isinstance(item, list):
                     self._replace_env_variables(item)
 
