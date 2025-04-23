@@ -1,3 +1,4 @@
+from aworld.dataset.gaia.benchmark import GAIABenchmark
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.core.task import Task
@@ -9,6 +10,7 @@ import logging
 import traceback
 import os
 
+GAIA_DATASET_PATH = os.getenv("GAIA_DATASET_PATH", "/Users/arac/Desktop/gaia-benchmark/GAIA")
 
 def setup_logging():
     # 创建日志记录器
@@ -30,6 +32,9 @@ def setup_logging():
 
 
 if __name__ == '__main__':
+
+    # 初始化日志配置
+    setup_logging()
 
     llm_api_key = os.getenv("LLM_API_KEY", "")
     llm_base_url = os.getenv("LLM_BASE_URL", "")
@@ -70,14 +75,13 @@ Here are some tips to help you give better instructions:
 Now, here is the task. Stay focused and complete it carefully using the appropriate tools!
 """
 
-    full_dataset = load_dataset(
-        "./gaia/gaia_dataset/GAIA.py",
-        name="2023_all",
-        split="validation",  # validation 165 + test 301
-    )
-
-    # 初始化日志配置
-    setup_logging()
+    # full_dataset = load_dataset(
+    #     GAIA_DATASET_PATH,
+    #     name="2023",
+    #     split="validation",  # validation 165 + test 301
+    # )
+    local_dataset_path = GAIA_DATASET_PATH
+    full_dataset = GAIABenchmark(GAIA_DATASET_PATH).load()["valid"]
 
     for i in range(len(full_dataset)):
         try:
