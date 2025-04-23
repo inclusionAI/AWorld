@@ -10,7 +10,7 @@ import logging
 import traceback
 import os
 
-GAIA_DATASET_PATH = os.getenv("GAIA_DATASET_PATH", "/Users/arac/Desktop/gaia-benchmark/GAIA")
+GAIA_DATASET_PATH = os.getenv("GAIA_DATASET_PATH")
 
 def setup_logging():
     # 创建日志记录器
