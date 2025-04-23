@@ -16,8 +16,8 @@ mcp[cli]~=1.6.0
 python-dotenv~=1.0.1
 loguru~=0.7.3
 datasets>=2.16.0,<2.19.0
-terminal_controller
-mcp_server_calculator
+terminal_controller # mcp server: https://github.com/GongRzhe/terminal-controller-mcp
+mcp_server_calculator # mcp server: https://github.com/githejie/mcp-server-calculator
 
 ######### [optional] #########
 # optional requirements will also be installed by all extensions,
