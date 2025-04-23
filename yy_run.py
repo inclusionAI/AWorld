@@ -98,9 +98,9 @@ Now, here is the task. Stay focused and complete it carefully using the appropri
                 system_prompt=search_sys_prompt,
                 mcp_servers=[
                     "e2b-server", 
-                    "filesystem", 
+                    # "filesystem", 
                     "terminal-controller",
-                    "excel",
+                    # "excel",
                     "calculator",
                     "google-search",
                     "ms-playwright",
