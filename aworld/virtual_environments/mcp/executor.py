@@ -24,6 +24,24 @@ class MCPToolExecutor(ToolActionExecutor):
         self._load_mcp_config()
         # self.server: MCPServer = None
 
+    def _replace_env_variables(self, config):
+        if isinstance(config, dict):
+            for key, value in config.items():
+                if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+                    env_var_name = value[2:-1]
+                    config[key] = os.getenv(env_var_name, value)
+                    print(f"Replaced {value} with {config[key]}")
+                elif isinstance(value, dict) or isinstance(value, list):
+                    self._replace_env_variables(value)
+        elif isinstance(config, list):
+            for index, item in enumerate(config):
+                if isinstance(item, str) and item.startswith("${") and item.endswith("}"):
+                    env_var_name = item[2:-1]
+                    config[index] = os.getenv(env_var_name, item)
+                    print(f"Replaced {item} with {config[index]}")
+                elif isinstance(item, dict) or isinstance(item, list):
+                    self._replace_env_variables(item)
+
     def _load_mcp_config(self) -> None:
         """Load MCP server configurations from config file."""
         try:
@@ -37,6 +55,9 @@ class MCPToolExecutor(ToolActionExecutor):
 
             with open(config_path, "r") as f:
                 config_data = json.load(f)
+            
+            # Replace environment variables in config
+            self._replace_env_variables(config_data)
 
             # Load all server configurations
             for server_name, server_config in config_data.get("mcpServers", {}).items():
@@ -201,3 +222,10 @@ class MCPToolExecutor(ToolActionExecutor):
     #     List[ActionResult], Any]:
     #     results = await self.async_execute_action(actions, **kwargs)
     #     return results
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
+    executor = MCPToolExecutor()
+    executor._load_mcp_config()
+    print(executor.mcp_servers)
