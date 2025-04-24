@@ -6,12 +6,9 @@ import time
 import traceback
 from typing import List, Dict, Any, Union
 
-from aworld.models.model_response import ToolCall, Function
-from aworld.output.base import StepOutput, ToolCallOutput, ToolResultOutput
-
-from aworld.config.conf import ToolConfig
 from pydantic import BaseModel
 
+from aworld.config.conf import ToolConfig
 from aworld.core.agent.base import Agent, is_agent_by_name
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
@@ -19,6 +16,8 @@ from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
 from aworld.core.task import Runner, Task
 from aworld.logs.util import logger, color_log, Color
+from aworld.models.model_response import ToolCall
+from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.utils.common import sync_exec, override_in_subclass
 
 
@@ -285,12 +284,12 @@ class SequenceRunner(TaskRunner):
                                 "response": "",
                                 "steps": step,
                                 "success": False}
-                    step += 1
                     await self.outputs.add_output(
                         StepOutput.build_finished_output(name=f"Step{step}",
-                                                       step_num=step,
-                                                      )
+                                                         step_num=step,
+                                                         )
                     )
+                    step += 1
                     if terminated and agent.finished:
                         logger.info("swarm finished")
                         break
