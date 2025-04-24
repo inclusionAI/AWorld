@@ -4,10 +4,7 @@ import abc
 import asyncio
 import time
 import traceback
-import uuid
 from typing import List, Dict, Any, Union
-
-from aworld.output.base import StepOutput
 
 from aworld.config.conf import ToolConfig
 from pydantic import BaseModel
@@ -19,7 +16,6 @@ from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
 from aworld.core.task import Runner, Task
 from aworld.logs.util import logger, color_log, Color
-from aworld.output.output_channel import OutputChannels
 from aworld.utils.common import sync_exec, override_in_subclass
 
 
@@ -150,7 +146,6 @@ class TaskRunner(Runner):
 
         self.swarm = task.swarm
         self.input = task.input
-        self.output = task.output
         self.name = task.name
         self.conf = task.conf
         self.tools = {tool.name(): tool for tool in task.tools} if task.tools else {}
@@ -169,7 +164,6 @@ class TaskRunner(Runner):
         self._exception = None
         for k, v in kwargs.items():
             setattr(self, k, v)
-
 
         # modules init
 
@@ -226,23 +220,16 @@ class SequenceRunner(TaskRunner):
                 policy = None
                 cur_agent = agent
                 while step < max_steps:
-
-                    step_output = StepOutput(name=f"Step#{step}", step_num=step, type="step")
-                    if self.output:
-                       self.output.add_output(step_output)
-
                     terminated = False
 
                     observation = self.swarm.action_to_observation(policy, observations)
 
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
                         policy: List[ActionModel] = cur_agent.policy(observation,
-                                                                     step=step,
-                                                                     output=step_output)
+                                                                     step=step)
                     else:
                         policy: List[ActionModel] = await cur_agent.async_policy(observation,
-                                                                                 step=step,
-                                                                                 output=step_output)
+                                                                                 step=step)
                     observation.content = None
                     color_log(f"{cur_agent.name()} policy: {policy}")
                     if not policy:
@@ -263,7 +250,7 @@ class SequenceRunner(TaskRunner):
                         elif status == 'return':
                             return info
                     elif is_tool_by_name(policy[0].tool_name):
-                        msg, terminated = await self._tool_call(policy, observations, step, output=step_output)
+                        msg, terminated = await self._tool_call(policy, observations, step)
                     else:
                         logger.warning(f"Unrecognized policy: {policy[0]}")
                         return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
@@ -273,9 +260,7 @@ class SequenceRunner(TaskRunner):
                     step += 1
                     if terminated and agent.finished:
                         logger.info("swarm finished")
-                        step_output.mark_finished()
                         break
-                    step_output.mark_finished()
         return {"steps": step,
                 "answer": observation.content,
                 "observation": observation,
@@ -322,7 +307,7 @@ class SequenceRunner(TaskRunner):
             return status, observation
         return status, None
 
-    async def _tool_call(self, policy: List[ActionModel], observations: List[Observation], step: int, **kwargs):
+    async def _tool_call(self, policy: List[ActionModel], observations: List[Observation], step: int):
         msg = None
         terminated = False
         # group action by tool name

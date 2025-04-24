@@ -454,9 +454,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         Returns:
             ActionModel sequence from agent policy
         """
-        output = None
-        if kwargs.get("output") and isinstance(kwargs.get("output"), StepOutput):
-            output = kwargs["output"]
 
         self._finished = False
         await self.async_desc_transform()
@@ -489,8 +486,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 tools=self.tools if self.tools else None
             )
             logger.info(f"Execute response: {llm_response.message}")
-            if output:
-                output.add_part(MessageOutput(source=llm_response))
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
@@ -510,11 +505,10 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             else:
                 logger.error(f"{self.name()} failed to get LLM response")
                 raise RuntimeError(f"{self.name()} failed to get LLM response")
+
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
             self._finished = True
-        if output:
-            output.mark_finished()
         return agent_result.actions
 
 

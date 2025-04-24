@@ -5,7 +5,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable
 
-from aworld.output.output_channel import OutputChannel, OutputChannels
 from pydantic import BaseModel
 
 from aworld.config import ConfigDict
@@ -34,7 +33,6 @@ class Task:
     agent: Agent = None
     # for loop detect
     endless_threshold: int = 3
-    output: OutputChannel = None
 
 
 class Runner(object):
