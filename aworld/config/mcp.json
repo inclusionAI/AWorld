@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "amap-amap-sse": {
+      "url": "https://mcp.amap.com/sse?key=08c925b190caf1cd566f2cf4c4517fdb",
+      "timeout": 5.0,
+      "sse_read_timeout": 300.0
+    },
+    "tavily-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "tavily-mcp@0.1.2"
+      ],
+      "env": {
+        "TAVILY_API_KEY": "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"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/wuhulala/PycharmProjects/AWorld/examples/amap/"
+      ]
+    }
+  }
+}

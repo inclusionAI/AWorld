@@ -76,6 +76,7 @@ docs/api/
 data/raw/
 data/processed/
 data/workspaces/
+examples/gaia/gaia_dataset/
 
 # Compiled files
 *.com
