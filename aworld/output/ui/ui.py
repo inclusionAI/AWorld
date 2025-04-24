@@ -26,7 +26,7 @@ class AworldMessageUIUtils:
 
         if __output__.reason_generator or __output__.response_generator:
             if __output__.reason_generator:
-                await consume_content(__output__.response_generator, __log_item)
+                await consume_content(__output__.reason_generator, __log_item)
             if __output__.reason_generator:
                 await consume_content(__output__.response_generator, __log_item)
         else:

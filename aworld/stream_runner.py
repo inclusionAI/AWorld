@@ -3,6 +3,7 @@
 import asyncio
 import copy
 
+from aworld.config import TaskConfig
 from aworld.core.task import Task, Config
 from aworld.output import StreamingOutputs
 from aworld.runner import Runners
@@ -24,7 +25,10 @@ class StreamRunner:
         One Agent with Tool Event Loop
         """
         if not task.conf:
-            task.conf = Config()
+            task.conf = TaskConfig()
+
+        if not task.conf.stream:
+            task.conf.stream = True
 
         streamed_result = StreamingOutputs(
             input=task.input,

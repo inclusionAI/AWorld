@@ -492,7 +492,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             if outputs and isinstance(outputs, Outputs):
                 await outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
 
-            logger.info(f"Execute response: {llm_response.message}")
+            # logger.info(f"Execute response: {llm_response.message}")
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e

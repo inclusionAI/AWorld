@@ -110,7 +110,7 @@ class MessageOutput(Output):
     reasoning_format_end: str = Field(default="</think>", description="reasoning format end of the message")
 
     json_parse: bool = Field(default=False, description="json parse of the message", exclude=True)
-    has_reasoning: bool = Field(default=True, description="has reasoning of the message")
+    has_reasoning: bool = Field(default=False, description="has reasoning of the message")
     finished: bool = Field(default=False, description="finished of the message")
 
     @model_validator(mode='after')
@@ -175,6 +175,8 @@ class MessageOutput(Output):
             while True:
                 chunk = await anext(self.source)
                 chunk_content = self.get_chunk_content(chunk)
+                if not chunk_content:
+                    continue
                 if chunk_content.startswith(self.reasoning_format_start):
                     is_in_reasoning = True
                     reasoning_buffer = chunk_content
@@ -212,6 +214,9 @@ class MessageOutput(Output):
             while True:
                 chunk = await anext(self.source)
                 chunk_content = self.get_chunk_content(chunk)
+
+                if not chunk_content:
+                    continue
                 response_buffer += chunk_content
                 yield chunk_content
         except StopAsyncIteration:
@@ -219,10 +224,11 @@ class MessageOutput(Output):
             self.response = self.__resolve_json__(response_buffer, self.json_parse)
 
     def get_chunk_content(self, chunk):
-        if chunk in ModelResponse:
+        if isinstance(chunk, ModelResponse):
             return chunk.content
         else:
             return chunk
+
     def __split_reasoning_and_response__(self) -> tuple[Generator[str, None, None], Generator[str, None, None]]: # type: ignore
         """
         Split source into reasoning and response generators for sync source

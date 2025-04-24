@@ -60,7 +60,7 @@ async def consume_content(__content__, callback: Callable[..., Any]):
             elif isinstance(sub_content, Output):
                 await consume_output(sub_content, callback)
             else:
-                await callback(__content__)
+                await callback(sub_content)
     elif isinstance(__content__, Generator) or isinstance(__content__, list):
         for sub_content in __content__:
             if isinstance(sub_content, OutputPart):
@@ -68,7 +68,7 @@ async def consume_content(__content__, callback: Callable[..., Any]):
             elif isinstance(sub_content, Output):
                 await consume_output(sub_content, callback)
             else:
-                await callback(__content__)
+                await callback(sub_content)
     elif isinstance(__content__, str):
         await callback(__content__)
     else:
