@@ -118,6 +118,3 @@ data/workspaces/
 *.pdf
 *.html
 *.wav
-
-# gaia
-gaia/

@@ -99,8 +99,6 @@ Now, here is the task. Stay focused and complete it carefully using the appropri
     )
 
     for i in range(len(full_dataset)):
-        if i not in [5]:
-            continue
         try:
             logging.info(f"Start to process: {i}")
             logging.info(f"Detail: {full_dataset[i]}")
