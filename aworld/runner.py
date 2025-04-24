@@ -6,6 +6,9 @@ import time
 import traceback
 from typing import List, Dict, Any, Union
 
+from aworld.models.model_response import ToolCall, Function
+from aworld.output.base import StepOutput, ToolCallOutput, ToolResultOutput
+
 from aworld.config.conf import ToolConfig
 from pydantic import BaseModel
 
@@ -146,6 +149,7 @@ class TaskRunner(Runner):
 
         self.swarm = task.swarm
         self.input = task.input
+        self.outputs = task.outputs
         self.name = task.name
         self.conf = task.conf
         self.tools = {tool.name(): tool for tool in task.tools} if task.tools else {}
@@ -210,7 +214,7 @@ class SequenceRunner(TaskRunner):
             raise RuntimeError("no observation, check run process")
 
         start = time.time()
-        step = 0
+        step = 1
         max_steps = self.conf.get("max_steps", 100)
         msg = None
 
@@ -219,21 +223,36 @@ class SequenceRunner(TaskRunner):
                 observations = [observation]
                 policy = None
                 cur_agent = agent
-                while step < max_steps:
+                while step <= max_steps:
+                    await self.outputs.add_output(StepOutput.build_start_output(name=f"Step{step}", step_num=step))
+
                     terminated = False
 
                     observation = self.swarm.action_to_observation(policy, observations)
 
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
                         policy: List[ActionModel] = cur_agent.policy(observation,
-                                                                     step=step)
+                                                                     step=step,
+                                                                     outputs=self.outputs,
+                                                                     stream=self.conf.get("stream", False)
+                                                                     )
                     else:
                         policy: List[ActionModel] = await cur_agent.async_policy(observation,
-                                                                                 step=step)
+                                                                                 step=step,
+                                                                                 outputs=self.outputs,
+                                                                                 stream=self.conf.get("stream", False)
+                                                                                 )
                     observation.content = None
                     color_log(f"{cur_agent.name()} policy: {policy}")
                     if not policy:
                         logger.warning(f"current agent {cur_agent.name()} no policy to use.")
+                        await self.outputs.add_output(
+                            StepOutput.build_failed_output(name=f"Step{step}",
+                                                           step_num=step,
+                                                           data = f"current agent {cur_agent.name()} no policy to use."
+                                                           )
+                        )
+                        await self.outputs.mark_completed()
                         return {"msg": f"current agent {cur_agent.name()} no policy to use.",
                                 "steps": step,
                                 "success": False,
@@ -248,19 +267,34 @@ class SequenceRunner(TaskRunner):
                             observation = self.swarm.action_to_observation(policy, observations)
                             break
                         elif status == 'return':
+                            await self.outputs.add_output(
+                                StepOutput.build_finished_output(name=f"Step{step}",step_num=step)
+                            )
                             return info
                     elif is_tool_by_name(policy[0].tool_name):
                         msg, terminated = await self._tool_call(policy, observations, step)
                     else:
                         logger.warning(f"Unrecognized policy: {policy[0]}")
+                        await self.outputs.add_output(
+                            StepOutput.build_failed_output(name=f"Step{step}",
+                                                           step_num=step,
+                                                           data = f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.")
+                        )
+                        await self.outputs.mark_completed()
                         return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
                                 "response": "",
                                 "steps": step,
                                 "success": False}
                     step += 1
+                    await self.outputs.add_output(
+                        StepOutput.build_finished_output(name=f"Step{step}",
+                                                       step_num=step,
+                                                      )
+                    )
                     if terminated and agent.finished:
                         logger.info("swarm finished")
                         break
+        await self.outputs.mark_completed()
         return {"steps": step,
                 "answer": observation.content,
                 "observation": observation,
@@ -339,6 +373,14 @@ class SequenceRunner(TaskRunner):
                 continue
 
             observations.append(observation)
+            for i, item in enumerate(action):
+                tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
+                    "function": {
+                        "name": item.action_name,
+                        "arguments": item.params,
+                    }
+                }))
+                await self.outputs.add_output(tool_output)
 
             logger.info(f'{action} state: {observation}; reward: {reward}')
             # Check if there's an exception in info

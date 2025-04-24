@@ -21,8 +21,8 @@ from aworld.memory.main import Memory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
-from aworld.output import MessageOutput
-from aworld.output.base import StepOutput
+from aworld.output import Outputs
+from aworld.output.base import StepOutput, MessageOutput
 from aworld.utils.common import convert_to_snake, sync_exec
 
 INPUT = TypeVar('INPUT')
@@ -454,6 +454,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         Returns:
             ActionModel sequence from agent policy
         """
+        outputs = None
+        if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
+            outputs = kwargs.get("outputs")
 
         self._finished = False
         await self.async_desc_transform()
@@ -483,8 +486,12 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 messages=messages,
                 model=self.model_name,
                 temperature=self.conf.llm_config.llm_temperature,
-                tools=self.tools if self.tools else None
+                tools=self.tools if self.tools else None,
+                stream = kwargs.get("stream", False)
             )
+            if outputs and isinstance(outputs, Outputs):
+                await outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
+
             logger.info(f"Execute response: {llm_response.message}")
         except Exception as e:
             logger.warn(traceback.format_exc())

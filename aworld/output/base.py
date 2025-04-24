@@ -55,10 +55,23 @@ class ToolCallOutput(Output):
 
 class ToolResultOutput(Output):
 
+    origin_tool_call: ToolCall
+
+    image: str = Field(default=None)
+
+    images: list = Field(default=list)
+
     def output_type(self):
         return "tool_call_result"
 
     pass
+
+class RunFinishedSignal(Output):
+
+    def output_type(self):
+        return "finished_signal"
+
+RUN_FINISHED_SIGNAL = RunFinishedSignal()
 
 
 class MessageOutput(Output):
@@ -67,7 +80,6 @@ class MessageOutput(Output):
     MessageOutput structure of LLM output
     if you want to get the only response, you must first call reasoning_generator or set parameter only_response to True , then call response_generator
     if you model not reasoning, you do not need care about reasoning_generator and reasoning
-    TODO 1:n pub/sub stream
 
     1. source: async/sync generator of the message
     2. reasoning_generator: async/sync reasoning generator of the message
@@ -314,17 +326,21 @@ class MessageOutput(Output):
 class StepOutput(Output):
     name: str
     step_num: int
-    type: str
     status: Optional[str] = Field(default="START", description="step_status")
     started_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="started at")
-    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="updated at")
     finished_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="finished at")
 
-    def mark_finished(self):
-        self.status = 'FINISHED'
+    @classmethod
+    def build_start_output(cls, name, step_num, data = None):
+        return cls(name=name,step_num=step_num, data=data)
 
-    def is_finished(self) -> bool:
-        return self.status == 'FINISHED'
+    @classmethod
+    def build_finished_output(cls, name, step_num, data = None):
+        return cls(name=name, step_num=step_num, status='FINISHED', data=data)
+
+    @classmethod
+    def build_failed_output(cls, name, step_num, data = None):
+        return cls(name=name,step_num=step_num, status='FAILED', data=data)
 
     def output_type(self):
         return "step_output"
