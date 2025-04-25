@@ -47,5 +47,30 @@ class Play(ExecutableAction):
 You can view the example [code](gym_tool/openai_gym.py) to learn more.
 
 # Be tool
-You can convert locally defined functions into tools for use in a task.
+You also can convert locally defined functions into tools for use in a task.
 
+NOTE: The function must have a return value, preferably a string.
+
+```python
+from pydantic import Field
+
+from aworld.core.envs.func_to_tool import be_tool
+
+
+@be_tool(tool_name='example', tool_desc="example description")
+def example_1() -> str:
+    return "example_1"
+
+
+@be_tool(tool_name='example')
+def example_2(param: str) -> str:
+    return f"example_2{param}"
+
+
+@be_tool(tool_name='example', name="example_3_alias_name", desc="example_3 description")
+def example_3(param_1: str = "param",
+              param_2: str = Field(default="", description="param2 description")) -> str:
+    return f"example_3{param_1}{param_2}"
+```
+
+The name of the tool is `example`, now, you can use these functions as tools in the framework. 
