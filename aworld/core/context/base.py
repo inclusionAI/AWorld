@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+from collections import Counter
 from typing import Dict
 
 from pydantic import BaseModel
@@ -28,6 +29,10 @@ class Context(InheritanceSingleton):
         self._task_id = kwargs.get('task_id', self.conf.get('task_id', None))
         self._engine = kwargs.get('engine', self.conf.get('engine', None))
         self.session: Session = None
+        self.token_usage = {}
+
+    def add_token(self, usage: Dict[str, int]):
+        self.token_usage = dict(Counter(usage) + Counter(self.token_usage))
 
     @property
     def engine(self):
