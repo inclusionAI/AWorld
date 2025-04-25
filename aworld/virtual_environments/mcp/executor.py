@@ -47,7 +47,6 @@ class MCPToolExecutor(ToolActionExecutor):
     def _load_mcp_config(self) -> None:
         """Load MCP server configurations from config file."""
         try:
-            # todo:mcp_config
             config_data = {}
             if mcp_utils.MCP_SERVERS_CONFIG:
                 config_data=mcp_utils.MCP_SERVERS_CONFIG

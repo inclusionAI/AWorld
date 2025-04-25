@@ -8,7 +8,6 @@ from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
 from aworld.utils.common import find_file
 
-# todo:mcp_config
 MCP_SERVERS_CONFIG = {}
 
 async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
@@ -70,7 +69,6 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
 
 async def mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     """Default implement transform framework standard protocol to openai protocol of tool description."""
-    # todo:mcp_config
     config = {}
     global MCP_SERVERS_CONFIG
     def _replace_env_variables(config):
@@ -117,7 +115,7 @@ async def mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, 
             logging.info(f"load config fail: {e}")
             return []
         _replace_env_variables(config)
-        # todo:mcp_config
+
         MCP_SERVERS_CONFIG = config
 
     mcp_servers_config = config.get("mcpServers", {})

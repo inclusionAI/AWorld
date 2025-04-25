@@ -89,7 +89,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.handoffs: List[str] = kwargs.pop("agent_names", [])
         # Supported MCP server
         self.mcp_servers: List[str] = kwargs.pop("mcp_servers", [])
-        # todo:mcp_config
         self.mcp_config: Dict[str, Any] = kwargs.pop("mcp_config", {})
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
@@ -184,7 +183,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             "black_tool_actions") else self.conf.get('black_tool_actions', {})
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
         self.history_messages = kwargs.get("history_messages") if kwargs.get("history_messages") else 100
-        # todo:tool_promot
         self.use_tools_in_prompt = kwargs.get('use_tools_in_prompt', conf.use_tools_in_prompt)
 
     def reset(self, options: Dict[str, Any]):
@@ -216,14 +214,12 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
     def mcp_is_tool(self):
         """Description of mcp servers are tools."""
         try:
-            # todo:mcp_config
             return sync_exec(mcp_tool_desc_transform, self.mcp_servers,self.mcp_config)
         except Exception as e:
             logger.error(f"mcp_is_tool error: {e}")
             return []
 
     def use_tool_list(self, resp: ModelResponse) -> List[Dict[str, Any]]:
-        # todo:tool_promot
         return self.tool_parse(resp)
 
     def desc_transform(self):
@@ -245,7 +241,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         # Agents as tool
         self.tools.extend(self.handoffs_agent_as_tool())
         # MCP servers are tools
-        # todo:mcp_config
         self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers,self.mcp_config))
 
     def messages_transform(self,
@@ -265,7 +260,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         Returns:
             Message list for LLM.
         """
-        # todo:tool_promot
         messages = []
         if sys_prompt:
             messages.append({'role': 'system', 'content': sys_prompt if self.use_tools_in_prompt else sys_prompt.format(tool_list=self.tools)})
@@ -307,7 +301,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         return messages
 
     def tool_parse(self, resp: ModelResponse) -> List[Dict[str, Any]]:
-        # todo:tool_promot
         tool_list = []
         try:
             if resp and hasattr(resp, 'content') and resp.content:
@@ -334,7 +327,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
     def response_parse(self, resp: ModelResponse) -> AgentResult:
         """Default parse response by LLM."""
-        # todo:tool_promot
         results = []
         if not resp:
             logger.warning("LLM no valid response!")
@@ -476,7 +468,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
         llm_response = None
         try:
-            # todo:tool_promot
             llm_response = call_llm_model(
                 self.llm,
                 messages=messages,
@@ -491,7 +482,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             raise e
         finally:
             if llm_response:
-                # todo:tool_promot
                 use_tools = self.use_tool_list(llm_response)
                 is_use_tool_prompt = len(use_tools) > 0
                 if llm_response.error:
@@ -555,7 +545,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
         llm_response = None
         try:
-            # todo:tool_promot
             llm_response = await acall_llm_model(
                 self.llm,
                 messages=messages,
