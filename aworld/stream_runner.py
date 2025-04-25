@@ -27,8 +27,8 @@ class StreamRunner:
         if not task.conf:
             task.conf = TaskConfig()
 
-        if not task.conf.stream:
-            task.conf.stream = True
+        # if not task.conf.stream:
+        #     task.conf.stream = True
 
         streamed_result = StreamingOutputs(
             input=task.input,
