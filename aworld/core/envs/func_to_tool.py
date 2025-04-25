@@ -195,6 +195,9 @@ def func_params(func: Callable[..., Any]):
     type_hints = get_type_hints(func)
     filtered_params = []
 
+    if sig.return_annotation == inspect.Parameter.empty:
+        raise RuntimeError(f"{func} no return value, preferably a string.")
+
     for name, param in sig.parameters.items():
         filtered_params.append((name, param))
 

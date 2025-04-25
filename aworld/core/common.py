@@ -11,7 +11,7 @@ class ActionResult(BaseModel):
     """Result of executing an action by use tool."""
     is_done: bool = False
     success: bool = False
-    content: str = None
+    content: Any = None
     error: str = None
     keep: bool = False
     action_name: str = None
