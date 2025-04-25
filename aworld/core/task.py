@@ -11,7 +11,7 @@ from aworld.config import ConfigDict
 from aworld.core.agent.base import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.envs.tool import Tool, AsyncTool
-from aworld.output.outputs import Outputs, StreamingOutputs
+from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
 
 Config = Union[Dict[str, Any], ConfigDict, BaseModel]
 
@@ -35,7 +35,7 @@ class Task:
     # for loop detect
     endless_threshold: int = 3
     # task_outputs
-    outputs: Outputs = None
+    outputs: Outputs = field(default_factory=DefaultOutputs)
 
 
 class Runner(object):

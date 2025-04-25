@@ -3,18 +3,65 @@ from aworld.output.utils import consume_content
 from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput
 
 
-class AworldMessageUIUtils:
+class AworldUI:
     """"""
 
-    @staticmethod
-    def title(output) -> str:
+    async def title(self, output):
         """
         Title
         """
         pass
 
+    async def message_output(self, __output__: MessageOutput):
+        """
+        message_output
+        """
+        pass
+
+    async def tool_result(self, output: ToolResultOutput):
+        """
+            loading
+        """
+        pass
+
+
+    async def step(self, output: StepOutput):
+        """
+            loading
+        """
+        pass
+
     @staticmethod
-    async def message_output(__output__: MessageOutput) -> str:
+    async def interrupt(output) -> str:
+        """
+            interrupt
+        """
+        pass
+
+    @classmethod
+    async def parse_output(cls, output, ui: "AworldUI"):
+        """
+            parse_output
+        """
+        if isinstance(output, MessageOutput):
+            return await ui.message_output(output)
+        elif isinstance(output, ToolResultOutput):
+            return await ui.tool_result(output)
+        elif isinstance(output, StepOutput):
+            return await ui.step(output)
+        else:
+            return await ui.interrupt(output)
+
+class PrinterAworldUI(AworldUI):
+    """"""
+
+    async def title(self, output) -> str:
+        """
+        Title
+        """
+        pass
+
+    async def message_output(self, __output__: MessageOutput) -> str:
         """
         message_output
         """
@@ -38,8 +85,7 @@ class AworldMessageUIUtils:
         print("")
         return "".join(result)
 
-    @staticmethod
-    def mcp_tool_result(output: ToolResultOutput) -> str:
+    async def tool_result(self, output: ToolResultOutput) -> str:
         """
             loading
         """
@@ -47,8 +93,8 @@ class AworldMessageUIUtils:
                f"with params {output.origin_tool_call.function.arguments} \n" \
                f"with result {output.data}\n"
 
-    @staticmethod
-    def loading(output: StepOutput) -> str:
+
+    async def step(self, output: StepOutput) -> str:
         """
             loading
         """
@@ -62,23 +108,8 @@ class AworldMessageUIUtils:
 
 
     @staticmethod
-    def interrupt(output) -> str:
+    async def interrupt(output) -> str:
         """
             interrupt
         """
         pass
-
-    @classmethod
-    async def parse_output(cls, output) -> str:
-        """
-            parse_output
-        """
-        if isinstance(output, MessageOutput):
-            return await cls.message_output(output)
-        elif isinstance(output, ToolResultOutput):
-            return cls.mcp_tool_result(output)
-        elif isinstance(output, StepOutput):
-            return cls.loading(output)
-        else:
-            return cls.interrupt(output)
-

@@ -35,7 +35,7 @@ class Outputs(abc.ABC):
         pass
 
     @abstractmethod
-    async def stream_events(self) -> Union[AsyncIterator[Output]]:
+    async def stream_events(self) -> Union[AsyncIterator[Output], list]:
         """Stream outputs asynchronously.
         
         Returns:
@@ -44,7 +44,7 @@ class Outputs(abc.ABC):
         pass
 
     @abstractmethod
-    def sync_stream_events(self) -> Union[Iterator[Output]]:
+    def sync_stream_events(self) -> Union[Iterator[Output], list]:
         """Stream outputs synchronously.
         
         Returns:
@@ -67,11 +67,34 @@ class AsyncOutputs(Outputs):
     def sync_add_output(self, output: Output):
         pass
 
-    async def stream_events(self) -> Union[AsyncIterator[Output]]:
+    async def stream_events(self) -> Union[AsyncIterator[Output], list]:
         pass
 
     def sync_stream_events(self) -> Union[Iterator[Output]]:
         pass
+
+
+@dataclass
+class DefaultOutputs(Outputs):
+    """DefaultAsyncOutputs """
+
+    _outputs: list = field(default_factory=list)
+
+    async def add_output(self, output: Output):
+        self._outputs.append(output)
+
+    def sync_add_output(self, output: Output):
+        self._outputs.append(output)
+
+    async def stream_events(self) -> Union[AsyncIterator[Output], list]:
+        return self._outputs
+
+    def sync_stream_events(self) -> Union[Iterator[Output], list]:
+        return self._outputs
+
+    async def mark_completed(self):
+        pass
+
 
 @dataclass
 class StreamingOutputs(AsyncOutputs):
