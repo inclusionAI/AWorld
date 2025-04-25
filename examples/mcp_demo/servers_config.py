@@ -4,7 +4,7 @@ mcp_config = {
       "url": "http://localhost:20000/sse"
     },
     "amap-amap-sse": {
-      "url": "https://mcp.amap.com/sse?key=f569d30e3e381f13b93ea4635652bcdf",
+      "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",
       "timeout": 5,
       "sse_read_timeout": 300
     },
