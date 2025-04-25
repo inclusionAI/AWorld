@@ -32,7 +32,7 @@ class AworldUI:
         pass
 
     @staticmethod
-    async def interrupt(output) -> str:
+    async def custom_output(output) -> str:
         """
             interrupt
         """
@@ -50,7 +50,7 @@ class AworldUI:
         elif isinstance(output, StepOutput):
             return await ui.step(output)
         else:
-            return await ui.interrupt(output)
+            return await ui.custom_output(output)
 
 class PrinterAworldUI(AworldUI):
     """"""
@@ -108,7 +108,7 @@ class PrinterAworldUI(AworldUI):
 
 
     @staticmethod
-    async def interrupt(output) -> str:
+    async def custom_output(output) -> str:
         """
             interrupt
         """
