@@ -1,11 +1,13 @@
 import os
+import time
 
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
-os.environ["LOGFIRE_WRITE_TOKEN"] = (
-    "Your logfire write token, "
-    "create guide refer to "
-    "https://logfire.pydantic.dev/docs/how-to-guides/create-write-tokens/"
-)
+# os.environ["METRICS_SYSTEM_ENABLED"] = "true"
+# os.environ["LOGFIRE_WRITE_TOKEN"] = (
+#     "Your logfire write token, "
+#     "create guide refer to "
+#     "https://logfire.pydantic.dev/docs/how-to-guides/create-write-tokens/"
+# )
 
 import aworld.trace as trace
 from aworld.logs.util import logger

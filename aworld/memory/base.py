@@ -60,6 +60,14 @@ class MemoryStore(ABC):
         pass
 
     @abstractmethod
+    def get_first(self) -> Optional[MemoryItem]:
+        pass
+
+    @abstractmethod
+    def total_rounds(self) -> int:
+        pass
+
+    @abstractmethod
     def get_all(self) -> list[MemoryItem]:
         pass
 
@@ -83,7 +91,7 @@ class MemoryStore(ABC):
     @abstractmethod
     def history(self, memory_id) -> list[MemoryItem]:
         pass
-    
+
 
 class MemoryBase(ABC):
 
@@ -192,6 +200,14 @@ class InMemoryMemoryStore(MemoryStore):
 
     def get(self, memory_id) -> Optional[MemoryItem]:
         return next((item for item in self.memory_items if item.id == memory_id), None)  # Find item by ID
+
+    def get_first(self) -> Optional[MemoryItem]:
+        if len(self.memory_items) == 0:
+            return None
+        return self.memory_items[0]
+
+    def total_rounds(self) -> int:
+        return len(self.memory_items)
 
     def get_all(self) -> list[MemoryItem]:
         return self.memory_items  # Return all items directly

@@ -149,7 +149,7 @@ class AnthropicProvider(LLMProviderBase):
             system_content = processed_data["system"]
             anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
                                                          stop, **kwargs)
-            response = self.provider.messages.create(**anthropic_params)
+            response = self.provider.visited_messages.create(**anthropic_params)
 
             return self.postprocess_response(response)
         except Exception as e:
@@ -184,7 +184,7 @@ class AnthropicProvider(LLMProviderBase):
             anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
                                                          stop, **kwargs)
             anthropic_params["stream"] = True
-            response_stream = self.provider.messages.create(**anthropic_params)
+            response_stream = self.provider.visited_messages.create(**anthropic_params)
 
             for chunk in response_stream:
                 if not chunk:
@@ -224,7 +224,7 @@ class AnthropicProvider(LLMProviderBase):
             anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
                                                          stop, **kwargs)
             anthropic_params["stream"] = True
-            response_stream = await self.async_provider.messages.create(**anthropic_params)
+            response_stream = await self.async_provider.visited_messages.create(**anthropic_params)
 
             async for chunk in response_stream:
                 if not chunk:
@@ -262,7 +262,7 @@ class AnthropicProvider(LLMProviderBase):
             processed_messages = processed_data["messages"]
             system_content = processed_data["system"]
             anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens, stop, **kwargs)
-            response = await self.async_provider.messages.create(**anthropic_params)
+            response = await self.async_provider.visited_messages.create(**anthropic_params)
 
             return self.postprocess_response(response)
         except Exception as e:

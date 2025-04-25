@@ -14,7 +14,7 @@ class MessagePanel(BaseModel):
     """
     
     panel_id: str = Field(default="", description="Unique identifier for the panel")
-    messages: List[Output] = Field(default_factory=list, description="List of messages/outputs")
+    visited_messages: List[Output] = Field(default_factory=list, description="List of messages/outputs")
     
     # Queue for async operations
     _queue: asyncio.Queue = None
@@ -25,7 +25,6 @@ class MessagePanel(BaseModel):
 
     async def add_output(self, output: Output) -> None:
         """Add an output to the panel"""
-        self.messages.append(output)
         await self._queue.put(output)
 
     async def get_messages_async(self) -> AsyncGenerator[Output, None]:
@@ -36,7 +35,7 @@ class MessagePanel(BaseModel):
             Output objects as they arrive
         """
         # First yield existing messages
-        for message in self.messages:
+        for message in self.visited_messages:
             if message is None:  # None signals completion
                 break
             yield message
@@ -44,6 +43,7 @@ class MessagePanel(BaseModel):
         # Then wait for new messages
         while True:
             message = await self._queue.get()
+            self.visited_messages.append(message)
             if message is None:  # None signals completion
                 break
             yield message

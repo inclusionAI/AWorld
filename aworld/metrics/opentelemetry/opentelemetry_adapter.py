@@ -293,8 +293,8 @@ def configure_otlp_provider(backend: Sequence[str] = None,
             compression=Compression.Gzip,
         )
         set_metric_provider(OpentelemetryMetricProvider(exporter))
-
-    instrument_system_metrics()
+    if os.getenv("METRICS_SYSTEM_ENABLED") == "true":
+        instrument_system_metrics()
 
 
 def instrument_system_metrics():

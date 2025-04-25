@@ -7,6 +7,7 @@ from aworld.trace.trace import (
     Span, Tracer,
     NoOpTracer,
     get_tracer_provider,
+    get_tracer_provider_silent,
     log_trace_error
 )
 from aworld.version_gen import __version__
@@ -44,6 +45,9 @@ def trace_configure(provider: str = "otlp",
     Returns:
         None
     """
+    exist_provider = get_tracer_provider_silent()
+    if exist_provider:
+        exist_provider.shutdown()
     if provider == "otlp":
         configure_otlp_provider(backends=backends, base_url=base_url, write_token=write_token, **kwargs)
     else:
