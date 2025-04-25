@@ -8,6 +8,7 @@ from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
 from aworld.utils.common import find_file
 
+MCP_SERVERS_CONFIG = {}
 
 async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
     openai_tools = []
@@ -66,8 +67,10 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
     return openai_tools
 
 
-async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any]]:
+async def mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     """Default implement transform framework standard protocol to openai protocol of tool description."""
+    config = {}
+    global MCP_SERVERS_CONFIG
     def _replace_env_variables(config):
         if isinstance(config, dict):
             for key, value in config.items():
@@ -86,25 +89,35 @@ async def mcp_tool_desc_transform(tools: List[str] = None) -> List[Dict[str, Any
                 elif isinstance(item, dict) or isinstance(item, list):
                     _replace_env_variables(item)
 
-    # Priority given to the running path.
-    config_path = find_file(filename='mcp.json')
-    if not os.path.exists(config_path):
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.normpath(os.path.join(current_dir, "../config/mcp.json"))
-    logger.info(f"mcp conf path: {config_path}")
+    if mcp_config:
+        try:
+            config = mcp_config
+            MCP_SERVERS_CONFIG = config
+        except Exception as e:
+            logging.error(f"mcp_config error: {e}")
+            return []
+    else:
+        # Priority given to the running path.
+        config_path = find_file(filename='mcp.json')
+        if not os.path.exists(config_path):
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.normpath(os.path.join(current_dir, "../config/mcp.json"))
+        logger.info(f"mcp conf path: {config_path}")
 
-    if not os.path.exists(config_path):
-        logging.info(f"mcp config is not exist: {config_path}")
-        return []
+        if not os.path.exists(config_path):
+            logging.info(f"mcp config is not exist: {config_path}")
+            return []
 
-    try:
-        with open(config_path, "r") as f:
-            config = json.load(f)
-    except Exception as e:
-        logging.info(f"load config fail: {e}")
-        return []
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+        except Exception as e:
+            logging.info(f"load config fail: {e}")
+            return []
+        _replace_env_variables(config)
 
-    _replace_env_variables(config)
+        MCP_SERVERS_CONFIG = config
+
     mcp_servers_config = config.get("mcpServers", {})
 
     server_configs = []

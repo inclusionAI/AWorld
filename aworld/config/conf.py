@@ -112,6 +112,7 @@ class AgentConfig(BaseModel):
     output_prompt: Optional[str] = None
     working_dir: Optional[str] = None
     enable_recording: bool = False
+    use_tools_in_prompt: bool = True
     ext: dict = {}
 
 
