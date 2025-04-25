@@ -1,6 +1,6 @@
 from aworld.output.utils import consume_content
 
-from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput
+from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput, Output
 
 
 class AworldUI:
@@ -31,10 +31,9 @@ class AworldUI:
         """
         pass
 
-    @staticmethod
-    async def custom_output(output) -> str:
+    async def custom_output(self, output: Output) -> str:
         """
-            interrupt
+            custom
         """
         pass
 
@@ -106,10 +105,7 @@ class PrinterAworldUI(AworldUI):
             return f"=============🛬💥FAILED {output.name}======================"
         return f"=============？UNKNOWN#{output.status} {output.name}======================"
 
-
-    @staticmethod
-    async def custom_output(output) -> str:
-        """
-            interrupt
-        """
+    async def custom_output(self, output: Output) -> str:
         pass
+
+
