@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Generator, AsyncGenerator
 
 from binascii import b2a_hex, a2b_hex
 import ast
+import html
 import requests
 import json
 import time
@@ -51,7 +52,7 @@ class ShangshuProvider(LLMProviderBase):
         Returns:
             Shangshu provider instance.
         """
-        import_package("Crypto.Cipher.AES")
+        import_package("pycryptodome")
         # Get API key
         api_key = self.api_key
         if not api_key:
@@ -177,10 +178,8 @@ class ShangshuProvider(LLMProviderBase):
                     
                     x = response["data"]["values"]["response"]
                     ast_str = ast.literal_eval("'" + x + "'")
-                    
-                    js = ast_str.replace('&quot;', '"')
-                    js = js.replace("&#39;", "'")
-                    data = json.loads(js)
+                    result = html.unescape(ast_str)
+                    data = json.loads(result)
                     return data
                 
                 # If no result, wait 1 second and query again
