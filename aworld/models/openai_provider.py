@@ -8,7 +8,6 @@ from aworld.metrics.context_manager import MetricContext
 from aworld.models.llm_provider_base import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
-from aworld.env_secrets import secrets
 from aworld.logs.util import logger
 
 
@@ -383,7 +382,7 @@ class AzureOpenAIProvider(OpenAIProvider):
         api_key = self.api_key
         if not api_key:
             env_var = "AZURE_OPENAI_API_KEY"
-            api_key = os.getenv(env_var, "") or secrets.azure_openai_api_key
+            api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
                     f"Azure OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters")
