@@ -6,9 +6,9 @@ from typing import Dict
 from pydantic import BaseModel
 
 from aworld.config import ConfigDict
+from aworld.core.common import Config
 from aworld.core.context.session import Session
 from aworld.core.singleton import InheritanceSingleton
-from aworld.core.task import Config
 from aworld.logs.util import logger
 
 

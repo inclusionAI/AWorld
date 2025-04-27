@@ -7,21 +7,44 @@ import traceback
 from typing import List, Dict, Any, Union
 
 from pydantic import BaseModel
-
-from aworld.config.conf import ToolConfig
+from aworld.config.conf import ToolConfig, TaskConfig
 from aworld.core.agent.base import Agent, is_agent_by_name
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
+from aworld.core.context.base import Context
 from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
 from aworld.core.task import Runner, Task
-from aworld.logs.util import logger, color_log, Color
+from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.models.model_response import ToolCall
+from aworld.output import StreamingOutputs
 from aworld.output.base import StepOutput, ToolResultOutput
+from aworld import trace
 from aworld.utils.common import sync_exec, override_in_subclass
 
 
 class Runners:
+    """Unified entrance to the utility class of the runnable task of execution."""
+
+    @staticmethod
+    def streamed_run_task(task: Task, ) -> StreamingOutputs:
+        """Run the task in stream output."""
+
+        with trace.span(task.name) as span:
+            if not task.conf:
+                task.conf = TaskConfig()
+
+            streamed_result = StreamingOutputs(
+                input=task.input,
+                usage={},
+                is_complete=False
+            )
+            task.outputs = streamed_result
+
+            streamed_result._run_impl_task = asyncio.create_task(
+                Runners.run_task(task)
+            )
+            return streamed_result
 
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], parallel: bool = False):
@@ -85,9 +108,11 @@ class Runners:
             swarm = Swarm(agent)
 
         task = Task(input=input, swarm=swarm, tool_names=tool_names)
-        runner = Runners._choose_runner(task=task)
-        res = await runner.run()
-        logger.info(f"{input} execute finished, response: {res}")
+
+        with trace.span(task.name) as span:
+            runner = Runners._choose_runner(task=task)
+            res = await runner.run()
+            trace_logger.info(f"{input} execute finished, response: {res}")
         return res
 
     @staticmethod
@@ -95,7 +120,8 @@ class Runners:
         # also can use ProcessPoolExecutor
         parallel_tasks = []
         for t in tasks:
-            parallel_tasks.append(Runners._choose_runner(task=t).run())
+            with trace.span(t.name) as span:
+                parallel_tasks.append(Runners._choose_runner(task=t).run())
 
         results = await asyncio.gather(*parallel_tasks)
         for idx, t in enumerate(results):
@@ -104,9 +130,10 @@ class Runners:
     @staticmethod
     async def _run_in_local(tasks: List[Task], res: Dict[str, Any]) -> None:
         for idx, task in enumerate(tasks):
-            # Execute the task
-            result = await Runners._choose_runner(task=task).run()
-            res[f'task_{idx}'] = result
+            with trace.span(task.name) as span:
+                # Execute the task
+                result = await Runners._choose_runner(task=task).run()
+                res[f'task_{idx}'] = result
 
     @staticmethod
     def _choose_runner(task: Task):
@@ -122,6 +149,7 @@ class Runners:
 
 
 class TaskRunner(Runner):
+    """TODO: supported worker pipeline."""
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, task: Task, *args, **kwargs):
@@ -191,6 +219,7 @@ class TaskRunner(Runner):
 
         self.observation = observation
         self.swarm.reset(observation.content, self.tool_names)
+        trace_logger.info(f"{self.name} pre run")
 
     def is_agent(self, policy: ActionModel):
         return is_agent_by_name(policy.tool_name) or (not policy.tool_name and not policy.action_name)
@@ -200,10 +229,10 @@ class SequenceRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task=task, *args, **kwargs)
 
-    async def do_run(self):
+    async def do_run(self, context: Context = None):
         """Multi-agent sequence general process workflow.
 
-        NOTE: Use the agent‘s finished state(no tool calls) to control the inner loop.
+        NOTE: Use the agent's finished state(no tool calls) to control the inner loop.
         Args:
             observation: Observation based on env
             info: Extend info by env
@@ -248,7 +277,7 @@ class SequenceRunner(TaskRunner):
                         await self.outputs.add_output(
                             StepOutput.build_failed_output(name=f"Step{step}",
                                                            step_num=step,
-                                                           data = f"current agent {cur_agent.name()} no policy to use."
+                                                           data=f"current agent {cur_agent.name()} no policy to use."
                                                            )
                         )
                         await self.outputs.mark_completed()
@@ -267,7 +296,7 @@ class SequenceRunner(TaskRunner):
                             break
                         elif status == 'return':
                             await self.outputs.add_output(
-                                StepOutput.build_finished_output(name=f"Step{step}",step_num=step)
+                                StepOutput.build_finished_output(name=f"Step{step}", step_num=step)
                             )
                             return info
                     elif is_tool_by_name(policy[0].tool_name):
@@ -277,7 +306,7 @@ class SequenceRunner(TaskRunner):
                         await self.outputs.add_output(
                             StepOutput.build_failed_output(name=f"Step{step}",
                                                            step_num=step,
-                                                           data = f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.")
+                                                           data=f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.")
                         )
                         await self.outputs.mark_completed()
                         return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",

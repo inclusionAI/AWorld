@@ -5,15 +5,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable
 
-from pydantic import BaseModel
-
-from aworld.config import ConfigDict
 from aworld.core.agent.base import Agent
 from aworld.core.agent.swarm import Swarm
+from aworld.core.common import Config
+from aworld.core.context.base import Context
 from aworld.core.envs.tool import Tool, AsyncTool
 from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
-
-Config = Union[Dict[str, Any], ConfigDict, BaseModel]
 
 
 @dataclass
@@ -43,6 +40,7 @@ class Runner(object):
 
     _use_demon: bool = False
     daemon_target: Callable[..., Any] = None
+    context: Context = None
 
     async def pre_run(self):
         pass
@@ -51,7 +49,7 @@ class Runner(object):
         pass
 
     @abc.abstractmethod
-    async def do_run(self):
+    async def do_run(self, context: Context = None):
         """Raise exception if not success."""
 
     async def _daemon_run(self):
@@ -64,7 +62,7 @@ class Runner(object):
         try:
             await self.pre_run()
             await self._daemon_run()
-            ret = await self.do_run()
+            ret = await self.do_run(self.context)
             return 0 if ret is None else ret
         except BaseException as ex:
             self._exception = ex

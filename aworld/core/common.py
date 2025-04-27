@@ -1,10 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from enum import Enum
-
 from pydantic import BaseModel
 from typing import Dict, Any, Union, List
+
+from aworld.config import ConfigDict
+
+Config = Union[Dict[str, Any], ConfigDict, BaseModel]
 
 
 class ActionResult(BaseModel):
