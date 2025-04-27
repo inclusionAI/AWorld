@@ -25,7 +25,7 @@ def be_tool(
         name: str = None,
         desc: str = None, **kwargs
 ) -> Callable[..., Any]:
-    """Decorate a function to be a tool, register the tool and action with the parameters with the factory.
+    """Decorate a function to be a tool, auto register the tool and action with the parameters with the factory.
 
     Example:
         >>> @be_tool()
@@ -195,6 +195,7 @@ def func_params(func: Callable[..., Any]):
     type_hints = get_type_hints(func)
     filtered_params = []
 
+    # The function must have a return value
     if sig.return_annotation == inspect.Parameter.empty:
         raise RuntimeError(f"{func} no return value, preferably a string.")
 
@@ -207,18 +208,17 @@ def func_params(func: Callable[..., Any]):
     for name, param in filtered_params:
         ann = type_hints.get(name, param.annotation)
         default = param.default
-        if isinstance(default, FieldInfo):
-            default = default.default
         def_desc = None
         if hasattr(default, 'description'):
             def_desc = default.description
+        field_description = param_descs.get(name, def_desc)
+        
+        if isinstance(default, FieldInfo):
+            default = default.default
 
         # If there's no type hint, assume `Any`
         if ann == inspect.Parameter.empty:
             ann = Any
-
-        # If a docstring param description exists, use it
-        field_description = param_descs.get(name, def_desc)
 
         # Handle different parameter kinds
         if param.kind == param.VAR_POSITIONAL:
@@ -266,4 +266,5 @@ def func_params(func: Callable[..., Any]):
 
     dynamic_model = create_model(f"{func.__name__}".upper(), __base__=BaseModel, **fields)
     json_schema = dynamic_model.model_json_schema()
+    logger.debug(f"{func} parameters schema: {json_schema}")
     return json_schema
