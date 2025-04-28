@@ -228,6 +228,11 @@ class OpenAIProvider(LLMProviderBase):
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
         processed_messages = self.preprocess_messages(messages)
+        usage={
+            "completion_tokens": 0,
+            "prompt_tokens": 0,
+            "total_tokens": 0
+        }
 
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
@@ -240,8 +245,10 @@ class OpenAIProvider(LLMProviderBase):
             for chunk in response_stream:
                 if not chunk:
                     continue
-
-                yield self.postprocess_stream_response(chunk)
+                resp = self.postprocess_stream_response(chunk)
+                self._accumulate_chunk_usage(usage, resp.usage)
+                yield resp
+            usage_process(usage)
 
         except Exception as e:
             logger.warn(f"Error in stream_completion: {e}")
@@ -273,6 +280,11 @@ class OpenAIProvider(LLMProviderBase):
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
         processed_messages = self.preprocess_messages(messages)
+        usage = {
+            "completion_tokens": 0,
+            "prompt_tokens": 0,
+            "total_tokens": 0
+        }
 
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
@@ -282,13 +294,18 @@ class OpenAIProvider(LLMProviderBase):
                 async for chunk in self.http_provider.async_stream_call(openai_params):
                     if not chunk:
                         continue
-                    yield self.postprocess_stream_response(chunk)
+                    resp = self.postprocess_stream_response(chunk)
+                    self._accumulate_chunk_usage(usage, resp.usage)
+                    yield resp
             else:
                 response_stream = await self.async_provider.chat.completions.create(**openai_params)
                 async for chunk in response_stream:
                     if not chunk:
                         continue
-                    yield self.postprocess_stream_response(chunk)
+                    resp = self.postprocess_stream_response(chunk)
+                    self._accumulate_chunk_usage(usage, resp.usage)
+                    yield resp
+            usage_process(usage)
 
         except Exception as e:
             logger.warn(f"Error in astream_completion: {e}")
