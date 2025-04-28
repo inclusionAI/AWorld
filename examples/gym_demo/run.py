@@ -25,7 +25,4 @@ def main():
 
 if __name__ == "__main__":
     # We use it as a showcase to demonstrate the framework's scalability.
-    from aworld import trace
-    with trace.span("xx") as span:
-        main()
-        trace_logger.info("adfadfadsfasdf", color=Color.pink)
+    main()
