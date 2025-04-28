@@ -1,9 +1,36 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import Dict, Any, List
+import copy
+import inspect
+import os.path
+from typing import Dict, Any, List, Union
 
+from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from aworld.utils import import_package
+
+
+def usage_process(usage: Dict[str, Union[int, Dict[str, int]]] = {}, context: Context = None):
+    if not context:
+        context = Context.instance()
+
+    stacks = inspect.stack()
+    index = 0
+    for idx, stack in enumerate(stacks):
+        index = idx + 1
+        file = os.path.basename(stack.filename)
+        # supported use `llm.py` utility function only
+        if 'call_llm_model' in stack.function and file == 'llm.py':
+            break
+
+    if index >= len(stacks):
+        logger.warning("not category usage find to count")
+
+    instance = stacks[index].frame.f_locals.get('self')
+    name = getattr(instance, "_name", "unknown")
+    usage[name] = copy.copy(usage)
+    # total usage
+    context.add_token(usage)
 
 
 def num_tokens_from_messages(messages, model="gpt-4o"):
@@ -14,7 +41,7 @@ def num_tokens_from_messages(messages, model="gpt-4o"):
     try:
         encoding = tiktoken.encoding_for_model(model)
     except KeyError:
-        print("Warning: model not found. Using cl100k_base encoding.")
+        logger.warning(f"{model} model not found. Using cl100k_base encoding.")
         encoding = tiktoken.get_encoding("cl100k_base")
 
     tokens_per_message = 3

@@ -9,6 +9,7 @@ from aworld.models.llm_provider_base import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from aworld.logs.util import logger
+from aworld.models.utils import usage_process
 
 
 class OpenAIProvider(LLMProviderBase):
@@ -192,7 +193,9 @@ class OpenAIProvider(LLMProviderBase):
             if not response:
                 raise LLMResponseError("Empty response", kwargs.get("model_name", self.model_name or "unknown"))
 
-            return self.postprocess_response(response)
+            resp = self.postprocess_response(response)
+            usage_process(resp.usage)
+            return resp
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e
@@ -237,7 +240,7 @@ class OpenAIProvider(LLMProviderBase):
             for chunk in response_stream:
                 if not chunk:
                     continue
-                MetricContext.count()
+
                 yield self.postprocess_stream_response(chunk)
 
         except Exception as e:
@@ -334,7 +337,9 @@ class OpenAIProvider(LLMProviderBase):
             if not response:
                 raise LLMResponseError("Empty response", kwargs.get("model_name", self.model_name or "unknown"))
 
-            return self.postprocess_response(response)
+            resp = self.postprocess_response(response)
+            usage_process(resp.usage)
+            return resp
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e

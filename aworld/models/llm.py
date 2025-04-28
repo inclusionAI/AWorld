@@ -282,7 +282,9 @@ def register_llm_provider(provider: str, provider_class: type):
     PROVIDER_CLASSES[provider] = provider_class
 
 
-def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None, custom_provider: LLMProviderBase = None, **kwargs) -> Union[LLMModel, ChatOpenAI]:
+def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
+                  custom_provider: LLMProviderBase = None,
+                  **kwargs) -> Union[LLMModel, ChatOpenAI]:
     """Get a unified LLM model instance.
 
     Args:

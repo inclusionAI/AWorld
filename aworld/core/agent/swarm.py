@@ -5,6 +5,7 @@ from typing import Dict, List
 from aworld.core.agent.agent_desc import agent_handoffs_desc
 from aworld.core.agent.base import Agent, AgentFactory
 from aworld.core.common import ActionModel, Observation
+from aworld.core.context.base import Context
 from aworld.logs.util import logger
 
 
@@ -87,7 +88,7 @@ class Swarm(object):
         if self.sequence:
             self.topology_type = 'sequence'
 
-    def reset(self, content: str, tools: List[str] = []):
+    def reset(self, content: str, context: Context = None, tools: List[str] = []):
         """Resets the initial internal state, and init supported tools in agent in swarm.
 
         Args:
@@ -103,8 +104,12 @@ class Swarm(object):
 
         self.cur_agent = self.communicate_agent
 
+        if context is None:
+            context = Context.instance()
+
         for agent in self.agents.values():
             if agent.need_reset:
+                agent.context = context
                 agent.reset({"task": content,
                              "tool_names": agent.tool_names,
                              "agent_names": agent.handoffs,

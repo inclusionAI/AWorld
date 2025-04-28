@@ -16,6 +16,7 @@ from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
 @dataclass
 class Task:
     name: str = uuid.uuid1().hex
+    session_id: str = None
     input: Any = None
     # task config
     conf: Config = None
