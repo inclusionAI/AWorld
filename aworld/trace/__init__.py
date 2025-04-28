@@ -14,7 +14,7 @@ if os.getenv("LOGFIRE_WRITE_TOKEN"):
 else:
     logger.warning("LOGFIRE_WRITE_TOKEN is not set, using console backend")
     trace_configure(
-        backends=["console"]
+        backends=["file"]
     )
 
 instrumentLogging(trace_logger)

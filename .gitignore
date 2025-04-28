@@ -119,3 +119,4 @@ examples/gaia/gaia_dataset/
 *.pdf
 *.html
 *.wav
+traces*.json
