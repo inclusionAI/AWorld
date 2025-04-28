@@ -200,6 +200,6 @@ def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
             result[elem] = newcount
 
     for elem, count in other.items():
-        if elem not in usage and (not ignore_zero or count > 0):
+        if elem not in usage and not ignore_zero:
             result[elem] = count
     return result

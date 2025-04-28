@@ -25,10 +25,10 @@ def usage_process(usage: Dict[str, Union[int, Dict[str, int]]] = {}, context: Co
 
     if index >= len(stacks):
         logger.warning("not category usage find to count")
-
-    instance = stacks[index].frame.f_locals.get('self')
-    name = getattr(instance, "_name", "unknown")
-    usage[name] = copy.copy(usage)
+    else:
+        instance = stacks[index].frame.f_locals.get('self')
+        name = getattr(instance, "_name", "unknown")
+        usage[name] = copy.copy(usage)
     # total usage
     context.add_token(usage)
 
