@@ -29,6 +29,8 @@ from aworld.trace.base import (
     Span,
     set_tracer_provider
 )
+from aworld.logs.util import logger
+from .memory_storage import InMemoryStorage, InMemorySpanExporter
 from ..constants import ATTRIBUTES_MESSAGE_KEY
 from .export import FileSpanExporter
 from ..server import start_trace_server
