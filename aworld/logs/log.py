@@ -89,6 +89,11 @@ class TraceLogginHandler(Handler):
     to a stream. Note that this class does not close the stream, as
     sys.stdout or sys.stderr may be used.
     """
+    @staticmethod
+    def strip_color(text: str) -> str:
+        """Remove ANSI color codes from text"""
+        import re
+        return re.sub(r'\033\[[0-9;]*m', '', text)
 
     def __init__(self,
                  level: Union[int, str] = NOTSET,
@@ -96,7 +101,6 @@ class TraceLogginHandler(Handler):
         """Initialize the handler."""
         super().__init__(level=level)
         self._tracer_name = tracer_name
-        # self.streamHandler = StreamHandler()
         self._tracer: Tracer = None
 
     def emit(self, record: LogRecord) -> None:
@@ -109,6 +113,8 @@ class TraceLogginHandler(Handler):
             self._tracer = trace.get_tracer(name=self._tracer_name)
 
         try:
+            origin_msg = record.msg
+            record.msg = self.strip_color(record.msg)
             msg_template = record.msg
             attributes = {
                 'code.filepath': record.pathname,
@@ -118,6 +124,7 @@ class TraceLogginHandler(Handler):
                 'log.logger': record.name,
                 'log.message': self.format(record),
             }
+            record.msg = origin_msg
             self._create_span(
                 span_name=msg_template,
                 attributes=attributes,
