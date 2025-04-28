@@ -1,30 +1,28 @@
 import time
-from typing import Union
-from logging import Logger, Filter, LogRecord, NOTSET, Handler, Formatter, StreamHandler
+from logging import StreamHandler
 from abc import ABC
-from typing import Optional
-from aworld.trace.trace import get_tracer_provider_silent, AttributeValueType, Tracer
+from logging import Logger, NOTSET, LogRecord, Filter, Formatter, Handler
+from typing import Optional, Union
+
+from aworld.trace.base import get_tracer_provider_silent, Tracer, AttributeValueType
 
 TRACE_LOG_FORMAT = '%(asctime)s - [%(trace_id)s] - [%(span_id)s] - %(name)s - %(levelname)s - %(message)s'
 SPECIAL_TRACE_LOG_FORMAT = '%(asctime)s - [trace_%(trace_id)s] - [%(span_id)s] - %(name)s - %(levelname)s - %(message)s'
 
+
 class LoggerProvider(ABC):
-    """
-    A logger provider is a factory for loggers.
-    """
+    """A logger provider is a factory for loggers."""
 
 
 _GLOBAL_LOG_PROVIDER: Optional[LoggerProvider] = None
+
 
 def set_log_provider(provider: str = "otlp",
                      backend: str = "logfire",
                      base_url: str = None,
                      write_token: str = None,
-                     **kwargs
-):
-    """
-    Set the global log provider.
-    """
+                     **kwargs):
+    """Set the global log provider."""
 
     global _GLOBAL_LOG_PROVIDER
 
@@ -34,7 +32,6 @@ def set_log_provider(provider: str = "otlp",
                                                   base_url=base_url,
                                                   write_token=write_token,
                                                   **kwargs)
-
 
 
 def get_log_provider() -> LoggerProvider:
@@ -47,10 +44,8 @@ def get_log_provider() -> LoggerProvider:
     return _GLOBAL_LOG_PROVIDER
 
 
-def instrumentLogging(logger: Logger, level: Union[int, str] = NOTSET) -> None:
-    """
-    Instrument the logger.
-    """
+def instrument_logging(logger: Logger, level: Union[int, str] = NOTSET) -> None:
+    """Instrument the logger."""
     for handler in logger.root.handlers:
         if not any(isinstance(filter, TraceLoggingFilter) for filter in handler.filters):
             handler.setFormatter(Formatter(TRACE_LOG_FORMAT))
@@ -69,6 +64,7 @@ def instrumentLogging(logger: Logger, level: Union[int, str] = NOTSET) -> None:
                 handler.addFilter(TraceLoggingFilter())
     logger.propagate = False
     logger.addHandler(TraceLogginHandler(level))
+
 
 class TraceLoggingFilter(Filter):
     """
@@ -93,22 +89,18 @@ class TraceLogginHandler(Handler):
     to a stream. Note that this class does not close the stream, as
     sys.stdout or sys.stderr may be used.
     """
+
     def __init__(self,
                  level: Union[int, str] = NOTSET,
-                 tracer_name: str = "aworld.log",
-    ) -> None:
-        """
-        Initialize the handler.
-        """
+                 tracer_name: str = "aworld.log") -> None:
+        """Initialize the handler."""
         super().__init__(level=level)
         self._tracer_name = tracer_name
         # self.streamHandler = StreamHandler()
         self._tracer: Tracer = None
 
     def emit(self, record: LogRecord) -> None:
-        """
-        Emit a record.
-        """
+        """Emit a record."""
         trace = get_tracer_provider_silent()
         if not trace or not trace.get_current_span() or not trace.get_current_span().is_recording():
             return

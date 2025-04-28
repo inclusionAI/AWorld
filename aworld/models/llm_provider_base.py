@@ -1,22 +1,25 @@
-import os
 import abc
 from typing import (
     Any,
-    Optional,
     List,
     Dict,
-    Union,
     Generator,
     AsyncGenerator,
 )
 
-from aworld.models.model_response import ModelResponse, LLMResponseError
+from aworld.models.model_response import ModelResponse
 
 
 class LLMProviderBase(abc.ABC):
     """Base class for large language model providers, defines unified interface."""
 
-    def __init__(self, api_key: str = None, base_url: str = None, model_name: str = None, sync_enabled: bool = None, async_enabled: bool = None, **kwargs):
+    def __init__(self,
+                 api_key: str = None,
+                 base_url: str = None,
+                 model_name: str = None,
+                 sync_enabled: bool = None,
+                 async_enabled: bool = None,
+                 **kwargs):
         """Initialize provider.
 
         Args:
@@ -94,14 +97,13 @@ class LLMProviderBase(abc.ABC):
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
-        return None
 
     async def acompletion(self,
-                    messages: List[Dict[str, str]], 
-                    temperature: float = 0.0, 
-                    max_tokens: int = None, 
-                    stop: List[str] = None, 
-                    **kwargs) -> ModelResponse:
+                          messages: List[Dict[str, str]],
+                          temperature: float = 0.0,
+                          max_tokens: int = None,
+                          stop: List[str] = None,
+                          **kwargs) -> ModelResponse:
         """Asynchronously call model to generate response.
         
         Args:
@@ -119,17 +121,17 @@ class LLMProviderBase(abc.ABC):
             RuntimeError: When async provider is not initialized.
         """
         if not self.async_provider:
-            raise RuntimeError("Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+            raise RuntimeError(
+                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
-        return None
 
     @abc.abstractmethod
-    def completion(self, 
-                messages: List[Dict[str, str]], 
-                temperature: float = 0.0, 
-                max_tokens: int = None, 
-                stop: List[str] = None, 
-                **kwargs) -> ModelResponse:
+    def completion(self,
+                   messages: List[Dict[str, str]],
+                   temperature: float = 0.0,
+                   max_tokens: int = None,
+                   stop: List[str] = None,
+                   **kwargs) -> ModelResponse:
         """Synchronously call model to generate response.
 
         Args:
@@ -148,11 +150,11 @@ class LLMProviderBase(abc.ABC):
         """
 
     def stream_completion(self,
-                     messages: List[Dict[str, str]], 
-                     temperature: float = 0.0, 
-                     max_tokens: int = None, 
-                     stop: List[str] = None, 
-                     **kwargs) -> Generator[ModelResponse, None, None]:
+                          messages: List[Dict[str, str]],
+                          temperature: float = 0.0,
+                          max_tokens: int = None,
+                          stop: List[str] = None,
+                          **kwargs) -> Generator[ModelResponse, None, None]:
         """Synchronously call model to generate streaming response.
 
         Args:
@@ -169,7 +171,6 @@ class LLMProviderBase(abc.ABC):
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When sync provider is not initialized.
         """
-        return None
 
     async def astream_completion(self,
                                  messages: List[Dict[str, str]],
@@ -193,4 +194,3 @@ class LLMProviderBase(abc.ABC):
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When async provider is not initialized.
         """
-        return None

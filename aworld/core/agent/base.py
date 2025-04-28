@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.common import Observation, ActionModel
+from aworld.core.context.base import Context
 from aworld.core.envs.tool_desc import get_tool_desc
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
@@ -93,6 +94,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
+        self.context = Context.instance()
         self.state = AgentStatus.START
         self._finished = True
 

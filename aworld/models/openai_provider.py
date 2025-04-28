@@ -8,8 +8,8 @@ from aworld.metrics.context_manager import MetricContext
 from aworld.models.llm_provider_base import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
-from aworld.env_secrets import secrets
 from aworld.logs.util import logger
+from aworld.models.utils import usage_process
 
 
 class OpenAIProvider(LLMProviderBase):
@@ -193,7 +193,9 @@ class OpenAIProvider(LLMProviderBase):
             if not response:
                 raise LLMResponseError("Empty response", kwargs.get("model_name", self.model_name or "unknown"))
 
-            return self.postprocess_response(response)
+            resp = self.postprocess_response(response)
+            usage_process(resp.usage)
+            return resp
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e
@@ -238,7 +240,7 @@ class OpenAIProvider(LLMProviderBase):
             for chunk in response_stream:
                 if not chunk:
                     continue
-                MetricContext.count()
+
                 yield self.postprocess_stream_response(chunk)
 
         except Exception as e:
@@ -335,7 +337,9 @@ class OpenAIProvider(LLMProviderBase):
             if not response:
                 raise LLMResponseError("Empty response", kwargs.get("model_name", self.model_name or "unknown"))
 
-            return self.postprocess_response(response)
+            resp = self.postprocess_response(response)
+            usage_process(resp.usage)
+            return resp
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e
@@ -383,7 +387,7 @@ class AzureOpenAIProvider(OpenAIProvider):
         api_key = self.api_key
         if not api_key:
             env_var = "AZURE_OPENAI_API_KEY"
-            api_key = os.getenv(env_var, "") or secrets.azure_openai_api_key
+            api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
                     f"Azure OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters")

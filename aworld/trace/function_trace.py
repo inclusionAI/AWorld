@@ -2,11 +2,11 @@ import inspect
 import contextlib
 import functools
 from typing import TYPE_CHECKING, Callable, Any, Union, Iterable
-from aworld.trace.trace import (
+from aworld.trace.base import (
     AttributeValueType
 )
 
-from aworld.trace.stack_info import  get_filepath_attribute
+from aworld.trace.stack_info import get_filepath_attribute
 from aworld.trace.constants import (
     ATTRIBUTES_MESSAGE_TEMPLATE_KEY
 )
@@ -14,20 +14,21 @@ from aworld.trace.constants import (
 if TYPE_CHECKING:
     from aworld.trace.context_manager import TraceManager, ContextSpan
 
+
 def trace_func(trace_manager: "TraceManager",
                msg_template: str = None,
                attributes: dict[str, AttributeValueType] = None,
                span_name: str = None,
-               extract_args: Union[bool, Iterable[str]] = False
-):
-    """
-    A decorator that traces the execution of a function.
+               extract_args: Union[bool, Iterable[str]] = False):
+    """A decorator that traces the execution of a function.
+
     Args:
         trace_manager: The trace manager to use.
         msg_template: The message template to use.
         attributes: The attributes to use.
         span_name: The span name to use.
         extract_args: Whether to extract arguments from the function call.
+
     Returns:
         The decorated function.
     """
@@ -65,15 +66,17 @@ def trace_func(trace_manager: "TraceManager",
 
     return decorator
 
+
 def open_func_span(trace_manager: "TraceManager",
                    func_meta: dict[str, AttributeValueType],
                    span_name: str,
                    func_args: dict[str, AttributeValueType]):
-    """
-    Open a function span.
+    """Open a function span.
+
     Args:
         func_meta: The function meta information.
         span_name: The span name.
+
     Returns:
         The function span.
     """
@@ -82,16 +85,17 @@ def open_func_span(trace_manager: "TraceManager",
 
 
 def get_func_args(func: Callable,
-                   extract_args: Union[bool, Iterable[str]] = False,
-                   *args,
-                   **kwargs):
-    """
-    Get the arguments of a function.
+                  extract_args: Union[bool, Iterable[str]] = False,
+                  *args,
+                  **kwargs):
+    """Get the arguments of a function.
+
     Args:
         func: The function to get the arguments of.
         extract_args: Whether to extract arguments from the function call.
         *args: The positional arguments.
         **kwargs: The keyword arguments.
+
     Returns:
         The arguments of the function.
     """
@@ -105,14 +109,15 @@ def get_func_args(func: Callable,
         return func_args
     return {}
 
+
 def get_function_meta(func: Any,
-                      msg_template: str = None
-) -> dict[str, AttributeValueType]:
-    """
-    Get the meta information of a function.
+                      msg_template: str = None) -> dict[str, AttributeValueType]:
+    """Get the meta information of a function.\
+
     Args:
         func: The function to get the meta information of.
         msg_template: The message template to use.
+
     Returns:
         The meta information of the function.
     """
@@ -140,14 +145,16 @@ def get_function_meta(func: Any,
     func_sig = inspect.signature(func)
     if func_sig.parameters:
         meta['func.args'] = [str(param) for param in func_sig.parameters.values()
-                            if param.name != 'self']
+                             if param.name != 'self']
     return meta
 
-def build_func_name(func: Any)  -> str:
-    """
-    Build the function name.
+
+def build_func_name(func: Any) -> str:
+    """Build the function name.
+
     Args:
         func: The function to build the name of.
+
     Returns:
         The function name.
     """

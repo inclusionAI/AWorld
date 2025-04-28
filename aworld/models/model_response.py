@@ -295,9 +295,7 @@ class ModelResponse:
             )
 
         # Normal chunk with delta content
-        message = None
         content = None
-        tool_calls = None
         processed_tool_calls = []
 
         if hasattr(chunk, 'choices') and chunk.choices:
