@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trace Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+    <style>
+        .trace-bar {
+            transition: all 0.3s ease;
+        }
+
+        .trace-bar:hover {
+            transform: scaleY(1.1);
+        }
+    </style>
+</head>
+
+<body class="bg-gray-50">
+    <div id="app" class="h-screen flex flex-col">
+        <!-- Top timeline section -->
+        <div class="h-32 bg-white shadow-sm p-4 mb-2">
+            <h2 class="text-xl font-semibold text-gray-800 mb-2">Trace Timeline (Last 24 Hours)</h2>
+            <!-- Bar chart on top -->
+            <div class="relative h-12 mb-0"> <!-- Remove bottom margin -->
+                <div class="flex space-x-1 h-full items-end">
+                    <div v-for="(trace, index) in traces" :key="index"
+                        class="trace-bar w-3 rounded-t hover:shadow-md cursor-pointer" :style="{ 
+                            height: calculateBarHeight(trace) + 'px', 
+                            backgroundColor: generateColor(trace.trace_id),
+                            position: 'absolute',
+                            left: calculateBarPosition(trace) + 'px',
+                            bottom: '0'  <!-- Ensure bottom alignment -->
+                         }" @click="selectTrace(trace)">
+                    </div>
+                </div>
+            </div>
+            <!-- Timeline at bottom -->
+            <div class="relative h-8 mt-0"> <!-- Remove top margin -->
+                <div class="h-px bg-gray-300 w-full"></div>
+                <div class="flex justify-between text-xs text-gray-500 mt-1">
+                    <span v-for="hour in 24" :key="hour" class="text-center w-8" v-text="formatHour(hour)"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom content section -->
+        <div class="flex-grow flex overflow-hidden" style="height: calc(100vh - 10rem)">
+            <!-- Adjusted height calculation -->
+            <!-- Left trace list -->
+            <div class="w-1/3 bg-white border-r overflow-y-auto flex-shrink-0"> <!-- Added flex-shrink-0 -->
+                <div class="p-4 sticky top-0 bg-white border-b">
+                    <h2 class="text-xl font-semibold text-gray-800">Trace List</h2>
+                    <input type="text" v-model="searchQuery" placeholder="Search traces..."
+                        class="mt-2 px-3 py-2 border rounded w-full">
+                </div>
+                <ul class="divide-y">
+                    <li v-for="(trace, index) in filteredTraces" :key="index" class="p-3 hover:bg-gray-50">
+                        <div class="flex items-center cursor-pointer" @click="toggleTrace(index)">
+                            <span v-if="trace.root_span.length > 0" class="mr-2 text-gray-500"
+                                v-text="trace.expanded ? '−' : '+'"></span>
+                            <div class="flex-1">
+                                <div class="font-medium text-gray-800"
+                                    v-text="formatTime(trace.root_span[0].start_time)"></div>
+                                <div class="text-sm text-gray-500"
+                                    v-text="trace.root_span[0].name + ' (' + trace.root_span[0].duration_ms.toFixed(2) + 'ms)'">
+                                </div>
+                            </div>
+                        </div>
+                        <ul v-if="trace.expanded" class="ml-8 mt-2 space-y-2">
+                            <li v-for="(span, spanIndex) in getAllSpans(trace.root_span[0])" :key="spanIndex"
+                                class="p-2 text-sm border-l-2 border-blue-200 hover:bg-blue-50 cursor-pointer"
+                                @click="selectSpan(span)">
+                                <div class="text-gray-700" v-text="span.name"></div>
+                                <div class="text-xs text-gray-500"
+                                    v-text="formatTime(span.start_time) + ' (' + span.duration_ms.toFixed(2) + 'ms)'">
+                                </div>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Right detail panel -->
+            <div class="w-2/3 bg-gray-50 overflow-y-auto p-6 flex-shrink-0"> <!-- Add flex-shrink-0 -->
+                <div v-if="selectedSpan" class="space-y-6">
+                    <!-- Span basic information -->
+                    <div class="bg-white rounded-lg shadow p-6">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-4">Span Details</h2>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="text-sm font-medium text-gray-500">Trace ID</label>
+                                <div class="mt-1 text-gray-800" v-text="selectedSpan.trace_id"></div>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-500">Span ID</label>
+                                <div class="mt-1 text-gray-800" v-text="selectedSpan.span_id"></div>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-500">Parent Span ID</label>
+                                <div class="mt-1 text-gray-800" v-text="selectedSpan.parent_id"></div>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-500">Span Name</label>
+                                <div class="mt-1 text-gray-800" v-text="selectedSpan.name"></div>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-500">Status</label>
+                                <div class="mt-1 text-gray-800" v-text="selectedSpan.status.code"></div>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-500">Start Time</label>
+                                <div class="mt-1 text-gray-800" v-text="selectedSpan.start_time"></div>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-500">End Time</label>
+                                <div class="mt-1 text-gray-800" v-text="selectedSpan.end_time"></div>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-500">Duration</label>
+                                <div class="mt-1 text-gray-800" v-text="selectedSpan.duration_ms.toFixed(2) + ' ms'">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Attributes -->
+                    <div class="bg-white rounded-lg shadow p-6">
+                        <h2 class="text-xl font-semibold text-gray-800 mb-4">Attributes</h2>
+                        <pre class="bg-gray-100 p-4 rounded text-sm overflow-x-auto"
+                            v-text="formatAttributes(selectedSpan.attributes)"></pre>
+                    </div>
+                </div>
+                <div v-else class="flex items-center justify-center h-full">
+                    <div class="text-center text-gray-500">
+                        <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24"
+                            stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z">
+                            </path>
+                        </svg>
+                        <h3 class="mt-2 text-sm font-medium text-gray-900">No span selected</h3>
+                        <p class="mt-1 text-sm text-gray-500">Select a span from the list to view details</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        new Vue({
+            el: '#app',
+            data: {
+                traces: [],
+                selectedSpan: null,
+                searchQuery: '',
+                selectedTrace: null
+            },
+            mounted() {
+                this.fetchTraces();
+                setInterval(this.fetchTraces, 5000);
+            },
+            computed: {
+                filteredTraces() {
+                    if (!this.searchQuery) return this.traces;
+                    const query = this.searchQuery.toLowerCase();
+                    return this.traces.filter(trace => {
+                        return trace.root_span.some(span =>
+                            span.name.toLowerCase().includes(query) ||
+                            span.trace_id.toLowerCase().includes(query)
+                        );
+                    });
+                }
+            },
+            methods: {
+                fetchTraces() {
+                    fetch('/api/traces')
+                        .then(response => response.json())
+                        .then(data => {
+                            // Save current expanded state and selected trace/span
+                            const expandedStates = this.traces.reduce((acc, trace, index) => {
+                                acc[trace.trace_id] = trace.expanded;
+                                return acc;
+                            }, {});
+
+                            const selectedTraceId = this.selectedTrace?.trace_id;
+                            const selectedSpanId = this.selectedSpan?.span_id;
+
+                            // Update trace data and restore state
+                            this.traces = data.map(trace => ({
+                                ...trace,
+                                expanded: expandedStates[trace.trace_id] || false
+                            }));
+
+                            // Restore selected trace and span
+                            if (selectedTraceId) {
+                                this.selectedTrace = this.traces.find(t => t.trace_id === selectedTraceId);
+                            }
+                            if (selectedSpanId && this.selectedTrace) {
+                                const allSpans = this.getAllSpans(this.selectedTrace.root_span[0]);
+                                this.selectedSpan = allSpans.find(s => s.span_id === selectedSpanId);
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error loading traces:', error);  // Add error handling
+                        });
+                },
+                toggleTrace(index) {
+                    const filteredTrace = this.filteredTraces[index];
+                    const originalIndex = this.traces.findIndex(t => t.trace_id === filteredTrace.trace_id);
+                    if (originalIndex !== -1) {
+                        this.traces[originalIndex].expanded = !this.traces[originalIndex].expanded;
+                    }
+                },
+                selectSpan(span) {
+                    this.selectedSpan = span;
+                },
+                selectTrace(trace) {
+                    this.selectedTrace = trace;
+                    if (trace.root_span.length > 0) {
+                        this.selectedSpan = trace.root_span[0];
+                    }
+                },
+                getAllSpans(rootSpan) {
+                    const spans = [];
+                    const collectSpans = (span) => {
+                        spans.push(span);
+                        if (span.children) {
+                            span.children.forEach(child => collectSpans(child));
+                        }
+                    };
+                    collectSpans(rootSpan);
+                    return spans.slice(1); // Exclude root span itself
+                },
+                generateColor(traceId) {
+                    // Generate more vibrant colors
+                    const hash = Array.from(traceId).reduce((acc, char) => {
+                        return char.charCodeAt(0) + ((acc << 5) - acc);
+                    }, 0);
+                    return `hsl(${Math.abs(hash % 360)}, 85%, 60%)`;  // Increase saturation and brightness
+                },
+                calculateBarHeight(trace) {
+                    if (!trace.root_span.length) return 20;  // Minimum height increased to 20px
+                    const duration = trace.root_span[0].duration_ms;
+                    return Math.min(Math.max(duration / 3, 20), 150);  // Adjust height calculation ratio
+                },
+                calculateBarPosition(trace) {
+                    if (!trace.root_span.length) return 0;
+                    const startTime = new Date(trace.root_span[0].start_time).getTime();
+                    const now = Date.now();
+                    const hoursAgo = (now - startTime) / 3600000;
+
+                    // Ensure time is within 24 hour range
+                    const position = Math.max(0, Math.min(24 - hoursAgo, 24)) / 24;
+
+                    // Get container width and ensure calculation is valid
+                    const container = this.$el.querySelector('.relative');
+                    if (!container) return 0;
+
+                    // Consider margins and ensure position is within container
+                    return position * (container.offsetWidth - 6); // Subtract bar width and margins
+                },
+                formatTime(timestamp) {
+                    return timestamp.split('.')[0]; // Remove milliseconds
+                },
+                formatAttributes(attributes) {
+                    return JSON.stringify(attributes, null, 2);
+                },
+                formatHour(hour) {
+                    const date = new Date(Date.now() - (24 - hour) * 3600000);
+                    return date.getHours() + ':00';
+                },
+                calculateBarPosition(trace) {
+                    if (!trace.root_span.length) return 0;
+                    const startTime = new Date(trace.root_span[0].start_time).getTime();
+                    const now = Date.now();
+                    const hoursAgo = (now - startTime) / 3600000;
+
+                    //  Ensure time is within 24 hour range
+                    const position = Math.max(0, Math.min(24 - hoursAgo, 24)) / 24;
+
+                    // Get container width and ensure calculation is valid
+                    const container = this.$el.querySelector('.relative');
+                    if (!container) return 0;
+
+                    // Consider margins and ensure position is within container
+                    return position * (container.offsetWidth - 6); // Subtract bar width and margins
+                },
+            }
+        });
+    </script>
+</body>
+
+</html>
