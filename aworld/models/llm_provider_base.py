@@ -39,6 +39,7 @@ class LLMProviderBase(abc.ABC):
         # Initialize providers based on flags
         self.provider = self._init_provider() if self.need_sync else None
         self.async_provider = self._init_async_provider() if self.need_async else None
+        self.stream_tool_buffer=[]
 
     @abc.abstractmethod
     def _init_provider(self):

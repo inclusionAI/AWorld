@@ -333,6 +333,17 @@ class ModelResponse:
                 for tool_call in raw_tool_calls:
                     processed_tool_calls.append(ToolCall.from_dict(tool_call))
 
+        # Extract usage information
+        usage = {}
+        if hasattr(chunk, 'usage'):
+            usage = {
+                "completion_tokens": chunk.usage.completion_tokens if hasattr(chunk.usage, 'completion_tokens') else 0,
+                "prompt_tokens": chunk.usage.prompt_tokens if hasattr(chunk.usage, 'prompt_tokens') else 0,
+                "total_tokens": chunk.usage.total_tokens if hasattr(chunk.usage, 'total_tokens') else 0
+            }
+        elif isinstance(chunk, dict) and chunk.get('usage'):
+            usage = chunk['usage']
+
         # Create message object
         message = {
             "role": "assistant",
@@ -347,6 +358,7 @@ class ModelResponse:
             model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
             content=content,
             tool_calls=processed_tool_calls or None,
+            usage=usage,
             raw_response=chunk,
             message=message
         )

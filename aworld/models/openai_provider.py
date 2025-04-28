@@ -1,10 +1,10 @@
 import os
 from typing import Any, Dict, List, Generator, AsyncGenerator
+
 from openai import OpenAI, AsyncOpenAI
 from langchain_openai import AzureChatOpenAI
 
 from aworld.config.conf import ClientType
-from aworld.metrics.context_manager import MetricContext
 from aworld.models.llm_provider_base import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
@@ -148,6 +148,57 @@ class OpenAIProvider(LLMProviderBase):
                 chunk
             )
 
+        # process tool calls
+        if (hasattr(chunk, 'choices') and chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.tool_calls) or (
+                isinstance(chunk, dict) and chunk.get("choices") and chunk["choices"] and chunk["choices"][0].get("delta", {}).get("tool_calls")):
+            tool_calls = chunk.choices[0].delta.tool_calls if hasattr(chunk, 'choices') else chunk["choices"][0].get("delta", {}).get("tool_calls")
+
+            for tool_call in tool_calls:
+                index = tool_call.index if hasattr(tool_call, 'index') else tool_call["index"]
+                func_name = tool_call.function.name if hasattr(tool_call, 'function') else tool_call.get("function", {}).get("name")
+                func_args = tool_call.function.arguments if hasattr(tool_call, 'function') else tool_call.get("function", {}).get("arguments")
+                if index >= len(self.stream_tool_buffer):
+                    self.stream_tool_buffer.append({
+                        "id": tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id"),
+                        "type": "function",
+                        "function": {
+                            "name": func_name,
+                            "arguments": func_args
+                        }
+                    })
+                else:
+                    self.stream_tool_buffer[index]["function"]["arguments"] += func_args
+            processed_chunk = chunk
+            if hasattr(processed_chunk, 'choices'):
+                processed_chunk.choices[0].delta.tool_calls = None
+            else:
+                processed_chunk["choices"][0]["delta"]["tool_calls"] = None
+            resp = ModelResponse.from_openai_stream_chunk(processed_chunk)
+            if (not resp.content and not resp.usage.get("total_tokens", 0)):
+                return None
+        if (hasattr(chunk, 'choices') and chunk.choices and chunk.choices[0].finish_reason) or (
+                isinstance(chunk, dict) and chunk.get("choices") and chunk["choices"] and chunk["choices"][0].get(
+            "finish_reason")):
+            finish_reason = chunk.choices[0].finish_reason if hasattr(chunk, 'choices') else chunk["choices"][0].get(
+                "finish_reason")
+            if self.stream_tool_buffer:
+                tool_call_chunk = {
+                    "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
+                    "model": chunk.model if hasattr(chunk, 'model') else chunk.get("model"),
+                    "object": chunk.object if hasattr(chunk, 'object') else chunk.get("object"),
+                    "choices": [
+                        {
+                            "delta": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": self.stream_tool_buffer
+                            }
+                        }
+                    ]
+                }
+                self.stream_tool_buffer = []
+                return ModelResponse.from_openai_stream_chunk(tool_call_chunk)
+
         return ModelResponse.from_openai_stream_chunk(chunk)
 
     def completion(self,
@@ -246,8 +297,9 @@ class OpenAIProvider(LLMProviderBase):
                 if not chunk:
                     continue
                 resp = self.postprocess_stream_response(chunk)
-                self._accumulate_chunk_usage(usage, resp.usage)
-                yield resp
+                if resp:
+                    self._accumulate_chunk_usage(usage, resp.usage)
+                    yield resp
             usage_process(usage)
 
         except Exception as e:
@@ -303,8 +355,9 @@ class OpenAIProvider(LLMProviderBase):
                     if not chunk:
                         continue
                     resp = self.postprocess_stream_response(chunk)
-                    self._accumulate_chunk_usage(usage, resp.usage)
-                    yield resp
+                    if resp:
+                        self._accumulate_chunk_usage(usage, resp.usage)
+                        yield resp
             usage_process(usage)
 
         except Exception as e:
