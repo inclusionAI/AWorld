@@ -1,11 +1,12 @@
 import time
 from typing import Union
-from logging import Logger, Filter, LogRecord, NOTSET, Handler, Formatter
+from logging import Logger, Filter, LogRecord, NOTSET, Handler, Formatter, StreamHandler
 from abc import ABC
 from typing import Optional
 from aworld.trace.trace import get_tracer_provider_silent, AttributeValueType, Tracer
 
 TRACE_LOG_FORMAT = '%(asctime)s - [%(trace_id)s] - [%(span_id)s] - %(name)s - %(levelname)s - %(message)s'
+SPECIAL_TRACE_LOG_FORMAT = '%(asctime)s - [trace_%(trace_id)s] - [%(span_id)s] - %(name)s - %(levelname)s - %(message)s'
 
 class LoggerProvider(ABC):
     """
@@ -51,9 +52,22 @@ def instrumentLogging(logger: Logger, level: Union[int, str] = NOTSET) -> None:
     Instrument the logger.
     """
     for handler in logger.root.handlers:
-        handler.setFormatter(Formatter(TRACE_LOG_FORMAT))
-        handler.addFilter(TraceLoggingFilter())
+        if not any(isinstance(filter, TraceLoggingFilter) for filter in handler.filters):
+            handler.setFormatter(Formatter(TRACE_LOG_FORMAT))
+            handler.addFilter(TraceLoggingFilter())
 
+    if not logger.handlers:
+        print("No handlers found, adding a StreamHandler. logger=", logger.name)
+        handler = StreamHandler()
+        handler.setFormatter(Formatter(SPECIAL_TRACE_LOG_FORMAT))
+        handler.addFilter(TraceLoggingFilter())
+        logger.addHandler(handler)
+    else:
+        for handler in logger.handlers:
+            if not any(isinstance(filter, TraceLoggingFilter) for filter in handler.filters):
+                handler.setFormatter(Formatter(SPECIAL_TRACE_LOG_FORMAT))
+                handler.addFilter(TraceLoggingFilter())
+    logger.propagate = False
     logger.addHandler(TraceLogginHandler(level))
 
 class TraceLoggingFilter(Filter):
