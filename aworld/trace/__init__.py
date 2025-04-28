@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import os
+from re import S
 from aworld.trace.context_manager import TraceManager, trace_configure
 from aworld.logs.log import set_log_provider, instrument_logging
 from aworld.logs.util import logger, trace_logger
@@ -12,9 +13,9 @@ if os.getenv("LOGFIRE_WRITE_TOKEN"):
     )
     set_log_provider(provider="otlp", backend="logfire", write_token=os.getenv("LOGFIRE_WRITE_TOKEN"))
 else:
-    logger.warning("LOGFIRE_WRITE_TOKEN is not set, using console backend")
+    logger.warning("LOGFIRE_WRITE_TOKEN is not set, using memory backend")
     trace_configure(
-        backends=["file"]
+        backends=["memory"]
     )
 
 instrument_logging(trace_logger)
