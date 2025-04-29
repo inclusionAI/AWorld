@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import os
-from re import S
 from aworld.trace.context_manager import TraceManager, trace_configure
 from aworld.logs.log import set_log_provider, instrument_logging
 from aworld.logs.util import logger, trace_logger

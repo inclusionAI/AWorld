@@ -1,14 +1,18 @@
 import random
 import time
 import os
-
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
-os.environ["LOGFIRE_WRITE_TOKEN"] = ""
+# os.environ["LOGFIRE_WRITE_TOKEN"] = ""
+os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api"
+os.environ["METRICS_SYSTEM_ENABLED"] = "true"
 
 from aworld.metrics.metric import MetricType
 from aworld.metrics.context_manager import MetricContext, ApiMetricTracker
 from aworld.metrics.template import MetricTemplate
 
+MetricContext.configure(provider="otlp",
+                        backend="antmonitor"
+)
 
 
 my_counter = MetricTemplate(
