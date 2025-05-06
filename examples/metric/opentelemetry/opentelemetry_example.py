@@ -3,7 +3,7 @@ import time
 import os
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 # os.environ["LOGFIRE_WRITE_TOKEN"] = ""
-os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api"
+os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"
 os.environ["METRICS_SYSTEM_ENABLED"] = "true"
 
 from aworld.metrics.metric import MetricType
@@ -44,9 +44,9 @@ def custom_code():
 
 if __name__ == '__main__':
     while 1:
-        MetricContext.count(my_counter, random.randint(1, 10))
-        MetricContext.gauge_set(my_gauge, random.randint(1, 10))
-        MetricContext.histogram_record(my_histogram, random.randint(0, 1000))
-        api()
-        custom_code()
+        MetricContext.count(my_counter, 1, {"test_label": "b"})
+        MetricContext.gauge_set(my_gauge, random.randint(1, 10), {"test_label": "b"})
+        # MetricContext.histogram_record(my_histogram, random.randint(0, 1000))
+        # api()
+        # custom_code()
         time.sleep(random.random())

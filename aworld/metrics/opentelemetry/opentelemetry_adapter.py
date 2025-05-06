@@ -300,9 +300,9 @@ def configure_otlp_provider(backend: Sequence[str] = None,
         base_url = base_url or ant_otlp_endpoint
         session = requests.Session()
         exporter = OTLPMetricExporter(
-            endpoint=urljoin(base_url, '/v1/metrics'),
+            endpoint=base_url,
             session=session,
-            # compression=Compression.Gzip,
+            compression=Compression.Gzip
         )
         set_metric_provider(OpentelemetryMetricProvider(exporter))
         
