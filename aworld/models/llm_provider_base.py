@@ -39,6 +39,7 @@ class LLMProviderBase(abc.ABC):
         # Initialize providers based on flags
         self.provider = self._init_provider() if self.need_sync else None
         self.async_provider = self._init_async_provider() if self.need_async else None
+        self.stream_tool_buffer=[]
 
     @abc.abstractmethod
     def _init_provider(self):
@@ -194,3 +195,21 @@ class LLMProviderBase(abc.ABC):
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When async provider is not initialized.
         """
+
+    def _accumulate_chunk_usage(self, usage: Dict[str, int], chunk_usage: Dict[str, int]):
+        """Accumulate usage statistics from chunk into the main usage dictionary.
+
+        Args:
+            usage: Dictionary to accumulate usage into (will be modified)
+            chunk_usage: Usage statistics from the current chunk
+        """
+        if not chunk_usage:
+            return
+
+        for key, value in chunk_usage.items():
+            if value is None:
+                continue
+            if key in usage:
+                usage[key] += value
+            else:
+                usage[key] = value

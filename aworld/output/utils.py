@@ -1,21 +1,6 @@
 from typing import AsyncGenerator, Generator, Callable, Any
 
-from aworld.logs.util import logger
-from aworld.output import OutputChannel
-from aworld.output.base import OutputPart, MessageOutput, StepOutput, Output
-
-
-async def consume_channel_messages(channel: OutputChannel, callback: Callable[..., Any]):
-    """Consume messages from the message panel"""
-    message_panel = channel.message_renderer.panel
-
-    try:
-        async for message in message_panel.get_messages_async():
-            logger.info(f"Consumer: Found message: {message}")
-            await consume_output(message, callback)
-
-    except Exception as e:
-        logger.error(f"Error during message consumption: {e}")
+from aworld.output.base import OutputPart, MessageOutput, Output
 
 
 async def consume_output(__output__, callback):

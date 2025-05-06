@@ -2,7 +2,6 @@ from aworld.output.base import Output, SearchOutput, SearchItem, ToolResultOutpu
     RUN_FINISHED_SIGNAL
 from aworld.output.artifact import Artifact, ArtifactType
 from aworld.output.code_artifact import CodeArtifact, ShellArtifact
-from aworld.output.output_channel import OutputChannel
 from aworld.output.outputs import Outputs, StreamingOutputs
 from aworld.output.workspace import WorkSpace
 from aworld.output.observer import WorkspaceObserver,get_observer
@@ -24,7 +23,6 @@ __all__ = [
     "MessageOutput",
     "ToolCallOutput",
     "ToolResultOutput",
-    "OutputChannel",
     "Outputs",
     "StreamingOutputs",
     "RUN_FINISHED_SIGNAL",
