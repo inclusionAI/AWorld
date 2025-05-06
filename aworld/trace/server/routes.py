@@ -1,7 +1,7 @@
 from flask import Flask, render_template, jsonify
 from aworld.trace.opentelemetry.memory_storage import SpanModel, TraceStorage
 
-app = Flask(__name__, template_folder='templates')
+app = Flask(__name__, template_folder='../../web/templates')
 
 def build_trace_tree(spans: list[SpanModel]):
     spans_dict = {span.span_id: span.dict() for span in spans}
@@ -20,7 +20,7 @@ def setup_routes(storage: TraceStorage):
 
     @app.route('/')
     def index():
-        return render_template('index.html')
+        return render_template('trace_ui.html')
 
     @app.route('/api/traces')
     def traces():

@@ -237,7 +237,7 @@ setup(
             'requirements.txt',
             'config/*.yaml',
             'config/*.json',
-            'trace/server/templates/*.html'
+            'web/templates/*.html'
         ]
     },
     license='MIT',
