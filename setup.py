@@ -236,7 +236,8 @@ setup(
             'dataset/gaia/gaia.npy',
             'requirements.txt',
             'config/*.yaml',
-            'config/*.json'
+            'config/*.json',
+            'web/templates/*.html'
         ]
     },
     license='MIT',

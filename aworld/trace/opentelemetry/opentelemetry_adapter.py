@@ -29,9 +29,11 @@ from aworld.trace.base import (
     Span,
     set_tracer_provider
 )
+from aworld.logs.util import logger
+from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
 from ..constants import ATTRIBUTES_MESSAGE_KEY
 from .export import FileSpanExporter
-
+from ..server import start_trace_server
 
 class OTLPTraceProvider(TraceProvider):
     """A TraceProvider that wraps an existing `SDKTracerProvider`.
@@ -257,6 +259,12 @@ def configure_otlp_provider(
             timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
             file_path = kwargs.get("file_path", f"traces_{timestamp}.json")
             processor.add_span_processor(BatchSpanProcessor(FileSpanExporter(file_path)))
+        elif backend == "memory":
+            logger.info("Using in-memory storage for traces.")
+            storage = kwargs.get("storage", InMemoryWithPersistStorage())
+            processor.add_span_processor(BatchSpanProcessor(InMemorySpanExporter(storage)))
+            start_trace_server(storage=storage, port=8000)
+
     set_tracer_provider(OTLPTraceProvider(SDKTracerProvider(active_span_processor=processor,
                                                             resource=build_otel_resource())))
 

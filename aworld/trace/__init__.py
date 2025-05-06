@@ -12,9 +12,9 @@ if os.getenv("LOGFIRE_WRITE_TOKEN"):
     )
     set_log_provider(provider="otlp", backend="logfire", write_token=os.getenv("LOGFIRE_WRITE_TOKEN"))
 else:
-    logger.warning("LOGFIRE_WRITE_TOKEN is not set, using console backend")
+    logger.warning("LOGFIRE_WRITE_TOKEN is not set, using memory backend")
     trace_configure(
-        backends=["file"]
+        backends=["memory"]
     )
 
 instrument_logging(trace_logger)

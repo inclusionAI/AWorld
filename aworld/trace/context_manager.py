@@ -26,7 +26,7 @@ from aworld.trace.msg_format import (
 )
 from aworld.trace.function_trace import trace_func
 from .opentelemetry.opentelemetry_adapter import configure_otlp_provider
-
+from aworld.logs.util import logger
 
 def trace_configure(provider: str = "otlp",
                     backends: Sequence[str] = None,
@@ -47,6 +47,7 @@ def trace_configure(provider: str = "otlp",
     """
     exist_provider = get_tracer_provider_silent()
     if exist_provider:
+        logger.info("Trace provider already configured, shutting down...")
         exist_provider.shutdown()
     if provider == "otlp":
         configure_otlp_provider(backends=backends, base_url=base_url, write_token=write_token, **kwargs)

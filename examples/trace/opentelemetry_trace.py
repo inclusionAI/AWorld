@@ -1,5 +1,4 @@
 import os
-import time
 
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 # os.environ["METRICS_SYSTEM_ENABLED"] = "true"
@@ -11,6 +10,7 @@ os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 
 import aworld.trace as trace
 from aworld.logs.util import logger, trace_logger
+from aworld.trace.server import get_trace_server
 
 @trace.func_span(span_name="test_func", attributes={"test_attr": "test_value"}, extract_args=["param1"], add_attr = "add_attr_value")
 def traced_func(param1: str = None, param2: int = None):
@@ -50,7 +50,7 @@ def main():
     # b.classb_function_2()
     # b.classb_function_1()
     # b.classb_function_2()
-
-
+    get_trace_server().join()
+    
 if __name__ == "__main__":
     main()

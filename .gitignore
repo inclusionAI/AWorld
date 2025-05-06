@@ -120,3 +120,4 @@ examples/gaia/gaia_dataset/
 *.html
 *.wav
 traces*.json
+trace_data/*.json
