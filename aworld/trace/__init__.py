@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import os
 from aworld.trace.context_manager import TraceManager, trace_configure
-from aworld.logs.log import set_log_provider, instrumentLogging
+from aworld.logs.log import set_log_provider, instrument_logging
 from aworld.logs.util import logger, trace_logger
 
 if os.getenv("LOGFIRE_WRITE_TOKEN"):
@@ -14,10 +14,10 @@ if os.getenv("LOGFIRE_WRITE_TOKEN"):
 else:
     logger.warning("LOGFIRE_WRITE_TOKEN is not set, using console backend")
     trace_configure(
-        backends=["console"]
+        backends=["file"]
     )
 
-instrumentLogging(trace_logger)
+instrument_logging(trace_logger)
 
 GLOBAL_TRACE_MANAGER: TraceManager = TraceManager()
 span = GLOBAL_TRACE_MANAGER.span

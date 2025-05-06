@@ -2,18 +2,18 @@ import sys
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Iterator, Union, Sequence
 from enum import Enum
-import logging
 from weakref import WeakSet
 
-logger = logging.getLogger("trace")
+from aworld.logs.util import trace_logger
+
 
 class TraceProvider(ABC):
 
     @abstractmethod
     def get_tracer(
-        self,
-        name: str,
-        version: Optional[str] = None
+            self,
+            name: str,
+            version: Optional[str] = None
     ) -> "Tracer":
         """Returns a `Tracer` for use by the given name.
 
@@ -37,13 +37,13 @@ class TraceProvider(ABC):
                 instrumenting library.  Usually this should be the same as
                 ``importlib.metadata.version(instrumenting_library_name)``
         """
-    
+
     @abstractmethod
     def shutdown(self) -> None:
         """Shuts down the provider and all its resources.
         This method should be called when the application is shutting down.
         """
-    
+
     @abstractmethod
     def force_flush(self, timeout: Optional[float] = None) -> bool:
         """Forces all the data to be sent to the backend.
@@ -53,13 +53,14 @@ class TraceProvider(ABC):
         Returns:
             True if the data was sent successfully, False otherwise.
         """
-    
+
     @abstractmethod
     def get_current_span(self) -> Optional["Span"]:
         """Returns the current span from the current context.
         Returns:
             The current span from the current context.
         """
+
 
 class SpanType(Enum):
     """Specifies additional details on how this span relates to its parent span.
@@ -86,6 +87,7 @@ class SpanType(Enum):
     #: path latency relationship between producer and consumer spans.
     CONSUMER = 4
 
+
 AttributeValueType = Union[
     str,
     bool,
@@ -97,19 +99,20 @@ AttributeValueType = Union[
     Sequence[float],
 ]
 
+
 class Tracer(ABC):
     """Handles span creation and in-process context propagation.
     """
 
     @abstractmethod
     def start_span(
-        self,
-        name: str,
-        span_type: SpanType = SpanType.INTERNAL,
-        attributes: dict[str, AttributeValueType] = None,
-        start_time: Optional[int] = None,
-        record_exception: bool = True,
-        set_status_on_exception: bool = True,
+            self,
+            name: str,
+            span_type: SpanType = SpanType.INTERNAL,
+            attributes: dict[str, AttributeValueType] = None,
+            start_time: Optional[int] = None,
+            record_exception: bool = True,
+            set_status_on_exception: bool = True,
     ) -> "Span":
         """Starts and returns a new Span.
         Args:
@@ -129,14 +132,14 @@ class Tracer(ABC):
 
     @abstractmethod
     def start_as_current_span(
-        self,
-        name: str,
-        span_type: SpanType = SpanType.INTERNAL,
-        attributes: dict[str, AttributeValueType] = None,
-        start_time: Optional[int] = None,
-        record_exception: bool = True,
-        set_status_on_exception: bool = True,
-        end_on_exit: bool = True,
+            self,
+            name: str,
+            span_type: SpanType = SpanType.INTERNAL,
+            attributes: dict[str, AttributeValueType] = None,
+            start_time: Optional[int] = None,
+            record_exception: bool = True,
+            set_status_on_exception: bool = True,
+            end_on_exit: bool = True,
     ) -> Iterator["Span"]:
         """Context manager for creating a new span and set it
         as the current span in this tracer's context.
@@ -172,9 +175,11 @@ class Tracer(ABC):
                 context manager.
     """
 
+
 class Span(ABC):
     """A Span represents a single operation within a trace.
     """
+
     @abstractmethod
     def end(self, end_time: Optional[int] = None) -> None:
         """Sets the current time as the span's end time.
@@ -208,11 +213,11 @@ class Span(ABC):
 
     @abstractmethod
     def record_exception(
-        self,
-        exception: BaseException,
-        attributes: dict[str, Any] = None,
-        timestamp: Optional[int] = None,
-        escaped: bool = False,
+            self,
+            exception: BaseException,
+            attributes: dict[str, Any] = None,
+            timestamp: Optional[int] = None,
+            escaped: bool = False,
     ) -> None:
         """Records an exception in the span.
         Args:
@@ -223,14 +228,14 @@ class Span(ABC):
         """
 
     @abstractmethod
-    def get_trace_id( self) -> str:
+    def get_trace_id(self) -> str:
         """Returns the trace ID of the span.
         Returns:
             The trace ID of the span.
         """
-    
+
     @abstractmethod
-    def get_span_id( self) -> str:
+    def get_span_id(self) -> str:
         """Returns the ID of the span.
         Returns:
             The ID of the span.
@@ -244,56 +249,68 @@ class Span(ABC):
         """Remove the current span from OPEN_SPANS."""
         _OPEN_SPANS.discard(self)
 
+
 class NoOpSpan(Span):
     """No-op implementation of `Span`."""
+
     def end(self, end_time: Optional[int] = None) -> None:
         pass
+
     def set_attribute(self, key: str, value: Any) -> None:
         pass
+
     def set_attributes(self, attributes: dict[str, Any]) -> None:
         pass
+
     def is_recording(self) -> bool:
         return False
+
     def record_exception(
-        self,
-        exception: BaseException,
-        attributes: dict[str, Any] = None,
-        timestamp: Optional[int] = None,
-        escaped: bool = False,
+            self,
+            exception: BaseException,
+            attributes: dict[str, Any] = None,
+            timestamp: Optional[int] = None,
+            escaped: bool = False,
     ) -> None:
         pass
-    def get_trace_id( self) -> str:
+
+    def get_trace_id(self) -> str:
         return ""
-    def get_span_id( self) -> str:
+
+    def get_span_id(self) -> str:
         return ""
+
 
 class NoOpTracer(Tracer):
     """No-op implementation of `Tracer`."""
+
     def start_span(
-        self,
-        name: str,
-        span_type: SpanType = SpanType.INTERNAL,
-        attributes: dict[str, AttributeValueType] = None,
-        start_time: Optional[int] = None,
-        record_exception: bool = True,
-        set_status_on_exception: bool = True,
+            self,
+            name: str,
+            span_type: SpanType = SpanType.INTERNAL,
+            attributes: dict[str, AttributeValueType] = None,
+            start_time: Optional[int] = None,
+            record_exception: bool = True,
+            set_status_on_exception: bool = True,
     ) -> Span:
         return NoOpSpan()
 
     def start_as_current_span(
-        self,
-        name: str,
-        span_type: SpanType = SpanType.INTERNAL,
-        attributes: dict[str, AttributeValueType] = None,
-        start_time: Optional[int] = None,
-        record_exception: bool = True,
-        set_status_on_exception: bool = True,
-        end_on_exit: bool = True,
+            self,
+            name: str,
+            span_type: SpanType = SpanType.INTERNAL,
+            attributes: dict[str, AttributeValueType] = None,
+            start_time: Optional[int] = None,
+            record_exception: bool = True,
+            set_status_on_exception: bool = True,
+            end_on_exit: bool = True,
     ) -> Iterator[Span]:
         yield NoOpSpan()
 
+
 _GLOBAL_TRACER_PROVIDER: Optional[TraceProvider] = None
 _OPEN_SPANS: WeakSet[Span] = WeakSet()
+
 
 def set_tracer_provider(provider: TraceProvider):
     """
@@ -312,17 +329,19 @@ def get_tracer_provider() -> TraceProvider:
         raise ValueError("No tracer provider has been set.")
     return _GLOBAL_TRACER_PROVIDER
 
+
 def get_tracer_provider_silent():
     try:
         return get_tracer_provider()
     except Exception:
         return None
 
+
 def log_trace_error():
     """
     Log an error with traceback information.
     """
-    logger.exception(
+    trace_logger.exception(
         'This is logging the trace internal error.',
         exc_info=sys.exc_info(),
     )

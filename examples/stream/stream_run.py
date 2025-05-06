@@ -3,21 +3,13 @@
 import asyncio
 import os
 
-from dotenv import load_dotenv
+from aworld.runner import Runners
 
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
-from aworld.stream_runner import StreamRunner
 from custom.custom_rich_aworld_ui import RichAworldUI
-
-
-# import logging
-# logging.basicConfig(level=logging.ERROR, force=True)
-
-
-
 
 if __name__ == '__main__':
 
@@ -51,10 +43,8 @@ if __name__ == '__main__':
 
         rich_ui = RichAworldUI()
 
-        async for output in StreamRunner.run_streamed(task).stream_events():
+        async for output in Runners.streamed_run_task(task).stream_events():
             await AworldUI.parse_output(output, rich_ui)
 
+
     asyncio.run(_run(amap_agent, user_input))
-
-
-

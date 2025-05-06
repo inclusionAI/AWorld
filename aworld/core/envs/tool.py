@@ -11,6 +11,7 @@ from aworld.config.conf import ToolConfig, load_config, ConfigDict
 from aworld.config.tool_action import ToolAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
+from aworld.core.context.base import Context
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.utils.common import convert_to_snake
@@ -45,6 +46,7 @@ class Tool(Generic[AgentInput, ToolInput]):
 
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self.context: Context = Context.instance()
 
     def name(self):
         """Tool unique name."""
@@ -105,6 +107,7 @@ class AsyncTool(Generic[AgentInput, ToolInput]):
 
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self.context: Context = None
 
     def name(self):
         """Tool unique name."""
@@ -209,7 +212,7 @@ class ToolsManager(Factory):
         conf_file_name = conf_file_name if conf_file_name else f"{name}_tool.yaml"
         conf = load_config(conf_file_name, kwargs.get("dir"))
         if not conf:
-            logger.warning(f"can not load conf from {conf_file_name}")
+            logger.debug(f"can not load conf from {conf_file_name}")
             # use general tool config
             conf = ToolConfig().model_dump()
         name = prefix + name

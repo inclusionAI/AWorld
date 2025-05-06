@@ -8,7 +8,7 @@ import re
 import sys
 import threading
 from types import FunctionType
-from typing import Callable, Any, Tuple, List, Iterator
+from typing import Callable, Any, Tuple, List, Iterator, Dict, Union
 
 from aworld.logs.util import logger
 
@@ -180,4 +180,26 @@ def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
     else:
         loop = asyncio.get_event_loop()
         result = loop.run_until_complete(async_func(*args, **kwargs))
+    return result
+
+
+def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
+                      other: Dict[str, Union[int, Dict[str, int]]],
+                      ignore_zero: bool = True):
+    """Add counts from two dicts or nest dicts."""
+    result = {}
+    for elem, count in usage.items():
+        # nest dict
+        if isinstance(count, Dict):
+            res = nest_dict_counter(usage[elem], other.get(elem, {}))
+            result[elem] = res
+            continue
+
+        newcount = count + other.get(elem, 0)
+        if not ignore_zero or newcount > 0:
+            result[elem] = newcount
+
+    for elem, count in other.items():
+        if elem not in usage and not ignore_zero:
+            result[elem] = count
     return result

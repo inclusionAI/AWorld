@@ -1,17 +1,19 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from enum import Enum
-
 from pydantic import BaseModel
 from typing import Dict, Any, Union, List
+
+from aworld.config import ConfigDict
+
+Config = Union[Dict[str, Any], ConfigDict, BaseModel]
 
 
 class ActionResult(BaseModel):
     """Result of executing an action by use tool."""
     is_done: bool = False
     success: bool = False
-    content: str = None
+    content: Any = None
     error: str = None
     keep: bool = False
     action_name: str = None

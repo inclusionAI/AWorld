@@ -5,7 +5,6 @@ from anthropic import Anthropic, AsyncAnthropic
 from aworld.logs.util import logger
 from aworld.models.llm_provider_base import LLMProviderBase
 from aworld.models.model_response import ModelResponse, LLMResponseError
-from aworld.env_secrets import secrets
 
 
 class AnthropicProvider(LLMProviderBase):
@@ -22,7 +21,7 @@ class AnthropicProvider(LLMProviderBase):
         api_key = self.api_key
         if not api_key:
             env_var = "ANTHROPIC_API_KEY"
-            api_key = os.getenv(env_var, "") or secrets.claude_api_key
+            api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
                     f"Anthropic API key not found, please set {env_var} environment variable or provide it in the parameters")
@@ -42,7 +41,7 @@ class AnthropicProvider(LLMProviderBase):
         api_key = self.api_key
         if not api_key:
             env_var = "ANTHROPIC_API_KEY"
-            api_key = os.getenv(env_var, "") or secrets.claude_api_key
+            api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
                     f"Anthropic API key not found, please set {env_var} environment variable or provide it in the parameters")

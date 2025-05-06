@@ -1,6 +1,7 @@
 import sys
 import traceback
 import time
+import datetime
 import requests
 from threading import Lock
 from typing import Any, Iterator, Sequence, Optional, TYPE_CHECKING
@@ -19,7 +20,7 @@ from opentelemetry.context import Context as OTLPContext
 from opentelemetry.semconv.trace import SpanAttributes
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from aworld.trace.trace import (
+from aworld.trace.base import (
     AttributeValueType,
     NoOpTracer,
     SpanType,
@@ -29,6 +30,7 @@ from aworld.trace.trace import (
     set_tracer_provider
 )
 from ..constants import ATTRIBUTES_MESSAGE_KEY
+from .export import FileSpanExporter
 
 
 class OTLPTraceProvider(TraceProvider):
@@ -251,6 +253,10 @@ def configure_otlp_provider(
         elif backend == "console":
             from opentelemetry.sdk.trace.export import ConsoleSpanExporter
             processor.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+        elif backend == "file":
+            timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            file_path = kwargs.get("file_path", f"traces_{timestamp}.json")
+            processor.add_span_processor(BatchSpanProcessor(FileSpanExporter(file_path)))
     set_tracer_provider(OTLPTraceProvider(SDKTracerProvider(active_span_processor=processor,
                                                             resource=build_otel_resource())))
 

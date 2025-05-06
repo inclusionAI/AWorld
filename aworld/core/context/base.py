@@ -1,33 +1,43 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+from collections import Counter, OrderedDict
 from typing import Dict
-
-from pydantic import BaseModel
 
 from aworld.config import ConfigDict
 from aworld.core.context.session import Session
 from aworld.core.singleton import InheritanceSingleton
-from aworld.core.task import Config
-from aworld.logs.util import logger
+from aworld.utils.common import nest_dict_counter
 
 
 class Context(InheritanceSingleton):
-    def __init__(self, conf: Config = None, user: str = None, **kwargs):
-        self.conf = conf
-        if isinstance(conf, ConfigDict):
-            pass
-        elif isinstance(conf, Dict):
-            self.conf = ConfigDict(conf)
-        elif isinstance(conf, BaseModel):
-            # To add flexibility
-            self.conf = ConfigDict(conf.model_dump())
-        else:
-            logger.warning(f"Unknown conf type: {type(conf)}")
-
+    def __init__(self, user: str = None, **kwargs):
         self._user = user
-        self._task_id = kwargs.get('task_id', self.conf.get('task_id', None))
-        self._engine = kwargs.get('engine', self.conf.get('engine', None))
-        self.session: Session = None
+        self._task_id = kwargs.get('task_id')
+        self._engine = kwargs.get('engine')
+        self._trace_id = kwargs.get('trace_id')
+        self.session: Session = kwargs.get('session')
+        self.context_info = ConfigDict()
+        self.trajectories = OrderedDict()
+        self._token_usage = {
+            "completion_tokens": 0,
+            "prompt_tokens": 0,
+            "total_tokens": 0
+        }
+
+    def add_token(self, usage: Dict[str, int]):
+        self._token_usage = nest_dict_counter(self._token_usage, usage)
+
+    @property
+    def trace_id(self):
+        return self._trace_id
+
+    @trace_id.setter
+    def trace_id(self, trace_id):
+        self._trace_id = trace_id
+
+    @property
+    def token_usage(self):
+        return self._token_usage
 
     @property
     def engine(self):
@@ -35,8 +45,6 @@ class Context(InheritanceSingleton):
 
     @property
     def user(self):
-        if self._user is None:
-            self._user = self.conf.get('user', None)
         return self._user
 
     @user.setter

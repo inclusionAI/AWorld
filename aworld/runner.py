@@ -4,24 +4,50 @@ import abc
 import asyncio
 import time
 import traceback
+import uuid
 from typing import List, Dict, Any, Union
 
+from aworld.core.context.session import Session
+from baidusearch.baidusearch import session
 from pydantic import BaseModel
-
-from aworld.config.conf import ToolConfig
+from aworld.config.conf import ToolConfig, TaskConfig
 from aworld.core.agent.base import Agent, is_agent_by_name
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
+from aworld.core.context.base import Context
 from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
 from aworld.core.task import Runner, Task
-from aworld.logs.util import logger, color_log, Color
+from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.models.model_response import ToolCall
+from aworld.output import StreamingOutputs
 from aworld.output.base import StepOutput, ToolResultOutput
+from aworld import trace
 from aworld.utils.common import sync_exec, override_in_subclass
 
 
 class Runners:
+    """Unified entrance to the utility class of the runnable task of execution."""
+
+    @staticmethod
+    def streamed_run_task(task: Task, ) -> StreamingOutputs:
+        """Run the task in stream output."""
+
+        with trace.span(task.name) as span:
+            if not task.conf:
+                task.conf = TaskConfig()
+
+            streamed_result = StreamingOutputs(
+                input=task.input,
+                usage={},
+                is_complete=False
+            )
+            task.outputs = streamed_result
+
+            streamed_result._run_impl_task = asyncio.create_task(
+                Runners.run_task(task)
+            )
+            return streamed_result
 
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], parallel: bool = False):
@@ -85,9 +111,11 @@ class Runners:
             swarm = Swarm(agent)
 
         task = Task(input=input, swarm=swarm, tool_names=tool_names)
-        runner = Runners._choose_runner(task=task)
-        res = await runner.run()
-        logger.info(f"{input} execute finished, response: {res}")
+
+        with trace.span(task.name) as span:
+            runner = Runners._choose_runner(task=task)
+            res = await runner.run()
+            trace_logger.info(f"{input} execute finished, response: {res}")
         return res
 
     @staticmethod
@@ -95,7 +123,8 @@ class Runners:
         # also can use ProcessPoolExecutor
         parallel_tasks = []
         for t in tasks:
-            parallel_tasks.append(Runners._choose_runner(task=t).run())
+            with trace.span(t.name) as span:
+                parallel_tasks.append(Runners._choose_runner(task=t).run())
 
         results = await asyncio.gather(*parallel_tasks)
         for idx, t in enumerate(results):
@@ -104,9 +133,10 @@ class Runners:
     @staticmethod
     async def _run_in_local(tasks: List[Task], res: Dict[str, Any]) -> None:
         for idx, task in enumerate(tasks):
-            # Execute the task
-            result = await Runners._choose_runner(task=task).run()
-            res[f'task_{idx}'] = result
+            with trace.span(task.name) as span:
+                # Execute the task
+                result = await Runners._choose_runner(task=task).run()
+                res[f'task_{idx}'] = result
 
     @staticmethod
     def _choose_runner(task: Task):
@@ -122,6 +152,7 @@ class Runners:
 
 
 class TaskRunner(Runner):
+    """TODO: supported worker pipeline."""
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, task: Task, *args, **kwargs):
@@ -146,6 +177,17 @@ class TaskRunner(Runner):
         if check_input and not task.input:
             raise ValueError("task no input")
 
+        self.task = task
+        self.daemon_target = kwargs.pop('daemon_target', None)
+        self._use_demon = False if not task.conf else task.conf.get('use_demon', False)
+        self._exception = None
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+        # modules init
+
+    async def pre_run(self):
+        task = self.task
         self.swarm = task.swarm
         self.input = task.input
         self.outputs = task.outputs
@@ -162,21 +204,21 @@ class TaskRunner(Runner):
         self.tools_conf['mcp'] = ToolConfig(use_async=True, name='mcp')
         self.endless_threshold = task.endless_threshold
 
-        self.daemon_target = kwargs.pop('daemon_target', None)
-        self._use_demon = False if not task.conf else task.conf.get('use_demon', False)
-        self._exception = None
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+        # build context
+        if task.session_id:
+            session = Session(session_id=task.session_id)
+        else:
+            session = Session(session_id=uuid.uuid1().hex)
+        trace_id = None if trace.get_current_span() is None else trace.get_current_span().get_trace_id()
+        self.context = Context(task_id=self.name, trace_id=trace_id, session=session)
 
-        # modules init
-
-    async def pre_run(self):
         # init tool state by reset(), and ignore them observation
         observation = None
         if self.tools:
             for _, tool in self.tools.items():
                 # use the observation and info of the last one
                 if isinstance(tool, Tool):
+                    tool.context = self.context
                     observation, info = tool.reset()
                 elif isinstance(tool, AsyncTool):
                     observation, info = await tool.reset()
@@ -190,7 +232,8 @@ class TaskRunner(Runner):
             observation = Observation(content=self.input)
 
         self.observation = observation
-        self.swarm.reset(observation.content, self.tool_names)
+        self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
+        trace_logger.info(f"{self.name} pre run")
 
     def is_agent(self, policy: ActionModel):
         return is_agent_by_name(policy.tool_name) or (not policy.tool_name and not policy.action_name)
@@ -200,10 +243,10 @@ class SequenceRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task=task, *args, **kwargs)
 
-    async def do_run(self):
+    async def do_run(self, context: Context = None):
         """Multi-agent sequence general process workflow.
 
-        NOTE: Use the agent‘s finished state(no tool calls) to control the inner loop.
+        NOTE: Use the agent's finished state(no tool calls) to control the inner loop.
         Args:
             observation: Observation based on env
             info: Extend info by env
@@ -233,14 +276,12 @@ class SequenceRunner(TaskRunner):
                         policy: List[ActionModel] = cur_agent.policy(observation,
                                                                      step=step,
                                                                      outputs=self.outputs,
-                                                                     stream=self.conf.get("stream", False)
-                                                                     )
+                                                                     stream=self.conf.get("stream", False))
                     else:
                         policy: List[ActionModel] = await cur_agent.async_policy(observation,
                                                                                  step=step,
                                                                                  outputs=self.outputs,
-                                                                                 stream=self.conf.get("stream", False)
-                                                                                 )
+                                                                                 stream=self.conf.get("stream", False))
                     observation.content = None
                     color_log(f"{cur_agent.name()} policy: {policy}")
                     if not policy:
@@ -248,8 +289,7 @@ class SequenceRunner(TaskRunner):
                         await self.outputs.add_output(
                             StepOutput.build_failed_output(name=f"Step{step}",
                                                            step_num=step,
-                                                           data = f"current agent {cur_agent.name()} no policy to use."
-                                                           )
+                                                           data=f"current agent {cur_agent.name()} no policy to use.")
                         )
                         await self.outputs.mark_completed()
                         return {"msg": f"current agent {cur_agent.name()} no policy to use.",
@@ -267,7 +307,7 @@ class SequenceRunner(TaskRunner):
                             break
                         elif status == 'return':
                             await self.outputs.add_output(
-                                StepOutput.build_finished_output(name=f"Step{step}",step_num=step)
+                                StepOutput.build_finished_output(name=f"Step{step}", step_num=step)
                             )
                             return info
                     elif is_tool_by_name(policy[0].tool_name):
@@ -277,7 +317,7 @@ class SequenceRunner(TaskRunner):
                         await self.outputs.add_output(
                             StepOutput.build_failed_output(name=f"Step{step}",
                                                            step_num=step,
-                                                           data = f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.")
+                                                           data=f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.")
                         )
                         await self.outputs.mark_completed()
                         return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
@@ -286,8 +326,7 @@ class SequenceRunner(TaskRunner):
                                 "success": False}
                     await self.outputs.add_output(
                         StepOutput.build_finished_output(name=f"Step{step}",
-                                                         step_num=step,
-                                                         )
+                                                         step_num=step, )
                     )
                     step += 1
                     if terminated and agent.finished:
@@ -381,15 +420,14 @@ class SequenceRunner(TaskRunner):
                 }))
                 await self.outputs.add_output(tool_output)
 
-            logger.info(f'{action} state: {observation}; reward: {reward}')
             # Check if there's an exception in info
             if info.get("exception"):
                 color_log(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
                 msg = f"Step {step} failed with exception: {info['exception']}"
-            logger.info(f"step: {step} finished by tool action.")
+            logger.info(f"step: {step} finished by tool action: {action}.")
             log_ob = Observation(content='' if observation.content is None else observation.content,
                                  action_result=observation.action_result)
-            color_log(f"{tool_name} observation: {log_ob}", color=Color.green)
+            trace_logger.info(f"{tool_name} observation: {log_ob}", color=Color.green)
         return msg, terminated
 
 
@@ -397,13 +435,13 @@ class SocialRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task=task, *args, **kwargs)
 
-    async def do_run(self) -> Dict[str, Any]:
+    async def do_run(self, context: Context = None) -> Dict[str, Any]:
         """Multi-agent general process workflow.
 
-        NOTE: Use the agent‘s finished state to control the loop, so the agent must carefully set finished state.
+        NOTE: Use the agent's finished state to control the loop, so the agent must carefully set finished state.
+
         Args:
-            observation: Observation based on env
-            info: Extend info by env
+            context: Context of runner.
         """
         start = time.time()
 
@@ -471,10 +509,14 @@ class SocialRunner(TaskRunner):
         # use communicate agent every time
         if override_in_subclass('async_policy', self.swarm.cur_agent.__class__, Agent):
             policy: List[ActionModel] = self.swarm.cur_agent.policy(observation,
-                                                                    step=step)
+                                                                    step=step,
+                                                                    outputs=self.outputs,
+                                                                    stream=self.conf.get("stream", False))
         else:
             policy: List[ActionModel] = await self.swarm.cur_agent.async_policy(observation,
-                                                                                step=step)
+                                                                                step=step,
+                                                                                outputs=self.outputs,
+                                                                                stream=self.conf.get("stream", False))
         if not policy:
             logger.warning(f"current agent {self.swarm.cur_agent.name()} no policy to use.")
             return {"msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
@@ -524,9 +566,15 @@ class SocialRunner(TaskRunner):
                     if cur_agent is None:
                         cur_agent = self.swarm.cur_agent
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                        policy = cur_agent.policy(observation, step=step)
+                        policy = cur_agent.policy(observation,
+                                                  step=step,
+                                                  outputs=self.outputs,
+                                                  stream=self.conf.get("stream", False))
                     else:
-                        policy = await cur_agent.async_policy(observation, step=step)
+                        policy = await cur_agent.async_policy(observation,
+                                                              step=step,
+                                                              outputs=self.outputs,
+                                                              stream=self.conf.get("stream", False))
                     color_log(f"{cur_agent.name()} policy: {policy}")
 
             if policy:
@@ -594,10 +642,14 @@ class SocialRunner(TaskRunner):
 
         if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
             agent_policy = cur_agent.policy(observation,
-                                            step=step)
+                                            step=step,
+                                            outputs=self.outputs,
+                                            stream=self.conf.get("stream", False))
         else:
             agent_policy = await cur_agent.async_policy(observation,
-                                                        step=step)
+                                                        step=step,
+                                                        outputs=self.outputs,
+                                                        stream=self.conf.get("stream", False))
 
         if not agent_policy:
             logger.warning(
@@ -640,6 +692,15 @@ class SocialRunner(TaskRunner):
             else:
                 logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
                 continue
+
+            for i, item in enumerate(action):
+                tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
+                    "function": {
+                        "name": item.action_name,
+                        "arguments": item.params,
+                    }
+                }))
+                await self.outputs.add_output(tool_output)
 
             # Check if there's an exception in info
             if info.get("exception"):
