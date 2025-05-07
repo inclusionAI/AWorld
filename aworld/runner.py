@@ -7,14 +7,13 @@ import traceback
 import uuid
 from typing import List, Dict, Any, Union
 
-from aworld.core.context.session import Session
-from baidusearch.baidusearch import session
 from pydantic import BaseModel
 from aworld.config.conf import ToolConfig, TaskConfig
 from aworld.core.agent.base import Agent, is_agent_by_name
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
+from aworld.core.context.session import Session
 from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
 from aworld.core.task import Runner, Task
@@ -209,7 +208,7 @@ class TaskRunner(Runner):
             session = Session(session_id=task.session_id)
         else:
             session = Session(session_id=uuid.uuid1().hex)
-        trace_id = None if trace.get_current_span() is None else trace.get_current_span().get_trace_id()
+        trace_id = uuid.uuid1().hex if trace.get_current_span() is None else trace.get_current_span().get_trace_id()
         self.context = Context(task_id=self.name, trace_id=trace_id, session=session)
 
         # init tool state by reset(), and ignore them observation
