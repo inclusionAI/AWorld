@@ -19,7 +19,7 @@ class SingletonMeta(type):
 
 
 class InheritanceSingleton(object, metaclass=SingletonMeta):
-    _local_instance = threading.local()
+    _local_instances = {}
 
     @staticmethod
     def __get_base_class(clazz):
@@ -46,11 +46,16 @@ class InheritanceSingleton(object, metaclass=SingletonMeta):
     @classmethod
     def instance(cls, *args, **kwargs):
         """Each thread has its own singleton instance."""
-        if not hasattr(cls._local_instance, 'instance'):
-            logger.info(f"{threading.current_thread().name} thread create {cls} instance.")
-            cls._local_instance.instance = cls(*args, **kwargs)
 
-        return cls._local_instance.instance
+        if cls.__name__ not in cls._local_instances:
+            cls._local_instances[cls.__name__] = threading.local()
+
+        local_instance = cls._local_instances[cls.__name__]
+        if not hasattr(local_instance, 'instance'):
+            logger.info(f"{threading.current_thread().name} thread create {cls} instance.")
+            local_instance.instance = cls(*args, **kwargs)
+
+        return local_instance.instance
 
     @classmethod
     def clear_singleton(cls):

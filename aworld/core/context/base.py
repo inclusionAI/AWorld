@@ -65,6 +65,8 @@ class Context(InheritanceSingleton):
     def session_id(self):
         if self.session:
             return self.session.session_id
+        else:
+            return None
 
     @property
     def record_path(self):
