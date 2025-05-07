@@ -1,9 +1,5 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-# coding: utf-8
-# Copyright (c) Antfin, Inc. All rights reserved.
-
-import logging
 import os
 
 from aworld.logs.util import logger
@@ -49,7 +45,7 @@ class SparkRuntime(RuntimeBackend):
 
         conf = self.conf
         is_local = getattr(conf, 'is_local', False)
-        logging.info('build runtime is_local:{}'.format(is_local))
+        logger.info('build runtime is_local:{}'.format(is_local))
         spark_builder = SparkSession.builder
         if is_local:
             if getattr(conf, 'use_python', False) and hasattr(conf, "python_command"):
@@ -76,7 +72,7 @@ class RayRuntime(RuntimeBackend):
 
         self.runtime = ray
         self.num_executors = self.conf.get('num_executors', 1)
-        logging.info("ray init finished, executor number {}".format(str(self.num_executors)))
+        logger.info("ray init finished, executor number {}".format(str(self.num_executors)))
 
 
 class ODPSRuntime(RuntimeBackend):
