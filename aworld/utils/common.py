@@ -176,7 +176,6 @@ def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
         thread.start()
         thread.join()
         result = thread.result
-
     else:
         loop = asyncio.get_event_loop()
         result = loop.run_until_complete(async_func(*args, **kwargs))

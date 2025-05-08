@@ -322,10 +322,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
             return tool_list
         except Exception as e:
-            logger.warn(f"tool_parse error: {e}")
+            logger.warn(f"tool_parse error, content: {resp.content}, \nerror msg: {e}")
             return tool_list
-
-        return tool_list
 
     def response_parse(self, resp: ModelResponse) -> AgentResult:
         """Default parse response by LLM."""
