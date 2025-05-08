@@ -99,7 +99,7 @@ class EventBus(Messageable, InheritanceSingleton):
 
         # use asyncio Queue as default
         self._message_queues: Dict[str, Queue] = {}
-        if conf and conf.get('auto_consume'):
+        if conf and conf.get('auto'):
             self._task = asyncio.create_task(self._run())
             self._stopped = asyncio.Event()
 
@@ -217,7 +217,7 @@ class EventManager:
     """Record events in memory for re-consume."""
 
     def __init__(self, **kwargs):
-        self.event_bus = EventBus({'auto_consume': True})
+        self.event_bus = EventBus({'auto': True})
         self.context = Context.instance()
         self.messages: Dict[str, List[Message]] = {'None': []}
         self.max_len = kwargs.get('max_len', 1000)
