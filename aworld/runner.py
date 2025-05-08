@@ -22,6 +22,7 @@ from aworld.models.model_response import ToolCall
 from aworld.output import StreamingOutputs
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld import trace
+from aworld.trace.server import get_trace_server
 from aworld.utils.common import sync_exec, override_in_subclass
 
 
@@ -49,16 +50,17 @@ class Runners:
             return streamed_result
 
     @staticmethod
-    def sync_run_task(task: Union[Task, List[Task]], parallel: bool = False):
-        return sync_exec(Runners.run_task, task=task, parallel=parallel)
+    def sync_run_task(task: Union[Task, List[Task]], parallel: bool = False, view_trace: bool = False):
+        return sync_exec(Runners.run_task, task=task, parallel=parallel, view_trace=view_trace)
 
     @staticmethod
-    async def run_task(task: Union[Task, List[Task]], parallel: bool = False):
+    async def run_task(task: Union[Task, List[Task]], parallel: bool = False, view_trace: bool = False):
         """Run tasks for some complex scenarios where agents cannot be directly used.
 
         Args:
             task: User task define.
             parallel: Whether to process multiple tasks in parallel.
+            view_trace: Whether you want to view the trace log.
         """
         import time
         start = time.time()
@@ -78,6 +80,9 @@ class Runners:
                   logger_=trace_logger)
         res['usage'] = usage
         res['time_cost'] = time.time() - start
+
+        if view_trace:
+            get_trace_server().join()
         return res
 
     @staticmethod
@@ -85,16 +90,25 @@ class Runners:
             input: str,
             agent: Agent = None,
             swarm: Swarm = None,
-            tool_names: List[str] = []
+            tool_names: List[str] = [],
+            view_trace: bool = False
     ):
-        return sync_exec(Runners.run, input=input, agent=agent, swarm=swarm, tool_names=tool_names)
+        return sync_exec(
+            Runners.run,
+            input=input,
+            agent=agent,
+            swarm=swarm,
+            tool_names=tool_names,
+            view_trace=view_trace
+        )
 
     @staticmethod
     async def run(
             input: str,
             agent: Agent = None,
             swarm: Swarm = None,
-            tool_names: List[str] = []
+            tool_names: List[str] = [],
+            view_trace: bool = False
     ):
         """Run agent directly with input and tool names.
 
@@ -103,6 +117,7 @@ class Runners:
             agent: An agent with AI model configured, prompts, tools, mcp servers and other agents.
             swarm: Multi-agent topo.
             tool_names: Tool name list.
+            view_trace: Whether you want to view the trace log.
         """
         if agent and swarm:
             raise ValueError("`agent` and `swarm` only choose one.")
@@ -123,6 +138,9 @@ class Runners:
                       color=Color.pink,
                       logger_=trace_logger)
             trace_logger.info(f"{input} execute finished, response: {res}")
+
+        if view_trace:
+            get_trace_server().join()
         return res
 
     @staticmethod
