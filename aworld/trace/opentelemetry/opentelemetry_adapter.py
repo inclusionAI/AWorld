@@ -1,4 +1,5 @@
 import sys
+import os
 import traceback
 import time
 import datetime
@@ -264,6 +265,9 @@ def configure_otlp_provider(
             storage = kwargs.get("storage", InMemoryWithPersistStorage())
             processor.add_span_processor(BatchSpanProcessor(InMemorySpanExporter(storage)))
             start_trace_server(storage=storage, port=8000)
+        else:
+            span_exporter = _configure_otlp_exporter(base_url=base_url, **kwargs)
+            processor.add_span_processor(BatchSpanProcessor(span_exporter))
 
     set_tracer_provider(OTLPTraceProvider(SDKTracerProvider(active_span_processor=processor,
                                                             resource=build_otel_resource())))
@@ -285,6 +289,24 @@ def _configure_logfire_exporter(write_token: str, base_url: str = None) -> None:
     session.headers.update(headers)
     return OTLPSpanExporter(
         endpoint=urljoin(base_url, '/v1/traces'),
+        session=session,
+        compression=Compression.Gzip,
+    )
+
+def _configure_otlp_exporter(base_url: str = None) -> None:
+    """Configure the OTLP exporter.
+    Args:
+        write_token: The write token to use.
+        base_url: The base URL to use.
+        **kwargs: Additional keyword arguments to pass to the exporter.
+    """
+    from opentelemetry.exporter.otlp.proto.http import Compression
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    otlp_traces_endpoint = os.getenv("OTLP_TRACES_ENDPOINT")
+    base_url = base_url or otlp_traces_endpoint
+    session = requests.Session()
+    return OTLPSpanExporter(
+        endpoint=base_url,
         session=session,
         compression=Compression.Gzip,
     )

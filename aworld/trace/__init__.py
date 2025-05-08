@@ -11,6 +11,10 @@ if os.getenv("LOGFIRE_WRITE_TOKEN"):
         write_token=os.getenv("LOGFIRE_WRITE_TOKEN")
     )
     set_log_provider(provider="otlp", backend="logfire", write_token=os.getenv("LOGFIRE_WRITE_TOKEN"))
+elif os.getenv("OTLP_TRACES_ENDPOINT"):
+    trace_configure(
+        backends=["other_otlp"]
+    )
 else:
     logger.warning("LOGFIRE_WRITE_TOKEN is not set, using memory backend")
     trace_configure(
