@@ -72,6 +72,11 @@ class Runners:
         else:
             await Runners._run_in_local(task, res)
 
+        usage = Context.instance().token_usage
+        color_log(f"task token usage: {usage}",
+                  color=Color.pink,
+                  logger_=trace_logger)
+        res['usage'] = usage
         res['time_cost'] = time.time() - start
         return res
 
@@ -114,6 +119,9 @@ class Runners:
         with trace.span(task.name) as span:
             runner = Runners._choose_runner(task=task)
             res = await runner.run()
+            color_log(f"task token usage: {Context.instance().token_usage}",
+                      color=Color.pink,
+                      logger_=trace_logger)
             trace_logger.info(f"{input} execute finished, response: {res}")
         return res
 
