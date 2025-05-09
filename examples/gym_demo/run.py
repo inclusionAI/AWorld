@@ -6,7 +6,6 @@ from aworld.agents.gym.agent import GymDemoAgent as GymAgent
 
 from aworld.config.conf import AgentConfig
 from aworld.core.task import Task
-from aworld.logs.util import trace_logger, Color
 from aworld.runner import Runners
 from aworld.virtual_environments.gym_tool.async_openai_gym import OpenAIGym
 
