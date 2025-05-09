@@ -8,7 +8,7 @@ from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
-from aworld.core.message import EventManager
+from aworld.core.message import EventManager, EventType
 from aworld.core.task import Task
 from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.models.model_response import ToolCall
@@ -222,5 +222,119 @@ class EventRunner(SequenceRunner):
         super().__init__(task=task, *args, **kwargs)
         self.event_mng = EventManager()
 
+    async def pre_run(self):
+        await super().pre_run()
+        # regeister handler
+
     async def do_run(self, context: Context = None):
-        pass
+        observation = self.observation
+        if not observation:
+            raise RuntimeError("no observation, check run process")
+
+        start = time.time()
+        step = 1
+        max_steps = self.conf.get("max_steps", 100)
+        msg = None
+
+        try:
+            for i in range(self.swarm.max_steps):
+                for idx, agent in enumerate(self.swarm.ordered_agents):
+                    observations = [observation]
+                    policy = None
+                    cur_agent = agent
+                    while step <= max_steps:
+                        await self.outputs.add_output(StepOutput.build_start_output(name=f"Step{step}", step_num=step))
+
+                        terminated = False
+
+                        observation = self.swarm.action_to_observation(policy, observations)
+                        # send msg to agent
+                        await self.event_mng.emit(data=observation,
+                                                  sender="",
+                                                  receiver=cur_agent.name(),
+                                                  event_type=EventType.AGENT)
+
+                        if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
+                            policy: List[ActionModel] = cur_agent.policy(observation,
+                                                                         step=step,
+                                                                         outputs=self.outputs,
+                                                                         stream=self.conf.get("stream", False))
+                        else:
+                            policy: List[ActionModel] = await cur_agent.async_policy(observation,
+                                                                                     step=step,
+                                                                                     outputs=self.outputs,
+                                                                                     stream=self.conf.get("stream",
+                                                                                                          False))
+                        observation.content = None
+                        color_log(f"{cur_agent.name()} policy: {policy}")
+                        if not policy:
+                            logger.warning(f"current agent {cur_agent.name()} no policy to use.")
+                            await self.outputs.add_output(
+                                StepOutput.build_failed_output(name=f"Step{step}",
+                                                               step_num=step,
+                                                               data=f"current agent {cur_agent.name()} no policy to use.")
+                            )
+                            await self.outputs.mark_completed()
+                            return {"msg": f"current agent {cur_agent.name()} no policy to use.",
+                                    "steps": step,
+                                    "success": False,
+                                    "time_cost": (time.time() - start)}
+
+                        # data: Any,
+                        #             sender: str,
+                        #             receiver: str = None,
+                        #             topic: str = None,
+                        #             session_id: str = None,
+                        #             event_type: EventType = EventType.TASK
+
+                        if self.is_agent(policy[0]):
+                            name = policy[0].tool_name if policy[0].tool_name else policy[0].agent_name
+                            self.event_mng.emit(policy, sender=cur_agent.name(), receiver=name)
+
+                        if self.is_agent(policy[0]):
+                            status, info = await self._agent(agent, observation, policy, step)
+                            if status == 'normal':
+                                if info:
+                                    observations.append(observation)
+                            elif status == 'break':
+                                observation = self.swarm.action_to_observation(policy, observations)
+                                break
+                            elif status == 'return':
+                                await self.outputs.add_output(
+                                    StepOutput.build_finished_output(name=f"Step{step}", step_num=step)
+                                )
+                                return info
+                        elif is_tool_by_name(policy[0].tool_name):
+                            msg, terminated = await self._tool_call(policy, observations, step)
+                        else:
+                            logger.warning(f"Unrecognized policy: {policy[0]}")
+                            await self.outputs.add_output(
+                                StepOutput.build_failed_output(name=f"Step{step}",
+                                                               step_num=step,
+                                                               data=f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.")
+                            )
+                            await self.outputs.mark_completed()
+                            return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
+                                    "response": "",
+                                    "steps": step,
+                                    "success": False}
+                        await self.outputs.add_output(
+                            StepOutput.build_finished_output(name=f"Step{step}",
+                                                             step_num=step, )
+                        )
+                        step += 1
+                        if terminated and agent.finished:
+                            logger.info("swarm finished")
+                            break
+            await self.outputs.mark_completed()
+        finally:
+            for _, tool in self.tools.items():
+                if isinstance(tool, AsyncTool):
+                    await tool.close()
+                else:
+                    tool.close()
+        return {"steps": step,
+                "answer": observation.content,
+                "observation": observation,
+                "msg": msg,
+                "success": True if not msg else False}
