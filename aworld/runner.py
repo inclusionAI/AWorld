@@ -214,58 +214,65 @@ class SequenceRunner(TaskRunner):
         max_steps = self.conf.get("max_steps", 100)
         msg = None
 
-        for i in range(self.swarm.max_steps):
-            for idx, agent in enumerate(self.swarm.ordered_agents):
-                observations = [observation]
-                policy = None
-                cur_agent = agent
-                while step < max_steps:
-                    terminated = False
+        try:
+            for i in range(self.swarm.max_steps):
+                for idx, agent in enumerate(self.swarm.ordered_agents):
+                    observations = [observation]
+                    policy = None
+                    cur_agent = agent
+                    while step < max_steps:
+                        terminated = False
 
-                    observation = self.swarm.action_to_observation(policy, observations)
+                        observation = self.swarm.action_to_observation(policy, observations)
 
-                    if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                        policy: List[ActionModel] = cur_agent.policy(observation,
-                                                                     step=step)
-                    else:
-                        policy: List[ActionModel] = await cur_agent.async_policy(observation,
-                                                                                 step=step)
-                    observation.content = None
-                    color_log(f"{cur_agent.name()} policy: {policy}")
-                    if not policy:
-                        logger.warning(f"current agent {cur_agent.name()} no policy to use.")
-                        return {"msg": f"current agent {cur_agent.name()} no policy to use.",
-                                "steps": step,
-                                "success": False,
-                                "time_cost": (time.time() - start)}
+                        if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
+                            policy: List[ActionModel] = cur_agent.policy(observation,
+                                                                         step=step)
+                        else:
+                            policy: List[ActionModel] = await cur_agent.async_policy(observation,
+                                                                                     step=step)
+                        observation.content = None
+                        color_log(f"{cur_agent.name()} policy: {policy}")
+                        if not policy:
+                            logger.warning(f"current agent {cur_agent.name()} no policy to use.")
+                            return {"msg": f"current agent {cur_agent.name()} no policy to use.",
+                                    "steps": step,
+                                    "success": False,
+                                    "time_cost": (time.time() - start)}
 
-                    if self.is_agent(policy[0]):
-                        status, info = await self._agent(agent, observation, policy, step)
-                        if status == 'normal':
-                            if info:
-                                observations.append(observation)
-                        elif status == 'break':
-                            observation = self.swarm.action_to_observation(policy, observations)
+                        if self.is_agent(policy[0]):
+                            status, info = await self._agent(agent, observation, policy, step)
+                            if status == 'normal':
+                                if info:
+                                    observations.append(observation)
+                            elif status == 'break':
+                                observation = self.swarm.action_to_observation(policy, observations)
+                                break
+                            elif status == 'return':
+                                return info
+                        elif is_tool_by_name(policy[0].tool_name):
+                            msg, terminated = await self._tool_call(policy, observations, step)
+                        else:
+                            logger.warning(f"Unrecognized policy: {policy[0]}")
+                            return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
+                                    "response": "",
+                                    "steps": step,
+                                    "success": False}
+                        step += 1
+                        if terminated and agent.finished:
+                            logger.info("swarm finished")
                             break
-                        elif status == 'return':
-                            return info
-                    elif is_tool_by_name(policy[0].tool_name):
-                        msg, terminated = await self._tool_call(policy, observations, step)
-                    else:
-                        logger.warning(f"Unrecognized policy: {policy[0]}")
-                        return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
-                                "response": "",
-                                "steps": step,
-                                "success": False}
-                    step += 1
-                    if terminated and agent.finished:
-                        logger.info("swarm finished")
-                        break
-        return {"steps": step,
-                "answer": observation.content,
-                "observation": observation,
-                "msg": msg,
-                "success": True if not msg else False}
+            return {"steps": step,
+                    "answer": observation.content,
+                    "observation": observation,
+                    "msg": msg,
+                    "success": True if not msg else False}
+        finally:
+            for _, tool in self.tools.items():
+                if isinstance(tool, AsyncTool):
+                    await tool.close()
+                else:
+                    tool.close()
 
     async def _agent(self, agent: Agent, observation: Observation, policy: List[ActionModel], step: int):
         # only one agent, and get agent from policy
@@ -418,6 +425,12 @@ class SocialRunner(TaskRunner):
                     "steps": step,
                     "success": False,
                     "total_time": (time.time() - start)}
+        finally:
+            for _, tool in self.tools.items():
+                if isinstance(tool, AsyncTool):
+                    await tool.close()
+                else:
+                    tool.close()
 
     async def _process(self, observation, info) -> Dict[str, Any]:
         if not self.swarm.initialized:
