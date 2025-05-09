@@ -223,9 +223,11 @@ class ModelResponse:
             # Extract common properties
             message_dict = {
                 "role": "assistant",
-                "content": message.content if hasattr(message, 'content') else None,
+                "content": message.content if hasattr(message, 'content') else "",
                 "tool_calls": message.tool_calls if hasattr(message, 'tool_calls') else None,
             }
+
+        message_dict["content"] = '' if message_dict.get('content') is None else message_dict.get('content', '')
 
         # Process tool calls
         processed_tool_calls = []
@@ -250,11 +252,14 @@ class ModelResponse:
                         }
                     processed_tool_calls.append(ToolCall.from_dict(tool_call_dict))
 
+        if message_dict and processed_tool_calls:
+            message_dict["tool_calls"] = [tool_call.to_dict() for tool_call in processed_tool_calls]
+
         # Create and return ModelResponse
         return cls(
             id=response.id if hasattr(response, 'id') else response.get('id', 'unknown'),
             model=response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
-            content=message.content if hasattr(message, 'content') else message.get('content'),
+            content=message.content if hasattr(message, 'content') else message.get('content') or "",
             tool_calls=processed_tool_calls or None,
             usage=usage,
             raw_response=response,
@@ -291,7 +296,7 @@ class ModelResponse:
                 model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
                 content=None,
                 raw_response=chunk,
-                message={"role": "assistant", "content": None, "finish_reason": chunk.choices[0].finish_reason}
+                message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason}
             )
 
         # Normal chunk with delta content
@@ -347,7 +352,7 @@ class ModelResponse:
         # Create message object
         message = {
             "role": "assistant",
-            "content": content,
+            "content": content or "",
             "tool_calls": [tool_call.to_dict() for tool_call in processed_tool_calls] if processed_tool_calls else None,
             "is_chunk": True
         }
@@ -393,7 +398,7 @@ class ModelResponse:
                     model=chunk.model if hasattr(chunk, 'model') else 'claude',
                     content=None,
                     raw_response=chunk,
-                    message={"role": "assistant", "content": None, "stop_reason": chunk.stop_reason}
+                    message={"role": "assistant", "content": "", "stop_reason": chunk.stop_reason}
                 )
 
             # Handle delta content
@@ -419,7 +424,7 @@ class ModelResponse:
             # Create message object
             message = {
                 "role": "assistant",
-                "content": content,
+                "content": content or "",
                 "tool_calls": [tool_call.to_dict() for tool_call in
                                processed_tool_calls] if processed_tool_calls else None,
                 "is_chunk": True
@@ -468,7 +473,7 @@ class ModelResponse:
 
             # Build message content
             message = {
-                "content": None,
+                "content": "",
                 "role": "assistant",
                 "tool_calls": None,
             }

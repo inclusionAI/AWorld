@@ -1,4 +1,5 @@
 import abc
+from collections import Counter
 from typing import (
     Any,
     List,
@@ -195,6 +196,7 @@ class LLMProviderBase(abc.ABC):
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When async provider is not initialized.
         """
+        return None
 
     def _accumulate_chunk_usage(self, usage: Dict[str, int], chunk_usage: Dict[str, int]):
         """Accumulate usage statistics from chunk into the main usage dictionary.
@@ -206,10 +208,4 @@ class LLMProviderBase(abc.ABC):
         if not chunk_usage:
             return
 
-        for key, value in chunk_usage.items():
-            if value is None:
-                continue
-            if key in usage:
-                usage[key] += value
-            else:
-                usage[key] = value
+        usage.update(dict(Counter(usage) + Counter(chunk_usage)))

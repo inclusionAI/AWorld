@@ -31,6 +31,7 @@ class McpTool(Tool[Observation, List[ActionModel]]):
 
     def close(self) -> None:
         self._finished = True
+        self.action_executor.cleanup()
 
     def step(self,
              actions: list[ActionModel],

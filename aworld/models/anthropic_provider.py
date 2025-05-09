@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Generator, AsyncGenerator
 from anthropic import Anthropic, AsyncAnthropic
 
 from aworld.logs.util import logger
-from aworld.models.llm_provider_base import LLMProviderBase
+from aworld.core.llm_provider_base import LLMProviderBase
 from aworld.models.model_response import ModelResponse, LLMResponseError
 
 

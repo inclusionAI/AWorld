@@ -5,7 +5,7 @@ from openai import OpenAI, AsyncOpenAI
 from langchain_openai import AzureChatOpenAI
 
 from aworld.config.conf import ClientType
-from aworld.models.llm_provider_base import LLMProviderBase
+from aworld.core.llm_provider_base import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from aworld.logs.util import logger
@@ -93,6 +93,7 @@ class OpenAIProvider(LLMProviderBase):
         """
         for message in messages:
             if message["role"] == "assistant" and "tool_calls" in message and message["tool_calls"]:
+                if message["content"] is None: message["content"] = ""
                 for tool_call in message["tool_calls"]:
                     if "function" not in tool_call and "name" in tool_call and "arguments" in tool_call:
                         tool_call["function"] = {"name": tool_call["name"], "arguments": tool_call["arguments"]}
