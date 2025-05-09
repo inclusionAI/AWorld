@@ -1,8 +1,4 @@
-import os
-
 from typing import (
-    Any,
-    Optional,
     List,
     Dict,
     Union,
@@ -14,9 +10,10 @@ from aworld.config import ConfigDict
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.logs.util import logger
 
-from aworld.models.llm_provider_base import LLMProviderBase
+from aworld.core.llm_provider_base import LLMProviderBase
 from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
 from aworld.models.anthropic_provider import AnthropicProvider
+from aworld.models.ant_provider import AntProvider
 from aworld.models.model_response import ModelResponse
 
 # Predefined model names for common providers
@@ -31,6 +28,7 @@ ENDPOINT_PATTERNS = {
     "openai": ["api.openai.com"],
     "anthropic": ["api.anthropic.com", "claude-api"],
     "azure_openai": ["openai.azure.com"],
+    "ant": ["zdfmng.alipay.com"],
 }
 
 # Provider class mapping
@@ -38,6 +36,7 @@ PROVIDER_CLASSES = {
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
     "azure_openai": AzureOpenAIProvider,
+    "ant": AntProvider,
 }
 
 
@@ -69,7 +68,7 @@ class LLMModel:
         # Get basic parameters
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
         model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
-        llm_provider = conf.llm_provider if conf else None
+        llm_provider = conf.llm_provider if conf and "llm_provider" in conf else None
 
         # Get API key from configuration (if any)
         if conf and conf.llm_api_key:
@@ -83,12 +82,39 @@ class LLMModel:
         kwargs['model_name'] = model_name
 
         # Fill parameters for llm provider
-        kwargs['sync_enabled'] = conf.llm_sync_enabled if conf else True
-        kwargs['async_enabled'] = conf.llm_async_enabled if conf else True
-        kwargs['client_type'] = conf.llm_client_type if conf else ClientType.SDK
+        kwargs['sync_enabled'] = conf.llm_sync_enabled if conf and "llm_sync_enabled" in conf else True
+        kwargs['async_enabled'] = conf.llm_async_enabled if conf and "llm_async_enabled" in conf else True
+        kwargs['client_type'] = conf.llm_client_type if conf and "client_type" in conf else ClientType.SDK
+
+        kwargs.update(self._transfer_conf_to_args(conf))
 
         # Create model provider based on provider_name
         self._create_provider(**kwargs)
+    
+    def _transfer_conf_to_args(self, conf: Union[ConfigDict, AgentConfig] = None) -> dict:
+        """
+        Transfer parameters from conf to args
+        
+        Args:
+            conf: config object
+        """
+        if not conf:
+            return {}
+            
+        # Get all parameters from conf
+        if type(conf).__name__ == 'AgentConfig':
+            conf_dict = conf.model_dump()
+        else:  # ConfigDict
+            conf_dict = conf
+
+        ignored_keys = ["llm_provider", "llm_base_url", "llm_model_name", "llm_api_key", "llm_sync_enabled", "llm_async_enabled", "llm_client_type"]
+        args = {}
+        # Filter out used parameters and add remaining parameters to args
+        for key, value in conf_dict.items():
+            if key not in ignored_keys and value is not None:
+                args[key] = value
+                
+        return args
 
     def _identify_provider(self, provider: str = None, base_url: str = None, model_name: str = None) -> str:
         """Identify LLM provider.
@@ -300,15 +326,15 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
         Unified model interface.
     """
     # Create and return LLMModel instance directly
-    llm_provider = conf.llm_provider if conf else None
+    llm_provider = conf.llm_provider if conf and "llm_provider" in conf else None
     if (llm_provider == "chatopenai"):
-        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
-        model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
-        api_key = kwargs.get("api_key") or (conf.llm_api_key if conf else None)
+        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf and "base_url" in conf else None)
+        model_name = kwargs.get("model_name") or (conf.llm_model_name if conf and "model_name" in conf else None)
+        api_key = kwargs.get("api_key") or (conf.llm_api_key if conf and "api_key" in conf else None)
 
         return ChatOpenAI(
             model=model_name,
-            temperature=kwargs.get("temperature", conf.llm_temperature),
+            temperature=kwargs.get("temperature", conf.llm_temperature if conf and "temperature" in conf else 0.0),
             base_url=base_url,
             api_key=api_key,
         )

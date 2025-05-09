@@ -1,4 +1,5 @@
 import abc
+from collections import Counter
 from typing import (
     Any,
     List,
@@ -206,10 +207,4 @@ class LLMProviderBase(abc.ABC):
         if not chunk_usage:
             return
 
-        for key, value in chunk_usage.items():
-            if value is None:
-                continue
-            if key in usage:
-                usage[key] += value
-            else:
-                usage[key] = value
+        usage = dict(Counter(usage) + Counter(chunk_usage))

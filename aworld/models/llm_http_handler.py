@@ -8,6 +8,8 @@ import json
 import asyncio
 from typing import Any, Dict, List, Optional, Union, Generator, AsyncGenerator
 import requests
+from requests import HTTPError
+
 from aworld.logs.util import logger
 from aworld.utils import import_package
 
@@ -66,11 +68,11 @@ class LLMHTTPHandler:
             line_str = line.decode('utf-8').strip()
             if line_str.startswith('data: '):
                 line_str = line_str[6:]
-            
+
             # Skip empty lines
             if not line_str:
                 return None
-                
+
             return json.loads(line_str)
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.warning(f"Failed to parse SSE line: {line}, error: {str(e)}")
@@ -81,6 +83,7 @@ class LLMHTTPHandler:
         endpoint: str,
         data: Dict[str, Any],
         stream: bool = False,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
         """Make a synchronous HTTP request.
 
@@ -96,38 +99,64 @@ class LLMHTTPHandler:
             requests.exceptions.RequestException: If the request fails.
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        
-        if stream:
-            response = requests.post(
-                url,
-                headers=self.headers,
-                json=data,
-                stream=True,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            
-            def generate_chunks():
-                for line in response.iter_lines():
-                    if line:
-                        chunk = self._parse_sse_line(line)
-                        if chunk is not None:
-                            yield chunk
-            return generate_chunks()
-        else:
-            response = requests.post(
-                url,
-                headers=self.headers,
-                json=data,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            return response.json()
+        request_headers = self.headers.copy()
+        if headers:
+            request_headers.update(headers)
+
+
+        try:
+            if stream:
+                    response = requests.post(
+                        url,
+                        headers=request_headers,
+                        json=data,
+                        stream=True,
+                        timeout=self.timeout,
+                    )
+                    response.raise_for_status()
+
+                    def generate_chunks():
+                        for line in response.iter_lines():
+                            if line:
+                                line_str = line.decode('utf-8').strip()
+                                if line_str.startswith('data: '):
+                                    line_content = line_str[6:]
+
+                                    if line_content == "[DONE]":
+                                        yield {"status": "done", "message": "Stream completed"}
+                                        break
+                                    elif line_content == "[REVOKE]":
+                                        yield {"status": "revoke", "message": "Content should be revoked"}
+                                        continue
+                                    elif line_content == "[FAIL]":
+                                        yield {"status": "fail", "message": "Request failed"}
+                                        break
+                                    elif line_content.startswith("[FAIL]_stream was reset: CANCEL"):
+                                        yield {"status": "cancel", "message": "Stream was cancelled"}
+                                        break
+
+                                chunk = self._parse_sse_line(line)
+                                if chunk is not None:
+                                    yield chunk
+                    return generate_chunks()
+            else:
+                response = requests.post(
+                    url,
+                    headers=request_headers,
+                    json=data,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            logger.error(f"Error in HttpHandler: {str(e)}, response: {response.text}")
+            raise
 
     async def _make_async_request_stream(
         self,
         endpoint: str,
         data: Dict[str, Any],
+        headers: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Make an asynchronous streaming HTTP request.
 
@@ -143,21 +172,41 @@ class LLMHTTPHandler:
         """
         import aiohttp
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        
+        request_headers = self.headers.copy()
+        if headers:
+            request_headers.update(headers)
+
         # Create an independent session and keep it open
         session = aiohttp.ClientSession()
         try:
             response = await session.post(
                 url,
-                headers=self.headers,
+                headers=request_headers,
                 json=data,
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            
+
             # Implement async generator directly
             async for line in response.content:
                 if line:
+                    line_str = line.decode('utf-8').strip()
+                    if line_str.startswith('data: '):
+                        line_content = line_str[6:]
+
+                        if line_content == "[DONE]":
+                            yield {"status": "done", "message": "Stream completed"}
+                            break
+                        elif line_content == "[REVOKE]":
+                            yield {"status": "revoke", "message": "Content should be revoked"}
+                            continue
+                        elif line_content == "[FAIL]":
+                            yield {"status": "fail", "message": "Request failed"}
+                            break
+                        elif line_content.startswith("[FAIL]_stream was reset: CANCEL"):
+                            yield {"status": "cancel", "message": "Stream was cancelled"}
+                            break
+
                     chunk = self._parse_sse_line(line)
                     if chunk is not None:
                         yield chunk
@@ -172,6 +221,7 @@ class LLMHTTPHandler:
         self,
         endpoint: str,
         data: Dict[str, Any],
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Make an asynchronous non-streaming HTTP request.
 
@@ -187,11 +237,14 @@ class LLMHTTPHandler:
         """
         import aiohttp
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        
+        request_headers = self.headers.copy()
+        if headers:
+            request_headers.update(headers)
+
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url,
-                headers=self.headers,
+                headers=request_headers,
                 json=data,
                 timeout=self.timeout,
             ) as response:
@@ -201,6 +254,8 @@ class LLMHTTPHandler:
     def sync_call(
         self,
         data: Dict[str, Any],
+        endpoint: str = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Make a synchronous completion request.
 
@@ -210,14 +265,18 @@ class LLMHTTPHandler:
         Returns:
             Response data.
         """
-        logger.info(f"sync_call request data: {data}")
+        logger.debug(f"sync_call request data: {data}")
 
-        response = self._make_request("chat/completions", data)
+        if not endpoint:
+            endpoint = "chat/completions"
+        response = self._make_request(endpoint, data, headers=headers)
         return response
 
     async def async_call(
         self,
         data: Dict[str, Any],
+        endpoint: str = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Make an asynchronous completion request.
 
@@ -232,10 +291,12 @@ class LLMHTTPHandler:
 
         retries = 0
         last_error = None
+        if not endpoint:
+            endpoint = "chat/completions"
 
         while retries < self.max_retries:
             try:
-                response = await self._make_async_request("chat/completions", data)
+                response = await self._make_async_request(endpoint, data, headers=headers)
                 return response
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_error = e
@@ -250,6 +311,8 @@ class LLMHTTPHandler:
     def sync_stream_call(
         self,
         data: Dict[str, Any],
+        endpoint: str = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """Make a synchronous streaming completion request.
 
@@ -262,12 +325,14 @@ class LLMHTTPHandler:
         data["stream"] = True
         logger.info(f"sync_stream_call request data: {data}")
 
-        for chunk in self._make_request("chat/completions", data, stream=True):
+        for chunk in self._make_request(endpoint or "chat/completions", data, stream=True, headers=headers):
             yield chunk
 
     async def async_stream_call(
         self,
         data: Dict[str, Any],
+        endpoint: str = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Make an asynchronous streaming completion request.
 
@@ -286,7 +351,7 @@ class LLMHTTPHandler:
 
         while retries < self.max_retries:
             try:
-                async for chunk in self._make_async_request_stream("chat/completions", data):
+                async for chunk in self._make_async_request_stream(endpoint or "chat/completions", data, headers=headers):
                     yield chunk
                 return  # Exit after completing stream processing
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
