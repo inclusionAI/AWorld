@@ -21,26 +21,27 @@ from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError, ToolCall
 from aworld.logs.util import logger
 from aworld.utils import import_package
-
+from aworld.models.utils import usage_process
 
 MODEL_NAMES = {
     "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
     "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini"],
 }
 
+
 # Custom JSON encoder to handle ToolCall and other special types
 class CustomJSONEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle ToolCall objects and other special types."""
-    
+
     def default(self, obj):
         # Handle objects with to_dict method
         if hasattr(obj, 'to_dict') and callable(obj.to_dict):
             return obj.to_dict()
-            
+
         # Handle objects with __dict__ attribute (most custom classes)
         if hasattr(obj, '__dict__'):
             return obj.__dict__
-            
+
         # Let the base class handle it (will raise TypeError if not serializable)
         return super().default(obj)
 
@@ -51,7 +52,7 @@ class AntProvider(LLMProviderBase):
 
     def _init_provider(self):
         """Initialize Ant provider.
-        
+
         Returns:
             Ant provider instance.
         """
@@ -103,11 +104,11 @@ class AntProvider(LLMProviderBase):
 
     def _aes_encrypt(self, data, key):
         """AES encryption function. If data is not a multiple of 16 [encrypted data must be a multiple of 16!], pad it to a multiple of 16.
-        
+
         Args:
             key: Encryption key
             data: Data to encrypt
-        
+
         Returns:
             Encrypted data
         """
@@ -128,11 +129,11 @@ class AntProvider(LLMProviderBase):
         return result.decode('utf-8')
 
     def _build_openai_params(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> Dict[str, Any]:
+                             messages: List[Dict[str, str]],
+                             temperature: float = 0.0,
+                             max_tokens: int = None,
+                             stop: List[str] = None,
+                             **kwargs) -> Dict[str, Any]:
         openai_params = {
             "model": kwargs.get("model_name", self.model_name or ""),
             "messages": messages,
@@ -154,11 +155,11 @@ class AntProvider(LLMProviderBase):
         return openai_params
 
     def _build_claude_params(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> Dict[str, Any]:
+                             messages: List[Dict[str, str]],
+                             temperature: float = 0.0,
+                             max_tokens: int = None,
+                             stop: List[str] = None,
+                             **kwargs) -> Dict[str, Any]:
         claude_params = {
             "model": kwargs.get("model_name", self.model_name or ""),
             "messages": messages,
@@ -214,7 +215,7 @@ class AntProvider(LLMProviderBase):
         query_conditions = {
             "messageKey": message_key,
         }
-        param = {"cacheInterval": -1,}
+        param = {"cacheInterval": -1, }
         visit_info = self._get_visit_info()
         if not visit_info:
             raise LLMResponseError(
@@ -320,7 +321,6 @@ class AntProvider(LLMProviderBase):
                     f"Invalid response from Ant API, response: {response}",
                     self.model_name or "unknown"
                 )
-
 
         post_data = self._build_chat_pull_request_data(message_key)
         url = 'commonQuery/queryData'
@@ -434,24 +434,24 @@ class AntProvider(LLMProviderBase):
         """
         # Generate unique ID
         response_id = f"ant-{hash(str(message)) & 0xffffffff:08x}"
-        
+
         # Get content
         content = message.get("completion", "")
-        
+
         # Create message object
         message_dict = {
             "role": "assistant",
             "content": content,
             "is_chunk": True
         }
-        
+
         # Keep original contextId and sessionId
         if "contextId" in message:
             message_dict["contextId"] = message["contextId"]
         if "sessionId" in message:
             message_dict["sessionId"] = message["sessionId"]
-        
-        usage={
+
+        usage = {
             "completion_tokens": message.get("completionToken", 0),
             "prompt_tokens": message.get("promptTokens", 0),
             "total_tokens": message.get("completionToken", 0) + message.get("promptTokens", 0)
@@ -497,13 +497,14 @@ class AntProvider(LLMProviderBase):
             id=response_id,
             model=self.model_name or "ant",
             content=content,
-            tool_calls=None, # TODO: add tool calls
+            tool_calls=None,  # TODO: add tool calls
             usage=usage,
             raw_response=message,
             message=message_dict
         )
 
-    def preprocess_stream_call_message(self, messages: List[Dict[str, str]], ext_params: Dict[str, Any]) -> Dict[str, str]:
+    def preprocess_stream_call_message(self, messages: List[Dict[str, str]], ext_params: Dict[str, Any]) -> Dict[
+        str, str]:
         """Preprocess messages, use Ant format directly.
 
         Args:
@@ -526,7 +527,6 @@ class AntProvider(LLMProviderBase):
                 param[k] = ext_params[k]
         return param
 
-
     def postprocess_response(self, response: Any) -> ModelResponse:
         """Process Ant response.
 
@@ -535,7 +535,7 @@ class AntProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
@@ -563,7 +563,7 @@ class AntProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
@@ -578,7 +578,7 @@ class AntProvider(LLMProviderBase):
 
         if isinstance(chunk, dict) and ('completion' in chunk):
             return self._convert_completion_message(chunk)
-        
+
         # If chunk is already in OpenAI format, use standard processing method
         return ModelResponse.from_openai_stream_chunk(chunk)
 
@@ -589,7 +589,7 @@ class AntProvider(LLMProviderBase):
                    stop: List[str] = None,
                    **kwargs) -> ModelResponse:
         """Synchronously call Ant to generate response.
-        
+
         Args:
             messages: Message list.
             temperature: Temperature parameter.
@@ -599,7 +599,7 @@ class AntProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
@@ -615,6 +615,7 @@ class AntProvider(LLMProviderBase):
             logger.info(f"completion cost time: {time.time() - start_time}s.")
 
             resp = self.postprocess_response(result)
+            usage_process(resp.usage)
             return resp
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -654,6 +655,7 @@ class AntProvider(LLMProviderBase):
             logger.info(f"completion cost time: {time.time() - start_time}s.")
 
             resp = self.postprocess_response(result)
+            usage_process(resp.usage)
             return resp
 
         except Exception as e:
@@ -669,7 +671,7 @@ class AntProvider(LLMProviderBase):
                           stop: List[str] = None,
                           **kwargs) -> Generator[ModelResponse, None, None]:
         """Synchronously call Ant to generate streaming response.
-        
+
         Args:
             messages: Message list.
             temperature: Temperature parameter.
@@ -679,24 +681,26 @@ class AntProvider(LLMProviderBase):
 
         Returns:
             Generator yielding ModelResponse chunks.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
         if not self.provider:
             raise RuntimeError(
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
-        
+
         start_time = time.time()
         # Generate message_key
         timestamp = int(time.time())
         self.message_key = f"llm_call_{timestamp}"
         message_key_literal = self.message_key  # Ensure it's a direct string literal
         self.aes_key = kwargs.get("aes_key", self.aes_key)
-        
+
         # Add streaming parameter
         kwargs["stream"] = True
-        processed_messages = self.preprocess_stream_call_message(messages, self._build_openai_params(temperature, max_tokens, stop, **kwargs))
+        processed_messages = self.preprocess_stream_call_message(messages,
+                                                                 self._build_openai_params(temperature, max_tokens,
+                                                                                           stop, **kwargs))
         if not processed_messages:
             raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
 
@@ -713,12 +717,13 @@ class AntProvider(LLMProviderBase):
                 "Content-Type": "application/json",
                 "X_ACCESS_KEY": self.stream_api_key
             }
-            response_stream = self.http_provider.sync_stream_call(processed_messages, endpoint="chat/completions", headers=headers)
+            response_stream = self.http_provider.sync_stream_call(processed_messages, endpoint="chat/completions",
+                                                                  headers=headers)
             if response_stream:
                 for chunk in response_stream:
                     if not chunk:
                         continue
-                    
+
                     # Process special markers
                     if isinstance(chunk, dict) and "status" in chunk:
                         if chunk["status"] == "done":
@@ -741,11 +746,12 @@ class AntProvider(LLMProviderBase):
                             logger.warning("Received [CANCEL] marker, stream was cancelled")
                             raise LLMResponseError("Stream was cancelled", self.model_name or "unknown")
                         continue
-                    
+
                     # Process normal response chunks
                     resp = self.postprocess_stream_response(chunk)
                     self._accumulate_chunk_usage(usage, resp.usage)
                     yield resp
+                usage_process(usage)
 
             logger.info(f"stream_completion cost time: {time.time() - start_time}s.")
         except Exception as e:
@@ -761,7 +767,7 @@ class AntProvider(LLMProviderBase):
                                  stop: List[str] = None,
                                  **kwargs) -> AsyncGenerator[ModelResponse, None]:
         """Asynchronously call Ant to generate streaming response.
-        
+
         Args:
             messages: Message list.
             temperature: Temperature parameter.
@@ -771,23 +777,25 @@ class AntProvider(LLMProviderBase):
 
         Returns:
             AsyncGenerator yielding ModelResponse chunks.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
         if not self.async_provider:
             self._init_async_provider()
-            
+
         start_time = time.time()
         # Generate message_key
         timestamp = int(time.time())
         self.message_key = f"llm_call_{timestamp}"
         message_key_literal = self.message_key  # Ensure it's a direct string literal
         self.aes_key = kwargs.get("aes_key", self.aes_key)
-        
+
         # Add streaming parameter
         kwargs["stream"] = True
-        processed_messages = self.preprocess_stream_call_message(messages, self._build_openai_params(temperature, max_tokens, stop, **kwargs))
+        processed_messages = self.preprocess_stream_call_message(messages,
+                                                                 self._build_openai_params(temperature, max_tokens,
+                                                                                           stop, **kwargs))
         if not processed_messages:
             raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
 
@@ -802,11 +810,12 @@ class AntProvider(LLMProviderBase):
                 "X_ACCESS_KEY": self.stream_api_key
             }
             logger.info(f"astream_completion request data: {processed_messages}")
-            
-            async for chunk in self.http_provider.async_stream_call(processed_messages, endpoint="chat/completions", headers=headers):
+
+            async for chunk in self.http_provider.async_stream_call(processed_messages, endpoint="chat/completions",
+                                                                    headers=headers):
                 if not chunk:
                     continue
-                
+
                 # Process special markers
                 if isinstance(chunk, dict) and "status" in chunk:
                     if chunk["status"] == "done":
@@ -828,12 +837,12 @@ class AntProvider(LLMProviderBase):
                         logger.warning("Received [CANCEL] marker, stream was cancelled")
                         raise LLMResponseError("Stream was cancelled", self.model_name or "unknown")
                     continue
-                
+
                 # Process normal response chunks
                 resp = self.postprocess_stream_response(chunk)
                 self._accumulate_chunk_usage(usage, resp.usage)
                 yield resp
-
+            usage_process(usage)
 
             logger.info(f"astream_completion cost time: {time.time() - start_time}s.")
         except Exception as e:

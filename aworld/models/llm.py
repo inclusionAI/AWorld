@@ -68,7 +68,7 @@ class LLMModel:
         # Get basic parameters
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
         model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
-        llm_provider = conf.llm_provider if conf and "llm_provider" in conf else None
+        llm_provider = conf.llm_provider if conf_contains_key(conf, "llm_provider") else None
 
         # Get API key from configuration (if any)
         if conf and conf.llm_api_key:
@@ -82,38 +82,39 @@ class LLMModel:
         kwargs['model_name'] = model_name
 
         # Fill parameters for llm provider
-        kwargs['sync_enabled'] = conf.llm_sync_enabled if conf and "llm_sync_enabled" in conf else True
-        kwargs['async_enabled'] = conf.llm_async_enabled if conf and "llm_async_enabled" in conf else True
-        kwargs['client_type'] = conf.llm_client_type if conf and "client_type" in conf else ClientType.SDK
+        kwargs['sync_enabled'] = conf.llm_sync_enabled if conf_contains_key(conf, "llm_sync_enabled") else True
+        kwargs['async_enabled'] = conf.llm_async_enabled if conf_contains_key(conf, "llm_async_enabled") else True
+        kwargs['client_type'] = conf.llm_client_type if conf_contains_key(conf, "llm_client_type") else ClientType.SDK
 
         kwargs.update(self._transfer_conf_to_args(conf))
 
         # Create model provider based on provider_name
         self._create_provider(**kwargs)
-    
+
     def _transfer_conf_to_args(self, conf: Union[ConfigDict, AgentConfig] = None) -> dict:
         """
         Transfer parameters from conf to args
-        
+
         Args:
             conf: config object
         """
         if not conf:
             return {}
-            
+
         # Get all parameters from conf
         if type(conf).__name__ == 'AgentConfig':
             conf_dict = conf.model_dump()
         else:  # ConfigDict
             conf_dict = conf
 
-        ignored_keys = ["llm_provider", "llm_base_url", "llm_model_name", "llm_api_key", "llm_sync_enabled", "llm_async_enabled", "llm_client_type"]
+        ignored_keys = ["llm_provider", "llm_base_url", "llm_model_name", "llm_api_key", "llm_sync_enabled",
+                        "llm_async_enabled", "llm_client_type"]
         args = {}
         # Filter out used parameters and add remaining parameters to args
         for key, value in conf_dict.items():
             if key not in ignored_keys and value is not None:
                 args[key] = value
-                
+
         return args
 
     def _identify_provider(self, provider: str = None, base_url: str = None, model_name: str = None) -> str:
@@ -287,11 +288,11 @@ class LLMModel:
         """
         # Call provider's astream_completion method directly
         async for chunk in self.provider.astream_completion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            **kwargs
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                **kwargs
         ):
             yield chunk
 
@@ -306,6 +307,22 @@ def register_llm_provider(provider: str, provider_class: type):
     if not issubclass(provider_class, LLMProviderBase):
         raise TypeError("provider_class must be a subclass of LLMProviderBase")
     PROVIDER_CLASSES[provider] = provider_class
+
+
+def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key: str) -> bool:
+    """Check if conf contains key.
+    Args:
+        conf: Config object.
+        key: Key to check.
+    Returns:
+        bool: Whether conf contains key.
+    """
+    if not conf:
+        return False
+    if type(conf).__name__ == 'AgentConfig':
+        return hasattr(conf, key)
+    else:
+        return key in conf
 
 
 def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
@@ -326,15 +343,18 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
         Unified model interface.
     """
     # Create and return LLMModel instance directly
-    llm_provider = conf.llm_provider if conf and "llm_provider" in conf else None
+    llm_provider = conf.llm_provider if conf_contains_key(conf, "llm_provider") else None
+
     if (llm_provider == "chatopenai"):
-        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf or "base_url" in conf else None)
-        model_name = kwargs.get("model_name") or (conf.llm_model_name if conf or "model_name" in conf else None)
-        api_key = kwargs.get("api_key") or (conf.llm_api_key if conf or "api_key" in conf else None)
+        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf_contains_key(conf, "llm_base_url") else None)
+        model_name = kwargs.get("model_name") or (
+            conf.llm_model_name if conf_contains_key(conf, "llm_model_name") else None)
+        api_key = kwargs.get("api_key") or (conf.llm_api_key if conf_contains_key(conf, "llm_api_key") else None)
 
         return ChatOpenAI(
             model=model_name,
-            temperature=kwargs.get("temperature", conf.llm_temperature if conf and "temperature" in conf else 0.0),
+            temperature=kwargs.get("temperature",
+                                   conf.llm_temperature if conf_contains_key(conf, "llm_temperature") else 0.0),
             base_url=base_url,
             api_key=api_key,
         )
@@ -382,6 +402,7 @@ def call_llm_model(
             **kwargs
         )
 
+
 async def acall_llm_model(
         llm_model: LLMModel,
         messages: List[Dict[str, str]],
@@ -408,11 +429,11 @@ async def acall_llm_model(
     if stream:
         async def _stream_wrapper():
             async for chunk in llm_model.astream_completion(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                **kwargs
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=stop,
+                    **kwargs
             ):
                 yield chunk
 
