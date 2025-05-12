@@ -36,6 +36,7 @@ from ..constants import ATTRIBUTES_MESSAGE_KEY
 from .export import FileSpanExporter
 from ..server import start_trace_server
 
+
 class OTLPTraceProvider(TraceProvider):
     """A TraceProvider that wraps an existing `SDKTracerProvider`.
     This class provides a way to use a `SDKTracerProvider` as a `TraceProvider`.
@@ -104,7 +105,8 @@ class OTLPTracer(Tracer):
         attributes = {**(attributes or {})}
         attributes.setdefault(ATTRIBUTES_MESSAGE_KEY, name)
 
-        span_kind = self._convert_to_span_kind(span_type) if span_type else SpanKind.INTERNAL
+        span_kind = self._convert_to_span_kind(
+            span_type) if span_type else SpanKind.INTERNAL
         span = self._tracer.start_span(name=name,
                                        kind=span_kind,
                                        attributes=attributes,
@@ -127,7 +129,8 @@ class OTLPTracer(Tracer):
         start_time = start_time or time.time_ns()
         attributes = {**(attributes or {})}
         attributes.setdefault(ATTRIBUTES_MESSAGE_KEY, name)
-        span_kind = self._convert_to_span_kind(span_type) if span_type else SpanKind.INTERNAL
+        span_kind = self._convert_to_span_kind(
+            span_type) if span_type else SpanKind.INTERNAL
 
         with self._tracer.start_as_current_span(name=name,
                                                 kind=span_kind,
@@ -196,7 +199,8 @@ class OTLPSpan(Span, ReadableSpan):
             # OTEL's record_exception uses `traceback.format_exc()` which is for the current exception,
             # ignoring the passed exception.
             # So we override the stacktrace attribute with the correct one.
-            stacktrace = ''.join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+            stacktrace = ''.join(traceback.format_exception(
+                type(exception), exception, exception.__traceback__))
             attributes[SpanAttributes.EXCEPTION_STACKTRACE] = stacktrace
 
         self._span.record_exception(exception=exception,
@@ -213,7 +217,7 @@ class OTLPSpan(Span, ReadableSpan):
             return ""
         return f"{self._span.get_span_context().trace_id:032x}"
 
-    def get_span_id( self) -> str:
+    def get_span_id(self) -> str:
         """Get the span ID of the span.
         Returns:
             The span ID of the span.
@@ -251,22 +255,29 @@ def configure_otlp_provider(
     processor = SynchronousMultiSpanProcessor()
     for backend in backends:
         if backend == "logfire":
-            span_exporter = _configure_logfire_exporter(write_token=write_token, base_url=base_url, **kwargs)
+            span_exporter = _configure_logfire_exporter(
+                write_token=write_token, base_url=base_url, **kwargs)
             processor.add_span_processor(BatchSpanProcessor(span_exporter))
         elif backend == "console":
             from opentelemetry.sdk.trace.export import ConsoleSpanExporter
-            processor.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+            processor.add_span_processor(
+                BatchSpanProcessor(ConsoleSpanExporter()))
         elif backend == "file":
             timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
             file_path = kwargs.get("file_path", f"traces_{timestamp}.json")
-            processor.add_span_processor(BatchSpanProcessor(FileSpanExporter(file_path)))
+            processor.add_span_processor(
+                BatchSpanProcessor(FileSpanExporter(file_path)))
         elif backend == "memory":
             logger.info("Using in-memory storage for traces.")
             storage = kwargs.get("storage", InMemoryWithPersistStorage())
-            processor.add_span_processor(BatchSpanProcessor(InMemorySpanExporter(storage)))
-            start_trace_server(storage=storage, port=8000)
+            processor.add_span_processor(
+                BatchSpanProcessor(InMemorySpanExporter(storage)))
+            if (os.getenv("START_TRACE_SERVER") or "true").lower() == "true":
+                logger.info("Starting trace server on port 8000.")
+                start_trace_server(storage=storage, port=8000)
         else:
-            span_exporter = _configure_otlp_exporter(base_url=base_url, **kwargs)
+            span_exporter = _configure_otlp_exporter(
+                base_url=base_url, **kwargs)
             processor.add_span_processor(BatchSpanProcessor(span_exporter))
 
     set_tracer_provider(OTLPTraceProvider(SDKTracerProvider(active_span_processor=processor,
@@ -292,6 +303,7 @@ def _configure_logfire_exporter(write_token: str, base_url: str = None) -> None:
         session=session,
         compression=Compression.Gzip,
     )
+
 
 def _configure_otlp_exporter(base_url: str = None) -> None:
     """Configure the OTLP exporter.
