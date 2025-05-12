@@ -1,9 +1,12 @@
-import aworld.trace as trace
-from aworld.logs.util import logger, trace_logger
-from aworld.trace.server import get_trace_server
 import os
 
 # os.environ["START_TRACE_SERVER"] = "false"
+
+from aworld.trace.server import get_trace_server
+from aworld.logs.util import logger, trace_logger
+import aworld.trace as trace
+
+
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 # os.environ["OTLP_TRACES_ENDPOINT"] = "http://localhost:4318/v1/traces"
 # os.environ["METRICS_SYSTEM_ENABLED"] = "true"

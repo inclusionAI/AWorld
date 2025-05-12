@@ -33,7 +33,7 @@ from aworld.trace.base import (
 from aworld.logs.util import logger
 from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
 from ..constants import ATTRIBUTES_MESSAGE_KEY
-from .export import FileSpanExporter
+from .export import FileSpanExporter, NoOpSpanExporter
 from ..server import start_trace_server
 
 
@@ -269,12 +269,16 @@ def configure_otlp_provider(
                 BatchSpanProcessor(FileSpanExporter(file_path)))
         elif backend == "memory":
             logger.info("Using in-memory storage for traces.")
-            storage = kwargs.get("storage", InMemoryWithPersistStorage())
-            processor.add_span_processor(
-                BatchSpanProcessor(InMemorySpanExporter(storage)))
             if (os.getenv("START_TRACE_SERVER") or "true").lower() == "true":
                 logger.info("Starting trace server on port 8000.")
+                storage = kwargs.get("storage", InMemoryWithPersistStorage())
+                processor.add_span_processor(
+                    BatchSpanProcessor(InMemorySpanExporter(storage)))
                 start_trace_server(storage=storage, port=8000)
+            else:
+                processor.add_span_processor(
+                    BatchSpanProcessor(NoOpSpanExporter()))
+                logger.info("Trace server is not started.")
         else:
             span_exporter = _configure_otlp_exporter(
                 base_url=base_url, **kwargs)

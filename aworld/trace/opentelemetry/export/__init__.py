@@ -6,6 +6,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExportResult, SpanExporter
 from aworld.logs.util import logger
 
+
 class FileSpanExporter(SpanExporter):
     """Implementation of :class:`SpanExporter` that prints spans to the
     console.
@@ -34,6 +35,18 @@ class FileSpanExporter(SpanExporter):
         except Exception as e:
             logger.error(e)
             return SpanExportResult.FAILURE
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+
+class NoOpSpanExporter(SpanExporter):
+    """Implementation of :class:`SpanExporter` that does not export spans."""
+
+    def export(
+        self, spans: typing.Sequence[ReadableSpan]
+    ) -> SpanExportResult:
+        return SpanExportResult.SUCCESS
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         return True
