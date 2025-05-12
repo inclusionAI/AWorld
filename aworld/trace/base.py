@@ -1,9 +1,9 @@
 import sys
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Iterator, Union, Sequence
+from typing import Optional, Any, Iterator, Union, Sequence, Protocol, Iterable
 from enum import Enum
 from weakref import WeakSet
-
+from dataclasses import dataclass, field
 from aworld.logs.util import trace_logger
 
 
@@ -143,7 +143,7 @@ class Tracer(ABC):
     ) -> Iterator["Span"]:
         """Context manager for creating a new span and set it
         as the current span in this tracer's context.
-        
+
         Example::
 
             with tracer.start_as_current_span("one") as parent:
@@ -306,6 +306,62 @@ class NoOpTracer(Tracer):
             end_on_exit: bool = True,
     ) -> Iterator[Span]:
         yield NoOpSpan()
+
+
+class Carrier(Protocol):
+    """Carrier is a protocol that represents a carrier for trace context.
+    """
+
+    def get(self, key: str) -> Optional[str]:
+        """Returns the value of the given key from the carrier.
+        Args:
+            key: The key to get the value for.
+        Returns:
+            The value of the given key from the carrier.
+        """
+
+    def set(self, key: str, value: str) -> None:
+        """Sets the value of the given key in the carrier.
+        Args:
+            key: The key to set the value for.
+            value: The value to set.
+        """
+
+    def keys(self) -> Iterable[str]:
+        """Returns an iterable of keys in the carrier.
+        Returns:
+            An iterable of keys in the carrier.
+        """
+
+
+@dataclass(frozen=True)
+class TraceContext:
+    """TraceContext is a class that represents a trace context.
+    """
+    trace_id: str
+    span_id: str
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+
+class Propagator(ABC):
+    """Propagator is a protocol that represents a propagator for trace context.
+    """
+
+    @abstractmethod
+    def extract(self, carrier: Carrier) -> TraceContext:
+        """Extracts a trace context from the given carrier.
+        Args:
+            carrier: The carrier to extract the trace context from.
+        Returns:
+            The trace context extracted from the carrier.
+        """
+    @abstractmethod
+    def inject(self, trace_context: TraceContext, carrier: Carrier) -> None:
+        """Injects a trace context into the given carrier.
+        Args:
+            trace_context: The trace context to inject.
+            carrier: The carrier to inject the trace context into.
+        """
 
 
 _GLOBAL_TRACER_PROVIDER: Optional[TraceProvider] = None
