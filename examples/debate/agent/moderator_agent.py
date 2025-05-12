@@ -4,11 +4,10 @@ from datetime import datetime
 from typing import Dict, Any, Union, List
 
 from pydantic import Field
-from torch.utils.data.datapipes.gen_pyi import materialize_lines
 
-from aworld.agents.debate.base import DebateSpeech
-from aworld.agents.debate.prompts import user_assignment_system_prompt, summary_system_prompt, summary_debate_prompt
-from aworld.agents.debate.stream_output_agent import StreamOutputAgent
+from examples.debate.agent.base import DebateSpeech
+from examples.debate.agent.prompts import user_assignment_system_prompt, summary_system_prompt, summary_debate_prompt
+from examples.debate.agent.stream_output_agent import StreamOutputAgent
 from aworld.config import AgentConfig
 from aworld.core.common import Observation, ActionModel
 from aworld.memory.main import Memory
@@ -25,9 +24,9 @@ def truncate_content(raw_content, char_limit):
 
 class ModeratorAgent(StreamOutputAgent, ABC):
     stance: str = "moderator"
-    topic: str = Field(default = None)
-    affirmative_opinion: str = Field(default = None)
-    negative_opinion: str = Field(default = None)
+    topic: str = Field(default=None)
+    affirmative_opinion: str = Field(default=None)
+    negative_opinion: str = Field(default=None)
 
     def __init__(self, conf: AgentConfig,
                  **kwargs
@@ -37,12 +36,10 @@ class ModeratorAgent(StreamOutputAgent, ABC):
             "memory_store": "inmemory"
         })
 
-
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
         List[ActionModel], None]:
         ## step 1: params
         topic = observation.content
-
 
         ## step2: gen opinions
         output = await self.gen_opinions(topic)
@@ -68,8 +65,6 @@ class ModeratorAgent(StreamOutputAgent, ABC):
             }
             moderator_speech.finished = True
 
-
-
         await moderator_speech.convert_to_parts(output, after_speech_call)
 
         action = ActionModel(
@@ -82,8 +77,8 @@ class ModeratorAgent(StreamOutputAgent, ABC):
 
         current_time = datetime.now().strftime("%Y-%m-%d-%H")
         human_prompt = self.agent_prompt.format(topic=topic,
-                                                     current_time=current_time,
-                                                     )
+                                                current_time=current_time,
+                                                )
 
         messages = [
             {"role": "system", "content": user_assignment_system_prompt},
@@ -103,11 +98,11 @@ class ModeratorAgent(StreamOutputAgent, ABC):
         print(f"search_results_content_history is \n {search_results_content_history}")
 
         human_prompt = summary_debate_prompt.format(topic=self.topic,
-                                                    opinion = self.affirmative_opinion,
-                                                    oppose_opinion = self.negative_opinion,
-                                                    chat_history =chat_history,
-                                                    search_results_content_history = search_results_content_history
-                                                     )
+                                                    opinion=self.affirmative_opinion,
+                                                    oppose_opinion=self.negative_opinion,
+                                                    chat_history=chat_history,
+                                                    search_results_content_history=search_results_content_history
+                                                    )
 
         messages = [
             {"role": "system", "content": summary_system_prompt},
@@ -152,4 +147,3 @@ class ModeratorAgent(StreamOutputAgent, ABC):
 
     def set_workspace(self, workspace: WorkSpace):
         self.workspace = workspace
-

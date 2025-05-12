@@ -10,7 +10,7 @@ from typing import Tuple, Any
 from langchain_core.prompts import PromptTemplate
 
 from aworld.config.common import Tools
-from aworld.config.tool_action import BrowserAction
+from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.virtual_environments.browsers.util.dom import DOMElementNode
@@ -679,6 +679,9 @@ class Wait(ExecutableAction):
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         seconds = action.params.get("seconds")
+        if not seconds:
+            seconds = action.params.get("duration")
+        seconds = int(seconds)
         msg = f'Waiting for {seconds} seconds'
         logger.info(msg)
         await asyncio.sleep(seconds)

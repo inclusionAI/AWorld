@@ -11,7 +11,6 @@ from langchain_core.messages import HumanMessage, BaseMessage, SystemMessage
 from aworld.agents.android.prompts import SYSTEM_PROMPT, LAST_STEP_PROMPT
 from aworld.agents.android.utils import (
     AgentState,
-    AgentSettings,
     AgentHistory,
     AgentHistoryList,
     ActionResult,
@@ -24,8 +23,8 @@ from aworld.config.common import Agents, Tools
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.base import AgentFactory, Agent, AgentResult
 from aworld.core.common import Observation, ActionModel, ToolActionInfo
-from aworld.config.tool_action import AndroidAction
 from aworld.logs.util import logger
+from aworld.virtual_environments.tool_action import AndroidAction
 
 
 @AgentFactory.register(name=Agents.ANDROID.value, desc="android agent")

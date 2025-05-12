@@ -1,12 +1,11 @@
-import os
-
-from binascii import b2a_hex
 import ast
+import asyncio
 import datetime
 import html
 import json
+import os
 import time
-import asyncio
+
 from typing import (
     Any,
     List,
@@ -14,8 +13,7 @@ from typing import (
     Generator,
     AsyncGenerator,
 )
-
-from pygame.examples.eventlist import usage
+from binascii import b2a_hex
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider_base import LLMProviderBase
@@ -793,6 +791,11 @@ class AntProvider(LLMProviderBase):
         if not processed_messages:
             raise LLMResponseError("Failed to get post data", self.model_name or "unknown")
 
+        usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
         try:
             headers = {
                 "Content-Type": "application/json",

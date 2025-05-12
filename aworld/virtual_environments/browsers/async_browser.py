@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple, List
 
 from aworld.config.common import Tools
-from aworld.config.tool_action import BrowserAction
+from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
 from aworld.core.envs.tool import action_executor, ToolFactory, AsyncTool

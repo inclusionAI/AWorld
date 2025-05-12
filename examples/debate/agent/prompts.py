@@ -19,7 +19,6 @@ aaa, bbb, ccc...
 Now, you could output your assignment queries (strictly follow the Format Requirements: seperated by ,) to your assistant.
 """
 
-
 user_debate_system_prompt = "You are an impressive debater."
 user_debate_prompt = """
 ## Role
@@ -75,8 +74,6 @@ Reference materials: {search_results_content}
 Please use your character's identity traits, skills, restrictions, and dialogue style examples, relying on your reference materials, to counter the opposing debater in a incisive and concise way. Never output "You:". Now, please directly output your response to your opponent without "You:".
 """
 
-
-
 affirmative_few_shots = """
 Your opponent:
 You: Let me make it straight, Jordan is the best, who dares to oppose?
@@ -88,7 +85,6 @@ Your opponent: James has a stronger body, and physique is the most important fac
 You: My Jesus, I can't believe someone would say that. Bastetball is far beyond physique. Skills, mind and leadership all matters. In these aspects, James is no match for Jordan. If James is so proud of his physique, why doesn't he go work in the fields?
 """
 
-
 negative_few_shots = """
 Your opponent:
 You: Let me make it straight, Lebron is the best, who dares to oppose?
@@ -96,8 +92,6 @@ You: Let me make it straight, Lebron is the best, who dares to oppose?
 Your opponent: With no doubt, Jordan's skills are more well-rounded.
 You: Would you stop kidding...Since Jordan's skills are supposedly so well-rounded, then tell me why his three-point shooting percentage is so low. Jordan was just given a greater personal boost because of the unique era he played in.
 """
-
-
 
 generate_opinions_prompt = """
 Here is the debate topic:{topic}.
@@ -133,11 +127,6 @@ negative_opinion:No
    "negative_opinion":"No"
 }}
 """
-
-
-
-
-
 
 summary_system_prompt = "You are a good assistant to make summary."
 summary_debate_prompt = """
@@ -247,8 +236,6 @@ Jerry's citation (round 2): url_1:gggg, title_1: Some interesting things during 
 Please deeply understand Your Role and Current Situation. Strictly follow the Summary Format, Attention with Example, output your summary, according to the Conversation History and Supportive Materials History. 
 Then transfer your summary according to the Write HTML Requirements, Write HTML Technical Implementation, Write HTML Professional Typography Techniques.
 """
-
-
 
 # ## Conversation History:
 # Jake (round1): Jordan is the best, he scores 35.1 points per game. No one is better than that.

@@ -32,8 +32,6 @@ class DebateSpeech(Output, BaseModel):
 
         self.parts = __convert_to_parts__()
 
-
-
     @classmethod
     def from_dict(cls, data: dict) -> "DebateSpeech":
         return cls(

@@ -1,11 +1,11 @@
 import logging
 from typing import Optional, AsyncGenerator
 
-from aworld.agents.debate.base import DebateSpeech
-from aworld.agents.debate.debate_agent import DebateAgent
-from aworld.agents.debate.moderator_agent import ModeratorAgent
+from examples.debate.agent.base import DebateSpeech
+from examples.debate.agent.debate_agent import DebateAgent
+from examples.debate.agent.moderator_agent import ModeratorAgent
 from aworld.core.common import Observation
-from aworld.memory.base import MemoryItem
+from aworld.core.memory import MemoryItem
 from aworld.output import Output, WorkSpace
 
 
@@ -33,14 +33,14 @@ class DebateArena:
         self.affirmative_speaker = affirmative_speaker
         self.negative_speaker = negative_speaker
         self.moderator = moderator
-        self.speeches=[]
+        self.speeches = []
         self.workspace = workspace
         self.affirmative_speaker.set_workspace(workspace)
         self.negative_speaker.set_workspace(workspace)
         self.moderator.set_workspace(workspace)
         # Event.register("topic", func= );
 
-    async def async_run(self, topic: str, rounds: int)\
+    async def async_run(self, topic: str, rounds: int) \
             -> AsyncGenerator[Output, None]:
 
         """
@@ -67,7 +67,6 @@ class DebateArena:
         await moderator_speech.wait_until_finished()
         self.store_speech(moderator_speech)
 
-
         affirmative_opinion = moderator_speech.metadata["affirmative_opinion"]
         negative_opinion = moderator_speech.metadata["negative_opinion"]
 
@@ -77,10 +76,10 @@ class DebateArena:
         logging.info(f"negative_opinion: {negative_opinion}")
         logging.info(f"✈️==================================== start... =============================================")
 
-
         ## 2. Alternating speeches
-        for i in range(1, rounds+1):
-            logging.info(f"✈️==================================== round#{i} start =============================================")
+        for i in range(1, rounds + 1):
+            logging.info(
+                f"✈️==================================== round#{i} start =============================================")
             loading_speech = DebateSpeech.from_dict({
                 "content": f"\n\n**round#{i} start** \n\n",
                 "round": i,
@@ -123,7 +122,8 @@ class DebateArena:
             await speech.wait_until_finished()
             self.store_speech(speech)
 
-            logging.info(f"🛬==================================== round#{i} end =============================================")
+            logging.info(
+                f"🛬==================================== round#{i} end =============================================")
 
         ## 3. Summary speeches
         moderator_speech = await self.moderator.summary_speech()
@@ -132,10 +132,10 @@ class DebateArena:
         yield moderator_speech
         await moderator_speech.wait_until_finished()
         logging.info(
-        f"🛬====================================  total is end =============================================")
+            f"🛬====================================  total is end =============================================")
 
     async def moderator_speech(self, topic, rounds) -> DebateSpeech | None:
-        results = await self.moderator.async_policy(Observation(content=topic, info = {"rounds" : rounds}))
+        results = await self.moderator.async_policy(Observation(content=topic, info={"rounds": rounds}))
         if not results or not results[0] or not results[0].policy_info:
             return None
         return results[0].policy_info
@@ -168,7 +168,6 @@ class DebateArena:
         logging.info(negative_speaker.name() + ":  result: " + speech.content)
         return speech
 
-
     def get_affirmative_speaker(self) -> DebateAgent:
         """
         return the affirmative speaker
@@ -194,5 +193,3 @@ class DebateArena:
 
     def gen_closing_statement(self):
         pass
-
-

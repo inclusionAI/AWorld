@@ -8,7 +8,7 @@ import requests
 from typing import Tuple, Any, List, Dict
 
 from aworld.config.common import Tools
-from aworld.config.tool_action import SearchAction
+from aworld.virtual_environments.tool_action import SearchAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
 from aworld.logs.util import logger
@@ -82,7 +82,6 @@ class Duckduckgo(ExecutableAction):
         """
 
         from duckduckgo_search import DDGS
-        from requests.exceptions import RequestException
 
         params = action.params
         query = params.get("query")

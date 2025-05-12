@@ -109,7 +109,6 @@ class AgentConfig(BaseModel):
     max_actions_per_step: int = 10
     system_prompt: Optional[str] = None
     agent_prompt: Optional[str] = None
-    output_prompt: Optional[str] = None
     working_dir: Optional[str] = None
     enable_recording: bool = False
     use_tools_in_prompt: bool = True

@@ -175,4 +175,4 @@ class Runners:
 
         task.swarm.reset(task.input)
         topology = task.swarm.topology_type
-        RUNNERS.get(topology, SequenceRunner)(task=task)
+        return RUNNERS.get(topology, SequenceRunner)(task=task)

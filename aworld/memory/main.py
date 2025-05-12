@@ -1,5 +1,46 @@
 from typing import Optional
-from aworld.memory.base import MemoryBase, MemoryItem, MemoryStore, InMemoryMemoryStore
+from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore
+
+
+class InMemoryMemoryStore(MemoryStore):
+    def __init__(self):
+        self.memory_items = []  # Initialize as a list
+
+    def add(self, memory_item: MemoryItem):
+        self.memory_items.append(memory_item)  # Append memory item to the list
+
+    def get(self, memory_id) -> Optional[MemoryItem]:
+        return next((item for item in self.memory_items if item.id == memory_id), None)  # Find item by ID
+
+    def get_first(self) -> Optional[MemoryItem]:
+        if len(self.memory_items) == 0:
+            return None
+        return self.memory_items[0]
+
+    def total_rounds(self) -> int:
+        return len(self.memory_items)
+
+    def get_all(self) -> list[MemoryItem]:
+        return self.memory_items  # Return all items directly
+
+    def get_last_n(self, last_rounds) -> list[MemoryItem]:
+        return self.memory_items[-last_rounds:]  # Get the last n items
+
+    def update(self, memory_item: MemoryItem):
+        for index, item in enumerate(self.memory_items):
+            if item.id == memory_item.id:
+                self.memory_items[index] = memory_item  # Update the item in the list
+                break
+
+    def delete(self, memory_id):
+        self.memory_items = [item for item in self.memory_items if item.id != memory_id]  # Remove item by ID
+
+    def retrieve(self, query, filters: dict) -> list[MemoryItem]:
+        return [memory_item for memory_item in self.memory_items if
+                memory_item.content.lower().find(query.lower()) != -1]
+
+    def history(self, memory_id) -> list[MemoryItem]:
+        return [memory_item for memory_item in self.memory_items if memory_item.id == memory_id]
 
 
 class Memory(MemoryBase):
@@ -9,7 +50,6 @@ class Memory(MemoryBase):
         self.summary = {}
         self.summary_rounds = kwargs.get("summary_rounds", 10)
         self.enable_summary = enable_summary
-
 
     @classmethod
     def from_config(cls, config: dict) -> "Memory":
@@ -22,7 +62,7 @@ class Memory(MemoryBase):
         Returns:
             Memory: Memory instance.
         """
-        if config.get("memory_store") == "inmemory":    
+        if config.get("memory_store") == "inmemory":
             return cls(
                 memory_store=InMemoryMemoryStore(),
                 enable_summary=config.get("enable_summary", False),
@@ -30,7 +70,6 @@ class Memory(MemoryBase):
             )
         else:
             raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
-
 
     def add(self, memory_item: MemoryItem):
         self.memory_store.add(memory_item)
@@ -57,7 +96,7 @@ class Memory(MemoryBase):
         end = max(start, end)
 
         # Get the memory items to summarize
-        items_to_summarize = self.memory_store.get_all()[start:end+1]
+        items_to_summarize = self.memory_store.get_all()[start:end + 1]
         print(f"{total_rounds}start: {start}, end: {end},")
 
         # Create summary content
@@ -79,7 +118,7 @@ class Memory(MemoryBase):
                     "summary_index": summary_index,
                     "start_round": start,
                     "end_round": end,
-                    "role":"system"
+                    "role": "system"
                 },
                 tags=["summary"]
             )
@@ -113,7 +152,7 @@ class Memory(MemoryBase):
     def get_all(self) -> list[MemoryItem]:
         return self.memory_store.get_all()
 
-    def get_last_n(self, last_rounds, add_first_message = True) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, add_first_message=True) -> list[MemoryItem]:
         """
         Get last n memories.
 
@@ -125,7 +164,8 @@ class Memory(MemoryBase):
             list[MemoryItem]: List of latest memories.
         """
         memory_items = self.memory_store.get_last_n(last_rounds)
-        while len(memory_items) > 0 and memory_items[0].metadata and "tool_call_id" in memory_items[0].metadata and memory_items[0].metadata["tool_call_id"]:
+        while len(memory_items) > 0 and memory_items[0].metadata and "tool_call_id" in memory_items[0].metadata and \
+                memory_items[0].metadata["tool_call_id"]:
             last_rounds = last_rounds + 1
             memory_items = self.memory_store.get_last_n(last_rounds)
 
@@ -163,7 +203,6 @@ class Memory(MemoryBase):
         if add_first_message and last_rounds < self.memory_store.total_rounds():
             memory_items.insert(0, self.memory_store.get_first())
 
-
         return result
 
     def retrieve(self, query, filters: dict) -> list[MemoryItem]:
@@ -180,4 +219,3 @@ class Memory(MemoryBase):
             list[MemoryItem]: List of summary items.
         """
         return list(self.summary.values())
-

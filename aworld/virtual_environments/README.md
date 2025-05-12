@@ -19,10 +19,10 @@ Detailed steps for building a tool:
 from typing import List, Tuple, Dict, Any
 
 from aworld.config.common import Tools
-from aworld.config.tool_action import GymAction
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import ActionFactory, Tool, ToolFactory, ToolInput, AgentInput
 from aworld.virtual_environments.action import ExecutableAction
+from aworld.virtual_environments.tool_action import GymAction
 
 
 @ToolFactory.register(name=Tools.GYM.value, desc="gym classic control game", supported_action=GymAction)

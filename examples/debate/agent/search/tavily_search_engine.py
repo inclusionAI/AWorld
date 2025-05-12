@@ -1,5 +1,5 @@
 
-from aworld.agents.debate.search.search_engine import SearchEngine
+from examples.debate.agent.search.search_engine import SearchEngine
 
 
 class TavilySearchEngine(SearchEngine):

@@ -4,15 +4,14 @@ from typing import Dict, Any, Union, List, Literal, Optional
 from datetime import datetime
 import uuid
 
-from aworld.agents.debate.base import DebateSpeech
-from aworld.agents.debate.prompts import user_assignment_prompt, user_assignment_system_prompt, affirmative_few_shots, \
+from examples.debate.agent.base import DebateSpeech
+from examples.debate.agent.prompts import user_assignment_prompt, user_assignment_system_prompt, affirmative_few_shots, \
     negative_few_shots, \
-    user_debate_system_prompt, user_debate_prompt, summary_system_prompt
-from aworld.agents.debate.search.search_engine import SearchEngine
-from aworld.agents.debate.search.tavily_search_engine import TavilySearchEngine
-from aworld.agents.debate.stream_output_agent import StreamOutputAgent
+    user_debate_prompt
+from examples.debate.agent.search.search_engine import SearchEngine
+from examples.debate.agent.search.tavily_search_engine import TavilySearchEngine
+from examples.debate.agent.stream_output_agent import StreamOutputAgent
 from aworld.config import AgentConfig
-from aworld.core.agent.base import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.output import SearchOutput, SearchItem, MessageOutput
 from aworld.output.artifact import ArtifactType
@@ -157,7 +156,7 @@ class DebateAgent(StreamOutputAgent, ABC):
 
         affirmative_chat_history = ""
         negative_chat_history = ""
- 
+
         if len(unique_history) >= 2:
             if self.stance == "affirmative":
                 for speech in unique_history[:-1]:
@@ -183,19 +182,19 @@ class DebateAgent(StreamOutputAgent, ABC):
         elif self.stance == "negative":
             chat_history = negative_chat_history
             few_shots = negative_few_shots
-        
+
         human_prompt = user_debate_prompt.format(topic=topic,
                                                 opinion=opinion,
                                                 oppose_opinion=oppose_opinion,
                                                 last_oppose_speech_content=opponent_claim,
                                                 search_results_content=search_results_content,
                                                 chat_history = chat_history,
-                                                few_shots = few_shots 
+                                                few_shots = few_shots
                                                 )
 
         messages = [{'role': 'system', 'content': user_assignment_system_prompt},
                     {'role': 'user', 'content': human_prompt}]
-        
+
         return await self.async_call_llm(messages)
 
     def get_latest_speech(self, history: list[DebateSpeech]):

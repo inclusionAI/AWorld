@@ -328,9 +328,9 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
     # Create and return LLMModel instance directly
     llm_provider = conf.llm_provider if conf and "llm_provider" in conf else None
     if (llm_provider == "chatopenai"):
-        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf and "base_url" in conf else None)
-        model_name = kwargs.get("model_name") or (conf.llm_model_name if conf and "model_name" in conf else None)
-        api_key = kwargs.get("api_key") or (conf.llm_api_key if conf and "api_key" in conf else None)
+        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf or "base_url" in conf else None)
+        model_name = kwargs.get("model_name") or (conf.llm_model_name if conf or "model_name" in conf else None)
+        api_key = kwargs.get("api_key") or (conf.llm_api_key if conf or "api_key" in conf else None)
 
         return ChatOpenAI(
             model=model_name,

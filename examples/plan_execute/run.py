@@ -1,15 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from aworld.agents.gaia.agent import PlanAgent, ExecuteAgent
-
 from aworld.config.common import Agents, Tools
 from aworld.config.conf import ModelConfig, AgentConfig, TaskConfig
-
-from aworld.core.task import Task
-
 from aworld.core.agent.swarm import Swarm
+from aworld.core.task import Task
 from aworld.dataset.mock import mock_dataset
 from aworld.runner import Runners
+from examples.plan_execute.agent import PlanAgent, ExecuteAgent
 
 
 def main():

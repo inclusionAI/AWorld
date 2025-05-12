@@ -12,10 +12,13 @@ from aworld.utils.common import nest_dict_counter
 class Context(InheritanceSingleton):
     def __init__(self, user: str = None, **kwargs):
         self._user = user
+        self._init(**kwargs)
+
+    def _init(self, **kwargs):
         self._task_id = kwargs.get('task_id')
         self._engine = kwargs.get('engine')
         self._trace_id = kwargs.get('trace_id')
-        self.session: Session = kwargs.get('session')
+        self._session: Session = kwargs.get('session')
         self.context_info = ConfigDict()
         self.trajectories = OrderedDict()
         self._token_usage = {
@@ -26,6 +29,9 @@ class Context(InheritanceSingleton):
 
     def add_token(self, usage: Dict[str, int]):
         self._token_usage = nest_dict_counter(self._token_usage, usage)
+
+    def reset(self, **kwargs):
+        self._init(**kwargs)
 
     @property
     def trace_id(self):
@@ -67,6 +73,14 @@ class Context(InheritanceSingleton):
             return self.session.session_id
         else:
             return None
+
+    @property
+    def session(self):
+        return self._session
+
+    @session.setter
+    def session(self, session: Session):
+        self._session = session
 
     @property
     def record_path(self):
