@@ -20,15 +20,16 @@ mcp = FastMCP("Video Server")
 
 
 VIDEO_ANALYZE = (
-    "Input is a sequence of video frames. Given user's task: {task}, "
+    "Input is a sequence of video frames. Given user's task: {task}. "
     "analyze the video content following these steps:\n"
     "1. Temporal sequence understanding\n"
     "2. Motion and action analysis\n"
     "3. Scene context interpretation\n"
     "4. Object and person tracking\n"
     "Return a json string with the following format: "
-    '{"video_analysis_result": "analysis result given task and video frames"}'
+    '{{"video_analysis_result": "analysis result given task and video frames"}}'
 )
+
 
 VIDEO_EXTRACT_SUBTITLES = (
     "Input is a sequence of video frames. "
@@ -46,13 +47,16 @@ VIDEO_SUMMARIZE = (
 )
 
 
-def get_video_frames(video_source: str, sample_rate: int = 2) -> List[Dict[str, Any]]:
+
+def get_video_frames(video_source: str, sample_rate: int = 2, start_time: float = 0, end_time: float = None) -> List[Dict[str, Any]]:
     """
     Get frames from video with given sample rate using robust file handling
 
     Args:
         video_source: Path or URL to the video file
         sample_rate: Number of frames to sample per second
+        start_time: Start time of the video segment in seconds (default: 0)
+        end_time: End time of the video segment in seconds (default: None, meaning the end of the video)
 
     Returns:
         List[Dict[str, Any]]: List of dictionaries containing frame data and timestamp
@@ -65,7 +69,7 @@ def get_video_frames(video_source: str, sample_rate: int = 2) -> List[Dict[str, 
         file_path, _, _ = get_file_from_source(
             video_source,
             allowed_mime_prefixes=["video/"],
-            max_size_mb=100.0,  # 100MB limit for videos
+            max_size_mb=2500.0,  # 2500MB limit for videos
             type="video",  # Specify type as video to handle video files
         )
 
@@ -76,13 +80,33 @@ def get_video_frames(video_source: str, sample_rate: int = 2) -> List[Dict[str, 
 
         fps = video.get(cv2.CAP_PROP_FPS)
         frame_count = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_duration = frame_count / fps # 30s
+
+        if end_time is None:
+            end_time = video_duration
+
+        if start_time > end_time:
+            raise ValueError("Start time cannot be greater than end time.")
+
+        if start_time < 0:
+            start_time = 0
+
+        if end_time > video_duration:
+            end_time = video_duration
+
+        start_frame = int(start_time * fps)
+        end_frame = int(end_time * fps)
+
         all_frames = []
         frames = []
 
         # Calculate frame interval based on sample rate
         frame_interval = max(1, int(fps / sample_rate))
 
-        for i in range(0, frame_count):
+        # Set the video capture to the start frame
+        video.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        for i in range(start_frame, end_frame):
             ret, frame = video.read()
             if not ret:
                 break
@@ -134,12 +158,14 @@ def mcp_analyze_video(
     video_url: str = Field(description="The input video in given filepath or url."),
     question: str = Field(description="The question to analyze."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
+    start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
+    end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
     """analyze the video content by the given question."""
 
     try:
-        video_frames = get_video_frames(video_url, sample_rate)
-        print("len video_frames:", len(video_frames))
+        video_frames = get_video_frames(video_url, sample_rate, start_time, end_time)
+        logger.info(f"---len video_frames:{len(video_frames)}")
         interval = 20
         frame_nums = 30
         all_res = []
@@ -160,6 +186,7 @@ def mcp_analyze_video(
             except Exception as e:
                 cur_video_analysis_result = ""
             all_res.append(f"result of video part {int(i / interval + 1)}: {cur_video_analysis_result}")
+            logger.info(f"result of video part {int(i / interval + 1)}: {cur_video_analysis_result}")
             if i + frame_nums >= len(video_frames):
                 break
         video_analysis_result = "\n".join(all_res)
@@ -178,12 +205,14 @@ def mcp_analyze_video(
 def mcp_extract_video_subtitles(
     video_url: str = Field(description="The input video in given filepath or url."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
+    start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
+    end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
     """extract subtitles from the video."""
     
     inputs = []
     try:
-        video_frames = get_video_frames(video_url, sample_rate)
+        video_frames = get_video_frames(video_url, sample_rate, start_time, end_time)
         content = create_video_content(VIDEO_EXTRACT_SUBTITLES, video_frames)
         inputs.append({"role": "user", "content": content})
 
@@ -205,21 +234,37 @@ def mcp_extract_video_subtitles(
 def mcp_summarize_video(
     video_url: str = Field(description="The input video in given filepath or url."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
+    start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
+    end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
     """summarize the main content of the video."""
-
-    inputs = []
     try:
-        video_frames = get_video_frames(video_url, sample_rate)
-        content = create_video_content(VIDEO_SUMMARIZE, video_frames)
-        inputs.append({"role": "user", "content": content})
+        video_frames = get_video_frames(video_url, sample_rate, start_time, end_time)
+        logger.info(f"---len video_frames:{len(video_frames)}")
+        interval = 490
+        frame_nums = 500
+        all_res = []
+        for i in range(0, len(video_frames), interval):
+            inputs = []
+            cur_frames = video_frames[i : i + frame_nums]
+            content = create_video_content(
+                VIDEO_SUMMARIZE, cur_frames
+            )
+            inputs.append({"role": "user", "content": content})
+            try:
+                response = client.chat.completions.create(
+                    model=os.getenv("LLM_MODEL_NAME"),  
+                    messages=inputs,
+                    temperature=0,
+                )
+                logger.info(f"---response:{response}")
+                cur_video_summary = response.choices[0].message.content
+            except Exception as e:
+                cur_video_summary = ""
+            all_res.append(f"summary of video part {int(i / interval + 1)}: {cur_video_summary}")
+            logger.info(f"summary of video part {int(i / interval + 1)}: {cur_video_summary}")
+        video_summary = "\n".join(all_res)
 
-        response = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL_NAME"),  
-            messages=inputs,
-            temperature=0,
-        )
-        video_summary = response.choices[0].message.content
     except (ValueError, IOError, RuntimeError) as e:
         video_summary = ""
         logger.error(f"video_summary-Execute error: {traceback.format_exc()}")

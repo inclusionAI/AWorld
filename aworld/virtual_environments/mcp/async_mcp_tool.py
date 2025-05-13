@@ -32,6 +32,7 @@ class McpTool(AsyncTool[Observation, List[ActionModel]]):
 
     async def close(self) -> None:
         self._finished = True
+        await self.action_executor.cleanup()
 
     async def step(self,
              actions: list[ActionModel],

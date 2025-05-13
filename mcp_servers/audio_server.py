@@ -48,7 +48,7 @@ def encode_audio(audio_source: str, with_header: bool = True) -> str:
         file_path, mime_type, content = get_file_from_source(
             audio_source,
             allowed_mime_prefixes=["audio/"],
-            max_size_mb=25.0,  # 25MB limit for audio files
+            max_size_mb=50.0,  # 50MB limit for audio files
             type="audio",  # Specify type as audio to handle audio files
         )
 
@@ -95,7 +95,7 @@ async def mcp_transcribe_audio(
             file_path, mime_type, content = get_file_from_source(
                 audio_url,
                 allowed_mime_prefixes=["audio/"],
-                max_size_mb=25.0,  # 25MB limit for audio files
+                max_size_mb=50.0,  # 50MB limit for audio files
                 type="audio",  # Specify type as audio to handle audio files
             )
 

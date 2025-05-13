@@ -8,6 +8,7 @@ from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import Tool, ToolFactory
 from aworld.logs.util import logger
+from aworld.utils.common import sync_exec
 from aworld.virtual_environments.mcp.executor import MCPToolExecutor
 from aworld.virtual_environments.utils import build_observation
 
@@ -31,7 +32,7 @@ class McpTool(Tool[Observation, List[ActionModel]]):
 
     def close(self) -> None:
         self._finished = True
-        self.action_executor.cleanup()
+        sync_exec(self.action_executor.cleanup)
 
     def step(self,
              actions: list[ActionModel],
