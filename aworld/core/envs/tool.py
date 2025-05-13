@@ -46,7 +46,6 @@ class Tool(Generic[AgentInput, ToolInput]):
 
         for k, v in kwargs.items():
             setattr(self, k, v)
-        self.context: Context = Context.instance()
 
     def name(self):
         """Tool unique name."""
@@ -107,7 +106,6 @@ class AsyncTool(Generic[AgentInput, ToolInput]):
 
         for k, v in kwargs.items():
             setattr(self, k, v)
-        self.context: Context = None
 
     def name(self):
         """Tool unique name."""

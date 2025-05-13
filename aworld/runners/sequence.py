@@ -3,12 +3,13 @@
 import time
 
 from typing import List
+
 from aworld.core.agent.base import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
-from aworld.core.task import Task
+from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput, ToolResultOutput
@@ -20,7 +21,7 @@ class SequenceRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task=task, *args, **kwargs)
 
-    async def do_run(self, context: Context = None):
+    async def do_run(self, context: Context = None) -> TaskResponse:
         """Multi-agent sequence general process workflow.
 
         NOTE: Use the agent's finished state(no tool calls) to control the inner loop.
@@ -51,16 +52,16 @@ class SequenceRunner(TaskRunner):
                         observation = self.swarm.action_to_observation(policy, observations)
 
                         if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                            policy: List[ActionModel] = cur_agent.policy(observation,
-                                                                         step=step,
-                                                                         outputs=self.outputs,
-                                                                         stream=self.conf.get("stream", False))
+                            policy: List[ActionModel] = cur_agent.run(observation,
+                                                                      step=step,
+                                                                      outputs=self.outputs,
+                                                                      stream=self.conf.get("stream", False))
                         else:
-                            policy: List[ActionModel] = await cur_agent.async_policy(observation,
-                                                                                     step=step,
-                                                                                     outputs=self.outputs,
-                                                                                     stream=self.conf.get("stream",
-                                                                                                          False))
+                            policy: List[ActionModel] = await cur_agent.async_run(observation,
+                                                                                  step=step,
+                                                                                  outputs=self.outputs,
+                                                                                  stream=self.conf.get("stream",
+                                                                                                       False))
                         observation.content = None
                         color_log(f"{cur_agent.name()} policy: {policy}")
                         if not policy:
@@ -71,10 +72,12 @@ class SequenceRunner(TaskRunner):
                                                                data=f"current agent {cur_agent.name()} no policy to use.")
                             )
                             await self.outputs.mark_completed()
-                            return {"msg": f"current agent {cur_agent.name()} no policy to use.",
-                                    "steps": step,
-                                    "success": False,
-                                    "time_cost": (time.time() - start)}
+                            return TaskResponse(msg=f"current agent {cur_agent.name()} no policy to use.",
+                                                answer="",
+                                                success=False,
+                                                id=self.task.id,
+                                                time_cost=(time.time() - start),
+                                                usage=self.context.token_usage)
 
                         if self.is_agent(policy[0]):
                             status, info = await self._agent(agent, observation, policy, step)
@@ -88,6 +91,7 @@ class SequenceRunner(TaskRunner):
                                 await self.outputs.add_output(
                                     StepOutput.build_finished_output(name=f"Step{step}", step_num=step)
                                 )
+                                info.time_cost = (time.time() - start)
                                 return info
                         elif is_tool_by_name(policy[0].tool_name):
                             msg, terminated = await self._tool_call(policy, observations, step)
@@ -99,10 +103,14 @@ class SequenceRunner(TaskRunner):
                                                                data=f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.")
                             )
                             await self.outputs.mark_completed()
-                            return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
-                                    "response": "",
-                                    "steps": step,
-                                    "success": False}
+                            return TaskResponse(
+                                msg=f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
+                                answer="",
+                                success=False,
+                                id=self.task.id,
+                                time_cost=(time.time() - start),
+                                usage=self.context.token_usage
+                            )
                         await self.outputs.add_output(
                             StepOutput.build_finished_output(name=f"Step{step}",
                                                              step_num=step, )
@@ -113,16 +121,20 @@ class SequenceRunner(TaskRunner):
                             break
             await self.outputs.mark_completed()
         finally:
+            color_log(f"task token usage: {self.context.token_usage}",
+                      color=Color.pink,
+                      logger_=trace_logger)
             for _, tool in self.tools.items():
                 if isinstance(tool, AsyncTool):
                     await tool.close()
                 else:
                     tool.close()
-        return {"steps": step,
-                "answer": observation.content,
-                "observation": observation,
-                "msg": msg,
-                "success": True if not msg else False}
+        return TaskResponse(msg=msg,
+                            answer=observation.content,
+                            success=True if not msg else False,
+                            id=self.task.id,
+                            time_cost=(time.time() - start),
+                            usage=self.context.token_usage)
 
     async def _agent(self, agent: Agent, observation: Observation, policy: List[ActionModel], step: int):
         # only one agent, and get agent from policy
@@ -144,11 +156,11 @@ class SequenceRunner(TaskRunner):
         if agent.handoffs and agent_name not in agent.handoffs:
             # Unable to hand off, exit to the outer loop
             status = "return"
-            return status, {"msg": f"Can not handoffs {agent_name} agent "
-                                   f"by {agent.name()} agent.",
-                            "response": policy[0].policy_info if policy else "",
-                            "steps": step,
-                            "success": False}
+            return status, TaskResponse(msg=f"Can not handoffs {agent_name} agent ",
+                                        answer=observation.content,
+                                        success=False,
+                                        id=self.task.id,
+                                        usage=self.context.token_usage)
         # Check if current agent done
         if cur_agent.finished:
             cur_agent._finished = False

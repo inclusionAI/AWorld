@@ -13,7 +13,7 @@ from aworld.core.common import Observation, ActionModel, StatefulObservation
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
 from aworld.core.envs.tool import Tool, AsyncTool
-from aworld.core.task import Runner, Task
+from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
 from aworld import trace
 from aworld.memory.main import Memory
@@ -110,6 +110,10 @@ class TaskRunner(Runner):
 
     async def post_run(self):
         self.context.reset()
+
+    @abc.abstractmethod
+    async def do_run(self, context: Context = None) -> TaskResponse:
+        """Task do run."""
 
     def is_agent(self, policy: ActionModel):
         return is_agent_by_name(policy.tool_name) or (not policy.tool_name and not policy.action_name)

@@ -5,6 +5,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable
 
+from pydantic import BaseModel
+
 from aworld.core.agent.base import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
@@ -15,6 +17,7 @@ from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
 
 @dataclass
 class Task:
+    id: str = uuid.uuid1().hex
     name: str = uuid.uuid1().hex
     session_id: str = None
     input: Any = None
@@ -34,6 +37,15 @@ class Task:
     endless_threshold: int = 3
     # task_outputs
     outputs: Outputs = field(default_factory=DefaultOutputs)
+
+
+class TaskResponse(BaseModel):
+    id: str
+    answer: str | None
+    usage: Dict[str, Any] | None = None
+    time_cost: float | None = None
+    success: bool = False
+    msg: str | None = None
 
 
 class Runner(object):

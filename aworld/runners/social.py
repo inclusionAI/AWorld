@@ -11,7 +11,7 @@ from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
-from aworld.core.task import Task
+from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput, ToolResultOutput
@@ -23,7 +23,7 @@ class SocialRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task=task, *args, **kwargs)
 
-    async def do_run(self, context: Context = None) -> Dict[str, Any]:
+    async def do_run(self, context: Context = None) -> TaskResponse:
         """Multi-agent general process workflow.
 
         NOTE: Use the agent's finished state to control the loop, so the agent must carefully set finished state.
@@ -67,25 +67,31 @@ class SocialRunner(TaskRunner):
             time_cost = time.time() - start
             if not results:
                 logger.warning("task no result!")
-                return {"answer": "",
-                        "traceback": traceback.format_exc(),
-                        "steps": step,
-                        "success": False,
-                        "total_time": time_cost}
+                return TaskResponse(msg=traceback.format_exc(),
+                                    answer='',
+                                    success=False,
+                                    id=self.task.id,
+                                    time_cost=time_cost,
+                                    usage=self.context.token_usage)
 
             answer = results[-1].get('observation').content if results[-1].get('observation') else swarm_resp
-            return {"answer": answer,
-                    "steps": step,
-                    "success": True,
-                    "total_time": (time.time() - start)}
+            return TaskResponse(answer=answer,
+                                success=True,
+                                id=self.task.id,
+                                time_cost=(time.time() - start),
+                                usage=self.context.token_usage)
         except Exception as e:
             logger.error(f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
-            return {"msg": str(e),
-                    "traceback": traceback.format_exc(),
-                    "steps": step,
-                    "success": False,
-                    "total_time": (time.time() - start)}
+            return TaskResponse(msg=traceback.format_exc(),
+                                answer='',
+                                success=False,
+                                id=self.task.id,
+                                time_cost=(time.time() - start),
+                                usage=self.context.token_usage)
         finally:
+            color_log(f"task token usage: {self.context.token_usage}",
+                      color=Color.pink,
+                      logger_=trace_logger)
             for _, tool in self.tools.items():
                 if isinstance(tool, AsyncTool):
                     await tool.close()
@@ -102,15 +108,15 @@ class SocialRunner(TaskRunner):
         self.swarm.cur_agent = self.swarm.communicate_agent
         # use communicate agent every time
         if override_in_subclass('async_policy', self.swarm.cur_agent.__class__, Agent):
-            policy: List[ActionModel] = self.swarm.cur_agent.policy(observation,
-                                                                    step=step,
-                                                                    outputs=self.outputs,
-                                                                    stream=self.conf.get("stream", False))
+            policy: List[ActionModel] = self.swarm.cur_agent.run(observation,
+                                                                 step=step,
+                                                                 outputs=self.outputs,
+                                                                 stream=self.conf.get("stream", False))
         else:
-            policy: List[ActionModel] = await self.swarm.cur_agent.async_policy(observation,
-                                                                                step=step,
-                                                                                outputs=self.outputs,
-                                                                                stream=self.conf.get("stream", False))
+            policy: List[ActionModel] = await self.swarm.cur_agent.async_run(observation,
+                                                                             step=step,
+                                                                             outputs=self.outputs,
+                                                                             stream=self.conf.get("stream", False))
         if not policy:
             logger.warning(f"current agent {self.swarm.cur_agent.name()} no policy to use.")
             return {"msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
@@ -160,15 +166,15 @@ class SocialRunner(TaskRunner):
                     if cur_agent is None:
                         cur_agent = self.swarm.cur_agent
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                        policy = cur_agent.policy(observation,
-                                                  step=step,
-                                                  outputs=self.outputs,
-                                                  stream=self.conf.get("stream", False))
+                        policy = cur_agent.run(observation,
+                                               step=step,
+                                               outputs=self.outputs,
+                                               stream=self.conf.get("stream", False))
                     else:
-                        policy = await cur_agent.async_policy(observation,
-                                                              step=step,
-                                                              outputs=self.outputs,
-                                                              stream=self.conf.get("stream", False))
+                        policy = await cur_agent.async_run(observation,
+                                                           step=step,
+                                                           outputs=self.outputs,
+                                                           stream=self.conf.get("stream", False))
                     color_log(f"{cur_agent.name()} policy: {policy}")
 
             if policy:
@@ -235,15 +241,15 @@ class SocialRunner(TaskRunner):
                              "mcp_servers": cur_agent.mcp_servers})
 
         if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-            agent_policy = cur_agent.policy(observation,
-                                            step=step,
-                                            outputs=self.outputs,
-                                            stream=self.conf.get("stream", False))
+            agent_policy = cur_agent.run(observation,
+                                         step=step,
+                                         outputs=self.outputs,
+                                         stream=self.conf.get("stream", False))
         else:
-            agent_policy = await cur_agent.async_policy(observation,
-                                                        step=step,
-                                                        outputs=self.outputs,
-                                                        stream=self.conf.get("stream", False))
+            agent_policy = await cur_agent.async_run(observation,
+                                                     step=step,
+                                                     outputs=self.outputs,
+                                                     stream=self.conf.get("stream", False))
 
         if not agent_policy:
             logger.warning(
