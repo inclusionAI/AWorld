@@ -323,22 +323,6 @@ def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key:str) -> bool:
     else:
         return key in conf
 
-def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key: str) -> bool:
-    """Check if conf contains key.
-    Args:
-        conf: Config object.
-        key: Key to check.
-    Returns:
-        bool: Whether conf contains key.
-    """
-    if not conf:
-        return False
-    if type(conf).__name__ == 'AgentConfig':
-        return hasattr(conf, key)
-    else:
-        return key in conf
-
-
 def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
                   custom_provider: LLMProviderBase = None,
                   **kwargs) -> Union[LLMModel, ChatOpenAI]:
