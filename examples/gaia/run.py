@@ -20,10 +20,6 @@ from examples.gaia.utils import (
     report_results,
 )
 
-# Create log directory if it doesn't exist
-if not os.path.exists(os.getenv("LOG_FILE_PATH")):
-    os.makedirs(os.getenv("LOG_FILE_PATH"))
-
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--start",
@@ -34,7 +30,7 @@ parser.add_argument(
 parser.add_argument(
     "--end",
     type=int,
-    default=20,
+    default=165,
     help="End index of the dataset",
 )
 parser.add_argument(
@@ -59,44 +55,91 @@ parser.add_argument(
     nargs="?",
     help="Blacklist file path, e.g., blacklist.txt",
 )
+parser.add_argument(
+    "--is_sample",
+    action="store_true",
+    default=False,
+    help="Whether to use the sampled dataset",
+)
 args = parser.parse_args()
 
 
-def setup_logging():
-    logging_logger = logging.getLogger()
-    logging_logger.setLevel(logging.INFO)
+# Create log directory if it doesn't exist
+if not os.path.exists(os.getenv("LOG_FILE_PATH")):
+    os.makedirs(os.getenv("LOG_FILE_PATH"))
 
-    log_file_name = (
-        f"/super_agent_{args.q}.log"
-        if args.q
-        else f"/super_agent_{args.start}_{args.end}.log"
-    )
-    file_handler = logging.FileHandler(
-        os.getenv(
-            "LOG_FILE_PATH",
-            "run_super_agent.log",
+# Main log file
+logger_cache = {}
+main_log_file = os.path.join(
+    os.getenv("LOG_FILE_PATH", "./logs"), f"main_{args.start}_{args.end}.log"
+)
+main_handler = logging.FileHandler(main_log_file, mode="a", encoding="utf-8")
+main_handler.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+main_handler.setFormatter(formatter)
+
+# Main log handler
+main_logger = logging.getLogger("main")
+main_logger.setLevel(logging.INFO)
+main_logger.addHandler(main_handler)
+
+
+def setup_task_logging(task_id: str = args.q):
+    def set_default_logger(logger_name: str, ahandler: logging.Handler = None):
+        new_logger = logging.getLogger(logger_name)
+        if not hasattr(new_logger, "_handlers_added"):
+            new_logger.addHandler(main_handler)
+            new_logger.setLevel(logging.INFO)
+            new_logger._handlers_added = True
+        if task_id and task_id in logger_cache:
+            if not any(isinstance(h, logging.FileHandler) for h in new_logger.handlers):
+                new_logger.addHandler(logger_cache[task_id].handlers[0])
+        if ahandler:
+            new_logger.addHandler(ahandler)
+
+    if task_id:
+        log_file_name = f"/super_agent_{task_id}.log"
+        task_handler = logging.FileHandler(
+            os.getenv(
+                "LOG_FILE_PATH",
+                "run_super_agent.log",
+            )
+            + log_file_name,
+            mode="a",
+            encoding="utf-8",
         )
-        + log_file_name,
-        mode="a",
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.INFO)
+        task_handler.setLevel(logging.INFO)
+        task_handler.setFormatter(formatter)
 
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    file_handler.setFormatter(formatter)
+        _task_logger = logging.getLogger(task_id)
+        _task_logger.setLevel(logging.INFO)
 
-    logging_logger.addHandler(file_handler)
+        if _task_logger.handlers:
+            _task_logger.handlers.clear()
+
+        _task_logger.addHandler(task_handler)
+        _task_logger.addHandler(main_handler)
+        # logging.getLogger("common").addHandler(task_handler)
+        # logging.getLogger("root").addHandler(task_handler)
+        for name in ["common", "root"]:
+            set_default_logger(name, task_handler)
+
+        if task_id in logger_cache:
+            return logger_cache[task_id]
+
+        logger_cache[task_id] = _task_logger
+        return _task_logger
+    return main_logger
 
 
 if __name__ == "__main__":
     load_dotenv()
-    setup_logging()
 
     gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./gaia_dataset")
-    full_dataset = load_dataset_meta(gaia_dataset_path, split=args.split)
-    logging.info(f"Total questions: {len(full_dataset)}")
+    full_dataset = load_dataset_meta(
+        gaia_dataset_path, split=args.split, is_sample=args.is_sample
+    )
+    main_logger.info(f"Total questions: {len(full_dataset)}")
 
     agent_config = AgentConfig(
         llm_provider="openai",
@@ -152,7 +195,7 @@ if __name__ == "__main__":
                 if dataset_record["task_id"] in args.q
             ]
             if args.q is not None
-            else full_dataset[args.start : args.end]
+            else full_dataset[args.start : min(args.end, len(full_dataset))]
         )
 
         # main loop to execute questions
@@ -192,11 +235,13 @@ if __name__ == "__main__":
 
             # run
             try:
-                logging.info(f"Start to process: {dataset_i['task_id']}")
-                logging.info(f"Detail: {dataset_i}")
-                logging.info(f"Question: {dataset_i['Question']}")
-                logging.info(f"Level: {dataset_i['Level']}")
-                logging.info(f"Tools: {dataset_i['Annotator Metadata']['Tools']}")
+                task_logger = setup_task_logging(task_id=dataset_i["task_id"])
+
+                task_logger.info(f"Start to process: {dataset_i['task_id']}")
+                task_logger.info(f"Detail: {dataset_i}")
+                task_logger.info(f"Question: {dataset_i['Question']}")
+                task_logger.info(f"Level: {dataset_i['Level']}")
+                task_logger.info(f"Tools: {dataset_i['Annotator Metadata']['Tools']}")
 
                 question = add_file_path(
                     dataset_i, file_path=gaia_dataset_path, split=args.split
@@ -209,23 +254,38 @@ if __name__ == "__main__":
                 match = re.search(r"<answer>(.*?)</answer>", result["task_0"]["answer"])
                 if match:
                     answer = match.group(1)
-                    logging.info(f"Agent answer: {answer}")
-                    logging.info(f"Correct answer: {dataset_i['Final answer']}")
+                    task_logger.info(f"Agent answer: {answer}")
+                    task_logger.info(f"Correct answer: {dataset_i['Final answer']}")
 
                     if question_scorer(answer, dataset_i["Final answer"]):
-                        logging.info(f"Question {i} Correct!")
+                        task_logger.info(f"Question {i} Correct!")
                     else:
-                        logging.info("Incorrect!")
+                        task_logger.info("Incorrect!")
 
                 # Create the new result record
-                new_result = {
-                    "task_id": dataset_i["task_id"],
-                    "level": dataset_i["Level"],
-                    "question": question,
-                    "answer": dataset_i["Final answer"],
-                    "response": answer,
-                    "is_correct": question_scorer(answer, dataset_i["Final answer"]),
-                }
+                if args.split == "test":
+                    new_result = {
+                        "task_id": dataset_i["task_id"],
+                        "level": dataset_i["Level"],
+                        "question": question,
+                        "response": answer,
+                    }
+                elif args.split == "validation":
+                    new_result = {
+                        "task_id": dataset_i["task_id"],
+                        "level": dataset_i["Level"],
+                        "question": question,
+                        "answer": dataset_i["Final answer"],
+                        "response": answer,
+                        "is_correct": question_scorer(
+                            answer, dataset_i["Final answer"]
+                        ),
+                    }
+                else:
+                    raise ValueError(
+                        f"Invalid split: {args.split}."
+                        " Must be one of 'validation' or 'test'."
+                    )
 
                 # Check if this task_id already exists in results
                 existing_index = next(
@@ -240,25 +300,34 @@ if __name__ == "__main__":
                 if existing_index is not None:
                     # Update existing record
                     results[existing_index] = new_result
-                    logging.info(
+                    task_logger.info(
                         f"Updated existing record for task_id: {dataset_i['task_id']}"
                     )
                 else:
                     # Append new record
                     results.append(new_result)
-                    logging.info(
+                    task_logger.info(
                         f"Added new record for task_id: {dataset_i['task_id']}"
                     )
 
             except Exception as e:
-                logging.error(f"Error processing {i}: {traceback.format_exc()}")
+                task_logger.error(f"Error processing {i}: {traceback.format_exc()}")
                 continue
     except KeyboardInterrupt:
         pass
     finally:
         # report
-        report_results(results)
+        if args.split == "validation":
+            report_results(results)
+
+        # write final results to file
         with open(
             os.getenv("LOG_FILE_PATH") + "/results.json", "w", encoding="utf-8"
         ) as f:
             json.dump(results, f, indent=4, ensure_ascii=False)
+
+        # close log handlers
+        main_handler.close()
+        for logger in logger_cache.values():
+            for handler in logger.handlers:
+                handler.close()

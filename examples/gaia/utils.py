@@ -77,11 +77,18 @@ def question_scorer(model_answer: str, ground_truth: str) -> bool:
         return False
 
 
-def load_dataset_meta(path: str, split: str = "validation"):
+def load_dataset_meta(
+    path: str, split: str = "validation", is_sample: bool = False
+) -> List[Dict[str, Any]]:
     data_dir = Path(path) / split
+    data_file = (
+        data_dir / "metadata.jsonl"
+        if not is_sample
+        else data_dir / "sample_metadata.jsonl"
+    )
 
     dataset = []
-    with open(data_dir / "metadata.jsonl", "r", encoding="utf-8") as metaf:
+    with open(data_file, "r", encoding="utf-8") as metaf:
         lines = metaf.readlines()
         for line in lines:
             data = json.loads(line)
