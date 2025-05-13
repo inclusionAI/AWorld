@@ -113,6 +113,7 @@ class Tracer(ABC):
             start_time: Optional[int] = None,
             record_exception: bool = True,
             set_status_on_exception: bool = True,
+            trace_context: Optional["TraceContext"] = None,
     ) -> "Span":
         """Starts and returns a new Span.
         Args:
@@ -128,6 +129,8 @@ class Tracer(ABC):
                 be automatically set to ERROR when an uncaught exception is
                 raised in the span with block. The span status won't be set by
                 this mechanism if it was previously set manually.
+            trace_context: The trace context to use for the span. If not
+                provided, the current trace context will be used.
         """
 
     @abstractmethod
@@ -292,6 +295,7 @@ class NoOpTracer(Tracer):
             start_time: Optional[int] = None,
             record_exception: bool = True,
             set_status_on_exception: bool = True,
+            trace_context: Optional["TraceContext"] = None,
     ) -> Span:
         return NoOpSpan()
 
@@ -340,6 +344,8 @@ class TraceContext:
     """
     trace_id: str
     span_id: str
+    version: str = "00"
+    trace_flags: str = "01"
     attributes: dict[str, Any] = field(default_factory=dict)
 
 

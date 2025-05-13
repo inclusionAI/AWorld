@@ -212,6 +212,9 @@
                     const originalIndex = this.traces.findIndex(t => t.trace_id === filteredTrace.trace_id);
                     if (originalIndex !== -1) {
                         this.traces[originalIndex].expanded = !this.traces[originalIndex].expanded;
+                        if (this.traces[originalIndex].expanded) {
+                            this.selectSpan(this.traces[originalIndex].root_span[0]);
+                        }
                     }
                 },
                 selectSpan(span) {
@@ -232,7 +235,7 @@
                         }
                     };
                     collectSpans(rootSpan);
-                    return spans.slice(1); // Exclude root span itself
+                    return spans
                 },
                 generateColor(traceId) {
                     // Generate more vibrant colors

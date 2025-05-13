@@ -5,7 +5,8 @@ app = Flask(__name__, template_folder='../../web/templates')
 
 def build_trace_tree(spans: list[SpanModel]):
     spans_dict = {span.span_id: span.dict() for span in spans}
-    root_spans = [span for span in spans_dict.values() if span['parent_id'] is None]
+    root_spans = [span for span in spans_dict.values()
+                  if span['parent_id'] is None]
     for span in spans_dict.values():
         parent_id = span['parent_id'] if span['parent_id'] else None
         if parent_id:
@@ -34,5 +35,5 @@ def setup_routes(storage: TraceStorage):
                 'root_span': trace_tree,
             })
         return jsonify(trace_data)
-    
+
     return app

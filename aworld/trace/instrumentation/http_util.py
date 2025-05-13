@@ -1,10 +1,9 @@
+import os
 from re import compile as re_compile
 from re import search
-from typing import Final, Iterable, TYPE_CHECKING
+from typing import Final, Iterable
 from urllib.parse import urlparse
-
-if TYPE_CHECKING:
-    from wsgiref.types import StartResponse, WSGIApplication, WSGIEnvironment
+from wsgiref.types import WSGIEnvironment
 
 HTTP_REQUEST_METHOD: Final = "http.request.method"
 HTTP_FLAVOR: Final = "http.flavor"
@@ -26,6 +25,7 @@ HTTP_RESPONSE_BODY_SIZE: Final = "http.response.body.size"
 HTTP_RESPONSE_HEADER: Final = "http.response.header"
 HTTP_RESPONSE_SIZE: Final = "http.response.size"
 HTTP_RESPONSE_STATUS_CODE: Final = "http.response.status_code"
+HTTP_ROUTE = "http.route"
 
 
 def collect_request_attributes(environ: WSGIEnvironment):
@@ -71,7 +71,39 @@ def url_disabled(url: str, excluded_urls: Iterable[str]) -> bool:
     if excluded_urls is None:
         return False
     regex = re_compile("|".join(excluded_urls))
-    return  search(regex, url)
+    return search(regex, url)
+
+
+def get_excluded_urls(instrumentation: str) -> list[str]:
+    """
+    Get the excluded urls.
+    Args:
+        instrumentation: The instrumentation to get the excluded urls for.
+    Returns:
+        The excluded urls.
+    """
+
+    excluded_urls = os.environ.get(f"{instrumentation}_EXCLUDED_URLS")
+
+    return parse_excluded_urls(excluded_urls)
+
+
+def parse_excluded_urls(excluded_urls: str) -> list[str]:
+    """
+    Parse the excluded urls.
+    Args:
+        excluded_urls: The excluded urls.
+    Returns:
+        The excluded urls.
+    """
+    if excluded_urls:
+        excluded_url_list = [
+            excluded_url.strip() for excluded_url in excluded_urls.split(",")
+        ]
+    else:
+        excluded_url_list = []
+
+    return excluded_url_list
 
 
 def _parse_url_query(url: str):

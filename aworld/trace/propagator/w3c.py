@@ -65,12 +65,8 @@ class W3CTraceContextPropagator(Propagator):
         return TraceContext(
             trace_id=trace_id,
             span_id=span_id,
-            attributes={
-                "version": version,
-                "trace_flags": trace_flags,
-                **(self._extract_state_from_header(
-                    carrier.get(self._TRACESTATE_HEADER_NAME)))
-            }
+            attributes=(self._extract_state_from_header(
+                carrier.get(self._TRACESTATE_HEADER_NAME)))
         )
 
     def inject(self, trace_context: TraceContext, carrier: Carrier) -> None:
@@ -81,8 +77,8 @@ class W3CTraceContextPropagator(Propagator):
             carrier: The carrier to inject trace context into.
         """
         attribute_copy = trace_context.attributes.copy()
-        version: str = attribute_copy.pop("version", "00")
-        trace_flags: str = attribute_copy.pop("trace_flags", "00")
+        version: str = trace_context.version
+        trace_flags: str = trace_context.trace_flags
         trace_id = trace_context.trace_id
         span_id = trace_context.span_id
         if (not trace_id or trace_id == "0" * 32
