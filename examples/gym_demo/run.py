@@ -18,7 +18,7 @@ def main():
     # It can also be used `ToolFactory` for simplification.
     # gym_tool = ToolFactory(Tools.GYM.value)
     task = Task(agent=agent, tools=[gym_tool])
-    res = Runners.sync_run_task(task=task, view_trace=True)
+    res = Runners.sync_run_task(task=task)
     return res
 
 
