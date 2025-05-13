@@ -56,7 +56,8 @@ class AntProvider(LLMProviderBase):
         Returns:
             Ant provider instance.
         """
-        import_package("pycryptodome")
+        import_package("Crypto", install_name="pycryptodome")
+
         # Get API key
         api_key = self.api_key
         if not api_key:
