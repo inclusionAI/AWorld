@@ -10,6 +10,7 @@ Main functions:
 """
 
 import json
+import logging
 import os
 import sys
 import traceback
@@ -23,7 +24,10 @@ from langchain_openai import ChatOpenAI
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from aworld.logs.util import logger
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+logger = logging.getLogger("browser")
+logger.setLevel(logging.INFO)
+logger.setFormatter(LOG_FORMAT)
 
 mcp = FastMCP("browser-server")
 browser_system_prompt = """
@@ -79,8 +83,10 @@ async def browser_use(
                 cookies_file=os.getenv("COOKIES_FILE_PATH"),
                 disable_security=True,
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                minimum_wait_page_load_time=10,
-                maximum_wait_page_load_time=30,
+                minimum_wait_page_load_time=5,
+                maximum_wait_page_load_time=10,
+                save_recording_path=os.getenv("FILESYSTEM_SERVER_WORKDIR"),
+                save_downloads_path=os.getenv("FILESYSTEM_SERVER_WORKDIR"),
                 trace_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log",
             ),
         )
