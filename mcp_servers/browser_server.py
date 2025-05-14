@@ -119,8 +119,7 @@ async def browser_use(
                 ">>> 🌏 Browse Execution Succeed!\n"
             )
             return browser_execution.final_result()
-        else:
-            return f"Browser execution failed for task: {task}"
+        return f"Browser execution failed for task: {task}"
     except Exception as e:
         logger.error(f"Browser execution failed: {traceback.format_exc()}")
         return f"Browser execution failed for task: {task} due to {str(e)}"
