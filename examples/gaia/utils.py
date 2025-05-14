@@ -1,3 +1,4 @@
+import argparse
 import json
 import re
 import string
@@ -179,3 +180,48 @@ def report_results(entries):
         )
 
     logger.success(tabulate(level_table, headers=headers, tablefmt="grid"))
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="Start index of the dataset",
+    )
+    parser.add_argument(
+        "--end",
+        type=int,
+        default=165,
+        help="End index of the dataset",
+    )
+    parser.add_argument(
+        "--q",
+        type=str,
+        help="Question Index, e.g., 0-0-0-0-0. Highest priority: override other arguments if provided.",
+    )
+    parser.add_argument(
+        "--skip",
+        action="store_true",
+        help="Skip the question if it has been processed before.",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="validation",
+        help="Split of the dataset, e.g., validation, test",
+    )
+    parser.add_argument(
+        "--blacklist_file_path",
+        type=str,
+        nargs="?",
+        help="Blacklist file path, e.g., blacklist.txt",
+    )
+    parser.add_argument(
+        "--is_sample",
+        action="store_true",
+        default=False,
+        help="Whether to use the sampled dataset",
+    )
+    return parser.parse_args()
