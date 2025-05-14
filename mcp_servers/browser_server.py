@@ -76,16 +76,18 @@ async def browser_use(
         config=BrowserConfig(
             headless=False,
             new_context_config=BrowserContextConfig(
+                cookies_file=os.getenv("COOKIES_FILE_PATH"),
                 disable_security=True,
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 minimum_wait_page_load_time=10,
                 maximum_wait_page_load_time=30,
+                trace_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log",
             ),
         )
     )
     browser_context = BrowserContext(
         config=BrowserContextConfig(
-            trace_path=os.getenv("LOG_FILE_PATH" + "/browser_trace.log")
+            trace_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log"
         ),
         browser=browser,
     )
