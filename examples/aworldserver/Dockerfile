@@ -63,6 +63,7 @@ RUN git clone https://github.com/open-webui/pipelines.git
 # Copy the application code
 
 COPY pipelines .
+COPY aworldspace .
 
 # Run a docker command if either PIPELINES_URLS or PIPELINES_REQUIREMENTS_PATH is not empty
 RUN if [ -n "$PIPELINES_URLS" ] || [ -n "$PIPELINES_REQUIREMENTS_PATH" ]; then \
