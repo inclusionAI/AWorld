@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+from datetime import timedelta
 import logging
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
@@ -52,7 +53,7 @@ class MCPServer(abc.ABC):
 class _MCPServerWithClientSession(MCPServer, abc.ABC):
     """Base class for MCP servers that use a `ClientSession` to communicate with the server."""
 
-    def __init__(self, cache_tools_list: bool):
+    def __init__(self, cache_tools_list: bool, session_connect_timeout_seconds: int = 3):
         """
         Args:
             cache_tools_list: Whether to cache the tools list. If `True`, the tools list will be
@@ -61,11 +62,14 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             by calling `invalidate_tools_cache()`. You should set this to `True` if you know the
             server will not change its tools list, because it can drastically improve latency
             (by avoiding a round-trip to the server every time).
+
+            session_connect_timeout_seconds: session connect timeout seconds
         """
         self.session: ClientSession | None = None
         self.exit_stack: AsyncExitStack = AsyncExitStack()
         self._cleanup_lock: asyncio.Lock = asyncio.Lock()
         self.cache_tools_list = cache_tools_list
+        self.session_connect_timeout_seconds = timedelta(seconds=session_connect_timeout_seconds)
 
         # The cache is always dirty at startup, so that we fetch tools at least once
         self._cache_dirty = True
@@ -109,7 +113,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             # Use a single task context to create the connection
             transport = await self.exit_stack.enter_async_context(self.create_streams())
             read, write = transport
-            session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+            session = await self.exit_stack.enter_async_context(ClientSession(read, write, read_timeout_seconds=self.session_connect_timeout_seconds))
             await session.initialize()
             self.session = session
         except Exception as e:
@@ -224,7 +228,7 @@ class MCPServerStdio(_MCPServerWithClientSession):
             name: A readable name for the server. If not provided, we'll create one from the
                 command.
         """
-        super().__init__(cache_tools_list)
+        super().__init__(cache_tools_list, params.get("env").get("session_connect_timeout", 3))
 
         self.params = StdioServerParameters(
             command=params["command"],
