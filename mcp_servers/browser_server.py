@@ -34,7 +34,6 @@ browser_handler.setFormatter(LOG_FORMAT)
 
 logger = logging.getLogger("browser")
 logger.setLevel(logging.INFO)
-logger.setLevel(LOG_FORMAT)
 logger.addHandler(browser_handler)
 
 mcp = FastMCP("browser-server")
