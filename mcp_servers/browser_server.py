@@ -30,38 +30,26 @@ logger.setLevel(logging.INFO)
 logger.setFormatter(LOG_FORMAT)
 
 mcp = FastMCP("browser-server")
-browser_system_prompt = """
-===== NAVIGATION STRATEGY =====
-1. START: Navigate to the most authoritative source for this information
-   - For general queries: Use Google with specific search terms
-   - For known sources: Go directly to the relevant website
+extended_browser_system_prompt = """
+10. Download:
 
-2. EVALUATE: Assess each page methodically
-   - Scan headings and highlighted text first
-   - Look for data tables, charts, or official statistics
-   - Check publication dates for timeliness
+-  Save the most relevant files (text/image/pdf/...) to local path for further processing
 
-3. EXTRACT: Capture exactly what's needed
-   - Take screenshots of visual evidence (charts, tables, etc.)
-   - Copy precise text that answers the query
-   - Note source URLs for citation
+11. Robot Detection:
 
-4. DOWNLOAD: Save the most relevant file to local path for further processing
-   - Save the text if possible for futher text reading and analysis
-   - Save the image if possible for futher image reasoning analysis
-   - Save the pdf if possible for futher pdf reading and analysis
+- If the page is a robot detection page, abort immediately. Then navigate to the most authoritative source for similar information instead
 
-5. ROBOT DETECTION:
-   - If the page is a robot detection page, abort immediately
-   - Navigate to the most authoritative source for similar information instead
+# Efficiecy Guidelines
 
-===== EFFICIENCY GUIDELINES =====
-- Use specific search queries with key terms from the task
-- Avoid getting distracted by tangential information
-- If blocked by paywalls, try archive.org or similar alternatives
-- Document each significant finding clearly and concisely
+1. Use specific search queries with key terms from the task
 
-Your goal is to extract precisely the information needed with minimal browsing steps.
+2. Avoid getting distracted by tangential information
+
+3. If blocked by paywalls, try archive.org or similar alternatives
+
+4. Document each significant finding clearly and concisely
+
+5. Precisely extract the necessary information with minimal browsing steps.
 """
 
 
@@ -109,7 +97,7 @@ async def browser_use(
             temperature=1.0,
         ),
         browser_context=browser_context,
-        extend_system_message=browser_system_prompt,
+        extend_system_message=extended_browser_system_prompt,
     )
     try:
         browser_execution: AgentHistoryList = await agent.run(max_steps=50)
