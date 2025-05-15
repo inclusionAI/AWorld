@@ -20,7 +20,7 @@ from aworld.virtual_environments.action import ExecutableAction
 class {name}(ExecutableAction):
     # only for function to tool.
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
-        from {func_import} import {func}
+        {func_import}import {func}
         try:
             res = {func}(**action.params)
             if not res:
@@ -32,7 +32,7 @@ class {name}(ExecutableAction):
         
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
-        from {func_import} import {func}
+        {func_import}import {func}
         
         try:
             res = await {call_func}(**action.params)

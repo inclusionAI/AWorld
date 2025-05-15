@@ -12,6 +12,7 @@ from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.envs.tool import ToolActionExecutor, Tool, AsyncTool
 from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
+import aworld.mcp.utils as mcp_utils
 from aworld.utils.common import sync_exec, find_file
 
 
@@ -46,19 +47,23 @@ class MCPToolExecutor(ToolActionExecutor):
     def _load_mcp_config(self) -> None:
         """Load MCP server configurations from config file."""
         try:
-            # Priority given to the running path.
-            config_path = find_file(filename='mcp.json')
-            if not os.path.exists(config_path):
-                # Use relative path for config file
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                config_path = os.path.normpath(os.path.join(current_dir, "../../config/mcp.json"))
-            logger.info(f"mcp conf path: {config_path}")
+            config_data = {}
+            if mcp_utils.MCP_SERVERS_CONFIG:
+                config_data=mcp_utils.MCP_SERVERS_CONFIG
+            else:
+                # Priority given to the running path.
+                config_path = find_file(filename='mcp.json')
+                if not os.path.exists(config_path):
+                    # Use relative path for config file
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    config_path = os.path.normpath(os.path.join(current_dir, "../../config/mcp.json"))
+                logger.info(f"mcp conf path: {config_path}")
 
-            with open(config_path, "r") as f:
-                config_data = json.load(f)
+                with open(config_path, "r") as f:
+                    config_data = json.load(f)
 
-            # Replace environment variables in the configuration
-            self._replace_env_variables(config_data)
+                # Replace environment variables in the configuration
+                self._replace_env_variables(config_data)
 
             # Load all server configurations
             for server_name, server_config in config_data.get("mcpServers", {}).items():

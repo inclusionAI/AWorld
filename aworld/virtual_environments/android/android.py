@@ -5,7 +5,7 @@ import traceback
 from typing import Any, Tuple, List, Dict
 
 from aworld.config.common import Tools
-from aworld.config.tool_action import AndroidAction
+from aworld.virtual_environments.tool_action import AndroidAction
 from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.logs.util import logger
 from aworld.virtual_environments.android.action.adb_controller import ADBController

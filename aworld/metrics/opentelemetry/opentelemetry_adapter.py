@@ -293,8 +293,21 @@ def configure_otlp_provider(backend: Sequence[str] = None,
             compression=Compression.Gzip,
         )
         set_metric_provider(OpentelemetryMetricProvider(exporter))
-
-    instrument_system_metrics()
+    elif backend == "antmonitor":
+        from opentelemetry.exporter.otlp.proto.http import Compression
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+        ant_otlp_endpoint = os.getenv("ANT_OTEL_ENDPOINT")
+        base_url = base_url or ant_otlp_endpoint
+        session = requests.Session()
+        exporter = OTLPMetricExporter(
+            endpoint=base_url,
+            session=session,
+            compression=Compression.Gzip
+        )
+        set_metric_provider(OpentelemetryMetricProvider(exporter))
+        
+    if os.getenv("METRICS_SYSTEM_ENABLED") == "true":
+        instrument_system_metrics()
 
 
 def instrument_system_metrics():

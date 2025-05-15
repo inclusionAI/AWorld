@@ -7,7 +7,7 @@ import json
 from typing import List, Tuple, Dict, Any, Union
 
 from aworld.config.conf import ToolConfig, ConfigDict
-from aworld.core.envs.tool import Tool, ToolFactory
+from aworld.core.envs.tool import Tool, AsyncTool, ToolFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
 from aworld.virtual_environments.utils import build_observation
@@ -19,13 +19,13 @@ class {name}Tool({cls}[Observation, List[ActionModel]]):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         super().__init__(conf, **kwargs)
 
-    def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
+    {async_flag}def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         Observation, dict[str, Any]]:
         # from options obtain user query
         return build_observation(observer=self.name(),
                                  ability=''), dict()
 
-    def step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+    {async_flag}def step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         reward = 0
         fail_error = ""
         action_result = None
@@ -41,7 +41,7 @@ class {name}Tool({cls}[Observation, List[ActionModel]]):
 
         resp = ""
         try:
-            action_result, resp = self.action_executor.execute_action(action, **kwargs)
+            action_result, resp = {await_flag}self.action_executor.{async_underline}execute_action(action, **kwargs)
             reward = 1
         except Exception as e:
             fail_error = str(e)
@@ -73,10 +73,10 @@ class {name}Tool({cls}[Observation, List[ActionModel]]):
                 kwargs.get("truncated", False),
                 dict())
 
-    def close(self) -> None:
+    {async_flag}def close(self) -> None:
         pass
 
-    def finished(self) -> bool:
+    {async_flag}def finished(self) -> bool:
         # one time
         return True
 """

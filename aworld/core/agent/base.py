@@ -12,17 +12,18 @@ from pydantic import BaseModel
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.common import Observation, ActionModel
+from aworld.core.context.base import Context
 from aworld.core.envs.tool_desc import get_tool_desc
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.mcp.utils import mcp_tool_desc_transform
-from aworld.memory.base import MemoryItem
+from aworld.core.memory import MemoryItem
 from aworld.memory.main import Memory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
-from aworld.output import MessageOutput
-from aworld.output.base import StepOutput
+from aworld.output import Outputs
+from aworld.output.base import StepOutput, MessageOutput
 from aworld.utils.common import convert_to_snake, sync_exec
 
 INPUT = TypeVar('INPUT')
@@ -89,9 +90,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.handoffs: List[str] = kwargs.pop("agent_names", [])
         # Supported MCP server
         self.mcp_servers: List[str] = kwargs.pop("mcp_servers", [])
+        self.mcp_config: Dict[str, Any] = kwargs.pop("mcp_config", {})
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
+        self.context = Context.instance()
         self.state = AgentStatus.START
         self._finished = True
 
@@ -106,11 +109,17 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
         List[ActionModel], None]:
-        return self.policy(observation, info, **kwargs)
+        self.pre_run()
+        result = self.policy(observation, info, **kwargs)
+        self.post_run()
+        return result
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
         List[ActionModel], None]:
-        return await self.async_policy(observation, info, **kwargs)
+        await self.async_pre_run()
+        result = await self.async_policy(observation, info, **kwargs)
+        await self.async_post_run()
+        return result
 
     @abc.abstractmethod
     def policy(self, observation: INPUT, info: Dict[str, Any] = None, **kwargs) -> OUTPUT:
@@ -151,6 +160,18 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         """Agent finished the thing, default is True."""
         return self._finished
 
+    def pre_run(self):
+        pass
+
+    def post_run(self):
+        pass
+
+    async def async_pre_run(self):
+        pass
+
+    async def async_post_run(self):
+        pass
+
 
 class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
     """Basic agent for unified protocol within the framework."""
@@ -163,7 +184,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
         Args:
             conf: Agent config, supported AgentConfig, ConfigDict or dict.
-            resp_parse_func: Response parse function for the agent standard output.
+            resp_parse_func: Response parse function for the agent standard output, transform llm response.
         """
         super(Agent, self).__init__(conf, **kwargs)
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
@@ -172,7 +193,6 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             {"memory_store": kwargs.pop("memory_store") if kwargs.get("memory_store") else "inmemory"})
         self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
-        self.output_prompt: str = kwargs.get("output_prompt") if kwargs.get("output_prompt") else conf.output_prompt
 
         self.need_reset = kwargs.get('need_reset') if kwargs.get('need_reset') else conf.need_reset
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
@@ -182,6 +202,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             "black_tool_actions") else self.conf.get('black_tool_actions', {})
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
         self.history_messages = kwargs.get("history_messages") if kwargs.get("history_messages") else 100
+        # task history messages
+        self.task_histories: List[MemoryItem] = []
+        self.use_tools_in_prompt = kwargs.get('use_tools_in_prompt', conf.use_tools_in_prompt)
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
@@ -198,21 +221,21 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             self._llm = get_llm_model(conf)
         return self._llm
 
-    def env_tool(self):
+    def _env_tool(self):
         """Description of agent as tool."""
         return tool_desc_transform(get_tool_desc(),
                                    tools=self.tool_names if self.tool_names else [],
                                    black_tool_actions=self.black_tool_actions)
 
-    def handoffs_agent_as_tool(self):
+    def _handoffs_agent_as_tool(self):
         """Description of agent as tool."""
         return agent_desc_transform(get_agent_desc(),
                                     agents=self.handoffs if self.handoffs else [])
 
-    def mcp_is_tool(self):
+    def _mcp_is_tool(self):
         """Description of mcp servers are tools."""
         try:
-            return sync_exec(mcp_tool_desc_transform, self.mcp_servers)
+            return sync_exec(mcp_tool_desc_transform, self.mcp_servers, self.mcp_config)
         except Exception as e:
             logger.error(f"mcp_is_tool error: {e}")
             return []
@@ -221,29 +244,28 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
 
         # Stateless tool
-        self.tools = self.env_tool()
+        self.tools = self._env_tool()
         # Agents as tool
-        self.tools.extend(self.handoffs_agent_as_tool())
+        self.tools.extend(self._handoffs_agent_as_tool())
         # MCP servers are tools
-        self.tools.extend(self.mcp_is_tool())
+        self.tools.extend(self._mcp_is_tool())
         return self.tools
 
     async def async_desc_transform(self):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
 
         # Stateless tool
-        self.tools = self.env_tool()
+        self.tools = self._env_tool()
         # Agents as tool
-        self.tools.extend(self.handoffs_agent_as_tool())
+        self.tools.extend(self._handoffs_agent_as_tool())
         # MCP servers are tools
-        self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers))
+        self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
 
     def messages_transform(self,
                            content: str,
                            image_urls: List[str] = None,
                            sys_prompt: str = None,
                            agent_prompt: str = None,
-                           output_prompt: str = None,
                            **kwargs):
         """Transform the original content to LLM messages of native format.
 
@@ -257,31 +279,39 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         """
         messages = []
         if sys_prompt:
-            messages.append({'role': 'system', 'content': sys_prompt})
+            messages.append({'role': 'system', 'content': sys_prompt if self.use_tools_in_prompt else sys_prompt.format(
+                tool_list=self.tools)})
 
         if agent_prompt:
             content = agent_prompt.format(task=content)
-        if output_prompt:
-            content += output_prompt
 
         cur_msg = {'role': 'user', 'content': content}
+        histories = self.task_histories
         # query from memory,
-        histories = self.memory.get_last_n(self.history_messages)
+        if histories:
+            histories = histories.extend(self.memory.get_last_n(self.history_messages))
+        else:
+            histories = self.memory.get_last_n(self.history_messages)
         if histories:
             # default use the first tool call
             for history in histories:
-                if "tool_calls" in history.metadata and history.metadata['tool_calls']:
+                if self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata['tool_calls']:
                     messages.append({'role': history.metadata['role'], 'content': history.content,
                                      'tool_calls': [history.metadata["tool_calls"][0]]})
                 else:
                     messages.append({'role': history.metadata['role'], 'content': history.content,
                                      "tool_call_id": history.metadata.get("tool_call_id")})
 
-            if "tool_calls" in histories[-1].metadata and histories[-1].metadata['tool_calls']:
+            if self.use_tools_in_prompt and "tool_calls" in histories[-1].metadata and histories[-1].metadata[
+                'tool_calls']:
                 tool_id = histories[-1].metadata["tool_calls"][0].id
                 if tool_id:
                     cur_msg['role'] = 'tool'
                     cur_msg['tool_call_id'] = tool_id
+            if not self.use_tools_in_prompt and "is_use_tool_prompt" in histories[-1].metadata and "tool_calls" in \
+                    histories[-1].metadata and agent_prompt:
+                cur_msg['content'] = agent_prompt.format(action_list=histories[-1].metadata["tool_calls"],
+                                                         result=content)
 
         if image_urls:
             urls = [{'type': 'text', 'text': content}]
@@ -292,6 +322,29 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         messages.append(cur_msg)
         return messages
 
+    def use_tool_list(self, resp: ModelResponse) -> List[Dict[str, Any]]:
+        tool_list = []
+        try:
+            if resp and hasattr(resp, 'content') and resp.content:
+                content = resp.content.strip()
+            else:
+                return tool_list
+            content = content.replace('\n', '').replace('\r', '')
+            response_json = json.loads(content)
+            if "use_tool_list" in response_json:
+                use_tool_list = response_json["use_tool_list"]
+                if use_tool_list:
+                    for use_tool in use_tool_list:
+                        tool_name = use_tool["tool"]
+                        arguments = use_tool["arguments"]
+                        if tool_name and arguments:
+                            tool_list.append(use_tool)
+
+            return tool_list
+        except Exception as e:
+            logger.debug(f"tool_parse error, content: {resp.content}, \nerror msg: {e}")
+            return tool_list
+
     def response_parse(self, resp: ModelResponse) -> AgentResult:
         """Default parse response by LLM."""
         results = []
@@ -299,6 +352,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             logger.warning("LLM no valid response!")
             return AgentResult(actions=[], current_state=None)
 
+        use_tool_list = self.use_tool_list(resp)
         is_call_tool = False
         content = '' if resp.content is None else resp.content
         if resp.tool_calls:
@@ -314,6 +368,30 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                     logger.warning(f"{tool_call.function.arguments} parse to json fail.")
                     params = {}
                 # format in framework
+                names = full_name.split("__")
+                tool_name = names[0]
+                if is_agent_by_name(tool_name):
+                    param_info = params.get('content', "") + ' ' + params.get('info', '')
+                    results.append(ActionModel(agent_name=tool_name,
+                                               params=params,
+                                               policy_info=content + param_info))
+                else:
+                    action_name = '__'.join(names[1:]) if len(names) > 1 else ''
+                    results.append(ActionModel(tool_name=tool_name,
+                                               action_name=action_name,
+                                               params=params,
+                                               policy_info=content))
+        elif use_tool_list and len(use_tool_list) > 0:
+            is_call_tool = True
+            for use_tool in use_tool_list:
+                full_name = use_tool["tool"]
+                if not full_name:
+                    logger.warning("tool call response no tool name.")
+                    continue
+                params = use_tool["arguments"]
+                if not params:
+                    logger.warning("tool call response no tool params.")
+                    continue
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(tool_name):
@@ -382,8 +460,12 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         Returns:
             ActionModel sequence from agent policy
         """
+        output = None
         if kwargs.get("output") and isinstance(kwargs.get("output"), StepOutput):
             output = kwargs["output"]
+
+        if hasattr(observation, 'context') and observation.context:
+            self.task_histories = observation.context
 
         self._finished = False
         self.desc_transform()
@@ -393,8 +475,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         messages = self.messages_transform(content=observation.content,
                                            image_urls=images,
                                            sys_prompt=self.system_prompt,
-                                           agent_prompt=self.agent_prompt,
-                                           output_prompt=self.output_prompt)
+                                           agent_prompt=self.agent_prompt)
 
         self._log_messages(messages)
         self.memory.add(MemoryItem(
@@ -413,14 +494,17 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 messages=messages,
                 model=self.model_name,
                 temperature=self.conf.llm_config.llm_temperature,
-                tools=self.tools if self.tools else None
+                tools=self.tools if self.use_tools_in_prompt and self.tools else None
             )
+
             logger.info(f"Execute response: {llm_response.message}")
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
         finally:
             if llm_response:
+                use_tools = self.use_tool_list(llm_response)
+                is_use_tool_prompt = len(use_tools) > 0
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
                 else:
@@ -429,18 +513,21 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                         metadata={
                             "role": "assistant",
                             "agent_name": self.name(),
-                            "tool_calls": llm_response.tool_calls,
+                            "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
+                            "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
                         }
                     ))
             else:
                 logger.error(f"{self.name()} failed to get LLM response")
                 raise RuntimeError(f"{self.name()} failed to get LLM response")
 
-        # output.add_part(MessageOutput(source=llm_response, json_parse=False))
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
             self._finished = True
-        # output.mark_finished()
+
+        if output:
+            output.add_part(MessageOutput(source=llm_response, json_parse=False))
+            output.mark_finished()
         return agent_result.actions
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
@@ -454,6 +541,12 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         Returns:
             ActionModel sequence from agent policy
         """
+        outputs = None
+        if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
+            outputs = kwargs.get("outputs")
+
+        if hasattr(observation, 'context') and observation.context:
+            self.task_histories = observation.context
 
         self._finished = False
         await self.async_desc_transform()
@@ -463,8 +556,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         messages = self.messages_transform(content=observation.content,
                                            image_urls=images,
                                            sys_prompt=self.system_prompt,
-                                           agent_prompt=self.agent_prompt,
-                                           output_prompt=self.output_prompt)
+                                           agent_prompt=self.agent_prompt)
 
         self._log_messages(messages)
         self.memory.add(MemoryItem(
@@ -483,14 +575,20 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 messages=messages,
                 model=self.model_name,
                 temperature=self.conf.llm_config.llm_temperature,
-                tools=self.tools if self.tools else None
+                tools=self.tools if self.use_tools_in_prompt and self.tools else None,
+                stream=kwargs.get("stream", False)
             )
-            logger.info(f"Execute response: {llm_response.message}")
+            if outputs and isinstance(outputs, Outputs):
+                await outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
+
+            # logger.info(f"Execute response: {llm_response.message}")
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
         finally:
             if llm_response:
+                use_tools = self.use_tool_list(llm_response)
+                is_use_tool_prompt = len(use_tools) > 0
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
                 else:
@@ -499,7 +597,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                         metadata={
                             "role": "assistant",
                             "agent_name": self.name(),
-                            "tool_calls": llm_response.tool_calls,
+                            "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
+                            "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
                         }
                     ))
             else:

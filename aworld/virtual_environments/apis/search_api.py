@@ -7,7 +7,7 @@ from typing import List, Tuple, Dict, Any
 from aworld.config.common import Tools
 from aworld.config.conf import ToolConfig
 from aworld.core.envs.tool import Tool, ToolFactory
-from aworld.config.tool_action import SearchAction
+from aworld.virtual_environments.tool_action import SearchAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
 from aworld.virtual_environments.utils import build_observation

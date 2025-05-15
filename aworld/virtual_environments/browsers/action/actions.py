@@ -10,7 +10,7 @@ from typing import Tuple, Any
 from langchain_core.prompts import PromptTemplate
 
 from aworld.config.common import Tools
-from aworld.config.tool_action import BrowserAction
+from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.virtual_environments.browsers.util.dom import DOMElementNode
@@ -524,7 +524,7 @@ class ExtractContent(ExecutableAction):
         llm_config = kwargs.get("llm_config")
         if llm_config and llm_config.llm_api_key:
             llm = get_llm_model(llm_config)
-        content = markdownify.markdownify(page.content())
+        content = markdownify.markdownify(await page.content())
         max_extract_content_output_tokens = kwargs.get("max_extract_content_output_tokens")
         max_extract_content_input_tokens = kwargs.get("max_extract_content_input_tokens")
 
@@ -679,6 +679,9 @@ class Wait(ExecutableAction):
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         seconds = action.params.get("seconds")
+        if not seconds:
+            seconds = action.params.get("duration")
+        seconds = int(seconds)
         msg = f'Waiting for {seconds} seconds'
         logger.info(msg)
         await asyncio.sleep(seconds)
