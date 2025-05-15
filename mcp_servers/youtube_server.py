@@ -22,7 +22,7 @@ import traceback
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -56,7 +56,7 @@ class TranscriptResult(BaseModel):
     """Transcript result model with transcript information"""
 
     video_id: str
-    transcript: List[Dict[str, any]]
+    transcript: List[Dict[str, Any]]
     success: bool
     error: Optional[str] = None
 
