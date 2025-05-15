@@ -45,16 +45,13 @@ class Runners:
         return streamed_result
 
     @staticmethod
-    async def run_task(task: Union[Task, List[Task]], parallel: bool = False):
+    async def run_task(task: Union[Task, List[Task]], parallel: bool = False) -> Dict[str, TaskResponse]:
         """Run tasks for some complex scenarios where agents cannot be directly used.
 
         Args:
             task: User task define.
             parallel: Whether to process multiple tasks in parallel.
         """
-        import time
-        start = time.time()
-
         with trace.span(task.name) as span:
             if isinstance(task, Task):
                 task = [task]
@@ -67,7 +64,7 @@ class Runners:
             return res
 
     @staticmethod
-    def sync_run_task(task: Union[Task, List[Task]], parallel: bool = False):
+    def sync_run_task(task: Union[Task, List[Task]], parallel: bool = False) -> Dict[str, TaskResponse]:
         return sync_exec(Runners.run_task, task=task, parallel=parallel)
 
     @staticmethod
@@ -76,7 +73,7 @@ class Runners:
             agent: Agent = None,
             swarm: Swarm = None,
             tool_names: List[str] = []
-    ):
+    ) -> TaskResponse:
         return sync_exec(
             Runners.run,
             input=input,
@@ -91,7 +88,7 @@ class Runners:
             agent: Agent = None,
             swarm: Swarm = None,
             tool_names: List[str] = []
-    ):
+    ) -> TaskResponse:
         """Run agent directly with input and tool names.
 
         Args:
@@ -111,7 +108,8 @@ class Runners:
             swarm = Swarm(agent)
 
         task = Task(input=input, swarm=swarm, tool_names=tool_names)
-        return await Runners.run_task(task)
+        res = await Runners.run_task(task)
+        return res.get(task.id)
 
     @staticmethod
     async def _parallel_run_in_local(tasks: List[Task], res):

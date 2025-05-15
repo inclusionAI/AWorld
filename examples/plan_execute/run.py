@@ -35,13 +35,14 @@ def main():
     swarm = Swarm((agent1, agent2), sequence=False)
 
     # Define a task
-    task = Task(input=test_sample, swarm=swarm, conf=TaskConfig())
+    task_id = 'task'
+    task = Task(id=task_id, input=test_sample, swarm=swarm, endless_threshold=5)
 
     # Run task
     result = Runners.sync_run_task(task=task)
 
-    print(f"Time cost: {result['time_cost']}")
-    print(f"Task Answer: {result['task_0']['answer']}")
+    print(f"Time cost: {result[task_id].time_cost}")
+    print(f"Task Answer: {result[task_id].answer}")
 
 
 if __name__ == '__main__':

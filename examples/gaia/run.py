@@ -1,6 +1,5 @@
-from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import Agent
-from aworld.core.task import Task
 from aworld.runner import Runners
 from datasets import load_dataset
 from pathlib import Path
@@ -17,7 +16,7 @@ def setup_logging():
     logger.setLevel(logging.INFO)
 
     file_handler = logging.FileHandler(os.getenv("LOG_FILE_PATH", "run_super_agent.log"), mode="a", encoding="utf-8")
-    file_handler.setLevel(logging.INFO) 
+    file_handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -25,6 +24,7 @@ def setup_logging():
     file_handler.setFormatter(formatter)
 
     logger.addHandler(file_handler)
+
 
 def add_file_path(task: Dict[str, Any],
                   file_path: str = "./gaia_dataset"):
@@ -90,11 +90,10 @@ Now, here is the task. Stay focused and complete it carefully using the appropri
         split="validation",
     )
 
-
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-        llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"), 
+        llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
         llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
     )
 
@@ -113,8 +112,8 @@ Now, here is the task. Stay focused and complete it carefully using the appropri
                 name="gaia_super_agent",
                 system_prompt=search_sys_prompt,
                 mcp_servers=[
-                    "e2b-server", 
-                    "filesystem", 
+                    "e2b-server",
+                    "filesystem",
                     "terminal-controller",
                     "excel",
                     "calculator",
@@ -126,20 +125,19 @@ Now, here is the task. Stay focused and complete it carefully using the appropri
                     "video_server",
                 ]
             )
+            result = Runners.sync_run(input=question, agent=super)
 
-            result = Runners.sync_run_task(task=Task(input=question, agent=super, conf=TaskConfig()))
-
-            match = re.search(r'<answer>(.*?)</answer>', result["task_0"]["answer"])
+            match = re.search(r'<answer>(.*?)</answer>', result.answer)
             if match:
                 answer = match.group(1)
                 logging.info(f"Agent answer: {answer}")
                 logging.info(f"Correct answer: {full_dataset[i]['Final answer']}")
-                
+
                 if answer == full_dataset[i]["Final answer"]:
                     logging.info(f"Question {i} Correct!")
                 else:
                     logging.info("Incorrect!")
-            
+
         except Exception as e:
             logging.error(f"Error processing {i}: {traceback.format_exc()}")
             continue
