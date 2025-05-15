@@ -8,7 +8,6 @@ fi
 # Check GAIA dataset
 if [ ! -d "examples/gaia/GAIA" ]; then
     echo "Please download GAIA dataset from https://huggingface.co/datasets/gaia-benchmark/GAIA and put it in examples/gaia/GAIA"
-    echo "git clone git@hf.co:datasets/gaia-benchmark/GAIA examples/gaia/GAIA"
     exit 1
 fi
 
