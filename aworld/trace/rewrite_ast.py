@@ -8,7 +8,7 @@ from collections import deque
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, ContextManager, cast
 
-from aworld.trace.trace import AttributeValueType
+from aworld.trace.base import AttributeValueType
 from aworld.trace.constants import ATTRIBUTES_MESSAGE_TEMPLATE_KEY
 
 if TYPE_CHECKING:
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 def compile_source(
-    tree: ast.AST, filename: str, module_name: str, trace_manager: TraceManager, min_duration_ns: int
+        tree: ast.AST, filename: str, module_name: str, trace_manager: TraceManager, min_duration_ns: int
 ) -> Callable[[dict[str, Any]], None]:
     """Compile a modified AST of the module's source code in the module's namespace.
 
@@ -32,7 +32,8 @@ def compile_source(
     # The variable name for storing context_factors in the module's namespace.
 
     context_factories: list[Callable[[], ContextManager[Any]]] = []
-    tree = rewrite_ast(tree, filename, context_factories_var_name, module_name, trace_manager, context_factories, min_duration_ns)
+    tree = rewrite_ast(tree, filename, context_factories_var_name, module_name, trace_manager, context_factories,
+                       min_duration_ns)
     assert isinstance(tree, ast.Module)  # for type checking
     # dont_inherit=True is necessary to prevent the module from inheriting the __future__ import from this module.
     code = compile(tree, filename, 'exec', dont_inherit=True)
@@ -45,30 +46,31 @@ def compile_source(
 
 
 def rewrite_ast(
-    tree: ast.AST,
-    filename: str,
-    context_factories_var_name: str,
-    module_name: str,
-    trace_manager: TraceManager,
-    context_factories: list[Callable[[], ContextManager[Any]]],
-    min_duration_ns: int,
+        tree: ast.AST,
+        filename: str,
+        context_factories_var_name: str,
+        module_name: str,
+        trace_manager: TraceManager,
+        context_factories: list[Callable[[], ContextManager[Any]]],
+        min_duration_ns: int,
 ) -> ast.AST:
     transformer = AutoTraceTransformer(
         context_factories_var_name, filename, module_name, trace_manager, context_factories, min_duration_ns
     )
     return transformer.visit(tree)
 
+
 class AutoTraceTransformer(ast.NodeTransformer):
     """Trace all encountered functions except those explicitly marked with `@no_auto_trace`."""
 
     def __init__(
-        self,
-        context_factories_var_name: str,
-        filename: str,
-        module_name: str,
-        trace_manager: TraceManager,
-        context_factories: list[Callable[[], ContextManager[Any]]],
-        min_duration_ns: int,
+            self,
+            context_factories_var_name: str,
+            filename: str,
+            module_name: str,
+            trace_manager: TraceManager,
+            context_factories: list[Callable[[], ContextManager[Any]]],
+            min_duration_ns: int,
     ):
         self._context_factories_var_name = context_factories_var_name
         self._filename = filename
@@ -77,7 +79,6 @@ class AutoTraceTransformer(ast.NodeTransformer):
         self._context_factories = context_factories
         self._min_duration_ns = min_duration_ns
         self._qualname_stack: list[str] = []
-
 
     def visit_ClassDef(self, node: ast.ClassDef):
         """Visit a class definition and rewrite its methods."""
@@ -104,13 +105,12 @@ class AutoTraceTransformer(ast.NodeTransformer):
         self._qualname_stack.pop()  # node.name
         return self.rewrite_function(node, qualname)
 
-
     def check_not_auto_trace(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> bool:
         """Return true if the node has a `@not_auto_trace` decorator."""
         return any(
             (
-                isinstance(node, ast.Name)
-                and node.id == not_auto_trace.__name__
+                    isinstance(node, ast.Name)
+                    and node.id == not_auto_trace.__name__
                 # or (
                 #     isinstance(node, ast.Attribute)
                 #     and node.attr == not_auto_trace.__name__
@@ -121,7 +121,6 @@ class AutoTraceTransformer(ast.NodeTransformer):
             for node in node.decorator_list
         )
 
-
     def rewrite_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str) -> ast.AST:
         """Rewrite a function definition to trace its execution."""
 
@@ -131,22 +130,22 @@ class AutoTraceTransformer(ast.NodeTransformer):
         body = node.body.copy()
         new_body: list[ast.stmt] = []
         if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
         ):
             new_body.append(body.pop(0))
 
         if not body or (
-            len(body) == 1
-            and (
-                isinstance(body[0], ast.Pass)
-                or (isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant))
-            )
+                len(body) == 1
+                and (
+                        isinstance(body[0], ast.Pass)
+                        or (isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant))
+                )
         ):
             return node
-        
+
         span = ast.With(
             items=[
                 ast.withitem(
@@ -172,7 +171,6 @@ class AutoTraceTransformer(ast.NodeTransformer):
             )
         )
 
-
     def trace_context_method_call_node(self, node: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str) -> ast.Call:
         """Return a method call to `context_factories[index]()`."""
 
@@ -183,7 +181,7 @@ class AutoTraceTransformer(ast.NodeTransformer):
         )
         if self._min_duration_ns > 0:
 
-            timer =  time.time_ns
+            timer = time.time_ns
             min_duration = self._min_duration_ns
 
             # This needs to be as fast as possible since it's the cost of auto-tracing a function

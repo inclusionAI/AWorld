@@ -2,11 +2,12 @@ import types
 import inspect
 
 from typing import Union, Optional, Any, Type, Sequence, Callable, Iterable
-from aworld.trace.trace import (
+from aworld.trace.base import (
     AttributeValueType,
     Span, Tracer,
     NoOpTracer,
     get_tracer_provider,
+    get_tracer_provider_silent,
     log_trace_error
 )
 from aworld.version_gen import __version__
@@ -25,7 +26,7 @@ from aworld.trace.msg_format import (
 )
 from aworld.trace.function_trace import trace_func
 from .opentelemetry.opentelemetry_adapter import configure_otlp_provider
-
+from aworld.logs.util import logger
 
 def trace_configure(provider: str = "otlp",
                     backends: Sequence[str] = None,
@@ -44,6 +45,10 @@ def trace_configure(provider: str = "otlp",
     Returns:
         None
     """
+    exist_provider = get_tracer_provider_silent()
+    if exist_provider:
+        logger.info("Trace provider already configured, shutting down...")
+        exist_provider.shutdown()
     if provider == "otlp":
         configure_otlp_provider(backends=backends, base_url=base_url, write_token=write_token, **kwargs)
     else:
@@ -136,13 +141,12 @@ class TraceManager:
             return ContextSpan(span_name=span_name, tracer=NoOpTracer(), attributes=attributes)
 
     def func_span(self,
-                   msg_template: Union[str, Callable] = None,
-                   *,
-                   attributes: dict[str, AttributeValueType] = None,
-                   span_name: str = None,
-                   extract_args: Union[bool, Iterable[str]] = False,
-                    **kwargs
-                   ) -> Callable:
+                  msg_template: Union[str, Callable] = None,
+                  *,
+                  attributes: dict[str, AttributeValueType] = None,
+                  span_name: str = None,
+                  extract_args: Union[bool, Iterable[str]] = False,
+                  **kwargs) -> Callable:
         """
         A decorator that traces the execution of a function.
         Args:
@@ -237,7 +241,7 @@ class ContextSpan(Span):
         if self._span:
             return self._span.get_trace_id()
 
-    def get_span_id( self) -> str:
+    def get_span_id(self) -> str:
         if self._span:
             return self._span.get_span_id()
 

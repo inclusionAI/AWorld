@@ -3,7 +3,7 @@ import os
 
 from dotenv import load_dotenv
 
-from aworld.agents.debate.stream_output_agent import StreamOutputAgent
+from examples.debate.agent.stream_output_agent import StreamOutputAgent
 from aworld.config import AgentConfig
 
 
@@ -38,6 +38,7 @@ async def run():
 
     print()
     print(output.reasoning)
+
 
 if __name__ == '__main__':
     asyncio.run(run())

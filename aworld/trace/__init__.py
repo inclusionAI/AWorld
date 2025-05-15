@@ -1,18 +1,27 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import os
-from pickle import GLOBAL
 from aworld.trace.context_manager import TraceManager, trace_configure
-from aworld.logs.log import set_log_provider, get_log_provider
-from aworld.logs.util import logger
+from aworld.logs.log import set_log_provider, instrument_logging
+from aworld.logs.util import logger, trace_logger
 
-trace_configure(
-    backends=["logfire"],
-    write_token=os.getenv("LOGFIRE_WRITE_TOKEN")
-)
+if os.getenv("LOGFIRE_WRITE_TOKEN"):
+    trace_configure(
+        backends=["logfire"],
+        write_token=os.getenv("LOGFIRE_WRITE_TOKEN")
+    )
+    set_log_provider(provider="otlp", backend="logfire", write_token=os.getenv("LOGFIRE_WRITE_TOKEN"))
+elif os.getenv("OTLP_TRACES_ENDPOINT"):
+    trace_configure(
+        backends=["other_otlp"]
+    )
+else:
+    logger.warning("LOGFIRE_WRITE_TOKEN is not set, using memory backend")
+    trace_configure(
+        backends=["memory"]
+    )
 
-set_log_provider(provider="otlp", backend="logfire", write_token=os.getenv("LOGFIRE_WRITE_TOKEN"))
-get_log_provider().instrumentLogging(logger)
+instrument_logging(trace_logger)
 
 GLOBAL_TRACE_MANAGER: TraceManager = TraceManager()
 span = GLOBAL_TRACE_MANAGER.span

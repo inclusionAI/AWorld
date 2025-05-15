@@ -8,7 +8,7 @@ from io import StringIO
 from aworld.config.common import Tools
 from aworld.logs.util import logger
 from aworld.config.conf import ToolConfig
-from aworld.config.tool_action import PythonToolAction
+from aworld.virtual_environments.tool_action import PythonToolAction
 from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.core.envs.tool import Tool, AgentInput, ToolFactory
 from aworld.utils import import_package

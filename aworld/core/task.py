@@ -7,17 +7,19 @@ from typing import Any, Union, List, Dict, Callable
 
 from pydantic import BaseModel
 
-from aworld.config import ConfigDict
 from aworld.core.agent.base import Agent
 from aworld.core.agent.swarm import Swarm
+from aworld.core.common import Config
+from aworld.core.context.base import Context
 from aworld.core.envs.tool import Tool, AsyncTool
-
-Config = Union[Dict[str, Any], ConfigDict, BaseModel]
+from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
 
 
 @dataclass
 class Task:
+    id: str = uuid.uuid1().hex
     name: str = uuid.uuid1().hex
+    session_id: str = None
     input: Any = None
     # task config
     conf: Config = None
@@ -33,6 +35,17 @@ class Task:
     agent: Agent = None
     # for loop detect
     endless_threshold: int = 3
+    # task_outputs
+    outputs: Outputs = field(default_factory=DefaultOutputs)
+
+
+class TaskResponse(BaseModel):
+    id: str
+    answer: str | None
+    usage: Dict[str, Any] | None = None
+    time_cost: float | None = None
+    success: bool = False
+    msg: str | None = None
 
 
 class Runner(object):
@@ -40,6 +53,7 @@ class Runner(object):
 
     _use_demon: bool = False
     daemon_target: Callable[..., Any] = None
+    context: Context = None
 
     async def pre_run(self):
         pass
@@ -48,7 +62,7 @@ class Runner(object):
         pass
 
     @abc.abstractmethod
-    async def do_run(self):
+    async def do_run(self, context: Context = None):
         """Raise exception if not success."""
 
     async def _daemon_run(self):
@@ -61,7 +75,7 @@ class Runner(object):
         try:
             await self.pre_run()
             await self._daemon_run()
-            ret = await self.do_run()
+            ret = await self.do_run(self.context)
             return 0 if ret is None else ret
         except BaseException as ex:
             self._exception = ex

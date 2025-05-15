@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from aworld.config import ToolConfig
 from aworld.config.common import Tools
-from aworld.config.tool_action import DocumentExecuteAction
+from aworld.virtual_environments.tool_action import DocumentExecuteAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.envs.tool import ToolFactory, Tool
 from aworld.logs.util import logger
@@ -55,8 +55,7 @@ class DocumentTool(Tool[Observation, ActionModel]):
         self.initialized = True
 
     def close(self) -> None:
-        if hasattr(self, 'context') and self.context:
-            self.context.close()
+        pass
 
     def finished(self) -> bool:
         return self.step_finished

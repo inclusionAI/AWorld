@@ -5,7 +5,6 @@ from anthropic import Anthropic, AsyncAnthropic
 from aworld.logs.util import logger
 from aworld.core.llm_provider_base import LLMProviderBase
 from aworld.models.model_response import ModelResponse, LLMResponseError
-from aworld.env_secrets import secrets
 
 
 class AnthropicProvider(LLMProviderBase):
@@ -22,7 +21,7 @@ class AnthropicProvider(LLMProviderBase):
         api_key = self.api_key
         if not api_key:
             env_var = "ANTHROPIC_API_KEY"
-            api_key = os.getenv(env_var, "") or secrets.claude_api_key
+            api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
                     f"Anthropic API key not found, please set {env_var} environment variable or provide it in the parameters")
@@ -42,7 +41,7 @@ class AnthropicProvider(LLMProviderBase):
         api_key = self.api_key
         if not api_key:
             env_var = "ANTHROPIC_API_KEY"
-            api_key = os.getenv(env_var, "") or secrets.claude_api_key
+            api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
                     f"Anthropic API key not found, please set {env_var} environment variable or provide it in the parameters")
@@ -149,7 +148,7 @@ class AnthropicProvider(LLMProviderBase):
             system_content = processed_data["system"]
             anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
                                                          stop, **kwargs)
-            response = self.provider.messages.create(**anthropic_params)
+            response = self.provider.visited_messages.create(**anthropic_params)
 
             return self.postprocess_response(response)
         except Exception as e:
@@ -184,7 +183,7 @@ class AnthropicProvider(LLMProviderBase):
             anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
                                                          stop, **kwargs)
             anthropic_params["stream"] = True
-            response_stream = self.provider.messages.create(**anthropic_params)
+            response_stream = self.provider.visited_messages.create(**anthropic_params)
 
             for chunk in response_stream:
                 if not chunk:
@@ -224,7 +223,7 @@ class AnthropicProvider(LLMProviderBase):
             anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
                                                          stop, **kwargs)
             anthropic_params["stream"] = True
-            response_stream = await self.async_provider.messages.create(**anthropic_params)
+            response_stream = await self.async_provider.visited_messages.create(**anthropic_params)
 
             async for chunk in response_stream:
                 if not chunk:
@@ -262,7 +261,7 @@ class AnthropicProvider(LLMProviderBase):
             processed_messages = processed_data["messages"]
             system_content = processed_data["system"]
             anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens, stop, **kwargs)
-            response = await self.async_provider.messages.create(**anthropic_params)
+            response = await self.async_provider.visited_messages.create(**anthropic_params)
 
             return self.postprocess_response(response)
         except Exception as e:

@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
-from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.gaia.prompt import system_prompt
 from examples.gaia.utils import (

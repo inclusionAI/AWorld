@@ -7,7 +7,7 @@ from pathlib import Path
 from aworld.virtual_environments.browsers.browser import BrowserTool
 
 from aworld.config.common import Tools
-from aworld.config.tool_action import BrowserAction
+from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.common import ActionModel
 from aworld.virtual_environments.conf import BrowserToolConfig
 

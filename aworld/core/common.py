@@ -1,17 +1,20 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from enum import Enum
-
 from pydantic import BaseModel
 from typing import Dict, Any, Union, List
+
+from aworld.config import ConfigDict
+from aworld.core.memory import MemoryItem
+
+Config = Union[Dict[str, Any], ConfigDict, BaseModel]
 
 
 class ActionResult(BaseModel):
     """Result of executing an action by use tool."""
     is_done: bool = False
     success: bool = False
-    content: str = None
+    content: Any = None
     error: str = None
     keep: bool = False
     action_name: str = None
@@ -19,7 +22,7 @@ class ActionResult(BaseModel):
 
 
 class Observation(BaseModel):
-    """Observation information obtained from the tools.
+    """Observation information is obtained from the tools or transformed from the actions made by agents.
 
     It can be an agent(as a tool) in the swarm or a tool in the virtual environment.
     """
@@ -45,6 +48,11 @@ class Observation(BaseModel):
     info: Dict[str, Any] = {}
 
 
+class StatefulObservation(Observation):
+    """Observations with contextual states."""
+    context: List[MemoryItem]
+
+
 class ParamInfo(BaseModel):
     name: str | None = None
     type: str = "str"
@@ -67,14 +75,3 @@ class ActionModel(BaseModel):
     action_name: str = None
     params: Dict[str, Any] = {}
     policy_info: Any = None
-
-
-class AgentPolicy(BaseModel):
-    """The unified model of Agent response can be provided to the agent, or tool actions in environmental."""
-
-    # decision to agent policy
-    actions: List[ActionModel]
-    # which agent made the policy
-    name: str
-    # belongs to which swarm
-    swarm_id: str = None

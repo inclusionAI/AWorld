@@ -49,7 +49,7 @@ class MetricContext:
             metric = get_metric_provider().create_counter(template.name, template.description, template.unit,
                                                           template.labels)
         elif template.type == MetricType.UPDOWNCOUNTER:
-            metric = get_metric_provider().create_updowncounter(template.name, template.description, template.unit,
+            metric = get_metric_provider().create_un_down_counter(template.name, template.description, template.unit,
                                                                 template.labels)
         elif template.type == MetricType.GAUGE:
             metric = get_metric_provider().create_gauge(template.name, template.description, template.unit,
