@@ -25,9 +25,15 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+browser_log_file = os.path.join(os.getenv("LOG_FILE_PATH"), "browser_stdio.log")
+browser_handler = logging.FileHandler(browser_log_file, mode="a", encoding="utf-8")
+browser_handler.setLevel(logging.INFO)
+browser_handler.setFormatter(LOG_FORMAT)
+
 logger = logging.getLogger("browser")
 logger.setLevel(logging.INFO)
-logger.setFormatter(LOG_FORMAT)
+logger.set(LOG_FORMAT)
+logger.addHandler(browser_handler)
 
 mcp = FastMCP("browser-server")
 extended_browser_system_prompt = """
