@@ -56,7 +56,7 @@ def setup_main_logging():
     return _main_logger
 
 
-def setup_task_logging(task_id: str = args.q):
+def setup_task_logging(task_id: str = args.q):  # pylint: disable=W0621
     def set_default_logger(logger_name: str, ahandler: logging.Handler = None):
         if ahandler:
             new_logger = logging.getLogger(logger_name)
@@ -96,7 +96,6 @@ if __name__ == "__main__":
     full_dataset: List[Dict[str, Any]] = load_dataset_meta(
         gaia_dataset_path, split=args.split, is_sample=args.is_sample
     )
-    main_logger.info(f"Total questions: {len(full_dataset)}")
 
     agent_config: AgentConfig = AgentConfig(
         llm_provider="openai",
@@ -151,6 +150,12 @@ if __name__ == "__main__":
             ]
             if args.q is not None
             else full_dataset[args.start : min(args.end, len(full_dataset))]
+        )
+        main_logger.info(
+            (
+                f">>> # total questions: {len(full_dataset)}\n"
+                f">>> # sliced questions: {len(dataset_slice)}"
+            )
         )
 
         # main loop to execute questions

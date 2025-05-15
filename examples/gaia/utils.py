@@ -199,7 +199,10 @@ def parse_arguments():
     parser.add_argument(
         "--q",
         type=str,
-        help="Question Index, e.g., 0-0-0-0-0. Highest priority: override other arguments if provided.",
+        help=(
+            "Question Index, e.g., 0-0-0-0-0."
+            " Highest priority: override other arguments if provided."
+        ),
     )
     parser.add_argument(
         "--skip",
@@ -210,6 +213,7 @@ def parse_arguments():
         "--split",
         type=str,
         default="validation",
+        choices=["validation", "test"],
         help="Split of the dataset, e.g., validation, test",
     )
     parser.add_argument(
