@@ -7,7 +7,9 @@ import logging
 import os
 import json
 import re
+
 logger = logging.getLogger(__name__)
+
 
 class Pipe:
     class Valves(BaseModel):
@@ -65,8 +67,12 @@ class Pipe:
             models = self._get_model_config()
             selected_model = next((m for m in models if m["id"] == model), None)
             if not selected_model:
-                logger.warning(f">>> Gaia Agent: Model ID '{model}' not found in configuration!")
-                yield self._wrap_line(f">>> Gaia Agent: Model ID '{model}' not found in configuration!")
+                logger.warning(
+                    f">>> Gaia Agent: Model ID '{model}' not found in configuration!"
+                )
+                yield self._wrap_line(
+                    f">>> Gaia Agent: Model ID '{model}' not found in configuration!"
+                )
                 return
 
             env["LLM_PROVIDER"] = selected_model.get("provider")
@@ -75,7 +81,9 @@ class Pipe:
             env["LLM_MODEL_NAME"] = selected_model.get("model")
             env["LLM_TEMPERATURE"] = str(selected_model.get("temperature", 0))
 
-            logger.info(f">>> Gaia Agent: Using model configuration: {selected_model['model']}")
+            logger.info(
+                f">>> Gaia Agent: Using model configuration: {selected_model['model']}"
+            )
 
             process = await asyncio.subprocess.create_subprocess_exec(
                 *cmd,
@@ -93,23 +101,36 @@ class Pipe:
                 if not line:
                     break
 
-                line = line.decode("utf-8").rstrip()
+                line = line.decode("utf-8").rstrip().replace("\[[\d{1,3}m", "")
 
-                if re.search(r"\d{4}-\d{2}-\d{2}", line) : 
+                if re.search(r"\d{4}-\d{2}-\d{2}", line) :
                     if (
-                        " - __main__ - " in line
-                        or "- [agent] " in line
+                        " __main__ " in line
+                        or " [agent] " in line
                         or "ActionModel" in line
                         or "- INFO - step:" in line
-                        or "- INFO -  mcp observation:" in line
+                        or "mcp observation:" in line
                     ):
                         logger.info(f">>> Gaia Agent: line={line}")
                         yield self._wrap_line(f"{line}")
-                    else:
-                        logger.info(f">>> Gaia Agent: ignore line={line}")
-                else:
+                        continue
+                elif not (
+                    re.search(r"^Starting .* Server...$", line)
+                    or any(pattern in line for pattern in [
+                        "`e2b-server` is a powerful",
+                        "Processing request of type",
+                        "No handlers found",
+                        "Serving Flask app",
+                        "Debug mode:",
+                        "Running on http:",
+                        "npm WARN exec The following package was not found"
+                    ])
+                ):
                     logger.info(f">>> Gaia Agent: line={line}")
                     yield self._wrap_line(f"{line}")
+                    continue
+
+                logger.info(f">>> Gaia Agent: ignore line={line}")
 
             return_code = await process.wait()
             yield self._wrap_line(f"Process exited with code {return_code}")

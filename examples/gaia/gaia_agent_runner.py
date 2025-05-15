@@ -120,4 +120,6 @@ if __name__ == "__main__":
 
         logger.info(f"Final Result: {new_result}")
     except Exception as e:
-        logger.error(f"Error processing {args.prompt}: {traceback.format_exc()}")
+        logger.error(
+            f"Error processing {args.prompt}, result:{result if result else ''}, error: {traceback.format_exc()}"
+        )

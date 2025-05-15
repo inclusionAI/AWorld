@@ -24,6 +24,8 @@ COPY ./examples/gaia/requirements.txt /app/aworld/examples/gaia/requirements.txt
 # Install Gaia
 RUN pip install -r /app/aworld/examples/gaia/requirements.txt --resume-retries 5 ${PIP_OPTIONS}
 
+# Config Env
+RUN npx playwright install chrome
 
 FROM base as runner
 
@@ -32,9 +34,6 @@ COPY . /app/aworld
 # Create GAIA benchmark directory
 RUN mkdir -p /app/aworld/gaia-benchmark/fs && \
     mkdir -p /app/aworld/gaia-benchmark/logs
-
-# Config Env
-RUN npx playwright install chrome
 
 ENV HF_HUB_OFFLINE=1
 ENV ENABLE_OLLAMA_API=False
