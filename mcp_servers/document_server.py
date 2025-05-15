@@ -447,9 +447,7 @@ def mcpreadpdf(
                             pdf_document = fitz.open(document_path)
 
                             # Iterate through each page
-                            for page_index in range(len(pdf_document)):
-                                page = pdf_document[page_index]
-
+                            for page_index, page in enumerate(pdf_document):
                                 # Get image list
                                 image_list = page.get_images(full=True)
 
@@ -700,7 +698,10 @@ def mcpreadexcel(
                                 )
 
                                 if len(df) >= max_rows:
-                                    markdown_table += f"\n\n*Note: Table truncated to {max_rows} rows*"
+                                    markdown_table += (
+                                        "\n\n*Note: Table truncated to"
+                                        f" {max_rows} rows*"
+                                    )
 
                             # Create sheet model
                             excel_sheets.append(
@@ -977,8 +978,6 @@ def mcpreadhtmltext(
 
 def main():
     load_dotenv()
-
-    print("Starting Document MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 

@@ -82,7 +82,6 @@ def complex_problem_reasoning(
 
 def main():
     load_dotenv()
-    print("Starting Reasoning MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 
@@ -95,6 +94,7 @@ def __call__():
     main()
 
 
+# Make the module callable for uvx
 sys.modules[__name__].__call__ = __call__
 
 # Run the server when the script is executed directly

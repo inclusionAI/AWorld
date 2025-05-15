@@ -178,8 +178,6 @@ def _download_single_file(
 
 def main():
     load_dotenv()
-
-    print("Starting Download MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 

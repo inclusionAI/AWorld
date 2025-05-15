@@ -259,7 +259,6 @@ def download_youtube_files(
 
 def main():
     load_dotenv()
-    print("Starting YoutubeDownload MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 

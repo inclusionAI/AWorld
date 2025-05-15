@@ -1,9 +1,11 @@
 import base64
 import json
 import os
+import sys
 import traceback
 from typing import List
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from openai import OpenAI
 from pydantic import Field
@@ -50,7 +52,7 @@ def encode_audio(audio_source: str, with_header: bool = True) -> str:
             audio_source,
             allowed_mime_prefixes=["audio/"],
             max_size_mb=50.0,  # 50MB limit for audio files
-            type="audio",  # Specify type as audio to handle audio files
+            file_type="audio",  # Specify type as audio to handle audio files
         )
 
         # Encode to base64
@@ -97,7 +99,7 @@ async def mcp_transcribe_audio(
                 audio_url,
                 allowed_mime_prefixes=["audio/"],
                 max_size_mb=50.0,  # 50MB limit for audio files
-                type="audio",  # Specify type as audio to handle audio files
+                file_type="audio",  # Specify type as audio to handle audio files
             )
 
             # Use the file for transcription
@@ -122,11 +124,7 @@ async def mcp_transcribe_audio(
 
 
 def main():
-    from dotenv import load_dotenv
-
     load_dotenv()
-
-    print("Starting Audio MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 
@@ -140,8 +138,6 @@ def __call__():
 
 
 # Add this for compatibility with uvx
-import sys
-
 sys.modules[__name__].__call__ = __call__
 
 # Run the server when the script is executed directly

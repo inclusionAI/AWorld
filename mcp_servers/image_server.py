@@ -14,12 +14,14 @@ Main functions:
 - Various MCP tools for image analysis and processing
 """
 
-# import asyncio
 import base64
 import os
+import sys
+import traceback
 from io import BytesIO
 from typing import Any, Dict, List
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from openai import OpenAI
 from PIL import Image
@@ -109,7 +111,7 @@ def encode_images(image_sources: List[str], with_header: bool = True) -> List[st
                 image_source,
                 allowed_mime_prefixes=["image/"],
                 max_size_mb=10.0,  # 10MB limit for images
-                type="image",
+                file_type="image",
             )
 
             # Optimize image
@@ -206,8 +208,6 @@ def mcp_image_recognition(
 
     except Exception as e:
         image_reasoning_result = ""
-        import traceback
-
         traceback.print_exc()
         logger.error(f"image_reasoning_result-Execute error: {e}")
 
@@ -219,11 +219,8 @@ def mcp_image_recognition(
 
 
 def main():
-    from dotenv import load_dotenv
 
     load_dotenv()
-
-    print("Starting Image MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 
@@ -237,8 +234,6 @@ def __call__():
 
 
 # Add this for compatibility with uvx
-import sys
-
 sys.modules[__name__].__call__ = __call__
 
 # Run the server when the script is executed directly

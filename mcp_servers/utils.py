@@ -5,8 +5,8 @@ import tempfile
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
+import magic
 import requests
-from mcp.server import FastMCP
 
 from aworld.logs.util import logger
 from aworld.mcp.utils import mcp_tool_desc_transform
@@ -26,9 +26,8 @@ def get_mime_type(file_path: str, default_mime: Optional[str] = None) -> str:
     """
     # Try using python-magic for accurate MIME type detection
     try:
-        # mime = magic.Magic(mime=True)
-        # return mime.from_file(file_path)
-        return "audio/mpeg"
+        mime = magic.Magic(mime=True)
+        return mime.from_file(file_path)
     except (AttributeError, IOError):
         # Fallback to extension-based detection
         extension_mime_map = {
@@ -77,7 +76,7 @@ def get_file_from_source(
     allowed_mime_prefixes: List[str] = None,
     max_size_mb: float = 100.0,
     timeout: int = 60,
-    type: str = "image",
+    file_type: str = "image",
 ) -> Tuple[str, str, bytes]:
     """
     Unified function to get file content from a URL or local path with validation.
@@ -130,14 +129,16 @@ def get_file_from_source(
             temp_file.close()
 
             # Get MIME type
-            if type == "audio":
-                mime_type = "audio/mpeg"
-            elif type == "image":
-                mime_type = "image/jpeg"
-            elif type == "video":
-                mime_type = "video/mp4"
-
-            # mime_type = get_mime_type(file_path)
+            mime_type = get_mime_type(file_path)
+            if not mime_type:
+                if file_type == "audio":
+                    mime_type = "audio/mpeg"
+                elif file_type == "image":
+                    mime_type = "image/jpeg"
+                elif file_type == "video":
+                    mime_type = "video/mp4"
+                else:
+                    mime_type = ""
 
             # For URLs where magic fails, try to use Content-Type header
             if mime_type == "application/octet-stream":
@@ -158,13 +159,22 @@ def get_file_from_source(
                 raise ValueError(f"File size exceeds limit of {max_size_mb}MB")
 
             # Get MIME type
-            if type == "audio":
-                mime_type = "audio/mpeg"
-            elif type == "image":
-                mime_type = "image/jpeg"
-            elif type == "video":
-                mime_type = "video/mp4"
-            # mime_type = get_mime_type(file_path)
+            mime_type = get_mime_type(file_path)
+            if not mime_type:
+                if file_type == "audio":
+                    mime_type = "audio/mpeg"
+                elif file_type == "image":
+                    mime_type = "image/jpeg"
+                elif file_type == "video":
+                    mime_type = "video/mp4"
+                else:
+                    mime_type = ""
+
+            # For URLs where magic fails, try to use Content-Type header
+            if mime_type == "application/octet-stream":
+                content_type = response.headers.get("Content-Type", "").split(";")[0]
+                if content_type:
+                    mime_type = content_type
 
             # Read file content
             with open(file_path, "rb") as f:

@@ -124,7 +124,6 @@ async def browser_use(
 
 def main():
     load_dotenv()
-    print("Starting Browser MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 

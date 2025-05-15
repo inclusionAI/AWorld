@@ -85,7 +85,7 @@ def get_video_frames(
         video_source: Path or URL to the video file
         sample_rate: Number of frames to sample per second
         start_time: Start time of the video segment in seconds (default: 0)
-        end_time: End time of the video segment in seconds (default: None, meaning the end of the video)
+        end_time: End time of the video segment in seconds (default: None)
 
     Returns:
         List[Dict[str, Any]]: List of dictionaries containing frame data and timestamp
@@ -99,7 +99,7 @@ def get_video_frames(
             video_source,
             allowed_mime_prefixes=["video/"],
             max_size_mb=2500.0,  # 2500MB limit for videos
-            type="video",  # Specify type as video to handle video files
+            file_type="video",  # Specify type as video to handle video files
         )
 
         # Open video file
@@ -462,7 +462,6 @@ def get_video_keyframes(
 
 def main():
     load_dotenv()
-    print("Starting Video MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 

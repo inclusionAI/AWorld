@@ -1,7 +1,7 @@
 """
 Search MCP Server
 
-This module provides MCP server functionality for performing web searches using various search engines.
+This module provides MCP server functionality for performing web searches using search engines.
 It supports structured queries and returns formatted search results.
 
 Key features:
@@ -144,8 +144,6 @@ def mcpsearchgoogle(
 
 def main():
     load_dotenv()
-
-    print("Starting Search MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 
@@ -158,6 +156,7 @@ def __call__():
     main()
 
 
+# Make the module callable for uvx
 sys.modules[__name__].__call__ = __call__
 
 # Run the server when the script is executed directly
