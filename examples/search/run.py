@@ -39,7 +39,8 @@ if __name__ == "__main__":
         llm_model_name="gpt-4o",
         llm_temperature=1,
         # need to set llm_api_key for use LLM
-        llm_api_key=""
+        llm_base_url="http://localhost:34567",
+        llm_api_key="dummy-key",
     )
 
     search = Agent(
@@ -66,4 +67,4 @@ if __name__ == "__main__":
         input=prefix + """What is an agent.""",
         swarm=swarm
     )
-    print(res['answer'])
+    print(res.answer)

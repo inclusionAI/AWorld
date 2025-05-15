@@ -524,7 +524,7 @@ class ExtractContent(ExecutableAction):
         llm_config = kwargs.get("llm_config")
         if llm_config and llm_config.llm_api_key:
             llm = get_llm_model(llm_config)
-        content = markdownify.markdownify(page.content())
+        content = markdownify.markdownify(await page.content())
         max_extract_content_output_tokens = kwargs.get("max_extract_content_output_tokens")
         max_extract_content_input_tokens = kwargs.get("max_extract_content_input_tokens")
 

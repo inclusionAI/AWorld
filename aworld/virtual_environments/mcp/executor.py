@@ -260,6 +260,21 @@ class MCPToolExecutor(ToolActionExecutor):
                 except Exception as e:
                     logger.error(f"Error cleaning up MCP server {server_name}: {e}")
 
+    async def close(self, keys: List[str] = []) -> None:
+        if keys:
+            for key in keys:
+                if key in self.mcp_servers:
+                    server_info = self.mcp_servers[key]
+                    # Fixme: Have resources leak, MCP server may clean fail.
+                    if server_info.get("type") == "stdio":
+                        server_info["instance"] = None
+                        continue
+
+                    try:
+                        await server_info["instance"].cleanup()
+                    except Exception as e:
+                        logger.error(f"Error cleaning up MCP server {key}: {e}")
+
     def execute_action(self, actions: List[ActionModel], **kwargs) -> Tuple[
         List[ActionResult], Any]:
         return sync_exec(self.async_execute_action, actions, **kwargs)

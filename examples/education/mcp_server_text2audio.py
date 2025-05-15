@@ -1,10 +1,7 @@
+import numpy as np
+
 from mcp.server import FastMCP
 from pydantic import Field
-import pyttsx3
-from gtts import gTTS
-import librosa
-import soundfile as sf
-import numpy as np  # type: ignore
 
 from aworld.utils import import_package
 from aworld.logs.util import logger
@@ -14,6 +11,10 @@ import_package('gtts', install_name='gTTS')
 import_package('pyttsx3', install_name='pyttsx3')
 import_package('librosa', install_name='librosa')
 import_package('soundfile', install_name='soundfile')
+import pyttsx3
+from gtts import gTTS
+import librosa
+import soundfile as sf
 
 mcp = FastMCP("text_to_audio")
 
