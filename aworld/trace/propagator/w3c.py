@@ -40,12 +40,13 @@ class W3CTraceContextPropagator(Propagator):
         Returns:
             A dict of trace context.
         """
-        header = carrier.get(self._TRACEPARENT_HEADER_NAME)
+        header = carrier.get(self._TRACEPARENT_HEADER_NAME) or carrier.get(
+            'HTTP_' + self._TRACEPARENT_HEADER_NAME.upper())
 
         if header is None:
             return None
 
-        match = re.search(self._TRACEPARENT_HEADER_FORMAT_RE, header[0])
+        match = re.search(self._TRACEPARENT_HEADER_FORMAT_RE, header)
         if not match:
             return None
 
@@ -53,6 +54,9 @@ class W3CTraceContextPropagator(Propagator):
         trace_id: str = match.group(2)
         span_id: str = match.group(3)
         trace_flags: str = match.group(4)
+
+        logger.info(
+            f"extract trace_id: {trace_id}, span_id: {span_id}, trace_flags: {trace_flags}, version: {version}")
 
         if trace_id == "0" * 32 or span_id == "0" * 16:
             return None
@@ -62,11 +66,14 @@ class W3CTraceContextPropagator(Propagator):
         if version == "ff":
             return None
 
+        state_header = carrier.get(self._TRACESTATE_HEADER_NAME) or carrier.get(
+            'HTTP_' + self._TRACESTATE_HEADER_NAME.upper())
         return TraceContext(
             trace_id=trace_id,
             span_id=span_id,
-            attributes=(self._extract_state_from_header(
-                carrier.get(self._TRACESTATE_HEADER_NAME)))
+            trace_flags=trace_flags,
+            version=version,
+            attributes=(self._extract_state_from_header(state_header))
         )
 
     def inject(self, trace_context: TraceContext, carrier: Carrier) -> None:
@@ -81,6 +88,8 @@ class W3CTraceContextPropagator(Propagator):
         trace_flags: str = trace_context.trace_flags
         trace_id = trace_context.trace_id
         span_id = trace_context.span_id
+        logger.info(
+            f"inject trace_id: {trace_id}, span_id: {span_id}, trace_flags: {trace_flags}, version: {version}")
         if (not trace_id or trace_id == "0" * 32
                 or not span_id or span_id == "0" * 16):
             return
@@ -89,9 +98,9 @@ class W3CTraceContextPropagator(Propagator):
             trace_id = format(trace_id, "032x")
         if isinstance(span_id, int):
             span_id = format(span_id, "016x")
-        traceparent_string = f"{version}-{trace_id}-{span_id}-{trace_flags:02x}"
+        traceparent_string = f"{version}-{trace_id}-{span_id}-{trace_flags}"
         carrier.set(self._TRACEPARENT_HEADER_NAME, traceparent_string)
-        tracestate_string = self._state_delimiter_pattern.join(
+        tracestate_string = ",".join(
             f"{key}={value}" for key, value in attribute_copy.items())
         if tracestate_string:
             carrier.set(self._TRACESTATE_HEADER_NAME, tracestate_string)

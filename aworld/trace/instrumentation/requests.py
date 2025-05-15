@@ -1,16 +1,26 @@
 import functools
-from requests.sessions import Session
+from timeit import default_timer
+from requests import sessions
 from requests.models import PreparedRequest, Response
 from requests.structures import CaseInsensitiveDict
 from typing import Collection, Any, Callable
-from aworld.trace.base import Span, TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
+import aworld.trace as trace
+from aworld.trace.base import TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
+from aworld.trace.propagator import get_global_trace_propagator
+from aworld.trace.propagator.carrier import RequestCarrier
 from aworld.trace.instrumentation import Instrumentor
 from aworld.metrics.metric import MetricType
 from aworld.metrics.template import MetricTemplate
+from aworld.metrics.context_manager import MetricContext
 from aworld.trace.instrumentation.http_util import (
-    collect_request_attributes,
-    url_disabled
+    collect_attributes_from_request,
+    url_disabled,
+    get_excluded_urls,
+    parse_excluded_urls,
+    HTTP_RESPONSE_STATUS_CODE,
+    HTTP_FLAVOR
 )
+from aworld.logs.util import logger
 
 
 def _wrapped_send(
@@ -18,13 +28,14 @@ def _wrapped_send(
     excluded_urls=None,
     request_hook: Callable = None,
     response_hook: Callable = None,
+    duration_histogram: MetricTemplate = None
 ):
 
-    oringinal_send = Session.send
+    oringinal_send = sessions.Session.send
 
     @functools.wraps(oringinal_send)
     def instrumented_send(
-        self: Session, request: PreparedRequest, **kwargs: Any
+        self: sessions.Session, request: PreparedRequest, **kwargs: Any
     ):
         if excluded_urls and url_disabled(request.url, excluded_urls):
             return oringinal_send(self, request, **kwargs)
@@ -37,144 +48,64 @@ def _wrapped_send(
             )
             return request.headers
 
-        if not is_http_instrumentation_enabled():
-            return wrapped_send(self, request, **kwargs)
-
-        # See
-        # https://github.com/open-telemetry/semantic-conventions/blob/main/docs/http/http-spans.md#http-client
         method = request.method
-        span_name = get_default_span_name(method)
+        if method is None:
+            method = "HTTP"
+        span_name = method.upper()
 
-        url = remove_url_credentials(request.url)
-
-        span_attributes = {}
-        _set_http_method(
-            span_attributes,
-            method,
-            sanitize_method(method),
-            sem_conv_opt_in_mode,
-        )
-        _set_http_url(span_attributes, url, sem_conv_opt_in_mode)
-
-        metric_labels = {}
-        _set_http_method(
-            metric_labels,
-            method,
-            sanitize_method(method),
-            sem_conv_opt_in_mode,
-        )
-
-        try:
-            parsed_url = urlparse(url)
-            if parsed_url.scheme:
-                if _report_old(sem_conv_opt_in_mode):
-                    # TODO: Support opt-in for url.scheme in new semconv
-                    _set_http_scheme(
-                        metric_labels, parsed_url.scheme, sem_conv_opt_in_mode
-                    )
-            if parsed_url.hostname:
-                _set_http_host_client(
-                    metric_labels, parsed_url.hostname, sem_conv_opt_in_mode
-                )
-                _set_http_net_peer_name_client(
-                    metric_labels, parsed_url.hostname, sem_conv_opt_in_mode
-                )
-                if _report_new(sem_conv_opt_in_mode):
-                    _set_http_host_client(
-                        span_attributes,
-                        parsed_url.hostname,
-                        sem_conv_opt_in_mode,
-                    )
-                    # Use semconv library when available
-                    span_attributes[NETWORK_PEER_ADDRESS] = parsed_url.hostname
-            if parsed_url.port:
-                _set_http_peer_port_client(
-                    metric_labels, parsed_url.port, sem_conv_opt_in_mode
-                )
-                if _report_new(sem_conv_opt_in_mode):
-                    _set_http_peer_port_client(
-                        span_attributes, parsed_url.port, sem_conv_opt_in_mode
-                    )
-                    # Use semconv library when available
-                    span_attributes[NETWORK_PEER_PORT] = parsed_url.port
-        except ValueError:
-            pass
-
+        span_attributes = collect_attributes_from_request(request)
         with tracer.start_as_current_span(
-            span_name, kind=SpanKind.CLIENT, attributes=span_attributes
-        ) as span, set_ip_on_next_http_connection(span):
+            span_name, span_type=SpanType.CLIENT, attributes=span_attributes
+        ) as span:
             exception = None
             if callable(request_hook):
                 request_hook(span, request)
 
             headers = get_or_create_headers()
-            inject(headers)
 
-            with suppress_http_instrumentation():
-                start_time = default_timer()
-                try:
-                    result = wrapped_send(
-                        self, request, **kwargs
-                    )  # *** PROCEED
-                except Exception as exc:  # pylint: disable=W0703
-                    exception = exc
-                    result = getattr(exc, "response", None)
-                finally:
-                    elapsed_time = max(default_timer() - start_time, 0)
+            trace_context = TraceContext(
+                trace_id=span.get_trace_id(),
+                span_id=span.get_span_id(),
+            )
+            propagator = get_global_trace_propagator()
+            if propagator:
+                propagator.inject(trace_context, RequestCarrier(headers))
+
+            start_time = default_timer()
+            try:
+                logger.info("Sending headers: %s", request.headers)
+                result = oringinal_send(
+                    self, request, **kwargs
+                )  # *** PROCEED
+            except Exception as exc:  # pylint: disable=W0703
+                exception = exc
+                result = getattr(exc, "response", None)
+            finally:
+                elapsed_time = max(default_timer() - start_time, 0)
 
             if isinstance(result, Response):
                 span_attributes = {}
-                _set_http_status_code_attribute(
-                    span,
-                    result.status_code,
-                    metric_labels,
-                    sem_conv_opt_in_mode,
-                )
+                span_attributes[HTTP_RESPONSE_STATUS_CODE] = result.status_code
 
                 if result.raw is not None:
                     version = getattr(result.raw, "version", None)
                     if version:
                         # Only HTTP/1 is supported by requests
                         version_text = "1.1" if version == 11 else "1.0"
-                        _set_http_network_protocol_version(
-                            metric_labels, version_text, sem_conv_opt_in_mode
-                        )
-                        if _report_new(sem_conv_opt_in_mode):
-                            _set_http_network_protocol_version(
-                                span_attributes,
-                                version_text,
-                                sem_conv_opt_in_mode,
-                            )
-                for key, val in span_attributes.items():
-                    span.set_attribute(key, val)
+                        span_attributes[HTTP_FLAVOR] = version_text
+                span.set_attributes(span_attributes)
 
                 if callable(response_hook):
                     response_hook(span, request, result)
 
-            if exception is not None and _report_new(sem_conv_opt_in_mode):
-                span.set_attribute(ERROR_TYPE, type(exception).__qualname__)
-                metric_labels[ERROR_TYPE] = type(exception).__qualname__
+            if exception is not None:
+                span.record_exception(exception)
 
-            if duration_histogram_old is not None:
-                duration_attrs_old = _filter_semconv_duration_attrs(
-                    metric_labels,
-                    _client_duration_attrs_old,
-                    _client_duration_attrs_new,
-                    _StabilityMode.DEFAULT,
-                )
-                duration_histogram_old.record(
-                    max(round(elapsed_time * 1000), 0),
-                    attributes=duration_attrs_old,
-                )
-            if duration_histogram_new is not None:
-                duration_attrs_new = _filter_semconv_duration_attrs(
-                    metric_labels,
-                    _client_duration_attrs_old,
-                    _client_duration_attrs_new,
-                    _StabilityMode.HTTP,
-                )
-                duration_histogram_new.record(
-                    elapsed_time, attributes=duration_attrs_new
+            if duration_histogram is not None and MetricContext.metric_initialized():
+                MetricContext.histogram_record(
+                    duration_histogram,
+                    elapsed_time,
+                    span_attributes
                 )
 
             if exception is not None:
@@ -182,8 +113,10 @@ def _wrapped_send(
 
         return result
 
+    return instrumented_send
 
-class _InstrumentedSession(Session):
+
+class _InstrumentedSession(sessions.Session):
     """
     An instrumented requests.Session class.
     """
@@ -205,6 +138,13 @@ class _InstrumentedSession(Session):
             unit="s",
             description="Duration of  HTTP client requests."
         )
+        self.send = functools.partial(_wrapped_send(
+            tracer=tracer,
+            excluded_urls=excluded_urls,
+            request_hook=self._request_hook,
+            response_hook=self._response_hook,
+            duration_histogram=duration_histogram
+        ), self)
 
 
 class RequestsInstrumentor(Instrumentor):
@@ -219,3 +159,56 @@ class RequestsInstrumentor(Instrumentor):
         """
         Instruments the requests module.
         """
+        logger.info("requests _instrument entered.")
+        self._original_session = sessions.Session
+        request_hook = kwargs.get("request_hook")
+        response_hook = kwargs.get("response_hook")
+        if callable(request_hook):
+            _InstrumentedSession._request_hook = request_hook
+        if callable(response_hook):
+            _InstrumentedSession._response_hook = response_hook
+        tracer_provider = kwargs.get("tracer_provider")
+        _InstrumentedSession._tracer_provider = tracer_provider
+        excluded_urls = kwargs.get("excluded_urls")
+        _InstrumentedSession._excluded_urls = (
+            get_excluded_urls("FLASK")
+            if excluded_urls is None
+            else parse_excluded_urls(excluded_urls)
+        )
+        sessions.Session = _InstrumentedSession
+        logger.info("requests _instrument exited.")
+
+    def _uninstrument(self, **kwargs):
+        """
+        Uninstruments the requests module.
+        """
+        sessions.Session = self._original_session
+
+
+def instrument_requests(excluded_urls: str = None,
+                        request_hook: Callable = None,
+                        response_hook: Callable = None,
+                        tracer_provider: TraceProvider = None,
+                        **kwargs: Any,
+                        ):
+    """
+    Instruments the requests module.
+    Args:
+        excluded_urls: A comma separated list of URLs to exclude from tracing.
+        request_hook: A function that will be called before a request is sent.  
+            The function will be called with the span and the request.
+        response_hook: A function that will be called after a response is received.
+            The function will be called with the span and the response.
+        tracer_provider: The tracer provider to use. If not provided, the global
+            tracer provider will be used.
+        kwargs: Additional keyword arguments.
+    """
+    all_kwargs = {
+        "excluded_urls": excluded_urls,
+        "request_hook": request_hook,
+        "response_hook": response_hook,
+        "tracer_provider": tracer_provider or get_tracer_provider(),
+        **kwargs
+    }
+    RequestsInstrumentor().instrument(**all_kwargs)
+    logger.info("Requests instrumented.")

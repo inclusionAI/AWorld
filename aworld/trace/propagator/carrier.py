@@ -1,5 +1,6 @@
 from typing import TypeVar
 from aworld.trace.base import Carrier
+from aworld.logs.util import logger
 
 T = TypeVar("T")
 
@@ -31,4 +32,5 @@ class RequestCarrier(Carrier):
         return self.request_headers.get(key)
 
     def set(self, key: str, value: T) -> None:
+        logger.info(f"set request header {key}={value}")
         self.request_headers[key] = value

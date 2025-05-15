@@ -2,6 +2,7 @@ import threading
 import flask
 from aworld.trace.server import get_trace_server
 from aworld.trace.instrumentation.flask import instrument_flask
+from aworld.trace.instrumentation.requests import instrument_requests
 from aworld.logs.util import logger, trace_logger
 import aworld.trace as trace
 import os
@@ -13,6 +14,7 @@ MetricContext.configure(provider="otlp",
                         backend="antmonitor"
                         )
 instrument_flask()
+instrument_requests()
 
 app = flask.Flask(__name__)
 
@@ -29,7 +31,7 @@ thread.start()
 def invoke_api():
     import requests
     response = requests.get('http://localhost:7070/api/test')
-    logger.info("invoke_api response={response.text}")
+    logger.info(f"invoke_api response={response.text}")
 
 
 def main():

@@ -2,8 +2,9 @@ import os
 from re import compile as re_compile
 from re import search
 from typing import Final, Iterable
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from wsgiref.types import WSGIEnvironment
+from requests.models import PreparedRequest
 
 HTTP_REQUEST_METHOD: Final = "http.request.method"
 HTTP_FLAVOR: Final = "http.flavor"
@@ -17,6 +18,7 @@ URL_PATH: Final = "url.path"
 URL_QUERY: Final = "url.query"
 CLIENT_ADDRESS: Final = "client.address"
 CLIENT_PORT: Final = "client.port"
+URL_FULL: Final = "url.full"
 
 HTTP_REQUEST_BODY_SIZE: Final = "http.request.body.size"
 HTTP_REQUEST_HEADER: Final = "http.request.header"
@@ -56,6 +58,22 @@ def collect_request_attributes(environ: WSGIEnvironment):
     if remote_host and remote_host != remote_addr:
         attributes[CLIENT_ADDRESS] = remote_host
     attributes[HTTP_USER_AGENT] = environ.get("HTTP_USER_AGENT", "")
+    return attributes
+
+
+def collect_attributes_from_request(request: PreparedRequest) -> dict[str]:
+    attributes: dict[str] = {}
+
+    url = remove_url_credentials(request.url)
+    attributes[HTTP_REQUEST_METHOD] = request.method
+    attributes[URL_FULL] = url
+    parsed_url = urlparse(url)
+    if parsed_url.scheme:
+        attributes[HTTP_SCHEME] = parsed_url.scheme
+    if parsed_url.hostname:
+        attributes[HTTP_HOST] = parsed_url.hostname
+    if parsed_url.port:
+        attributes[SERVER_PORT] = parsed_url.port
     return attributes
 
 
@@ -104,6 +122,29 @@ def parse_excluded_urls(excluded_urls: str) -> list[str]:
         excluded_url_list = []
 
     return excluded_url_list
+
+
+def remove_url_credentials(url: str) -> str:
+    """Given a string url, remove the username and password only if it is a valid url"""
+
+    try:
+        parsed = urlparse(url)
+        if all([parsed.scheme, parsed.netloc]):  # checks for valid url
+            parsed_url = urlparse(url)
+            _, _, netloc = parsed.netloc.rpartition("@")
+            return urlunparse(
+                (
+                    parsed_url.scheme,
+                    netloc,
+                    parsed_url.path,
+                    parsed_url.params,
+                    parsed_url.query,
+                    parsed_url.fragment,
+                )
+            )
+    except ValueError:  # an unparsable url was passed
+        pass
+    return url
 
 
 def _parse_url_query(url: str):

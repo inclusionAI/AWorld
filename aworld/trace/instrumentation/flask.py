@@ -120,6 +120,8 @@ def _wrapped_before_request(
         if excluded_urls and url_disabled(flask.request.url, excluded_urls):
             return
         flask_request_environ = flask.request.environ
+        logger.info(
+            f"_wrapped_before_request flask_request_environ={flask_request_environ}")
 
         attributes = collect_request_attributes(flask_request_environ)
 
@@ -137,7 +139,7 @@ def _wrapped_before_request(
             trace_context = propagator.extract(
                 RequestCarrier(flask_request_environ))
 
-        logger.info("_wrapped_before_request trace_context={trace_context}")
+        logger.info(f"_wrapped_before_request trace_context={trace_context}")
 
         span = tracer.start_span(
             span_name,

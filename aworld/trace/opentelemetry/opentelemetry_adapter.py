@@ -1,5 +1,6 @@
 import sys
 import os
+from tkinter import NO
 import traceback
 import time
 import datetime
@@ -14,7 +15,8 @@ from opentelemetry.trace import (
     set_span_in_context,
     get_current_span as get_current_otlp_span,
     NonRecordingSpan,
-    SpanContext
+    SpanContext,
+    TraceFlags
 )
 from opentelemetry.sdk.trace import (
     ReadableSpan,
@@ -145,14 +147,28 @@ class OTLPTracer(Tracer):
         span_kind = self._convert_to_span_kind(
             span_type) if span_type else SpanKind.INTERNAL
 
-        with self._tracer.start_as_current_span(name=name,
-                                                kind=span_kind,
-                                                attributes=attributes,
-                                                start_time=start_time,
-                                                record_exception=record_exception,
-                                                set_status_on_exception=set_status_on_exception,
-                                                end_on_exit=end_on_exit) as span:
-            yield OTLPSpan(span)
+        class _OTLPSpanContextManager:
+            def __init__(self, tracer: SDKTracer):
+                self._span_cm = None
+                self._tracer = tracer
+
+            def __enter__(self):
+                self._span_cm = self._tracer.start_as_current_span(
+                    name=name,
+                    kind=span_kind,
+                    attributes=attributes,
+                    start_time=start_time,
+                    record_exception=record_exception,
+                    set_status_on_exception=set_status_on_exception,
+                    end_on_exit=end_on_exit
+                )
+                inner_span = self._span_cm.__enter__()
+                return OTLPSpan(inner_span)
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return self._span_cm.__exit__(exc_type, exc_val, exc_tb)
+
+        return _OTLPSpanContextManager(self._tracer)
 
     def _convert_to_span_kind(self, span_type: SpanType) -> str:
         if span_type == SpanType.INTERNAL:
@@ -169,6 +185,9 @@ class OTLPTracer(Tracer):
             return SpanKind.INTERNAL
 
     def _get_otel_context_from_trace_context(self, trace_context: TraceContext) -> OTLPContext:
+        trace_flags = None
+        if trace_context.trace_flags:
+            trace_flags = TraceFlags(int(trace_context.trace_flags, 16))
         otel_context = otlp_context_api.Context()
         return set_span_in_context(
             NonRecordingSpan(
@@ -176,7 +195,7 @@ class OTLPTracer(Tracer):
                     trace_id=int(trace_context.trace_id, 16),
                     span_id=int(trace_context.span_id, 16),
                     is_remote=True,
-                    trace_flags=TraceContext.trace_flags
+                    trace_flags=trace_flags
                 )
             ),
             otel_context,
