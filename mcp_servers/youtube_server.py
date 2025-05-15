@@ -22,7 +22,7 @@ import traceback
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from youtube_transcript_api import YouTubeTranscriptApi
 
 from aworld.logs.util import logger
 
@@ -47,6 +48,15 @@ class YoutubeDownloadResults(BaseModel):
     file_name: str
     file_size: int
     content_type: Optional[str] = None
+    success: bool
+    error: Optional[str] = None
+
+
+class TranscriptResult(BaseModel):
+    """Transcript result model with transcript information"""
+
+    video_id: str
+    transcript: List[Dict[str, any]]
     success: bool
     error: Optional[str] = None
 
@@ -209,7 +219,7 @@ def download_youtube_files(
                 logger.info(
                     f"Found {video_id} is already downloaded in: {existing_file}"
                 )
-                return result.model_dump_json()
+                return result.json()
 
             logger.info(f"Downloading file from {url} to {file_path}")
 
@@ -223,7 +233,7 @@ def download_youtube_files(
 
             # Get actual file size
             actual_size = os.path.getsize(download_file)
-            logger.success(f"File downloaded successfully to {download_file}")
+            logger.info(f"File downloaded successfully to {download_file}")
 
             # Create result
             result = YoutubeDownloadResults(
@@ -235,7 +245,7 @@ def download_youtube_files(
                 error=None,
             )
 
-            return result.model_dump_json()
+            return result.json()
 
         except Exception as e:
             error_msg = str(e)
@@ -250,11 +260,96 @@ def download_youtube_files(
                 error=error_msg,
             )
 
-            return result.model_dump_json()
+            return result.json()
 
     result_json = _download_single_file(url, output_dir, "", timeout)
     result = YoutubeDownloadResults.model_validate_json(result_json)
-    return result.model_dump_json()
+    return result.json()
+
+
+@mcp.tool(description="Extract transcript from a YouTube video given its video ID.")
+def extract_youtube_transcript(
+    video_id: str = Field(
+        description="The YouTube video ID to extract transcript from. Must be a String."
+    ),
+    language_code: str = Field(
+        "en", description="Language code for the transcript (default: en)."
+    ),
+    translate_to_language: Optional[str] = Field(
+        None, description="Translate transcript to this language code if provided."
+    ),
+) -> str:
+    """Extract transcript from a YouTube video given its video ID.
+
+    Args:
+        video_id: The YouTube video ID to extract transcript from, must be a String
+        language_code: Language code for the transcript (default: en)
+        translate_to_language: Translate transcript to this language code if provided
+
+    Returns:
+        JSON string with transcript information
+    """
+    # Handle Field objects if they're passed directly
+    if hasattr(video_id, "default") and not isinstance(video_id, str):
+        video_id = video_id.default
+
+    if hasattr(language_code, "default") and not isinstance(language_code, str):
+        language_code = language_code.default
+
+    if hasattr(translate_to_language, "default") and not isinstance(
+        translate_to_language, str
+    ):
+        translate_to_language = translate_to_language.default
+
+    try:
+        # Clean video_id if full URL was provided
+        if "youtube.com" in video_id or "youtu.be" in video_id:
+            if "?v=" in video_id:
+                video_id = video_id.split("?v=")[-1].split("&")[0]
+            elif "youtu.be/" in video_id:
+                video_id = video_id.split("youtu.be/")[-1].split("?")[0]
+
+        logger.info(f"Extracting transcript for video ID: {video_id}")
+
+        # Get transcript in specified language
+        if translate_to_language:
+            # Get transcript and translate it
+            y_api = YouTubeTranscriptApi()
+            transcript_list = y_api.list(video_id)
+            transcript = None
+
+            try:
+                # Try to get transcript in specified language
+                transcript = transcript_list.find_transcript([language_code])
+            except Exception:
+                # If specified language not found, get any available transcript
+                transcript = transcript_list.find_generated_transcript(["en"])
+
+            # Translate to target language
+            transcript_data = transcript.translate(translate_to_language).fetch()
+
+        else:
+            # Get transcript without translation
+            transcript_data = YouTubeTranscriptApi.get_transcript(
+                video_id, languages=[language_code]
+            )
+
+        result = TranscriptResult(
+            video_id=video_id, transcript=transcript_data, success=True, error=None
+        )
+
+        logger.info(f"Successfully extracted transcript for video ID: {video_id}")
+        return result.json()
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Transcript extraction error: {traceback.format_exc()}")
+
+        result = TranscriptResult(
+            video_id=video_id, transcript=[], success=False, error=error_msg
+        )
+
+        return result.json()
 
 
 def main():
