@@ -24,6 +24,8 @@ from langchain_openai import ChatOpenAI
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+load_dotenv()
+
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 browser_log_file = os.path.join(os.getenv("LOG_FILE_PATH"), "browser_stdio.log")
 browser_handler = logging.FileHandler(browser_log_file, mode="a", encoding="utf-8")
