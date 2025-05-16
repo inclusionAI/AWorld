@@ -99,11 +99,13 @@ if __name__ == "__main__":
             data_item, file_path=gaia_dataset_path
         )["Question"]
 
+        task = Task(input=question, agent=super_agent, conf=TaskConfig())
         result = Runners.sync_run_task(
-            task=Task(input=question, agent=super_agent, conf=TaskConfig())
+            task=task
         )
 
-        match = re.search(r"<answer>(.*?)</answer>", result.answer)
+        answer = result[task.id].answer
+        match = re.search(r"<answer>(.*?)</answer>", answer)
         if match:
             answer = match.group(1)
             logger.info(f"Agent answer: {answer}")
