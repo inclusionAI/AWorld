@@ -85,6 +85,8 @@ class Pipe:
                 f">>> Gaia Agent: Using model configuration: {selected_model['model']}"
             )
 
+            asyncio.streams._DEFAULT_LIMIT = 10*1024 * 1024  # 10MB
+            
             process = await asyncio.subprocess.create_subprocess_exec(
                 *cmd,
                 cwd="/app/aworld",
@@ -97,44 +99,65 @@ class Pipe:
             logger.info(f">>> Gaia Agent: process={process}")
 
             while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
+                try:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
 
-                line = line.decode("utf-8").rstrip().replace("\[[\d{1,3}m", "")
+                    line = line.decode("utf-8").rstrip()
+                    line = re.sub(r'\x1b\[\d+m', '', line)
 
-                if re.search(r"\d{4}-\d{2}-\d{2}", line) :
-                    if (
-                        " __main__ " in line
-                        or " [agent] " in line
-                        or "ActionModel" in line
-                        or "- INFO - step:" in line
-                        or "mcp observation:" in line
+                    if re.search(r"\d{4}-\d{2}-\d{2}", line) :
+                        if (
+                            " __main__ " in line
+                            or " [agent] " in line
+                            or "finished by tool action: [ActionModel(" in line
+                            or "- INFO - step:" in line
+                            or "mcp observation:" in line
+                        ):
+                            if "[agent] Content (continued):" in line:
+                                line = line.split("[agent] Content (continued):")[1]
+                            elif "finished by tool action: [ActionModel(" in line:
+                                line = line
+                            else:
+                                line = f"\n\n**{line[:23]}**{line[23:]}"
+                            logger.info(f">>> Gaia Agent: line={line}")
+                            yield self._wrap_line(f"{line}")
+                            continue
+                    elif not (
+                        re.search(r"^Starting .* Server...$", line)
+                        or any(
+                            pattern in line
+                            for pattern in [
+                                "`e2b-server` is a powerful",
+                                "Processing request of type",
+                                "No handlers found",
+                                "Serving Flask app",
+                                "Debug mode:",
+                                "Running on http:",
+                                "npm WARN exec The following package was not found",
+                                "ListToolsRequest",
+                            ]
+                        )
                     ):
                         logger.info(f">>> Gaia Agent: line={line}")
                         yield self._wrap_line(f"{line}")
                         continue
-                elif not (
-                    re.search(r"^Starting .* Server...$", line)
-                    or any(pattern in line for pattern in [
-                        "`e2b-server` is a powerful",
-                        "Processing request of type",
-                        "No handlers found",
-                        "Serving Flask app",
-                        "Debug mode:",
-                        "Running on http:",
-                        "npm WARN exec The following package was not found"
-                    ])
-                ):
-                    logger.info(f">>> Gaia Agent: line={line}")
-                    yield self._wrap_line(f"{line}")
-                    continue
 
-                logger.info(f">>> Gaia Agent: ignore line={line}")
+                    logger.info(f">>> Gaia Agent: ignore line={line}")
+                except Exception as e:
+                    # Handle the case where a separator is found but the chunk is too long
+                    if "Separator is found, but chunk is longer than limit" in str(e):
+                        logger.warning(f">>> Gaia Agent: Chunk size limit exceeded: {e}")
+                        continue
+                    else:
+                        logger.error(f">>> Gaia Agent: error={e}, line={line}")
+                        yield self._wrap_line(f"Gaia Agent Error: {e}, line={line}")
+                        break
 
             return_code = await process.wait()
             yield self._wrap_line(f"Process exited with code {return_code}")
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.01)
 
         except Exception as e:
             emsg = traceback.format_exc()

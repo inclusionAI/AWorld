@@ -64,7 +64,8 @@
             "command": "npx",
             "args": [
                 "@playwright/mcp@latest",
-                "--no-sandbox"
+                "--no-sandbox",
+                "--headless"
             ],
             "env": {
                 "PLAYWRIGHT_TIMEOUT": "120000"

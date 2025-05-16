@@ -78,9 +78,13 @@ if __name__ == "__main__":
             "reasoning_server",
         ],
     )
+    
+    mcp_servers = ", ".join(super_agent.mcp_servers)
+    logger.info(
+        f"Agent Info: name=gaia_super_agent, Environment MCP servers={mcp_servers}\n"
+    )
 
-    logger.info(f"Agent Info: name={super_agent.name}, Environment MCP servers={super_agent.mcp_servers}")
-
+    result = None
     try:
         prompt = args.prompt
 
@@ -99,7 +103,7 @@ if __name__ == "__main__":
             task=Task(input=question, agent=super_agent, conf=TaskConfig())
         )
 
-        match = re.search(r"<answer>(.*?)</answer>", result["task_0"]["answer"])
+        match = re.search(r"<answer>(.*?)</answer>", result.answer)
         if match:
             answer = match.group(1)
             logger.info(f"Agent answer: {answer}")
@@ -123,5 +127,5 @@ if __name__ == "__main__":
         logger.info(f"Final Result: {new_result}")
     except Exception as e:
         logger.error(
-            f"Error processing {args.prompt}, result:{result if result else ''}, error: {traceback.format_exc()}"
+            f"Error processing {args.prompt}, result: {result}, error: {traceback.format_exc()}"
         )
