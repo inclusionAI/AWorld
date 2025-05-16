@@ -61,6 +61,10 @@ class ToolResultOutput(Output):
 
     images: list = Field(default=list)
 
+    tool_type: str = Field(default=None)
+
+    tool_name: str = Field(default=None)
+
     def output_type(self):
         return "tool_call_result"
 
