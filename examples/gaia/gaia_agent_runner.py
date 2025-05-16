@@ -79,6 +79,8 @@ if __name__ == "__main__":
         ],
     )
 
+    logger.info(f"Agent Info: name={super_agent.name}, Environment MCP servers={super_agent.mcp_servers}")
+
     try:
         prompt = args.prompt
 
