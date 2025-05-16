@@ -53,7 +53,7 @@ class MCPServer(abc.ABC):
 class _MCPServerWithClientSession(MCPServer, abc.ABC):
     """Base class for MCP servers that use a `ClientSession` to communicate with the server."""
 
-    def __init__(self, cache_tools_list: bool, session_connect_timeout_seconds: int = 3):
+    def __init__(self, cache_tools_list: bool, session_connect_timeout_seconds: int = 5):
         """
         Args:
             cache_tools_list: Whether to cache the tools list. If `True`, the tools list will be
@@ -228,7 +228,7 @@ class MCPServerStdio(_MCPServerWithClientSession):
             name: A readable name for the server. If not provided, we'll create one from the
                 command.
         """
-        super().__init__(cache_tools_list, params.get("env").get("session_connect_timeout", 3))
+        super().__init__(cache_tools_list, int(params.get("env").get("SESSION_REQUEST_CONNECT_TIMEOUT", "5")))
 
         self.params = StdioServerParameters(
             command=params["command"],
