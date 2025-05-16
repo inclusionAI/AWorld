@@ -86,7 +86,7 @@ class Pipe:
             )
 
             asyncio.streams._DEFAULT_LIMIT = 10*1024 * 1024  # 10MB
-            
+
             process = await asyncio.subprocess.create_subprocess_exec(
                 *cmd,
                 cwd="/app/aworld",
@@ -137,12 +137,17 @@ class Pipe:
                                 "Running on http:",
                                 "npm WARN exec The following package was not found",
                                 "ListToolsRequest",
+                                "error msg: Expecting value",
                             ]
                         )
                     ):
-                        logger.info(f">>> Gaia Agent: line={line}")
-                        yield self._wrap_line(f"{line}")
-                        continue
+                        if re.search(r"^```\w+", line):
+                            ls = line.split("```", 1)
+                            line = f"{ls[0]}\n{ls[1:]}"
+                        else:
+                            logger.info(f">>> Gaia Agent: line={line}")
+                            yield self._wrap_line(f"{line}")
+                            continue
 
                     logger.info(f">>> Gaia Agent: ignore line={line}")
                 except Exception as e:
