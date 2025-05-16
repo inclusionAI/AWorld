@@ -152,8 +152,9 @@ class MessageOutput(Output):
         if self.response:
             return self.response
         else:
-            async for item in self.response_generator:
-                pass
+            if self.response_generator:
+                async for item in self.response_generator:
+                    pass
             return self.response
     
     async def __aget_reasoning_generator(self) -> AsyncGenerator[str, None]:
