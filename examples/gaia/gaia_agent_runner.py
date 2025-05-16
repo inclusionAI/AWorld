@@ -47,8 +47,7 @@ if __name__ == "__main__":
 
     load_dotenv()
 
-    gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./GAIA/2023/test")
-    full_dataset = load_dataset_meta_dict(gaia_dataset_path)
+
 
     agent_config = AgentConfig(
         llm_provider=os.getenv("LLM_PROVIDER"),
@@ -88,17 +87,24 @@ if __name__ == "__main__":
     try:
         prompt = args.prompt
 
-        json_data = json.loads(prompt)
-        task_id = json_data["task_id"]
+        question = None
+        try:
+            json_data = json.loads(prompt)
+            task_id = json_data["task_id"]
+            gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./GAIA/2023/test")
+            full_dataset = load_dataset_meta_dict(gaia_dataset_path)
+            data_item = full_dataset[task_id]
+            question = add_file_path(
+                data_item, file_path=gaia_dataset_path
+            )["Question"]
+            logger.info(f"Start to process: {data_item}")
+        except Exception as e:
+            pass
 
-        data_item = full_dataset[task_id]
-
-        logger.info(f"Start to process: {data_item}")
-
-        question = add_file_path(
-            data_item, file_path=gaia_dataset_path
-        )["Question"]
-
+        if not question:
+            logger.warning("Could not find question for prompt, using prompt as question")
+            question = prompt
+        
         task = Task(input=question, agent=super_agent, conf=TaskConfig())
         result = Runners.sync_run_task(
             task=task
