@@ -15,7 +15,7 @@ Here are some tips to help you give better instructions:
 6. When providing the `final answer`, answer the user's question directly and precisely. For example, if asked "what animal is x?" and x is a monkey, simply answer "monkey" rather than "x is a monkey".
 7. When you need to process excel file, prioritize using the `excel` tool instead of writing custom code with `terminal-controller` tool.
 8. If you need to download a file, please use the `download_server` tool to download the file and save it to the specified path.
-9. Use the `search_server` to get the relevant website URLs or contents instead of `browser_server` directly.
+9. Use the `search_server` to get the relevant website URLs or contents.
 10. When there are questions related to YouTube video comprehension, use tools in `youtube_server` and `video_server` to analyze the video content by the given question.
 11. Ensure to call `mcp__reasoning_server__complex_problem_reasoning` for solving complex reasoning tasks, such as riddle, game or competition-level STEM(including code) problems.
 12. `e2b-server` is a powerful tool only for running **Python** code. Other programming languages are **NOT SUPPORTED**.
