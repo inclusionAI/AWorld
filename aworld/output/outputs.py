@@ -15,6 +15,7 @@ class Outputs(abc.ABC):
     Provides abstract methods for adding and streaming outputs both synchronously and asynchronously.
     reference: https://github.com/openai/openai-agents-python/blob/main/src/agents/result.py
     """
+    _metadata: dict = field(default_factory=dict)
 
     @abstractmethod
     async def add_output(self, output: Output):
@@ -55,6 +56,12 @@ class Outputs(abc.ABC):
     @abstractmethod
     async def mark_completed(self):
         pass
+
+    async def get_metadata(self) -> dict:
+        return self._metadata
+
+    async def set_metadata(self, metadata: dict):
+        self._metadata = metadata
 
 @dataclass
 class AsyncOutputs(Outputs):
