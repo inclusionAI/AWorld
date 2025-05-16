@@ -47,8 +47,6 @@ if __name__ == "__main__":
 
     load_dotenv()
 
-
-
     agent_config = AgentConfig(
         llm_provider=os.getenv("LLM_PROVIDER"),
         llm_model_name=os.getenv("LLM_MODEL_NAME"),
@@ -77,7 +75,7 @@ if __name__ == "__main__":
             "reasoning_server",
         ],
     )
-    
+
     mcp_servers = ", ".join(super_agent.mcp_servers)
     logger.info(
         f"Agent Info: name=gaia_super_agent, Environment MCP servers={mcp_servers}\n"
@@ -102,9 +100,9 @@ if __name__ == "__main__":
             pass
 
         if not question:
-            logger.warning("Could not find question for prompt, using prompt as question")
+            logger.warning("Could not find GAIA question for prompt, chat using prompt directly!")
             question = prompt
-        
+
         task = Task(input=question, agent=super_agent, conf=TaskConfig())
         result = Runners.sync_run_task(
             task=task
@@ -122,15 +120,17 @@ if __name__ == "__main__":
             else:
                 logger.info(f"Question {task_id} Incorrect!")
 
-        # Create the new result record
-        new_result = {
-            "task_id": data_item["task_id"],
-            "level": data_item["Level"],
-            "question": question,
-            "answer": data_item["Final answer"],
-            "response": answer,
-            "is_correct": question_scorer(answer, data_item["Final answer"]),
-        }
+            # Create the new result record
+            new_result = {
+                "task_id": data_item["task_id"],
+                "level": data_item["Level"],
+                "question": question,
+                "answer": data_item["Final answer"],
+                "response": answer,
+                "is_correct": question_scorer(answer, data_item["Final answer"]),
+            }
+        else:
+            new_result = answer
 
         logger.info(f"Final Result: {new_result}")
     except Exception as e:
