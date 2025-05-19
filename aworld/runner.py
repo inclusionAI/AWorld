@@ -51,7 +51,6 @@ class Runners:
         Args:
             task: User task define.
             parallel: Whether to process multiple tasks in parallel.
-            view_trace: Whether you want to view the trace log.
         """
         with trace.span(task.name) as span:
             if isinstance(task, Task):
@@ -97,7 +96,6 @@ class Runners:
             agent: An agent with AI model configured, prompts, tools, mcp servers and other agents.
             swarm: Multi-agent topo.
             tool_names: Tool name list.
-            view_trace: Whether you want to view the trace log.
         """
         if agent and swarm:
             raise ValueError("`agent` and `swarm` only choose one.")

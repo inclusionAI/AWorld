@@ -11,14 +11,15 @@ from examples.gym_demo.agent import GymDemoAgent as GymAgent
 
 
 def main():
-    agent = GymAgent(name=Agents.GYM.value, conf=AgentConfig(), tool_names=[Tools.GYM.value])
+    agent = GymAgent(name=Agents.GYM.value, conf=AgentConfig(),
+                     tool_names=[Tools.GYM.value])
     gym_tool = OpenAIGym(name=Tools.GYM.value,
                          conf={"env_id": "CartPole-v1", "render_mode": "human", "render": True})
 
     # It can also be used `ToolFactory` for simplification.
     # gym_tool = ToolFactory(Tools.GYM.value)
     task = Task(agent=agent, tools=[gym_tool])
-    res = Runners.sync_run_task(task=task, view_trace=True)
+    res = Runners.sync_run_task(task=task)
     return res
 
 
