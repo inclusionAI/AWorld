@@ -196,7 +196,12 @@ if __name__ == "__main__":
                 # skip
                 if args.skip and any(
                     # Question Done and Correct
-                    (result["task_id"] == task_id)
+                    (result["task_id"] == task_id and result["answer"] != "<FAILED/>")
+                    or (
+                        result["task_id"] == task_id
+                        and result["answer"] == "<FAILED/>"
+                        and result["level"] == 3
+                    )
                     for result in results
                 ):
                     continue
