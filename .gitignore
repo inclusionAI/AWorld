@@ -76,6 +76,7 @@ docs/api/
 data/raw/
 data/processed/
 data/workspaces/
+gaia-benchmark/
 examples/gaia/gaia_dataset/
 
 # Compiled files
@@ -119,5 +120,13 @@ examples/gaia/gaia_dataset/
 *.pdf
 *.html
 *.wav
+
+# Node Modules
+node_modules/
+package.json
+package-lock.json
+
+.data/
+examples/gaia/GAIA/
 traces*.json
-trace_data/*.json
+trace_data

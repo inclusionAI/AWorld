@@ -1,68 +1,138 @@
 {
-  "mcpServers": {
-      "e2b-server": {
-          "command": "npx",
-          "args": ["-y", "@e2b/mcp-server"],
-          "env": { "E2B_API_KEY": "${E2B_API_KEY}" }
-      },
-      "playwright": {
-          "command": "npx",
-          "args": ["-y", "@executeautomation/playwright-mcp-server"]
-      },
-      "filesystem": {
-          "command": "npx",
-          "args": [
-              "-y",
-              "@modelcontextprotocol/server-filesystem",
-              "${FILESYSTEM_SERVER_WORKDIR}"
-          ]
-      },
-      "terminal-controller": {
-          "command": "python",
-          "args": ["-m", "terminal_controller"]
-      },
-      "calculator": {
-          "command": "python",
-          "args": ["-m", "mcp_server_calculator"]
-      },
-      "excel": {
-          "url":  "http://localhost:8000/sse"
-      },
-      "google-search": {
-          "command": "npx",
-          "args": [
-              "-y",
-              "@adenot/mcp-google-search"
-          ],
-          "env": {
-              "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
-              "GOOGLE_SEARCH_ENGINE_ID": "${GOOGLE_SEARCH_ENGINE_ID}"
-          }
-      },
-      "ms-playwright": {
-          "command": "npx",
-          "args": [
-            "@playwright/mcp@latest"
-          ],
-          "env": {
-            "PLAYWRIGHT_TIMEOUT": "120000"
-          }
-      },
-      "audio_server": {
-          "command": "python",
-          "args": ["-m", "mcp_servers.audio_server"]
-      },
-      "image_server": {
-          "command": "python",
-          "args": ["-m", "mcp_servers.image_server"]
-      },
-      "youtube_download_server": {
-          "command": "python",
-          "args": ["-m", "mcp_servers.youtube_download_server"]
-      },
-      "video_server": {
-          "command": "python",
-          "args": ["-m", "mcp_servers.video_server"]
-      }
-  }
+    "mcpServers": {
+        "e2b-server": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@e2b/mcp-server"
+            ],
+            "env": {
+                "E2B_API_KEY": "${E2B_API_KEY}"
+            }
+        },
+        "filesystem": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "${FILESYSTEM_SERVER_WORKDIR}"
+            ]
+        },
+        "terminal-controller": {
+            "command": "python",
+            "args": [
+                "-m",
+                "terminal_controller"
+            ]
+        },
+        "calculator": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_server_calculator"
+            ]
+        },
+        "excel": {
+            "command": "npx",
+            "args": [
+                "--yes",
+                "@negokaz/excel-mcp-server"
+            ],
+            "env": {
+                "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
+            }
+        },
+        "playwright": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@executeautomation/playwright-mcp-server"
+            ]
+        },
+        "google-search": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@adenot/mcp-google-search"
+            ],
+            "env": {
+                "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+                "GOOGLE_SEARCH_ENGINE_ID": "${GOOGLE_SEARCH_ENGINE_ID}"
+            }
+        },
+        "ms-playwright": {
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest",
+                "--no-sandbox",
+                "--headless"
+            ],
+            "env": {
+                "PLAYWRIGHT_TIMEOUT": "120000"
+            }
+        },
+        "audio_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.audio_server"
+            ]
+        },
+        "image_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.image_server"
+            ]
+        },
+        "youtube_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.youtube_server"
+            ]
+        },
+        "video_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.video_server"
+            ]
+        },
+        "search_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.search_server"
+            ]
+        },
+        "download_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.download_server"
+            ]
+        },
+        "document_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.document_server"
+            ]
+        },
+        "browser_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.browser_server"
+            ]
+        },
+        "reasoning_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.reasoning_server"
+            ]
+        }
+    }
 }

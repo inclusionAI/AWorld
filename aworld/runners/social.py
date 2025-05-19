@@ -17,6 +17,8 @@ from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import override_in_subclass
+import aworld.trace as trace
+import json
 
 
 class SocialRunner(TaskRunner):
@@ -40,63 +42,81 @@ class SocialRunner(TaskRunner):
         results = []
         swarm_resp = None
         self.loop_detect = []
-        try:
-            while step < max_steps:
-                # Loose protocol
-                result_dict = await self._process(observation=observation, info=info)
-                results.append(result_dict)
+        # Use trace.span to record the entire task execution process
+        with trace.span(f"task_execution_{self.task.id}", attributes={
+            "task_id": self.task.id,
+            "task_name": self.task.name,
+            "start_time": start
+        }) as task_span:
+            try:
+                while step < max_steps:
+                    # Loose protocol
+                    result_dict = await self._process(observation=observation, info=info)
+                    results.append(result_dict)
 
-                swarm_resp = result_dict.get("response")
-                logger.info(f"Step: {step} response:\n {result_dict}")
+                    swarm_resp = result_dict.get("response")
+                    logger.info(f"Step: {step} response:\n {result_dict}")
 
-                step += 1
-                if self.swarm.finished or self._loop_detect():
-                    logger.info("task done!")
-                    break
+                    step += 1
+                    if self.swarm.finished or self._loop_detect():
+                        logger.info("task done!")
+                        break
 
-                if not swarm_resp:
-                    logger.warning(f"Step: {step} swarm no valid response")
-                    break
+                    if not swarm_resp:
+                        logger.warning(f"Step: {step} swarm no valid response")
+                        break
 
-                observation = result_dict.get("observation")
-                if not observation:
-                    observation = Observation(content=swarm_resp)
-                else:
-                    observation.content = swarm_resp
+                    observation = result_dict.get("observation")
+                    if not observation:
+                        observation = Observation(content=swarm_resp)
+                    else:
+                        observation.content = swarm_resp
 
-            time_cost = time.time() - start
-            if not results:
-                logger.warning("task no result!")
+                time_cost = time.time() - start
+                if not results:
+                    logger.warning("task no result!")
+                    task_span.set_attributes({
+                        "status": "failed",
+                        "error": f"task no result!"
+                    })
+                    return TaskResponse(msg=traceback.format_exc(),
+                                        answer='',
+                                        success=False,
+                                        id=self.task.id,
+                                        time_cost=time_cost,
+                                        usage=self.context.token_usage)
+
+                answer = results[-1].get('observation').content if results[-1].get('observation') else swarm_resp
+                return TaskResponse(answer=answer,
+                                    success=True,
+                                    id=self.task.id,
+                                    time_cost=(time.time() - start),
+                                    usage=self.context.token_usage)
+            except Exception as e:
+                logger.error(f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
+                task_span.set_attributes({
+                    "status": "failed",
+                    "error": f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}"
+                })
                 return TaskResponse(msg=traceback.format_exc(),
                                     answer='',
                                     success=False,
                                     id=self.task.id,
-                                    time_cost=time_cost,
+                                    time_cost=(time.time() - start),
                                     usage=self.context.token_usage)
-
-            answer = results[-1].get('observation').content if results[-1].get('observation') else swarm_resp
-            return TaskResponse(answer=answer,
-                                success=True,
-                                id=self.task.id,
-                                time_cost=(time.time() - start),
-                                usage=self.context.token_usage)
-        except Exception as e:
-            logger.error(f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
-            return TaskResponse(msg=traceback.format_exc(),
-                                answer='',
-                                success=False,
-                                id=self.task.id,
-                                time_cost=(time.time() - start),
-                                usage=self.context.token_usage)
-        finally:
-            color_log(f"task token usage: {self.context.token_usage}",
-                      color=Color.pink,
-                      logger_=trace_logger)
-            for _, tool in self.tools.items():
-                if isinstance(tool, AsyncTool):
-                    await tool.close()
-                else:
-                    tool.close()
+            finally:
+                color_log(f"task token usage: {self.context.token_usage}",
+                          color=Color.pink,
+                          logger_=trace_logger)
+                for _, tool in self.tools.items():
+                    if isinstance(tool, AsyncTool):
+                        await tool.close()
+                    else:
+                        tool.close()
+                task_span.set_attributes({
+                    "end_time": time.time(),
+                    "duration": time.time() - start,
+                })
 
     async def _process(self, observation, info) -> Dict[str, Any]:
         if not self.swarm.initialized:
@@ -106,6 +126,8 @@ class SocialRunner(TaskRunner):
         step = 0
         max_steps = self.conf.get("max_steps", 100)
         self.swarm.cur_agent = self.swarm.communicate_agent
+        pre_agent_name = None
+
         # use communicate agent every time
         if override_in_subclass('async_policy', self.swarm.cur_agent.__class__, Agent):
             policy: List[ActionModel] = self.swarm.cur_agent.run(observation,
@@ -119,6 +141,19 @@ class SocialRunner(TaskRunner):
                                                                              stream=self.conf.get("stream", False))
         if not policy:
             logger.warning(f"current agent {self.swarm.cur_agent.name()} no policy to use.")
+            exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
+            with trace.span(f"step_execution_{exp_id}") as step_span:
+                step_span.set_attributes({
+                    "exp_id": exp_id,
+                    "task_id": self.task.id,
+                    "task_name": self.task.name,
+                    "trace_id": trace.get_current_span().get_trace_id(),
+                    "step": step,
+                    "agent_id": self.swarm.cur_agent.name(),
+                    "pre_agent": pre_agent_name,
+                    "observation": json.dumps(observation.model_dump(exclude_none=True), ensure_ascii=False),
+                    "actions": json.dumps([action.model_dump() for action in policy], ensure_ascii=False)
+                })
             return {"msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
                     "steps": step,
                     "success": False,
@@ -133,31 +168,46 @@ class SocialRunner(TaskRunner):
         try:
             while step < max_steps:
                 terminated = False
-                if self.is_agent(policy[0]):
-                    status, info = await self._social_agent(policy, step)
-                    if status == 'normal':
-                        self.swarm.cur_agent = self.swarm.agents.get(policy[0].agent_name)
-                        policy = info
-                    # clear observation
-                    observation = None
-                elif is_tool_by_name(policy[0].tool_name):
-                    status, terminated, info = await self._social_tool_call(policy, step)
-                    if status == 'normal':
-                        observation = info
-                else:
-                    logger.warning(f"Unrecognized policy: {policy[0]}")
-                    return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
-                            "response": "",
-                            "steps": step,
-                            "success": False}
+                exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
+                with trace.span(f"step_execution_{exp_id}") as step_span:
+                    step_span.set_attributes({
+                        "exp_id": exp_id,
+                        "task_id": self.task.id,
+                        "task_name": self.task.name,
+                        "trace_id": trace.get_current_span().get_trace_id(),
+                        "step": step,
+                        "agent_id": self.swarm.cur_agent.name(),
+                        "pre_agent": pre_agent_name,
+                        "observation": json.dumps(observation.model_dump(exclude_none=True), ensure_ascii=False),
+                        "actions": json.dumps([action.model_dump() for action in policy], ensure_ascii=False)
+                    })
 
-                if status == 'break':
-                    return_entry = info
-                    break
-                elif status == 'return':
-                    return info
+                    if self.is_agent(policy[0]):
+                        status, info = await self._social_agent(policy, step)
+                        if status == 'normal':
+                            self.swarm.cur_agent = self.swarm.agents.get(policy[0].agent_name)
+                            policy = info
+                        # clear observation
+                        observation = None
+                    elif is_tool_by_name(policy[0].tool_name):
+                        status, terminated, info = await self._social_tool_call(policy, step)
+                        if status == 'normal':
+                            observation = info
+                    else:
+                        logger.warning(f"Unrecognized policy: {policy[0]}")
+                        return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
+                                "response": "",
+                                "steps": step,
+                                "success": False}
+
+                    if status == 'break':
+                        return_entry = info
+                        break
+                    elif status == 'return':
+                        return info
 
                 step += 1
+                pre_agent_name = self.swarm.cur_agent.name()
                 if terminated and self.swarm.cur_agent.finished:
                     logger.info(f"{self.swarm.cur_agent.name()} finished")
                     break
@@ -264,6 +314,7 @@ class SocialRunner(TaskRunner):
     async def _social_tool_call(self, policy: List[ActionModel], step: int):
         observation = None
         terminated = False
+        reward = 0
         # group action by tool name
         tool_mapping = dict()
         # Directly use or use tools after creation.
@@ -309,6 +360,9 @@ class SocialRunner(TaskRunner):
             log_ob = Observation(content='' if observation.content is None else observation.content,
                                  action_result=observation.action_result)
             color_log(f"{tool_name} observation: {log_ob}", color=Color.green)
+        source_span = trace.get_current_span()
+        if source_span:
+            source_span.set_attribute("reward", reward)
 
         # The tool results give itself, exit; give to other agents, continue
         tmp_name = policy[0].agent_name
@@ -373,3 +427,13 @@ class SocialRunner(TaskRunner):
                         return True
 
         return False
+
+    def _get_step_span_id(self, step, cur_agent_name):
+        key = (step, cur_agent_name)
+        if key not in self.step_agent_counter:
+            self.step_agent_counter[key] = 0
+        else:
+            self.step_agent_counter[key] += 1
+        exp_index = self.step_agent_counter[key]
+
+        return f"{self.task.id}_{step}_{cur_agent_name}_{exp_index}"

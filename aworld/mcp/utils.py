@@ -59,7 +59,7 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                     "type": "function",
                     "function": openai_function_schema,
                 })
-            logging.debug(f"✅ server #{i + 1} ({server.name}) connected success，tools: {len(tools)}")
+            logging.info(f"✅ server #{i + 1} ({server.name}) connected success，tools: {len(tools)}")
 
         except Exception as e:
             logging.error(f"❌ server #{i + 1} ({server.name}) connect fail: {e}")

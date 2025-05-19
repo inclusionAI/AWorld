@@ -1,0 +1,14 @@
+*.egg-info
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+.github
+.vscode
+.gitignore
+.git
+.env
+__pycache__
+*.log.*
+.data
