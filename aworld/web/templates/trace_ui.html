@@ -15,6 +15,15 @@
         .trace-bar:hover {
             transform: scaleY(1.1);
         }
+
+        .selected-span {
+            background-color: #ebf8ff;
+            border-left: 2px solid #3b82f6;
+        }
+
+        .child-span {
+            opacity: 0.8;
+        }
     </style>
 </head>
 
@@ -70,13 +79,40 @@
                             </div>
                         </div>
                         <ul v-if="trace.expanded" class="ml-8 mt-2 space-y-2">
-                            <li v-for="(span, spanIndex) in getAllSpans(trace.root_span[0])" :key="spanIndex"
-                                class="p-2 text-sm border-l-2 border-blue-200 hover:bg-blue-50 cursor-pointer"
-                                @click="selectSpan(span)">
-                                <div class="text-gray-700" v-text="span.name"></div>
-                                <div class="text-xs text-gray-500"
-                                    v-text="formatTime(span.start_time) + ' (' + span.duration_ms.toFixed(2) + 'ms)'">
+                            <li v-for="(span, spanIndex) in trace.root_span[0].children" :key="spanIndex"
+                                class="p-2 text-sm border-l-2 border-blue-200 hover:bg-blue-50"
+                                :class="{'selected-span': selectedSpan && selectedSpan.span_id === span.span_id}">
+                                <div class="flex items-center">
+                                    <span v-if="span.children && span.children.length > 0"
+                                        class="mr-2 text-gray-500 cursor-pointer" @click.stop="toggleSpan(span, $event)"
+                                        v-text="isSpanExpanded(span) ? '−' : '+'"></span>
+                                    <div class="cursor-pointer" @click.stop="selectSpan(span)">
+                                        <div class="text-gray-700" v-text="span.name"></div>
+                                        <div class="text-xs text-gray-500"
+                                            v-text="formatTime(span.start_time) + ' (' + span.duration_ms.toFixed(2) + 'ms)'">
+                                        </div>
+                                    </div>
                                 </div>
+
+                                <ul v-if="isSpanExpanded(span)" class="ml-6 mt-1">
+                                    <li v-for="(child, childIndex) in span.children" :key="childIndex"
+                                        class="p-1 text-xs border-l-2 border-blue-100 hover:bg-blue-50"
+                                        :class="{'child-span': selectedSpan && selectedSpan.span_id !== child.span_id, 
+                                                'selected-span': selectedSpan && selectedSpan.span_id === child.span_id}">
+                                        <div class="flex items-center">
+                                            <span v-if="child.children && child.children.length > 0"
+                                                class="mr-1 text-gray-400 cursor-pointer"
+                                                @click.stop="toggleSpan(child, $event)"
+                                                v-text="isSpanExpanded(child) ? '−' : '+'"></span>
+                                            <div class="cursor-pointer" @click.stop="selectSpan(child)">
+                                                <div class="text-gray-600" v-text="child.name"></div>
+                                                <div class="text-xs text-gray-400"
+                                                    v-text="formatTime(child.start_time) + ' (' + child.duration_ms.toFixed(2) + 'ms)'">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </li>
+                                </ul>
                             </li>
                         </ul>
                     </li>
@@ -156,7 +192,8 @@
                 traces: [],
                 selectedSpan: null,
                 searchQuery: '',
-                selectedTrace: null
+                selectedTrace: null,
+                expandedSpans: new Set()  // Used to store expanded span IDs
             },
             mounted() {
                 this.fetchTraces();
@@ -179,32 +216,23 @@
                     fetch('/api/traces')
                         .then(response => response.json())
                         .then(data => {
-                            // Save current expanded state and selected trace/span
-                            const expandedStates = this.traces.reduce((acc, trace, index) => {
-                                acc[trace.trace_id] = trace.expanded;
-                                return acc;
-                            }, {});
-
-                            const selectedTraceId = this.selectedTrace?.trace_id;
+                            const expandedStates = new Set(this.expandedSpans);
                             const selectedSpanId = this.selectedSpan?.span_id;
 
-                            // Update trace data and restore state
                             this.traces = data.map(trace => ({
                                 ...trace,
-                                expanded: expandedStates[trace.trace_id] || false
+                                expanded: this.traces.find(t => t.trace_id === trace.trace_id)?.expanded || false
                             }));
 
-                            // Restore selected trace and span
-                            if (selectedTraceId) {
-                                this.selectedTrace = this.traces.find(t => t.trace_id === selectedTraceId);
-                            }
-                            if (selectedSpanId && this.selectedTrace) {
-                                const allSpans = this.getAllSpans(this.selectedTrace.root_span[0]);
+                            this.expandedSpans = expandedStates;
+
+                            if (selectedSpanId) {
+                                const allSpans = this.getAllSpans();
                                 this.selectedSpan = allSpans.find(s => s.span_id === selectedSpanId);
                             }
                         })
                         .catch(error => {
-                            console.error('Error loading traces:', error);  // Add error handling
+                            console.error('Error loading traces:', error);
                         });
                 },
                 toggleTrace(index) {
@@ -212,6 +240,9 @@
                     const originalIndex = this.traces.findIndex(t => t.trace_id === filteredTrace.trace_id);
                     if (originalIndex !== -1) {
                         this.traces[originalIndex].expanded = !this.traces[originalIndex].expanded;
+                        if (this.traces[originalIndex].expanded) {
+                            this.selectSpan(this.traces[originalIndex].root_span[0]);
+                        }
                     }
                 },
                 selectSpan(span) {
@@ -223,16 +254,31 @@
                         this.selectedSpan = trace.root_span[0];
                     }
                 },
-                getAllSpans(rootSpan) {
+                getAllSpans(rootSpan, level = 0) {
                     const spans = [];
-                    const collectSpans = (span) => {
-                        spans.push(span);
-                        if (span.children) {
-                            span.children.forEach(child => collectSpans(child));
+                    const collectSpans = (span, currentLevel) => {
+                        spans.push({ ...span, level: currentLevel });
+                        if (span.children && span.children.length > 0 && this.isSpanExpanded(span)) {
+                            span.children.forEach(child => collectSpans(child, currentLevel + 1));
                         }
                     };
-                    collectSpans(rootSpan);
-                    return spans.slice(1); // Exclude root span itself
+                    collectSpans(rootSpan, level);
+                    return spans;
+                },
+                isSpanExpanded(span) {
+                    return this.expandedSpans.has(span.span_id);
+                },
+                toggleSpan(span, event) {
+                    if (event) {
+                        event.stopPropagation();
+                        event.preventDefault();
+                    }
+                    if (this.isSpanExpanded(span)) {
+                        this.expandedSpans.delete(span.span_id);
+                    } else {
+                        this.expandedSpans.add(span.span_id);
+                    }
+                    this.$forceUpdate();
                 },
                 generateColor(traceId) {
                     // Generate more vibrant colors
