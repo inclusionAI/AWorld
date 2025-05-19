@@ -8,6 +8,7 @@ import os
 from typing import List, Dict, Any
 from datetime import datetime
 from opentelemetry.sdk.trace import Span
+import threading
 
 class ExpMeta:
     def __init__(self, task_id: str, task_name: str, agent_id: str, step: int, execute_time: float, pre_agent: str = None):
@@ -61,6 +62,17 @@ class DataRow:
         }
 
 class ReplayBufferExporter:
+    _file_locks = {}
+    _lock_dict_lock = threading.Lock()
+
+    @classmethod
+    def _get_file_lock(cls, file_path):
+        """Get the lock for the specified file"""
+        with cls._lock_dict_lock:
+            if file_path not in cls._file_locks:
+                cls._file_locks[file_path] = threading.Lock()
+            return cls._file_locks[file_path]
+
     @classmethod
     def replay_buffer_exporter(cls, spans: list[dict[str, Any]], output_dir: str):
         """
@@ -143,28 +155,32 @@ class ReplayBufferExporter:
             
             # Read existing data (if any)
             output_path = os.path.join(output_dir, f"task_replay_{task_id}.json")
-            if os.path.exists(output_path):
-                try:
-                    with open(output_path, 'r', encoding='utf-8') as f:
-                        existing_data = json.load(f)
-                        data_rows.extend([DataRow(
-                            row['id'],
-                            ExpMeta(**row['exp_meta']),
-                            Experience(**row['exp_data'])
-                        ) for row in existing_data])
-                except Exception as e:
-                    print(f"Failed to read existing file {output_path}: {str(e)}")
             
-            # Add new data
-            for exp_id, group in exp_groups.items():
-                if group['exp_meta'] and group['exp_data']:
-                    row = DataRow(exp_id, group['exp_meta'], group['exp_data'])
-                    data_rows.append(row)
+            # Use thread lock to protect read and write operations
+            file_lock = cls._get_file_lock(output_path)
+            with file_lock:
+                if os.path.exists(output_path):
+                    try:
+                        with open(output_path, 'r', encoding='utf-8') as f:
+                            existing_data = json.load(f)
+                            data_rows.extend([DataRow(
+                                row['id'],
+                                ExpMeta(**row['exp_meta']),
+                                Experience(**row['exp_data'])
+                            ) for row in existing_data])
+                    except Exception as e:
+                        print(f"Failed to read existing file {output_path}: {str(e)}")
                 
-            # Sort by execute_time
-            data_rows.sort(key=lambda x: x.exp_meta.execute_time)
-            
-            # Export to json
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump([row.to_dict() for row in data_rows], f, ensure_ascii=False, indent=2)
-            print(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
+                # Add new data
+                for exp_id, group in exp_groups.items():
+                    if group['exp_meta'] and group['exp_data']:
+                        row = DataRow(exp_id, group['exp_meta'], group['exp_data'])
+                        data_rows.append(row)
+                    
+                # Sort by execute_time
+                data_rows.sort(key=lambda x: x.exp_meta.execute_time)
+                
+                # Export to json
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump([row.to_dict() for row in data_rows], f, ensure_ascii=False, indent=2)
+                print(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
