@@ -185,6 +185,7 @@ if __name__ == "__main__":
                     # Question Done and Incorrect, but Level is 3
                     (
                         result["task_id"] == task_id
+                        and args.split == "validation"
                         and not result["is_correct"]
                         and dataset_i["Level"] == 3
                     )
@@ -282,6 +283,10 @@ if __name__ == "__main__":
                 main_logger.removeHandler(target_handler)
                 common_logger.removeHandler(target_handler)
                 root_logger.removeHandler(target_handler)
+
+                for logger_handler in task_logger.handlers:
+                    logger_handler.close()
+                logger_cache.pop(task_id, None)
     except KeyboardInterrupt:
         pass
     finally:
