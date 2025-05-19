@@ -5,9 +5,7 @@ RUN mkdir /app/aworld
 
 RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm
 
-ARG PIP_OPTIONS='-i https://pypi.tuna.tsinghua.edu.cn/simple'
-
-RUN pip install -U pip pysocks ${PIP_OPTIONS}
+ARG PIP_OPTIONS='-i https://mirrors.aliyun.com/pypi/simple/'
 
 # Install Chrome Driver
 RUN cd /app/aworld/ && \
@@ -18,11 +16,11 @@ ENV CHROME_DRIVER_PATH=/app/aworld/chromedriver-linux64/chromedriver
 
 # Install AWorld Dependencies
 COPY ./aworld/requirements.txt /app/aworld/aworld/requirements.txt
-RUN pip install -r /app/aworld/aworld/requirements.txt --resume-retries 5 ${PIP_OPTIONS}
+RUN pip install -r /app/aworld/aworld/requirements.txt ${PIP_OPTIONS}
 
 COPY ./examples/gaia/requirements.txt /app/aworld/examples/gaia/requirements.txt
 # Install Gaia
-RUN pip install -r /app/aworld/examples/gaia/requirements.txt --resume-retries 5 ${PIP_OPTIONS}
+RUN pip install -r /app/aworld/examples/gaia/requirements.txt ${PIP_OPTIONS}
 
 # Config Env
 RUN npx playwright install chrome
