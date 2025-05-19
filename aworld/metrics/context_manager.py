@@ -33,11 +33,16 @@ class MetricContext:
             cls.shutdown()
         if provider == "prometheus":
             from aworld.metrics.prometheus.prometheus_adapter import configure_prometheus_provider
-            configure_prometheus_provider(backend, base_url, write_token, **kwargs)
+            configure_prometheus_provider(
+                backend, base_url, write_token, **kwargs)
         elif provider == "otlp":
             from aworld.metrics.opentelemetry.opentelemetry_adapter import configure_otlp_provider
             configure_otlp_provider(backend, base_url, write_token, **kwargs)
         cls._initialized = True
+
+    @classmethod
+    def metric_initialized(cls):
+        return cls._initialized
 
     @staticmethod
     def get_or_create_metric(template: MetricTemplate):
@@ -50,7 +55,7 @@ class MetricContext:
                                                           template.labels)
         elif template.type == MetricType.UPDOWNCOUNTER:
             metric = get_metric_provider().create_un_down_counter(template.name, template.description, template.unit,
-                                                                template.labels)
+                                                                  template.labels)
         elif template.type == MetricType.GAUGE:
             metric = get_metric_provider().create_gauge(template.name, template.description, template.unit,
                                                         template.labels)
@@ -120,6 +125,7 @@ class MetricContext:
         if provider:
             provider.shutdown()
         cls._initialized = False
+
 
 class ApiMetricTracker:
     """
