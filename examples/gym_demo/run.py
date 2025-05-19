@@ -11,7 +11,8 @@ from examples.gym_demo.agent import GymDemoAgent as GymAgent
 
 
 def main():
-    agent = GymAgent(name=Agents.GYM.value, conf=AgentConfig(), tool_names=[Tools.GYM.value])
+    agent = GymAgent(name=Agents.GYM.value, conf=AgentConfig(),
+                     tool_names=[Tools.GYM.value])
     gym_tool = OpenAIGym(name=Tools.GYM.value,
                          conf={"env_id": "CartPole-v1", "render_mode": "human", "render": True})
 

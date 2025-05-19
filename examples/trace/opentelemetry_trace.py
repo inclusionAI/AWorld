@@ -1,3 +1,6 @@
+from aworld.trace.server import get_trace_server
+from aworld.logs.util import logger, trace_logger
+import aworld.trace as trace
 import os
 
 # os.environ["START_TRACE_SERVER"] = "false"

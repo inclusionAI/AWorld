@@ -18,6 +18,7 @@ datasets>=2.16.0,<2.19.0
 tornado~=6.4.2
 terminal_controller # mcp server: https://github.com/GongRzhe/terminal-controller-mcp
 mcp_server_calculator # mcp server: https://github.com/githejie/mcp-server-calculator
+executing~=2.2.0
 
 ######### [optional] #########
 # optional requirements will also be installed by all extensions,
@@ -39,6 +40,5 @@ opentelemetry-api~=1.32.1
 opentelemetry-exporter-otlp~=1.32.1
 opentelemetry-instrumentation-system-metrics~=0.53b1
 aiohttp~=3.11.16
-executing~=2.2.0
 requests~=2.32.3
 loguru~=0.7.3
