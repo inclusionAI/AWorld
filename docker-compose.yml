@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile_gaia
     container_name: gaia
+    platform: linux/amd64
     volumes:
       - ./.env:/app/aworld/.env
       - ./examples/gaia/openwebui-patch/ca81bd47c050_add_config_table.py:/app/backend/open_webui/migrations/versions/ca81bd47c050_add_config_table.py

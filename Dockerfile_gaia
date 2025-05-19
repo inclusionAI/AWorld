@@ -1,5 +1,5 @@
 # FROM ghcr.io/open-webui/open-webui:main as base
-FROM --platform=linux/amd64 ghcr.io/open-webui/open-webui:main as base
+FROM ghcr.io/open-webui/open-webui:main as base
 
 RUN mkdir /app/aworld
 
