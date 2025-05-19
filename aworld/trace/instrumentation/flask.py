@@ -72,11 +72,7 @@ def _rewrapped_app(
                 if propagator and span:
                     trace_context = TraceContext(
                         trace_id=span.get_trace_id(),
-                        span_id=span.get_span_id(),
-                        attributes={
-                            "version": "00",
-                            "trace_flags": "01"
-                        }
+                        span_id=span.get_span_id()
                     )
                     propagator.inject(
                         trace_context, ResponseCarrier(response_headers))
