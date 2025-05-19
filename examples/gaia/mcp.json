@@ -65,7 +65,8 @@
             "args": [
                 "@playwright/mcp@latest",
                 "--no-sandbox",
-                "--headless"
+                "--headless",
+                "--disable-gpu"
             ],
             "env": {
                 "PLAYWRIGHT_TIMEOUT": "120000"
