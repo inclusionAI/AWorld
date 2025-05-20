@@ -40,6 +40,7 @@ from aworld.trace.base import (
     set_tracer_provider
 )
 from aworld.logs.util import logger
+from aworld.utils.common import get_local_ip
 from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
 from ..constants import ATTRIBUTES_MESSAGE_KEY
 from .export import FileSpanExporter, NoOpSpanExporter
@@ -373,16 +374,3 @@ def _configure_otlp_exporter(base_url: str = None) -> None:
         session=session,
         compression=Compression.Gzip,
     )
-
-def get_local_ip():
-    try:
-        # build UDP socket
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # connect to a external address (no need to connect)
-        s.connect(("8.8.8.8", 80))
-        # get local IP
-        local_ip = s.getsockname()[0]
-        s.close()
-        return local_ip
-    except Exception:
-        return "127.0.0.1"
