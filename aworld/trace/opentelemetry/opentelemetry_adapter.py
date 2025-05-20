@@ -38,6 +38,7 @@ from aworld.trace.base import (
     TraceContext,
     set_tracer_provider
 )
+from aworld.trace.propagator import get_global_trace_context
 from aworld.logs.util import logger
 from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
 from ..constants import ATTRIBUTES_MESSAGE_KEY
@@ -111,6 +112,7 @@ class OTLPTracer(Tracer):
             trace_context: Optional[TraceContext] = None
     ) -> "Span":
         otel_context = None
+        trace_context = trace_context or get_global_trace_context().get_and_clear()
         if trace_context:
             otel_context = self._get_otel_context_from_trace_context(
                 trace_context)
@@ -147,6 +149,7 @@ class OTLPTracer(Tracer):
         span_kind = self._convert_to_span_kind(
             span_type) if span_type else SpanKind.INTERNAL
         otel_context = None
+        trace_context = trace_context or get_global_trace_context().get_and_clear()
         if trace_context:
             otel_context = self._get_otel_context_from_trace_context(
                 trace_context)
