@@ -311,6 +311,7 @@ class NoOpTracer(Tracer):
             record_exception: bool = True,
             set_status_on_exception: bool = True,
             end_on_exit: bool = True,
+            trace_context: Optional['TraceContext'] = None
     ) -> Iterator[Span]:
         yield NoOpSpan()
 
