@@ -4,6 +4,7 @@ import traceback
 import time
 import datetime
 import requests
+import socket
 from threading import Lock
 from typing import Any, Iterator, Sequence, Optional, TYPE_CHECKING
 from contextvars import Token
@@ -316,7 +317,8 @@ def configure_otlp_provider(
             logger.info("Using in-memory storage for traces.")
             if (os.getenv("START_TRACE_SERVER") or "true").lower() == "true":
                 logger.info("Starting trace server on port 8000.")
-                storage = kwargs.get("storage", InMemoryWithPersistStorage())
+                storage_dir = os.path.join("./", get_local_ip(), "trace_data")
+                storage = kwargs.get("storage", InMemoryWithPersistStorage(storage_dir=storage_dir))
                 processor.add_span_processor(
                     BatchSpanProcessor(InMemorySpanExporter(storage)))
                 start_trace_server(storage=storage, port=8000)
@@ -371,3 +373,16 @@ def _configure_otlp_exporter(base_url: str = None) -> None:
         session=session,
         compression=Compression.Gzip,
     )
+
+def get_local_ip():
+    try:
+        # build UDP socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # connect to a external address (no need to connect)
+        s.connect(("8.8.8.8", 80))
+        # get local IP
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return "127.0.0.1"
