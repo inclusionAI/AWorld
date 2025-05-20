@@ -1,7 +1,7 @@
 
 # Check your env file
-if [ ! -f ".env" ]; then
-    echo "Please add your own .env config file from template .env.template before running gaia test!"
+if [ ! -f ".env.docker" ]; then
+    echo "Please add your own .env.docker config file from template .env.template before running gaia test!"
     exit 1
 fi
 

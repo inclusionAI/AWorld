@@ -28,9 +28,9 @@
 4. **API Configuration**
    - Set up your environment variables:
      ```bash
-     cp .env.template .env
+     cp .env.template .env.docker
      ```
-   - Edit `.env` file and replace all `{YOUR_CONFIG}` placeholders with your actual values
+   - Edit `.env.docker` file and replace all `{YOUR_CONFIG}` placeholders with your actual values
 
 ## Running the Benchmark
 
