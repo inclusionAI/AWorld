@@ -7,7 +7,7 @@ from aworld.trace.instrumentation.http_util import (
     url_disabled,
     parser_host_port_url_from_asgi
 )
-from aworld.trace.base import Span, TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
+from aworld.trace.base import Span, TraceProvider, TraceContext, Tracer, SpanType
 from aworld.trace.propagator import get_global_trace_propagator
 from aworld.trace.propagator.carrier import DictCarrier, ListTupleCarrier
 from aworld.metrics.metric import MetricType

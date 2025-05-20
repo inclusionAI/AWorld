@@ -18,7 +18,6 @@ from requests import sessions
 from requests.models import PreparedRequest, Response
 from requests.structures import CaseInsensitiveDict
 from typing import Collection, Any, Callable
-import aworld.trace as trace
 from aworld.trace.base import TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
 from aworld.trace.propagator import get_global_trace_propagator
 

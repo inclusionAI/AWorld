@@ -1,6 +1,5 @@
 import threading
 import flask
-from aworld.trace.server import get_trace_server
 from aworld.trace.instrumentation.flask import instrument_flask
 from aworld.trace.instrumentation.requests import instrument_requests
 from aworld.logs.util import logger, trace_logger
