@@ -62,18 +62,18 @@ class Instrumentor(ABC):
                 requirement = Requirement(dependence)
             except InvalidRequirement as exc:
                 logger.warning(
-                    'error parsing dependency, reporting as a conflict: "{dependence}" - {exc}')
+                    f'error parsing dependency, reporting as a conflict: "{dependence}" - {exc}')
                 return False
             try:
                 dist_version = version(requirement.name)
             except PackageNotFoundError as exc:
                 logger.warning(
-                    'dependency not found, reporting as a conflict: "{dependence}" - {exc}')
+                    f'dependency not found, reporting as a conflict: "{dependence}" - {exc}')
                 return False
 
             if requirement.specifier and not requirement.specifier.contains(dist_version):
                 logger.warning(
-                    'dependency version conflict, reporting as a conflict: requested: "{self.required}" but found: "{self.found}"')
+                    f'dependency version conflict, reporting as a conflict: requested: "{self.required}" but found: "{self.found}"')
                 return False
 
         return True
