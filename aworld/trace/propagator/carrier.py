@@ -5,32 +5,38 @@ from aworld.logs.util import logger
 T = TypeVar("T")
 
 
-class ResponseCarrier(Carrier):
+class ListTupleCarrier(Carrier):
 
-    def __init__(self, response_headers: list[tuple[str, T]]):
-        self.response_headers = response_headers
+    def __init__(self, headers: list[tuple[str, T]]):
+        self.headers = headers
 
     def get(self, key: str) -> T:
-        for header, value in self.response_headers:
-            if header.lower() == key.lower():
-                return value
+        for header, value in self.headers:
+            header_str = header.decode(
+                'utf-8') if isinstance(header, bytes) else header
+            key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+            if header_str.lower() == key_str.lower():
+                return value.decode('utf-8') if isinstance(value, bytes) else value
         return None
 
     def set(self, key: str, value: T) -> None:
-        for i, (header, _) in enumerate(self.response_headers):
-            if header.lower() == key.lower():
-                self.response_headers[i] = (header, value)
+        for i, (header, _) in enumerate(self.headers):
+            header_str = header.decode(
+                'utf-8') if isinstance(header, bytes) else header
+            key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+            if header_str.lower() == key_str.lower():
+                self.headers[i] = (header, value)
                 return
-        self.response_headers.append((key, value))
+        self.headers.append((key, value))
 
 
-class RequestCarrier(Carrier):
-    def __init__(self, request_headers: dict[str, T]):
-        self.request_headers = request_headers
+class DictCarrier(Carrier):
+    def __init__(self, headers: dict[str, T]):
+        self.headers = headers
 
     def get(self, key: str) -> T:
-        return self.request_headers.get(key)
+        return self.headers.get(key)
 
     def set(self, key: str, value: T) -> None:
-        logger.info(f"set request header {key}={value}")
-        self.request_headers[key] = value
+        logger.info(f"set header {key}={value}")
+        self.headers[key] = value

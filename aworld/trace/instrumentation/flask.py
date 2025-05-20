@@ -19,7 +19,7 @@ from aworld.trace.instrumentation.http_util import (
 )
 from aworld.trace.propagator import get_global_trace_propagator
 from aworld.metrics.context_manager import MetricContext
-from aworld.trace.propagator.carrier import ResponseCarrier, RequestCarrier
+from aworld.trace.propagator.carrier import ListTupleCarrier, DictCarrier
 
 _ENVIRON_STARTTIME_KEY = "aworld-flask.starttime_key"
 _ENVIRON_SPAN_KEY = "aworld-flask.span_key"
@@ -72,14 +72,10 @@ def _rewrapped_app(
                 if propagator and span:
                     trace_context = TraceContext(
                         trace_id=span.get_trace_id(),
-                        span_id=span.get_span_id(),
-                        attributes={
-                            "version": "00",
-                            "trace_flags": "01"
-                        }
+                        span_id=span.get_span_id()
                     )
                     propagator.inject(
-                        trace_context, ResponseCarrier(response_headers))
+                        trace_context, ListTupleCarrier(response_headers))
 
                 if span and span.is_recording():
                     status_code_str, _ = status.split(" ", 1)
@@ -137,7 +133,7 @@ def _wrapped_before_request(
         trace_context = None
         if propagator:
             trace_context = propagator.extract(
-                RequestCarrier(flask_request_environ))
+                DictCarrier(flask_request_environ))
 
         logger.info(f"_wrapped_before_request trace_context={trace_context}")
 
