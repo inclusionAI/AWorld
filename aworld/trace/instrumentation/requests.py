@@ -7,7 +7,7 @@ from typing import Collection, Any, Callable
 import aworld.trace as trace
 from aworld.trace.base import TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
 from aworld.trace.propagator import get_global_trace_propagator
-from aworld.trace.propagator.carrier import RequestCarrier
+from aworld.trace.propagator.carrier import DictCarrier
 from aworld.trace.instrumentation import Instrumentor
 from aworld.metrics.metric import MetricType
 from aworld.metrics.template import MetricTemplate
@@ -69,7 +69,7 @@ def _wrapped_send(
             )
             propagator = get_global_trace_propagator()
             if propagator:
-                propagator.inject(trace_context, RequestCarrier(headers))
+                propagator.inject(trace_context, DictCarrier(headers))
 
             start_time = default_timer()
             try:

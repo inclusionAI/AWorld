@@ -138,6 +138,7 @@ class OTLPTracer(Tracer):
             record_exception: bool = True,
             set_status_on_exception: bool = True,
             end_on_exit: bool = True,
+            trace_context: Optional[TraceContext] = None
     ) -> Iterator["Span"]:
 
         start_time = start_time or time.time_ns()
@@ -145,6 +146,10 @@ class OTLPTracer(Tracer):
         attributes.setdefault(ATTRIBUTES_MESSAGE_KEY, name)
         span_kind = self._convert_to_span_kind(
             span_type) if span_type else SpanKind.INTERNAL
+        otel_context = None
+        if trace_context:
+            otel_context = self._get_otel_context_from_trace_context(
+                trace_context)
 
         class _OTLPSpanContextManager:
             def __init__(self, tracer: SDKTracer):
@@ -155,6 +160,7 @@ class OTLPTracer(Tracer):
                 self._span_cm = self._tracer.start_as_current_span(
                     name=name,
                     kind=span_kind,
+                    context=otel_context,
                     attributes=attributes,
                     start_time=start_time,
                     record_exception=record_exception,

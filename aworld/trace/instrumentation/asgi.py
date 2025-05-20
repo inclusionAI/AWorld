@@ -9,8 +9,31 @@ from aworld.trace.instrumentation.http_util import (
 )
 from aworld.trace.base import Span, TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
 from aworld.trace.propagator import get_global_trace_propagator
+from aworld.trace.propagator.carrier import DictCarrier, ListTupleCarrier
 from aworld.metrics.metric import MetricType
 from aworld.metrics.template import MetricTemplate
+from aworld.logs.util import logger
+
+
+def _wrapped_receive(
+    server_span: Span,
+    server_span_name: str,
+    scope: dict[str, Any],
+    receive: Callable[[], Awaitable[dict[str, Any]]],
+    attributes: dict[str],
+    client_request_hook: Callable = None
+):
+
+    @wraps(receive)
+    async def otel_receive():
+        message = await receive()
+        if client_request_hook and callable(client_request_hook):
+            client_request_hook(scope, message)
+
+        server_span.set_attribute("asgi.event.type", message.get("type", ""))
+        return message
+
+    return otel_receive
 
 
 def _wrapped_send(
@@ -19,6 +42,7 @@ def _wrapped_send(
     scope: dict[str, Any],
     send: Callable[[dict[str, Any]], Awaitable[None]],
     attributes: dict[str],
+    client_response_hook: Callable = None
 ):
     expecting_trailers = False
 
@@ -34,8 +58,15 @@ def _wrapped_send(
 
         # raw_headers = message.get("headers")
         # if raw_headers:
-        server_span.set_attribute(
-            "http.response.status_code", status_code)
+        if status_code:
+            server_span.set_attribute(
+                "http.response.status_code", status_code)
+
+        if callable(client_response_hook):
+            client_response_hook(scope, message)
+
+        if message["type"] == "http.response.start":
+            expecting_trailers = message.get("trailers", False)
 
         propagator = get_global_trace_propagator()
         if propagator:
@@ -44,18 +75,10 @@ def _wrapped_send(
                 span_id=server_span.get_span_id()
             )
             propagator.inject(
-                trace_context, ResponseCarrier(response_headers))
-
-        content_length = asgi_getter.get(message, "content-length")
-        if content_length:
-            try:
-                self.content_length_header = int(content_length[0])
-            except ValueError:
-                pass
+                trace_context, DictCarrier(message))
 
         await send(message)
 
-        # pylint: disable=too-many-boolean-expressions
         if (
             not expecting_trailers
             and message["type"] == "http.response.body"
@@ -79,7 +102,8 @@ class TraceMiddleware:
             self,
             app,
             excluded_urls=None,
-            tracer_provider=None,
+            tracer_provider: TraceProvider = None,
+            tracer: Tracer = None,
             server_request_hook: Callable = None,
             client_request_hook: Callable = None,
             client_response_hook: Callable = None,):
@@ -89,9 +113,11 @@ class TraceMiddleware:
         self.server_request_hook = server_request_hook
         self.client_request_hook = client_request_hook
         self.client_response_hook = client_response_hook
-        self.tracer: Tracer = self.tracer_provider.get_tracer(
+
+        self.tracer: Tracer = (self.tracer_provider.get_tracer(
             "aworld.trace.instrumentation.asgi"
-        )
+        ) if tracer is None else tracer)
+
         self.duration_histogram = MetricTemplate(
             type=MetricType.HISTOGRAM,
             name="asgi_request_duration_histogram",
@@ -126,27 +152,42 @@ class TraceMiddleware:
 
         if scope["type"] == "http" and MetricContext.metric_initialized():
             MetricContext.inc(self.active_requests_counter, 1, attributes)
+
+        trace_context = None
+        propagator = get_global_trace_propagator()
+        if propagator:
+            trace_context = propagator.extract(
+                ListTupleCarrier(scope.get("headers", [])))
+            logger.info(
+                f"asgi extract trace_context: {trace_context}, scope: {scope}")
         try:
             with self.tracer.start_as_current_span(
-                span_name, span_type=SpanType.SERVER, attributes=attributes
+                span_name, span_type=SpanType.SERVER, trace_context=trace_context, attributes=attributes
             ) as span:
 
                 if callable(self.server_request_hook):
                     self.server_request_hook(scope)
 
-                await self.app(scope, receive, send)
+                wrappered_receive = _wrapped_receive(
+                    span,
+                    span_name,
+                    scope,
+                    receive,
+                    attributes,
+                    self.client_request_hook
+                )
+                wrappered_send = _wrapped_send(
+                    span,
+                    span_name,
+                    scope,
+                    send,
+                    attributes,
+                    self.client_response_hook
+                )
+
+                await self.app(scope, wrappered_receive, wrappered_send)
         finally:
             if scope["type"] == "http":
-                target = _collect_target_attribute(scope)
-                if target:
-                    path, query = _parse_url_query(target)
-                    _set_http_target(
-                        attributes,
-                        target,
-                        path,
-                        query,
-                        self._sem_conv_opt_in_mode,
-                    )
                 duration_s = default_timer() - start
 
                 if MetricContext.metric_initialized():
@@ -158,48 +199,5 @@ class TraceMiddleware:
                     MetricContext.inc(
                         self.active_requests_counter, -1, attributes)
 
-                if target:
-                    duration_attrs_old[SpanAttributes.HTTP_TARGET] = target
-                duration_attrs_new = _parse_duration_attrs(
-                    attributes, _StabilityMode.HTTP
-                )
-                if self.duration_histogram_old:
-                    self.duration_histogram_old.record(
-                        max(round(duration_s * 1000), 0), duration_attrs_old
-                    )
-                if self.duration_histogram_new:
-                    self.duration_histogram_new.record(
-                        max(duration_s, 0), duration_attrs_new
-                    )
-                self.active_requests_counter.add(
-                    -1, active_requests_count_attrs
-                )
-                if self.content_length_header:
-                    if self.server_response_size_histogram:
-                        self.server_response_size_histogram.record(
-                            self.content_length_header, duration_attrs_old
-                        )
-                    if self.server_response_body_size_histogram:
-                        self.server_response_body_size_histogram.record(
-                            self.content_length_header, duration_attrs_new
-                        )
-
-                request_size = asgi_getter.get(scope, "content-length")
-                if request_size:
-                    try:
-                        request_size_amount = int(request_size[0])
-                    except ValueError:
-                        pass
-                    else:
-                        if self.server_request_size_histogram:
-                            self.server_request_size_histogram.record(
-                                request_size_amount, duration_attrs_old
-                            )
-                        if self.server_request_body_size_histogram:
-                            self.server_request_body_size_histogram.record(
-                                request_size_amount, duration_attrs_new
-                            )
-            if token:
-                context.detach(token)
             if span.is_recording():
                 span.end()
