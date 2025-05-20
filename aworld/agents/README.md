@@ -73,7 +73,7 @@ Summarize the following text in one clear and concise paragraph, capturing the k
 Ensure the summary is easy to understand and avoids excessive detail.
 
 Here are the content: 
-{content}
+{task}
 """
 
 summary = Agent(

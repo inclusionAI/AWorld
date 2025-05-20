@@ -12,7 +12,8 @@ from langchain_core.messages import HumanMessage, BaseMessage, AIMessage, ToolMe
 from pydantic import ValidationError
 
 from aworld.config.common import Agents, Tools
-from aworld.core.agent.base import AgentFactory, Agent, AgentResult
+from aworld.core.agent.base import AgentFactory, AgentResult
+from aworld.core.agent.llm_agent import Agent
 from aworld.agents.browser.prompts import SystemPrompt
 from aworld.agents.browser.utils import convert_input_messages, extract_json_from_model_output, estimate_messages_tokens
 from aworld.agents.browser.common import AgentState, AgentStepInfo, AgentHistory, PolicyMetadata, AgentBrain
