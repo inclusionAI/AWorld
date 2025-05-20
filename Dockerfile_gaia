@@ -31,7 +31,8 @@ COPY . /app/aworld
 
 # Create GAIA benchmark directory
 RUN mkdir -p /app/aworld/gaia-benchmark/fs && \
-    mkdir -p /app/aworld/gaia-benchmark/logs
+    mkdir -p /app/aworld/gaia-benchmark/logs && \
+    mkdir -p /app/aworld/static
 
 ENV HF_HUB_OFFLINE=1
 ENV ENABLE_OLLAMA_API=False
