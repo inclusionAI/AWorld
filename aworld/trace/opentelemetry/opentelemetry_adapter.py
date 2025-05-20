@@ -318,7 +318,7 @@ def configure_otlp_provider(
             logger.info("Using in-memory storage for traces.")
             if (os.getenv("START_TRACE_SERVER") or "true").lower() == "true":
                 logger.info("Starting trace server on port 8000.")
-                storage_dir = os.path.join("./", get_local_ip(), "trace_data")
+                storage_dir = os.path.join("./", "trace_data_" + get_local_ip())
                 storage = kwargs.get("storage", InMemoryWithPersistStorage(storage_dir=storage_dir))
                 processor.add_span_processor(
                     BatchSpanProcessor(InMemorySpanExporter(storage)))
