@@ -30,7 +30,7 @@ class InputDocument(BaseModel):
                       desc="document analysis",
                       supported_action=DocumentExecuteAction,
                       conf_file_name=f'{Tools.DOCUMENT_ANALYSIS.value}_tool.yaml')
-class DocumentTool(Tool[Observation, ActionModel]):
+class DocumentTool(Tool):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
         """Init document tool."""
         import_package('cv2', install_name='opencv-python')

@@ -21,7 +21,7 @@ ALL_UNICODE_CHARS = frozenset(chr(i) for i in range(0x10FFFF + 1))
                       desc="android",
                       supported_action=AndroidAction,
                       conf_file_name=f'{Tools.ANDROID.value}_tool.yaml')
-class AndroidTool(Tool[Observation, List[ActionModel]]):
+class AndroidTool(Tool):
 
     def __init__(self, conf: AndroidToolConfig, **kwargs):
         super(AndroidTool, self).__init__(conf, **kwargs)

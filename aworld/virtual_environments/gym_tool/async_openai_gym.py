@@ -20,7 +20,7 @@ class ActionType(object):
 
 
 @ToolFactory.register(name=Tools.GYM.value, desc="gym classic control game", asyn=True, supported_action=GymAction)
-class OpenAIGym(AsyncTool[Observation, List[ActionModel]]):
+class OpenAIGym(AsyncTool):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, BaseModel], **kwargs) -> None:
         """Gym environment constructor.
 

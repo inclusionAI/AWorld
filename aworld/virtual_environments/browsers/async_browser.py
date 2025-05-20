@@ -9,9 +9,10 @@ import subprocess
 import traceback
 from importlib import resources
 from pathlib import Path
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, Tuple, List, Union
 
 from aworld.config.common import Tools
+from aworld.core.event.base import Message
 from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
@@ -34,7 +35,7 @@ ASCII = "".join(chr(x) for x in range(32, 128))
                       asyn=True,
                       supported_action=BrowserAction,
                       conf_file_name=f'{Tools.BROWSER.value}_tool.yaml')
-class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
+class BrowserTool(AsyncTool):
     def __init__(self, conf: BrowserToolConfig, **kwargs) -> None:
         super(BrowserTool, self).__init__(conf)
 
@@ -286,8 +287,8 @@ class BrowserTool(AsyncTool[Observation, List[ActionModel]]):
         if self.initialized:
             await self.context_manager.__aexit__()
 
-    async def step(self, action: List[ActionModel], **kwargs) -> Tuple[
-        Observation, float, bool, bool, Dict[str, Any]]:
+    async def do_step(self, action: List[ActionModel], **kwargs) -> Tuple[
+        Union[Observation, Message], float, bool, bool, Dict[str, Any]]:
         if not self.initialized:
             raise RuntimeError("Call init first before calling step.")
 

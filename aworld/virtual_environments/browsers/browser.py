@@ -13,6 +13,7 @@ from typing import Any, Dict, Tuple, List, Union
 
 from aworld.config import ConfigDict
 from aworld.config.common import Tools
+from aworld.core.event.base import Message
 from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
@@ -35,7 +36,7 @@ ASCII = "".join(chr(x) for x in range(32, 128))
                       desc="browser",
                       supported_action=BrowserAction,
                       conf_file_name=f'{Tools.BROWSER.value}_tool.yaml')
-class BrowserTool(Tool[Observation, List[ActionModel]]):
+class BrowserTool(Tool):
     def __init__(self, conf: Union[ConfigDict, BrowserToolConfig], **kwargs) -> None:
         super(BrowserTool, self).__init__(conf, **kwargs)
 
@@ -287,7 +288,8 @@ class BrowserTool(Tool[Observation, List[ActionModel]]):
         if self.initialized:
             self.context_manager.__exit__()
 
-    def step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+    def do_step(self, action: List[ActionModel], **kwargs) -> Tuple[
+        Union[Observation, Message], float, bool, bool, Dict[str, Any]]:
         if not self.initialized:
             raise RuntimeError("Call init first before calling step.")
 

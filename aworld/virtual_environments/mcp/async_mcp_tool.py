@@ -6,7 +6,8 @@ from typing import Any, Dict, Tuple, List, Union
 from aworld.config.common import Tools
 from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.common import ActionModel, Observation
-from aworld.core.envs.tool import Tool, ToolFactory, AsyncTool
+from aworld.core.envs.tool import ToolFactory, AsyncTool
+from aworld.core.event.base import Message
 from aworld.logs.util import logger
 from aworld.virtual_environments.mcp.executor import MCPToolExecutor
 from aworld.virtual_environments.utils import build_observation
@@ -15,7 +16,7 @@ from aworld.virtual_environments.utils import build_observation
 @ToolFactory.register(name=Tools.MCP.value,
                       desc="mcp execute tool",
                       asyn=True)
-class McpTool(AsyncTool[Observation, List[ActionModel]]):
+class McpTool(AsyncTool):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         """Initialize the McpTool.
 
@@ -35,9 +36,9 @@ class McpTool(AsyncTool[Observation, List[ActionModel]]):
         # default only close playwright
         await self.action_executor.close(self.conf.get('close_servers', ['ms-playwright']))
 
-    async def step(self,
+    async def do_step(self,
              actions: list[ActionModel],
-             **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
+             **kwargs) -> Tuple[Union[Observation, Message], float, bool, bool, dict[str, Any]]:
         """Step of tool.
 
         Args:

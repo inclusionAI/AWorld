@@ -20,7 +20,7 @@ from aworld.virtual_environments.utils import build_observation
                       desc="shell execute tool",
                       supported_action=ShellAction,
                       conf_file_name=f'{Tools.SHELL.value}_tool.yaml')
-class ShellTool(Tool[Observation, List[ActionModel]]):
+class ShellTool(Tool):
     """
     used to execute shell commands, providing initialization, execution, and exit functions.
     """

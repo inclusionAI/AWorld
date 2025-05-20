@@ -21,7 +21,7 @@ class ActionType(object):
                       desc="gym classic control game",
                       supported_action=GymAction,
                       conf_file_name=f'{Tools.GYM.value}_tool.yaml')
-class OpenAIGym(Tool[Observation, List[ActionModel]]):
+class OpenAIGym(Tool):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         """Gym environment constructor.
 

@@ -19,7 +19,7 @@ from aworld.virtual_environments.utils import build_observation
                       desc="python interpreter tool",
                       supported_action=PythonToolAction,
                       conf_file_name=f'{Tools.PYTHON_EXECUTE.value}_tool.yaml')
-class PythonTool(Tool[Observation, List[ActionModel]]):
+class PythonTool(Tool):
 
     def __init__(self,
                  conf: ToolConfig,
