@@ -10,6 +10,8 @@ import re
 
 logger = logging.getLogger(__name__)
 
+line_output_prefix = "$$$GAIA_FMT_OUTPUT$$$"
+
 
 class Pipe:
     class Valves(BaseModel):
@@ -98,6 +100,8 @@ class Pipe:
 
             logger.info(f">>> Gaia Agent: process={process}")
 
+            yield self._response_line("## GAIA agent start!")
+
             while True:
                 try:
                     line = await process.stdout.readline()
@@ -105,23 +109,16 @@ class Pipe:
                         break
 
                     line = line.decode("utf-8").rstrip()
-                    
+
                     print(f">>> Gaia Agent: {line}")
 
-                    gaia_output_line_tag = "GA_FMT_CONTENT:"
-                    if line.startswith(gaia_output_line_tag):
-                        
-                        line = line[len(gaia_output_line_tag) :]
+                    if line.startswith(line_output_prefix):
+
+                        line = line[len(line_output_prefix) :]
+
+                        line = json.loads(line)
 
                         yield self._response_line(line)
-
-                        # resp = json.loads(line)
-                        # if resp.get("type") == "text":
-                        #     self._response_line(resp.get("text"))
-                        # elif resp.get("type") == "tool_result":
-                        #     self._response_line(resp.get("result"))
-                        # elif resp.get("type") == "tool_call":
-                        #     self._response_line(resp.get("call"))
 
                 except Exception as e:
                     # Handle the case where a separator is found but the chunk is too long
@@ -131,15 +128,17 @@ class Pipe:
                         )
                         continue
                     else:
-                        logger.error(f">>> Gaia Agent: error={e}, line={line}")
+                        logger.error(
+                            f">>> Gaia Agent Error: error={traceback.format_exc()}, line={line}"
+                        )
                         yield self._response_line(f"Gaia Agent Error: {e}, line={line}")
                         break
                 finally:
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.001)
 
         except Exception as e:
             emsg = traceback.format_exc()
-            logger.error(f">>> Gaia Agent: exception {emsg}")
+            logger.error(f">>> Gaia Agent Error: exception {emsg}")
             yield self._response_line(f"Gaia Agent Error: {emsg}")
 
         finally:
@@ -162,7 +161,4 @@ class Pipe:
             yield self._response_line(f"[Done]Gaia Task End!")
 
     def _response_line(self, line: str):
-        line = json.loads(line)
-        # line = line.replace("<think>", "<_think_>")
-        # line = line.replace("</think>", "<_think_/>")
         return f"{line}\n"

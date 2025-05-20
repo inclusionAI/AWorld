@@ -1,4 +1,3 @@
-import argparse
 import asyncio
 import json
 import logging
@@ -24,7 +23,6 @@ from examples.gaia.utils import (
 )
 from examples.gaia.markdown_aworld_ui import MarkdownAworldUI
 
-
 aworld_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(aworld_path)
 
@@ -35,14 +33,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-
-# Create log directory if it doesn't exist
-# if not os.path.exists(os.getenv("LOG_FILE_PATH")):
-#     os.makedirs(os.getenv("LOG_FILE_PATH"))
-
-with open("output.md", "a") as f:
-    f.truncate(0)
 
 def judge_answer(data_item: Dict, result: Output):
     answer = result
@@ -72,12 +62,16 @@ def judge_answer(data_item: Dict, result: Output):
     logger.info(f"## Final Result:\n \n```\n{json.dumps(new_result, indent=2)}\n```")
 
 def send_output(output):
-    with open("output.md", "a") as f:
+    line_output_prefix = "$$$GAIA_FMT_OUTPUT$$$"
+    output = json.dumps(output, indent=None)
+    print(f"\n{line_output_prefix} {output}\n")
+    output_dir = os.path.join( os.path.dirname(os.path.abspath(__file__)), "output" )
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    with open(os.path.join(output_dir, "output.md"), "a") as f:
         f.write(f"{output}\n")
 
 async def main():
-    send_output("## GAIA agent start!")
-
     import argparse
 
     parser = argparse.ArgumentParser()
@@ -115,11 +109,12 @@ async def main():
         ],
     )
 
-    mcp_server_status = ""
+    mcp_server_status = "\n```mcp_server_status\n"
     for i in super_agent.mcp_servers:
-        mcp_server_status += f"    - {i}\n"
+        mcp_server_status += f"- {i}\n"
+    mcp_server_status += "```\n"
 
-    send_output(f"### MCP Server Status:\n{mcp_server_status}")
+    send_output(f"{mcp_server_status}")
 
     result = None
     try:
@@ -135,14 +130,14 @@ async def main():
             question = add_file_path(
                 data_item, file_path=gaia_dataset_path
             )["Question"]
-            send_output(f"### GAIA Question: \n```\n{json.dumps(data_item, indent=2)}\n```")
+            send_output(f"\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```")
         except Exception as e:
             pass
 
         if not question:
             logger.warning("Could not find GAIA question for prompt, chat using prompt directly!")
             send_output(
-                f"### Your Question: \n```\n{json.dumps(prompt, indent=2)}```\n"
+                f"\n```question\n{json.dumps(prompt, indent=2)}```\n"
             )
             question = prompt
 

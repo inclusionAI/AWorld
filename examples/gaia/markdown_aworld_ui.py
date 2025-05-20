@@ -64,9 +64,9 @@ class MarkdownAworldUI(AworldUI):
         tool_result
         """
         fn_args = await self.json_parse(output.origin_tool_call.function.arguments);
-        fn_args = re.sub(r"^```"," ```",fn_args)
+        fn_args = re.sub(r"^```", " ` ` `", fn_args, flags=re.MULTILINE)
         fn_results = await self.json_parse(output.data);
-        fn_results = re.sub(r"^```"," ```",fn_results)
+        fn_results = re.sub(r"^```", " ` ` `", fn_results, flags=re.MULTILINE)
         tool_data = tool_call_template.format(
             function_name=output.origin_tool_call.function.name,
             function_arguments=fn_args,
