@@ -7,6 +7,7 @@ import pkgutil
 import re
 import sys
 import threading
+import socket
 from types import FunctionType
 from typing import Callable, Any, Tuple, List, Iterator, Dict, Union
 
@@ -202,3 +203,16 @@ def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
         if elem not in usage and not ignore_zero:
             result[elem] = count
     return result
+
+def get_local_ip():
+    try:
+        # build UDP socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # connect to an external address (no need to connect)
+        s.connect(("8.8.8.8", 80))
+        # get local IP
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        return "127.0.0.1"
