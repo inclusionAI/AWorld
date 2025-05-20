@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from aworld.config.conf import AgentConfig, ToolConfig
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.agents import BrowserAgent
 from aworld.agents.browser.config import BrowserAgentConfig
 from aworld.config import ModelConfig

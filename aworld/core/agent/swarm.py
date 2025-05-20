@@ -31,6 +31,7 @@ class Swarm(object):
         self.sequence = sequence
         self.max_steps = max_steps
         self.initialized = False
+        self._finished = False
         self._cur_step = 0
         self._event_driven = kwargs.get('event_driven', False)
         for agent in self._topology:
@@ -224,4 +225,10 @@ class Swarm(object):
     def finished(self) -> bool:
         """Need all agents in a finished state."""
         self._check()
-        return all([agent.finished for _, agent in self.agents.items()])
+        if not self._finished:
+            self._finished = all([agent.finished for _, agent in self.agents.items()])
+        return self._finished
+
+    @finished.setter
+    def finished(self, finished):
+        self._finished = finished

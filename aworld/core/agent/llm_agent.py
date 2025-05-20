@@ -2,7 +2,10 @@
 # Copyright (c) 2025 inclusionAI.
 import json
 import traceback
+import uuid
 from typing import Dict, Any, List, Union, Callable
+
+from mypyc.build import group_name
 
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.agent_desc import get_agent_desc
@@ -22,6 +25,7 @@ from aworld.output.base import StepOutput, MessageOutput
 from aworld.utils.common import sync_exec
 
 AgentPolicy = Union[List[ActionModel], Message, None]
+
 
 class Agent(BaseAgent[Observation, Union[List[ActionModel], Message]]):
     """Basic agent for unified protocol within the framework."""
@@ -302,26 +306,47 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], Message]]):
                         args = str(tool_call.function.arguments)[:1000]
                         logger.info(f"[agent] Tool args: {args}...")
 
-    def _agent_result(self, agent_result: AgentResult):
+    def _agent_result(self, agent_result: AgentResult, caller: str):
         if not self.event_driven:
             return agent_result.actions
-        else:
-            actions = agent_result.actions
-            if not actions:
-                raise Exception(f'{self.name()} no action decision has been made.')
 
-            if is_agent(actions[0]):
-                return Message(payload=actions,
-                               sender=self.name(),
-                               receiver=actions[0].tool_name,
-                               session_id=self.context.session_id,
-                               category=EventType.AGENT)
+        actions = agent_result.actions
+        if not actions:
+            raise Exception(f'{self.name()} no action decision has been made.')
+
+        tools = {}
+        agents = []
+        for action in actions:
+            if is_agent(action):
+                agents.append(action)
             else:
-                return Message(payload=actions,
-                               sender=self.name(),
-                               topic=EventType.TOOL,
-                               session_id=self.context.session_id,
-                               category=EventType.TOOL)
+                if action.tool_name not in tools:
+                    tools[action.tool_name] = []
+                tools[action.tool_name].append(action)
+
+        _group_name = None
+        # agents and tools exist simultaneously, more than one agent/tool name
+        if (agents and tools) or len(agents) > 1 or len(tools) > 1:
+            _group_name = f"{self.name()}_{uuid.uuid1().hex}"
+
+        # complex processing
+        if _group_name:
+            for action in actions:
+                action.group_name = _group_name
+            return Message(payload=actions,
+                           caller=caller,
+                           sender=self.name(),
+                           session_id=self.context.session_id,
+                           category=EventType.AGENT,
+                           group_name=_group_name)
+        else:
+            message = Message(payload=actions,
+                              caller=caller,
+                              sender=self.name(),
+                              receiver=actions[0].tool_name,
+                              session_id=self.context.session_id)
+            message.category = EventType.AGENT if agents else EventType.TOOL
+            return message
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> AgentPolicy:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
@@ -398,7 +423,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], Message]]):
         if output:
             output.add_part(MessageOutput(source=llm_response, json_parse=False))
             output.mark_finished()
-        return self._agent_result(agent_result)
+        return self._agent_result(agent_result,
+                                  observation.from_agent_name if observation.from_agent_name else observation.observer)
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> AgentPolicy:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
@@ -474,4 +500,5 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], Message]]):
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
             self._finished = True
-        return self._agent_result(agent_result)
+        return self._agent_result(agent_result,
+                                  observation.from_agent_name if observation.from_agent_name else observation.observer)

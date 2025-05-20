@@ -37,6 +37,7 @@ class Observation(BaseModel):
     from_agent_name: str = None
     # To which agent should the observation be given, default is None for compatible.
     to_agent_name: str = None
+    group_name: str = None
     # general info for agent
     content: Any = None
     # dom_tree is a str or DomTree object
@@ -75,3 +76,4 @@ class ActionModel(BaseModel):
     action_name: str = None
     params: Dict[str, Any] = {}
     policy_info: Any = None
+    group_name: str = None

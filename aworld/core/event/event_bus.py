@@ -96,6 +96,9 @@ class InMemoryEventbus(Eventbus):
     async def consume(self):
         return await self._message_queue.get()
 
+    async def consume_nowait(self):
+        return await self._message_queue.get_nowait()
+
     async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):
             if event_type in self._transformer:

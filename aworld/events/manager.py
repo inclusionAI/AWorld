@@ -60,7 +60,9 @@ class EventManager:
         await self.event_bus.publish(event)
         return True
 
-    async def consume(self):
+    async def consume(self, nowait: bool = False):
+        if nowait:
+            return await self.event_bus.consume_nowait()
         return await self.event_bus.consume()
 
     async def register(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):

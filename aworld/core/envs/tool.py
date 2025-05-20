@@ -180,6 +180,7 @@ class Tool(BaseTool[Union[Observation], List[ActionModel]]):
                   **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if self.event_driven:
             return Message(payload=step_res,
+                           caller=action[0].agent_name,
                            sender=self.name(),
                            receiver=action[0].agent_name,
                            session_id=Context.instance().session_id,
@@ -195,6 +196,7 @@ class AsyncTool(AsyncBaseTool[Union[Observation], List[ActionModel]]):
                         **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if self.event_driven:
             return Message(payload=step_res,
+                           caller=action[0].agent_name,
                            sender=self.name(),
                            receiver=action[0].agent_name,
                            session_id=Context.instance().session_id,

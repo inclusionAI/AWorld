@@ -3,7 +3,7 @@
 import abc
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict
 
 from pydantic import BaseModel
@@ -42,12 +42,15 @@ class Message:
     payload: Any
     sender: str
     receiver: str = None
+    caller: str = None
     id: str = uuid.uuid4().hex
     timestamp: int = time.time()
     # Topic of message
     topic: str = None
     # Type(event) of message
     category: str = EventType.TASK
+    headers: Dict[str, Any] = field(default_factory=dict)
+    group_name: str = None
 
     def key(self):
         category = self.category if self.category else ''

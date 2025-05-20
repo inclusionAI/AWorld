@@ -3,6 +3,7 @@
 import os
 import traceback
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -71,9 +72,11 @@ def wipe_secret_info(config: Dict[str, Any], keys: List[str]) -> Dict[str, Any]:
         return config
     return _wipe_secret(config)
 
+
 class ClientType(Enum):
     SDK = "sdk"
     HTTP = "http"
+
 
 class ModelConfig(BaseModel):
     llm_provider: str = None
@@ -141,7 +144,9 @@ class ConfigDict(dict):
     __setattr__ = dict.__setitem__
     __getattr__ = dict.__getitem__
 
-    def __init__(self, seq: dict = {}, **kwargs):
+    def __init__(self, seq: dict = None, **kwargs):
+        if seq is None:
+            seq = OrderedDict()
         super(ConfigDict, self).__init__(seq, **kwargs)
         self.nested(self)
 
