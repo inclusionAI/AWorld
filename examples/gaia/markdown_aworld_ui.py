@@ -15,11 +15,11 @@ tool_call_template = """
 **call {function_name}**
 
 ```tool_call_arguments
-{re.sub(r"^```$"," ```",function_arguments)}
+{function_arguments}
 ```
         
 ```tool_call_result
-{re.sub(r"^```$"," ```",function_result)}
+{function_result}
 ```
 
 
@@ -52,7 +52,6 @@ class MarkdownAworldUI(AworldUI):
         items = []
 
         async def __log_item(item):
-            print(f">>> Gaia Agent Event Ouput: {item}")
             items.append(item)
 
         await consume_content(__output__.reasoning, __log_item)
@@ -64,12 +63,14 @@ class MarkdownAworldUI(AworldUI):
         """
         tool_result
         """
+        fn_args = await self.json_parse(output.origin_tool_call.function.arguments);
+        fn_args = re.sub(r"^```"," ```",fn_args)
+        fn_results = await self.json_parse(output.data);
+        fn_results = re.sub(r"^```"," ```",fn_results)
         tool_data = tool_call_template.format(
             function_name=output.origin_tool_call.function.name,
-            function_arguments=await self.json_parse(
-                output.origin_tool_call.function.arguments
-            ),
-            function_result=await self.json_parse(output.data),
+            function_arguments=fn_args,
+            function_result=fn_results,
         )
 
         return tool_data

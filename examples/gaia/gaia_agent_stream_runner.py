@@ -44,12 +44,39 @@ logger = logging.getLogger(__name__)
 with open("output.md", "a") as f:
     f.truncate(0)
 
+def judge_answer(data_item: Dict, result: Output):
+    answer = result
+    match = re.search(r"<answer>(.*?)</answer>", answer)
+    if match:
+        answer = match.group(1)
+        logger.info(f"Agent answer: {answer}")
+        logger.info(f"Correct answer: {data_item['Final answer']}")
+
+        if question_scorer(answer, data_item["Final answer"]):
+            logger.info(f"Question {data_item['task_id']} Correct!")
+        else:
+            logger.info(f"Question {data_item['task_id']} Incorrect!")
+
+        # Create the new result record
+        new_result = {
+            "task_id": data_item["task_id"],
+            "level": data_item["Level"],
+            "question": data_item["Question"],
+            "answer": data_item["Final answer"],
+            "response": answer,
+            "is_correct": question_scorer(answer, data_item["Final answer"]),
+        }
+    else:
+        new_result = answer
+
+    logger.info(f"## Final Result:\n \n```\n{json.dumps(new_result, indent=2)}\n```")
+
 def send_output(output):
     with open("output.md", "a") as f:
         f.write(f"{output}\n")
 
 async def main():
-    send_output("# GAIA agent start!")
+    send_output("## GAIA agent start!")
 
     import argparse
 
@@ -92,7 +119,7 @@ async def main():
     for i in super_agent.mcp_servers:
         mcp_server_status += f"    - {i}\n"
 
-    send_output(f"## Agent MCP Server Status:\n{mcp_server_status}")
+    send_output(f"### MCP Server Status:\n{mcp_server_status}")
 
     result = None
     try:
@@ -108,22 +135,31 @@ async def main():
             question = add_file_path(
                 data_item, file_path=gaia_dataset_path
             )["Question"]
-            # send_output(f"**GAIA Question:**\n ```\n{data_item}```\n")
+            send_output(f"### GAIA Question: \n```\n{json.dumps(data_item, indent=2)}\n```")
         except Exception as e:
             pass
 
         if not question:
             logger.warning("Could not find GAIA question for prompt, chat using prompt directly!")
+            send_output(
+                f"### Your Question: \n```\n{json.dumps(prompt, indent=2)}```\n"
+            )
             question = prompt
 
         task = Task(input=question, agent=super_agent, conf=TaskConfig())
 
+        last_output: Output = None
         rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():
             print(f">>> Gaia Agent Event Ouput: {output}")
             res = await AworldUI.parse_output(output, rich_ui)
             for item in res if isinstance(res, list) else [res]:
                 send_output(item)
+                last_output = item
+
+        if data_item and last_output:
+            final_response = judge_answer(data_item, last_output)
+            send_output(final_response)
 
     except Exception as e:
         logger.error(
