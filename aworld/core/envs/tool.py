@@ -12,6 +12,7 @@ from aworld.core.envs.action import ToolAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message, EventType
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.utils.common import convert_to_snake
@@ -20,7 +21,7 @@ AgentInput = TypeVar("AgentInput")
 ToolInput = TypeVar("ToolInput")
 
 
-class Tool(Generic[AgentInput, ToolInput]):
+class BaseTool(Generic[AgentInput, ToolInput]):
     """The basic generic classes of tools in the environment, with two parameterized types: AgentInput and ToolInput.
 
     We follow the gym/gymnasium protocol to be compatible with gym games, can also build special env tool in the framework.
@@ -43,6 +44,7 @@ class Tool(Generic[AgentInput, ToolInput]):
         self._name = kwargs.pop('name', self.conf.get("name", convert_to_snake(self.__class__.__name__)))
         action_executor.register(name=self.name(), tool=self)
         self.action_executor = action_executor
+        self.event_driven = kwargs.pop('event_driven', self.conf.get('event_driven', False))
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -51,13 +53,28 @@ class Tool(Generic[AgentInput, ToolInput]):
         """Tool unique name."""
         return self._name
 
+    def pre_step(self, action: ToolInput, **kwargs):
+        pass
+
+    def post_step(self,
+                  step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
+                  action: ToolInput,
+                  **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
+        pass
+
+    def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
+        self.pre_step(action, **kwargs)
+        res = self.do_step(action, **kwargs)
+        final_res = self.post_step(res, action, **kwargs)
+        return final_res
+
     @abc.abstractmethod
     def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         AgentInput, dict[str, Any]]:
         """Resets the initial internal state, returning an initial state and extended info."""
 
     @abc.abstractmethod
-    def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
+    def do_step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
         """Run one step of the tool's in env using the actions.
 
         Args:
@@ -80,7 +97,7 @@ class Tool(Generic[AgentInput, ToolInput]):
         pass
 
 
-class AsyncTool(Generic[AgentInput, ToolInput]):
+class AsyncBaseTool(Generic[AgentInput, ToolInput]):
     """The basic generic classes of tools in the environment, with two parameterized types: AgentInput and ToolInput.
 
     We follow the gym/gymnasium protocol to be compatible with gym games, can also build special env tool in the framework.
@@ -103,6 +120,7 @@ class AsyncTool(Generic[AgentInput, ToolInput]):
         self._name = kwargs.pop('name', self.conf.get("name", convert_to_snake(self.__class__.__name__)))
         action_executor.register(name=self.name(), tool=self)
         self.action_executor = action_executor
+        self.event_driven = kwargs.pop('event_driven', self.conf.get('event_driven', False))
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -111,13 +129,28 @@ class AsyncTool(Generic[AgentInput, ToolInput]):
         """Tool unique name."""
         return self._name
 
+    async def pre_step(self, action: ToolInput, **kwargs):
+        pass
+
+    async def post_step(self,
+                        step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
+                        action: ToolInput,
+                        **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
+        pass
+
+    async def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
+        await self.pre_step(action, **kwargs)
+        res = await self.do_step(action, **kwargs)
+        final_res = await self.post_step(res, action, **kwargs)
+        return final_res
+
     @abc.abstractmethod
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         AgentInput, dict[str, Any]]:
         """Resets the initial internal state, returning an initial state and extended info."""
 
     @abc.abstractmethod
-    async def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
+    async def do_step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
         """Run one step of the tool's in env using the actions.
 
         Args:
@@ -138,6 +171,34 @@ class AsyncTool(Generic[AgentInput, ToolInput]):
     async def render(self):
         """For interface compatibility."""
         pass
+
+
+class Tool(BaseTool[Union[Observation, Message], List[ActionModel]]):
+    def post_step(self,
+                  step_res: Tuple[Union[Observation, Message], float, bool, bool, Dict[str, Any]],
+                  action: List[ActionModel],
+                  **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
+        if self.event_driven:
+            return Message(payload=step_res,
+                           sender=self.name(),
+                           receiver=action[0].agent_name,
+                           session_id=Context.instance().session_id,
+                           category=EventType.AGENT)
+        return step_res
+
+
+class AsyncTool(AsyncBaseTool[Union[Observation, Message], List[ActionModel]]):
+    async def post_step(self,
+                        step_res: Tuple[Union[Observation, Message], float, bool, bool, Dict[str, Any]],
+                        action: List[ActionModel],
+                        **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
+        if self.event_driven:
+            return Message(payload=step_res,
+                           sender=self.name(),
+                           receiver=action[0].agent_name,
+                           session_id=Context.instance().session_id,
+                           category=EventType.AGENT)
+        return step_res
 
 
 class ToolsManager(Factory):
@@ -225,14 +286,14 @@ ToolFactory = ToolsManager("env_tool_type")
 class ToolActionExecutor(object):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, tool: Tool[Observation, List[ActionModel]] = None):
+    def __init__(self, tool: Tool = None):
         self.tool = tool
-        self.tools: Dict[str, Tool[Observation, List[ActionModel]]] = {}
+        self.tools: Dict[str, Tool] = {}
 
     def register(
             self,
             name: str,
-            tool: Union[Tool[Observation, List[ActionModel]], AsyncTool[Observation, List[ActionModel]]]):
+            tool: Union[Tool, AsyncTool]):
         self.tools[name] = tool
 
     @abc.abstractmethod
@@ -248,7 +309,7 @@ class ToolActionExecutor(object):
     @abc.abstractmethod
     def execute_env_action(self,
                            actions: List[ActionModel],
-                           tool: Tool[Observation, List[ActionModel]],
+                           tool: Tool,
                            **kwargs) -> Tuple[List[ActionResult], Any]:
         """"""
         action_results = []
@@ -277,7 +338,7 @@ class ToolActionExecutor(object):
 
     async def async_execute_env_action(self,
                                        actions: List[ActionModel],
-                                       tool: Tool[Observation, List[ActionModel]],
+                                       tool: Tool,
                                        **kwargs) -> Tuple[List[ActionResult], Any]:
         """"""
         action_results = []
@@ -303,7 +364,7 @@ class ToolActionExecutor(object):
             action_results.append(action_result)
         return action_results, ctx
 
-    def do_act(self, action_model: ActionModel, tool: Tool[Observation, List[ActionModel]], **kwargs):
+    def do_act(self, action_model: ActionModel, tool: Tool, **kwargs):
         action_name = action_model.action_name
         if action_name not in ActionFactory:
             action_name = action_model.tool_name + action_model.action_name
@@ -315,7 +376,7 @@ class ToolActionExecutor(object):
         logger.info(f"{tool.name()}-{action_model.action_name} execute finished")
         return action_result, page
 
-    async def async_do_act(self, action_model: ActionModel, tool: Tool[Observation, List[ActionModel]],
+    async def async_do_act(self, action_model: ActionModel, tool: Tool,
                            **kwargs):
         action_name = action_model.action_name
         if action_name not in ActionFactory:

@@ -3,14 +3,23 @@
 from typing import Dict, List
 
 from aworld.core.agent.agent_desc import agent_handoffs_desc
-from aworld.core.agent.base import Agent, AgentFactory
+from aworld.core.agent.base import AgentFactory
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
 
 
 class Swarm(object):
-    """Simple implementation of interactive collaboration between multi-agent and supported env tools."""
+    """Multi-agent topology.
+
+    Examples:
+        >>> agent1 = Agent(name='agent1'); agent2 = Agent(name='agent2'); agent3 = Agent(name='agent3')
+        # sequencial
+        >>> Swarm(agent1, agent2, agent3)
+        # social
+        >>> Swarm((agent1, agent2), (agent1, agent3), (agent2, agent3), sequence=False)
+    """
 
     def __init__(self, *args, root_agent: Agent = None, sequence: bool = True, max_steps: int = 1, **kwargs):
         self.communicate_agent = root_agent
@@ -22,8 +31,28 @@ class Swarm(object):
         self.sequence = sequence
         self.max_steps = max_steps
         self.initialized = False
+        self._cur_step = 0
+        self._event_driven = kwargs.get('event_driven', False)
+        for agent in self._topology:
+            if isinstance(agent, Agent):
+                agent = [agent]
+            for a in agent:
+                if a and a.event_driven:
+                    self._event_driven = True
+                    break
+            if self._event_driven:
+                break
+
+    @property
+    def event_driven(self):
+        return self._event_driven
+
+    @event_driven.setter
+    def event_driven(self, event_driven):
+        self._event_driven = event_driven
 
     def _init(self, **kwargs):
+        """Swarm init, build the agent or agent pairs to the topology of agents."""
         # prebuild
         valid_agent_pair = []
         for pair in self._topology:
@@ -88,6 +117,16 @@ class Swarm(object):
         if self.sequence:
             self.topology_type = 'sequence'
 
+        self._cur_step = 1
+        # event driven
+        if self.event_driven:
+            for agent in self.ordered_agents:
+                agent.event_driven = True
+            if self.topology_type == 'sequence':
+                self.topology_type = 'sequence_event'
+            elif self.topology_type == 'social':
+                self.topology_type = 'social_event'
+
     def reset(self, content: str, context: Context = None, tools: List[str] = []):
         """Resets the initial internal state, and init supported tools in agent in swarm.
 
@@ -120,7 +159,7 @@ class Swarm(object):
 
     def _check(self):
         if not self.initialized:
-            self.reset()
+            self.reset('')
 
     def handoffs_desc(self, agent_name: str = None, use_all: bool = False):
         """Get agent description by name for handoffs.
@@ -172,6 +211,14 @@ class Swarm(object):
         """Tool names that can be used by all agents in Swarm."""
         self._check()
         return self.tools
+
+    @property
+    def cur_step(self) -> int:
+        return self._cur_step
+
+    @cur_step.setter
+    def cur_step(self, step):
+        self._cur_step = step
 
     @property
     def finished(self) -> bool:

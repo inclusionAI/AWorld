@@ -7,7 +7,7 @@ from typing import Any, Union, List, Dict, Callable
 
 from pydantic import BaseModel
 
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.context.base import Context
@@ -46,6 +46,13 @@ class TaskResponse(BaseModel):
     time_cost: float | None = None
     success: bool = False
     msg: str | None = None
+
+
+class TaskItem(BaseModel):
+    data: Any
+    msg: str = None
+    stop: bool = False
+    success: bool = False
 
 
 class Runner(object):
