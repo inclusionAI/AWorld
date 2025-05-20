@@ -81,7 +81,7 @@ class ShellTool(Tool):
             self.processes = []
             self._finished = True
 
-    def step(self,
+    def do_step(self,
              actions: list[ActionModel],
              **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
         """

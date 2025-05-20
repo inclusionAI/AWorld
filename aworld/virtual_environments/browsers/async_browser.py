@@ -288,7 +288,7 @@ class BrowserTool(AsyncTool):
             await self.context_manager.__aexit__()
 
     async def do_step(self, action: List[ActionModel], **kwargs) -> Tuple[
-        Union[Observation, Message], float, bool, bool, Dict[str, Any]]:
+        Observation, float, bool, bool, Dict[str, Any]]:
         if not self.initialized:
             raise RuntimeError("Call init first before calling step.")
 

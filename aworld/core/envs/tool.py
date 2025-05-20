@@ -59,10 +59,10 @@ class BaseTool(Generic[AgentInput, ToolInput]):
     def post_step(self,
                   step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
                   action: ToolInput,
-                  **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
+                  **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]] | Message:
         pass
 
-    def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
+    def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]] | Message:
         self.pre_step(action, **kwargs)
         res = self.do_step(action, **kwargs)
         final_res = self.post_step(res, action, **kwargs)
@@ -135,10 +135,10 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
     async def post_step(self,
                         step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
                         action: ToolInput,
-                        **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
+                        **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]] | Message:
         pass
 
-    async def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
+    async def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]] | Message:
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, **kwargs)
@@ -173,9 +173,9 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         pass
 
 
-class Tool(BaseTool[Union[Observation, Message], List[ActionModel]]):
+class Tool(BaseTool[Union[Observation], List[ActionModel]]):
     def post_step(self,
-                  step_res: Tuple[Union[Observation, Message], float, bool, bool, Dict[str, Any]],
+                  step_res: Tuple[Union[Observation], float, bool, bool, Dict[str, Any]],
                   action: List[ActionModel],
                   **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if self.event_driven:
@@ -183,13 +183,14 @@ class Tool(BaseTool[Union[Observation, Message], List[ActionModel]]):
                            sender=self.name(),
                            receiver=action[0].agent_name,
                            session_id=Context.instance().session_id,
-                           category=EventType.AGENT)
+                           category=EventType.AGENT,
+                           group_name=action[0].group_name)
         return step_res
 
 
-class AsyncTool(AsyncBaseTool[Union[Observation, Message], List[ActionModel]]):
+class AsyncTool(AsyncBaseTool[Union[Observation], List[ActionModel]]):
     async def post_step(self,
-                        step_res: Tuple[Union[Observation, Message], float, bool, bool, Dict[str, Any]],
+                        step_res: Tuple[Union[Observation], float, bool, bool, Dict[str, Any]],
                         action: List[ActionModel],
                         **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if self.event_driven:
@@ -197,7 +198,8 @@ class AsyncTool(AsyncBaseTool[Union[Observation, Message], List[ActionModel]]):
                            sender=self.name(),
                            receiver=action[0].agent_name,
                            session_id=Context.instance().session_id,
-                           category=EventType.AGENT)
+                           category=EventType.AGENT,
+                           group_name=action[0].group_name)
         return step_res
 
 

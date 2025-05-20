@@ -39,7 +39,8 @@ class OpenAIGym(Tool):
         self.env = self._gym_env_wrappers(self.env_id, self.conf.get("wrappers", []), **kwargs)
         self.action_space = self.env.action_space
 
-    def step(self, action: List[ActionModel], **kwargs) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+    def do_step(self, action: List[ActionModel], **kwargs) -> Tuple[
+        Observation, SupportsFloat, bool, bool, Dict[str, Any]]:
         if self._render:
             self.render()
         action = action[0].params['result']

@@ -23,7 +23,7 @@ class OneTimeTool(Tool):
 
     def do_step(self,
              action: List[ActionModel],
-             **kwargs) -> Tuple[Union[Observation, Message], float, bool, bool, Dict[str, Any]]:
+             **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         reward = 0
         fail_error = ""
         action_result = None

@@ -60,7 +60,7 @@ class DocumentTool(Tool):
     def finished(self) -> bool:
         return self.step_finished
 
-    def step(self, actions: list[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+    def do_step(self, actions: list[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
         fail_error = ""

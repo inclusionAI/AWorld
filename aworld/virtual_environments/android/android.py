@@ -47,7 +47,7 @@ class AndroidTool(Tool):
                                  image=pic_base64,
                                  action_result=action_result_list), {}
 
-    def step(self, action_list: List[ActionModel], **kwargs) -> Tuple[
+    def do_step(self, action_list: List[ActionModel], **kwargs) -> Tuple[
         Observation, float, bool, bool, Dict[str, Any]]:
 
         exec_state = 0

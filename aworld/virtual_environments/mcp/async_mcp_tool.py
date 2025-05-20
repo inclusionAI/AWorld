@@ -38,7 +38,7 @@ class McpTool(AsyncTool):
 
     async def do_step(self,
              actions: list[ActionModel],
-             **kwargs) -> Tuple[Union[Observation, Message], float, bool, bool, dict[str, Any]]:
+             **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
         """Step of tool.
 
         Args:

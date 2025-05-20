@@ -162,7 +162,7 @@ class PythonTool(Tool):
         finally:
             self._finished = True
 
-    def step(
+    def do_step(
             self,
             actions: List[ActionModel],
             **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
