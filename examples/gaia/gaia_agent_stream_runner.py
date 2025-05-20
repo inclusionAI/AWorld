@@ -14,6 +14,7 @@ from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.core.task import Task
 from aworld.output.base import *
+from aworld.output.ui.base import AworldUI
 from aworld.runner import Runners
 from examples.gaia.prompt import system_prompt
 from examples.gaia.utils import (
@@ -21,6 +22,8 @@ from examples.gaia.utils import (
     load_dataset_meta_dict,
     question_scorer,
 )
+from examples.gaia.markdown_aworld_ui import MarkdownAworldUI
+
 
 aworld_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(aworld_path)
@@ -35,31 +38,18 @@ logger = logging.getLogger(__name__)
 
 
 # Create log directory if it doesn't exist
-if not os.path.exists(os.getenv("LOG_FILE_PATH")):
-    os.makedirs(os.getenv("LOG_FILE_PATH"))
+# if not os.path.exists(os.getenv("LOG_FILE_PATH")):
+#     os.makedirs(os.getenv("LOG_FILE_PATH"))
 
+with open("output.md", "a") as f:
+    f.truncate(0)
 
-async def process_final_result(output):
-    if isinstance(output, MessageOutput):
-        print(output.response)
-    elif isinstance(output, ToolResultOutput):
-        print(output.response)
-    elif isinstance(output, ToolCallOutput):
-        print(output.response)
-
-
-async def send_output(output):
-    gaia_output_line_tag = "GA_FMT_C:"
-    if isinstance(output, MessageOutput):
-        print(f"{gaia_output_line_tag}{output.response}")
-    elif isinstance(output, ToolResultOutput):
-        print(f"{gaia_output_line_tag}{output.response}")
-    elif isinstance(output, ToolCallOutput):
-        print(f"{gaia_output_line_tag}{output.response}")
-
+def send_output(output):
+    with open("output.md", "a") as f:
+        f.write(f"{output}\n")
 
 async def main():
-    logger.info(f"Start gaia agent runner!")
+    send_output("# GAIA agent start!")
 
     import argparse
 
@@ -98,10 +88,11 @@ async def main():
         ],
     )
 
-    mcp_servers = ", ".join(super_agent.mcp_servers)
-    logger.info(
-        f"Agent Info: name=gaia_super_agent, Environment MCP servers={mcp_servers}\n"
-    )
+    mcp_server_status = ""
+    for i in super_agent.mcp_servers:
+        mcp_server_status += f"    - {i}\n"
+
+    send_output(f"## Agent MCP Server Status:\n{mcp_server_status}")
 
     result = None
     try:
@@ -111,13 +102,13 @@ async def main():
         try:
             json_data = json.loads(prompt)
             task_id = json_data["task_id"]
-            gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./GAIA/2023/test")
+            gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./GAIA/2023")
             full_dataset = load_dataset_meta_dict(gaia_dataset_path)
             data_item = full_dataset[task_id]
             question = add_file_path(
                 data_item, file_path=gaia_dataset_path
             )["Question"]
-            logger.info(f"Start to process: {data_item}")
+            # send_output(f"**GAIA Question:**\n ```\n{data_item}```\n")
         except Exception as e:
             pass
 
@@ -127,13 +118,13 @@ async def main():
 
         task = Task(input=question, agent=super_agent, conf=TaskConfig())
 
-        last_output = None
+        rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():
-            await send_output(output);
-            last_output = output
+            print(f">>> Gaia Agent Event Ouput: {output}")
+            res = await AworldUI.parse_output(output, rich_ui)
+            for item in res if isinstance(res, list) else [res]:
+                send_output(item)
 
-        if last_output:
-            await process_final_result(last_output)
     except Exception as e:
         logger.error(
             f"Error processing {args.prompt}, result: {result}, error: {traceback.format_exc()}"

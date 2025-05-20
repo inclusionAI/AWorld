@@ -14,6 +14,9 @@ RUN cd /app/aworld/ && \
     rm chromedriver-linux64.zip
 ENV CHROME_DRIVER_PATH=/app/aworld/chromedriver-linux64/chromedriver
 
+# Config Env
+RUN npx playwright install chrome
+
 # Install AWorld Dependencies
 COPY ./aworld/requirements.txt /app/aworld/aworld/requirements.txt
 RUN pip install -r /app/aworld/aworld/requirements.txt ${PIP_OPTIONS}
@@ -21,9 +24,6 @@ RUN pip install -r /app/aworld/aworld/requirements.txt ${PIP_OPTIONS}
 COPY ./examples/gaia/requirements.txt /app/aworld/examples/gaia/requirements.txt
 # Install Gaia
 RUN pip install -r /app/aworld/examples/gaia/requirements.txt ${PIP_OPTIONS}
-
-# Config Env
-RUN npx playwright install chrome
 
 FROM base as runner
 

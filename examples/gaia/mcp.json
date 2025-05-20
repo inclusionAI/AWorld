@@ -7,7 +7,8 @@
                 "@e2b/mcp-server"
             ],
             "env": {
-                "E2B_API_KEY": "${E2B_API_KEY}"
+                "E2B_API_KEY": "${E2B_API_KEY}",
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
             }
         },
         "filesystem": {
@@ -65,11 +66,11 @@
             "args": [
                 "@playwright/mcp@latest",
                 "--no-sandbox",
-                "--headless",
-                "--disable-gpu"
+                "--headless"
             ],
             "env": {
-                "PLAYWRIGHT_TIMEOUT": "120000"
+                "PLAYWRIGHT_TIMEOUT": "120000",
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
             }
         },
         "audio_server": {
