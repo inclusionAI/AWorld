@@ -33,7 +33,6 @@ if __name__ == '__main__':
                   "which cities are passed along the way, what interesting places are there along the route, "
                   "and finally generate the content as markdown and save it")
 
-
     async def _run(agent, input):
         task = Task(
             input=input,
@@ -41,10 +40,15 @@ if __name__ == '__main__':
             conf=TaskConfig()
         )
 
-        rich_ui = RichAworldUI()
+        openwebui_ui = OpenAworldUI(
+            chat_id=chat_id,
+            workspace=WorkSpace.from_local_storages(
+                workspace_id=chat_id,
+                storage_path=os.path.join(os.curdir, "workspaces", chat_id),
+            ),
+        )
 
         async for output in Runners.streamed_run_task(task).stream_events():
             await AworldUI.parse_output(output, rich_ui)
-
 
     asyncio.run(_run(amap_agent, user_input))

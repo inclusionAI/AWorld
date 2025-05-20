@@ -43,6 +43,7 @@ env.bak/
 venv.bak/
 .env
 .env.docker
+
 # IDE specific files
 .idea/
 .vscode/
@@ -130,3 +131,5 @@ package-lock.json
 examples/gaia/GAIA/
 traces*.json
 trace_data
+
+output.md

@@ -3,6 +3,7 @@ from typing import List, Dict, Any
 import json
 import os
 from contextlib import AsyncExitStack
+import traceback
 
 from aworld.logs.util import logger
 from aworld.mcp.server import MCPServer, MCPServerSse
@@ -155,23 +156,31 @@ async def mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, 
     async with AsyncExitStack() as stack:
         servers = []
         for server_config in server_configs:
-            if server_config["type"] == "sse":
-                server = MCPServerSse(
-                    name=server_config["name"],
-                    params=server_config["params"]
-                )
-            elif server_config["type"] == "stdio":
-                from aworld.mcp.server import MCPServerStdio
-                server = MCPServerStdio(
-                    name=server_config["name"],
-                    params=server_config["params"]
-                )
-            else:
-                logging.warning(f"Unsupported MCP server type: {server_config['type']}")
-                continue
+            try:
+                if server_config["type"] == "sse":
+                    server = MCPServerSse(
+                        name=server_config["name"],
+                        params=server_config["params"]
+                    )
+                elif server_config["type"] == "stdio":
+                    from aworld.mcp.server import MCPServerStdio
+                    server = MCPServerStdio(
+                        name=server_config["name"],
+                        params=server_config["params"]
+                    )
+                else:
+                    logging.warning(f"Unsupported MCP server type: {server_config['type']}")
+                    continue
 
-            server = await stack.enter_async_context(server)
-            servers.append(server)
+                server = await stack.enter_async_context(server)
+                servers.append(server)
+            except BaseException as err:
+                # single
+                logging.error(
+                    f"Failed to get tools for MCP server '{server_config['name']}'.\n"
+                    f"Error: {err}\n"
+                    f"Traceback:\n{traceback.format_exc()}"
+                )
 
         openai_tools = await run(servers)
 

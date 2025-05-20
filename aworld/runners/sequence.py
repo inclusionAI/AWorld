@@ -269,12 +269,17 @@ class SequenceRunner(TaskRunner):
 
             observations.append(observation)
             for i, item in enumerate(action):
-                tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
-                    "function": {
-                        "name": item.action_name,
-                        "arguments": item.params,
-                    }
-                }))
+                tool_output = ToolResultOutput(
+                    tool_type=tool_name,
+                    tool_name=item.tool_name,
+                    data=observation.content,
+                    origin_tool_call=ToolCall.from_dict({
+                        "function": {
+                            "name": item.action_name,
+                            "arguments": item.params,
+                        }
+                    })
+                )
                 await self.outputs.add_output(tool_output)
 
             # Check if there's an exception in info
