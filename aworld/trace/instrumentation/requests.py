@@ -1,3 +1,17 @@
+from aworld.logs.util import logger
+from aworld.trace.instrumentation.http_util import (
+    collect_attributes_from_request,
+    url_disabled,
+    get_excluded_urls,
+    parse_excluded_urls,
+    HTTP_RESPONSE_STATUS_CODE,
+    HTTP_FLAVOR
+)
+from aworld.metrics.context_manager import MetricContext
+from aworld.metrics.template import MetricTemplate
+from aworld.metrics.metric import MetricType
+from aworld.trace.instrumentation import Instrumentor
+from aworld.trace.propagator.carrier import DictCarrier
 import functools
 from timeit import default_timer
 from requests import sessions
@@ -7,20 +21,6 @@ from typing import Collection, Any, Callable
 import aworld.trace as trace
 from aworld.trace.base import TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
 from aworld.trace.propagator import get_global_trace_propagator
-from aworld.trace.propagator.carrier import DictCarrier
-from aworld.trace.instrumentation import Instrumentor
-from aworld.metrics.metric import MetricType
-from aworld.metrics.template import MetricTemplate
-from aworld.metrics.context_manager import MetricContext
-from aworld.trace.instrumentation.http_util import (
-    collect_attributes_from_request,
-    url_disabled,
-    get_excluded_urls,
-    parse_excluded_urls,
-    HTTP_RESPONSE_STATUS_CODE,
-    HTTP_FLAVOR
-)
-from aworld.logs.util import logger
 
 
 def _wrapped_send(
