@@ -105,6 +105,20 @@
                 "mcp_servers.reasoning_server"
             ]
         },
+        "wikipedia_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.wikipedia_server"
+            ]
+        },
+        "pdf_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.pdf_server"
+            ]
+        },
         "playwright": {
             "command": "npx",
             "args": [

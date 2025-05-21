@@ -120,9 +120,11 @@ if __name__ == "__main__":
             "search_server",
             "download_server",
             "document_server",
+            "pdf_server",
             "browser_server",
             "youtube_server",
             "reasoning_server",
+            "wikipedia_server",
         ],
     )
 
@@ -243,7 +245,7 @@ if __name__ == "__main__":
                         "task_id": task_id,
                         "level": dataset_i["Level"],
                         "question": question,
-                        "response": answer or "",
+                        "answer": answer or "",
                     }
                 elif args.split == "validation":
                     new_result = {
