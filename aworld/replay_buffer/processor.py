@@ -5,13 +5,10 @@ Used to clean raw trace data into standard storage structure for reinforcement l
 """
 import json
 import os
-from typing import List, Dict, Any
-from datetime import datetime
-from opentelemetry.sdk.trace import Span
+from typing import Any
 import threading
 from aworld.replay_buffer.base import DataRow, Experience, ExpMeta
 from aworld.logs.util import logger
-import oss2
 
 
 class ReplayBufferExporter:
@@ -36,8 +33,10 @@ class ReplayBufferExporter:
             output_dir: output directory path
         """
         # Ensure output directory exists
+        import oss2
+
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Get OSS credentials from environment variables
         enable_oss_export = os.getenv("EXPORT_REPLAY_TRACE_TO_OSS", "false").lower() == "true"
         access_key_id = os.getenv('OSS_ACCESS_KEY_ID')
@@ -45,7 +44,7 @@ class ReplayBufferExporter:
         endpoint = os.getenv('OSS_ENDPOINT')
         bucket_name = os.getenv('OSS_BUCKET_NAME')
         bucket = None
-        
+
         if not all([access_key_id, access_key_secret, endpoint, bucket_name]):
             enable_oss_export = False
             logger.warn("Missing required OSS environment variables")
@@ -57,7 +56,7 @@ class ReplayBufferExporter:
             except Exception as e:
                 enable_oss_export = False
                 logger.warn(f"Failed to initialize OSS client, endpoint: {endpoint}, bucket: {bucket_name}. Error: {str(e)}")
-        
+
         # Group by task_id
         task_groups = {}
 
@@ -65,29 +64,29 @@ class ReplayBufferExporter:
             # Only process spans with 'step_execution_' prefix
             if not span_data['name'].startswith('step_execution_'):
                 continue
-                
+
             attr = span_data.get('attributes', {})
             exp_id = attr.get('exp_id')
             task_id = attr.get('task_id', '')
-            
+
             if not exp_id or not task_id:
                 continue
-                
+
             if task_id not in task_groups:
                 task_groups[task_id] = {}
-                
+
             if exp_id not in task_groups[task_id]:
                 task_groups[task_id][exp_id] = {
                     'exp_meta': None,
                     'exp_data': None
                 }
-                
+
             # Process step_execution span
             task_name = attr.get('task_name', '')
             agent_id = attr.get('agent_id', '')
             step = attr.get('step', 0)
             execute_time = float(span_data.get('start_time', 0).split('.')[0].replace(' ', '').replace('-', '').replace(':', ''))
-            
+
             observation = {}
             action = []
             messages = []
@@ -97,7 +96,7 @@ class ReplayBufferExporter:
                     observation = json.loads(attr['observation'])
                 except:
                     observation = attr['observation']
-                    
+
             if 'actions' in attr:
                 try:
                     action = json.loads(attr['actions'])
@@ -114,18 +113,18 @@ class ReplayBufferExporter:
             reward = attr.get('reward', 0.0)
             adv = attr.get('adv_t', 0.0)
             v = attr.get('v_t', 0.0)
-            
+
             exp_meta = ExpMeta(task_id, task_name, agent_id, step, execute_time, pre_agent)
             exp_data = Experience(observation, action, reward, adv, v, messages)
-            
+
             task_groups[task_id][exp_id]['exp_meta'] = exp_meta
             task_groups[task_id][exp_id]['exp_data'] = exp_data
-            
+
         # Process data for each task_id
         for task_id, exp_groups in task_groups.items():
             # Merge data and generate final Experience object
             data_rows = []
-            
+
             # Read existing data (if any)
             output_path = os.path.join(output_dir, f"task_replay_{task_id}.json")
 
