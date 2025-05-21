@@ -5,9 +5,12 @@ Used to clean raw trace data into standard storage structure for reinforcement l
 """
 import json
 import os
+from cgitb import enable
 from typing import List, Dict, Any
 from datetime import datetime
 from opentelemetry.sdk.trace import Span
+from aworld.logs.util import logger
+import oss2
 
 class ExpMeta:
     def __init__(self, task_id: str, task_name: str, agent_id: str, step: int, execute_time: float, pre_agent: str = None):
@@ -72,6 +75,25 @@ class ReplayBufferExporter:
         """
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Get OSS credentials from environment variables
+        enable_oss_export = os.getenv("EXPORT_REPLAY_TRACE_TO_OSS", "false").lower() == "true"
+        access_key_id = os.getenv('OSS_ACCESS_KEY_ID')
+        access_key_secret = os.getenv('OSS_ACCESS_KEY_SECRET')
+        endpoint = os.getenv('OSS_ENDPOINT')
+        bucket_name = os.getenv('OSS_BUCKET_NAME')
+        bucket = None
+        
+        if not all([access_key_id, access_key_secret, endpoint, bucket_name]):
+            enable_oss_export = False
+            logger.warn("Missing required OSS environment variables")
+        else:
+            try:
+                # Initialize OSS client
+                auth = oss2.Auth(access_key_id, access_key_secret)
+                bucket = oss2.Bucket(auth, endpoint, bucket_name)
+            except Exception as e:
+                logger.warn(f"Failed to initialize OSS client, endpoint: {endpoint}, bucket: {bucket_name}. Error: {str(e)}")
         
         # Group by task_id
         task_groups = {}
@@ -153,7 +175,7 @@ class ReplayBufferExporter:
                             Experience(**row['exp_data'])
                         ) for row in existing_data])
                 except Exception as e:
-                    print(f"Failed to read existing file {output_path}: {str(e)}")
+                    logger.warn(f"Failed to read existing file {output_path}: {str(e)}")
             
             # Add new data
             for exp_id, group in exp_groups.items():
@@ -167,4 +189,23 @@ class ReplayBufferExporter:
             # Export to json
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump([row.to_dict() for row in data_rows], f, ensure_ascii=False, indent=2)
-            print(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
+            logger.info(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
+
+            if enable_oss_export:
+                # Upload to OSS
+                try:
+                    # Get the relative path
+                    abs_path = os.path.abspath(output_path)
+                    path_parts = abs_path.split(os.sep)
+                    if len(path_parts) >= 4:
+                        # Get the last 4 parts of the path
+                        relative_path = os.sep.join(path_parts[-4:])
+                        oss_key = relative_path
+                    else:
+                        oss_key = f"replay_buffer/{os.path.basename(output_path)}"
+                    bucket.put_object_from_file(oss_key, output_path)
+                    logger.info(f"Successfully uploaded {output_path} to OSS: {oss_key}")
+                except Exception as e:
+                    logger.warn(f"Failed to upload {output_path} to OSS: {str(e)}")
+
+            
