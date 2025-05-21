@@ -1,17 +1,4 @@
-import functools
-from timeit import default_timer
-from requests import sessions
-from requests.models import PreparedRequest, Response
-from requests.structures import CaseInsensitiveDict
-from typing import Collection, Any, Callable
-import aworld.trace as trace
-from aworld.trace.base import TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
-from aworld.trace.propagator import get_global_trace_propagator
-from aworld.trace.propagator.carrier import RequestCarrier
-from aworld.trace.instrumentation import Instrumentor
-from aworld.metrics.metric import MetricType
-from aworld.metrics.template import MetricTemplate
-from aworld.metrics.context_manager import MetricContext
+from aworld.logs.util import logger
 from aworld.trace.instrumentation.http_util import (
     collect_attributes_from_request,
     url_disabled,
@@ -20,7 +7,19 @@ from aworld.trace.instrumentation.http_util import (
     HTTP_RESPONSE_STATUS_CODE,
     HTTP_FLAVOR
 )
-from aworld.logs.util import logger
+from aworld.metrics.context_manager import MetricContext
+from aworld.metrics.template import MetricTemplate
+from aworld.metrics.metric import MetricType
+from aworld.trace.instrumentation import Instrumentor
+from aworld.trace.propagator.carrier import DictCarrier
+import functools
+from timeit import default_timer
+from requests import sessions
+from requests.models import PreparedRequest, Response
+from requests.structures import CaseInsensitiveDict
+from typing import Collection, Any, Callable
+from aworld.trace.base import TraceProvider, TraceContext, Tracer, SpanType, get_tracer_provider
+from aworld.trace.propagator import get_global_trace_propagator
 
 
 def _wrapped_send(
@@ -69,7 +68,7 @@ def _wrapped_send(
             )
             propagator = get_global_trace_propagator()
             if propagator:
-                propagator.inject(trace_context, RequestCarrier(headers))
+                propagator.inject(trace_context, DictCarrier(headers))
 
             start_time = default_timer()
             try:

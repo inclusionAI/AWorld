@@ -1,46 +1,51 @@
+import os
+import time
 import threading
-import flask
-from aworld.trace.server import get_trace_server
-from aworld.trace.instrumentation.flask import instrument_flask
+from aworld.trace.instrumentation.fastapi import instrument_fastapi
 from aworld.trace.instrumentation.requests import instrument_requests
 from aworld.logs.util import logger, trace_logger
 import aworld.trace as trace
-import os
 from aworld.metrics.context_manager import MetricContext
+from aworld.utils.import_package import import_packages
+import_packages(['fastapi', 'uvicorn'])  # noqa
+import fastapi  # noqa
+import uvicorn  # noqa
 
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"
 MetricContext.configure(provider="otlp",
                         backend="antmonitor"
                         )
-instrument_flask()
+instrument_fastapi()
 instrument_requests()
 
-app = flask.Flask(__name__)
+app = fastapi.FastAPI()
 
 
-@app.route('/api/test')
-def test():
-    return 'Hello, World!'
-
-
-thread = threading.Thread(target=lambda: app.run(port=7070), daemon=True)
-thread.start()
+@app.get("/api/hello")
+async def hello():
+    return {"message": "Hello World"}
 
 
 def invoke_api():
     import requests
-    response = requests.get('http://localhost:7070/api/test')
+    response = requests.get('http://127.0.0.1:7071/api/hello')
     logger.info(f"invoke_api response={response.text}")
 
 
 def main():
     logger.info("main running")
-    with trace.span("test_flask") as span:
+    with trace.span("test_fastapi") as span:
         trace_logger.info("start invoke_api")
         invoke_api()
 
 
 if __name__ == "__main__":
+    server_thread = threading.Thread(
+        target=lambda: uvicorn.run(app, host="0.0.0.0", port=7071),
+        daemon=True
+    )
+    server_thread.start()
+    time.sleep(1)
     main()
-    thread.join()
+    server_thread.join()
