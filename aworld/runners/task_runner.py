@@ -50,6 +50,7 @@ class TaskRunner(Runner):
         self.daemon_target = kwargs.pop('daemon_target', None)
         self._use_demon = False if not task.conf else task.conf.get('use_demon', False)
         self._exception = None
+        self.step_agent_counter = {}
         for k, v in kwargs.items():
             setattr(self, k, v)
 

@@ -1,21 +1,84 @@
-from aworld.config.conf import AgentConfig
+import argparse
+import json
+import logging
+import os
+import re
+import traceback
+from typing import Any, Dict, List
+
+from dotenv import load_dotenv
+
+from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.runner import Runners
-from datasets import load_dataset
-from pathlib import Path
-from typing import Any, Dict
-from dotenv import load_dotenv
-import re
-import logging
-import traceback
-import os
+from examples.gaia.prompt import system_prompt
+from examples.gaia.utils import (
+    add_file_path,
+    load_dataset_meta,
+    question_scorer,
+    report_results,
+)
+
+# Create log directory if it doesn't exist
+if not os.path.exists(os.getenv("LOG_FILE_PATH")):
+    os.makedirs(os.getenv("LOG_FILE_PATH"))
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--start",
+    type=int,
+    default=0,
+    help="Start index of the dataset",
+)
+parser.add_argument(
+    "--end",
+    type=int,
+    default=20,
+    help="End index of the dataset",
+)
+parser.add_argument(
+    "--q",
+    type=str,
+    help="Question Index, e.g., 0-0-0-0-0. Highest priority: override other arguments if provided.",
+)
+parser.add_argument(
+    "--skip",
+    action="store_true",
+    help="Skip the question if it has been processed before.",
+)
+parser.add_argument(
+    "--split",
+    type=str,
+    default="validation",
+    help="Split of the dataset, e.g., validation, test",
+)
+parser.add_argument(
+    "--blacklist_file_path",
+    type=str,
+    nargs="?",
+    help="Blacklist file path, e.g., blacklist.txt",
+)
+args = parser.parse_args()
 
 
 def setup_logging():
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    logging_logger = logging.getLogger()
+    logging_logger.setLevel(logging.INFO)
 
-    file_handler = logging.FileHandler(os.getenv("LOG_FILE_PATH", "run_super_agent.log"), mode="a", encoding="utf-8")
+    log_file_name = (
+        f"/super_agent_{args.q}.log"
+        if args.q
+        else f"/super_agent_{args.start}_{args.end}.log"
+    )
+    file_handler = logging.FileHandler(
+        os.getenv(
+            "LOG_FILE_PATH",
+            "run_super_agent.log",
+        )
+        + log_file_name,
+        mode="a",
+        encoding="utf-8",
+    )
     file_handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
@@ -23,72 +86,16 @@ def setup_logging():
     )
     file_handler.setFormatter(formatter)
 
-    logger.addHandler(file_handler)
-
-
-def add_file_path(task: Dict[str, Any],
-                  file_path: str = "./gaia_dataset"):
-    if task["file_name"]:
-        file_path = Path(f"{file_path}/2023/validation/" + task["file_name"])
-        if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
-            task["Question"] += f" Here are the necessary document files: {file_path}"
-
-        elif file_path.suffix in [".jpg", ".jpeg", ".png"]:
-            task["Question"] += f" Here are the necessary image files: {file_path}"
-
-        elif file_path.suffix in [".xlsx", "xls", ".csv"]:
-            task[
-                "Question"
-            ] += f" Here are the necessary table files: {file_path}, for processing excel file, you can use the excel tool or write python code to process the file step-by-step and get the information."
-
-        elif file_path.suffix in [".py"]:
-            task["Question"] += f" Here are the necessary python files: {file_path}"
-
-        else:
-            task["Question"] += f" Here are the necessary files: {file_path}"
-
-    return task
+    logging_logger.addHandler(file_handler)
 
 
 if __name__ == "__main__":
     load_dotenv()
-
     setup_logging()
 
-    search_sys_prompt = f"""You are an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.
-Please note that the task may be complex. Do not attempt to solve it all at once. You should break the task down and use different tools step by step to solve it. After using each tool, clearly explain the execution results and suggest the next steps.
-Please utilize appropriate tools for the task, analyze the results obtained from these tools, and provide your reasoning. Always use available tools such as browser, calcutor, etc. to verify correctness rather than relying on your internal knowledge.
-If you believe the problem has been solved, please output the `final answer`. The `final answer` should be given in <answer></answer> format, while your other thought process should be output in <think></think> tags.
-Your `final answer` should be a number OR as few words as possible OR a comma separated list of numbers and/or strings. If you are asked for a number, don't use comma to write your number neither use units such as $ or percent sign unless specified otherwise. If you are asked for a string, don't use articles, neither abbreviations (e.g. for cities), and write the digits in plain text unless specified otherwise. If you are asked for a comma separated list, apply the above rules depending of whether the element to be put in the list is a number or a string.
-
-Here are some tips to help you give better instructions: 
-<tips>
-1. Do not use any tools outside of the provided tools list.
-2. Even if the task is complex, there is always a solution. If you can’t find the answer using one method, try another approach or use different tools to find the solution.
-3. When using browser `playwright_click` tool, you need to check if the element exists and is clickable before clicking it. 
-4. Before providing the `final answer`, carefully reflect on whether the task has been fully solved. If you have not solved the task, please provide your reasoning and suggest the next steps.
-5. Due to context length limitations, always try to complete browser-based tasks with the minimal number of steps possible.
-6. When providing the `final answer`, answer the user's question directly and precisely. For example, if asked "what animal is x?" and x is a monkey, simply answer "monkey" rather than "x is a monkey".
-7. When you need to process excel file, prioritize using the `excel` tool instead of writing custom code with `terminal-controller` tool.
-8. If you need to download a file, please use the `terminal-controller` tool to download the file and save it to the specified path.
-9. The browser doesn't support direct searching on www.google.com. Use the `google-search` to get the relevant website URLs or contents instead of `ms-playwright` directly.
-10. Always use only one tool at a time in each step of your execution.
-11. Using `mcp__ms-playwright__browser_pdf_save` tool to save the pdf file of URLs to the specified path.
-12. Using `mcp__terminal-controller__execute_command` tool to set the timeout to 300 seconds when downloading large files such as pdf.
-13. Using `mcp__ms-playwright__browser_take_screenshot` tool to save the screenshot of URLs to the specified path when you need to understand the gif / jpg of the URLs.
-14. When there are questions related to YouTube video comprehension, use tools in `youtube_download_server` and `video_server` to analyze the video content by the given question.
-</tips>
-
-Now, here is the task. Stay focused and complete it carefully using the appropriate tools!
-"""
-
     gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./gaia_dataset")
-    print(gaia_dataset_path)
-    full_dataset = load_dataset(
-        f"{gaia_dataset_path}/GAIA.py",
-        name="2023_all",
-        split="validation",
-    )
+    full_dataset = load_dataset_meta(gaia_dataset_path, split=args.split)
+    logging.info(f"Total questions: {len(full_dataset)}")
 
     agent_config = AgentConfig(
         llm_provider="openai",
@@ -96,48 +103,161 @@ Now, here is the task. Stay focused and complete it carefully using the appropri
         llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
         llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
     )
+    super_agent = Agent(
+        conf=agent_config,
+        name="gaia_super_agent",
+        system_prompt=system_prompt,
+        mcp_servers=[
+            "e2b-server",
+            # "filesystem",
+            "terminal-controller",
+            "excel",
+            "calculator",
+            "ms-playwright",
+            "audio_server",
+            "image_server",
+            "video_server",
+            "search_server",
+            "download_server",
+            "document_server",
+            # "browser_server",
+            "youtube_server",
+            "reasoning_server",
+        ],
+    )
 
-    for i in range(len(full_dataset)):
-        try:
-            logging.info(f"Start to process: {i}")
-            logging.info(f"Detail: {full_dataset[i]}")
-            logging.info(f"Question: {full_dataset[i]['Question']}")
-            logging.info(f"Level: {full_dataset[i]['Level']}")
-            logging.info(f"Tools: {full_dataset[i]['Annotator Metadata']['Tools']}")
+    # load results from the checkpoint file
+    if os.path.exists(os.getenv("LOG_FILE_PATH") + "/results.json"):
+        with open(
+            os.getenv("LOG_FILE_PATH") + "/results.json", "r", encoding="utf-8"
+        ) as results_f:
+            results: List[Dict[str, Any]] = json.load(results_f)
+    else:
+        results: List[Dict[str, Any]] = []
 
-            question = add_file_path(full_dataset[i], gaia_dataset_path)["Question"]
+    # load blacklist `task_id`
+    if args.blacklist_file_path and os.path.exists(args.blacklist_file_path):
+        with open(args.blacklist_file_path, "r", encoding="utf-8") as f:
+            blacklist = set(f.read().splitlines())
+    else:
+        blacklist = set()  # Empty set if file doesn't exist
 
-            super = Agent(
-                conf=agent_config,
-                name="gaia_super_agent",
-                system_prompt=search_sys_prompt,
-                mcp_servers=[
-                    "e2b-server",
-                    "filesystem",
-                    "terminal-controller",
-                    "excel",
-                    "calculator",
-                    "google-search",
-                    "ms-playwright",
-                    "audio_server",
-                    "image_server",
-                    "youtube_download_server",
-                    "video_server",
-                ]
-            )
-            result = Runners.sync_run(input=question, agent=super)
+    try:
+        # slice dataset by args.start and args.end, overrided by args.q (single `task_id`)
+        dataset_slice = (
+            [
+                dataset_record
+                for idx, dataset_record in enumerate(full_dataset)
+                if dataset_record["task_id"] in args.q
+            ]
+            if args.q is not None
+            else full_dataset[args.start : args.end]
+        )
 
-            match = re.search(r'<answer>(.*?)</answer>', result.answer)
-            if match:
-                answer = match.group(1)
-                logging.info(f"Agent answer: {answer}")
-                logging.info(f"Correct answer: {full_dataset[i]['Final answer']}")
+        # main loop to execute questions
+        for i, dataset_i in enumerate(dataset_slice):
+            # specify `task_id`
+            if args.q and args.q != dataset_i["task_id"]:
+                continue
+            # only valid for args.q==None
+            if not args.q:
+                # blacklist
+                if dataset_i["task_id"] in blacklist:
+                    continue
 
-                if answer == full_dataset[i]["Final answer"]:
-                    logging.info(f"Question {i} Correct!")
+                # pass
+                if any(
+                    # Question Done and Correct
+                    (result["task_id"] == dataset_i["task_id"] and result["is_correct"])
+                    for result in results
+                ) or any(
+                    # Question Done and Incorrect, but Level is 3
+                    (
+                        result["task_id"] == dataset_i["task_id"]
+                        and not result["is_correct"]
+                        and dataset_i["Level"] == 3
+                    )
+                    for result in results
+                ):
+                    continue
+
+                # skip
+                if args.skip and any(
+                    # Question Done and Correct
+                    (result["task_id"] == dataset_i["task_id"])
+                    for result in results
+                ):
+                    continue
+
+            # run
+            try:
+                logging.info(f"Start to process: {dataset_i['task_id']}")
+                logging.info(f"Detail: {dataset_i}")
+                logging.info(f"Question: {dataset_i['Question']}")
+                logging.info(f"Level: {dataset_i['Level']}")
+                logging.info(f"Tools: {dataset_i['Annotator Metadata']['Tools']}")
+
+                question = add_file_path(
+                    dataset_i, file_path=gaia_dataset_path, split=args.split
+                )["Question"]
+
+                result = Runners.sync_run_task(
+                    task=Task(input=question, agent=super_agent, conf=TaskConfig())
+                )
+
+                match = re.search(r"<answer>(.*?)</answer>", result["task_0"]["answer"])
+                if match:
+                    answer = match.group(1)
+                    logging.info(f"Agent answer: {answer}")
+                    logging.info(f"Correct answer: {dataset_i['Final answer']}")
+
+                    if question_scorer(answer, dataset_i["Final answer"]):
+                        logging.info(f"Question {i} Correct!")
+                    else:
+                        logging.info("Incorrect!")
+
+                # Create the new result record
+                new_result = {
+                    "task_id": dataset_i["task_id"],
+                    "level": dataset_i["Level"],
+                    "question": question,
+                    "answer": dataset_i["Final answer"],
+                    "response": answer,
+                    "is_correct": question_scorer(answer, dataset_i["Final answer"]),
+                }
+
+                # Check if this task_id already exists in results
+                existing_index = next(
+                    (
+                        i
+                        for i, result in enumerate(results)
+                        if result["task_id"] == dataset_i["task_id"]
+                    ),
+                    None,
+                )
+
+                if existing_index is not None:
+                    # Update existing record
+                    results[existing_index] = new_result
+                    logging.info(
+                        f"Updated existing record for task_id: {dataset_i['task_id']}"
+                    )
                 else:
-                    logging.info("Incorrect!")
+                    # Append new record
+                    results.append(new_result)
+                    logging.info(
+                        f"Added new record for task_id: {dataset_i['task_id']}"
+                    )
 
-        except Exception as e:
-            logging.error(f"Error processing {i}: {traceback.format_exc()}")
-            continue
+            except Exception as e:
+                logging.error(f"Error processing {i}: {traceback.format_exc()}")
+                continue
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # report
+        report_results(results)
+        with open(
+            os.getenv("LOG_FILE_PATH") + "/results.json", "w", encoding="utf-8"
+        ) as f:
+            json.dump(results, f, indent=4, ensure_ascii=False)

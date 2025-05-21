@@ -69,7 +69,7 @@ class ToolCall(BaseModel):
 
         arguments = function_data.get('arguments')
         # Ensure arguments is a string
-        if arguments and not isinstance(arguments, str):
+        if arguments is not None and not isinstance(arguments, str):
             arguments = json.dumps(arguments)
 
         function = Function(name=name, arguments=arguments)
