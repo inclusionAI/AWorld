@@ -5,7 +5,7 @@ import os
 from aworld.config.conf import AgentConfig
 
 from aworld.config.common import Tools
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 

@@ -35,9 +35,6 @@ class Observation(BaseModel):
     ability: str = None
     # The agent wants the observation to be created, default is None for compatible.
     from_agent_name: str = None
-    # To which agent should the observation be given, default is None for compatible.
-    to_agent_name: str = None
-    group_name: str = None
     # general info for agent
     content: Any = None
     # dom_tree is a str or DomTree object

@@ -44,20 +44,21 @@ class Message:
     receiver: str = None
     caller: str = None
     id: str = uuid.uuid4().hex
-    timestamp: int = time.time()
+    priority: int = 0
     # Topic of message
     topic: str = None
     # Type(event) of message
     category: str = EventType.TASK
     headers: Dict[str, Any] = field(default_factory=dict)
     group_name: str = None
+    timestamp: int = time.time()
 
     def key(self):
         category = self.category if self.category else ''
         if self.topic:
             return f'{category}_{self.topic}'
         else:
-            return f'{category}_{self.receiver if self.receiver else ''}'
+            return f'{category}_{self.sender if self.sender else ''}'
 
 
 class Messageable(object):

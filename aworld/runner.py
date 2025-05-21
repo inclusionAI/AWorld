@@ -4,20 +4,21 @@ import asyncio
 from typing import List, Dict, Any, Union
 
 from aworld.config.conf import TaskConfig
-from aworld.core.agent.base import Agent
-from aworld.core.agent.swarm import Swarm
+from aworld.core.agent.llm_agent import Agent
+from aworld.core.agent.swarm import Swarm, SEQUENCE, SEQUENCE_EVENT, SOCIAL, SOCIAL_EVENT
 from aworld.core.task import Task, TaskResponse
 from aworld.output import StreamingOutputs
 from aworld import trace
-from aworld.runners.sequence import SequenceRunner
-from aworld.runners.social import SocialRunner
+from aworld.runners.sequence import SequenceRunner, SequenceEventRunner
+from aworld.runners.social import SocialRunner, SocialEventRunner
 from aworld.utils.common import sync_exec
 
-SEQUENCE = "sequence"
-SOCIAL = "social"
+
 RUNNERS = {
     SEQUENCE: SequenceRunner,
-    SOCIAL: SocialRunner
+    SOCIAL: SocialRunner,
+    SEQUENCE_EVENT: SequenceEventRunner,
+    SOCIAL_EVENT: SocialEventRunner
 }
 
 

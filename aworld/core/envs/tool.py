@@ -175,10 +175,11 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
 
 class Tool(BaseTool[Union[Observation], List[ActionModel]]):
     def post_step(self,
-                  step_res: Tuple[Union[Observation], float, bool, bool, Dict[str, Any]],
+                  step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                   action: List[ActionModel],
                   **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if self.event_driven:
+            step_res[0].from_agent_name = action[0].agent_name
             return Message(payload=step_res,
                            caller=action[0].agent_name,
                            sender=self.name(),
@@ -191,10 +192,11 @@ class Tool(BaseTool[Union[Observation], List[ActionModel]]):
 
 class AsyncTool(AsyncBaseTool[Union[Observation], List[ActionModel]]):
     async def post_step(self,
-                        step_res: Tuple[Union[Observation], float, bool, bool, Dict[str, Any]],
+                        step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                         action: List[ActionModel],
                         **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if self.event_driven:
+            step_res[0].from_agent_name = action[0].agent_name
             return Message(payload=step_res,
                            caller=action[0].agent_name,
                            sender=self.name(),

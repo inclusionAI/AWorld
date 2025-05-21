@@ -48,9 +48,7 @@ class EventManager:
 
     async def emit_message(self, event: Message):
         """Send the message to the event bus."""
-        topic = event.topic
-        receiver = event.receiver
-        key = f'{event.category}_{topic if topic else receiver if receiver else ''}'
+        key = event.key()
         if key not in self.messages:
             self.messages[key] = []
         self.messages[key].append(event)
@@ -77,18 +75,35 @@ class EventManager:
     async def unregister_transformer(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         await self.event_bus.unsubscribe(event_type, topic, handler, transformer=True, **kwargs)
 
-    def topic_messages(self, topic: str) -> List[Message]:
-        return self.messages.get(topic, [])
+    def messages_by_key(self, key: str) -> List[Message]:
+        return self.messages.get(key, [])
+
+    def messages_by_sender(self, sender: str, key: str):
+        results = []
+        for res in self.messages.get(key, []):
+            if res.sender == sender:
+                results.append(res)
+        return results
+
+    def messages_by_topic(self, topic: str, key: str):
+        results = []
+        for res in self.messages.get(key, []):
+            if res.topic == topic:
+                results.append(res)
+        return results
 
     def session_messages(self, session_id: str) -> List[Message]:
         return [m for k, msg in self.messages.items() for m in msg if m.session_id == session_id]
 
-    def messages_by_name(self, name: str, topic: str):
-        results = []
-        for res in self.messages.get(topic, []):
-            if res.sender == name:
-                results.append(res)
-        return results
+    @staticmethod
+    def mark_valid(messages: List[Message]):
+        for msg in messages:
+            msg.is_valid = True
+
+    @staticmethod
+    def mark_invalid(messages: List[Message]):
+        for msg in messages:
+            msg.is_valid = False
 
     def clear_messages(self):
         self.messages = []

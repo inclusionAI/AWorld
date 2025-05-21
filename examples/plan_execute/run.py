@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from aworld.config.common import Agents, Tools
-from aworld.config.conf import ModelConfig, AgentConfig, TaskConfig
+from aworld.config.conf import ModelConfig, AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 from aworld.dataset.mock import mock_dataset
@@ -16,6 +16,8 @@ def main():
         llm_provider="openai",
         llm_temperature=1,
         llm_model_name="gpt-4o",
+        llm_base_url="http://localhost:34567",
+        llm_api_key="dummy-key",
     )
 
     agent1_config = AgentConfig(
@@ -32,7 +34,7 @@ def main():
 
     # Create swarm for multi-agents
     # define (head_node1, tail_node1), (head_node1, tail_node1) edge in the topology graph
-    swarm = Swarm((agent1, agent2), sequence=False)
+    swarm = Swarm((agent1, agent2), sequence=False, event_driven=True)
 
     # Define a task
     task_id = 'task'

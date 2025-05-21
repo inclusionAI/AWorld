@@ -9,6 +9,11 @@ from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
 
+SEQUENCE = "sequence"
+SOCIAL = "social"
+SEQUENCE_EVENT = "sequence_event"
+SOCIAL_EVENT = "social_event"
+
 
 class Swarm(object):
     """Multi-agent topology.
@@ -58,7 +63,7 @@ class Swarm(object):
         valid_agent_pair = []
         for pair in self._topology:
             if isinstance(pair, (list, tuple)):
-                self.topology_type = 'social'
+                self.topology_type = SOCIAL
                 # (agent1, agent2)
                 if len(pair) != 2:
                     raise RuntimeError(f"{pair} is not a pair value, please check it.")
@@ -69,7 +74,7 @@ class Swarm(object):
                 # agent
                 if not isinstance(pair, Agent):
                     raise RuntimeError(f"agent in {pair} is not a base agent instance, please check it.")
-                self.topology_type = 'sequence'
+                self.topology_type = SEQUENCE
                 valid_agent_pair.append((pair,))
 
         if not valid_agent_pair:
@@ -85,7 +90,7 @@ class Swarm(object):
 
         # agent handoffs build.
         for pair in valid_agent_pair:
-            if self.sequence:
+            if self.sequence or self.topology_type == SEQUENCE:
                 self.ordered_agents.append(pair[0])
                 if len(pair) == 2:
                     self.ordered_agents.append(pair[1])
@@ -111,22 +116,22 @@ class Swarm(object):
                 elif pair[1].desc():
                     AgentFactory._desc[pair[1].name()] = pair[1].desc()
 
-            if self.topology_type == 'social':
+            if self.topology_type == SOCIAL:
                 # need to explicitly set handoffs in the agent
                 pair[0].handoffs.append(pair[1].name())
 
         if self.sequence:
-            self.topology_type = 'sequence'
+            self.topology_type = SEQUENCE
 
         self._cur_step = 1
         # event driven
         if self.event_driven:
-            for agent in self.ordered_agents:
+            for _, agent in self.agents.items():
                 agent.event_driven = True
-            if self.topology_type == 'sequence':
-                self.topology_type = 'sequence_event'
-            elif self.topology_type == 'social':
-                self.topology_type = 'social_event'
+            if self.topology_type == SEQUENCE:
+                self.topology_type = SEQUENCE_EVENT
+            elif self.topology_type == SOCIAL:
+                self.topology_type = SOCIAL_EVENT
 
     def reset(self, content: str, context: Context = None, tools: List[str] = []):
         """Resets the initial internal state, and init supported tools in agent in swarm.
