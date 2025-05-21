@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, Union
 from opentelemetry.sdk.trace import Span, SpanContext
 from opentelemetry.sdk.trace.export import SpanExporter
 from aworld.logs.util import logger
-from aworld.trace.rl_trace_processor import ReplayBufferExporter
+from aworld.replay_buffer.processor import ReplayBufferExporter
 
 class SpanStatus(BaseModel):
     code: str = "UNSET"
