@@ -27,7 +27,7 @@ if __name__ == "__main__":
     ]
 
     result_dir = Path("/Users/arac/Desktop/AWorld/gaia-benchmark/logs/test/all")
-    with open(result_dir / "results_0521.json", "r", encoding="utf-8") as f:
+    with open(result_dir / "results.json", "r", encoding="utf-8") as f:
         entries = json.loads(f.read())
 
     for entry in entries:
