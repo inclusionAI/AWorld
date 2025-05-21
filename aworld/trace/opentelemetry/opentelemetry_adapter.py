@@ -39,12 +39,13 @@ from aworld.trace.base import (
     TraceContext,
     set_tracer_provider
 )
+from aworld.trace.span_cosumer import SpanConsumer
 from aworld.trace.propagator import get_global_trace_context
 from aworld.logs.util import logger
 from aworld.utils.common import get_local_ip
 from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
 from ..constants import ATTRIBUTES_MESSAGE_KEY
-from .export import FileSpanExporter, NoOpSpanExporter
+from .export import FileSpanExporter, NoOpSpanExporter, SpanConsumerExporter
 from ..server import start_trace_server
 
 
@@ -293,11 +294,11 @@ class OTLPSpan(Span, ReadableSpan):
         otlp_context_api.detach(self._token)
         self._token = None
 
-
 def configure_otlp_provider(
         backends: Sequence[str] = None,
         base_url: str = None,
         write_token: str = None,
+        span_consumers: Optional[Sequence[SpanConsumer]] = None,
         **kwargs
 ) -> None:
     """Configure the OTLP provider.
@@ -309,6 +310,8 @@ def configure_otlp_provider(
     from aworld.metrics.opentelemetry.opentelemetry_adapter import build_otel_resource
     backends = backends or ["logfire"]
     processor = SynchronousMultiSpanProcessor()
+    processor.add_span_processor(BatchSpanProcessor(
+        SpanConsumerExporter(span_consumers)))
     for backend in backends:
         if backend == "logfire":
             span_exporter = _configure_logfire_exporter(
