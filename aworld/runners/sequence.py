@@ -169,8 +169,9 @@ class SequenceRunner(TaskRunner):
                                 if terminated and agent.finished:
                                     logger.info("swarm finished")
                                     break
-                await self.outputs.mark_completed()
+
             finally:
+                await self.outputs.mark_completed()
                 color_log(f"task token usage: {self.context.token_usage}",
                           color=Color.pink,
                           logger_=trace_logger)
