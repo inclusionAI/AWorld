@@ -169,7 +169,8 @@ class SequenceRunner(TaskRunner):
                                 if terminated and agent.finished:
                                     logger.info("swarm finished")
                                     break
-
+            except Exception as err:
+                logger.error(f"Runner run failed, err is {err}", exc_info=True)
             finally:
                 await self.outputs.mark_completed()
                 color_log(f"task token usage: {self.context.token_usage}",
