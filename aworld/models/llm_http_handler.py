@@ -149,7 +149,7 @@ class LLMHTTPHandler:
                 response.raise_for_status()
                 return response.json()
         except Exception as e:
-            logger.error(f"Error in HttpHandler: {str(e)}, response: {response.text}")
+            logger.error(f"Error in HttpHandler: {str(e)}")
             raise
 
     async def _make_async_request_stream(
