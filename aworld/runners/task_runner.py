@@ -1,22 +1,21 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import time
 import uuid
 
 from pydantic import BaseModel
 
 from aworld.config import ConfigDict
 from aworld.config.conf import ToolConfig
-from aworld.core.agent.base import is_agent_by_name
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Observation, ActionModel, StatefulObservation
+from aworld.core.common import Observation
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
 from aworld.core.envs.tool import Tool, AsyncTool
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
 from aworld import trace
-from aworld.memory.main import Memory
 
 
 class TaskRunner(Runner):
@@ -50,6 +49,7 @@ class TaskRunner(Runner):
         self.daemon_target = kwargs.pop('daemon_target', None)
         self._use_demon = False if not task.conf else task.conf.get('use_demon', False)
         self._exception = None
+        self.start_time = time.time()
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -100,11 +100,6 @@ class TaskRunner(Runner):
         else:
             observation = Observation(content=self.input)
 
-        # query task and session from memory
-        self.memory = Memory.from_config({"memory_store": self.conf.get("memory_store", "inmemory")})
-        histories = self.memory.get_all()
-        if histories:
-            observation = StatefulObservation(context=histories, **observation.model_dump())
         self.observation = observation
         self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
 
@@ -114,6 +109,3 @@ class TaskRunner(Runner):
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:
         """Task do run."""
-
-    def is_agent(self, policy: ActionModel):
-        return is_agent_by_name(policy.tool_name) or (not policy.tool_name and not policy.action_name)

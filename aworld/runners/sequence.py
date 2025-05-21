@@ -4,15 +4,22 @@ import time
 
 from typing import List
 
-from aworld.core.agent.base import Agent
+from aworld.core.agent.base import is_agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
 from aworld.core.envs.tool_desc import is_tool_by_name
-from aworld.core.task import Task, TaskResponse
+from aworld.core.event.base import Message, EventType
+from aworld.core.task import Task, TaskResponse, TaskItem
 from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput, ToolResultOutput
+from aworld.runners.event_runner import TaskEventRunner
+from aworld.runners.handler.agent import DefaultAgentHandler
+from aworld.runners.handler.base import DefaultHandler
+from aworld.runners.handler.task import DefaultTaskHandler
+from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import override_in_subclass
 
@@ -22,6 +29,11 @@ class SequenceRunner(TaskRunner):
         super().__init__(task=task, *args, **kwargs)
 
     async def do_run(self, context: Context = None) -> TaskResponse:
+        resp = await self._do_run(context)
+        self._task_response = resp
+        return resp
+
+    async def _do_run(self, context: Context = None) -> TaskResponse:
         """Multi-agent sequence general process workflow.
 
         NOTE: Use the agent's finished state(no tool calls) to control the inner loop.
@@ -79,7 +91,7 @@ class SequenceRunner(TaskRunner):
                                                 time_cost=(time.time() - start),
                                                 usage=self.context.token_usage)
 
-                        if self.is_agent(policy[0]):
+                        if is_agent(policy[0]):
                             status, info = await self._agent(agent, observation, policy, step)
                             if status == 'normal':
                                 if info:
@@ -139,9 +151,9 @@ class SequenceRunner(TaskRunner):
     async def _agent(self, agent: Agent, observation: Observation, policy: List[ActionModel], step: int):
         # only one agent, and get agent from policy
         policy_for_agent = policy[0]
-        agent_name = policy_for_agent.agent_name
+        agent_name = policy_for_agent.tool_name
         if not agent_name:
-            agent_name = policy_for_agent.tool_name
+            agent_name = policy_for_agent.agent_name
         cur_agent: Agent = self.swarm.agents.get(agent_name)
         if not cur_agent:
             raise RuntimeError(f"Can not find {agent_name} agent in swarm.")
@@ -231,3 +243,53 @@ class SequenceRunner(TaskRunner):
                                  action_result=observation.action_result)
             trace_logger.info(f"{tool_name} observation: {log_ob}", color=Color.green)
         return msg, terminated
+
+
+class SequenceEventRunner(TaskEventRunner):
+    async def pre_run(self):
+        await super().pre_run()
+
+        # register handler
+        for agent in self.swarm.ordered_agents:
+            if agent.handler:
+                await self.event_mng.register(EventType.AGENT, agent.name(), agent.handler)
+            else:
+                if override_in_subclass('async_policy', agent.__class__, Agent):
+                    await self.event_mng.register(EventType.AGENT, agent.name(), agent.async_policy)
+                else:
+                    await self.event_mng.register(EventType.AGENT, agent.name(), agent.policy)
+
+        self.agent_handler = DefaultAgentHandler(swarm=self.swarm)
+        self.tool_handler = DefaultToolHandler(tools=self.tools, tools_conf=self.tools_conf)
+        self.task_handler = DefaultTaskHandler(runner=self)
+
+    async def _do_run(self, context: Context = None):
+        start = time.time()
+        msg = None
+        answer = None
+
+        while True:
+            if await self.is_stopped():
+                logger.info("stop task...")
+                if self._task_response is None:
+                    # send msg to output
+                    self._task_response = TaskResponse(msg=msg,
+                                                       answer=answer,
+                                                       success=True if not msg else False,
+                                                       id=self.task.id,
+                                                       time_cost=(time.time() - start),
+                                                       usage=self.context.token_usage)
+                break
+
+            # consume message
+            message: Message = await self.event_mng.consume()
+
+            # use registered handler to process message
+            results = await self._common_process(message)
+
+            # process in framework
+            async for event in self._inner_handler_process(
+                    results=results,
+                    handlers=[self.agent_handler, self.tool_handler, self.task_handler]
+            ):
+                await self.event_mng.emit_message(event)
