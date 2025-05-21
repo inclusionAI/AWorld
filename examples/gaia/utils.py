@@ -1,5 +1,7 @@
 import argparse
 import json
+import logging
+import os
 import re
 import string
 from pathlib import Path
@@ -229,3 +231,36 @@ def parse_arguments():
         help="Whether to use the sampled dataset",
     )
     return parser.parse_args()
+
+
+def setup_logger(logger_name, output_folder_path, file_name="main.log"):
+    """
+    Set up a logger with the given name that writes to the specified file.
+    Returns a configured logger instance.
+    """
+    if not os.path.exists(output_folder_path):
+        os.makedirs(output_folder_path)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    log_file = os.path.join(output_folder_path, file_name)
+
+    # Check if the logger already has handlers to avoid duplicates
+    logger = logging.getLogger(logger_name)
+
+    # Remove existing handlers if any
+    if logger.hasHandlers():
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+
+    # Add file handler
+    handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(formatter)
+
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+    return logger
