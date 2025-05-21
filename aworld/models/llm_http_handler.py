@@ -269,8 +269,20 @@ class LLMHTTPHandler:
 
         if not endpoint:
             endpoint = "chat/completions"
-        response = self._make_request(endpoint, data, headers=headers)
-        return response
+
+        retries = 0
+        while retries < self.max_retries:
+            try:
+                response = self._make_request(endpoint, data, headers=headers)
+                return response
+            except Exception as e:
+                last_error = e
+                retries += 1
+                if retries < self.max_retries:
+                    logger.warning(f"Request failed, retrying ({retries}/{self.max_retries}): {str(e)}")
+                else:
+                    logger.error(f"Request failed after {self.max_retries} retries: {str(e)}")
+                    raise last_error
 
     async def async_call(
         self,
@@ -324,9 +336,22 @@ class LLMHTTPHandler:
         """
         data["stream"] = True
         logger.info(f"sync_stream_call request data: {data}")
+        retries = 0
 
-        for chunk in self._make_request(endpoint or "chat/completions", data, stream=True, headers=headers):
-            yield chunk
+        while retries < self.max_retries:
+            try:
+                for chunk in self._make_request(endpoint or "chat/completions", data, stream=True, headers=headers):
+                    yield chunk
+                return  # Exit after completing stream processing
+            except Exception as e:
+                last_error = e
+                retries += 1
+                if retries < self.max_retries:
+                    logger.warning(f"Stream connection failed, retrying ({retries}/{self.max_retries}): {str(e)}")
+                else:
+                    logger.error(f"Stream connection failed after {self.max_retries} retries: {str(e)}")
+                    raise last_error
+
 
     async def async_stream_call(
         self,
