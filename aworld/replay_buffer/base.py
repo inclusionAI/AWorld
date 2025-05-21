@@ -22,6 +22,17 @@ class Experience:
     reward_t: float = None
     adv_t: float = None
     v_t: float = None
+    messages: List[Dict] = None
+
+    def to_dict(self):
+        return {
+            "state": self.state,
+            "action": self.action,
+            "reward_t": self.reward_t,
+            "adv_t": self.adv_t,
+            "v_t": self.v_t,
+            "messages": self.messages
+        }
 
 
 @dataclass
@@ -34,6 +45,17 @@ class ExpMeta:
     agent_id: str
     step: int
     execute_time: float
+    pre_agent: str
+
+    def to_dict(self):
+        return {
+            "task_id": self.task_id,
+            "task_name": self.task_name,
+            "agent_id": self.agent_id,
+            "step": self.step,
+            "execute_time": self.execute_time,
+            "pre_agent": self.pre_agent
+        }
 
 
 @dataclass
@@ -44,6 +66,13 @@ class DataRow:
     exp_meta: ExpMeta
     exp_data: Experience
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def to_dict(self):
+        return {
+            "exp_meta": self.exp_meta.to_dict(),
+            "exp_data": self.exp_data.to_dict(),
+            "id": self.id
+        }
 
 
 class Storage(ABC):

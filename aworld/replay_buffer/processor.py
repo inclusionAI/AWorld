@@ -1,6 +1,6 @@
 # coding: utf-8
 """
-rl_trace_processor.py
+processor.py
 Used to clean raw trace data into standard storage structure for reinforcement learning training.
 """
 import json
@@ -9,59 +9,10 @@ from cgitb import enable
 from typing import List, Dict, Any
 from datetime import datetime
 from opentelemetry.sdk.trace import Span
+from aworld.replay_buffer.base import DataRow, Experience, ExpMeta
 from aworld.logs.util import logger
 import oss2
 
-class ExpMeta:
-    def __init__(self, task_id: str, task_name: str, agent_id: str, step: int, execute_time: float, pre_agent: str = None):
-        self.task_id = task_id
-        self.task_name = task_name
-        self.agent_id = agent_id
-        self.step = step
-        self.execute_time = execute_time
-        self.pre_agent = pre_agent
-
-    def to_dict(self):
-        return {
-            "task_id": self.task_id,
-            "task_name": self.task_name,
-            "agent_id": self.agent_id,
-            "step": self.step,
-            "execute_time": self.execute_time,
-            "pre_agent": self.pre_agent
-        }
-
-class Experience:
-    def __init__(self, observation: Any, action: Any, reward_t: float, adv_t: float = 0.0, v_t: float = 0.0, messages: List[Dict] = None):
-        self.observation = observation
-        self.action = action
-        self.reward_t = reward_t
-        self.adv_t = adv_t
-        self.v_t = v_t
-        self.messages = messages
-
-    def to_dict(self):
-        return {
-            "observation": self.observation,
-            "action": self.action,
-            "reward_t": self.reward_t,
-            "adv_t": self.adv_t,
-            "v_t": self.v_t,
-            "messages": self.messages
-        }
-
-class DataRow:
-    def __init__(self, id_: str, exp_meta: ExpMeta, exp_data: Experience):
-        self.id = id_
-        self.exp_meta = exp_meta
-        self.exp_data = exp_data
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "exp_meta": self.exp_meta.to_dict(),
-            "exp_data": self.exp_data.to_dict()
-        }
 
 class ReplayBufferExporter:
     @classmethod
@@ -170,9 +121,9 @@ class ReplayBufferExporter:
                     with open(output_path, 'r', encoding='utf-8') as f:
                         existing_data = json.load(f)
                         data_rows.extend([DataRow(
-                            row['id'],
                             ExpMeta(**row['exp_meta']),
-                            Experience(**row['exp_data'])
+                            Experience(**row['exp_data']),
+                            row['id'],
                         ) for row in existing_data])
                 except Exception as e:
                     logger.warn(f"Failed to read existing file {output_path}: {str(e)}")
@@ -180,7 +131,7 @@ class ReplayBufferExporter:
             # Add new data
             for exp_id, group in exp_groups.items():
                 if group['exp_meta'] and group['exp_data']:
-                    row = DataRow(exp_id, group['exp_meta'], group['exp_data'])
+                    row = DataRow(group['exp_meta'], group['exp_data'], exp_id)
                     data_rows.append(row)
                 
             # Sort by execute_time
