@@ -3,12 +3,11 @@
 import asyncio
 import os
 
-from aworld.runner import Runners
-
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
+from aworld.runner import Runners
 from custom.custom_rich_aworld_ui import RichAworldUI
 
 if __name__ == '__main__':
@@ -33,7 +32,6 @@ if __name__ == '__main__':
                   "which cities are passed along the way, what interesting places are there along the route, "
                   "and finally generate the content as markdown and save it")
 
-
     async def _run(agent, input):
         task = Task(
             input=input,
@@ -45,6 +43,5 @@ if __name__ == '__main__':
 
         async for output in Runners.streamed_run_task(task).stream_events():
             await AworldUI.parse_output(output, rich_ui)
-
 
     asyncio.run(_run(amap_agent, user_input))
