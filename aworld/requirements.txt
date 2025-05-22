@@ -19,6 +19,7 @@ tornado~=6.4.2
 terminal_controller # mcp server: https://github.com/GongRzhe/terminal-controller-mcp
 mcp_server_calculator # mcp server: https://github.com/githejie/mcp-server-calculator
 executing~=2.2.0
+oss2~=2.19.1
 
 ######### [optional] #########
 # optional requirements will also be installed by all extensions,

@@ -344,7 +344,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
             return tool_list
         except Exception as e:
-            logger.debug(f"tool_parse error, content: {resp.content}, \nerror msg: {e}")
+            logger.debug(f"tool_parse error, content: {resp.content}, error msg: {e}")
             return tool_list
 
     def response_parse(self, resp: ModelResponse) -> AgentResult:
