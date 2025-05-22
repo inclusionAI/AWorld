@@ -71,9 +71,13 @@ class GaiaRunner:
             logger_name=self.__class__.__name__, output_folder_path=output_folder_path
         )
 
+        self._color_log("🏃 GaiaRunner Initialization", Color.bold)
         self.complete_dataset: List[Dict[str, Any]] = self._construct_dataset()
         self.target_dataset: List[Dict[str, Any]] = self._filter_dataset()
         self.results: List[Dict[str, Any]] = self._read_existing_results()
+        self._color_log(f"📖 Fetched {len(self.complete_dataset)} tasks.", Color.bold)
+        self._color_log(f"🧯 Filtered {len(self.target_dataset)} tasks.", Color.bold)
+        self._color_log(f"💯 Read {len(self.results)} existing results.", Color.bold)
 
     @staticmethod
     def cleanup(func: Callable) -> Callable:
@@ -115,8 +119,8 @@ class GaiaRunner:
                 continue
 
             self._color_log("=" * 20 + f" <START> {task['task_id']} <START/> " + "=" * 20, Color.darkgrey)
-            self._color_log(f"Question: {task['Question']}", Color.lightblue)
-            self._color_log(f"Level: {task['Level']}", Color.lightblue)
+            self._color_log(f"❓ Question: {task['Question']}", Color.lightblue)
+            self._color_log(f"🪜 Level: {task['Level']}", Color.lightblue)
             try:
                 result: Dict[str, Any] = self._execute_task(task=task)
                 answer: Optional[str] = self._extract_answer(result)
@@ -234,7 +238,6 @@ class GaiaRunner:
                 except json.JSONDecodeError:
                     self.logger.error(f"Error reading existing results: {traceback.format_exc()}")
                     self.logger.error(f"Original file path is: {output_file}. Check it carefully!")
-            self.logger.info(f"Completed reading {len(results)} existing results.")
         return results
 
     def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
