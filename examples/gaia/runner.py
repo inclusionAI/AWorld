@@ -117,9 +117,12 @@ class GaiaRunner:
             self._color_log("=" * 20 + f" <START> {task['task_id']} <START/> " + "=" * 20, Color.darkgrey)
             self._color_log(f"Question: {task['Question']}", Color.lightblue)
             self._color_log(f"Level: {task['Level']}", Color.lightblue)
-            result: Dict[str, Any] = self._execute_task(task=task)
-            answer: str = self._extract_answer(result)
-            self._update_results(task, answer)
+            try:
+                result: Dict[str, Any] = self._execute_task(task=task)
+                answer: Optional[str] = self._extract_answer(result)
+                self._update_results(task, answer)
+            except Exception:
+                self.logger.error(f"Error executing task {task['task_id']}: {traceback.format_exc()}")
             self._color_log("=" * 25 + f" <END> {task['task_id']} <END/> " + "=" * 25, Color.darkgrey)
         self._color_log("🎉 Task Finished~~~", Color.red)
 
@@ -255,7 +258,11 @@ class GaiaRunner:
             self.logger.error(f"Failed to get answer! Original output: {result['answer']}")
         return answer
 
-    def _update_results(self, task: Dict[str, Any], answer: str) -> None:
+    def _update_results(self, task: Dict[str, Any], answer: Optional[str]) -> None:
+        # execution failed
+        if answer is None:
+            return
+
         task_id = task["task_id"]
         question = task["Question"]
 
