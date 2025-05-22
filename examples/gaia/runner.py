@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import signal
 import sys
 import traceback
 from dataclasses import dataclass
@@ -26,6 +25,7 @@ class RunnerArguments:
     """
     Command Line Arguments:
         --split: Split of the dataset, e.g., validation, test.
+        --level: Level of the dataset, e.g., 1, 2, 3.
         --q: Question Index, e.g., 0-0-0-0-0.
         --slice: A continuous range of question indices, e.g., 0:300
         --blacklist_file_path: Blacklist file path, e.g., blacklist.txt
@@ -34,6 +34,7 @@ class RunnerArguments:
     """
 
     split: Literal["validation", "test"]
+    level: Literal["1", "2", "3"]
     q: str = None
     slice: str = None
     blacklist_file_path: str = None
@@ -72,7 +73,6 @@ class GaiaRunner:
 
         self.complete_dataset: List[Dict[str, Any]] = self._construct_dataset()
         self.target_dataset: List[Dict[str, Any]] = self._filter_dataset()
-
         self.results: List[Dict[str, Any]] = self._read_existing_results()
 
     @staticmethod
@@ -83,19 +83,6 @@ class GaiaRunner:
         """
 
         def wrapper(self: "GaiaRunner", *args, **kwargs):
-            def signal_handler(sig, frame):
-                self.logger.info("Received interrupt signal. Saving results before exit...")
-                if self.runner_args.split == "validation":
-                    self._report_results(self.results)
-                self._save_results()
-                if self.runner_args.is_submit:
-                    self._export_submission()
-                sys.exit(0)
-
-            # Register the signal handler for keyboard interrupt
-            original_handler = signal.getsignal(signal.SIGINT)
-            signal.signal(signal.SIGINT, signal_handler)
-
             try:
                 # Execute the wrapped function
                 return func(self, *args, **kwargs)
@@ -106,11 +93,14 @@ class GaiaRunner:
                 self.logger.info("Saving results before raising exception...")
                 raise
             finally:
-                # Save results and restore original signal handler
+                # Save results before exiting
                 if self.runner_args.split == "validation":
                     self._report_results(self.results)
                 self._save_results()
-                signal.signal(signal.SIGINT, original_handler)
+                if self.runner_args.is_submit:
+                    self._export_submission()
+                # exit the program
+                sys.exit(0)
 
         return wrapper
 
@@ -122,10 +112,11 @@ class GaiaRunner:
         self._color_log("🎯 Task Submitted~~~", Color.red)
         for task in self.target_dataset:
             if self.runner_args.skip and any(result["task_id"] == task["task_id"] for result in self.results):
-                self._color_log(f"🐱 Skipping task {task['task_id']}", Color.orange)
                 continue
 
             self._color_log("=" * 20 + f" <START> {task['task_id']} <START/> " + "=" * 20, Color.darkgrey)
+            self._color_log(f"Question: {task['Question']}", Color.lightblue)
+            self._color_log(f"Level: {task['Level']}", Color.lightblue)
             result: Dict[str, Any] = self._exec(task=task)
             answer: str = self._extract_answer(result)
             self._update_results(task, answer)
@@ -207,6 +198,13 @@ class GaiaRunner:
                 if self.runner_args.q in blacklist:
                     raise ValueError(f"Question {self.runner_args.q} is in blacklist.")
                 return list(task for task in self.complete_dataset if task["task_id"] == self.runner_args.q)
+            # Specify the level of questions.
+            if self.runner_args.level is not None:
+                return list(
+                    task
+                    for task in self.complete_dataset
+                    if task["Level"] == self.runner_args.level and task["task_id"] not in blacklist
+                )
             # Take a slice of the dataset.
             if self.runner_args.slice is not None:
                 start, end = self.runner_args.slice.split(":")
@@ -225,15 +223,15 @@ class GaiaRunner:
 
     def _read_existing_results(self) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
-        output_file = os.path.join(self.output_folder_path, "results.jsonl")
+        output_file = os.path.join(self.output_folder_path, "results.json")
         if os.path.exists(output_file):
             with open(output_file, "r", encoding="utf-8") as f:
-                for line in f.readlines():
-                    try:
-                        results.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        self.logger.error(f"Error reading existing results: {traceback.format_exc()}")
-                        self.logger.error(f"Original line is: {line}")
+                try:
+                    results = json.loads(f.read())
+                except json.JSONDecodeError:
+                    self.logger.error(f"Error reading existing results: {traceback.format_exc()}")
+                    self.logger.error(f"Original file path is: {output_file}. Check it carefully!")
+            self.logger.info(f"Completed reading {len(results)} existing results.")
         return results
 
     def _exec(self, task: Dict[str, Any]) -> Dict[str, Any]:
@@ -304,14 +302,13 @@ class GaiaRunner:
         This method is called by the cleanup decorator to ensure results are saved
         even if the program is interrupted.
         """
-        output_file = os.path.join(self.output_folder_path, "results.jsonl")
-        temp_file = os.path.join(self.output_folder_path, "results.jsonl.tmp")
+        output_file = os.path.join(self.output_folder_path, "results.json")
+        temp_file = os.path.join(self.output_folder_path, "results.json.tmp")
 
         try:
             # Write to a temporary file first to avoid corruption if interrupted
             with open(temp_file, "w", encoding="utf-8") as f:
-                for result in self.results:
-                    f.write(json.dumps(result) + "\n")
+                f.write(json.dumps(self.results, indent=2, ensure_ascii=False))
 
             # Rename the temporary file to the actual output file
             os.replace(temp_file, output_file)
@@ -324,8 +321,7 @@ class GaiaRunner:
             if not os.path.exists(output_file):
                 try:
                     with open(output_file, "w", encoding="utf-8") as f:
-                        for result in self.results:
-                            f.write(json.dumps(result) + "\n")
+                        f.write(json.dumps(self.results, indent=2, ensure_ascii=False))
                     self.logger.info(f"Results saved to {output_file} (fallback method)")
                 except Exception as e2:
                     self.logger.error(f"Fallback save also failed: {str(e2)}")

@@ -25,6 +25,13 @@ if __name__ == "__main__":
         help="Skip the question if it has been processed before.",
     )
     parser.add_argument(
+        "--level",
+        type=str,
+        nargs="?",
+        choices=["1", "2", "3"],
+        help="Level of the question, e.g., 1, 2, 3",
+    )
+    parser.add_argument(
         "--q",
         type=str,
         nargs="?",
@@ -85,6 +92,7 @@ if __name__ == "__main__":
         ),
         runner_args=RunnerArguments(
             split=args.split,
+            level=args.level,
             q=args.q,
             slice=args.slice,
             blacklist_file_path=args.blacklist_file_path,
