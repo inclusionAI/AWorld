@@ -1,5 +1,6 @@
 import json
 import os
+import traceback
 from typing import Optional
 
 from cohere.finetuning import BaseModel
@@ -97,20 +98,22 @@ class Mem0Memory(MemoryBase):
         messages_to_process = []
 
         for msg in all_messages:
-            if isinstance(msg, MemoryItem) and msg.memory_type in {'init', 'summary'}:
+            if isinstance(msg, MemoryItem) and msg.memory_type in {'summary'}:
                 # Keep system and memory messages as they are
                 summary_messages.append(msg)
+            elif msg.memory_type in {'init'}:
+                messages_to_process.append(msg)
             else:
                 if len(msg.content) > 0:
                     messages_to_process.append(msg)
-
+        if messages_to_process[-1].metadata.get("tool_calls"):
+            messages_to_process = messages_to_process[:-1]
         # Need at least 1 message to create a meaningful summary
         if len(messages_to_process) < 1:
             logger.info('Not enough non-memory messages to summarize')
             return
         # Create a procedural memory
-        if messages_to_process[-1].metadata.get("tool_calls"):
-            messages_to_process = messages_to_process[:-1]
+
         memory_content = self._create_summary_memory(messages_to_process)
 
         if not memory_content:
@@ -129,7 +132,7 @@ class Mem0Memory(MemoryBase):
 
         # Update the history
         [self.memory_store.delete(m.id) for m in messages_to_process]
-        [self.memory_store.add(m) for m in summary_messages]
+        self.memory_store.add(summary_message)
 
 
         logger.info(f'Messages consolidated: {len(messages_to_process)} messages converted to procedural memory')
@@ -149,6 +152,7 @@ class Mem0Memory(MemoryBase):
             return None
         except Exception as e:
             logger.error(f'Error creating summary memory: {e}')
+            traceback.print_exc()
             return None
     def __format_tool_call(self, tool_calls):
         return json.dumps(tool_calls, default=lambda o: o.model_dump_json() if isinstance(o, BaseModel) else str(o))
