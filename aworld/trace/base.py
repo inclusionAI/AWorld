@@ -358,7 +358,7 @@ class Propagator(ABC):
     """
 
     @abstractmethod
-    def extract(self, carrier: Carrier) -> TraceContext:
+    def extract(self, carrier: Carrier) -> Optional[TraceContext]:
         """Extracts a trace context from the given carrier.
         Args:
             carrier: The carrier to extract the trace context from.
