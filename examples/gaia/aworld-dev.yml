@@ -30,12 +30,13 @@ dependencies:
       - apify-shared==1.4.1
       - attrs==25.3.0
       - audioread==3.0.1
+      - autoflake==2.3.1
       - backoff==2.2.1
       - beautifulsoup4==4.13.4
       - boto3==1.38.11
       - botocore==1.38.11
       - brotli==1.1.0
-      - browser-use==0.1.45
+      - browser-use==0.1.48
       - browserforge==1.2.3
       - cachetools==5.5.2
       - certifi==2025.1.31
@@ -59,6 +60,7 @@ dependencies:
       - datasets==2.18.0
       - decorator==5.2.1
       - defusedxml==0.7.1
+      - deprecated==1.2.18
       - dill==0.3.8
       - distro==1.9.0
       - docx2markdown==0.1.1
@@ -148,13 +150,15 @@ dependencies:
       - packaging==24.2
       - pandas==2.2.3
       - pandas-datareader==0.10.0
-      - patchright==1.52.2
+      - patchright==1.52.4
       - pathlib==1.0.1
       - pdfminer-six==20250327
       - pdfplumber==0.11.6
       - peewee==3.18.1
+      - pikepdf==9.7.0
       - pillow==11.2.1
       - platformdirs==4.3.8
+      - playwright==1.52.0
       - pooch==1.8.2
       - portalocker==2.10.1
       - posthog==3.25.0
@@ -178,6 +182,7 @@ dependencies:
       - pydot==4.0.0
       - pydub==0.25.1
       - pyee==13.0.0
+      - pyflakes==3.3.2
       - pygame==2.6.1
       - pygments==2.19.1
       - pymupdf==1.25.5
@@ -247,6 +252,8 @@ dependencies:
       - webcolors==24.11.1
       - websocket-client==1.8.0
       - websockets==15.0.1
+      - wikipedia==1.4.0
+      - wrapt==1.17.2
       - wsproto==1.2.0
       - xlrd==2.0.1
       - xls2xlsx==0.2.0
