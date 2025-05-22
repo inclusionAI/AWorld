@@ -17,8 +17,6 @@ from aworld.runner import Runners
 from examples.gaia.agent import GaiaAgent
 from examples.gaia.utils import color_log, question_scorer, setup_logger
 
-# pylint: disable=W0613,W0622,W1201
-
 
 @dataclass
 class RunnerArguments:
@@ -246,10 +244,10 @@ class GaiaRunner:
     def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_id = task["task_id"]
         question = task["Question"]
-        exec: Dict[str, Dict[str, Any]] = Runners.sync_run_task(
+        execution: Dict[str, Dict[str, Any]] = Runners.sync_run_task(
             task=Task(input=question, agent=self.agent, conf=TaskConfig(task_id=task_id))
         )
-        result: Dict[str, Any] = exec.get("task_0", {})
+        result: Dict[str, Any] = execution.get("task_0", {})
         if not result:
             self.logger.warning(f"⚠️ Task {task_id} with EMPTY return!")
         return result
