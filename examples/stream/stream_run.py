@@ -3,12 +3,11 @@
 import asyncio
 import os
 
-from aworld.runner import Runners
-
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
+from aworld.runner import Runners
 from custom.custom_rich_aworld_ui import RichAworldUI
 
 if __name__ == '__main__':
@@ -40,13 +39,7 @@ if __name__ == '__main__':
             conf=TaskConfig()
         )
 
-        openwebui_ui = OpenAworldUI(
-            chat_id=chat_id,
-            workspace=WorkSpace.from_local_storages(
-                workspace_id=chat_id,
-                storage_path=os.path.join(os.curdir, "workspaces", chat_id),
-            ),
-        )
+        rich_ui = RichAworldUI()
 
         async for output in Runners.streamed_run_task(task).stream_events():
             await AworldUI.parse_output(output, rich_ui)
