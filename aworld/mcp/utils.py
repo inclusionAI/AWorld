@@ -27,16 +27,61 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                         param_desc = param_info.get("description", "")
                         if param_type == "array":
                             # Handle array type parameters
-                            item_type = param_info.get("items", {}).get("type", "string")
-                            if item_type == "str":
-                                item_type = "string"
-                            properties[param_name] = {
-                                "description": param_desc,
-                                "type": param_type,
-                                "items": {
-                                    "type": item_type
+                            items_info = param_info.get("items", {})
+                            item_type = items_info.get("type", "string")
+
+                            # Process nested array type parameters
+                            if item_type == "array":
+                                nested_items = items_info.get("items", {})
+                                nested_type = nested_items.get("type", "string")
+
+                                # If the nested type is an object
+                                if nested_type == "object":
+                                    properties[param_name] = {
+                                        "description": param_desc,
+                                        "type": param_type,
+                                        "items": {
+                                            "type": item_type,
+                                            "items": {
+                                                "type": nested_type,
+                                                "properties": nested_items.get("properties", {}),
+                                                "required": nested_items.get("required", [])
+                                            }
+                                        }
+                                    }
+                                else:
+                                    properties[param_name] = {
+                                        "description": param_desc,
+                                        "type": param_type,
+                                        "items": {
+                                            "type": item_type,
+                                            "items": {
+                                                "type": nested_type
+                                            }
+                                        }
+                                    }
+                            # Process object type cases
+                            elif item_type == "object":
+                                properties[param_name] = {
+                                    "description": param_desc,
+                                    "type": param_type,
+                                    "items": {
+                                        "type": item_type,
+                                        "properties": items_info.get("properties", {}),
+                                        "required": items_info.get("required", [])
+                                    }
                                 }
-                            }
+                            # Process basic type cases
+                            else:
+                                if item_type == "str":
+                                    item_type = "string"
+                                properties[param_name] = {
+                                    "description": param_desc,
+                                    "type": param_type,
+                                    "items": {
+                                        "type": item_type
+                                    }
+                                }
                         else:
                             # Handle non-array type parameters
                             properties[param_name] = {
