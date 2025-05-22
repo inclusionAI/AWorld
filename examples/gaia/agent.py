@@ -79,7 +79,7 @@ class GaiaAgent(Agent):
                 temperature=self.conf.llm_config.llm_temperature,
                 tools=self.tools if self.tools else None,
             )
-            self.logger.info(f"🤖 Execute response: {llm_response.message}")
+            self._color_log(f"🤖 Execute response: {llm_response.message}", Color.orange)
         except Exception as e:
             self.logger.warning(traceback.format_exc())
             raise e
