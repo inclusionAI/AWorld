@@ -134,6 +134,26 @@ class GaiaRunner:
         color_log(self.logger, message, color)
 
     def _construct_dataset(self) -> List[Dict[str, Any]]:
+        def _add_file_path(task: Dict[str, Any], data_dir: Path) -> str:
+            file_path: Path = data_dir / task["file_name"]
+            if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
+                question = task["Question"] + f" Here are the necessary document files: {file_path}"
+
+            elif file_path.suffix in [".jpg", ".jpeg", ".png"]:
+                question = task["Question"] + f" Here are the necessary image files: {file_path}"
+
+            elif file_path.suffix in [".xlsx", "xls", ".csv"]:
+                question = task["Question"] + (
+                    f" Here are the necessary table files: {file_path}, for processing excel file,"
+                    " you can use the excel tool or write python code to process the file"
+                    " step-by-step and get the information."
+                )
+            elif file_path.suffix in [".py"]:
+                question = task["Question"] + f" Here are the necessary python files: {file_path}"
+            else:
+                question = task["Question"] + f" Here are the necessary files: {file_path}"
+            return question
+
         data_dir = Path(self.dataset_folder_path) / self.runner_args.split
         data_file = data_dir / "metadata.jsonl"
         assert data_file.exists(), f"{data_file} not exists"
@@ -151,28 +171,8 @@ class GaiaRunner:
 
         for task in dataset:
             if task["file_name"]:
-                task["Question"] = self._add_file_path(task, data_dir)
+                task["Question"] = _add_file_path(task, data_dir)
         return dataset
-
-    def _add_file_path(self, task: Dict[str, Any], data_dir: Path) -> str:
-        file_path: Path = data_dir / task["file_name"]
-        if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
-            question = task["Question"] + f" Here are the necessary document files: {file_path}"
-
-        elif file_path.suffix in [".jpg", ".jpeg", ".png"]:
-            question = task["Question"] + f" Here are the necessary image files: {file_path}"
-
-        elif file_path.suffix in [".xlsx", "xls", ".csv"]:
-            question = task["Question"] + (
-                f" Here are the necessary table files: {file_path}, for processing excel file,"
-                " you can use the excel tool or write python code to process the file"
-                " step-by-step and get the information."
-            )
-        elif file_path.suffix in [".py"]:
-            question = task["Question"] + f" Here are the necessary python files: {file_path}"
-        else:
-            question = task["Question"] + f" Here are the necessary files: {file_path}"
-        return question
 
     def _filter_dataset(self) -> List[Dict[str, Any]]:
         """
