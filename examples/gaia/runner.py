@@ -117,7 +117,7 @@ class GaiaRunner:
             self._color_log("=" * 20 + f" <START> {task['task_id']} <START/> " + "=" * 20, Color.darkgrey)
             self._color_log(f"Question: {task['Question']}", Color.lightblue)
             self._color_log(f"Level: {task['Level']}", Color.lightblue)
-            result: Dict[str, Any] = self._exec(task=task)
+            result: Dict[str, Any] = self._execute_task(task=task)
             answer: str = self._extract_answer(result)
             self._update_results(task, answer)
             self._color_log("=" * 25 + f" <END> {task['task_id']} <END/> " + "=" * 25, Color.darkgrey)
@@ -234,7 +234,7 @@ class GaiaRunner:
             self.logger.info(f"Completed reading {len(results)} existing results.")
         return results
 
-    def _exec(self, task: Dict[str, Any]) -> Dict[str, Any]:
+    def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_id = task["task_id"]
         question = task["Question"]
         exec: Dict[str, Dict[str, Any]] = Runners.sync_run_task(
