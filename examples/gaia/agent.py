@@ -11,7 +11,7 @@ from aworld.models.llm import call_llm_model
 from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput
 from aworld.utils.common import sync_exec
-from examples.gaia.utils import setup_logger
+from examples.gaia.utils import color_log, setup_logger
 
 
 class GaiaAgent(Agent):
@@ -24,21 +24,10 @@ class GaiaAgent(Agent):
     ):
         super().__init__(config, resp_parse_func, **kwargs)
         self.logger: logging.Logger = self._setup_logger(
-            self.__class__.__name__, output_folder_path
+            logger_name=self.__class__.__name__, output_folder_path=output_folder_path
         )
 
-    def _setup_logger(
-        self, logger_name: str, output_folder_path: str, file_name: str = "main.log"
-    ) -> logging.Logger:
-        return setup_logger(
-            logger_name=logger_name,
-            output_folder_path=output_folder_path,
-            file_name=file_name,
-        )
-
-    def policy(
-        self, observation: Observation, info: Dict[str, Any] = None, **kwargs
-    ) -> Union[List[ActionModel], None]:
+    def policy(self, observation: Observation, info: Dict[str, Any] = None, **kwargs) -> Union[List[ActionModel], None]:
         """Adapted from the base class. Format necessary GAIA logs.
 
         Args:
@@ -49,7 +38,7 @@ class GaiaAgent(Agent):
             ActionModel sequence from agent policy
         """
         # LOG CKPT: Agent's Observation
-        self._color_log(f"🌍 Observation: {observation}", Color.green)
+        self._color_log(f"🌍 Observation: {observation}", Color.pink)
 
         if info is None:
             info = {}
@@ -70,8 +59,6 @@ class GaiaAgent(Agent):
             output_prompt=self.output_prompt,
         )
 
-        # logging_level=DEBUG
-        self._log_messages(messages)
         self.memory.add(
             MemoryItem(
                 content=messages[-1]["content"],
@@ -99,7 +86,7 @@ class GaiaAgent(Agent):
         finally:
             if llm_response:
                 if llm_response.error:
-                    self.logger.error(f"llm result error: {llm_response.error}")
+                    self.logger.error(f"LLM result error: {llm_response.error}")
                 else:
                     self.memory.add(
                         MemoryItem(
@@ -128,17 +115,22 @@ class GaiaAgent(Agent):
 
         return actions
 
-    def _color_log(self, value: str, color: Color):
-        self.logger.info(f"{color} {value} {Color.reset}")
+    def _setup_logger(self, logger_name: str, output_folder_path: str, file_name: str = "app.log") -> logging.Logger:
+        return setup_logger(
+            logger_name=logger_name,
+            output_folder_path=output_folder_path,
+            file_name=file_name,
+        )
+
+    def _color_log(self, message: str, color: Color) -> None:
+        color_log(self.logger, message, color)
 
     def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
         """Log the sequence of messages for debugging purposes"""
         self.logger.debug(f"[agent] Invoking LLM with {len(messages)} messages:")
         for i, msg in enumerate(messages):
             prefix = msg.get("role")
-            self.logger.debug(
-                f"[agent] Message {i + 1}: {prefix} ==================================="
-            )
+            self.logger.debug(f"[agent] Message {i + 1}: {prefix} ===================================")
             if isinstance(msg["content"], list):
                 for item in msg["content"]:
                     if item.get("type") == "text":
@@ -151,28 +143,14 @@ class GaiaAgent(Agent):
                             self.logger.debug(f"[agent] Image URL: {image_url[:30]}...")
             else:
                 content = str(msg["content"])
-                chunk_size = 500
-                for j in range(0, len(content), chunk_size):
-                    chunk = content[j : j + chunk_size]
-                    if j == 0:
-                        self.logger.debug(f"[agent] Content: {chunk}")
-                    else:
-                        self.logger.debug(f"[agent] Content (continued): {chunk}")
-
+                self.logger.debug(f"[agent] Content: {content}")
             if "tool_calls" in msg and msg["tool_calls"]:
                 for tool_call in msg.get("tool_calls"):
                     if isinstance(tool_call, dict):
-                        self.logger.debug(
-                            f"[agent] Tool call: {tool_call.get('name')}"
-                            " - ID: {tool_call.get('id')}"
-                        )
-                        args = str(tool_call.get("args", {}))[  # pylint: disable=W0621
-                            :1000
-                        ]
+                        self.logger.debug(f"[agent] Tool call: {tool_call.get('name')} - ID: {{tool_call.get('id')}}")
+                        args = str(tool_call.get("args", {}))[:1000]
                         self.logger.debug(f"[agent] Tool args: {args}...")
                     elif isinstance(tool_call, ToolCall):
-                        self.logger.debug(
-                            f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}"
-                        )
+                        self.logger.debug(f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
                         args = str(tool_call.function.arguments)[:1000]
                         self.logger.debug(f"[agent] Tool args: {args}...")

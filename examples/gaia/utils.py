@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 from tabulate import tabulate
 
+from aworld.logs.util import Color
+
 
 def normalize_str(input_str, remove_punct=True) -> str:
     no_spaces = re.sub(r"\s", "", input_str)
@@ -80,15 +82,9 @@ def question_scorer(model_answer: str, ground_truth: str) -> bool:
         return False
 
 
-def load_dataset_meta(
-    path: str, split: str = "validation", is_sample: bool = False
-) -> List[Dict[str, Any]]:
+def load_dataset_meta(path: str, split: str = "validation", is_sample: bool = False) -> List[Dict[str, Any]]:
     data_dir = Path(path) / split
-    data_file = (
-        data_dir / "metadata.jsonl"
-        if not is_sample
-        else data_dir / "sample_metadata.jsonl"
-    )
+    data_file = data_dir / "metadata.jsonl" if not is_sample else data_dir / "sample_metadata.jsonl"
 
     dataset = []
     with open(data_file, "r", encoding="utf-8") as metaf:
@@ -103,9 +99,7 @@ def load_dataset_meta(
     return dataset
 
 
-def add_file_path(
-    task: Dict[str, Any], file_path: str = "./gaia_dataset", split: str = "validation"
-):
+def add_file_path(task: Dict[str, Any], file_path: str = "./gaia_dataset", split: str = "validation"):
     if task["file_name"]:
         file_path = Path(f"{file_path}/{split}") / task["file_name"]
         if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
@@ -177,9 +171,7 @@ def report_results(entries):
 
     for level in sorted(level_stats.keys()):
         stats = level_stats[level]
-        level_table.append(
-            [level, stats["total"], stats["correct"], f"{stats['accuracy']:.2f}%"]
-        )
+        level_table.append([level, stats["total"], stats["correct"], f"{stats['accuracy']:.2f}%"])
 
     logger.success(tabulate(level_table, headers=headers, tablefmt="grid"))
 
@@ -201,10 +193,7 @@ def parse_arguments():
     parser.add_argument(
         "--q",
         type=str,
-        help=(
-            "Question Index, e.g., 0-0-0-0-0."
-            " Highest priority: override other arguments if provided."
-        ),
+        help=("Question Index, e.g., 0-0-0-0-0. Highest priority: override other arguments if provided."),
     )
     parser.add_argument(
         "--skip",
@@ -241,9 +230,7 @@ def setup_logger(logger_name, output_folder_path, file_name="main.log"):
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
 
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
     log_file = os.path.join(output_folder_path, file_name)
 
@@ -264,3 +251,7 @@ def setup_logger(logger_name, output_folder_path, file_name="main.log"):
     logger.addHandler(handler)
 
     return logger
+
+
+def color_log(logger: logging.Logger, value: str, color: Color):
+    logger.info(f"{color} {value} {Color.reset}")
