@@ -71,6 +71,9 @@ class GaiaRunner:
             logger_name=self.__class__.__name__, output_folder_path=output_folder_path
         )
 
+        if os.getenv("FRAMEWORK_LOG_LEVEL") != "INFO":
+            self.logger.info(f"{os.getenv('FRAMEWORK_LOG_LEVEL')=}")
+
         self._color_log("🏃 GaiaRunner Initialization", Color.bold)
         self.complete_dataset: List[Dict[str, Any]] = self._construct_dataset()
         self.target_dataset: List[Dict[str, Any]] = self._filter_dataset()
