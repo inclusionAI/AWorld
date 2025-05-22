@@ -1,8 +1,8 @@
+import json
 import os
-from dataclasses import Field
 from typing import Optional
 
-from langchain_core.messages import HumanMessage, convert_to_openai_messages
+from cohere.finetuning import BaseModel
 from langchain_openai import ChatOpenAI
 
 from aworld.core.memory import MemoryStore, MemoryConfig, MemoryBase, MemoryItem
@@ -23,6 +23,7 @@ class Mem0Memory(MemoryBase):
             api_key=os.getenv("MEM0_LLM_API_KEY"),
             base_url=os.getenv("MEM0_LLM_BASE_URL"),
             temperature=1.0,
+            streaming=False
         )
 
         # Check for required packages
@@ -48,20 +49,45 @@ class Mem0Memory(MemoryBase):
         self.memory_store = memory_store
 
     def add(self, memory_item: MemoryItem, filters: dict = None):
-        self.memory_store.add(memory_item)
         # generate summary memory if needed
         message_filters = {
-            "message_type": "message",
-            **filters
+            "memory_type": "message"
         }
-        if self.memory_store.total_rounds(message_filters) > self.config.summary_rounds == 0:
-            self.create_procedural_memory(filters)
+        if filters:
+            message_filters = {
+                "memory_type": "message",
+                "agent_id": memory_item.metadata.get("agent_id"),
+                "task_id": memory_item.metadata.get("task_id"),
+                "user_id": memory_item.metadata.get("user_id"),
+                "session_id": memory_item.metadata.get("session_id"),
+            }
 
-    def create_summary_memory(self, filters: dict) -> None:
+        if self._need_summary(memory_item, message_filters):
+            self.create_summary_memory(
+                agent_id=memory_item.metadata.get("agent_id"),
+                task_id=memory_item.metadata.get("task_id"),
+                user_id=memory_item.metadata.get("user_id"),
+                session_id=memory_item.metadata.get("session_id"),
+                filters=message_filters
+            )
+        else:
+            self.memory_store.add(memory_item)
+
+    def _need_summary(self, memory_item, message_filters):
+        """
+        Check if a summary is needed based on the current step.
+        1. If the number of messages is greater than the summary rounds.
+        2. If the message is a message and the content is greater than the summary single context length.
+        """
+        return self.memory_store.total_rounds(message_filters) > self.config.summary_rounds or (
+                memory_item.memory_type == 'message' and len(
+            memory_item.content) >= self.config.summary_single_context_length)
+
+    def create_summary_memory(self, agent_id, task_id, user_id, session_id, filters: dict) -> None:
         """
         Create a summary memory if needed based on the current step.
         """
-        logger.info(f'Creating summary memory at step {current_step}')
+        logger.info(f'Creating summary memory, {filters}')
 
         # Get all messages
         all_messages = self.memory_store.get_all(filters=filters)
@@ -71,28 +97,33 @@ class Mem0Memory(MemoryBase):
         messages_to_process = []
 
         for msg in all_messages:
-            if isinstance(msg, MemoryItem) and msg.metadata.get('message_type') in {'init', 'memory'}:
+            if isinstance(msg, MemoryItem) and msg.memory_type in {'init', 'summary'}:
                 # Keep system and memory messages as they are
                 summary_messages.append(msg)
             else:
                 if len(msg.content) > 0:
                     messages_to_process.append(msg)
 
-        # Need at least 2 messages to create a meaningful summary
-        if len(messages_to_process) <= 1:
+        # Need at least 1 message to create a meaningful summary
+        if len(messages_to_process) < 1:
             logger.info('Not enough non-memory messages to summarize')
             return
         # Create a procedural memory
-        memory_content = self._create([m for m in messages_to_process], current_step)
+        if messages_to_process[-1].metadata.get("tool_calls"):
+            messages_to_process = messages_to_process[:-1]
+        memory_content = self._create_summary_memory(messages_to_process)
 
         if not memory_content:
             logger.warning('Failed to create procedural memory')
             return
 
         # Add the summary message
-        summary_message = MemoryItem(content=memory_content, message_type='summary', metadata= {
+        summary_message = MemoryItem(content=memory_content, memory_type='summary', metadata= {
             "role": "user",
-            **filters
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "task_id": task_id,
+            "user_id": user_id,
         })
         summary_messages.append(summary_message)
 
@@ -103,48 +134,42 @@ class Mem0Memory(MemoryBase):
 
         logger.info(f'Messages consolidated: {len(messages_to_process)} messages converted to procedural memory')
 
-    def _create(self, messages: list[MemoryItem], current_step: int) -> str | None:
-        parsed_messages = convert_to_openai_messages(messages)
+    def _create_summary_memory(self, messages: list[MemoryItem]) -> str | None:
+
+        parsed_messages = [{'role': message.metadata['role'], 'content': message.content if not message.metadata.get('tool_calls') else message.content + "\n\n" + self.__format_tool_call(message.metadata.get('tool_calls')) } for message in messages] #TODO add tool_call from metadata['tool_calls']  such as [{"id": "fc-7b66b01a-f125-44d5-9f32-5e3723384d8e", "type": "function", "function": {"name": "mcp__amap-amap-sse__maps_geo", "arguments": "{\"address\": \"\u676d\u5dde\", \"city\": \"\u676d\u5dde\"}"}}] append to content
         try:
             results = self.mem0.add(
                 messages=parsed_messages,
-                agent_id=self.config.agent_id,
-                memory_type='procedural_memory',
-                metadata={'step': current_step},
+                agent_id=messages[-1].metadata.get('agent_id'),
+                memory_type='procedural_memory'
             )
             if len(results.get('results', [])):
+                logger.info(f'creating summary memory result: {results}')
                 return results.get('results', [])[0].get('memory')
             return None
         except Exception as e:
-            logger.error(f'Error creating procedural memory: {e}')
+            logger.error(f'Error creating summary memory: {e}')
             return None
+    def __format_tool_call(self, tool_calls):
+        return json.dumps(tool_calls, default=lambda o: o.model_dump_json() if isinstance(o, BaseModel) else str(o))
 
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)
-        self.mem0.update(
-            memory_item.id,
-            messages=memory_item.content,
-        )
 
     def delete(self, memory_id):
         self.memory_store.delete(memory_id)
-        self.mem0.delete(
-            memory_id,
-        )
 
     def get(self, memory_id) -> Optional[MemoryItem]:
         # self.memory_store.get(memory_id)
-        return self.mem0.get(
+        return self.memory_store.get(
             memory_id,
         )
 
 
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
-        return self.mem0.get_all(
-            user_id=filters.get('user_id'),
-            agent_id=filters.get('agent_id'),
-            run_id=filters.get('task_id'),
-        )['results']
+        return self.memory_store.get_all(
+            filters=filters,
+        )
 
     def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None) -> list[MemoryItem]:
         """
@@ -157,9 +182,7 @@ class Mem0Memory(MemoryBase):
         Returns:
             list[MemoryItem]: List of latest memories.
         """
-        return self.mem0.get_all(
-            user_id=filters.get('user_id'),
-            agent_id=filters.get('agent_id'),
-            run_id=filters.get('task_id'),
-            limit=last_rounds
-        )['results']
+        return self.memory_store.get_last_n(
+            last_rounds=last_rounds,
+            filters=filters,
+        )

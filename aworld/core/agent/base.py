@@ -499,6 +499,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                                            agent_prompt=self.agent_prompt)
         self.memory.add(MemoryItem(
             content=messages[-1]['content'],
+            memory_type="message" if messages[-1]['role'] in ["assistant", "tool"] else "init",
             metadata={
                 "role": messages[-1]['role'],
                 "agent_name": self.name(),
@@ -545,6 +546,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                     else:
                         self.memory.add(MemoryItem(
                             content=llm_response.content,
+                            memory_type="message",
                             metadata={
                                 "role": "assistant",
                                 "agent_name": self.name(),
@@ -609,6 +611,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         self._log_messages(messages)
         self.memory.add(MemoryItem(
             content=messages[-1]['content'],
+            memory_type="message" if messages[-1]['role'] in ["assistant", "tool"] else "init",
             metadata={
                 "role": messages[-1]['role'],
                 "agent_name": self.name(),
@@ -663,6 +666,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                     else:
                         self.memory.add(MemoryItem(
                             content=llm_response.content,
+                            memory_type="message",
                             metadata={
                                 "role": "assistant",
                                 "agent_name": self.name(),

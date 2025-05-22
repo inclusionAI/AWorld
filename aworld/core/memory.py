@@ -22,7 +22,7 @@ class MemoryItem(BaseModel):
     tags: list[str] = Field(description="tags")
     histories: list["MemoryItem"] = Field(default_factory=list)
     deleted: bool = Field(default=False)
-    memory_type: Literal["message", "summary"] = Field(default="message")
+    memory_type: Literal["init", "message", "summary"] = Field(default="message")
     version: int = Field(description="version")
 
     def __init__(self, **data):
@@ -161,8 +161,9 @@ class MemoryConfig(BaseModel):
 
     # Memory Config
     provider: Literal['inmemory', 'mem0'] = 'inmemory'
-    enable_summary: bool = Field(default=False, description="enable_summary use llm")
-    summary_rounds: int = Field(default=5, description="rounds of message msg")
+    enable_summary: bool = Field(default=False, description="enable_summary use llm to create summary memory")
+    summary_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
+    summary_single_context_length: int = Field(default=4000, description=" when the content length is greater than the summary_single_context_length, the summary will be created")
 
     # Embedder settings
     embedder_provider: Literal['openai', 'gemini', 'ollama', 'huggingface'] = 'huggingface'

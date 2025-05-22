@@ -3,7 +3,6 @@
 import abc
 import uuid
 
-from aworld.memory.base import MemoryItem
 from pydantic import BaseModel
 
 from aworld.config import ConfigDict

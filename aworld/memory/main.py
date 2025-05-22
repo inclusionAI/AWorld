@@ -59,10 +59,10 @@ class InMemoryMemoryStore(MemoryStore):
                 return False
             if memory_item.metadata.get('session_id') != filters['session_id']:
                 return False
-        if filters.get('message_type') is not None:
-            if memory_item.message_type is None:
+        if filters.get('memory_type') is not None:
+            if memory_item.memory_type is None:
                 return False
-            if memory_item.message_type != filters['message_type']:
+            if memory_item.memory_type != filters['memory_type']:
                 return False
         return True
 
