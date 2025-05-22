@@ -26,9 +26,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--level",
-        type=str,
+        type=int,
         nargs="?",
-        choices=["1", "2", "3"],
+        choices=[1, 2, 3],
         help="Level of the question, e.g., 1, 2, 3",
     )
     parser.add_argument(

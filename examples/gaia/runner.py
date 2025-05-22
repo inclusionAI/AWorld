@@ -34,7 +34,7 @@ class RunnerArguments:
     """
 
     split: Literal["validation", "test"]
-    level: Literal["1", "2", "3"]
+    level: Literal[1, 2, 3] | None = None
     q: str = None
     slice: str = None
     blacklist_file_path: str = None
