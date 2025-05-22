@@ -402,8 +402,8 @@ class GaiaRunner:
         submission: List[Dict[str, Any]] = [
             {
                 "task_id": task_id,
-                "model_answer": results.get("result", {}).get("model_answer", ""),
-                "is_correct": results.get("result", {}).get("is_correct", None),
+                "model_answer": results.get(task_id, {}).get("model_answer", ""),
+                "is_correct": results.get(task_id, {}).get("is_correct", None),
                 "reasoning_trace": "",
             }
             for task_id in task_ids
