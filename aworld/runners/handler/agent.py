@@ -18,6 +18,7 @@ from aworld.runners.utils import endless_detect
 class DefaultAgentHandler(DefaultHandler):
     def __init__(self, swarm: Swarm):
         self.swarm = swarm
+        self.agent_calls = []
 
     @classmethod
     def name(cls):
@@ -88,6 +89,7 @@ class DefaultAgentHandler(DefaultHandler):
                 yield event
 
     async def _agent(self, action: ActionModel, message: Message):
+        self.agent_calls.append(action.agent_name)
         agent = self.swarm.agents.get(action.agent_name)
         # be handoff
         agent_name = action.tool_name
@@ -135,7 +137,6 @@ class DefaultAgentHandler(DefaultHandler):
             sender=action.agent_name,
             session_id=Context.instance().session_id,
             receiver=action.tool_name,
-            topic=EventType.AGENT,
             group_name=message.group_name
         )
 
@@ -187,15 +188,12 @@ class DefaultAgentSocialHandler(DefaultAgentHandler):
         super().__init__(swarm)
 
         self.endless_threshold = endless_threshold
-        self.agent_calls = []
 
     @classmethod
     def name(cls):
         return "_social_agents_handler"
 
     async def _stop_check(self, action: ActionModel, caller: str):
-        self.agent_calls.append(action.agent_name)
-
         agent = self.swarm.agents.get(action.agent_name)
 
         if endless_detect(self.agent_calls,
@@ -223,14 +221,21 @@ class DefaultAgentSocialHandler(DefaultAgentHandler):
                 self.swarm.cur_step += 1
                 logger.info(f"execute loop {self.swarm.cur_step}.")
                 yield Message(
-                    category=EventType.TASK,
+                    category=EventType.AGENT,
                     payload=Observation(content=action.policy_info),
                     sender=agent.name(),
                     session_id=Context.instance().session_id,
-                    topic=TaskType.START,
                     receiver=self.swarm.communicate_agent.name()
                 )
         else:
+            idx = 0
+            for idx, name in enumerate(self.agent_calls[::-1]):
+                if name == agent.name():
+                    break
+            idx = len(self.agent_calls) - idx - 1
+            if idx:
+                caller = self.agent_calls[idx - 1]
+
             yield Message(
                 category=EventType.AGENT,
                 payload=Observation(content=action.policy_info),

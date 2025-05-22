@@ -152,19 +152,17 @@ class ExecuteAgent(Agent):
             policy_info = extract_pattern(content, "final_answer")
             if policy_info:
                 res.append(ActionModel(agent_name=Agents.EXECUTE.value,
-                                       tool_name=Agents.PLAN.value,
                                        policy_info=policy_info))
                 self._finished = True
             else:
                 res.append(ActionModel(agent_name=Agents.EXECUTE.value,
-                                       tool_name=Agents.PLAN.value,
                                        policy_info=content))
 
         logger.info(f">>> execute result: {res}")
 
         result = AgentResult(actions=res,
                              current_state=None)
-        return self._agent_result(result, observation.from_agent_name)
+        return result.actions
 
 
 @AgentFactory.register(name=Agents.PLAN.value, desc="plan agent")
@@ -242,4 +240,4 @@ class PlanAgent(Agent):
                                                   tool_name=Agents.EXECUTE.value,
                                                   policy_info=content)],
                              current_state=None)
-        return self._agent_result(result, observation.from_agent_name)
+        return result.actions

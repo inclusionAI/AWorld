@@ -13,7 +13,6 @@ from typing import Any, Dict, Tuple, List, Union
 
 from aworld.config import ConfigDict
 from aworld.config.common import Tools
-from aworld.core.event.base import Message
 from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger

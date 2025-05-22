@@ -10,12 +10,15 @@ from pydantic import BaseModel
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.utils.common import convert_to_snake
 
 INPUT = TypeVar('INPUT')
 OUTPUT = TypeVar('OUTPUT')
+
+AgentPolicy = Union[List[ActionModel], Message, None]
 
 
 def is_agent_by_name(name: str) -> bool:
@@ -102,14 +105,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> OUTPUT:
         self.pre_run()
         result = self.policy(observation, info, **kwargs)
-        self.post_run()
-        return result
+        final_result = self.post_run(result, observation)
+        return final_result if final_result else result
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> OUTPUT:
         await self.async_pre_run()
         result = await self.async_policy(observation, info, **kwargs)
-        await self.async_post_run()
-        return result
+        final_result = await self.async_post_run(result, observation)
+        return final_result if final_result else result
 
     @abc.abstractmethod
     def policy(self, observation: INPUT, info: Dict[str, Any] = None, **kwargs) -> OUTPUT:
@@ -153,13 +156,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def pre_run(self):
         pass
 
-    def post_run(self):
+    def post_run(self, policy_result: OUTPUT, input: INPUT) -> AgentPolicy:
         pass
 
     async def async_pre_run(self):
         pass
 
-    async def async_post_run(self):
+    async def async_post_run(self, policy_result: OUTPUT, input: INPUT) -> AgentPolicy:
         pass
 
 

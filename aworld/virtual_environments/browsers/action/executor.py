@@ -10,7 +10,7 @@ from aworld.core.envs.tool import Tool, ToolActionExecutor
 
 
 class BrowserToolActionExecutor(ToolActionExecutor):
-    def __init__(self, tool: Tool[Observation, List[ActionModel]] = None):
+    def __init__(self, tool: Tool = None):
         super(BrowserToolActionExecutor, self).__init__(tool)
 
     def execute_action(self, actions: List[ActionModel], **kwargs) -> Tuple[

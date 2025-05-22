@@ -53,7 +53,7 @@ class TaskEventRunner(TaskRunner):
 
         # register handler
         for key, tool in self.tools.items():
-            handlers = self.event_mng.event_bus.get_topic_handlers(EventType.AGENT, tool.name())
+            handlers = self.event_mng.event_bus.get_topic_handlers(EventType.TOOL, tool.name())
             if not handlers:
                 await self.event_mng.register(EventType.TOOL, EventType.TOOL, tool.step)
                 await self.event_mng.register(EventType.TOOL, tool.name(), tool.step)
@@ -93,7 +93,8 @@ class TaskEventRunner(TaskRunner):
                         results.append(con)
                         con = message
                 except Exception as e:
-                    logger.warning(traceback.format_exc())
+                    logger.warning(f"{handler} process fail. {traceback.format_exc()}")
+
                     await event_bus.publish(Message(
                         category=EventType.TASK,
                         payload=TaskItem(msg=str(e), data=message),

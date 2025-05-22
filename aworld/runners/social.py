@@ -355,6 +355,7 @@ class SocialRunner(TaskRunner):
 class SocialEventRunner(TaskEventRunner):
     async def pre_run(self):
         await super().pre_run()
+        self.swarm.max_steps = self.task.conf.get('max_steps', 100)
 
         # register handler
         for _, agent in self.swarm.agents.items():
@@ -362,9 +363,9 @@ class SocialEventRunner(TaskEventRunner):
                 await self.event_mng.register(EventType.AGENT, agent.name(), agent.handler)
             else:
                 if override_in_subclass('async_policy', agent.__class__, Agent):
-                    await self.event_mng.register(EventType.AGENT, agent.name(), agent.async_policy)
+                    await self.event_mng.register(EventType.AGENT, agent.name(), agent.async_run)
                 else:
-                    await self.event_mng.register(EventType.AGENT, agent.name(), agent.policy)
+                    await self.event_mng.register(EventType.AGENT, agent.name(), agent.run)
 
         self.agent_handler = DefaultAgentSocialHandler(swarm=self.swarm, endless_threshold=self.endless_threshold)
         self.tool_handler = DefaultToolHandler(tools=self.tools, tools_conf=self.tools_conf)
