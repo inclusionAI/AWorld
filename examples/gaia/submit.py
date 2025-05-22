@@ -26,9 +26,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--level",
-        type=int,
+        type=lambda value: [int(digit) for digit in value.split(",")],
         nargs="?",
-        choices=[1, 2, 3],
         help="Level of the question, e.g., 1, 2, 3",
     )
     parser.add_argument(
@@ -83,7 +82,8 @@ if __name__ == "__main__":
                 "search_server",
                 "download_server",
                 "document_server",
-                "pdf_server",
+                # "pdf_server",
+                "pdf-reader-mcp",
                 "browser_server",
                 "youtube_server",
                 "reasoning_server",

@@ -32,7 +32,7 @@ class RunnerArguments:
     """
 
     split: Literal["validation", "test"]
-    level: Literal[1, 2, 3] | None = None
+    level: List = None
     q: str = None
     slice: str = None
     blacklist_file_path: str = None
@@ -211,7 +211,7 @@ class GaiaRunner:
                 return list(
                     task
                     for task in self.complete_dataset
-                    if task["Level"] == self.runner_args.level and task["task_id"] not in blacklist
+                    if task["Level"] in self.runner_args.level and task["task_id"] not in blacklist
                 )
             # Take a slice of the dataset.
             if self.runner_args.slice is not None:

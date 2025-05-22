@@ -119,6 +119,13 @@
                 "mcp_servers.pdf_server"
             ]
         },
+        "pdf-reader-mcp": {
+            "command": "npx",
+            "args": [
+                "@sylphlab/pdf-reader-mcp"
+            ],
+            "name": "PDF Reader (npx)"
+        },
         "playwright": {
             "command": "npx",
             "args": [
