@@ -18,7 +18,7 @@ from aworld.utils.common import convert_to_snake
 INPUT = TypeVar('INPUT')
 OUTPUT = TypeVar('OUTPUT')
 
-AgentPolicy = Union[List[ActionModel], Message, None]
+AgentPolicy = Union[INPUT, Message, None]
 
 
 def is_agent_by_name(name: str) -> bool:
@@ -102,13 +102,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def desc(self) -> str:
         return self._desc
 
-    def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> OUTPUT:
+    def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> AgentPolicy:
         self.pre_run()
         result = self.policy(observation, info, **kwargs)
         final_result = self.post_run(result, observation)
         return final_result if final_result else result
 
-    async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> OUTPUT:
+    async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> AgentPolicy:
         await self.async_pre_run()
         result = await self.async_policy(observation, info, **kwargs)
         final_result = await self.async_post_run(result, observation)
