@@ -53,8 +53,8 @@ class GaiaRunner:
         super().__init__(**kwargs)
         assert os.path.exists(dataset_folder_path), "dataset folder path not exists"
         assert runner_args.split in ["validation", "test"], "split must be validation or test"
-        assert runner_args.q is not None or runner_args.slice is not None, (
-            "Please provide either --q or --slice argument."
+        assert runner_args.q is not None or runner_args.slice is not None or runner_args.level, (
+            "Please provide one of --q or --slice or --level argument."
         )
 
         self.agent: GaiaAgent = agent
@@ -197,7 +197,7 @@ class GaiaRunner:
 
         try:
             # Default setting where user want to run full dataset
-            if self.runner_args.q is None and self.runner_args.slice is None:
+            if self.runner_args.q is None and self.runner_args.slice is None and self.runner_args.level is None:
                 return list(task for task in self.complete_dataset if task["task_id"] not in blacklist)
             # Specify question index. Highest priority: override other arguments if provided.
             if self.runner_args.q is not None:
