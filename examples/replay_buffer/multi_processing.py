@@ -20,7 +20,8 @@ def write_processing(replay_buffer: ReplayBuffer, task_id: str):
                     step=i,
                     execute_time=time.time()
                 ),
-                exp_data=Experience(state=Observation(), action=ActionModel())
+                exp_data=Experience(state=Observation(),
+                                    actions=[ActionModel()])
             )
             replay_buffer.store(data)
         except Exception as e:
