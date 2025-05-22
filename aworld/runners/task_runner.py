@@ -3,6 +3,7 @@
 import abc
 import uuid
 
+from aworld.memory.base import MemoryItem
 from pydantic import BaseModel
 
 from aworld.config import ConfigDict
@@ -16,7 +17,7 @@ from aworld.core.envs.tool import Tool, AsyncTool
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
 from aworld import trace
-from aworld.memory.main import Memory
+from aworld.memory.main import Memory, MemoryFactory
 
 
 class TaskRunner(Runner):
@@ -102,8 +103,8 @@ class TaskRunner(Runner):
             observation = Observation(content=self.input)
 
         # query task and session from memory
-        self.memory = Memory.from_config({"memory_store": self.conf.get("memory_store", "inmemory")})
-        histories = self.memory.get_all()
+        # self.memory = MemoryFactory.from_config({"memory_store": self.conf.get("memory_store", "inmemory")})
+        histories = []
         if histories:
             observation = StatefulObservation(context=histories, **observation.model_dump())
         self.observation = observation

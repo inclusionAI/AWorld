@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import time
+import traceback
 
 from typing import List
 
@@ -84,13 +85,15 @@ class SequenceRunner(TaskRunner):
                                                                               step=step,
                                                                               outputs=self.outputs,
                                                                               stream=self.conf.get("stream", False),
-                                                                              exp_id=exp_id)
+                                                                              exp_id=exp_id,
+                                                                              task=self.task)
                                 else:
                                     policy: List[ActionModel] = await cur_agent.async_run(observation,
                                                                                           step=step,
                                                                                           outputs=self.outputs,
                                                                                           stream=self.conf.get("stream", False),
-                                                                                          exp_id=exp_id)
+                                                                                          exp_id=exp_id,
+                                                                                          task=self.task)
 
                                 step_span.set_attribute("actions", json.dumps([action.model_dump() for action in policy], ensure_ascii=False))
                                 observation.content = None
@@ -170,7 +173,8 @@ class SequenceRunner(TaskRunner):
                                     logger.info("swarm finished")
                                     break
             except Exception as err:
-                logger.error(f"Runner run failed, err is {err}", exc_info=True)
+                traceback.print_exc()
+                logger.error(f"Runner run failed, err is {err}")
             finally:
                 await self.outputs.mark_completed()
                 color_log(f"task token usage: {self.context.token_usage}",

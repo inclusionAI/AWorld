@@ -2,7 +2,9 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import os
+from typing import AsyncGenerator
 
+from aworld.core.memory import MemoryConfig
 from aworld.runner import Runners
 
 from aworld.config.conf import AgentConfig, TaskConfig
@@ -26,7 +28,8 @@ if __name__ == '__main__':
         name="amap_agent",
         system_prompt=amap_sys_prompt,
         mcp_servers=["filesystem", "amap-amap-sse"],  # MCP server name for agent to use
-        history_messages=100
+        history_messages=100,
+        memory_config=MemoryConfig(provider="mem0", enable_summary=False)
     )
 
     user_input = ("How long does it take to drive from Hangzhou of Zhejiang to  Weihai of Shandong (generate a table with columns for starting point, destination, duration, distance), "
@@ -44,7 +47,13 @@ if __name__ == '__main__':
         rich_ui = RichAworldUI()
 
         async for output in Runners.streamed_run_task(task).stream_events():
-            await AworldUI.parse_output(output, rich_ui)
+            res = await AworldUI.parse_output(output, rich_ui)
+            if res:
+                if isinstance(res, AsyncGenerator):
+                    async for item in res:
+                        print(item)
+                else:
+                    print(res)
 
 
     asyncio.run(_run(amap_agent, user_input))

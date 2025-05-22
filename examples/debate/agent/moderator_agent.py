@@ -5,12 +5,13 @@ from typing import Dict, Any, Union, List
 
 from pydantic import Field
 
+from aworld.core.memory import MemoryConfig
 from examples.debate.agent.base import DebateSpeech
 from examples.debate.agent.prompts import user_assignment_system_prompt, summary_system_prompt, summary_debate_prompt
 from examples.debate.agent.stream_output_agent import StreamOutputAgent
 from aworld.config import AgentConfig
 from aworld.core.common import Observation, ActionModel
-from aworld.memory.main import Memory
+from aworld.memory.main import Memory, MemoryFactory
 from aworld.output import MessageOutput, WorkSpace, ArtifactType, SearchOutput
 
 
@@ -32,9 +33,8 @@ class ModeratorAgent(StreamOutputAgent, ABC):
                  **kwargs
                  ):
         super().__init__(conf)
-        self.memory = Memory.from_config(config={
-            "memory_store": "inmemory"
-        })
+        self.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory"))
+
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
         List[ActionModel], None]:

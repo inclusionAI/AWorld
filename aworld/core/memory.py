@@ -2,9 +2,13 @@ import datetime
 import hashlib
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
-from pydantic import BaseModel, Field
+from langchain_core.language_models import BaseChatModel
+from mem0.llms.base import LLMBase
+from pydantic import BaseModel, Field, ConfigDict
+
+from aworld.core.llm_provider_base import LLMProviderBase
 
 
 class MemoryItem(BaseModel):
@@ -16,6 +20,9 @@ class MemoryItem(BaseModel):
     metadata: dict = Field(
         description="metadata, use to store additional information, such as user_id, agent_id, run_id, task_id, etc.")
     tags: list[str] = Field(description="tags")
+    histories: list["MemoryItem"] = Field(default_factory=list)
+    deleted: bool = Field(default=False)
+    memory_type: Literal["message", "summary"] = Field(default="message")
     version: int = Field(description="version")
 
     def __init__(self, **data):
@@ -60,19 +67,19 @@ class MemoryStore(ABC):
         pass
 
     @abstractmethod
-    def get_first(self) -> Optional[MemoryItem]:
+    def get_first(self, filters: dict = None) -> Optional[MemoryItem]:
         pass
 
     @abstractmethod
-    def total_rounds(self) -> int:
+    def total_rounds(self, filters: dict = None) -> int:
         pass
 
     @abstractmethod
-    def get_all(self) -> list[MemoryItem]:
+    def get_all(self, filters: dict = None) -> list[MemoryItem]:
         pass
 
     @abstractmethod
-    def get_last_n(self, last_rounds) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, filters: dict = None) -> list[MemoryItem]:
         pass
 
     @abstractmethod
@@ -84,26 +91,11 @@ class MemoryStore(ABC):
         pass
 
     @abstractmethod
-    def retrieve(self, query, filters: dict) -> list[MemoryItem]:
-        pass
-
-    @abstractmethod
-    def history(self, memory_id) -> list[MemoryItem]:
+    def history(self, memory_id) -> list[MemoryItem] | None:
         pass
 
 
 class MemoryBase(ABC):
-    @abstractmethod
-    def retrieve(self, query, filters: dict) -> list[MemoryItem]:
-        """Retrieve a memory by ID.
-
-        Args:
-            query (str): query.
-            filters (dict): filters.
-
-        Returns:
-            list: Retrieved memory.
-        """
 
     @abstractmethod
     def get(self, memory_id) -> Optional[MemoryItem]:
@@ -117,7 +109,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    def get_all(self) -> list[MemoryItem]:
+    def get_all(self, filters: dict = None) -> list[MemoryItem]:
         """List all items in memory store.
 
         Returns:
@@ -125,7 +117,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    def get_last_n(self, last_rounds) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, filters: dict = None) -> list[MemoryItem]:
         """get last_rounds memories.
 
         Returns:
@@ -133,7 +125,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    def add(self, memory_item: MemoryItem):
+    def add(self, memory_item: MemoryItem, filters: dict = None):
         """Add memory in the memory store.
 
 
@@ -160,13 +152,65 @@ class MemoryBase(ABC):
             memory_id (str): ID of the memory to delete.
         """
 
-    @abstractmethod
-    def history(self, memory_id) -> list[MemoryItem]:
-        """Get the history of changes for a memory by ID.
+class MemoryConfig(BaseModel):
+    """Configuration for procedural memory."""
 
-        Args:
-            memory_id (str): ID of the memory to get history for.
+    model_config = ConfigDict(
+        from_attributes=True, validate_default=True, revalidate_instances='always', validate_assignment=True, arbitrary_types_allowed=True
+    )
 
-        Returns:
-            list: List of changes for the memory.
-        """
+    # Memory Config
+    provider: Literal['inmemory', 'mem0'] = 'inmemory'
+    enable_summary: bool = Field(default=False, description="enable_summary use llm")
+    summary_rounds: int = Field(default=5, description="rounds of message msg")
+
+    # Embedder settings
+    embedder_provider: Literal['openai', 'gemini', 'ollama', 'huggingface'] = 'huggingface'
+    embedder_model: str = Field(min_length=2, default='all-MiniLM-L6-v2')
+    embedder_dims: int = Field(default=384, gt=10, lt=10000)
+
+    # LLM settings - the LLM instance can be passed separately
+    llm_provider: Literal['openai', 'langchain'] = 'langchain'
+    llm_instance: BaseChatModel | None = None
+
+    # Vector store settings
+    vector_store_provider: Literal['faiss'] = 'faiss'
+    vector_store_base_path: str = Field(default='/tmp/mem0_aworld')
+
+    @property
+    def vector_store_path(self) -> str:
+        """Returns the full vector store path for the current configuration. e.g. /tmp/mem0_384_faiss"""
+        return f'{self.vector_store_base_path}_{self.embedder_dims}_{self.vector_store_provider}'
+
+    @property
+    def embedder_config_dict(self) -> dict[str, Any]:
+        """Returns the embedder configuration dictionary."""
+        return {
+            'provider': self.embedder_provider,
+            'config': {'model': self.embedder_model, 'embedding_dims': self.embedder_dims},
+        }
+
+    @property
+    def llm_config_dict(self) -> dict[str, Any]:
+        """Returns the LLM configuration dictionary."""
+        return {'provider': self.llm_provider, 'config': {'model': self.llm_instance}}
+
+    @property
+    def vector_store_config_dict(self) -> dict[str, Any]:
+        """Returns the vector store configuration dictionary."""
+        return {
+            'provider': self.vector_store_provider,
+            'config': {
+                'embedding_model_dims': self.embedder_dims,
+                'path': self.vector_store_path,
+            },
+        }
+
+    @property
+    def full_config_dict(self) -> dict[str, dict[str, Any]]:
+        """Returns the complete configuration dictionary for Mem0."""
+        return {
+            'embedder': self.embedder_config_dict,
+            'llm': self.llm_config_dict,
+            'vector_store': self.vector_store_config_dict,
+        }

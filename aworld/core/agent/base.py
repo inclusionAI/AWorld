@@ -9,24 +9,23 @@ from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union, Callable
 
 from pydantic import BaseModel
 
+import aworld.trace as trace
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.envs.tool_desc import get_tool_desc
 from aworld.core.factory import Factory
+from aworld.core.memory import MemoryItem, MemoryConfig
 from aworld.logs.util import logger
 from aworld.mcp.utils import mcp_tool_desc_transform
-from aworld.core.memory import MemoryItem
-from aworld.memory.main import Memory
+from aworld.memory.main import MemoryFactory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
 from aworld.utils.common import convert_to_snake, sync_exec
-from aworld.logs.util import logger, trace_logger
-import aworld.trace as trace
 
 INPUT = TypeVar('INPUT')
 OUTPUT = TypeVar('OUTPUT')
@@ -191,8 +190,10 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         super(Agent, self).__init__(conf, **kwargs)
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
         self._llm = None
-        self.memory = Memory.from_config(
-            {"memory_store": kwargs.pop("memory_store") if kwargs.get("memory_store") else "inmemory"})
+        memory_config = kwargs.get("memory_config")
+        if not memory_config:
+            memory_config = MemoryConfig(provider="inmemory")
+        self.memory = MemoryFactory.from_config(memory_config)
         self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
 
@@ -210,8 +211,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
-        self.memory = Memory.from_config(
-            {"memory_store": options.pop("memory_store") if options.get("memory_store") else "inmemory"})
+        # TODO memory 的
 
     @property
     def llm(self):
@@ -279,6 +279,10 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         Returns:
             Message list for LLM.
         """
+        cur_task = None
+        if kwargs.get("task"):
+            cur_task = kwargs.get("task")
+
         messages = []
         if sys_prompt:
             messages.append({'role': 'system', 'content': sys_prompt if self.use_tools_in_prompt else sys_prompt.format(
@@ -290,10 +294,17 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         cur_msg = {'role': 'user', 'content': content}
         histories = self.task_histories
         # query from memory,
+        histories = histories.extend(self.memory.get_last_n(self.history_messages, filters={
+            "agent_id": self.id,
+            "task_id": cur_task.id if cur_task else None,
+        }))
         if histories:
-            histories = histories.extend(self.memory.get_last_n(self.history_messages))
+            pass
         else:
-            histories = self.memory.get_last_n(self.history_messages)
+            histories = self.memory.get_last_n(self.history_messages, filters={
+                "agent_id": self.id,
+                "task_id": cur_task.id if cur_task else None,
+            })
         if histories:
             # default use the first tool call
             for history in histories:
@@ -465,6 +476,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         output = None
         if kwargs.get("output") and isinstance(kwargs.get("output"), StepOutput):
             output = kwargs["output"]
+        cur_task = None
+        if kwargs.get("task"):
+            cur_task = kwargs.get("task")
 
         # Get current step information for trace recording
         step = kwargs.get("step", 0)
@@ -483,16 +497,20 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                                            image_urls=images,
                                            sys_prompt=self.system_prompt,
                                            agent_prompt=self.agent_prompt)
-
-        self._log_messages(messages)
         self.memory.add(MemoryItem(
             content=messages[-1]['content'],
             metadata={
                 "role": messages[-1]['role'],
                 "agent_name": self.name(),
+                "agent_id": self.id,
+                "user_id": cur_task.user_id if cur_task else None,
+                "session_id": cur_task.session_id if cur_task else None,
+                "task_id": cur_task.id if cur_task else None,
                 "tool_call_id": messages[-1].get("tool_call_id")
             }
         ))
+
+        self._log_messages(messages)
 
         llm_response = None
         span_name = f"llm_call_{exp_id}"
@@ -530,6 +548,10 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                             metadata={
                                 "role": "assistant",
                                 "agent_name": self.name(),
+                                "agent_id": self.id,
+                                "user_id": cur_task.user_id if cur_task else None,
+                                "session_id": cur_task.session_id if cur_task else None,
+                                "task_id": cur_task.id if cur_task else None,
                                 "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
                                 "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
                             }
@@ -561,6 +583,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         outputs = None
         if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
             outputs = kwargs.get("outputs")
+        cur_task = None
+        if kwargs.get("task"):
+            cur_task = kwargs.get("task")
 
         # Get current step information for trace recording
         step = kwargs.get("step", 0)
@@ -578,7 +603,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         messages = self.messages_transform(content=observation.content,
                                            image_urls=images,
                                            sys_prompt=self.system_prompt,
-                                           agent_prompt=self.agent_prompt)
+                                           agent_prompt=self.agent_prompt,
+                                           task=cur_task)
 
         self._log_messages(messages)
         self.memory.add(MemoryItem(
@@ -586,6 +612,10 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             metadata={
                 "role": messages[-1]['role'],
                 "agent_name": self.name(),
+                "agent_id": self.id,
+                "user_id": cur_task.user_id if cur_task else None,
+                "session_id": cur_task.session_id if cur_task else None,
+                "task_id": cur_task.id if cur_task else None,
                 "tool_call_id": messages[-1].get("tool_call_id")
             }
         ))
@@ -636,6 +666,10 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                             metadata={
                                 "role": "assistant",
                                 "agent_name": self.name(),
+                                "agent_id": self.id,
+                                "user_id": cur_task.user_id if cur_task else None,
+                                "session_id": cur_task.session_id if cur_task else None,
+                                "task_id": cur_task.id if cur_task else None,
                                 "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
                                 "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
                             }
