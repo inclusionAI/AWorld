@@ -1,12 +1,7 @@
-<p align="center">
-  <img src="readme_assets/framework_logic.png" alt="AWorld Logo" width="600"/>
-  <br>
-  <span align="center" style="font-size: 24px;">
-    <b><span style="color: #1677FF;">A</span><span style="color: var(--color-fg-default, #333333);">World: Advancing Agentic AI</span></b>
-  </span>
-</p>
-
 <div align="center">
+
+![](readme_assets/framework_logic.png)
+# AWorld: Advancing Agentic AI
 
 [![Twitter Follow](https://img.shields.io/twitter/follow/AWorld_AI?style=social)](https://x.com/InclusionAI666)
 [![WeChat QR Code](https://img.shields.io/badge/WeChat-Add%20us-green?logo=wechat&logoColor=white)](https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat_qr.png)
@@ -16,7 +11,7 @@
 </div>
 
 ## News
-- 🥳 [2024/05/22] For quick GAIA evaluation, MCP tools, AWorld, and models are now available in a single Docker image. See <code>./README-docker.md</code> for instructions and [YouTube video]() for a demo.
+- 🥳 [2024/05/22] For quick GAIA evaluation, MCP tools, AWorld, and models are now available in a single Docker image. See <code>./README-docker.md</code> for instructions.
 - 🥳 [2024/05/13] AWorld has updated its state management for browser use and enhanced the video processing MCP server, achieving a score of 77.58 on GAIA validation (Pass@1 = 61.8) and maintaining its position as the top-ranked open-source framework. Learn more: [GAIA leaderboard](https://huggingface.co/spaces/gaia-benchmark/leaderboard)
 - ✨ [2025/04/23] AWorld ranks 3rd on GAIA benchmark (69.7 avg) with impressive Pass@1 = 58.8, 1st among open-source frameworks. Reproduce with <code>python examples/gaia/run.py</code>
 
