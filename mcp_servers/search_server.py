@@ -66,12 +66,8 @@ class SearchResponse(BaseModel):
 @mcp.tool(description="Search the web using Google Custom Search API.")
 def mcpsearchgoogle(
     query: str = Field(..., description="The search query string."),
-    num_results: int = Field(
-        10, description="Number of search results to return (default 10)."
-    ),
-    safe_search: bool = Field(
-        True, description="Whether to enable safe search filtering."
-    ),
+    num_results: int = Field(10, description="Number of search results to return (default 10)."),
+    safe_search: bool = Field(True, description="Whether to enable safe search filtering."),
     language: str = Field("en", description="Language code for search results."),
     country: str = Field("us", description="Country code for search results."),
 ) -> str:
@@ -137,9 +133,7 @@ def mcpsearchgoogle(
 
     except Exception as e:
         logger.error(f"Google search error: {traceback.format_exc()}")
-        return SearchResponse(
-            query=query, results=[], count=0, source="google", error=str(e)
-        ).model_dump_json()
+        return SearchResponse(query=query, results=[], count=0, source="google", error=str(e)).model_dump_json()
 
 
 def main():

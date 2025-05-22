@@ -61,20 +61,14 @@ class TranscriptResult(BaseModel):
     error: Optional[str] = None
 
 
-@mcp.tool(
-    description="Download the youtube file from the URL and save to the local filesystem."
-)
+@mcp.tool(description="Download the youtube file from the URL and save to the local filesystem.")
 def download_youtube_files(
-    url: str = Field(
-        description="The URL of youtube file to download. Must be a String."
-    ),
+    url: str = Field(description="The URL of youtube file to download. Must be a String."),
     output_dir: str = Field(
         "/tmp/mcp_downloads",
         description="Directory to save the downloaded files (default: /tmp/mcp_downloads).",
     ),
-    timeout: int = Field(
-        180, description="Download timeout in seconds (default: 180)."
-    ),
+    timeout: int = Field(180, description="Download timeout in seconds (default: 180)."),
 ) -> str:
     """Download the youtube file from the URL and save to the local filesystem.
 
@@ -138,10 +132,7 @@ def download_youtube_files(
 
             # Wait for download to complete
             cnt = 0
-            while (
-                len(os.listdir(output_dir)) == 0
-                or os.listdir(output_dir)[0].split(".")[-1] == "crdownload"
-            ):
+            while len(os.listdir(output_dir)) == 0 or os.listdir(output_dir)[0].split(".")[-1] == "crdownload":
                 time.sleep(3)
                 cnt += 3
                 if cnt >= timeout:
@@ -158,16 +149,12 @@ def download_youtube_files(
             if "driver" in locals():
                 driver.quit()
 
-    def _download_single_file(
-        url: str, output_dir: str, filename: str, timeout: int
-    ) -> str:
+    def _download_single_file(url: str, output_dir: str, filename: str, timeout: int) -> str:
         """Download a single file from URL and save it to the local filesystem."""
         try:
             # Validate URL
             if not url.startswith(("http://", "https://")):
-                raise ValueError(
-                    "Invalid URL format. URL must start with http:// or https://"
-                )
+                raise ValueError("Invalid URL format. URL must start with http:// or https://")
 
             # Create output directory if it doesn't exist
             output_path = Path(output_dir)
@@ -216,9 +203,7 @@ def download_youtube_files(
                     success=True,
                     error=None,
                 )
-                logger.info(
-                    f"Found {video_id} is already downloaded in: {existing_file}"
-                )
+                logger.info(f"Found {video_id} is already downloaded in: {existing_file}")
                 return result.json()
 
             logger.info(f"Downloading file from {url} to {file_path}")
@@ -269,12 +254,8 @@ def download_youtube_files(
 
 @mcp.tool(description="Extract transcript from a YouTube video given its video ID.")
 def extract_youtube_transcript(
-    video_id: str = Field(
-        description="The YouTube video ID to extract transcript from. Must be a String."
-    ),
-    language_code: str = Field(
-        "en", description="Language code for the transcript (default: en)."
-    ),
+    video_id: str = Field(description="The YouTube video ID to extract transcript from. Must be a String."),
+    language_code: str = Field("en", description="Language code for the transcript (default: en)."),
     translate_to_language: Optional[str] = Field(
         None, description="Translate transcript to this language code if provided."
     ),
@@ -296,9 +277,7 @@ def extract_youtube_transcript(
     if hasattr(language_code, "default") and not isinstance(language_code, str):
         language_code = language_code.default
 
-    if hasattr(translate_to_language, "default") and not isinstance(
-        translate_to_language, str
-    ):
+    if hasattr(translate_to_language, "default") and not isinstance(translate_to_language, str):
         translate_to_language = translate_to_language.default
 
     try:
@@ -330,13 +309,9 @@ def extract_youtube_transcript(
 
         else:
             # Get transcript without translation
-            transcript_data = YouTubeTranscriptApi.get_transcript(
-                video_id, languages=[language_code]
-            )
+            transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[language_code])
 
-        result = TranscriptResult(
-            video_id=video_id, transcript=transcript_data, success=True, error=None
-        )
+        result = TranscriptResult(video_id=video_id, transcript=transcript_data, success=True, error=None)
 
         logger.info(f"Successfully extracted transcript for video ID: {video_id}")
         return result.json()
@@ -345,9 +320,7 @@ def extract_youtube_transcript(
         error_msg = str(e)
         logger.error(f"Transcript extraction error: {traceback.format_exc()}")
 
-        result = TranscriptResult(
-            video_id=video_id, transcript=[], success=False, error=error_msg
-        )
+        result = TranscriptResult(video_id=video_id, transcript=[], success=False, error=error_msg)
 
         return result.json()
 

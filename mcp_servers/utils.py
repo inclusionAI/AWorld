@@ -182,13 +182,9 @@ def get_file_from_source(
 
         # Validate MIME type if allowed_mime_prefixes is provided
         if allowed_mime_prefixes:
-            if not any(
-                mime_type.startswith(prefix) for prefix in allowed_mime_prefixes
-            ):
+            if not any(mime_type.startswith(prefix) for prefix in allowed_mime_prefixes):
                 allowed_types = ", ".join(allowed_mime_prefixes)
-                raise ValueError(
-                    f"Invalid file type: {mime_type}. Allowed types: {allowed_types}"
-                )
+                raise ValueError(f"Invalid file type: {mime_type}. Allowed types: {allowed_types}")
 
         return file_path, mime_type, content
 
@@ -201,4 +197,4 @@ def get_file_from_source(
 
 if __name__ == "__main__":
     mcp_tools = asyncio.run(mcp_tool_desc_transform(["search"]))
-    logger.success(f"{json.dumps(mcp_tools, indent=4, ensure_ascii=False)}")
+    logger.info(f"{json.dumps(mcp_tools, indent=4, ensure_ascii=False)}")

@@ -80,19 +80,13 @@ def handle_error(e: Exception, error_type: str, file_path: Optional[str] = None)
     return error.model_dump_json()
 
 
-@mcp.tool(
-    description="Read and return content from PDF file "
-    "with optional image extraction."
-)
+@mcp.tool(description="Read and return content from PDF file with optional image extraction.")
 def mcp_read_pdf_with_extracted_images(
     document_paths: List[str] = Field(description="The local input PDF file paths."),
-    extract_images: bool = Field(
-        default=False, description="Whether to extract images from PDF (default: False)"
-    ),
+    extract_images: bool = Field(default=False, description="Whether to extract images from PDF (default: False)"),
 ) -> str:
     """Read and return content from PDF file with optional image extraction."""
     try:
-
         results = []
         success_count = 0
         failed_count = 0
@@ -159,7 +153,7 @@ def mcp_read_pdf_with_extracted_images(
                                     image_ext = base_image["ext"]
 
                                     # Save image to file in /tmp directory
-                                    img_filename = f"pdf_image_p{page_index+1}_{img_index+1}.{image_ext}"
+                                    img_filename = f"pdf_image_p{page_index + 1}_{img_index + 1}.{image_ext}"
                                     img_path = os.path.join(image_dir, img_filename)
 
                                     with open(img_path, "wb") as img_file:

@@ -53,9 +53,7 @@ class DownloadResults(BaseModel):
 
 @mcp.tool(description="Download files from URLs and save to the local filesystem.")
 def mcpdownloadfiles(
-    urls: List[str] = Field(
-        ..., description="The URLs of the files to download. Must be a list of URLs."
-    ),
+    urls: List[str] = Field(..., description="The URLs of the files to download. Must be a list of URLs."),
     output_dir: str = Field(
         "/tmp/mcp_downloads",
         description="Directory to save the downloaded files (default: /tmp/mcp_downloads).",
@@ -86,23 +84,17 @@ def mcpdownloadfiles(
         else:
             failed_count += 1
 
-    batch_results = DownloadResults(
-        results=results, success_count=success_count, failed_count=failed_count
-    )
+    batch_results = DownloadResults(results=results, success_count=success_count, failed_count=failed_count)
 
     return batch_results.model_dump_json()
 
 
-def _download_single_file(
-    url: str, output_dir: str, filename: str, timeout: int
-) -> str:
+def _download_single_file(url: str, output_dir: str, filename: str, timeout: int) -> str:
     """Download a single file from URL and save it to the local filesystem."""
     try:
         # Validate URL
         if not url.startswith(("http://", "https://")):
-            raise ValueError(
-                "Invalid URL format. URL must start with http:// or https://"
-            )
+            raise ValueError("Invalid URL format. URL must start with http:// or https://")
 
         # Create output directory if it doesn't exist
         output_path = Path(output_dir)

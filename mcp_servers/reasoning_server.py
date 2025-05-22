@@ -14,18 +14,14 @@ from aworld.models.llm import call_llm_model, get_llm_model
 mcp = FastMCP("reasoning-server")
 
 
-@mcp.tool(
-    description="Perform complex problem reasoning using powerful reasoning model."
-)
+@mcp.tool(description="Perform complex problem reasoning using powerful reasoning model.")
 def complex_problem_reasoning(
     question: str = Field(
-        description="The input question for complex problem reasoning,"
-        + " such as math and code contest problem",
+        description="The input question for complex problem reasoning," + " such as math and code contest problem",
     ),
     original_task: str = Field(
         default="",
-        description="The original task description."
-        + " This argument could be fetched from the <task>TASK</task> tag",
+        description="The original task description." + " This argument could be fetched from the <task>TASK</task> tag",
     ),
 ) -> str:
     """
@@ -41,9 +37,12 @@ def complex_problem_reasoning(
     """
     try:
         # Prepare the prompt with both the question and original task if provided
-        prompt = question
+        if not question:
+            raise ValueError("Question is required for complex problem reasoning")
         if original_task:
             prompt = f"Original Task: {original_task}\n\nQuestion: {question}"
+        else:
+            prompt = f"Question: {question}"
 
         # Call the LLM model for reasoning
         response = call_llm_model(

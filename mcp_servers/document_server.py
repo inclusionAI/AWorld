@@ -45,7 +45,6 @@ from mcp.server.fastmcp import FastMCP
 from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
 from pydantic import BaseModel, Field
-from PyPDF2 import PdfReader
 from tabulate import tabulate
 from xls2xlsx import XLS2XLSX
 
@@ -219,9 +218,7 @@ def check_file_readable(document_path: str) -> str:
     return None
 
 
-@mcp.tool(
-    description="Read and return content from local text file. Cannot process https://URLs files."
-)
+@mcp.tool(description="Read and return content from local text file. Cannot process https://URLs files.")
 def mcpreadtext(
     document_path: str = Field(description="The input local text file path."),
 ) -> str:
@@ -239,9 +236,7 @@ def mcpreadtext(
             file_path=document_path,
             file_name=os.path.basename(document_path),
             file_size=os.path.getsize(document_path),
-            last_modified=datetime.fromtimestamp(
-                os.path.getmtime(document_path)
-            ).strftime("%Y-%m-%d %H:%M:%S"),
+            last_modified=datetime.fromtimestamp(os.path.getmtime(document_path)).strftime("%Y-%m-%d %H:%M:%S"),
         )
 
         return result.model_dump_json()
@@ -278,9 +273,7 @@ def mcpreadjson(
                         json_obj = json.loads(line)
                         results.append(json_obj)
                     except json.JSONDecodeError as e:
-                        logger.warning(
-                            f"JSON parsing error at line {line_num}: {str(e)}"
-                        )
+                        logger.warning(f"JSON parsing error at line {line_num}: {str(e)}")
 
             # Create result model
             result = JsonDocument(
@@ -362,7 +355,6 @@ def mcpreaddocx(
         return DocumentError(error=error, file_path=document_path).model_dump_json()
 
     try:
-
         file_name = os.path.basename(document_path)
         md_file_path = f"{file_name}.md"
         docx_to_markdown(document_path, md_file_path)
@@ -372,9 +364,7 @@ def mcpreaddocx(
 
         os.remove(md_file_path)
 
-        result = DocxDocument(
-            content=content, file_path=document_path, file_name=file_name
-        )
+        result = DocxDocument(content=content, file_path=document_path, file_name=file_name)
 
         return result.model_dump_json()
     except Exception as e:
@@ -385,12 +375,8 @@ def mcpreaddocx(
     description="Read multiple Excel/CSV files and convert sheets to Markdown tables. return the parsed content. Cannot process https://URLs files."
 )
 def mcpreadexcel(
-    document_paths: List[str] = Field(
-        description="List of local input Excel/CSV file paths."
-    ),
-    max_rows: int = Field(
-        1000, description="Maximum number of rows to read per sheet (default: 1000)"
-    ),
+    document_paths: List[str] = Field(description="List of local input Excel/CSV file paths."),
+    max_rows: int = Field(1000, description="Maximum number of rows to read per sheet (default: 1000)"),
     convert_xls_to_xlsx: bool = Field(
         False,
         description="Whether to convert XLS files to XLSX format (default: False)",
@@ -398,7 +384,6 @@ def mcpreadexcel(
 ) -> str:
     """Read multiple Excel/CSV files and convert sheets to Markdown tables. Cannot process https://URLs files."""
     try:
-
         # Import required packages
         import_package("tabulate")
 
@@ -437,7 +422,9 @@ def mcpreadexcel(
 
                 # Validate file type
                 if file_ext not in [".csv", ".xls", ".xlsx", ".xlsm"]:
-                    error_msg = f"Unsupported file format: {file_ext}. Only CSV, XLS, XLSX, and XLSM formats are supported."
+                    error_msg = (
+                        f"Unsupported file format: {file_ext}. Only CSV, XLS, XLSX, and XLSM formats are supported."
+                    )
                     all_results.append(
                         ExcelDocument(
                             file_name=os.path.basename(document_path),
@@ -460,13 +447,11 @@ def mcpreadexcel(
                         logger.info(f"Converting XLS to XLSX: {document_path}")
                         converter = XLS2XLSX(document_path)
                         # Create temp file with xlsx extension
-                        xlsx_path = (
-                            os.path.splitext(document_path)[0] + "_converted.xlsx"
-                        )
+                        xlsx_path = os.path.splitext(document_path)[0] + "_converted.xlsx"
                         converter.to_xlsx(xlsx_path)
                         processed_path = xlsx_path
                         temp_files.append(xlsx_path)  # Track for cleanup
-                        logger.success(f"Converted XLS to XLSX: {xlsx_path}")
+                        logger.info(f"Converted XLS to XLSX: {xlsx_path}")
                     except Exception as conv_error:
                         logger.error(f"XLS to XLSX conversion error: {str(conv_error)}")
                         # Continue with original file if conversion fails
@@ -485,14 +470,10 @@ def mcpreadexcel(
                     if not df.empty:
                         headers = df.columns.tolist()
                         table_data = df.values.tolist()
-                        markdown_table = tabulate(
-                            table_data, headers=headers, tablefmt="pipe"
-                        )
+                        markdown_table = tabulate(table_data, headers=headers, tablefmt="pipe")
 
                         if len(df) >= max_rows:
-                            markdown_table += (
-                                f"\n\n*Note: Table truncated to {max_rows} rows*"
-                            )
+                            markdown_table += f"\n\n*Note: Table truncated to {max_rows} rows*"
 
                     # Create sheet model
                     excel_sheets.append(
@@ -514,24 +495,17 @@ def mcpreadexcel(
 
                         for sheet_name in sheet_names:
                             # Read Excel sheet into DataFrame with row limit
-                            df = pd.read_excel(
-                                xls, sheet_name=sheet_name, nrows=max_rows
-                            )
+                            df = pd.read_excel(xls, sheet_name=sheet_name, nrows=max_rows)
 
                             # Create markdown table
                             markdown_table = "*Empty table*"
                             if not df.empty:
                                 headers = df.columns.tolist()
                                 table_data = df.values.tolist()
-                                markdown_table = tabulate(
-                                    table_data, headers=headers, tablefmt="pipe"
-                                )
+                                markdown_table = tabulate(table_data, headers=headers, tablefmt="pipe")
 
                                 if len(df) >= max_rows:
-                                    markdown_table += (
-                                        "\n\n*Note: Table truncated to"
-                                        f" {max_rows} rows*"
-                                    )
+                                    markdown_table += f"\n\n*Note: Table truncated to {max_rows} rows*"
 
                             # Create sheet model
                             excel_sheets.append(
@@ -548,9 +522,7 @@ def mcpreadexcel(
                 file_result = ExcelDocument(
                     file_name=os.path.basename(document_path),
                     file_path=document_path,
-                    processed_path=(
-                        processed_path if processed_path != document_path else None
-                    ),
+                    processed_path=(processed_path if processed_path != document_path else None),
                     file_type=file_ext.replace(".", "").upper(),
                     sheet_count=len(sheet_names),
                     sheet_names=sheet_names,
@@ -569,9 +541,7 @@ def mcpreadexcel(
                     ExcelDocument(
                         file_name=os.path.basename(document_path),
                         file_path=document_path,
-                        file_type=os.path.splitext(document_path)[1]
-                        .replace(".", "")
-                        .upper(),
+                        file_type=os.path.splitext(document_path)[1].replace(".", "").upper(),
                         sheet_count=0,
                         sheet_names=[],
                         sheets=[],
@@ -588,9 +558,7 @@ def mcpreadexcel(
                     os.remove(temp_file)
                     logger.info(f"Removed temporary file: {temp_file}")
             except Exception as cleanup_error:
-                logger.warning(
-                    f"Error cleaning up temporary file {temp_file}: {str(cleanup_error)}"
-                )
+                logger.warning(f"Error cleaning up temporary file {temp_file}: {str(cleanup_error)}")
 
         # Create final result
         excel_result = ExcelResult(
@@ -640,7 +608,7 @@ def mcpreadpptx(
             font = ImageFont.load_default()
 
             # Draw slide number
-            draw.text((20, 20), f"Slide {i+1}/{total_slides}", fill="black", font=font)
+            draw.text((20, 20), f"Slide {i + 1}/{total_slides}", fill="black", font=font)
 
             # Process shapes in the slide
             for shape in slide.shapes:
@@ -649,22 +617,14 @@ def mcpreadpptx(
                     if hasattr(shape, "image") and shape.image:
                         image_stream = io.BytesIO(shape.image.blob)
                         img = Image.open(image_stream)
-                        left = int(
-                            shape.left * slide_width_px / presentation.slide_width
-                        )
-                        top = int(
-                            shape.top * slide_height_px / presentation.slide_height
-                        )
+                        left = int(shape.left * slide_width_px / presentation.slide_width)
+                        top = int(shape.top * slide_height_px / presentation.slide_height)
                         slide_img.paste(img, (left, top))
 
                     # Process text
                     elif hasattr(shape, "text") and shape.text:
-                        text_left = int(
-                            shape.left * slide_width_px / presentation.slide_width
-                        )
-                        text_top = int(
-                            shape.top * slide_height_px / presentation.slide_height
-                        )
+                        text_left = int(shape.left * slide_width_px / presentation.slide_width)
+                        text_top = int(shape.top * slide_height_px / presentation.slide_height)
                         draw.text(
                             (text_left, text_top),
                             shape.text,
@@ -673,21 +633,15 @@ def mcpreadpptx(
                         )
 
                 except Exception as shape_error:
-                    logger.warning(
-                        f"Error processing shape in slide {i+1}: {str(shape_error)}"
-                    )
+                    logger.warning(f"Error processing shape in slide {i + 1}: {str(shape_error)}")
 
             # Save slide image
-            img_path = os.path.join(temp_dir, f"slide_{i+1}.jpg")
+            img_path = os.path.join(temp_dir, f"slide_{i + 1}.jpg")
             slide_img.save(img_path, "JPEG")
 
             # Convert to base64
             base64_image = encode_images(img_path)
-            slides_data.append(
-                PowerPointSlide(
-                    slide_number=i + 1, image=f"data:image/jpeg;base64,{base64_image}"
-                )
-            )
+            slides_data.append(PowerPointSlide(slide_number=i + 1, image=f"data:image/jpeg;base64,{base64_image}"))
 
         # Create result
         result = PowerPointDocument(
@@ -716,18 +670,10 @@ def mcpreadpptx(
 )
 def mcpreadhtmltext(
     document_path: str = Field(description="Local HTML file path or Web URL."),
-    extract_links: bool = Field(
-        default=True, description="Whether to extract link information"
-    ),
-    extract_images: bool = Field(
-        default=True, description="Whether to extract image information"
-    ),
-    extract_tables: bool = Field(
-        default=True, description="Whether to extract table information"
-    ),
-    convert_to_markdown: bool = Field(
-        default=True, description="Whether to convert HTML to Markdown format"
-    ),
+    extract_links: bool = Field(default=True, description="Whether to extract link information"),
+    extract_images: bool = Field(default=True, description="Whether to extract image information"),
+    extract_tables: bool = Field(default=True, description="Whether to extract table information"),
+    convert_to_markdown: bool = Field(default=True, description="Whether to convert HTML to Markdown format"),
 ) -> str:
     """Read HTML file and extract text content, optionally extract links, images, and table information, and convert to Markdown format."""
     error = check_file_readable(document_path)
@@ -735,7 +681,6 @@ def mcpreadhtmltext(
         return DocumentError(error=error, file_path=document_path).model_dump_json()
 
     try:
-
         # Read HTML file
         with open(document_path, "r", encoding="utf-8") as f:
             html_content = f.read()
@@ -758,9 +703,7 @@ def mcpreadhtmltext(
             file_path=document_path,
             file_name=os.path.basename(document_path),
             file_size=os.path.getsize(document_path),
-            last_modified=datetime.fromtimestamp(
-                os.path.getmtime(document_path)
-            ).strftime("%Y-%m-%d %H:%M:%S"),
+            last_modified=datetime.fromtimestamp(os.path.getmtime(document_path)).strftime("%Y-%m-%d %H:%M:%S"),
             title=title,
         )
 

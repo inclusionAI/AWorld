@@ -75,9 +75,7 @@ class WikipediaResponse(BaseModel):
     """Model representing a Wikipedia API response"""
 
     query: str
-    results: Union[
-        List[WikipediaSearchResult], List[WikipediaArticle], WikipediaArticle
-    ]
+    results: Union[List[WikipediaSearchResult], List[WikipediaArticle], WikipediaArticle]
     count: int
     language: str
     error: Optional[str] = None
@@ -106,9 +104,7 @@ def handle_error(e: Exception, operation_type: str, query: Optional[str] = None)
 def mcpwikisearch(
     query: str = Field(..., description="The search query string"),
     limit: int = Field(10, description="Maximum number of results to return"),
-    language: str = Field(
-        "en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"
-    ),
+    language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
 ) -> str:
     """
     Search Wikipedia for articles matching the query.
@@ -121,9 +117,7 @@ def mcpwikisearch(
     Returns:
         JSON string containing search results
     """
-    logger.info(
-        f"Performing Wikipedia search for query: '{query}' in language: {language}"
-    )
+    logger.info(f"Performing Wikipedia search for query: '{query}' in language: {language}")
     try:
         # Set Wikipedia language - ensure language is a string
         wikipedia.set_lang(str(language))
@@ -167,13 +161,9 @@ def mcpwikisearch(
 @mcp.tool(description="Retrieve the full content of a Wikipedia article.")
 def mcpwikicontent(
     title: str = Field(..., description="Title of the Wikipedia article"),
-    auto_suggest: bool = Field(
-        True, description="Whether to use Wikipedia's auto-suggest feature"
-    ),
+    auto_suggest: bool = Field(True, description="Whether to use Wikipedia's auto-suggest feature"),
     redirect: bool = Field(True, description="Whether to follow redirects"),
-    language: str = Field(
-        "en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"
-    ),
+    language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
 ) -> str:
     """
     Retrieve the full content of a Wikipedia article.
@@ -187,9 +177,7 @@ def mcpwikicontent(
     Returns:
         JSON string containing the article content
     """
-    logger.info(
-        f"Retrieving Wikipedia article content for: '{title}' in language: {language}"
-    )
+    logger.info(f"Retrieving Wikipedia article content for: '{title}' in language: {language}")
     try:
         # Set Wikipedia language
         wikipedia.set_lang(language)
@@ -208,16 +196,11 @@ def mcpwikicontent(
             categories=page.categories,
             links=page.links,
             references=page.references,
-            sections=[
-                {"title": section, "content": page.section(section)}
-                for section in page.sections
-            ],
+            sections=[{"title": section, "content": page.section(section)} for section in page.sections],
         )
 
         # Create response
-        response = WikipediaResponse(
-            query=title, results=article, count=1, language=language
-        )
+        response = WikipediaResponse(query=title, results=article, count=1, language=language)
 
         logger.info(f"Wikipedia article content retrieved successfully for: '{title}'")
         return response.model_dump_json()
@@ -229,16 +212,10 @@ def mcpwikicontent(
 @mcp.tool(description="Get a summary of a Wikipedia article.")
 def mcpwikisummary(
     title: str = Field(..., description="Title of the Wikipedia article"),
-    sentences: int = Field(
-        5, description="Number of sentences to return in the summary"
-    ),
-    auto_suggest: bool = Field(
-        True, description="Whether to use Wikipedia's auto-suggest feature"
-    ),
+    sentences: int = Field(5, description="Number of sentences to return in the summary"),
+    auto_suggest: bool = Field(True, description="Whether to use Wikipedia's auto-suggest feature"),
     redirect: bool = Field(True, description="Whether to follow redirects"),
-    language: str = Field(
-        "en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"
-    ),
+    language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
 ) -> str:
     """
     Get a summary of a Wikipedia article.
@@ -259,9 +236,7 @@ def mcpwikisummary(
         wikipedia.set_lang(language)
 
         # Get the summary
-        summary = wikipedia.summary(
-            title, sentences=sentences, auto_suggest=auto_suggest, redirect=redirect
-        )
+        summary = wikipedia.summary(title, sentences=sentences, auto_suggest=auto_suggest, redirect=redirect)
 
         # Get the URL
         url = f"https://{language}.wikipedia.org/wiki/{title.replace(' ', '_')}"
@@ -275,9 +250,7 @@ def mcpwikisummary(
         )
 
         # Create response
-        response = WikipediaResponse(
-            query=title, results=article, count=1, language=language
-        )
+        response = WikipediaResponse(query=title, results=article, count=1, language=language)
 
         logger.info(f"Wikipedia summary retrieved successfully for: '{title}'")
         return response.model_dump_json()
@@ -289,9 +262,7 @@ def mcpwikisummary(
 @mcp.tool(description="Get categories for a Wikipedia article.")
 def mcpwikicategories(
     title: str = Field(..., description="Title of the Wikipedia article"),
-    language: str = Field(
-        "en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"
-    ),
+    language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
 ) -> str:
     """
     Get categories for a Wikipedia article.
@@ -303,9 +274,7 @@ def mcpwikicategories(
     Returns:
         JSON string containing the article categories
     """
-    logger.info(
-        f"Retrieving categories for Wikipedia article: '{title}' in language: {language}"
-    )
+    logger.info(f"Retrieving categories for Wikipedia article: '{title}' in language: {language}")
     try:
         # Set Wikipedia language
         wikipedia.set_lang(language)
@@ -321,9 +290,7 @@ def mcpwikicategories(
             language=language,
         )
 
-        logger.info(
-            f"Retrieved {len(page.categories)} categories for Wikipedia article: '{title}'"
-        )
+        logger.info(f"Retrieved {len(page.categories)} categories for Wikipedia article: '{title}'")
         return response.model_dump_json()
 
     except Exception as e:
@@ -333,9 +300,7 @@ def mcpwikicategories(
 @mcp.tool(description="Get links from a Wikipedia article.")
 def mcpwikilinks(
     title: str = Field(..., description="Title of the Wikipedia article"),
-    language: str = Field(
-        "en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"
-    ),
+    language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
 ) -> str:
     """
     Get links from a Wikipedia article.
@@ -347,9 +312,7 @@ def mcpwikilinks(
     Returns:
         JSON string containing the article links
     """
-    logger.info(
-        f"Retrieving links from Wikipedia article: '{title}' in language: {language}"
-    )
+    logger.info(f"Retrieving links from Wikipedia article: '{title}' in language: {language}")
     try:
         # Set Wikipedia language
         wikipedia.set_lang(language)
@@ -375,9 +338,7 @@ def mcpwikilinks(
             language=language,
         )
 
-        logger.info(
-            f"Retrieved {len(formatted_results)} links from Wikipedia article: '{title}'"
-        )
+        logger.info(f"Retrieved {len(formatted_results)} links from Wikipedia article: '{title}'")
         return response.model_dump_json()
 
     except Exception as e:
@@ -395,14 +356,9 @@ def mcpwikihistory(
     title: str = Field(..., description="Title of the Wikipedia article"),
     date: str = Field(
         ...,
-        description=(
-            "Target date in YYYY/MM/DD format. "
-            "If day is omitted, last day of month will be used"
-        ),
+        description=("Target date in YYYY/MM/DD format. If day is omitted, last day of month will be used"),
     ),
-    language: str = Field(
-        "en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"
-    ),
+    language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
     auto_suggest: bool = Field(
         True,
         description="Whether to use Wikipedia's auto-suggest feature and handle redirects",
@@ -434,13 +390,9 @@ def mcpwikihistory(
                 search_results = wikipedia.search(title, results=1)
                 if search_results:
                     # Get the page to handle redirects and get the canonical title
-                    page = wikipedia.page(
-                        search_results[0], auto_suggest=True, redirect=True
-                    )
+                    page = wikipedia.page(search_results[0], auto_suggest=True, redirect=True)
                     actual_title = page.title
-                    logger.info(
-                        f"Found matching page: {actual_title} for query: {title}"
-                    )
+                    logger.info(f"Found matching page: {actual_title} for query: {title}")
             except Exception as e:
                 logger.warning(f"Auto-suggest failed for {title}: {str(e)}")
 
@@ -448,11 +400,7 @@ def mcpwikihistory(
         date_parts = date.split("/")
         year = int(date_parts[0])
         month = int(date_parts[1])
-        day = (
-            int(date_parts[2])
-            if len(date_parts) > 2
-            else calendar.monthrange(year, month)[1]
-        )
+        day = int(date_parts[2]) if len(date_parts) > 2 else calendar.monthrange(year, month)[1]
 
         target_date = datetime(year, month, day)
 
@@ -507,9 +455,7 @@ def mcpwikihistory(
             article.editor = revision["user"]
             article.edit_comment = revision.get("comment", "")
 
-            return WikipediaResponse(
-                query=title, results=article, count=1, language=language
-            ).model_dump_json()
+            return WikipediaResponse(query=title, results=article, count=1, language=language).model_dump_json()
 
         return WikipediaError(
             error=f"No revision found for {actual_title} (original query: {title}) before {date}",

@@ -25,16 +25,9 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 load_dotenv()
-
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-browser_log_file = os.path.join(os.getenv("LOG_FILE_PATH"), "browser_stdio.log")
-browser_handler = logging.FileHandler(browser_log_file, mode="a", encoding="utf-8")
-browser_handler.setLevel(logging.INFO)
-browser_handler.setFormatter(LOG_FORMAT)
-
-logger = logging.getLogger("browser")
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-logger.addHandler(browser_handler)
+logger.addHandler(logging.StreamHandler(sys.stdout))
 
 mcp = FastMCP("browser-server")
 extended_browser_system_prompt = """
@@ -87,9 +80,7 @@ async def browser_use(
         )
     )
     browser_context = BrowserContext(
-        config=BrowserContextConfig(
-            trace_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log"
-        ),
+        config=BrowserContextConfig(trace_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log"),
         browser=browser,
     )
     agent = Agent(
@@ -108,11 +99,7 @@ async def browser_use(
     )
     try:
         browser_execution: AgentHistoryList = await agent.run(max_steps=50)
-        if (
-            browser_execution is not None
-            and browser_execution.is_done()
-            and browser_execution.is_successful()
-        ):
+        if browser_execution is not None and browser_execution.is_done() and browser_execution.is_successful():
             exec_trace = browser_execution.extracted_content()
             logger.info(
                 ">>> 🌏 Browse Execution Succeed!\n"
