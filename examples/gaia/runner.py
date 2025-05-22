@@ -412,4 +412,5 @@ class GaiaRunner:
         with open(Path(self.output_folder_path) / "submission.jsonl", "w", encoding="utf-8") as f:
             for item in submission:
                 f.write(json.dumps(item) + "\n")
+            f.write(json.dumps({"task_id": "0-0-0-0-0", "model_answer": "", "reasoning_trace": ""}) + "\n")
         self._color_log("🎉 Submission file generated!", Color.red)
