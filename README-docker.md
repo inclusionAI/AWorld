@@ -14,7 +14,7 @@
      ```bash
      git clone https://github.com/inclusionAI/AWorld
      cd AWorld
-     git checkout gaia-benchmark
+     git checkout main
      ```
 
 3. **Dataset Preparation**
