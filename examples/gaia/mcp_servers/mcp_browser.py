@@ -33,6 +33,7 @@ extended_browser_system_prompt = """
 10. Download:
 
 -  Save the most relevant files (text/image/pdf/...) to local path for further processing
+-  **ALWAYS** download the pdf files for further processing. DO NOT click the link to open the pdf file in new tabs.
 
 11. Robot Detection:
 
