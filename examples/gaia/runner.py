@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import signal
 import sys
 import traceback
 from dataclasses import dataclass
@@ -38,6 +39,11 @@ class RunnerArguments:
     blacklist_file_path: str = None
     skip: bool = False
     is_submit: bool = False
+    task_timeout: int = 20 * 60
+
+
+class GaiaTimeoutException(Exception):
+    """GaiaTimeoutException"""
 
 
 class GaiaRunner:
@@ -61,6 +67,8 @@ class GaiaRunner:
         self.runner_args: RunnerArguments = runner_args
         self.dataset_folder_path: str = dataset_folder_path
         self.output_folder_path: str = output_folder_path
+
+        self.task_timeout: int = runner_args.task_timeout
 
         if not os.path.exists(output_folder_path):
             os.makedirs(output_folder_path)
@@ -109,6 +117,29 @@ class GaiaRunner:
 
         return wrapper
 
+    @staticmethod
+    def timeout(seconds: int):
+        def _raise_timeout_exception(signum, frame):
+            raise GaiaTimeoutException("Gaia Task execution timed out")
+
+        def decorator(func):
+            def wrapper(self, *args, **kwargs):
+                # Store the original handler to restore it later
+                original_handler = signal.signal(signal.SIGALRM, _raise_timeout_exception)
+                # Set the alarm for the specified timeout duration
+                signal.alarm(seconds)
+                try:
+                    # Execute the wrapped function
+                    return func(self, *args, **kwargs)
+                finally:
+                    # Cancel the alarm and restore the original signal handler
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, original_handler)
+
+            return wrapper
+
+        return decorator
+
     @cleanup
     def submit(self) -> None:
         """
@@ -126,8 +157,12 @@ class GaiaRunner:
                 result: Dict[str, Any] = self._execute_task(task=task)
                 answer: Optional[str] = self._extract_answer(result)
                 self._update_results(task, answer)
+            except GaiaTimeoutException:
+                self.logger.error(f"Task {task['task_id']} timed out after {self.task_timeout} seconds.")
+                self._update_results(task, answer="<TIMEOUT: 20>")
             except Exception:
                 self.logger.error(f"Error executing task {task['task_id']}: {traceback.format_exc()}")
+                self._update_results(task, answer="<ERROR>")
             self._color_log("=" * 25 + f" <END> {task['task_id']} <END/> " + "=" * 25, Color.darkgrey)
         self._color_log("🎉 Task Finished~~~", Color.red)
 
@@ -241,6 +276,7 @@ class GaiaRunner:
                     self.logger.error(f"Original file path is: {output_file}. Check it carefully!")
         return results
 
+    @timeout(seconds=RunnerArguments.task_timeout)
     def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_id = task["task_id"]
         question = task["Question"]
