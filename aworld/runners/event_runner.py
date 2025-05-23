@@ -52,12 +52,24 @@ class TaskEventRunner(TaskRunner):
                                     session_id=self.context.session_id,
                                     category=Constants.AGENT)
 
-        # register handler
+        # register agent handler
+        for _, agent in self.swarm.agents.items():
+            if agent.handler:
+                await self.event_mng.register(Constants.AGENT, agent.name(), agent.handler)
+            else:
+                if override_in_subclass('async_policy', agent.__class__, Agent):
+                    await self.event_mng.register(Constants.AGENT, agent.name(), agent.async_run)
+                else:
+                    await self.event_mng.register(Constants.AGENT, agent.name(), agent.run)
+        # register tool handler
         for key, tool in self.tools.items():
+            if tool.handler:
+                await self.event_mng.register(Constants.TOOL, tool.name(), tool.handler)
+            else:
+                await self.event_mng.register(Constants.TOOL, tool.name(), tool.step)
             handlers = self.event_mng.event_bus.get_topic_handlers(Constants.TOOL, tool.name())
             if not handlers:
                 await self.event_mng.register(Constants.TOOL, Constants.TOOL, tool.step)
-                await self.event_mng.register(Constants.TOOL, tool.name(), tool.step)
 
         self._stopped = asyncio.Event()
 

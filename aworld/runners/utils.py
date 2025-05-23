@@ -27,8 +27,14 @@ def choose_runner(task: Task):
         else:
             topology = "sequence"
 
-        runner = new_instance(
-            f"aworld.runners.call_driven_runner.{snake_to_camel(topology)}Runner", task)
+        if 'event' in topology:
+            # name must is xx_event.
+            name = topology.split('_')
+            runner = new_instance(
+                f"aworld.runners.{name[0]}.{snake_to_camel(name[0])}Runner", task)
+        else:
+            runner = new_instance(
+                f"aworld.runners.call_driven_runner.{snake_to_camel(topology)}Runner", task)
         return runner
 
 

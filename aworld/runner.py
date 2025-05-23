@@ -12,8 +12,8 @@ from aworld.core.task import Task, TaskResponse
 from aworld.output import StreamingOutputs
 from aworld import trace
 from aworld.runners.call_driven_runner import SequenceRunner, SocialRunner
-from aworld.runners.sequence import SequenceEventRunner
-from aworld.runners.social import SocialEventRunner
+from aworld.runners.sequence import SequenceRunner as SequenceEventRunner
+from aworld.runners.social import SocialRunner as SocialEventRunner
 from aworld.runners.utils import choose_runner
 from aworld.utils.common import sync_exec, new_instance, snake_to_camel
 

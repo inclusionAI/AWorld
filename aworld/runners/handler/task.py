@@ -4,10 +4,11 @@ import time
 
 from typing import AsyncGenerator
 
+from aworld.core.common import TaskItem
 from aworld.core.envs.tool import Tool, AsyncTool
 
-from aworld.core.event.base import Message, EventType
-from aworld.core.task import TaskItem, TaskResponse
+from aworld.core.event.base import Message, Constants
+from aworld.core.task import TaskResponse
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.event_runner import TaskEventRunner, TaskType
@@ -18,7 +19,7 @@ class DefaultTaskHandler(DefaultHandler):
         self.runner = runner
 
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if message.category != EventType.TASK:
+        if message.category != Constants.TASK:
             return
 
         topic = message.topic
@@ -27,7 +28,7 @@ class DefaultTaskHandler(DefaultHandler):
             new_tools = message.payload.data
             for name, tool in new_tools.items():
                 if isinstance(tool, Tool) or isinstance(tool, AsyncTool):
-                    await self.runner.event_mng.register(EventType.TOOL, name, tool.step)
+                    await self.runner.event_mng.register(Constants.TOOL, name, tool.step)
                     logger.info(f"dynamic register {name} tool.")
                 else:
                     logger.warning(f"Unknown tool instance: {tool}")
@@ -48,7 +49,7 @@ class DefaultTaskHandler(DefaultHandler):
             # restart
             logger.warning(f"The task {self.runner.task.id} will be restarted due to error: {task_item.msg}.")
             yield Message(
-                category=EventType.TASK,
+                category=Constants.TASK,
                 payload='',
                 sender=self.name(),
                 session_id=self.runner.context.session_id,

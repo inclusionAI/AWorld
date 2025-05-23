@@ -340,15 +340,17 @@ class SocialRunner(TaskRunner):
         self.swarm.cur_agent = self.swarm.communicate_agent
         # use communicate agent every time
         if override_in_subclass('async_policy', self.swarm.cur_agent.__class__, Agent):
-            policy: List[ActionModel] = self.swarm.cur_agent.run(observation,
-                                                                 step=step,
-                                                                 outputs=self.outputs,
-                                                                 stream=self.conf.get("stream", False))
+            message = self.swarm.cur_agent.run(observation,
+                                               step=step,
+                                               outputs=self.outputs,
+                                               stream=self.conf.get("stream", False))
         else:
-            policy: List[ActionModel] = await self.swarm.cur_agent.async_run(observation,
-                                                                             step=step,
-                                                                             outputs=self.outputs,
-                                                                             stream=self.conf.get("stream", False))
+            message = await self.swarm.cur_agent.async_run(observation,
+                                                           step=step,
+                                                           outputs=self.outputs,
+                                                           stream=self.conf.get("stream", False))
+        self.loop_detect.append(self.swarm.cur_agent.name())
+        policy = message.payload
         if not policy:
             logger.warning(f"current agent {self.swarm.cur_agent.name()} no policy to use.")
             return {"msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
@@ -368,7 +370,7 @@ class SocialRunner(TaskRunner):
                 if is_agent(policy[0]):
                     status, info = await self._social_agent(policy, step)
                     if status == 'normal':
-                        self.swarm.cur_agent = self.swarm.agents.get(policy[0].agent_name)
+                        self.swarm.cur_agent = self.swarm.agents.get(policy[0].tool_name)
                         policy = info
                     # clear observation
                     observation = None
@@ -398,15 +400,16 @@ class SocialRunner(TaskRunner):
                     if cur_agent is None:
                         cur_agent = self.swarm.cur_agent
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                        policy = cur_agent.run(observation,
-                                               step=step,
-                                               outputs=self.outputs,
-                                               stream=self.conf.get("stream", False))
+                        message = cur_agent.run(observation,
+                                                step=step,
+                                                outputs=self.outputs,
+                                                stream=self.conf.get("stream", False))
                     else:
-                        policy = await cur_agent.async_run(observation,
-                                                           step=step,
-                                                           outputs=self.outputs,
-                                                           stream=self.conf.get("stream", False))
+                        message = await cur_agent.async_run(observation,
+                                                            step=step,
+                                                            outputs=self.outputs,
+                                                            stream=self.conf.get("stream", False))
+                    policy = message.payload
                     color_log(f"{cur_agent.name()} policy: {policy}")
 
             if policy:
@@ -449,7 +452,6 @@ class SocialRunner(TaskRunner):
         if cur_agent.name() == self.swarm.communicate_agent.name() or cur_agent.name() == self.swarm.cur_agent.name():
             # Current agent is entrance agent, means need to exit to the outer loop
             logger.info(f"{cur_agent.name()} exit to the outer loop")
-            self.loop_detect.append(cur_agent.name())
             return 'break', True
 
         if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
@@ -473,16 +475,17 @@ class SocialRunner(TaskRunner):
                              "mcp_servers": cur_agent.mcp_servers})
 
         if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-            agent_policy = cur_agent.run(observation,
-                                         step=step,
-                                         outputs=self.outputs,
-                                         stream=self.conf.get("stream", False))
+            message = cur_agent.run(observation,
+                                    step=step,
+                                    outputs=self.outputs,
+                                    stream=self.conf.get("stream", False))
         else:
-            agent_policy = await cur_agent.async_run(observation,
-                                                     step=step,
-                                                     outputs=self.outputs,
-                                                     stream=self.conf.get("stream", False))
+            message = await cur_agent.async_run(observation,
+                                                step=step,
+                                                outputs=self.outputs,
+                                                stream=self.conf.get("stream", False))
 
+        agent_policy = message.payload
         if not agent_policy:
             logger.warning(
                 f"{observation} can not get the valid policy in {policy_for_agent.agent_name}, exit task!")
@@ -518,13 +521,14 @@ class SocialRunner(TaskRunner):
         for tool_name, action in tool_mapping.items():
             # Execute action using browser tool and unpack all return values
             if isinstance(self.tools[tool_name], Tool):
-                observation, reward, terminated, _, info = self.tools[tool_name].step(action)
+                message = self.tools[tool_name].step(action)
             elif isinstance(self.tools[tool_name], AsyncTool):
-                observation, reward, terminated, _, info = await self.tools[tool_name].step(action)
+                message = await self.tools[tool_name].step(action)
             else:
                 logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
                 continue
 
+            observation, reward, terminated, _, info = message.payload
             for i, item in enumerate(action):
                 tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
                     "function": {

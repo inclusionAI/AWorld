@@ -4,10 +4,9 @@ from typing import AsyncGenerator, Tuple
 
 from aworld.core.agent.base import is_agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import ActionModel, Observation
+from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, EventType
-from aworld.core.task import TaskItem
+from aworld.core.event.base import Message, Constants
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.event_runner import TaskType
@@ -25,14 +24,14 @@ class DefaultAgentHandler(DefaultHandler):
         return "_sequential_agents_handler"
 
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if message.category != EventType.AGENT:
+        if message.category != Constants.AGENT:
             return
 
         data = message.payload
         if not data:
             # error message, p2p
             yield Message(
-                category=EventType.TASK,
+                category=Constants.TASK,
                 payload=TaskItem(msg="no data to process.", data=data, stop=True),
                 sender=self.name(),
                 session_id=Context.instance().session_id,
@@ -53,7 +52,7 @@ class DefaultAgentHandler(DefaultHandler):
             if not isinstance(action, ActionModel):
                 # error message, p2p
                 yield Message(
-                    category=EventType.TASK,
+                    category=Constants.TASK,
                     payload=TaskItem(msg="action not a ActionModel.", data=data, stop=True),
                     sender=self.name(),
                     session_id=Context.instance().session_id,
@@ -71,17 +70,11 @@ class DefaultAgentHandler(DefaultHandler):
 
         if tools:
             yield Message(
-                category=EventType.TOOL,
+                category=Constants.TOOL,
                 payload=tools,
                 sender=self.name(),
                 session_id=Context.instance().session_id,
                 receiver=DefaultToolHandler.name(),
-                group_name=message.group_name
-            )
-
-        if agents and message.group_name:
-            Context.instance().context_info[message.group_name] = (
-                message.sender, {agent.name(): None for agent in agents}
             )
 
         for agent in agents:
@@ -101,7 +94,7 @@ class DefaultAgentHandler(DefaultHandler):
         cur_agent = self.swarm.agents.get(agent_name)
         if not cur_agent or not agent:
             yield Message(
-                category=EventType.TASK,
+                category=Constants.TASK,
                 payload=TaskItem(msg=f"Can not find {agent_name} or {action.agent_name} agent in swarm.",
                                  data=action,
                                  stop=True),
@@ -123,7 +116,7 @@ class DefaultAgentHandler(DefaultHandler):
                 message.caller = ''
                 yield message
             else:
-                yield Message(category=EventType.TASK,
+                yield Message(category=Constants.TASK,
                               payload=TaskItem(msg=f"Can not handoffs {agent_name} agent ", data=observation),
                               sender=self.name(),
                               session_id=Context.instance().session_id,
@@ -131,13 +124,12 @@ class DefaultAgentHandler(DefaultHandler):
             return
 
         yield Message(
-            category=EventType.AGENT,
+            category=Constants.AGENT,
             payload=observation,
             caller=message.caller,
             sender=action.agent_name,
             session_id=Context.instance().session_id,
             receiver=action.tool_name,
-            group_name=message.group_name
         )
 
     async def _stop_check(self, action: ActionModel, caller: str):
@@ -145,7 +137,7 @@ class DefaultAgentHandler(DefaultHandler):
         idx = next((i for i, x in enumerate(self.swarm.ordered_agents) if x == agent), -1)
         if idx == -1:
             yield Message(
-                category=EventType.TASK,
+                category=Constants.TASK,
                 payload=action,
                 sender=self.name(),
                 session_id=Context.instance().session_id,
@@ -156,7 +148,7 @@ class DefaultAgentHandler(DefaultHandler):
             if self.swarm.cur_step >= self.swarm.max_steps:
                 # means the task finished
                 yield Message(
-                    category=EventType.TASK,
+                    category=Constants.TASK,
                     payload=action.policy_info,
                     sender=agent.name(),
                     session_id=Context.instance().session_id,
@@ -166,7 +158,7 @@ class DefaultAgentHandler(DefaultHandler):
                 self.swarm.cur_step += 1
                 logger.info(f"execute loop {self.swarm.cur_step}.")
                 yield Message(
-                    category=EventType.TASK,
+                    category=Constants.TASK,
                     payload='',
                     sender=agent.name(),
                     session_id=Context.instance().session_id,
@@ -175,7 +167,7 @@ class DefaultAgentHandler(DefaultHandler):
         else:
             # means the loop finished
             yield Message(
-                category=EventType.AGENT,
+                category=Constants.AGENT,
                 payload=Observation(content=action.policy_info),
                 sender=agent.name(),
                 session_id=Context.instance().session_id,
@@ -200,7 +192,7 @@ class DefaultAgentSocialHandler(DefaultAgentHandler):
                           endless_threshold=self.endless_threshold,
                           root_agent_name=self.swarm.communicate_agent.name()):
             yield Message(
-                category=EventType.TASK,
+                category=Constants.TASK,
                 payload=action.policy_info,
                 sender=agent.name(),
                 session_id=Context.instance().session_id,
@@ -211,7 +203,7 @@ class DefaultAgentSocialHandler(DefaultAgentHandler):
         if not caller or caller == self.swarm.communicate_agent.name():
             if self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished:
                 yield Message(
-                    category=EventType.TASK,
+                    category=Constants.TASK,
                     payload=action.policy_info,
                     sender=agent.name(),
                     session_id=Context.instance().session_id,
@@ -221,7 +213,7 @@ class DefaultAgentSocialHandler(DefaultAgentHandler):
                 self.swarm.cur_step += 1
                 logger.info(f"execute loop {self.swarm.cur_step}.")
                 yield Message(
-                    category=EventType.AGENT,
+                    category=Constants.AGENT,
                     payload=Observation(content=action.policy_info),
                     sender=agent.name(),
                     session_id=Context.instance().session_id,
@@ -237,7 +229,7 @@ class DefaultAgentSocialHandler(DefaultAgentHandler):
                 caller = self.agent_calls[idx - 1]
 
             yield Message(
-                category=EventType.AGENT,
+                category=Constants.AGENT,
                 payload=Observation(content=action.policy_info),
                 sender=agent.name(),
                 session_id=Context.instance().session_id,

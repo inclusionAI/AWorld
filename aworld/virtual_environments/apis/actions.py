@@ -17,7 +17,7 @@ from aworld.virtual_environments.action import ExecutableAction
 
 @ActionFactory.register(name=SearchAction.WIKI.value.name,
                         desc=SearchAction.WIKI.value.desc,
-                        tool_name=Tools.SEARCH_API.value)
+                        tool_name='search_api')
 class SearchWiki(ExecutableAction):
     def __init__(self):
         import_package("wikipedia")
@@ -56,7 +56,7 @@ class SearchWiki(ExecutableAction):
 
 @ActionFactory.register(name=SearchAction.DUCK_GO.value.name,
                         desc=SearchAction.DUCK_GO.value.desc,
-                        tool_name=Tools.SEARCH_API.value)
+                        tool_name="search_api")
 class Duckduckgo(ExecutableAction):
     def __init__(self):
         import_package("duckduckgo_search")
@@ -155,7 +155,7 @@ class Duckduckgo(ExecutableAction):
 
 @ActionFactory.register(name=SearchAction.GOOGLE.value.name,
                         desc=SearchAction.GOOGLE.value.desc,
-                        tool_name=Tools.SEARCH_API.value)
+                        tool_name="search_api")
 class SearchGoogle(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         query = action.params.get("query")
@@ -230,7 +230,7 @@ class SearchGoogle(ExecutableAction):
 
 @ActionFactory.register(name=SearchAction.BAIDU.value.name,
                         desc=SearchAction.BAIDU.value.desc,
-                        tool_name=Tools.SEARCH_API.value)
+                        tool_name="search_api")
 class SearchBaidu(ExecutableAction):
     def __init__(self):
         import_package("baidusearch")

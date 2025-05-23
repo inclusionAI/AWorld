@@ -3,11 +3,10 @@
 from typing import Union, Dict, AsyncGenerator, Any
 
 from aworld.core.agent.base import is_agent
-from aworld.core.common import ActionModel
+from aworld.core.common import ActionModel, TaskItem
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, EventType
+from aworld.core.event.base import Message, Constants
 from aworld.core.envs.tool import AsyncTool, Tool, ToolFactory
-from aworld.core.task import TaskItem
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.event_runner import TaskType
@@ -19,7 +18,7 @@ class DefaultToolHandler(DefaultHandler):
         self.tools_conf = tools_conf
 
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if message.category != EventType.TOOL:
+        if message.category != Constants.TOOL:
             return
 
         # data is List[ActionModel]
@@ -27,7 +26,7 @@ class DefaultToolHandler(DefaultHandler):
         if not data:
             # error message, p2p
             yield Message(
-                category=EventType.TASK,
+                category=Constants.TASK,
                 payload=TaskItem(msg="no data to process.", data=data, stop=True),
                 sender='agent_handler',
                 session_id=Context.instance().session_id,
@@ -39,7 +38,7 @@ class DefaultToolHandler(DefaultHandler):
             if not isinstance(action, ActionModel):
                 # error message, p2p
                 yield Message(
-                    category=EventType.TASK,
+                    category=Constants.TASK,
                     payload=TaskItem(msg="action not a ActionModel.", data=data, stop=True),
                     sender=self.name(),
                     session_id=Context.instance().session_id,
@@ -72,7 +71,7 @@ class DefaultToolHandler(DefaultHandler):
             tool_mapping[act.tool_name].append(act)
 
         yield Message(
-            category=EventType.TASK,
+            category=Constants.TASK,
             payload=TaskItem(data=new_tools),
             sender=self.name(),
             session_id=Context.instance().session_id,
@@ -86,10 +85,9 @@ class DefaultToolHandler(DefaultHandler):
 
             # send to the tool
             yield Message(
-                category=EventType.TOOL,
+                category=Constants.TOOL,
                 payload=actions,
                 sender=actions[0].agent_name if actions else '',
                 session_id=Context.instance().session_id,
-                receiver=tool_name,
-                group_name=message.group_name
+                receiver=tool_name
             )
