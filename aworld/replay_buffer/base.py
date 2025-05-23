@@ -1,13 +1,14 @@
 import random
-import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, TypeVar
 from abc import ABC, abstractmethod
+from math import ceil
 
 from aworld.core.common import ActionModel, Observation
 from aworld.replay_buffer.query_filter import QueryCondition, QueryFilter
 from aworld.logs.util import logger
+
 
 T = TypeVar('T')
 
@@ -18,7 +19,7 @@ class Experience:
     Experience of agent.
     '''
     state: Observation
-    action: ActionModel
+    actions: List[ActionModel]
     reward_t: float = None
     adv_t: float = None
     v_t: float = None
@@ -27,7 +28,7 @@ class Experience:
     def to_dict(self):
         return {
             "state": self.state,
-            "action": self.action,
+            "actions": self.actions,
             "reward_t": self.reward_t,
             "adv_t": self.adv_t,
             "v_t": self.v_t,
@@ -56,8 +57,6 @@ class ExpMeta:
             "execute_time": self.execute_time,
             "pre_agent": self.pre_agent
         }
-
-
 @dataclass
 class DataRow:
     '''
@@ -162,7 +161,7 @@ class Sampler(ABC):
             batch_size (int): Number of data to sample.
             query_condition (QueryCondition, optional): Query condition. Defaults to None.
         Returns:
-            List[DataRow] 
+            List[DataRow]
         '''
 
 
@@ -170,7 +169,7 @@ class TaskSampler(Sampler):
     '''
     Sample task data from storage, returns Dict[str, List[DataRow]] where:
     - key is task_id
-    - value is list of task all data rows 
+    - value is list of task all data rows
     '''
 
     def sorted_by_step(self, task_experience: List[DataRow]) -> List[DataRow]:
@@ -320,13 +319,13 @@ class RandomTaskSample(TaskSampler):
                         storage: Storage,
                         batch_size: int,
                         query_condition: QueryCondition = None) -> List[str]:
-        total_size = storage.size()
+        total_size = storage.size(query_condition)
         if total_size <= batch_size:
             return storage.get_all(query_condition)
 
         sampled_task_ids = set()
         page_size = min(100, batch_size * 2)
-        total_pages = (total_size + page_size - 1)
+        total_pages = ceil(total_size/page_size)
         visited_pages = set()
         while len(sampled_task_ids) < batch_size and len(visited_pages) < total_pages:
             page = random.choice(

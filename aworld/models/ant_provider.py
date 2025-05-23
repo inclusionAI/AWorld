@@ -60,6 +60,7 @@ class AntProvider(LLMProviderBase):
 
         # Get API key
         api_key = self.api_key
+
         if not api_key:
             env_var = "ANT_API_KEY"
             api_key = os.getenv(env_var, "")
@@ -67,6 +68,18 @@ class AntProvider(LLMProviderBase):
             if not api_key:
                 raise ValueError(
                     f"ANT API key not found, please set {env_var} environment variable or provide it in the parameters")
+
+        if api_key and api_key.startswith("ak_info:"):
+            ak_info_str = api_key[len("ak_info:"):]
+            try:
+                ak_info = json.loads(ak_info_str)
+                for key, value in ak_info.items():
+                    os.environ[key] = value
+                    if key == "ANT_API_KEY":
+                        api_key = value
+                        self.api_key = api_key
+            except Exception as e:
+                logger.warn(f"Invalid ANT API key startswith ak_info: {api_key}")
 
         self.stream_api_key = os.getenv("ANT_STREAM_API_KEY", "")
 
