@@ -104,7 +104,7 @@ class GaiaAgent(Agent):
 
         # output.add_part(MessageOutput(source=llm_response, json_parse=False))
         agent_result = sync_exec(self.resp_parse_func, llm_response)
-        if not agent_result.is_call_tool:
+        if not agent_result.is_call_tool and "<answer>" in llm_response.content:
             self._finished = True
         # output.mark_finished()
 
