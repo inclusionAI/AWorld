@@ -3,12 +3,11 @@
 import asyncio
 import os
 
-from aworld.runner import Runners
-
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
+from aworld.runner import Runners
 from custom.custom_rich_aworld_ui import RichAworldUI
 
 if __name__ == '__main__':

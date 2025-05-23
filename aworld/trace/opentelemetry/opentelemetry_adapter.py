@@ -4,6 +4,7 @@ import traceback
 import time
 import datetime
 import requests
+import socket
 from threading import Lock
 from typing import Any, Iterator, Sequence, Optional, TYPE_CHECKING
 from contextvars import Token
@@ -38,10 +39,13 @@ from aworld.trace.base import (
     TraceContext,
     set_tracer_provider
 )
+from aworld.trace.span_cosumer import SpanConsumer
+from aworld.trace.propagator import get_global_trace_context
 from aworld.logs.util import logger
+from aworld.utils.common import get_local_ip
 from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
 from ..constants import ATTRIBUTES_MESSAGE_KEY
-from .export import FileSpanExporter, NoOpSpanExporter
+from .export import FileSpanExporter, NoOpSpanExporter, SpanConsumerExporter
 from ..server import start_trace_server
 
 
@@ -111,6 +115,7 @@ class OTLPTracer(Tracer):
             trace_context: Optional[TraceContext] = None
     ) -> "Span":
         otel_context = None
+        trace_context = trace_context or get_global_trace_context().get_and_clear()
         if trace_context:
             otel_context = self._get_otel_context_from_trace_context(
                 trace_context)
@@ -138,6 +143,7 @@ class OTLPTracer(Tracer):
             record_exception: bool = True,
             set_status_on_exception: bool = True,
             end_on_exit: bool = True,
+            trace_context: Optional[TraceContext] = None
     ) -> Iterator["Span"]:
 
         start_time = start_time or time.time_ns()
@@ -145,6 +151,11 @@ class OTLPTracer(Tracer):
         attributes.setdefault(ATTRIBUTES_MESSAGE_KEY, name)
         span_kind = self._convert_to_span_kind(
             span_type) if span_type else SpanKind.INTERNAL
+        otel_context = None
+        trace_context = trace_context or get_global_trace_context().get_and_clear()
+        if trace_context:
+            otel_context = self._get_otel_context_from_trace_context(
+                trace_context)
 
         class _OTLPSpanContextManager:
             def __init__(self, tracer: SDKTracer):
@@ -155,6 +166,7 @@ class OTLPTracer(Tracer):
                 self._span_cm = self._tracer.start_as_current_span(
                     name=name,
                     kind=span_kind,
+                    context=otel_context,
                     attributes=attributes,
                     start_time=start_time,
                     record_exception=record_exception,
@@ -282,11 +294,11 @@ class OTLPSpan(Span, ReadableSpan):
         otlp_context_api.detach(self._token)
         self._token = None
 
-
 def configure_otlp_provider(
         backends: Sequence[str] = None,
         base_url: str = None,
         write_token: str = None,
+        span_consumers: Optional[Sequence[SpanConsumer]] = None,
         **kwargs
 ) -> None:
     """Configure the OTLP provider.
@@ -298,6 +310,8 @@ def configure_otlp_provider(
     from aworld.metrics.opentelemetry.opentelemetry_adapter import build_otel_resource
     backends = backends or ["logfire"]
     processor = SynchronousMultiSpanProcessor()
+    processor.add_span_processor(BatchSpanProcessor(
+        SpanConsumerExporter(span_consumers)))
     for backend in backends:
         if backend == "logfire":
             span_exporter = _configure_logfire_exporter(
@@ -316,7 +330,8 @@ def configure_otlp_provider(
             logger.info("Using in-memory storage for traces.")
             if (os.getenv("START_TRACE_SERVER") or "true").lower() == "true":
                 logger.info("Starting trace server on port 8000.")
-                storage = kwargs.get("storage", InMemoryWithPersistStorage())
+                storage_dir = os.path.join("./", "trace_data", get_local_ip())
+                storage = kwargs.get("storage", InMemoryWithPersistStorage(storage_dir=storage_dir))
                 processor.add_span_processor(
                     BatchSpanProcessor(InMemorySpanExporter(storage)))
                 start_trace_server(storage=storage, port=8000)
