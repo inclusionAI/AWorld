@@ -1,22 +1,40 @@
 services:
-  gaia:
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - 127.0.0.1:8080:8080
+    restart: on-failure:3
+    volumes:
+      - ./examples/gaia/openwebui-patch/ca81bd47c050_add_config_table.py:/app/backend/open_webui/migrations/versions/ca81bd47c050_add_config_table.py
+      - ./examples/gaia/GAIA:/app/aworld/examples/gaia/GAIA
+    environment:
+      - HF_HUB_OFFLINE=1
+      - ENABLE_OLLAMA_API=False
+      - ENABLE_DIRECT_CONNECTIONS=False
+      - ENABLE_EVALUATION_ARENA_MODELS=False
+      - ENABLE_TITLE_GENERATION=False
+      - ENABLE_AUTOCOMPLETE_GENERATION=False
+      - ENABLE_TAGS_GENERATION=False
+      - OPENAI_API_BASE_URL=http://gaia_agent:8888/v1
+      - OPENAI_API_KEY=xxx
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  gaia_agent:
     build:
       context: .
       dockerfile: Dockerfile_gaia
-    container_name: gaia
     platform: linux/amd64
+    ports:
+      - 127.0.0.1:8888:8888
     volumes:
       - ./.env.docker:/app/aworld/.env
-      - ./examples/gaia/openwebui-patch/ca81bd47c050_add_config_table.py:/app/backend/open_webui/migrations/versions/ca81bd47c050_add_config_table.py
-      - ./examples:/app/aworld/examples
-      - ./mcp_servers:/app/aworld/mcp_servers
-      # - ./.data:/app/backend/data
     env_file:
       - ./.env.docker
-    ports:
-      - 127.0.0.1:8080:8080
     restart: on-failure:3
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 4G
