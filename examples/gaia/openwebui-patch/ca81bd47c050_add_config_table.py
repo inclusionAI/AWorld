@@ -44,7 +44,6 @@ def downgrade():
 
 def init_gaia_config():
     import json
-    import time
     prompt_suggestions = None
     with open(
         "/app/aworld/examples/gaia/GAIA/2023/validation/metadata.jsonl",
@@ -71,20 +70,3 @@ def init_gaia_config():
     )
     print(f">>> patch gaia_agent: add prompt_suggestions success!")
 
-    func_content = None
-    with open(
-        "/app/aworld/examples/gaia/openwebui-patch/gaia_agent.py", "r", encoding="utf-8"
-    ) as f:
-        func_content = f.read()
-    conn.execute(
-        text(
-            "INSERT INTO function (id, user_id, name, type, content, meta, created_at, updated_at, is_active, is_global) VALUES('gaia_agent', '00000000-0000-0000-0000-000000000000', 'gaia_agent', 'pipe', :content, :meta, :created_at, :updated_at, 1, 0)"
-        ),
-        {
-            "content": func_content,
-            "meta": '{"description": "gaia_agent", "manifest": {}}',
-            "created_at": int(time.time()),
-            "updated_at": int(time.time()),
-        },
-    )
-    print(f">>> patch gaia_agent: add gaia_agent function success!")

@@ -6,11 +6,7 @@ import sys
 import re
 import subprocess
 
-from aworld.utils.import_package import import_package
 from aworld.version_gen import generate_version_info, __version__
-
-# if no setuptools, install first
-import_package("setuptools")
 
 from setuptools import setup, find_packages
 from setuptools.command.sdist import sdist
