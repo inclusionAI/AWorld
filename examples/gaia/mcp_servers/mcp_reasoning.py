@@ -49,7 +49,7 @@ def complex_problem_reasoning(
             llm_model=get_llm_model(
                 conf=AgentConfig(
                     llm_provider="openai",
-                    llm_model_name="openai/o4-mini-high",
+                    llm_model_name="google/gemini-2.5-flash-preview-05-20:thinking",
                     llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
                     llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
                 )
