@@ -11,7 +11,7 @@
 </div>
 
 ## News
-- 🥳 [2024/05/22] For quick GAIA evaluation, MCP tools, AWorld, and models are now available in a single Docker image. See <code>./README-docker.md</code> for instructions.
+- 🥳 [2024/05/22] For quick GAIA evaluation, MCP tools, AWorld, and models are now available in a single Docker image. See <code>./README-docker.md</code> for instructions and [youtube video](https://www.youtube.com/watch?v=kkYWeVvJKrg) for demo.
 - 🥳 [2024/05/13] AWorld has updated its state management for browser use and enhanced the video processing MCP server, achieving a score of 77.58 on GAIA validation (Pass@1 = 61.8) and maintaining its position as the top-ranked open-source framework. Learn more: [GAIA leaderboard](https://huggingface.co/spaces/gaia-benchmark/leaderboard)
 - ✨ [2025/04/23] AWorld ranks 3rd on GAIA benchmark (69.7 avg) with impressive Pass@1 = 58.8, 1st among open-source frameworks. Reproduce with <code>python examples/gaia/run.py</code>
 
@@ -38,7 +38,13 @@ For quick evaluation, training, rapid prototyping, and other use cases, we provi
   <tr>
     <td rowspan="1">Evalution</td>
     <td>GAIA Evaluation Docker Image. For instructions on building the image, see <code>./README-docker.md</code>.</td>
-   <td></td>
+   <td>
+      <a href="https://www.youtube.com/watch?v=kkYWeVvJKrg" target="_blank">
+        <img src="https://img.youtube.com/vi/kkYWeVvJKrg/0.jpg" alt="AWorld Browser Demo on YouTube" width="45%">
+        <br>
+        <p align="left">▶️ Runing GAIA task in our image</p>
+      </a>
+   </td>
   </tr>
 
   <tr>
