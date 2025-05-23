@@ -5,7 +5,7 @@ import uuid
 from aworld_client import AworldTask, AworldTaskClient
 
 AWORLD_TASK_CLIENT = AworldTaskClient(
-    know_hosts=["localhost:9299", "localhost:9399", "localhost:9499"]
+    know_hosts=["localhost:9999"]
 )
 
 

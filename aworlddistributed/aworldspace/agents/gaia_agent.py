@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.task import Task
 from aworld.output import Outputs, Output, StreamingOutputs
+from aworld.utils.common import get_local_ip
 from pydantic import BaseModel, Field
 
 from aworldspace.base_agent import AworldBaseAgent
@@ -111,7 +112,7 @@ class Pipeline(AworldBaseAgent):
         task_config:TaskConfig = task.conf
         gaia_task = await self.get_gaia_task(int(task_config.ext['origin_message']))
 
-        result = f"\n\n`GAIA TASK#{task_config.ext['origin_message']}`\n\n---\n\n"
+        result = f"\n\n`{get_local_ip()}` execute `GAIA TASK#{task_config.ext['origin_message']}`:\n\n---\n\n"
         result += f"**Question**: {gaia_task['Question']}\n"
         result += f"**Answer**: {gaia_task['Final answer']}\n"
         result += f"**Level**: {gaia_task['Level']}\n"

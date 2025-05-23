@@ -2,6 +2,7 @@ import inspect
 import traceback
 from logging.handlers import TimedRotatingFileHandler
 
+from aworld.utils.common import get_local_ip
 from fastapi import FastAPI, Request, Depends, status, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
@@ -858,6 +859,7 @@ def openai_chat_message_template(model: str):
         "id": f"{model}-{str(uuid.uuid4())}",
         "created": int(time.time()),
         "model": model,
+        "node_id": get_local_ip(),
         "choices": [{"index": 0, "logprobs": None, "finish_reason": None}],
     }
 
