@@ -187,8 +187,8 @@ def mcp_image_recognition(
             ],
             temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
         )
-        logger.info(f"response:{response.choices[0]}")
-        image_reasoning_result = response.choices[0].message.content
+        logger.info(f"{response.content=}")
+        image_reasoning_result = response.content
 
     except Exception as e:
         image_reasoning_result = ""

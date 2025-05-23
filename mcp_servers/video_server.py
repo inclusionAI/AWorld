@@ -212,7 +212,7 @@ def mcp_analyze_video(
                     inputs,
                     temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
                 )
-                cur_video_analysis_result = response.choices[0].message.content
+                cur_video_analysis_result = response.content
             except Exception:
                 cur_video_analysis_result = ""
             all_res.append(f"result of video part {int(i / interval + 1)}: {cur_video_analysis_result}")
@@ -254,7 +254,7 @@ def mcp_extract_video_subtitles(
             inputs,
             temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
         )
-        video_subtitles = response.choices[0].message.content
+        video_subtitles = response.content
     except (ValueError, IOError, RuntimeError):
         video_subtitles = ""
         logger.error(f"video_subtitles-Execute error: {traceback.format_exc()}")
@@ -296,7 +296,7 @@ def mcp_summarize_video(
                     temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
                 )
                 logger.info(f"---response:{response}")
-                cur_video_summary = response.choices[0].message.content
+                cur_video_summary = response.content
             except Exception:
                 cur_video_summary = ""
             all_res.append(f"summary of video part {int(i / interval + 1)}: {cur_video_summary}")
