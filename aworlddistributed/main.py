@@ -1,5 +1,6 @@
 import inspect
 import traceback
+from logging.handlers import TimedRotatingFileHandler
 
 from fastapi import FastAPI, Request, Depends, status, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,7 +51,7 @@ def setup_logging():
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     log_path = os.path.join(log_dir, "aworldserver.log")
-    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler = TimedRotatingFileHandler(log_path, when='H', interval=1, backupCount=24)
     file_handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
