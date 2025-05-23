@@ -1,19 +1,17 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from typing import Any, Dict, Tuple, List, Union
+from typing import Any, Dict, Tuple, Union
 
-from aworld.config.common import Tools
 from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import ToolFactory, AsyncTool
-from aworld.core.event.base import Message
 from aworld.logs.util import logger
 from aworld.virtual_environments.mcp.executor import MCPToolExecutor
 from aworld.virtual_environments.utils import build_observation
 
 
-@ToolFactory.register(name=Tools.MCP.value,
+@ToolFactory.register(name="mcp",
                       desc="mcp execute tool",
                       asyn=True)
 class McpTool(AsyncTool):

@@ -5,7 +5,7 @@ from aworld.core.agent.llm_agent import Agent
 from aworld.agents import BrowserAgent
 from aworld.agents.browser.config import BrowserAgentConfig
 from aworld.config import ModelConfig
-from aworld.config.common import Tools
+from examples.common import Tools
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 from aworld.runner import Runners

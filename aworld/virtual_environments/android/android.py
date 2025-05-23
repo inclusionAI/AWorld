@@ -4,7 +4,6 @@
 import traceback
 from typing import Any, Tuple, List, Dict
 
-from aworld.config.common import Tools
 from aworld.virtual_environments.tool_action import AndroidAction
 from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.logs.util import logger
@@ -17,10 +16,10 @@ from aworld.virtual_environments.utils import build_observation
 ALL_UNICODE_CHARS = frozenset(chr(i) for i in range(0x10FFFF + 1))
 
 
-@ToolFactory.register(name=Tools.ANDROID.value,
+@ToolFactory.register(name="android",
                       desc="android",
                       supported_action=AndroidAction,
-                      conf_file_name=f'{Tools.ANDROID.value}_tool.yaml')
+                      conf_file_name=f'android_tool.yaml')
 class AndroidTool(Tool):
 
     def __init__(self, conf: AndroidToolConfig, **kwargs):

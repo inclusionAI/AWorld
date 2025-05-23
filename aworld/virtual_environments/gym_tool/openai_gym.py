@@ -4,7 +4,6 @@
 from typing import Dict, Any, Tuple, SupportsFloat, List, Union
 
 from aworld.config import ConfigDict, ToolConfig
-from aworld.config.common import Tools
 from aworld.virtual_environments.tool_action import GymAction
 from aworld.core.common import Observation, ActionModel
 from aworld.core.envs.tool import Tool, ToolFactory
@@ -17,10 +16,10 @@ class ActionType(object):
     CONTINUOUS = 'continuous'
 
 
-@ToolFactory.register(name=Tools.GYM.value,
+@ToolFactory.register(name="openai_gym",
                       desc="gym classic control game",
                       supported_action=GymAction,
-                      conf_file_name=f'{Tools.GYM.value}_tool.yaml')
+                      conf_file_name=f'openai_gym_tool.yaml')
 class OpenAIGym(Tool):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         """Gym environment constructor.

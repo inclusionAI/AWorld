@@ -3,7 +3,7 @@
 
 from aworld.agents import AndroidAgent
 from aworld.config import AgentConfig
-from aworld.config.common import Agents, Tools
+from examples.common import Agents, Tools
 from aworld.core.task import Task
 from aworld.runner import Runners
 from aworld.virtual_environments.conf import AndroidToolConfig

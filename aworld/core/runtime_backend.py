@@ -1,17 +1,35 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import abc
+import inspect
 import os
+from concurrent.futures import Future
+from concurrent.futures.process import ProcessPoolExecutor
+from types import MethodType
+from typing import List, Callable, Any
+
+from aworld.core.common import Config
+from aworld.core.task import Task
 
 from aworld.logs.util import logger
+from aworld.utils.common import sync_exec
+
+LOCAL = "local"
+SPARK = "spark"
+RAY = "ray"
+ODPS = "odps"
 
 
 class RuntimeBackend(object):
     """Lightweight wrapper of computing and storage engine runtime."""
 
-    def __init__(self, conf):
+    __metaclass__ = abc.ABCMeta
+
+    def __init__(self, conf: Config):
         """Engine runtime instance initialize."""
         self.conf = conf
         self.runtime = None
+        register(conf.name, self)
 
     def build_context(self):
         """Create computing or storage engine runtime context.
@@ -23,12 +41,59 @@ class RuntimeBackend(object):
         self._build_context()
         return self
 
+    @abc.abstractmethod
     def _build_context(self):
-        raise NotImplementedError("Base _getOrCreate not implemented!")
+        raise NotImplementedError("Base _build_context not implemented!")
+
+    @abc.abstractmethod
+    def execute(self, tasks: List[Task]):
+        raise NotImplementedError("Base execute not implemented!")
 
 
 class LocalRuntime(RuntimeBackend):
     """Local runtime is used to verify or test locally."""
+
+    def _build_context(self):
+        self.runtime = self
+
+    def func_wrapper(self, func):
+        """Function is used to adapter computing form."""
+
+        if inspect.iscoroutinefunction(func):
+            res = sync_exec(func, )
+        else:
+            res = func()
+        return res
+
+    async def execute(self, funcs: List[Callable[..., Any]]):
+        # opt of the one task process
+        if len(funcs) == 1:
+            func = funcs[0]
+            if inspect.iscoroutinefunction(func):
+                res = await func()
+            else:
+                res = func()
+            return {res.id: res}
+
+        num_executor = self.conf.get('num_executor', os.cpu_count() - 1)
+        num_process = len(funcs)
+        if num_process > num_executor:
+            num_process = num_executor
+
+        if num_process <= 0:
+            num_process = 1
+
+        futures = []
+        with ProcessPoolExecutor(num_process) as pool:
+            for func in funcs:
+                futures.append(pool.submit(self.func_wrapper, func))
+
+        results = {}
+        for future in futures:
+            future: Future = future
+            res = future.result()
+            results[res.id] = res
+        return results
 
 
 class SparkRuntime(RuntimeBackend):
@@ -102,4 +167,4 @@ def register(key, runtime_backend):
         return
 
     RUNTIME[key] = runtime_backend
-    logger.warning("register {}:{} success".format(key, runtime_backend))
+    logger.info("register {}:{} success".format(key, runtime_backend))

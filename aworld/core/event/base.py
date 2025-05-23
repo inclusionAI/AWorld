@@ -4,31 +4,25 @@ import abc
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, Generic, TypeVar, List
 
 from pydantic import BaseModel
 
-from aworld.config import ConfigDict
-from aworld.core.common import Config
+from aworld.config.conf import ConfigDict
+from aworld.core.common import Config, Observation, ActionModel, TaskItem
 
 
-class EventType:
-    """The types of events are respectively oriented towards agents, tools, and applications.
-
-    As the three types of entities are independent of each other within the framework, they can
-    interact with third-party entities independently.
-
-    For example, `agent` event types can interact with other agents through the A2A protocol,
-    `tool` event types can interact with other tools through the MCP protocol,
-    and `task` event types can interact with third-party applications.
-    """
+class Constants:
     AGENT = "agent"
     TOOL = "tool"
     TASK = "task"
 
 
+DataType = TypeVar('DataType')
+
+
 @dataclass
-class Message:
+class Message(Generic[DataType]):
     """The message structure for event transmission.
 
     Each message has a unique ID, and the actual data is carried through the `payload` attribute,
@@ -39,18 +33,20 @@ class Message:
     or by extending `Message`.
     """
     session_id: str
-    payload: Any
+    payload: DataType
+    # Current caller
     sender: str
+    # event type
+    category: str
+    # Next caller
     receiver: str = None
+    # The previous caller
     caller: str = None
     id: str = uuid.uuid4().hex
     priority: int = 0
     # Topic of message
     topic: str = None
-    # Type(event) of message
-    category: str = EventType.TASK
     headers: Dict[str, Any] = field(default_factory=dict)
-    group_name: str = None
     timestamp: int = time.time()
 
     def key(self):
@@ -59,6 +55,30 @@ class Message:
             return f'{category}_{self.topic}'
         else:
             return f'{category}_{self.sender if self.sender else ''}'
+
+
+@dataclass
+class TaskEvent(Message[TaskItem]):
+    """Task message is oriented towards applications, can interact with third-party entities independently."""
+    category: str = 'task'
+
+
+@dataclass
+class AgentMessage(Message[Observation]):
+    """Agent event is oriented towards applications, can interact with third-party entities independently.
+
+    For example, `agent` event can interact with other agents through the A2A protocol.
+    """
+    category: str = 'agent'
+
+
+@dataclass
+class ToolMessage(Message[List[ActionModel]]):
+    """Tool event is oriented towards applications, can interact with third-party entities independently.
+
+    For example, `tool` event can interact with other tools through the MCP protocol.
+    """
+    category: str = 'tool'
 
 
 class Messageable(object):

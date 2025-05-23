@@ -5,9 +5,8 @@ import subprocess
 import os
 import signal
 import sys
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, Tuple
 
-from aworld.config.common import Tools
 from aworld.config.conf import ToolConfig
 from aworld.virtual_environments.tool_action import ShellAction
 from aworld.core.common import ActionModel, Observation, ActionResult
@@ -16,10 +15,10 @@ from aworld.logs.util import logger
 from aworld.virtual_environments.utils import build_observation
 
 
-@ToolFactory.register(name=Tools.SHELL.value,
+@ToolFactory.register(name='shell',
                       desc="shell execute tool",
                       supported_action=ShellAction,
-                      conf_file_name=f'{Tools.SHELL.value}_tool.yaml')
+                      conf_file_name=f'shell_tool.yaml')
 class ShellTool(Tool):
     """
     used to execute shell commands, providing initialization, execution, and exit functions.

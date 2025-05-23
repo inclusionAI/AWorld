@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Callable
 
 from aworld.core.context.base import Context
 from aworld.core.event.event_bus import InMemoryEventbus
-from aworld.core.event.base import EventType, Message
+from aworld.core.event.base import Constants, Message
 
 
 class EventManager:
@@ -24,7 +24,7 @@ class EventManager:
             receiver: str = None,
             topic: str = None,
             session_id: str = None,
-            event_type: str = EventType.TASK
+            event_type: str = Constants.TASK
     ):
         """Send data to the event bus.
 

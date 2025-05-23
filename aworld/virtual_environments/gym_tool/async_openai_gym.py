@@ -6,7 +6,6 @@ from typing import Dict, Any, Tuple, SupportsFloat, Union, List
 from pydantic import BaseModel
 
 from aworld.config import ConfigDict
-from aworld.config.common import Tools
 from aworld.virtual_environments.tool_action import GymAction
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import AsyncTool, ToolFactory
@@ -19,7 +18,7 @@ class ActionType(object):
     CONTINUOUS = 'continuous'
 
 
-@ToolFactory.register(name=Tools.GYM.value, desc="gym classic control game", asyn=True, supported_action=GymAction)
+@ToolFactory.register(name="openai_gym", desc="gym classic control game", asyn=True, supported_action=GymAction)
 class OpenAIGym(AsyncTool):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, BaseModel], **kwargs) -> None:
         """Gym environment constructor.

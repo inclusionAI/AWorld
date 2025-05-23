@@ -3,7 +3,7 @@
 
 import abc
 import uuid
-from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union, Callable
+from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union
 
 from pydantic import BaseModel
 
@@ -17,8 +17,6 @@ from aworld.utils.common import convert_to_snake
 
 INPUT = TypeVar('INPUT')
 OUTPUT = TypeVar('OUTPUT')
-
-AgentPolicy = Union[INPUT, Message, None]
 
 
 def is_agent_by_name(name: str) -> bool:
@@ -102,13 +100,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def desc(self) -> str:
         return self._desc
 
-    def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> AgentPolicy:
+    def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
         self.pre_run()
         result = self.policy(observation, info, **kwargs)
         final_result = self.post_run(result, observation)
         return final_result if final_result else result
 
-    async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> AgentPolicy:
+    async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
         await self.async_pre_run()
         result = await self.async_policy(observation, info, **kwargs)
         final_result = await self.async_post_run(result, observation)
@@ -156,13 +154,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def pre_run(self):
         pass
 
-    def post_run(self, policy_result: OUTPUT, input: INPUT) -> AgentPolicy:
+    def post_run(self, policy_result: OUTPUT, input: INPUT) -> Message:
         pass
 
     async def async_pre_run(self):
         pass
 
-    async def async_post_run(self, policy_result: OUTPUT, input: INPUT) -> AgentPolicy:
+    async def async_post_run(self, policy_result: OUTPUT, input: INPUT) -> Message:
         pass
 
 

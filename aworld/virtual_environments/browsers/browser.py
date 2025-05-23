@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Dict, Tuple, List, Union
 
 from aworld.config import ConfigDict
-from aworld.config.common import Tools
 from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
@@ -31,10 +30,10 @@ UTF8 = "".join(chr(x) for x in range(0, 55290))
 ASCII = "".join(chr(x) for x in range(32, 128))
 
 
-@ToolFactory.register(name=Tools.BROWSER.value,
+@ToolFactory.register(name="browser",
                       desc="browser",
                       supported_action=BrowserAction,
-                      conf_file_name=f'{Tools.BROWSER.value}_tool.yaml')
+                      conf_file_name=f'browser_tool.yaml')
 class BrowserTool(Tool):
     def __init__(self, conf: Union[ConfigDict, BrowserToolConfig], **kwargs) -> None:
         super(BrowserTool, self).__init__(conf, **kwargs)

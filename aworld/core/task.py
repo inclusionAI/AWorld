@@ -3,7 +3,7 @@
 import abc
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Dict, Callable
+from typing import Any, Union, List, Dict, Callable, Optional
 
 from pydantic import BaseModel
 
@@ -31,12 +31,14 @@ class Task:
     tools_conf: Config = field(default_factory=dict)
     # custom mcp servers conf
     mcp_servers_conf: Config = field(default_factory=dict)
-    swarm: Swarm = None
-    agent: Agent = None
+    swarm: Optional[Swarm] = None
+    agent: Optional[Agent] = None
     # for loop detect
     endless_threshold: int = 3
     # task_outputs
     outputs: Outputs = field(default_factory=DefaultOutputs)
+    # task special runner class, for example: package.XXRunner
+    runner_cls: Optional[str] = None
 
 
 class TaskResponse(BaseModel):
@@ -46,13 +48,6 @@ class TaskResponse(BaseModel):
     time_cost: float | None = None
     success: bool = False
     msg: str | None = None
-
-
-class TaskItem(BaseModel):
-    data: Any
-    msg: str = None
-    stop: bool = False
-    success: bool = False
 
 
 class Runner(object):

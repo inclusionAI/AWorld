@@ -19,7 +19,6 @@ from aworld.agents.android.utils import (
     Trajectory
 )
 from aworld.agents.browser.common import AgentStepInfo
-from aworld.config.common import Agents, Tools
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.base import AgentFactory, AgentResult
 from aworld.core.agent.llm_agent import Agent
@@ -28,7 +27,7 @@ from aworld.logs.util import logger
 from aworld.virtual_environments.tool_action import AndroidAction
 
 
-@AgentFactory.register(name=Agents.ANDROID.value, desc="android agent")
+@AgentFactory.register(name='android_agent', desc="android agent")
 class AndroidAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(AndroidAgent, self).__init__(conf, **kwargs)
@@ -118,7 +117,7 @@ class AndroidAgent(Agent):
 
                 if self.state.stopped or self.state.paused:
                     logger.info('Android agent paused after getting state')
-                    return [ActionModel(tool_name=Tools.ANDROID.value, action_name="stop")]
+                    return [ActionModel(tool_name='android', action_name="stop")]
 
                 tool_action = llm_result.actions
 
@@ -214,7 +213,7 @@ class AndroidAgent(Agent):
                 params['text'] = action['text']
 
             action_model = ActionModel(
-                tool_name=Tools.ANDROID.value,
+                tool_name='android',
                 action_name=action_type,
                 params=params
             )

@@ -5,7 +5,6 @@ import re
 
 from typing import Tuple, Any
 
-from aworld.config.common import Tools
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
 from aworld.logs.util import logger
@@ -15,7 +14,7 @@ from aworld.models.llm import get_llm_model, call_llm_model
 
 @ActionFactory.register(name="write_html",
                         desc="a tool use for write html.",
-                        tool_name=Tools.HTML.value)
+                        tool_name="html")
 class WriteHTML(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info("start write html!")

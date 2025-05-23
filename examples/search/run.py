@@ -1,10 +1,9 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import os
 
 from aworld.config.conf import AgentConfig
 
-from aworld.config.common import Tools
+from examples.common import Tools
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners

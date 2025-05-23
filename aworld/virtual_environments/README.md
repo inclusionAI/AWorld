@@ -18,14 +18,13 @@ Detailed steps for building a tool:
 ```python
 from typing import List, Tuple, Dict, Any
 
-from aworld.config.common import Tools
 from aworld.core.common import ActionModel, Observation
 from aworld.core.envs.tool import ActionFactory, Tool, ToolFactory, ToolInput, AgentInput
 from aworld.virtual_environments.action import ExecutableAction
 from aworld.virtual_environments.tool_action import GymAction
 
 
-@ToolFactory.register(name=Tools.GYM.value, desc="gym classic control game", supported_action=GymAction)
+@ToolFactory.register(name="openai_gym", desc="gym classic control game", supported_action=GymAction)
 class OpenAIGym(Tool[Observation, List[ActionModel]]):
     def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
         ...
@@ -40,7 +39,7 @@ class OpenAIGym(Tool[Observation, List[ActionModel]]):
 
 @ActionFactory.register(name=GymAction.PLAY.value.name,
                         desc=GymAction.PLAY.value.desc,
-                        tool_name=Tools.GYM.value)
+                        tool_name="openai_gym")
 class Play(ExecutableAction):
     """There is only one Action, it can be implemented in the tool, registration is required here."""
 ```

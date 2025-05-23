@@ -3,16 +3,15 @@
 import json
 import traceback
 import uuid
+from collections import OrderedDict
 from typing import Dict, Any, List, Union, Callable
-
-from mypyc.build import group_name
 
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.agent_desc import get_agent_desc
-from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, OUTPUT, INPUT, AgentPolicy
+from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.envs.tool_desc import get_tool_desc
-from aworld.core.event.base import Message, EventType
+from aworld.core.event.base import Message, ToolMessage, Constants
 from aworld.logs.util import logger
 from aworld.mcp.utils import mcp_tool_desc_transform
 from aworld.core.memory import MemoryItem
@@ -305,13 +304,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         logger.info(f"[agent] Tool args: {args}...")
 
     def _agent_result(self, actions: List[ActionModel], caller: str):
-        if not self.event_driven:
-            return actions
-
         if not actions:
             raise Exception(f'{self.name()} no action decision has been made.')
 
-        tools = {}
+        tools = OrderedDict()
         agents = []
         for action in actions:
             if is_agent(action):
@@ -328,30 +324,33 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # complex processing
         if _group_name:
-            for action in actions:
-                action.group_name = _group_name
+            logger.warning("more than one agent an tool causing confusion, will choose the first one.")
+            agents = [agents[0]] if agents else []
+            for _, v in tools.items():
+                actions = v
+                break
+
+        if agents:
             return Message(payload=actions,
                            caller=caller,
                            sender=self.name(),
+                           receiver=actions[0].tool_name,
                            session_id=self.context.session_id,
-                           category=EventType.AGENT,
-                           group_name=_group_name)
+                           category=Constants.AGENT)
         else:
-            message = Message(payload=actions,
-                              caller=caller,
-                              sender=self.name(),
-                              receiver=actions[0].tool_name,
-                              session_id=self.context.session_id)
-            message.category = EventType.AGENT if agents else EventType.TOOL
-            return message
+            return ToolMessage(payload=actions,
+                               caller=caller,
+                               sender=self.name(),
+                               receiver=actions[0].tool_name,
+                               session_id=self.context.session_id)
 
-    def post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> AgentPolicy:
+    def post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer
         )
 
-    async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> AgentPolicy:
+    async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer

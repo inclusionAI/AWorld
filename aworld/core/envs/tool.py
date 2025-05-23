@@ -12,7 +12,7 @@ from aworld.core.envs.action import ToolAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, EventType
+from aworld.core.event.base import Message, ToolMessage, AgentMessage
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.utils.common import convert_to_snake
@@ -59,10 +59,10 @@ class BaseTool(Generic[AgentInput, ToolInput]):
     def post_step(self,
                   step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
                   action: ToolInput,
-                  **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]] | Message:
+                  **kwargs) -> Message:
         pass
 
-    def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]] | Message:
+    def step(self, action: ToolInput, **kwargs) -> Message:
         self.pre_step(action, **kwargs)
         res = self.do_step(action, **kwargs)
         final_res = self.post_step(res, action, **kwargs)
@@ -135,10 +135,10 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
     async def post_step(self,
                         step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
                         action: ToolInput,
-                        **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]] | Message:
+                        **kwargs) -> Message:
         pass
 
-    async def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]] | Message:
+    async def step(self, action: ToolInput, **kwargs) -> Message:
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, **kwargs)
@@ -178,16 +178,15 @@ class Tool(BaseTool[Union[Observation], List[ActionModel]]):
                   step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                   action: List[ActionModel],
                   **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
-        if self.event_driven:
-            step_res[0].from_agent_name = action[0].agent_name
-            return Message(payload=step_res,
-                           caller=action[0].agent_name,
-                           sender=self.name(),
-                           receiver=action[0].agent_name,
-                           session_id=Context.instance().session_id,
-                           category=EventType.AGENT,
-                           group_name=action[0].group_name)
-        return step_res
+        if not step_res:
+            raise Exception(f'{self.name()} no observation has been made.')
+
+        step_res[0].from_agent_name = action[0].agent_name
+        return AgentMessage(payload=step_res,
+                            caller=action[0].agent_name,
+                            sender=self.name(),
+                            receiver=action[0].agent_name,
+                            session_id=Context.instance().session_id)
 
 
 class AsyncTool(AsyncBaseTool[Union[Observation], List[ActionModel]]):
@@ -195,16 +194,15 @@ class AsyncTool(AsyncBaseTool[Union[Observation], List[ActionModel]]):
                         step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                         action: List[ActionModel],
                         **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
-        if self.event_driven:
-            step_res[0].from_agent_name = action[0].agent_name
-            return Message(payload=step_res,
-                           caller=action[0].agent_name,
-                           sender=self.name(),
-                           receiver=action[0].agent_name,
-                           session_id=Context.instance().session_id,
-                           category=EventType.AGENT,
-                           group_name=action[0].group_name)
-        return step_res
+        if not step_res:
+            raise Exception(f'{self.name()} no observation has been made.')
+
+        step_res[0].from_agent_name = action[0].agent_name
+        return AgentMessage(payload=step_res,
+                            caller=action[0].agent_name,
+                            sender=self.name(),
+                            receiver=action[0].agent_name,
+                            session_id=Context.instance().session_id)
 
 
 class ToolsManager(Factory):

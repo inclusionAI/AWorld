@@ -3,7 +3,6 @@
 
 import json
 
-from aworld.config.common import Tools
 from aworld.virtual_environments.tool_action import AndroidAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
@@ -14,7 +13,7 @@ from aworld.virtual_environments.action import ExecutableAction
 
 @ActionFactory.register(name=AndroidAction.TAP.value.name,
                         desc=AndroidAction.TAP.value.desc,
-                        tool_name=Tools.ANDROID.value)
+                        tool_name="android")
 class Tap(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> ActionResult:
         controller: ADBController = kwargs.get('controller')
@@ -27,7 +26,7 @@ class Tap(ExecutableAction):
 
 @ActionFactory.register(name=AndroidAction.INPUT_TEXT.value.name,
                         desc=AndroidAction.INPUT_TEXT.value.desc,
-                        tool_name=Tools.ANDROID.value)
+                        tool_name="android")
 class InputText(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> ActionResult:
         controller: ADBController = kwargs.get('controller')
@@ -40,7 +39,7 @@ class InputText(ExecutableAction):
 
 @ActionFactory.register(name=AndroidAction.LONG_PRESS.value.name,
                         desc=AndroidAction.LONG_PRESS.value.desc,
-                        tool_name=Tools.ANDROID.value)
+                        tool_name="android")
 class LongPress(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> ActionResult:
         controller: ADBController = kwargs.get('controller')
@@ -53,7 +52,7 @@ class LongPress(ExecutableAction):
 
 @ActionFactory.register(name=AndroidAction.SWIPE.value.name,
                         desc=AndroidAction.SWIPE.value.desc,
-                        tool_name=Tools.ANDROID.value)
+                        tool_name="android")
 class Swipe(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> ActionResult:
         controller: ADBController = kwargs.get('controller')
@@ -71,7 +70,7 @@ class Swipe(ExecutableAction):
 
 @ActionFactory.register(name=AndroidAction.DONE.value.name,
                         desc=AndroidAction.DONE.value.desc,
-                        tool_name=Tools.ANDROID.value)
+                        tool_name="android")
 class Done(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> ActionResult:
         output_dict = action.model_dump(exclude={'success'})

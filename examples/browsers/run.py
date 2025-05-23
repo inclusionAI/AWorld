@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from aworld.config.common import Agents, Tools
+from examples.common import Agents, Tools
 from aworld.core.task import Task
 from aworld.agents.browser.agent import BrowserAgent
 from aworld.agents.browser.config import BrowserAgentConfig

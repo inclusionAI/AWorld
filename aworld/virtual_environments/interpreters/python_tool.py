@@ -5,7 +5,6 @@ import subprocess
 from typing import Any, Dict, Tuple, List
 from io import StringIO
 
-from aworld.config.common import Tools
 from aworld.logs.util import logger
 from aworld.config.conf import ToolConfig
 from aworld.virtual_environments.tool_action import PythonToolAction
@@ -15,10 +14,10 @@ from aworld.utils import import_package
 from aworld.virtual_environments.utils import build_observation
 
 
-@ToolFactory.register(name=Tools.PYTHON_EXECUTE.value,
+@ToolFactory.register(name="python_execute",
                       desc="python interpreter tool",
                       supported_action=PythonToolAction,
-                      conf_file_name=f'{Tools.PYTHON_EXECUTE.value}_tool.yaml')
+                      conf_file_name=f'python_execute_tool.yaml')
 class PythonTool(Tool):
 
     def __init__(self,

@@ -73,4 +73,10 @@ class ActionModel(BaseModel):
     action_name: str = None
     params: Dict[str, Any] = {}
     policy_info: Any = None
-    group_name: str = None
+
+
+class TaskItem(BaseModel):
+    data: Any
+    msg: str = None
+    stop: bool = False
+    success: bool = False

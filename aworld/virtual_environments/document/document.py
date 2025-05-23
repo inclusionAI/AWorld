@@ -12,7 +12,6 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 
 from aworld.config import ToolConfig
-from aworld.config.common import Tools
 from aworld.virtual_environments.tool_action import DocumentExecuteAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.envs.tool import ToolFactory, Tool
@@ -26,10 +25,10 @@ class InputDocument(BaseModel):
     document_path: str | None = None
 
 
-@ToolFactory.register(name=Tools.DOCUMENT_ANALYSIS.value,
+@ToolFactory.register(name="document_analysis",
                       desc="document analysis",
                       supported_action=DocumentExecuteAction,
-                      conf_file_name=f'{Tools.DOCUMENT_ANALYSIS.value}_tool.yaml')
+                      conf_file_name=f'document_analysis_tool.yaml')
 class DocumentTool(Tool):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
         """Init document tool."""

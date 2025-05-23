@@ -9,7 +9,6 @@ from typing import Tuple, Any
 
 from langchain_core.prompts import PromptTemplate
 
-from aworld.config.common import Tools
 from aworld.virtual_environments.tool_action import BrowserAction
 from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult, Observation
@@ -41,7 +40,7 @@ def get_browser(**kwargs):
 
 @ActionFactory.register(name=BrowserAction.GO_TO_URL.value.name,
                         desc=BrowserAction.GO_TO_URL.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class GotoUrl(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.GO_TO_URL.value.name} action")
@@ -92,7 +91,7 @@ class GotoUrl(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.INPUT_TEXT.value.name,
                         desc=BrowserAction.INPUT_TEXT.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class InputText(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.INPUT_TEXT.value.name} action")
@@ -208,7 +207,7 @@ class InputText(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.CLICK_ELEMENT.value.name,
                         desc=BrowserAction.CLICK_ELEMENT.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class ClickElement(ExecutableAction):
     def __init__(self):
         import_packages(['playwright', 'markdownify'])
@@ -307,7 +306,7 @@ SEARCH_ENGINE = {"": "https://www.bing.com/search?q=",
 
 @ActionFactory.register(name=BrowserAction.SEARCH.value.name,
                         desc=BrowserAction.SEARCH.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class Search(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.SEARCH.value.name} action")
@@ -346,7 +345,7 @@ class Search(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.SEARCH_GOOGLE.value.name,
                         desc=BrowserAction.SEARCH_GOOGLE.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class SearchGoogle(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.SEARCH_GOOGLE.value.name} action")
@@ -379,7 +378,7 @@ class SearchGoogle(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.NEW_TAB.value.name,
                         desc=BrowserAction.NEW_TAB.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class NewTab(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.NEW_TAB.value.name} action")
@@ -414,7 +413,7 @@ class NewTab(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.GO_BACK.value.name,
                         desc=BrowserAction.GO_BACK.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class GoBack(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.GO_BACK.value.name} action")
@@ -443,7 +442,7 @@ class GoBack(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.EXTRACT_CONTENT.value.name,
                         desc=BrowserAction.EXTRACT_CONTENT.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class ExtractContent(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         import markdownify
@@ -579,7 +578,7 @@ class ExtractContent(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.SCROLL_DOWN.value.name,
                         desc=BrowserAction.SCROLL_DOWN.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class ScrollDown(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.SCROLL_DOWN.value.name} action")
@@ -622,7 +621,7 @@ class ScrollDown(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.SCROLL_UP.value.name,
                         desc=BrowserAction.SCROLL_UP.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class ScrollUp(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.SCROLL_UP.value.name} action")
@@ -665,7 +664,7 @@ class ScrollUp(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.WAIT.value.name,
                         desc=BrowserAction.WAIT.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class Wait(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         seconds = action.params.get("seconds")
@@ -690,7 +689,7 @@ class Wait(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.SWITCH_TAB.value.name,
                         desc=BrowserAction.SWITCH_TAB.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class SwitchTab(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.SWITCH_TAB.value.name} action")
@@ -737,7 +736,7 @@ class SwitchTab(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.SEND_KEYS.value.name,
                         desc=BrowserAction.SEND_KEYS.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class SendKeys(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.SEND_KEYS.value.name} action")
@@ -779,7 +778,7 @@ class SendKeys(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.WRITE_TO_FILE.value.name,
                         desc=BrowserAction.WRITE_TO_FILE.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class WriteToFile(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         # 设置默认文件路径
@@ -814,7 +813,7 @@ class WriteToFile(ExecutableAction):
 
 @ActionFactory.register(name=BrowserAction.DONE.value.name,
                         desc=BrowserAction.DONE.value.desc,
-                        tool_name=Tools.BROWSER.value)
+                        tool_name="browser")
 class Done(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         logger.info(f"exec {BrowserAction.DONE.value.name} action")

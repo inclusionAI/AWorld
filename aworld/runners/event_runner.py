@@ -5,11 +5,12 @@ import asyncio
 import traceback
 from typing import List
 
+from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
 
 from aworld.core.agent.llm_agent import Agent
-from aworld.core.event.base import Message, EventType
-from aworld.core.task import Task, TaskItem
+from aworld.core.event.base import Message, Constants
+from aworld.core.task import Task
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
@@ -49,14 +50,14 @@ class TaskEventRunner(TaskRunner):
                                     sender='runner',
                                     receiver=self.swarm.communicate_agent.name(),
                                     session_id=self.context.session_id,
-                                    category=EventType.AGENT)
+                                    category=Constants.AGENT)
 
         # register handler
         for key, tool in self.tools.items():
-            handlers = self.event_mng.event_bus.get_topic_handlers(EventType.TOOL, tool.name())
+            handlers = self.event_mng.event_bus.get_topic_handlers(Constants.TOOL, tool.name())
             if not handlers:
-                await self.event_mng.register(EventType.TOOL, EventType.TOOL, tool.step)
-                await self.event_mng.register(EventType.TOOL, tool.name(), tool.step)
+                await self.event_mng.register(Constants.TOOL, Constants.TOOL, tool.step)
+                await self.event_mng.register(Constants.TOOL, tool.name(), tool.step)
 
         self._stopped = asyncio.Event()
 
@@ -96,7 +97,7 @@ class TaskEventRunner(TaskRunner):
                     logger.warning(f"{handler} process fail. {traceback.format_exc()}")
 
                     await event_bus.publish(Message(
-                        category=EventType.TASK,
+                        category=Constants.TASK,
                         payload=TaskItem(msg=str(e), data=message),
                         sender=self.name,
                         session_id=Context.instance().session_id,

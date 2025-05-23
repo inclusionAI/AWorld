@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
-from aworld.config.common import Tools, Agents
+from examples.common import Tools, Agents
 from aworld.config.conf import AgentConfig
 from aworld.core.task import Task
 from aworld.runner import Runners

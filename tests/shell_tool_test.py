@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 
-from aworld.config.common import Tools
+from examples.common import Tools
 
 from aworld.core.envs.tool import ToolFactory
 
