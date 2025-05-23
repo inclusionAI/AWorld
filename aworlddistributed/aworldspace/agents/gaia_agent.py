@@ -239,7 +239,7 @@ class Pipeline(AworldBaseAgent):
                     ],
                     "env": {
                         "GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"],
-                        "GOOGLE_SEARCH_ENGINE_ID": os.environ["GOOGLE_SEARCH_ENGINE_ID"]
+                        "GOOGLE_SEARCH_ENGINE_ID": os.environ["GOOGLE_CSE_ID"]
                     }
                 },
                 "ms-playwright": {
