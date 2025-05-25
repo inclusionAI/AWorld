@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.runner import Runners
+from aworld.core.task import Task
 from examples.gaia.prompt import system_prompt
 from examples.gaia.utils import (
     add_file_path,
