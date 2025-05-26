@@ -15,7 +15,6 @@ import sys
 import traceback
 
 from browser_use import Agent
-from browser_use.agent.memory.views import MemoryConfig
 from browser_use.agent.views import AgentHistoryList
 from browser_use.browser.browser import Browser, BrowserConfig
 from browser_use.browser.context import BrowserContext, BrowserContextConfig
@@ -94,18 +93,6 @@ async def browser_use(
             openai_api_base=os.getenv("LLM_BASE_URL"),
             openai_api_key=os.getenv("LLM_API_KEY"),
             temperature=1.0,
-        ),
-        memory_config=MemoryConfig(
-            llm_provider="langchain",
-            llm_instance=ChatOpenAI(
-                model=os.getenv("LLM_MODEL_NAME"),
-                api_key=os.getenv("LLM_API_KEY"),
-                base_url=os.getenv("LLM_BASE_URL"),
-                model_name=os.getenv("LLM_MODEL_NAME"),
-                openai_api_base=os.getenv("LLM_BASE_URL"),
-                openai_api_key=os.getenv("LLM_API_KEY"),
-                temperature=1.0,
-            ),
         ),
         browser_context=browser_context,
         extend_system_message=extended_browser_system_prompt,
