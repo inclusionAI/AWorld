@@ -1,24 +1,15 @@
 import logging
-import re
 import sys
 import traceback
 from typing import Any, Dict, List, Optional, Union
 
-# Import library for WayBack Machine interaction
-# Install with: pip install waybackpy
-try:
-    # Optional: for text extraction from HTML
-    from bs4 import BeautifulSoup
-    from waybackpy import WaybackMachineCDXServerAPI, WaybackMachineSaveAPI
-except ImportError:
-    logging.error("waybackpy library is not installed. Please install it by running: pip install waybackpy")
-    WaybackMachineCDXServerAPI = None
-    WaybackMachineSaveAPI = None
-    BeautifulSoup = None  # Uncomment if using BeautifulSoup
-
+import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
+from waybackpy import WaybackMachineCDXServerAPI, WaybackMachineSaveAPI
+from waybackpy.cdx_snapshot import CDXSnapshot
 
 # pylint: disable=W0707
 # Initialize logger
@@ -71,10 +62,16 @@ async def list_available_versions(
         user_agent = "AWorld/1.0 (https://github.com/inclusionAI/AWorld; qintong.wqt@antgroup.com)"
         cdx_api = WaybackMachineCDXServerAPI(url, user_agent=user_agent)
 
-        # Fetch snapshots, applying filters and limit
-        # Note: waybackpy's limit might behave differently, need to check documentation
-        # Let's fetch all and then apply limit/preview logic
-        snapshots = list(cdx_api.snapshots(from_date=from_date, to_date=to_date))
+        # Fetch all snapshots, then filter by date range
+        all_snapshots: List[CDXSnapshot] = list(cdx_api.snapshots())
+        if from_date or to_date:
+            snapshots = [
+                s
+                for s in all_snapshots
+                if (not from_date or s.timestamp >= from_date) and (not to_date or s.timestamp <= to_date)
+            ]
+        else:
+            snapshots = all_snapshots
 
         if not snapshots:
             raise ValueError(f"No archived versions found for URL: {url}")
@@ -86,10 +83,10 @@ async def list_available_versions(
                 {
                     "timestamp": snapshot.timestamp,
                     "url": snapshot.archive_url,
-                    "status_code": snapshot.status_code,
+                    "status_code": snapshot.statuscode,
                     "digest": snapshot.digest,
                     "length": snapshot.length,
-                    "mime_type": snapshot.mime_type,
+                    "mime_type": snapshot.mimetype,
                 }
             )
 
@@ -124,11 +121,12 @@ async def list_available_versions(
 async def get_archived_page_content(
     url: str = Field(description="The URL of the website."),
     timestamp: str = Field(description="The timestamp of the desired version (YYYYMMDDhhmmss)."),
-    content_limit: Optional[int] = Field(
-        default=2000,  # Limit content length for LLM friendliness
-        description="Maximum length of the returned page content (in characters). Set to 0 for full content.",
+    is_truncated: bool = Field(
+        default=False,  # Limit content length for LLM friendliness
+        description="Set to False for full webpage content. Otherwise, "
+        "the content is truncated to the first 8192 characters.",
     ),
-    extract_text_only: Optional[bool] = Field(
+    extract_text_only: bool = Field(
         default=True,
         description="If true, attempts to extract only the main text content, ignoring HTML tags.",
     ),
@@ -149,6 +147,8 @@ async def get_archived_page_content(
         RuntimeError: If waybackpy library is not installed or if data cannot be fetched.
         ValueError: If the URL or timestamp is invalid, or content cannot be retrieved.
     """
+    TRUNCATED_LENGTH = 8 * 1024
+
     if WaybackMachineCDXServerAPI is None:
         raise RuntimeError("waybackpy library is not installed.")
 
@@ -157,14 +157,14 @@ async def get_archived_page_content(
         cdx_api = WaybackMachineCDXServerAPI(url, user_agent=user_agent)
 
         # Find the closest snapshot to the given timestamp
-        snapshot = cdx_api.closest(timestamp=timestamp)
+        snapshot: CDXSnapshot = cdx_api.near(wayback_machine_timestamp=timestamp)
 
         if not snapshot or not snapshot.archive_url:
             raise ValueError(f"No archived version found for URL {url} at timestamp {timestamp}.")
 
         # Fetch the content of the snapshot
-        # waybackpy's snapshot object has a .text attribute to get content
-        page_content = snapshot.text
+        response = requests.get(snapshot.archive_url, timeout=10)
+        page_content = response.text
 
         if extract_text_only:
             # Simple text extraction (can be improved with libraries like BeautifulSoup)
@@ -172,18 +172,13 @@ async def get_archived_page_content(
             # page_content = re.sub(r"<.*?>", "", page_content)
             # page_content = re.sub(r"\s+", " ", page_content).strip()  # Normalize whitespace
             # Alternative with BeautifulSoup (uncomment imports above):
-            if BeautifulSoup:
-                soup = BeautifulSoup(page_content, "html.parser")
-                page_content = soup.get_text(separator=" ", strip=True)
-            else:
-                page_content = re.sub(r"<.*?>", "", page_content)
-                page_content = re.sub(r"\s+", " ", page_content).strip()  # Normalize whitespace
+            soup = BeautifulSoup(page_content, "html.parser")
+            page_content = soup.get_text(separator=" ", strip=True)
 
         original_length = len(page_content)
         truncated = False
-
-        if content_limit is not None and content_limit > 0 and len(page_content) > content_limit:
-            page_content = page_content[:content_limit] + "..."  # Truncate and add ellipsis
+        if is_truncated and len(page_content) > TRUNCATED_LENGTH:
+            page_content = page_content[:TRUNCATED_LENGTH] + "..."  # Truncate and add ellipsis
             truncated = True
 
         return {
@@ -209,13 +204,7 @@ async def get_archived_page_content(
 
 # Optional: Add a tool to save a current page to WayBack Machine
 @mcp.tool(description="Saves the current state of a given URL to the WayBack Machine.")
-async def save_page_to_wayback(
-    url: str = Field(description="The URL of the website to save."),
-    capture_all: Optional[bool] = Field(
-        default=False,
-        description="If true, attempts to capture all linked assets (images, CSS, JS).",
-    ),
-) -> Dict[str, Any]:
+async def save_page_to_wayback(url: str = Field(description="The URL of the website to save.")) -> Dict[str, Any]:
     """
     Saves the current state of a given URL to the WayBack Machine.
 
@@ -235,7 +224,7 @@ async def save_page_to_wayback(
 
     try:
         user_agent = "AWorld/1.0 (https://github.com/inclusionAI/AWorld; qintong.wqt@antgroup.com)"
-        save_api = WaybackMachineSaveAPI(url, user_agent=user_agent, capture_all=capture_all)
+        save_api = WaybackMachineSaveAPI(url, user_agent=user_agent)
 
         # Save the page
         archive_url = save_api.save()

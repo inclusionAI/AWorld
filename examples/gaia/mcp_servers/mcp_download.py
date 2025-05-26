@@ -31,7 +31,7 @@ mcp = FastMCP("download-server")
 async def download_file(
     url: str = Field(description="The HTTP/HTTPS URL of the file to download."),
     output_file_path: str = Field(
-        description="The absolute path (including filename) where the downloaded file should be saved."
+        description="The absolute path (including filename) where the downloaded file should be saved.",
     ),
     overwrite: bool = Field(
         default=False,
@@ -70,13 +70,19 @@ async def download_file(
         }
 
     if not os.path.isabs(output_file_path):
-        logger.error(f"Output path is not absolute: {output_file_path}")
-        return {
-            "status": "error",
-            "message": f"Output path must be an absolute path. Provided: {output_file_path}",
-            "file_path": None,
-            "size_bytes": None,
-        }
+        fs_dir = os.getenv("FILESYSTEM_SERVER_WORKDIR")
+        if fs_dir and os.path.isabs(fs_dir):
+            logger.warning(
+                f"Output path is not absolute: {output_file_path}. Use enviroment variable instead: {fs_dir}"
+            )
+            output_file_path = fs_dir + output_file_path
+        else:
+            return {
+                "status": "error",
+                "message": f"Output path must be an absolute path. Provided: {output_file_path}",
+                "file_path": None,
+                "size_bytes": None,
+            }
 
     output_dir = os.path.dirname(output_file_path)
     try:
