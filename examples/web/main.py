@@ -12,8 +12,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-sys.path.append(os.getcwd())
-
 
 def agent_page():
     st.set_page_config(
@@ -43,9 +41,6 @@ def agent_page():
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                full_response = ""
-
                 agent_name = st.session_state.selected_agent
                 agent_path = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)),
@@ -65,8 +60,7 @@ def agent_page():
                     st.error("Error importing agent module")
                     return
 
-                Agent = agent_module.Agent
-                agent = Agent()
+                agent = agent_module.AWorldAgent()
 
                 async def markdown_generator():
                     async for line in agent.run(prompt):

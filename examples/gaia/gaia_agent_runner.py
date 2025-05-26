@@ -80,7 +80,7 @@ class GaiaAgentRunner:
         )
 
     async def run(self, prompt: str):
-        yield (f"\n## GAIA Agent Start!")
+        yield (f"\n### GAIA Agent Start!")
 
         mcp_servers = "\n- ".join(self.super_agent.mcp_servers)
         yield (f"\n```gaia_agent_status\n- {mcp_servers}\n```\n")

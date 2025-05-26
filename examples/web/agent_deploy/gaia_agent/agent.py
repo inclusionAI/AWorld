@@ -5,7 +5,7 @@ import json
 logger = logging.getLogger(__name__)
 
 
-class Agent:
+class AWorldAgent:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         path_cwd = os.path.dirname(os.path.abspath(__file__))
