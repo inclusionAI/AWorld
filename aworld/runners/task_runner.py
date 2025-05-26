@@ -50,6 +50,7 @@ class TaskRunner(Runner):
         self._use_demon = False if not task.conf else task.conf.get('use_demon', False)
         self._exception = None
         self.start_time = time.time()
+        self.step_agent_counter = {}
         for k, v in kwargs.items():
             setattr(self, k, v)
 

@@ -1,8 +1,8 @@
 import os
 from re import compile as re_compile
 from re import search
-from typing import Final, Iterable
-from urllib.parse import urlparse, urlunparse
+from typing import Final, Iterable, Any
+from urllib.parse import urlparse, urlunparse, unquote
 from wsgiref.types import WSGIEnvironment
 from requests.models import PreparedRequest
 
@@ -145,6 +145,45 @@ def remove_url_credentials(url: str) -> str:
     except ValueError:  # an unparsable url was passed
         pass
     return url
+
+
+def parser_host_port_url_from_asgi(scope: dict[str, Any]):
+    """Returns (host, port, full_url) tuple."""
+    server = scope.get("server") or ["0.0.0.0", 80]
+    port = server[1]
+    server_host = server[0] + (":" + str(port) if str(port) != "80" else "")
+    full_path = scope.get("path", "")
+    http_url = scope.get("scheme", "http") + "://" + server_host + full_path
+    return server_host, port, http_url
+
+
+def collect_request_attributes_asgi(scope: dict[str, Any]):
+    attributes: dict[str] = {}
+    server_host, port, http_url = parser_host_port_url_from_asgi(scope)
+    query_string = scope.get("query_string")
+    if query_string and http_url:
+        if isinstance(query_string, bytes):
+            query_string = query_string.decode("utf8")
+        http_url += "?" + unquote(query_string)
+    attributes[HTTP_REQUEST_METHOD] = scope.get("method", "")
+    attributes[HTTP_FLAVOR] = scope.get("http_version", "")
+    attributes[HTTP_SCHEME] = scope.get("scheme", "")
+    attributes[HTTP_HOST] = server_host
+    attributes[SERVER_PORT] = port
+    attributes[URL_FULL] = remove_url_credentials(http_url)
+    attributes[URL_PATH] = scope.get("path", "")
+    header = scope.get("headers")
+    if header:
+        for key, value in header:
+            if key == b"user-agent":
+                attributes[HTTP_USER_AGENT] = value.decode("utf8")
+
+    client = scope.get("client")
+    if client:
+        attributes[CLIENT_ADDRESS] = client[0]
+        attributes[CLIENT_PORT] = client[1]
+
+    return attributes
 
 
 def _parse_url_query(url: str):

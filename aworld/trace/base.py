@@ -143,6 +143,7 @@ class Tracer(ABC):
             record_exception: bool = True,
             set_status_on_exception: bool = True,
             end_on_exit: bool = True,
+            trace_context: Optional['TraceContext'] = None
     ) -> Iterator["Span"]:
         """Context manager for creating a new span and set it
         as the current span in this tracer's context.
@@ -176,6 +177,8 @@ class Tracer(ABC):
                 this mechanism if it was previously set manually.
             end_on_exit: Whether to end the span automatically when leaving the
                 context manager.
+            trace_context: The trace context to use for the span. If not
+                provided, the current trace context will be used.
     """
 
 
@@ -308,6 +311,7 @@ class NoOpTracer(Tracer):
             record_exception: bool = True,
             set_status_on_exception: bool = True,
             end_on_exit: bool = True,
+            trace_context: Optional['TraceContext'] = None
     ) -> Iterator[Span]:
         yield NoOpSpan()
 
