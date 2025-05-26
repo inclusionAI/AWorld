@@ -1,3 +1,4 @@
+import sys
 import streamlit as st
 from dotenv import load_dotenv
 import logging
@@ -14,8 +15,18 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+sys.path.append(os.getcwd())
+
 
 def agent_page(trace_id):
+    st.set_page_config(
+        page_title="AWorld Agent",
+        page_icon=":robot_face:",
+        layout="wide",
+    )
+
+    with st.sidebar:
+        st.title("Agents List")
 
     with st.sidebar:
         agent_list_tab, trace_tab = st.tabs(
