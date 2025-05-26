@@ -5,6 +5,7 @@ import os
 import traceback
 import utils
 import importlib.util
+import inspect
 
 load_dotenv()
 
@@ -57,15 +58,20 @@ def agent_page():
                     return
 
                 Agent = agent_module.Agent
-
                 agent = Agent()
-                for line in agent.run(prompt):
-                    full_response += f"{line}\n"
-                    message_placeholder.markdown(full_response)
 
+                async def markdown_generator():
+                    async for line in agent.run(prompt):
+                        yield f"\n{line}\n"
+
+                st.write_stream(markdown_generator())
     else:
         st.title("AWorld Agent Chat Assistant")
         st.info("Please select an Agent from the left sidebar to start")
 
 
-agent_page()
+try:
+    agent_page()
+except Exception as e:
+    logger.error(f">>> Error: {traceback.format_exc()}")
+    st.error(f"Error: {str(e)}")

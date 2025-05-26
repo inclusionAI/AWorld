@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "weather_server": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@h1deya/mcp-server-weather"
+            ]
+        }
+    }
+}

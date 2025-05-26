@@ -18,10 +18,12 @@ def list_agents():
         for item in os.listdir(agents_dir):
             item_path = os.path.join(agents_dir, item)
             if os.path.isdir(item_path):
-                # 这里可以添加读取配置文件的逻辑
-                # 暂时返回目录名和空配置
-                agents.append(item)
+                # 检查是否包含agent.py文件
+                agent_file = os.path.join(item_path, "agent.py")
+                if os.path.exists(agent_file):
+                    agents.append(item)
         return agents
-    except OSError:
+    except OSError as e:
         # 处理权限错误或其他文件系统错误
-        pass
+        print(f"Error listing agents: {e}")
+        return []
