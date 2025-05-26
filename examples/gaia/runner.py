@@ -163,7 +163,7 @@ class GaiaRunner:
             except Exception:
                 self.logger.error(f"Error executing task {task['task_id']}: {traceback.format_exc()}")
                 self._update_results(task, answer="<ERROR>")
-            self._color_log("=" * 25 + f" <END> {task['task_id']} <END/> " + "=" * 25, Color.darkgrey)
+            self._color_log("=" * 20 + f" <END> {task['task_id']} <END/> " + "=" * 20, Color.darkgrey)
         self._color_log("🎉 Task Finished~~~", Color.red)
 
     def _setup_logger(self, logger_name: str, output_folder_path: str, file_name: str = "app.log") -> logging.Logger:
