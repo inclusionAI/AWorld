@@ -132,4 +132,4 @@ examples/gaia/GAIA/
 traces*.json
 trace_data
 
-gaia/output
+examples/gaia/output
