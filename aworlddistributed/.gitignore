@@ -1,0 +1,14 @@
+__pycache__
+.env
+
+/litellm
+
+pipelines/*
+!pipelines/.gitignore
+.DS_Store
+datasets/gaia_dataset/**
+
+aworldspace/agents/**/*.json
+
+.venv
+venv/
