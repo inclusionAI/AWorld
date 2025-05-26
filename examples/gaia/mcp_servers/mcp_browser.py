@@ -14,10 +14,8 @@ import os
 import sys
 import traceback
 
-from browser_use import Agent
-from browser_use.agent.views import AgentHistoryList
-from browser_use.browser.browser import Browser, BrowserConfig
-from browser_use.browser.context import BrowserContext, BrowserContextConfig
+from browser_use import Agent, AgentHistoryList, BrowserProfile
+from browser_use.agent.memory.views import MemoryConfig
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from mcp.server.fastmcp import FastMCP
@@ -65,36 +63,30 @@ async def browser_use(
     Returns:
         str: The result of the browser actions.
     """
-    browser = Browser(
-        config=BrowserConfig(
-            headless=False,
-            new_context_config=BrowserContextConfig(
-                cookies_file=os.getenv("COOKIES_FILE_PATH"),
-                disable_security=True,
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                minimum_wait_page_load_time=5,
-                maximum_wait_page_load_time=10,
-                save_recording_path=os.getenv("FILESYSTEM_SERVER_WORKDIR"),
-                save_downloads_path=os.getenv("FILESYSTEM_SERVER_WORKDIR"),
-                trace_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log",
-            ),
-        )
+    # Agent & Memory shares the same LLM configuration
+    # i.e., gemini-2.5-pro according to qingw-dev's os env
+    llm_config = ChatOpenAI(
+        model=os.getenv("LLM_MODEL_NAME"),
+        api_key=os.getenv("LLM_API_KEY"),
+        base_url=os.getenv("LLM_BASE_URL"),
+        temperature=1.0,
     )
-    browser_context = BrowserContext(
-        config=BrowserContextConfig(trace_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log"),
-        browser=browser,
-    )
+    # Next, Create an Agent instance
     agent = Agent(
         task=task,
-        llm=ChatOpenAI(
-            model=os.getenv("LLM_MODEL_NAME"),
-            api_key=os.getenv("LLM_API_KEY"),
-            base_url=os.getenv("LLM_BASE_URL"),
-            temperature=1.0,
-        ),
-        browser_context=browser_context,
+        # Use LLM
+        llm=llm_config,
         extend_system_message=extended_browser_system_prompt,
+        use_vision=True,
+        # Use memory
+        enable_memory=True,
+        memory_config=MemoryConfig(llm_instance=llm_config),
+        # Use cookies
+        browser_profile=BrowserProfile(cookies_file=os.getenv("COOKIES_FILE_PATH")),
+        # Log path
+        save_conversation_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log",
     )
+
     try:
         color_log(logger, f"🎯 Task: {task}", Color.darkgrey)
         browser_execution: AgentHistoryList = await agent.run(max_steps=50)
@@ -107,8 +99,6 @@ async def browser_use(
     except Exception as e:
         logger.error(f"Browser execution failed: {traceback.format_exc()}")
         return f"Browser execution failed for task: {task} due to {str(e)}"
-    finally:
-        await browser.close()
 
 
 def main():
