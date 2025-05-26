@@ -107,119 +107,96 @@ def read_table_file(file_path: str):
         return pd.ExcelFile(file_path)
 
 
-def read_excel_file(file_path: str) -> pd.ExcelFile:
-    """Helper function to read Excel file using pandas, handling .xls if xlrd is installed."""
+def read_excel_file(file_path: str):
+    """Helper function to read Excel or CSV file using pandas."""
+    if file_path.lower().endswith(".csv"):
+        return pd.read_csv(file_path)
     if file_path.lower().endswith(".xls") and xlrd is None:
         raise RuntimeError("xlrd library is required to read .xls files but not found.")
     return pd.ExcelFile(file_path)
 
 
-@mcp.tool(description="Retrieves metadata from an Excel file (e.g., sheet names, number of sheets).")
+@mcp.tool(description="Retrieves metadata from an Excel or CSV file (e.g., sheet names, number of sheets).")
 async def get_excel_metadata(
-    file_path: str = Field(description="The absolute path to the Excel file (.xlsx or .xls)."),
+    file_path: str = Field(description="The absolute path to the Excel or CSV file (.xlsx, .xls, or .csv)."),
 ) -> Dict[str, Any]:
     """
-    Retrieves metadata from an Excel file.
-
-    Args:
-        file_path: The absolute path to the Excel file.
-
-    Returns:
-        A dictionary containing metadata such as sheet names and number of sheets.
-
-    Raises:
-        FileNotFoundError: If the specified file_path does not exist.
-        RuntimeError: If required libraries are not installed or an error occurs.
-        ValueError: If unsupported file format.
+    Retrieves metadata from an Excel or CSV file.
     """
     error = check_file_readable(file_path)
     if error:
         logger.error(error)
         raise FileNotFoundError(error)
-
     try:
-        xls = read_excel_file(file_path)
-        sheet_names = xls.sheet_names
-        sheet_count = len(sheet_names)
-
+        if file_path.lower().endswith(".csv"):
+            sheet_names = ["Sheet1"]
+            sheet_count = 1
+        else:
+            xls = read_excel_file(file_path)
+            sheet_names = xls.sheet_names
+            sheet_count = len(sheet_names)
         metadata = ExcelMetadata(
             file_path=file_path, file_name=os.path.basename(file_path), sheet_count=sheet_count, sheet_names=sheet_names
         )
         return metadata.model_dump()
-
     except Exception as e:
         logger.error(f"Error getting metadata from {file_path}: {e}\n{traceback.format_exc()}")
-        raise RuntimeError(f"Error processing Excel for metadata: {str(e)}")
+        raise RuntimeError(f"Error processing file for metadata: {str(e)}")
 
 
-@mcp.tool(description="Retrieves the number of rows and columns for a specific sheet in an Excel file.")
+@mcp.tool(description="Retrieves the number of rows and columns for a specific sheet in an Excel or CSV file.")
 async def get_sheet_dimensions(
-    file_path: str = Field(description="The absolute path to the Excel file (.xlsx or .xls)."),
+    file_path: str = Field(description="The absolute path to the Excel or CSV file (.xlsx, .xls, or .csv)."),
     sheet_name: str = Field(description="The name of the sheet."),
 ) -> Dict[str, int]:
     """
-    Retrieves the number of rows and columns for a specific sheet.
-
-    Args:
-        file_path: The absolute path to the Excel file.
-        sheet_name: The name of the sheet.
-
-    Returns:
-        A dictionary containing 'row_count' and 'column_count'.
-
-    Raises:
-        FileNotFoundError: If the specified file_path does not exist.
-        ValueError: If the sheet name is not found or file format is unsupported.
-        RuntimeError: If required libraries are not installed or an error occurs.
+    Retrieves the number of rows and columns for a specific sheet in an Excel or CSV file.
     """
     error = check_file_readable(file_path)
     if error:
         logger.error(error)
         raise FileNotFoundError(error)
-
     try:
-        xls = read_excel_file(file_path)
-        if sheet_name not in xls.sheet_names:
-            raise ValueError(
-                f"Sheet '{sheet_name}' not found in file '{file_path}'. Available sheets: {xls.sheet_names}"
-            )
-
-        df = xls.parse(sheet_name)
+        if file_path.lower().endswith(".csv"):
+            if sheet_name != "Sheet1":
+                raise ValueError(f"CSV file only supports a single sheet named 'Sheet1', got '{sheet_name}'")
+            df = pd.read_csv(file_path)
+        else:
+            xls = read_excel_file(file_path)
+            if sheet_name not in xls.sheet_names:
+                raise ValueError(
+                    f"Sheet '{sheet_name}' not found in file '{file_path}'. Available sheets: {xls.sheet_names}"
+                )
+            df = xls.parse(sheet_name)
         row_count = df.shape[0]
         column_count = df.shape[1]
-
         dimensions = SheetDimensions(
             file_path=file_path, sheet_name=sheet_name, row_count=row_count, column_count=column_count
         )
         return dimensions.model_dump()
-
     except Exception as e:
         logger.error(f"Error getting dimensions for sheet '{sheet_name}' in {file_path}: {e}\n{traceback.format_exc()}")
-        raise RuntimeError(f"Error processing Excel for sheet dimensions: {str(e)}")
+        raise RuntimeError(f"Error processing file for sheet dimensions: {str(e)}")
 
 
 @mcp.tool(
-    description="Reads data from a specific sheet in an Excel file. "
+    description="Reads data from a specific sheet in an Excel or CSV file. "
     "Supports reading specific ranges, limiting rows/columns, and different output formats."
 )
 async def read_excel_sheet(
-    file_path: str = Field(description="The absolute path to the Excel file (.xlsx or .xls)."),
+    file_path: str = Field(description="The absolute path to the Excel or CSV file (.xlsx, .xls, or .csv)."),
     sheet_name: str = Field(description="The name of the sheet."),
     start_row: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed starting row to read from (inclusive).",
+        default=None, description="Optional. The 0-indexed starting row to read from (inclusive)."
     ),
     end_row: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed ending row to read up to (inclusive).",
+        default=None, description="Optional. The 0-indexed ending row to read up to (inclusive)."
     ),
     start_column: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed starting column to read from (inclusive).",
+        default=None, description="Optional. The 0-indexed starting column to read from (inclusive)."
     ),
     end_column: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed ending column to read up to (inclusive).",
+        default=None, description="Optional. The 0-indexed ending column to read up to (inclusive)."
     ),
     max_rows: Optional[int] = Field(
         default=None,
@@ -238,96 +215,58 @@ async def read_excel_sheet(
     ),
 ) -> Union[List[Dict[str, Any]], List[List[Any]], str]:
     """
-    Reads data from a specific sheet in an Excel file.
-
-    Args:
-        file_path: The absolute path to the Excel file.
-        sheet_name: The name of the sheet.
-        start_row: Optional. The 0-indexed starting row (inclusive).
-        end_row: Optional. The 0-indexed ending row (inclusive).
-        start_column: Optional. The 0-indexed starting column (inclusive).
-        end_column: Optional. The 0-indexed ending column (inclusive).
-        max_rows: Optional. Maximum number of rows to read.
-        max_columns: Optional. Maximum number of columns to read.
-        return_format: Optional. 'list_of_dicts', 'list_of_lists', or 'markdown_table'.
-
-    Returns:
-        Data from the sheet in the specified format.
-
-    Raises:
-        FileNotFoundError: If the specified file_path does not exist.
-        ValueError: If the sheet name is not found, file format is unsupported, or invalid parameters.
-        RuntimeError: If required libraries are not installed or an error occurs.
+    Reads data from a specific sheet in an Excel or CSV file.
     """
     error = check_file_readable(file_path)
     if error:
         logger.error(error)
         raise FileNotFoundError(error)
-
     try:
-        xls = read_excel_file(file_path)
-        if sheet_name not in xls.sheet_names:
-            raise ValueError(
-                f"Sheet '{sheet_name}' not found in file '{file_path}'. Available sheets: {xls.sheet_names}"
-            )
-
-        # Determine rows to read based on start_row, end_row, and max_rows
-        skiprows = start_row if start_row is not None else 0
-        nrows = None
-        if end_row is not None:
-            nrows = end_row - skiprows + 1
+        if file_path.lower().endswith(".csv"):
+            if sheet_name != "Sheet1":
+                raise ValueError(f"CSV file only supports a single sheet named 'Sheet1', got '{sheet_name}'")
+            df = pd.read_csv(file_path)
+        else:
+            xls = read_excel_file(file_path)
+            if sheet_name not in xls.sheet_names:
+                raise ValueError(
+                    f"Sheet '{sheet_name}' not found in file '{file_path}'. Available sheets: {xls.sheet_names}"
+                )
+            df = xls.parse(sheet_name)
+        # Row slicing
+        start = start_row if start_row is not None else 0
+        end = end_row + 1 if end_row is not None else None
+        df = df.iloc[start:end]
+        # Column slicing
+        col_start = start_column if start_column is not None else 0
+        col_end = end_column + 1 if end_column is not None else None
+        df = df.iloc[:, col_start:col_end]
+        # Max rows/columns
         if max_rows is not None:
-            if nrows is None:
-                nrows = max_rows
-            else:
-                nrows = min(nrows, max_rows)
-
-        # Determine columns to read based on start_column, end_column, and max_columns
-        usecols = None
-        if start_column is not None or end_column is not None or max_columns is not None:
-            col_start = start_column if start_column is not None else 0
-            col_end = end_column if end_column is not None else float("inf")
-            col_limit = max_columns if max_columns is not None else float("inf")
-
-            # Calculate the actual range of columns to read
-            actual_col_end = min(col_end, col_start + col_limit - 1) if col_limit is not float("inf") else col_end
-            if actual_col_end < col_start:
-                usecols = []  # No columns to read
-            else:
-                usecols = list(range(col_start, int(actual_col_end) + 1))
-
-        # Read the sheet into a pandas DataFrame
-        # Use header=None if you want to include the first row as data, not header
-        # For simplicity, assuming the first row is header unless start_row > 0
-        header = 0 if skiprows == 0 else None
-        df = xls.parse(sheet_name, skiprows=skiprows, nrows=nrows, usecols=usecols, header=header)
-
+            df = df.head(max_rows)
+        if max_columns is not None:
+            df = df.iloc[:, :max_columns]
         row_count_read = df.shape[0]
         column_count_read = df.shape[1]
-
-        # Get total dimensions for context if needed
         total_row_count = None
         total_column_count = None
         try:
-            full_df_shape = xls.parse(sheet_name).shape
-            total_row_count = full_df_shape[0]
-            total_column_count = full_df_shape[1]
+            if file_path.lower().endswith(".csv"):
+                full_df = pd.read_csv(file_path)
+            else:
+                full_df = xls.parse(sheet_name)
+            total_row_count = full_df.shape[0]
+            total_column_count = full_df.shape[1]
         except Exception:
-            # Ignore errors if getting full shape fails for very large files
             pass
-
-        # Convert DataFrame to the requested format
         if return_format == "list_of_dicts":
             data = df.to_dict(orient="records")
         elif return_format == "list_of_lists":
-            # Include header row in list of lists
             data = [df.columns.tolist()] + df.values.tolist()
         elif return_format == "markdown_table":
-            # Convert DataFrame to Markdown table string
             data = tabulate(df, headers="keys", tablefmt="pipe")
         else:
             raise ValueError(f"Invalid return_format: {return_format}")
-
         result = SheetData(
             file_path=file_path,
             sheet_name=sheet_name,
@@ -337,115 +276,82 @@ async def read_excel_sheet(
             total_row_count=total_row_count,
             total_column_count=total_column_count,
         )
-        # Return the data part directly as per tool return type
         return result.data
-
     except Exception as e:
         logger.error(f"Error reading sheet '{sheet_name}' in {file_path}: {e}\n{traceback.format_exc()}")
-        raise RuntimeError(f"Error processing Excel for reading sheet: {str(e)}")
+        raise RuntimeError(f"Error processing file for reading sheet: {str(e)}")
 
 
-@mcp.tool(description="Converts data from a specific sheet or range in an Excel file to CSV format (string).")
+@mcp.tool(description="Converts data from a specific sheet or range in an Excel or CSV file to CSV format (string).")
 async def convert_sheet_to_csv(
-    file_path: str = Field(description="The absolute path to the Excel file (.xlsx or .xls)."),
+    file_path: str = Field(description="The absolute path to the Excel or CSV file (.xlsx, .xls, or .csv)."),
     sheet_name: str = Field(description="The name of the sheet."),
     start_row: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed starting row to read from (inclusive).",
+        default=None, description="Optional. The 0-indexed starting row to read from (inclusive)."
     ),
     end_row: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed ending row to read up to (inclusive).",
+        default=None, description="Optional. The 0-indexed ending row to read up to (inclusive)."
     ),
     start_column: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed starting column to read from (inclusive).",
+        default=None, description="Optional. The 0-indexed starting column to read from (inclusive)."
     ),
     end_column: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed ending column to read up to (inclusive).",
+        default=None, description="Optional. The 0-indexed ending column to read up to (inclusive)."
     ),
 ) -> str:
     """
-    Converts data from a specific sheet or range in an Excel file to CSV format string.
-
-    Args:
-        file_path: The absolute path to the Excel file.
-        sheet_name: The name of the sheet.
-        start_row: Optional. The 0-indexed starting row (inclusive).
-        end_row: Optional. The 0-indexed ending row (inclusive).
-        start_column: Optional. The 0-indexed starting column (inclusive).
-        end_column: Optional. The 0-indexed ending column (inclusive).
-
-    Returns:
-        A string containing the CSV representation of the data.
-
-    Raises:
-        FileNotFoundError: If the specified file_path does not exist.
-        ValueError: If the sheet name is not found, file format is unsupported, or invalid parameters.
-        RuntimeError: If required libraries are not installed or an error occurs.
+    Converts data from a specific sheet or range in an Excel or CSV file to CSV format string.
     """
     error = check_file_readable(file_path)
     if error:
         logger.error(error)
         raise FileNotFoundError(error)
-
     try:
-        xls = read_excel_file(file_path)
-        if sheet_name not in xls.sheet_names:
-            raise ValueError(
-                f"Sheet '{sheet_name}' not found in file '{file_path}'. Available sheets: {xls.sheet_names}"
-            )
-
-        # Determine rows to read based on start_row and end_row
-        skiprows = start_row if start_row is not None else 0
-        nrows = None
-        if end_row is not None:
-            nrows = end_row - skiprows + 1
-
-        # Determine columns to read based on start_column and end_column
-        usecols = None
-        if start_column is not None or end_column is not None:
-            col_start = start_column if start_column is not None else 0
-            col_end = end_column if end_column is not None else float("inf")
-            usecols = list(range(col_start, int(col_end) + 1))
-
-        # Read the sheet into a pandas DataFrame
-        header = 0 if skiprows == 0 else None
-        df = xls.parse(sheet_name, skiprows=skiprows, nrows=nrows, usecols=usecols, header=header)
-
-        # Convert DataFrame to CSV string
+        if file_path.lower().endswith(".csv"):
+            if sheet_name != "Sheet1":
+                raise ValueError(f"CSV file only supports a single sheet named 'Sheet1', got '{sheet_name}'")
+            df = pd.read_csv(file_path)
+        else:
+            xls = read_excel_file(file_path)
+            if sheet_name not in xls.sheet_names:
+                raise ValueError(
+                    f"Sheet '{sheet_name}' not found in file '{file_path}'. Available sheets: {xls.sheet_names}"
+                )
+            df = xls.parse(sheet_name)
+        # Row slicing
+        start = start_row if start_row is not None else 0
+        end = end_row + 1 if end_row is not None else None
+        df = df.iloc[start:end]
+        # Column slicing
+        col_start = start_column if start_column is not None else 0
+        col_end = end_column + 1 if end_column is not None else None
+        df = df.iloc[:, col_start:col_end]
         csv_data = df.to_csv(index=False)
-
         result = CsvContent(file_path=file_path, sheet_name=sheet_name, csv_data=csv_data)
         return result.csv_data
-
     except Exception as e:
         logger.error(f"Error converting sheet '{sheet_name}' in {file_path} to CSV: {e}\n{traceback.format_exc()}")
-        raise RuntimeError(f"Error processing Excel for CSV conversion: {str(e)}")
+        raise RuntimeError(f"Error processing file for CSV conversion: {str(e)}")
 
 
 @mcp.tool(
-    description="Converts data from a specific sheet or range in an Excel file to Markdown table format (string)."
+    description="Converts data from a specific sheet or range in "
+    "an Excel or CSV file to Markdown table format (string)."
 )
 async def convert_sheet_to_markdown(
-    file_path: str = Field(description="The absolute path to the Excel file (.xlsx or .xls)."),
+    file_path: str = Field(description="The absolute path to the Excel or CSV file (.xlsx, .xls, or .csv)."),
     sheet_name: str = Field(description="The name of the sheet."),
     start_row: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed starting row to read from (inclusive).",
+        default=None, description="Optional. The 0-indexed starting row to read from (inclusive)."
     ),
     end_row: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed ending row to read up to (inclusive).",
+        default=None, description="Optional. The 0-indexed ending row to read up to (inclusive)."
     ),
     start_column: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed starting column to read from (inclusive).",
+        default=None, description="Optional. The 0-indexed starting column to read from (inclusive)."
     ),
     end_column: Optional[int] = Field(
-        default=None,
-        description="Optional. The 0-indexed ending column to read up to (inclusive).",
+        default=None, description="Optional. The 0-indexed ending column to read up to (inclusive)."
     ),
     max_rows: Optional[int] = Field(
         default=None,
@@ -459,75 +365,42 @@ async def convert_sheet_to_markdown(
     ),
 ) -> str:
     """
-    Converts data from a specific sheet or range in an Excel file to Markdown table format string.
-
-    Args:
-        file_path: The absolute path to the Excel file.
-        sheet_name: The name of the sheet.
-        start_row: Optional. The 0-indexed starting row (inclusive).
-        end_row: Optional. The 0-indexed ending row (inclusive).
-        start_column: Optional. The 0-indexed starting column (inclusive).
-        end_column: Optional. The 0-indexed ending column (inclusive).
-        max_rows: Optional. Maximum number of rows to read.
-        max_columns: Optional. Maximum number of columns to read.
-
-    Returns:
-        A string containing the Markdown table representation of the data.
-
-    Raises:
-        FileNotFoundError: If the specified file_path does not exist.
-        ValueError: If the sheet name is not found, file format is unsupported, or invalid parameters.
-        RuntimeError: If required libraries are not installed or an error occurs.
+    Converts data from a specific sheet or range in an Excel or CSV file to Markdown table format string.
     """
     error = check_file_readable(file_path)
     if error:
         logger.error(error)
         raise FileNotFoundError(error)
-
     try:
-        xls = read_excel_file(file_path)
-        if sheet_name not in xls.sheet_names:
-            raise ValueError(
-                f"Sheet '{sheet_name}' not found in file '{file_path}'. Available sheets: {xls.sheet_names}"
-            )
-
-        # Determine rows to read based on start_row, end_row, and max_rows
-        skiprows = start_row if start_row is not None else 0
-        nrows = None
-        if end_row is not None:
-            nrows = end_row - skiprows + 1
+        if file_path.lower().endswith(".csv"):
+            if sheet_name != "Sheet1":
+                raise ValueError(f"CSV file only supports a single sheet named 'Sheet1', got '{sheet_name}'")
+            df = pd.read_csv(file_path)
+        else:
+            xls = read_excel_file(file_path)
+            if sheet_name not in xls.sheet_names:
+                raise ValueError(
+                    f"Sheet '{sheet_name}' not found in file '{file_path}'. Available sheets: {xls.sheet_names}"
+                )
+            df = xls.parse(sheet_name)
+        # Row slicing
+        start = start_row if start_row is not None else 0
+        end = end_row + 1 if end_row is not None else None
+        df = df.iloc[start:end]
+        # Column slicing
+        col_start = start_column if start_column is not None else 0
+        col_end = end_column + 1 if end_column is not None else None
+        df = df.iloc[:, col_start:col_end]
         if max_rows is not None:
-            if nrows is None:
-                nrows = max_rows
-            else:
-                nrows = min(nrows, max_rows)
-
-        # Determine columns to read based on start_column, end_column, and max_columns
-        usecols = None
-        if start_column is not None or end_column is not None or max_columns is not None:
-            col_start = start_column if start_column is not None else 0
-            col_end = end_column if end_column is not None else float("inf")
-            col_limit = max_columns if max_columns is not None else float("inf")
-
-            actual_col_end = min(col_end, col_start + col_limit - 1) if col_limit is not float("inf") else col_end
-            if actual_col_end < col_start:
-                usecols = []  # No columns to read
-            else:
-                usecols = list(range(col_start, int(actual_col_end) + 1))
-
-        # Read the sheet into a pandas DataFrame
-        header = 0 if skiprows == 0 else None
-        df = xls.parse(sheet_name, skiprows=skiprows, nrows=nrows, usecols=usecols, header=header)
-
-        # Convert DataFrame to Markdown table string
+            df = df.head(max_rows)
+        if max_columns is not None:
+            df = df.iloc[:, :max_columns]
         markdown_table = tabulate(df, headers="keys", tablefmt="pipe")
-
         result = MarkdownTableContent(file_path=file_path, sheet_name=sheet_name, markdown_table=markdown_table)
         return result.markdown_table
-
     except Exception as e:
         logger.error(f"Error converting sheet '{sheet_name}' in {file_path} to Markdown: {e}\n{traceback.format_exc()}")
-        raise RuntimeError(f"Error processing Excel for Markdown conversion: {str(e)}")
+        raise RuntimeError(f"Error processing file for Markdown conversion: {str(e)}")
 
 
 def main():
