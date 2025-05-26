@@ -82,7 +82,10 @@ async def browser_use(
         enable_memory=True,
         memory_config=MemoryConfig(llm_instance=llm_config),
         # Use cookies
-        browser_profile=BrowserProfile(cookies_file=os.getenv("COOKIES_FILE_PATH")),
+        browser_profile=BrowserProfile(
+            cookies_file=os.getenv("COOKIES_FILE_PATH"),
+            downloads_dir=os.getenv("FILESYSTEM_SERVER_WORKDIR"),
+        ),
         # Log path
         save_conversation_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log",
     )
