@@ -32,6 +32,7 @@ class GaiaAgentRunner:
         llm_base_url: str,
         llm_api_key: str,
         llm_temperature: float = 0.0,
+        mcp_config: dict = {},
     ):
         self.agent_config = AgentConfig(
             llm_provider=llm_provider,
@@ -45,6 +46,7 @@ class GaiaAgentRunner:
             conf=self.agent_config,
             name="gaia_super_agent",
             system_prompt=system_prompt,
+            mcp_config=mcp_config,
             mcp_servers=[
                 "e2b-server",
                 # "filesystem",
@@ -64,7 +66,14 @@ class GaiaAgentRunner:
             ],
         )
 
-        self.gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./GAIA/2023")
+        self.gaia_dataset_path = os.path.abspath(
+            os.getenv(
+                "GAIA_DATASET_PATH",
+                os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "GAIA", "2023"
+                ),
+            )
+        )
         self.full_dataset = load_dataset_meta_dict(self.gaia_dataset_path)
         logger.info(
             f"Gaia Agent Runner initialized: super_agent={self.super_agent}, agent_config={self.agent_config}, gaia_dataset_path={self.gaia_dataset_path}, full_dataset={len(self.full_dataset)}"
@@ -73,8 +82,8 @@ class GaiaAgentRunner:
     async def run(self, prompt: str):
         yield (f"\n## GAIA Agent Start!")
 
-        mcp_servers = "\n - ".join(self.super_agent.mcp_servers)
-        yield (f"\n```gaia_agent_status\n - {mcp_servers}\n```")
+        mcp_servers = "\n- ".join(self.super_agent.mcp_servers)
+        yield (f"\n```gaia_agent_status\n- {mcp_servers}\n```\n")
 
         question = None
         data_item = None
@@ -86,7 +95,7 @@ class GaiaAgentRunner:
             question = add_file_path(data_item, file_path=self.gaia_dataset_path)[
                 "Question"
             ]
-            yield (f"\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```")
+            yield (f"\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```\n")
         except Exception as e:
             pass
 
@@ -94,7 +103,7 @@ class GaiaAgentRunner:
             logger.warning(
                 "Could not find GAIA question for prompt, chat using prompt directly!"
             )
-            yield (f"\n```question\n{json.dumps(prompt, indent=2)}```\n")
+            yield (f"\n{prompt}\n")
             question = prompt
 
         try:

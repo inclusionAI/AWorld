@@ -1,0 +1,1 @@
+streamlit run examples/web/main.py
