@@ -96,12 +96,12 @@ async def browser_use(
         extend_system_message=extended_browser_system_prompt,
     )
     try:
-        color_log(logger, f"🎯 Task: {task}", Color.purple)
+        color_log(logger, f"🎯 Task: {task}", Color.darkgrey)
         browser_execution: AgentHistoryList = await agent.run(max_steps=50)
         if browser_execution is not None and browser_execution.is_done() and browser_execution.is_successful():
             exec_trace = browser_execution.extracted_content()
-            color_log(logger, f"🎢 Detail: {json.dumps(exec_trace, ensure_ascii=False, indent=4)}", Color.purple)
-            color_log(logger, f"📈 Result: {browser_execution.final_result()}", Color.purple)
+            color_log(logger, f"🎢 Detail: {json.dumps(exec_trace, ensure_ascii=False, indent=4)}", Color.darkgrey)
+            color_log(logger, f"📈 Result: {browser_execution.final_result()}", Color.darkgrey)
             return browser_execution.final_result()
         return f"Browser execution failed for task: {task}"
     except Exception as e:
