@@ -669,7 +669,7 @@ class Wait(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         seconds = action.params.get("seconds")
         if not seconds:
-            seconds = action.params.get("duration")
+            seconds = action.params.get("duration", 0)
         seconds = int(seconds)
         msg = f'Waiting for {seconds} seconds'
         logger.info(msg)
@@ -679,7 +679,7 @@ class Wait(ExecutableAction):
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         seconds = action.params.get("seconds")
         if not seconds:
-            seconds = action.params.get("duration")
+            seconds = action.params.get("duration", 0)
         seconds = int(seconds)
         msg = f'Waiting for {seconds} seconds'
         logger.info(msg)

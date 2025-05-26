@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Union
 
 from aworld.config.conf import TaskConfig, ConfigDict
 from aworld.core.agent.llm_agent import Agent
@@ -116,35 +116,6 @@ class Runners:
             agent.task = input
             swarm = Swarm(agent)
 
-        task = Task(input=input, swarm=swarm, tool_names=tool_names)
+        task = Task(input=input, swarm=swarm, tool_names=tool_names, event_driven=swarm.event_driven)
         res = await Runners.run_task(task)
         return res.get(task.id)
-
-    # @staticmethod
-    # async def _parallel_run_in_local(tasks: List[Task], res):
-    #     # also can use ProcessPoolExecutor
-    #     parallel_tasks = []
-    #     for t in tasks:
-    #         with trace.span(t.name) as span:
-    #             parallel_tasks.append(Runners._choose_runner(task=t).run())
-    #
-    #     results = await asyncio.gather(*parallel_tasks)
-    #     for idx, t in enumerate(results):
-    #         res[f'{t.id}'] = t
-    #
-    # @staticmethod
-    # async def _run_in_local(tasks: List[Task], res: Dict[str, Any]) -> None:
-    #     for idx, task in enumerate(tasks):
-    #         with trace.span(task.name) as span:
-    #             # Execute the task
-    #             result: TaskResponse = await Runners._choose_runner(task=task).run()
-    #             res[f'{result.id}'] = result
-    #
-    # @staticmethod
-    # def _choose_runner(task: Task):
-    #     if not task.swarm:
-    #         return SequenceRunner(task=task)
-    #
-    #     task.swarm.reset(task.input)
-    #     topology = task.swarm.topology_type
-    #     return RUNNERS.get(topology, SequenceRunner)(task=task)

@@ -44,7 +44,28 @@ class DefaultAgentHandler(DefaultHandler):
             message.payload = data
         # data is Observation
         if isinstance(data, Observation):
-            yield message
+            agent = self.swarm.agents.get(message.receiver)
+            # agent + tool completion protocol.
+            if agent.finished and data.info.get('done'):
+                self.swarm.cur_step += 1
+                if agent.name() == self.swarm.communicate_agent.name():
+                    yield Message(
+                        category=Constants.TASK,
+                        payload=data.content,
+                        sender=agent.name(),
+                        session_id=Context.instance().session_id,
+                        topic=TaskType.FINISHED
+                    )
+                else:
+                    yield Message(
+                        category=Constants.AGENT,
+                        payload=Observation(content=data.content),
+                        sender=agent.name(),
+                        session_id=Context.instance().session_id,
+                        receiver=self.swarm.communicate_agent.name()
+                    )
+            else:
+                yield message
             return
 
         # data is List[ActionModel]

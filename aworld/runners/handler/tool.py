@@ -70,13 +70,14 @@ class DefaultToolHandler(DefaultHandler):
                 tool_mapping[act.tool_name] = []
             tool_mapping[act.tool_name].append(act)
 
-        yield Message(
-            category=Constants.TASK,
-            payload=TaskItem(data=new_tools),
-            sender=self.name(),
-            session_id=Context.instance().session_id,
-            topic=TaskType.SUBSCRIBE_TOOL
-        )
+        if new_tools:
+            yield Message(
+                category=Constants.TASK,
+                payload=TaskItem(data=new_tools),
+                sender=self.name(),
+                session_id=Context.instance().session_id,
+                topic=TaskType.SUBSCRIBE_TOOL
+            )
 
         for tool_name, actions in tool_mapping.items():
             if not (isinstance(self.tools[tool_name], Tool) or isinstance(self.tools[tool_name], AsyncTool)):

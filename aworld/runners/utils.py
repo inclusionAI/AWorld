@@ -22,12 +22,13 @@ def choose_runner(task: Task):
         return new_instance(runner_cls, task)
     else:
         if task.swarm:
+            task.swarm.event_driven = task.event_driven
             task.swarm.reset(task.input)
             topology = task.swarm.topology_type
         else:
             topology = "sequence"
 
-        if 'event' in topology:
+        if task.event_driven:
             # name must is xx_event.
             name = topology.split('_')
             runner = new_instance(

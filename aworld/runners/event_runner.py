@@ -104,7 +104,7 @@ class TaskEventRunner(TaskRunner):
 
                     if isinstance(con, Message):
                         results.append(con)
-                        con = message
+                        con = message.payload
                 except Exception as e:
                     logger.warning(f"{handler} process fail. {traceback.format_exc()}")
 

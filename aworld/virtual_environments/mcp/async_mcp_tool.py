@@ -63,7 +63,7 @@ class McpTool(AsyncTool):
         mcp_actions = []
         for action in actions:
             tool_name = action.tool_name
-            if Tools.MCP.value != tool_name:
+            if 'mcp' != tool_name:
                 logger.warning(f"Unsupported tool: {tool_name}")
                 continue
             full_tool_name = action.action_name

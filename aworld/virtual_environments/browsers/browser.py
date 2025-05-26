@@ -29,8 +29,10 @@ URL_MAX_LENGTH = 4096
 UTF8 = "".join(chr(x) for x in range(0, 55290))
 ASCII = "".join(chr(x) for x in range(32, 128))
 
+BROWSER = "browser"
 
-@ToolFactory.register(name="browser",
+
+@ToolFactory.register(name=BROWSER,
                       desc="browser",
                       supported_action=BrowserAction,
                       conf_file_name=f'browser_tool.yaml')
@@ -198,7 +200,8 @@ class BrowserTool(Tool):
         screenshot_base64 = base64.b64encode(screenshot).decode('utf-8')
         return screenshot_base64
 
-    def _get_observation(self, fail_error: str = None) -> Observation:
+    def _get_observation(self, info: Dict[str, Any] = None) -> Observation:
+        fail_error = info.get('exception')
         if fail_error:
             return Observation(observer=self.name(), action_result=[ActionResult(error=fail_error)])
 
@@ -206,9 +209,9 @@ class BrowserTool(Tool):
             dom_tree = self._parse_dom_tree()
             image = self.screenshot()
             pixels_above, pixels_below = self._scroll_info()
-            info = {"pixels_above": pixels_above,
-                    "pixels_below": pixels_below,
-                    "url": self.page.url}
+            info.update({"pixels_above": pixels_above,
+                         "pixels_below": pixels_below,
+                         "url": self.page.url})
             return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
         except Exception as e:
             try:
@@ -220,9 +223,9 @@ class BrowserTool(Tool):
                 dom_tree = self._parse_dom_tree()
                 image = self.screenshot()
                 pixels_above, pixels_below = self._scroll_info()
-                info = {"pixels_above": pixels_above,
-                        "pixels_below": pixels_below,
-                        "url": self.page.url}
+                info.update({"pixels_above": pixels_above,
+                             "pixels_below": pixels_below,
+                             "url": self.page.url})
                 return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
             except Exception as e:
                 logger.warning(f"build observation fail, {traceback.format_exc()}")
@@ -301,7 +304,7 @@ class BrowserTool(Tool):
 
         invalid_acts: List[int] = []
         for i, act in enumerate(action):
-            if act.tool_name != Tools.BROWSER.value:
+            if act.tool_name != BROWSER:
                 logger.warning(f"tool {act.tool_name} is not a browser!")
                 invalid_acts.append(i)
 
@@ -318,16 +321,16 @@ class BrowserTool(Tool):
         except Exception as e:
             fail_error = str(e)
 
+        info = {"exception": fail_error}
         terminated = kwargs.get("terminated", False)
         if action_result:
             for res in action_result:
                 if res.is_done:
                     terminated = res.is_done
+                    info['done'] = True
                     self._finish = True
                 if res.error:
                     fail_error += res.error
-
-        info = {"exception": fail_error}
 
         contains_write_to_file = any(act.action_name == BrowserAction.WRITE_TO_FILE.value.name for act in action if act)
         if contains_write_to_file:
@@ -349,7 +352,7 @@ class BrowserTool(Tool):
                     info)
         else:
             # normal observation
-            observation = self._get_observation(fail_error)
+            observation = self._get_observation(info)
             observation.ability = action[-1].action_name
             observation.action_result = action_result
             self.cur_observation = observation

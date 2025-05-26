@@ -197,17 +197,18 @@ class BrowserTool(AsyncTool):
         screenshot_base64 = base64.b64encode(screenshot).decode('utf-8')
         return screenshot_base64
 
-    async def _get_observation(self, fail_error: str = None) -> Observation:
+    async def _get_observation(self, info: Dict[str, Any] = {}) -> Observation:
+        fail_error = info.get('exception')
         if fail_error:
             return Observation(observer=self.name(), action_result=[ActionResult(error=fail_error)])
 
         try:
-            dom_tree = await self._parse_dom_tree()
-            image = await self.screenshot()
-            pixels_above, pixels_below = await self._scroll_info()
-            info = {"pixels_above": pixels_above,
-                    "pixels_below": pixels_below,
-                    "url": self.page.url}
+            dom_tree = self._parse_dom_tree()
+            image = self.screenshot()
+            pixels_above, pixels_below = self._scroll_info()
+            info.update({"pixels_above": pixels_above,
+                         "pixels_below": pixels_below,
+                         "url": self.page.url})
             return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
         except Exception as e:
             try:
@@ -219,9 +220,9 @@ class BrowserTool(AsyncTool):
                 dom_tree = await self._parse_dom_tree()
                 image = await self.screenshot()
                 pixels_above, pixels_below = await self._scroll_info()
-                info = {"pixels_above": pixels_above,
-                        "pixels_below": pixels_below,
-                        "url": self.page.url}
+                info.update({"pixels_above": pixels_above,
+                             "pixels_below": pixels_below,
+                             "url": self.page.url})
                 return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
             except Exception as e:
                 logger.warning(f"build observation fail, {traceback.format_exc()}")
@@ -300,7 +301,7 @@ class BrowserTool(AsyncTool):
 
         invalid_acts: List[int] = []
         for i, act in enumerate(action):
-            if act.tool_name != Tools.BROWSER.value:
+            if act.tool_name != 'browser':
                 logger.warning(f"tool {act.tool_name} is not a browser!")
                 invalid_acts.append(i)
 
@@ -317,16 +318,16 @@ class BrowserTool(AsyncTool):
         except Exception as e:
             fail_error = str(e)
 
+        info = {"exception": fail_error}
         terminated = kwargs.get("terminated", False)
         if action_result:
             for res in action_result:
                 if res.is_done:
                     terminated = res.is_done
+                    info['done'] = True
                     self._finish = True
                 if res.error:
                     fail_error += res.error
-
-        info = {"exception": fail_error}
 
         contains_write_to_file = any(act.action_name == BrowserAction.WRITE_TO_FILE.value.name for act in action if act)
         if contains_write_to_file:
@@ -348,7 +349,7 @@ class BrowserTool(AsyncTool):
                     info)
         else:
             # normal observation
-            observation = await self._get_observation(fail_error)
+            observation = await self._get_observation(info)
             observation.action_result = action_result
             observation.ability = action[-1].action_name
             self.cur_observation = observation

@@ -33,6 +33,7 @@ class Task:
     mcp_servers_conf: Config = field(default_factory=dict)
     swarm: Optional[Swarm] = None
     agent: Optional[Agent] = None
+    event_driven: bool = True
     # for loop detect
     endless_threshold: int = 3
     # task_outputs

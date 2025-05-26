@@ -19,7 +19,7 @@ from aworld.utils.common import sync_exec, find_file
 class MCPToolExecutor(ToolActionExecutor):
     """A tool executor that uses MCP server to execute actions."""
 
-    def __init__(self, tool: Union[Tool[Observation, List[ActionModel]], AsyncTool] = None):
+    def __init__(self, tool: Union[Tool, AsyncTool] = None):
         """Initialize the MCP tool executor."""
         super().__init__(tool)
         self.initialized = False

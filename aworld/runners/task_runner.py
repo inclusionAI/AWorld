@@ -101,6 +101,7 @@ class TaskRunner(Runner):
             observation = Observation(content=self.input)
 
         self.observation = observation
+        self.swarm.event_driven = task.event_driven
         self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
 
     async def post_run(self):

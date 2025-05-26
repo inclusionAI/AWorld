@@ -324,7 +324,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # complex processing
         if _group_name:
-            logger.warning("more than one agent an tool causing confusion, will choose the first one.")
+            logger.warning(f"more than one agent an tool causing confusion, will choose the first one. {agents}")
             agents = [agents[0]] if agents else []
             for _, v in tools.items():
                 actions = v
