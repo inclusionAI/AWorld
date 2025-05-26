@@ -11,6 +11,7 @@ class AworldTask(BaseModel):
     agent_input: str = Field(default=None, description="agent input")
     session_id: Optional[str] = Field(default=None, description="session id")
     user_id: Optional[str] = Field(default=None, description="user id")
+    node_id: Optional[str] = Field(default=None, description="execute task node_id")
 
 class AworldTaskResult(BaseModel):
     server_host: str = Field(default=None, description="aworld server id")
@@ -42,7 +43,7 @@ class AworldTaskClient(BaseModel):
         
     async def _submit_task(self, aworld_server, task: AworldTask):
         try:
-            print(f"submit task#{task.task_id} to {aworld_server}")
+            print(f"submit task#{task.task_id} to cluster#[{aworld_server}]")
 
             return await self._submit_task_to_server(aworld_server, task)
         except Exception as e:
@@ -69,10 +70,22 @@ class AworldTaskClient(BaseModel):
         result_data = ""
         if isinstance(data, AsyncGenerator):
             async for item in data:
+                if item.raw_response and item.raw_response.model_extra and item.raw_response.model_extra.get('node_id'):
+                    if not task.node_id:
+                        print(f"submit task#{task.task_id} success. execute pod ip is [{item.raw_response.model_extra.get('node_id')}]")
+                    task.node_id = item.raw_response.model_extra.get('node_id')
+
                 if item.content:
                     print(item)
                     result_data += item.content
+
+
         elif isinstance(data, ModelResponse):
+            if data.raw_response and data.raw_response.model_extra and data.raw_response.model_extra.get('node_id'):
+                if not task.node_id:
+                    print(f"submit task#{task.task_id} success. execute pod ip is [{data.raw_response.model_extra.get('node_id')}]")
+                task.node_id = data.raw_response.model_extra.get('node_id')
+
             print(data)
             if data.content:
                 result_data = data.content

@@ -6,11 +6,13 @@ from typing import Dict, Any, List, Optional
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.task import Task
 from aworld.output import Outputs, Output, StreamingOutputs
+from aworld.utils.common import get_local_ip
 from pydantic import BaseModel, Field
 
 from aworldspace.base_agent import AworldBaseAgent
 from datasets import load_dataset
 
+from aworldspace.utils.mcp_utils import load_all_mcp_config
 from aworldspace.utils.utils import question_scorer
 import re
 
@@ -111,7 +113,7 @@ class Pipeline(AworldBaseAgent):
         task_config:TaskConfig = task.conf
         gaia_task = await self.get_gaia_task(int(task_config.ext['origin_message']))
 
-        result = f"\n\n`GAIA TASK#{task_config.ext['origin_message']}`\n\n---\n\n"
+        result = f"\n\n`{get_local_ip()}` execute `GAIA TASK#{task_config.ext['origin_message']}`:\n\n---\n\n"
         result += f"**Question**: {gaia_task['Question']}\n"
         result += f"**Answer**: {gaia_task['Final answer']}\n"
         result += f"**Level**: {gaia_task['Level']}\n"
@@ -186,138 +188,4 @@ class Pipeline(AworldBaseAgent):
 
         return task
     async def load_mcp_config(self) -> dict:
-        return {
-            "mcpServers": {
-                "e2b-server": {
-                    "command": "npx",
-                    "args": [
-                        "-y",
-                        "@e2b/mcp-server"
-                    ],
-                    "env": {
-                        "E2B_API_KEY": os.environ["E2B_API_KEY"]
-                    }
-                },
-                "filesystem": {
-                    "command": "npx",
-                    "args": [
-                        "-y",
-                        "@modelcontextprotocol/server-filesystem",
-                        "${FILESYSTEM_SERVER_WORKDIR}"
-                    ]
-                },
-                "terminal-controller": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "terminal_controller"
-                    ]
-                },
-                "calculator": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_server_calculator"
-                    ]
-                },
-                "excel": {
-                    "command": "npx",
-                    "args": [
-                        "--yes",
-                        "@negokaz/excel-mcp-server"
-                    ],
-                    "env": {
-                        "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
-                    }
-                },
-                "google-search": {
-                    "command": "npx",
-                    "args": [
-                        "-y",
-                        "@adenot/mcp-google-search"
-                    ],
-                    "env": {
-                        "GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"],
-                        "GOOGLE_SEARCH_ENGINE_ID": os.environ["GOOGLE_SEARCH_ENGINE_ID"]
-                    }
-                },
-                "ms-playwright": {
-                    "command": "npx",
-                    "args": [
-                        "@playwright/mcp@latest",
-                        "--no-sandbox",
-                        "--headless"
-                    ],
-                    "env": {
-                        "PLAYWRIGHT_TIMEOUT": "120000",
-                        "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-                    }
-                },
-                "audio_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.audio_server"
-                    ]
-                },
-                "image_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.image_server"
-                    ]
-                },
-                "youtube_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.youtube_server"
-                    ]
-                },
-                "video_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.video_server"
-                    ]
-                },
-                "search_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.search_server"
-                    ]
-                },
-                "download_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.download_server"
-                    ],
-                    "env": {
-                        "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-                    }
-                },
-                "document_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.document_server"
-                    ]
-                },
-                "browser_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.browser_server"
-                    ]
-                },
-                "reasoning_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.reasoning_server"
-                    ]
-                }
-            }
-        }
+        return load_all_mcp_config()

@@ -1,6 +1,8 @@
 import inspect
 import traceback
+from logging.handlers import TimedRotatingFileHandler
 
+from aworld.utils.common import get_local_ip
 from fastapi import FastAPI, Request, Depends, status, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
@@ -50,7 +52,7 @@ def setup_logging():
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     log_path = os.path.join(log_dir, "aworldserver.log")
-    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler = TimedRotatingFileHandler(log_path, when='H', interval=1, backupCount=24)
     file_handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
@@ -857,6 +859,7 @@ def openai_chat_message_template(model: str):
         "id": f"{model}-{str(uuid.uuid4())}",
         "created": int(time.time()),
         "model": model,
+        "node_id": get_local_ip(),
         "choices": [{"index": 0, "logprobs": None, "finish_reason": None}],
     }
 
