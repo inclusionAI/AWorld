@@ -88,14 +88,23 @@ class MarkdownTableContent(BaseModel):
 
 
 def check_file_readable(file_path: str) -> Optional[str]:
-    """Check if file exists and is readable, return error message or None."""
     if not os.path.exists(file_path):
         return f"File does not exist: {file_path}"
     if not os.access(file_path, os.R_OK):
         return f"File is not readable: {file_path}"
-    if not (file_path.lower().endswith(".xlsx") or file_path.lower().endswith(".xls")):
-        return f"Unsupported file format. Only .xlsx and .xls are supported: {file_path}"
+    if not (
+        file_path.lower().endswith(".xlsx") or file_path.lower().endswith(".xls") or file_path.lower().endswith(".csv")
+    ):
+        return f"Unsupported file format. Only .xlsx, .xls, and .csv are supported: {file_path}"
     return None
+
+
+# Helper to read Excel or CSV
+def read_table_file(file_path: str):
+    if file_path.lower().endswith(".csv"):
+        return pd.read_csv(file_path)
+    else:
+        return pd.ExcelFile(file_path)
 
 
 def read_excel_file(file_path: str) -> pd.ExcelFile:
