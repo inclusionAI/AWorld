@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
@@ -117,7 +118,7 @@ async def download_file(
         logger.info(f"Successfully downloaded {url} to {output_file_path} ({file_size} bytes).")
         return {
             "status": "success",
-            "file_path": output_file_path,
+            "file_path": output_file_path if os.path.isabs(output_file_path) else Path(output_dir) / output_file_path,
             "size_bytes": file_size,
             "message": "File downloaded successfully.",
         }
