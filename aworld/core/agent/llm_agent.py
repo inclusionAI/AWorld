@@ -3,6 +3,9 @@
 import json
 import traceback
 import uuid
+
+import aworld.trace as trace
+
 from collections import OrderedDict
 from typing import Dict, Any, List, Union, Callable
 
@@ -370,6 +373,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if kwargs.get("output") and isinstance(kwargs.get("output"), StepOutput):
             output = kwargs["output"]
 
+        # Get current step information for trace recording
+        step = kwargs.get("step", 0)
+        exp_id = kwargs.get("exp_id", None)
+        source_span = trace.get_current_span()
+
+        if hasattr(observation, 'context') and observation.context:
+            self.task_histories = observation.context
+
         self._finished = False
         self.desc_transform()
         images = observation.images if self.conf.use_vision else None
@@ -391,38 +402,48 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         ))
 
         llm_response = None
-        try:
-            llm_response = call_llm_model(
-                self.llm,
-                messages=messages,
-                model=self.model_name,
-                temperature=self.conf.llm_config.llm_temperature,
-                tools=self.tools if self.use_tools_in_prompt and self.tools else None
-            )
+        span_name = f"llm_call_{exp_id}"
+        with trace.span(span_name) as llm_span:
+            llm_span.set_attributes({
+                "exp_id": exp_id,
+                "step": step,
+                "messages": json.dumps([str(m) for m in messages], ensure_ascii=False)
+            })
+            if source_span:
+                source_span.set_attribute("messages", json.dumps([str(m) for m in messages], ensure_ascii=False))
 
-            logger.info(f"Execute response: {llm_response.message}")
-        except Exception as e:
-            logger.warn(traceback.format_exc())
-            raise e
-        finally:
-            if llm_response:
-                use_tools = self.use_tool_list(llm_response)
-                is_use_tool_prompt = len(use_tools) > 0
-                if llm_response.error:
-                    logger.info(f"llm result error: {llm_response.error}")
+            try:
+                llm_response = call_llm_model(
+                    self.llm,
+                    messages=messages,
+                    model=self.model_name,
+                    temperature=self.conf.llm_config.llm_temperature,
+                    tools=self.tools if self.use_tools_in_prompt and self.tools else None
+                )
+
+                logger.info(f"Execute response: {llm_response.message}")
+            except Exception as e:
+                logger.warn(traceback.format_exc())
+                raise e
+            finally:
+                if llm_response:
+                    use_tools = self.use_tool_list(llm_response)
+                    is_use_tool_prompt = len(use_tools) > 0
+                    if llm_response.error:
+                        logger.info(f"llm result error: {llm_response.error}")
+                    else:
+                        self.memory.add(MemoryItem(
+                            content=llm_response.content,
+                            metadata={
+                                "role": "assistant",
+                                "agent_name": self.name(),
+                                "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
+                                "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
+                            }
+                        ))
                 else:
-                    self.memory.add(MemoryItem(
-                        content=llm_response.content,
-                        metadata={
-                            "role": "assistant",
-                            "agent_name": self.name(),
-                            "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
-                            "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
-                        }
-                    ))
-            else:
-                logger.error(f"{self.name()} failed to get LLM response")
-                raise RuntimeError(f"{self.name()} failed to get LLM response")
+                    logger.error(f"{self.name()} failed to get LLM response")
+                    raise RuntimeError(f"{self.name()} failed to get LLM response")
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
@@ -447,6 +468,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
             outputs = kwargs.get("outputs")
 
+        # Get current step information for trace recording
+        step = kwargs.get("step", 0)
+        exp_id = kwargs.get("exp_id", None)
+        source_span = trace.get_current_span()
+
+        if hasattr(observation, 'context') and observation.context:
+            self.task_histories = observation.context
+
         self._finished = False
         await self.async_desc_transform()
         images = observation.images if self.conf.use_vision else None
@@ -468,41 +497,60 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         ))
 
         llm_response = None
-        try:
-            llm_response = await acall_llm_model(
-                self.llm,
-                messages=messages,
-                model=self.model_name,
-                temperature=self.conf.llm_config.llm_temperature,
-                tools=self.tools if self.use_tools_in_prompt and self.tools else None,
-                stream=kwargs.get("stream", False)
-            )
-            if outputs and isinstance(outputs, Outputs):
-                await outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
+        span_name = f"llm_call_{exp_id}"
+        with trace.span(span_name) as llm_span:
+            llm_span.set_attributes({
+                "exp_id": exp_id,
+                "step": step,
+                "messages": json.dumps([str(m) for m in messages], ensure_ascii=False)
+            })
+            if source_span:
+                source_span.set_attribute("messages", json.dumps([str(m) for m in messages], ensure_ascii=False))
 
-            # logger.info(f"Execute response: {llm_response.message}")
-        except Exception as e:
-            logger.warn(traceback.format_exc())
-            raise e
-        finally:
-            if llm_response:
-                use_tools = self.use_tool_list(llm_response)
-                is_use_tool_prompt = len(use_tools) > 0
-                if llm_response.error:
-                    logger.info(f"llm result error: {llm_response.error}")
+            try:
+                llm_response = await acall_llm_model(
+                    self.llm,
+                    messages=messages,
+                    model=self.model_name,
+                    temperature=self.conf.llm_config.llm_temperature,
+                    tools=self.tools if self.use_tools_in_prompt and self.tools else None,
+                    stream=kwargs.get("stream", False)
+                )
+                if outputs and isinstance(outputs, Outputs):
+                    await outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
+
+                # Record LLM response
+                llm_span.set_attributes({
+                    "llm_response": json.dumps(llm_response.to_dict(), ensure_ascii=False),
+                    "tool_calls": json.dumps([tool_call.model_dump() for tool_call in
+                                              llm_response.tool_calls] if llm_response.tool_calls else [],
+                                             ensure_ascii=False),
+                    "error": llm_response.error if llm_response.error else ""
+                })
+
+            except Exception as e:
+                logger.warn(traceback.format_exc())
+                llm_span.set_attribute("error", str(e))
+                raise e
+            finally:
+                if llm_response:
+                    use_tools = self.use_tool_list(llm_response)
+                    is_use_tool_prompt = len(use_tools) > 0
+                    if llm_response.error:
+                        logger.info(f"llm result error: {llm_response.error}")
+                    else:
+                        self.memory.add(MemoryItem(
+                            content=llm_response.content,
+                            metadata={
+                                "role": "assistant",
+                                "agent_name": self.name(),
+                                "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
+                                "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
+                            }
+                        ))
                 else:
-                    self.memory.add(MemoryItem(
-                        content=llm_response.content,
-                        metadata={
-                            "role": "assistant",
-                            "agent_name": self.name(),
-                            "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
-                            "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
-                        }
-                    ))
-            else:
-                logger.error(f"{self.name()} failed to get LLM response")
-                raise RuntimeError(f"{self.name()} failed to get LLM response")
+                    logger.error(f"{self.name()} failed to get LLM response")
+                    raise RuntimeError(f"{self.name()} failed to get LLM response")
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
