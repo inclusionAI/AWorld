@@ -23,7 +23,8 @@ from langchain_openai import ChatOpenAI
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from examples.gaia.utils import setup_logger
+from aworld.logs.util import Color
+from examples.gaia.utils import color_log, setup_logger
 
 load_dotenv()
 logger = setup_logger("GaiaBrowser", output_folder_path=os.getenv("LOG_FILE_PATH"), file_name="browser.log")
@@ -95,12 +96,12 @@ async def browser_use(
         extend_system_message=extended_browser_system_prompt,
     )
     try:
-        logger.info(f"🎯 Task: {task}")
+        color_log(logger, f"🎯 Task: {task}", Color.purple)
         browser_execution: AgentHistoryList = await agent.run(max_steps=50)
         if browser_execution is not None and browser_execution.is_done() and browser_execution.is_successful():
             exec_trace = browser_execution.extracted_content()
-            logger.info(f"🎢 Detail: {json.dumps(exec_trace, ensure_ascii=False, indent=4)}")
-            logger.info(f"📈 Result: {browser_execution.final_result()}")
+            color_log(logger, f"🎢 Detail: {json.dumps(exec_trace, ensure_ascii=False, indent=4)}", Color.purple)
+            color_log(logger, f"📈 Result: {browser_execution.final_result()}", Color.purple)
             return browser_execution.final_result()
         return f"Browser execution failed for task: {task}"
     except Exception as e:
