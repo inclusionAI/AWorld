@@ -1,5 +1,6 @@
 from uuid import uuid4
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
+from types import MappingProxyType
 
 _BAGGAGE_KEY = "aworld.baggage." + str(uuid4())
 
@@ -14,13 +15,13 @@ class BaggageContext:
     @staticmethod
     def get_baggage() -> dict:
         """
-        Get the baggage.
+        Get the baggage. This is a read-only view of the baggage.
         Returns:
-            A dict of baggage.
+            The baggage.
         """
         baggage = _BAGGAGE_CONTEXT.get()
         if isinstance(baggage, dict):
-            return baggage
+            return MappingProxyType(baggage)
         return {}
 
     @staticmethod

@@ -1,7 +1,7 @@
-from re import L
 from aworld.trace.base import Propagator, Carrier, TraceContext
 from aworld.trace.baggage import BaggageContext
 from aworld.logs.util import logger
+from aworld.trace.base import AttributeValueType
 
 
 class SofaTracerBaggagePropagator(Propagator):
@@ -18,17 +18,6 @@ class SofaTracerBaggagePropagator(Propagator):
     _SPAN_ID_BAGGAGE_KEY = "attributes.sofa.rpcid"
     _PEN_ATTRS_BAGGAGE_KEY = "attributes.sofa.penattrs"
     _SYS_PEN_ATTRS_BAGGAGE_KEY = "attributes.sofa.syspenattrs"
-
-    def _get_value(self, carrier: Carrier, name: str) -> str:
-        """
-        Get value from carrier.
-        Args:
-            carrier: The carrier to get value from.
-            name: The name of the value.
-        Returns:
-            The value of the name.
-        """
-        return carrier.get(name) or carrier.get('HTTP_' + name.upper().replace('-', '_'))
 
     def extract(self, carrier: Carrier):
         """
@@ -72,16 +61,68 @@ class SofaTracerBaggagePropagator(Propagator):
             trace_context: The trace context to inject.
             carrier: The carrier to inject trace context to.
         """
-        trace_id = BaggageContext.get_baggage_value(self._TRACE_ID_BAGGAGE_KEY)
-        span_id = BaggageContext.get_baggage_value(self._SPAN_ID_BAGGAGE_KEY)
-        pen_attrs = BaggageContext.get_baggage_value(
-            self._PEN_ATTRS_BAGGAGE_KEY)
-        sys_pen_attrs = BaggageContext.get_baggage_value(
-            self._SYS_PEN_ATTRS_BAGGAGE_KEY)
-        if trace_id and span_id:
-            carrier.set(self._TRACE_ID_HEDER_NAMES[0], trace_id)
-            carrier.set(self._SPAN_ID_HEDER_NAMES[0], span_id)
-            if pen_attrs:
+        baggage = BaggageContext.get_baggage()
+
+        if baggage:
+            trace_id = baggage.get(self._TRACE_ID_BAGGAGE_KEY)
+            span_id = baggage.get(self._SPAN_ID_BAGGAGE_KEY)
+            if trace_id and span_id:
+                carrier.set(self._TRACE_ID_HEDER_NAMES[0], trace_id)
+                carrier.set(self._SPAN_ID_HEDER_NAMES[0], span_id)
+
+            pen_attrs_dict = {}
+            for key, value in baggage.items():
+                if key == self._TRACE_ID_BAGGAGE_KEY or key == self._SPAN_ID_BAGGAGE_KEY:
+                    continue
+                if key == self._PEN_ATTRS_BAGGAGE_KEY and value:
+                    pen_attrs_dict.update(dict(item.split("=")
+                                          for item in value.split("&")))
+                    continue
+                if key == self._SYS_PEN_ATTRS_BAGGAGE_KEY and value:
+                    carrier.set(self._SYS_PEN_ATTRS_HEDER_NAME, value)
+                    continue
+
+                # other baggage items will be injected to sofaPenAttrs
+                pen_attrs_dict.update({key: value})
+
+            if pen_attrs_dict:
+                pen_attrs = "&".join(f"{key}={value}"
+                                     for key, value in pen_attrs_dict.items())
                 carrier.set(self._PEN_ATTRS_HEDER_NAME, pen_attrs)
+
+
+class SofaSpanHelper:
+    """
+    Sofa span helper.
+    """
+
+    @staticmethod
+    def set_sofa_context_to_attr(span_attributes: dict[str, AttributeValueType]):
+        """
+        Set sofa context to span attributes.
+        Args:
+            span_attributes: The span attributes to set sofa context to.
+        """
+        baggage = BaggageContext.get_baggage()
+        if baggage:
+            trace_id = baggage.get(
+                SofaTracerBaggagePropagator._TRACE_ID_BAGGAGE_KEY)
+            span_id = baggage.get(
+                SofaTracerBaggagePropagator._SPAN_ID_BAGGAGE_KEY)
+            if trace_id and span_id:
+                span_attributes.update({
+                    SofaTracerBaggagePropagator._TRACE_ID_BAGGAGE_KEY: trace_id,
+                    SofaTracerBaggagePropagator._SPAN_ID_BAGGAGE_KEY: span_id
+                })
+            pen_attrs = baggage.get(
+                SofaTracerBaggagePropagator._PEN_ATTRS_BAGGAGE_KEY)
+            if pen_attrs:
+                span_attributes.update({
+                    SofaTracerBaggagePropagator._PEN_ATTRS_BAGGAGE_KEY: pen_attrs
+                })
+            sys_pen_attrs = baggage.get(
+                SofaTracerBaggagePropagator._SYS_PEN_ATTRS_BAGGAGE_KEY)
             if sys_pen_attrs:
-                carrier.set(self._SYS_PEN_ATTRS_HEDER_NAME, sys_pen_attrs)
+                span_attributes.update({
+                    SofaTracerBaggagePropagator._SYS_PEN_ATTRS_BAGGAGE_KEY: sys_pen_attrs
+                })

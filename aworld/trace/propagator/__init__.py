@@ -5,6 +5,7 @@ from contextvars import ContextVar, Token
 from aworld.trace.base import TraceContext, Propagator
 from aworld.trace.propagator.w3c import W3CTraceContextPropagator
 from aworld.trace.baggage.sofa_tracer import SofaTracerBaggagePropagator
+from aworld.trace.baggage.w3c import W3CBaggagePropagator
 from aworld.logs.util import logger
 
 
@@ -35,7 +36,7 @@ class CompositePropagator(Propagator):
 
 
 _GLOBAL_TRACE_PROPAGATOR = CompositePropagator(
-    [W3CTraceContextPropagator(), SofaTracerBaggagePropagator()])
+    [W3CTraceContextPropagator(), SofaTracerBaggagePropagator(), W3CBaggagePropagator()])
 
 
 def get_global_trace_propagator():

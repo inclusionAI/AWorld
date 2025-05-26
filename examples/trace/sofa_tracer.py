@@ -1,14 +1,18 @@
-import threading
-import flask
-from aworld.trace.instrumentation.flask import instrument_flask
-from aworld.trace.instrumentation.requests import instrument_requests
-from aworld.trace.baggage import BaggageContext
-from aworld.logs.util import logger
-import os
-from aworld.metrics.context_manager import MetricContext
+import os  # noqa: E402
 
-os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
-os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"
+os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"  # noqa
+os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"  # noqa
+os.environ["OTLP_TRACES_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/traces"  # noqa
+
+from aworld.metrics.context_manager import MetricContext
+from aworld.logs.util import logger
+from aworld.trace.baggage import BaggageContext
+from aworld.trace.instrumentation.requests import instrument_requests
+from aworld.trace.instrumentation.flask import instrument_flask
+import flask
+import threading
+
+
 MetricContext.configure(provider="otlp",
                         backend="antmonitor"
                         )
@@ -42,8 +46,8 @@ def invoke_api():
     session.headers.update({
         "SOFA-TraceId": "12345678901234567890123456789012",
         "SOFA-RpcId": "0.1.1",
-        "sofaPenAttrs": "key1=value1,key2=value2",
-        "sysPenAttrs": "key1=value1,key2=value2"
+        "sofaPenAttrs": "key1=value1&key2=value2",
+        "sysPenAttrs": "key1=value1&key2=value2"
     })
     response = session.get('http://localhost:7070/api/test')
     logger.info(f"invoke_api response={response.text}")
