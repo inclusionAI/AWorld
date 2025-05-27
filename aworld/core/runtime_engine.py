@@ -3,13 +3,14 @@
 import abc
 import inspect
 import os
+
 from concurrent.futures import Future
 from concurrent.futures.process import ProcessPoolExecutor
 from types import MethodType
-from typing import List, Callable, Any
+from typing import List, Callable, Any, Dict
 
 from aworld.core.common import Config
-
+from aworld.core.task import TaskResponse
 from aworld.logs.util import logger
 from aworld.utils.common import sync_exec
 
@@ -20,7 +21,7 @@ ODPS = "odps"
 K8S = "k8s"
 
 
-class RuntimeBackend(object):
+class RuntimeEngine(object):
     """Lightweight wrapper of computing engine runtime."""
 
     __metaclass__ = abc.ABCMeta
@@ -31,7 +32,7 @@ class RuntimeBackend(object):
         self.runtime = None
         register(conf.name, self)
 
-    def build_context(self):
+    def build_context(self) -> 'RuntimeEngine':
         """Create computing or storage engine runtime context.
 
         If create more times in the same runtime instance, will get the same context instance, like getOrCreate.
@@ -42,19 +43,15 @@ class RuntimeBackend(object):
         return self
 
     @abc.abstractmethod
-    def _build_context(self):
+    def _build_context(self) -> None:
         raise NotImplementedError("Base _build_context not implemented!")
 
-
-class TaskRuntimeBackend(RuntimeBackend):
-    """The runtime base class for task execution."""
-
     @abc.abstractmethod
-    def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs):
+    def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
         raise NotImplementedError("Base task execute not implemented!")
 
 
-class LocalRuntime(TaskRuntimeBackend):
+class LocalRuntime(RuntimeEngine):
     """Local runtime key is 'local', and execute tasks in local machine.
 
     Local runtime is used to verify or test locally.
@@ -111,7 +108,7 @@ class KubernetesRuntime(LocalRuntime):
     """kubernetes runtime key is 'kubernetes', and execute tasks in kubernetes cluster."""
 
 
-class SparkRuntime(TaskRuntimeBackend):
+class SparkRuntime(RuntimeEngine):
     """Spark runtime key is 'spark', and execute tasks in spark cluster.
 
     Note: Spark runtime must in driver end.
@@ -154,7 +151,7 @@ class SparkRuntime(TaskRuntimeBackend):
         return results
 
 
-class RayRuntime(TaskRuntimeBackend):
+class RayRuntime(RuntimeEngine):
     """Ray runtime key is 'ray', and execute tasks in ray cluster.
 
     Ray runtime in TaskRuntimeBackend only execute function (stateless), can be used to custom
@@ -188,7 +185,7 @@ class RayRuntime(TaskRuntimeBackend):
         return self.runtime.get(ray_map(fn_wrapper, funcs))
 
 
-class ODPSRuntime(TaskRuntimeBackend):
+class ODPSRuntime(RuntimeEngine):
     """ODPS runtime key is 'odps', and execute tasks in ODPS cluster.
 
     ODPS runtime can reused or create more instances to use.

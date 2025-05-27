@@ -7,7 +7,7 @@ from aworld.config.conf import TaskConfig, ConfigDict
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm, SEQUENCE, SEQUENCE_EVENT, SOCIAL, SOCIAL_EVENT
 from aworld.core.common import Config
-from aworld.core.runtime_backend import LOCAL
+from aworld.core.runtime_engine import LOCAL
 from aworld.core.task import Task, TaskResponse
 from aworld.output import StreamingOutputs
 from aworld import trace
@@ -66,11 +66,11 @@ class Runners:
             else:
                 runtime_backend = new_instance(
                     f"aworld.core.runtime_backend.{snake_to_camel(name)}Runtime", run_conf)
-            runtime_context = runtime_backend.build_context()
+            runtime_engine = runtime_backend.build_engine()
 
             if isinstance(task, Task):
                 task = [task]
-            return await runtime_context.execute([choose_runner(t).run for t in task])
+            return await runtime_engine.execute([choose_runner(t).run for t in task])
 
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:
