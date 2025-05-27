@@ -12,6 +12,7 @@ load_dotenv(os.path.join(os.getcwd(), ".env"))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+sys.path.insert(0, os.getcwd())
 
 def agent_page():
     st.set_page_config(
@@ -42,32 +43,32 @@ def agent_page():
 
             with st.chat_message("assistant"):
                 agent_name = st.session_state.selected_agent
-                agent_path = os.path.join(
+                agent_package_path = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)),
                     "agent_deploy",
                     agent_name,
                 )
 
-                agent_target_file = os.path.join(agent_path, "agent.py")
+                agent_module_file = os.path.join(agent_package_path, "agent.py")
 
                 try:
-                    # 直接从文件路径加载，避免sys.path操作
                     spec = importlib.util.spec_from_file_location(
-                        agent_name, agent_target_file
+                        agent_name, agent_module_file
                     )
 
                     if spec is None or spec.loader is None:
                         logger.error(
-                            f"Could not load spec for agent {agent_name} from {agent_target_file}"
+                            f"Could not load spec for agent {agent_name} from {agent_module_file}"
                         )
                         st.error(f"Error: Could not load agent! {agent_name}")
                         return
 
-                    if agent_path not in sys.path:
-                        sys.path.insert(0, agent_path)
-
                     agent_module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(agent_module)
+                except ModuleNotFoundError as e:
+                    logger.error(f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
+                    st.error(f"Error: Could not load agent! {agent_name}")
+                    return
 
                 except Exception as e:
                     logger.error(
@@ -76,13 +77,7 @@ def agent_page():
                     st.error(f"Error: Could not load agent! {agent_name}")
                     return
 
-                try:
-                    agent = agent_module.AWorldAgent()
-                except Exception as e:
-                    st.error(
-                        f"Error: Could not load agent {agent_name}, check model.py!"
-                    )
-                    return
+                agent = agent_module.AWorldAgent()
 
                 async def markdown_generator():
                     async for line in agent.run(prompt):

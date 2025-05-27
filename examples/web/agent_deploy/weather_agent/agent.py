@@ -2,7 +2,6 @@ import logging
 import os
 import json
 
-import aworld
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.base import Agent
 from aworld.core.task import Task

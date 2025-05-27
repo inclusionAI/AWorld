@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+from examples.gaia.gaia_agent_runner import GaiaAgentRunner
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +28,6 @@ class AWorldAgent:
             raise ValueError(
                 "LLM_MODEL_NAME, LLM_API_KEY, LLM_BASE_URL must be set in your envrionment variables"
             )
-
-        from examples.gaia.gaia_agent_runner import GaiaAgentRunner
 
         runner = GaiaAgentRunner(
             llm_provider=llm_provider,
