@@ -69,11 +69,17 @@ class Pipeline(AworldBaseAgent):
             name="2023_all",
             split="validation",
         )
-
+        
+        # Create task_id to index mapping for improved lookup performance
+        self.task_id_to_index = {}
+        for i, task in enumerate(self.full_dataset):
+            self.task_id_to_index[task['task_id']] = i
+        
+        logging.info(f"Loaded {len(self.full_dataset)} tasks, created task_id mapping")
         logging.info("gaia_agent init success")
 
     async def get_custom_input(self, user_message: str, model_id: str, messages: List[dict], body: dict) -> Any:
-        task = await self.get_gaia_task(int(user_message))
+        task = await self.get_gaia_task(user_message)
         return task['Question']
 
     async def get_agent_config(self):
@@ -99,9 +105,24 @@ class Pipeline(AworldBaseAgent):
             "reasoning_server",
         ]
 
-    async def get_gaia_task(self, index) -> dict:
-        logging.info(f"Start to process: gaia_task_{index}")
-        gaia_task = self.full_dataset[index]
+    async def get_gaia_task(self, task_id: str) -> dict:
+        """
+        Get GAIA task by task_id
+        Args:
+            task_id: Unique identifier of the task
+        Returns:
+            Corresponding task dictionary
+        """
+        logging.info(f"Start to process: gaia_task_{task_id}")
+        
+        # Search by task_id
+        if task_id in self.task_id_to_index:
+            index = self.task_id_to_index[task_id]
+            gaia_task = self.full_dataset[index]
+            logging.info(f"Found task by task_id: {task_id} at index: {index}")
+        else:
+            raise ValueError(f"Task with task_id '{task_id}' not found in dataset")
+        
         logging.info(f"Detail: {gaia_task}")
         logging.info(f"Question: {gaia_task['Question']}")
         logging.info(f"Level: {gaia_task['Level']}")
@@ -109,9 +130,38 @@ class Pipeline(AworldBaseAgent):
 
         return self.add_file_path(gaia_task)
 
+    def get_all_task_ids(self) -> List[str]:
+        """
+        Get list of all available task_ids
+        Returns:
+            List of all task_ids
+        """
+        return list(self.task_id_to_index.keys())
+    
+    def get_task_count(self) -> int:
+        """
+        Get total number of tasks
+        Returns:
+            Total task count
+        """
+        return len(self.full_dataset)
+    
+    def get_task_index_by_id(self, task_id: str) -> int:
+        """
+        Get task index in dataset by task_id
+        Args:
+            task_id: Unique identifier of the task
+        Returns:
+            Index of the task in the dataset
+        """
+        if task_id in self.task_id_to_index:
+            return self.task_id_to_index[task_id]
+        else:
+            raise ValueError(f"Task with task_id '{task_id}' not found in dataset")
+
     async def custom_output_before_task(self, outputs: Outputs, chat_id: str, task: Task) -> None:
         task_config:TaskConfig = task.conf
-        gaia_task = await self.get_gaia_task(int(task_config.ext['origin_message']))
+        gaia_task = await self.get_gaia_task(task_config.ext['origin_message'])
 
         result = f"\n\n`{get_local_ip()}` execute `GAIA TASK#{task_config.ext['origin_message']}`:\n\n---\n\n"
         result += f"**Question**: {gaia_task['Question']}\n"
@@ -133,7 +183,7 @@ class Pipeline(AworldBaseAgent):
 
         """
         task_config: TaskConfig = task.conf
-        gaia_task_id = int(task_config['ext']['origin_message'])
+        gaia_task_id = task_config['ext']['origin_message']
         gaia_task = await self.get_gaia_task(gaia_task_id)
         agent_result = ""
         if isinstance(outputs, StreamingOutputs):

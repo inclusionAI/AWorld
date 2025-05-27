@@ -44,7 +44,8 @@ def load_all_mcp_config():
                     "@negokaz/excel-mcp-server"
                 ],
                 "env": {
-                    "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
+                    "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000",
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
                 }
             },
             "google-search": {
