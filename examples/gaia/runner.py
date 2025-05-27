@@ -291,7 +291,6 @@ class GaiaRunner:
             return set(task["task_id"] for task in self.results if task["model_answer"] in ["<ERROR>", "<TIMEOUT: 20>"])
         return set()
 
-    @timeout(seconds=RunnerArguments.task_timeout)
     def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         task_id = task["task_id"]
         question = task["Question"]
