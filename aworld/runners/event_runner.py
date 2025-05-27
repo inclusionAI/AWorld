@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import asyncio
+import time
 import traceback
 from typing import List
 
@@ -10,24 +11,16 @@ from aworld.core.context.base import Context
 
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.event.base import Message, Constants
-from aworld.core.task import Task
+from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
+from aworld.runners.handler.agent import DefaultAgentHandler
 from aworld.runners.handler.base import DefaultHandler
+from aworld.runners.handler.task import DefaultTaskHandler
+from aworld.runners.handler.tool import DefaultToolHandler
 
 from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import override_in_subclass
-
-
-class TaskType:
-    START = "__start"
-    FINISHED = "__finished"
-    OUTPUT = "__output"
-    ERROR = "__error"
-    RERUN = "__rerun"
-    # for dynamic subscribe
-    SUBSCRIBE_TOOL = "__subscribe_tool"
-    SUBSCRIBE_AGENT = "__subscribe_agent"
 
 
 class TaskEventRunner(TaskRunner):
@@ -42,6 +35,7 @@ class TaskEventRunner(TaskRunner):
     async def pre_run(self):
         await super().pre_run()
 
+        self.swarm.max_steps = self.task.conf.get('max_steps', 100)
         observation = self.observation
         if not observation:
             raise RuntimeError("no observation, check run process")
@@ -73,6 +67,11 @@ class TaskEventRunner(TaskRunner):
                 await self.event_mng.register(Constants.TOOL, Constants.TOOL, tool.step)
 
         self._stopped = asyncio.Event()
+        # handler of process in framework
+        # todo: open to custom process
+        self.agent_handler = DefaultAgentHandler(swarm=self.swarm, endless_threshold=self.endless_threshold)
+        self.tool_handler = DefaultToolHandler(tools=self.tools, tools_conf=self.tools_conf)
+        self.task_handler = DefaultTaskHandler(runner=self)
 
     async def _common_process(self, message: Message) -> List[Message]:
         event_bus = self.event_mng.event_bus
@@ -132,6 +131,37 @@ class TaskEventRunner(TaskRunner):
     @abc.abstractmethod
     async def _do_run(self):
         """Task execution process in real."""
+        start = time.time()
+        msg = None
+        answer = None
+
+        while True:
+            if await self.is_stopped():
+                logger.info("stop task...")
+                if self._task_response is None:
+                    # send msg to output
+                    self._task_response = TaskResponse(msg=msg,
+                                                       answer=answer,
+                                                       success=True if not msg else False,
+                                                       id=self.task.id,
+                                                       time_cost=(time.time() - start),
+                                                       usage=self.context.token_usage)
+                break
+
+            # consume message
+            message: Message = await self.event_mng.consume()
+
+            # use registered handler to process message
+            results = await self._common_process(message)
+            if not results:
+                raise RuntimeError(f'{message} handler can not get the valid message')
+
+            # process in framework
+            async for event in self._inner_handler_process(
+                    results=results,
+                    handlers=[self.agent_handler, self.tool_handler, self.task_handler]
+            ):
+                await self.event_mng.emit_message(event)
 
     async def do_run(self, context: Context = None):
         if not self.swarm.initialized:

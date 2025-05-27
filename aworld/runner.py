@@ -3,26 +3,15 @@
 import asyncio
 from typing import List, Dict, Union
 
-from aworld.config.conf import TaskConfig, ConfigDict
+from aworld.config.conf import TaskConfig
 from aworld.core.agent.llm_agent import Agent
-from aworld.core.agent.swarm import Swarm, SEQUENCE, SEQUENCE_EVENT, SOCIAL, SOCIAL_EVENT
+from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
-from aworld.core.runtime_engine import LOCAL
-from aworld.core.task import Task, TaskResponse
+from aworld.core.task import Task, TaskResponse, Runner
 from aworld.output import StreamingOutputs
 from aworld import trace
-from aworld.runners.call_driven_runner import SequenceRunner, SocialRunner
-from aworld.runners.sequence import SequenceRunner as SequenceEventRunner
-from aworld.runners.social import SocialRunner as SocialEventRunner
-from aworld.runners.utils import choose_runner
-from aworld.utils.common import sync_exec, new_instance, snake_to_camel
-
-RUNNERS = {
-    SEQUENCE: SequenceRunner,
-    SOCIAL: SocialRunner,
-    SEQUENCE_EVENT: SequenceEventRunner,
-    SOCIAL_EVENT: SocialEventRunner
-}
+from aworld.runners.utils import choose_runners, execute_runner
+from aworld.utils.common import sync_exec
 
 
 class Runners:
@@ -57,20 +46,11 @@ class Runners:
             run_conf:
         """
         with trace.span('run_task') as span:
-            if not run_conf:
-                run_conf = ConfigDict({"name": LOCAL})
-
-            name = run_conf.name
-            if run_conf.get('cls'):
-                runtime_backend = new_instance(run_conf.cls, run_conf)
-            else:
-                runtime_backend = new_instance(
-                    f"aworld.core.runtime_backend.{snake_to_camel(name)}Runtime", run_conf)
-            runtime_engine = runtime_backend.build_engine()
-
             if isinstance(task, Task):
                 task = [task]
-            return await runtime_engine.execute([choose_runner(t).run for t in task])
+
+            runners: List[Runner] = await choose_runners(task)
+            return await execute_runner(runners, run_conf)
 
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:

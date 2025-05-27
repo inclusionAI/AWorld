@@ -11,11 +11,11 @@ from aworld.core.event.base import Message, Constants
 from aworld.core.task import TaskResponse
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
-from aworld.runners.event_runner import TaskEventRunner, TaskType
+from aworld.runners.utils import TaskType
 
 
 class DefaultTaskHandler(DefaultHandler):
-    def __init__(self, runner: TaskEventRunner):
+    def __init__(self, runner: 'TaskEventRunner'):
         self.runner = runner
 
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:

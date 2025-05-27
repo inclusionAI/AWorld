@@ -9,19 +9,19 @@ from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
-from aworld.runners.event_runner import TaskType
 from aworld.runners.handler.tool import DefaultToolHandler
-from aworld.runners.utils import endless_detect
+from aworld.runners.utils import endless_detect, TaskType
 
 
 class DefaultAgentHandler(DefaultHandler):
-    def __init__(self, swarm: Swarm):
+    def __init__(self, swarm: Swarm, endless_threshold: int):
         self.swarm = swarm
+        self.endless_threshold = endless_threshold
         self.agent_calls = []
 
     @classmethod
     def name(cls):
-        return "_sequential_agents_handler"
+        return "_agents_handler"
 
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
         if message.category != Constants.AGENT:
@@ -153,7 +153,15 @@ class DefaultAgentHandler(DefaultHandler):
             receiver=action.tool_name,
         )
 
-    async def _stop_check(self, action: ActionModel, caller: str):
+    async def _stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
+        if 'social' in self.swarm.topology_type:
+            async for event in self._social_stop_check(action, caller):
+                yield event
+        else:
+            async for event in self._sequence_stop_check(action, caller):
+                yield event
+
+    async def _sequence_stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
         agent = self.swarm.agents.get(action.agent_name)
         idx = next((i for i, x in enumerate(self.swarm.ordered_agents) if x == agent), -1)
         if idx == -1:
@@ -195,18 +203,7 @@ class DefaultAgentHandler(DefaultHandler):
                 receiver=self.swarm.ordered_agents[idx + 1].name()
             )
 
-
-class DefaultAgentSocialHandler(DefaultAgentHandler):
-    def __init__(self, swarm: Swarm, endless_threshold: int):
-        super().__init__(swarm)
-
-        self.endless_threshold = endless_threshold
-
-    @classmethod
-    def name(cls):
-        return "_social_agents_handler"
-
-    async def _stop_check(self, action: ActionModel, caller: str):
+    async def _social_stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
         agent = self.swarm.agents.get(action.agent_name)
 
         if endless_detect(self.agent_calls,

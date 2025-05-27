@@ -9,7 +9,7 @@ from aworld.core.event.base import Message, Constants
 from aworld.core.envs.tool import AsyncTool, Tool, ToolFactory
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
-from aworld.runners.event_runner import TaskType
+from aworld.runners.utils import TaskType
 
 
 class DefaultToolHandler(DefaultHandler):

@@ -47,7 +47,7 @@ class RuntimeEngine(object):
         raise NotImplementedError("Base _build_engine not implemented!")
 
     @abc.abstractmethod
-    def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
         raise NotImplementedError("Base task execute not implemented!")
 
 
@@ -171,7 +171,7 @@ class RayRuntime(RuntimeEngine):
         self.num_executors = self.conf.get('num_executors', 1)
         logger.info("ray init finished, executor number {}".format(str(self.num_executors)))
 
-    def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
         @self.runtime.remote
         def fn_wrapper(fn, *args):
             real_args = [arg for arg in args if not isinstance(arg, MethodType)]
@@ -182,7 +182,8 @@ class RayRuntime(RuntimeEngine):
             params.append([arg] * len(funcs))
 
         ray_map = lambda func, fn: [func.remote(x, *y) for x, *y in zip(fn, *params)]
-        return self.runtime.get(ray_map(fn_wrapper, funcs))
+        res_list = self.runtime.get(ray_map(fn_wrapper, funcs))
+        return {res.id: res for res in res_list}
 
 
 class ODPSRuntime(RuntimeEngine):
