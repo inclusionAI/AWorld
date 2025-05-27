@@ -4,7 +4,7 @@ import os
 from examples.gaia.mcp_servers.mcp_audio import mcp_audio_metadata
 from examples.gaia.mcp_servers.mcp_browser import browser_use
 from examples.gaia.mcp_servers.mcp_pdf import count_text_occurrences
-from examples.gaia.mcp_servers.mcp_vectore_store import index_text_file, search_text
+from examples.gaia.mcp_servers.mcp_vector_store import index_text_file, search_text
 from examples.gaia.mcp_servers.mcp_wayback import get_archived_page_content, list_available_versions
 
 
