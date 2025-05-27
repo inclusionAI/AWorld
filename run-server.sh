@@ -7,4 +7,4 @@ pip install -r examples/gaia/requirements.txt && \
 
 pip install -r examples/web/requirements.txt && \
 
-streamlit run examples/web/main.py
+streamlit run examples/web/main.py --server.port 8000

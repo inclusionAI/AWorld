@@ -38,5 +38,7 @@ RUN mkdir -p gaia-benchmark/fs && \
     mkdir -p static
 
 ENV PYTHONPATH=/app/aworld${PYTHONPATH:+:${PYTHONPATH}}
+ENV GAIA_DATASET_PATH=/app/aworld/examples/gaia/GAIA/2023
+ENV LOG_FILE_PATH=/app/aworld/gaia-benchmark/logs
 
 CMD [ "python", "examples/gaia/gaia_agent_server.py" ]
