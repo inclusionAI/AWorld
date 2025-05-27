@@ -3,7 +3,7 @@ import os
 import re
 import sys
 import traceback
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -247,7 +247,7 @@ async def get_pdf_metadata(file_path: str = Field(description="The absolute path
 )
 async def count_text_occurrences(
     file_path: str = Field(description="The absolute path to the PDF file."),
-    text_options: Set[str] = Field(description="A set of text strings to search for in the PDF."),
+    text_options: List[str] = Field(description="A set of regexp to search for in the PDF."),
 ) -> Dict[str, int]:
     """
     Count the number of specific text options that appear in a PDF file

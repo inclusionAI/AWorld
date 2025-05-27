@@ -24,6 +24,7 @@ class GaiaAgent(Agent):
         **kwargs,
     ):
         super().__init__(config, resp_parse_func, **kwargs)
+        self.truncated_length = 600
         self.logger: logging.Logger = self._setup_logger(
             logger_name=self.__class__.__name__, output_folder_path=output_folder_path
         )
@@ -40,7 +41,10 @@ class GaiaAgent(Agent):
             ActionModel sequence from agent policy
         """
         # LOG CKPT: Agent's Observation
-        self._color_log(f"🌍 Observation: {observation}", Color.pink)
+        _log_obs = observation
+        if len(_log_obs.content) > self.truncated_length:
+            _log_obs.content = _log_obs.content[: self.truncated_length] + "..."
+        self._color_log(f"🌍 Observation: {_log_obs}", Color.pink)
 
         if info is None:
             info = {}
