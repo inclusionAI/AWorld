@@ -13,14 +13,24 @@ logger = logging.getLogger(__name__)
 class GaiaAgentServer:
 
     def _get_model_config(self):
+        model_cfg = None
         try:
-            model_cfg = os.getenv("GAIA_MODEL_CONFIG")
-            return json.loads(model_cfg)
+            model_cfg_str = os.getenv("GAIA_MODEL_CONFIG")
+            model_cfg = json.loads(model_cfg_str)
         except Exception as e:
-            logger.error(
-                f">>> Gaia Agent: Error loading model config, model_cfg={model_cfg}: {traceback.format_exc()}"
+            logger.warning(
+                f">>> Gaia Agent: GAIA_MODEL_CONFIG is not configured, using LLM"
             )
-            raise e
+        if not model_cfg:
+            model_cfg = {
+                "provider": os.getenv("LLM_PROVIDER", "openai"),
+                "model": os.getenv("LLM_MODEL_NAME"),
+                "api_key": os.getenv("LLM_API_KEY", ""),
+                "base_url": os.getenv("LLM_BASE_URL"),
+                "temperature": os.getenv("LLM_TEMPERATURE", 0.0),
+            }
+        logger.info(f">>> Gaia Agent: LLM models config: {model_cfg}")
+        return model_cfg
 
     def _get_selected_model_config(self, model: str):
         selected_model = next(

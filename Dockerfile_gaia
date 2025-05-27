@@ -1,5 +1,14 @@
 FROM python:3.11-slim AS aworld_base
 
+# 在基础镜像中也配置阿里云镜像源
+RUN rm -f /etc/apt/sources.list.d/* && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /app/aworld
 
 WORKDIR /app/aworld
@@ -14,6 +23,15 @@ RUN python setup.py install
 
 # GAIA Docker Image
 FROM aworld_base AS gaia_env
+
+# 完全替换 sources.list 并清理缓存
+RUN rm -fv /etc/apt/sources.list.d/* && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm 
 
