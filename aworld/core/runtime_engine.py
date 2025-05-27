@@ -32,19 +32,19 @@ class RuntimeEngine(object):
         self.runtime = None
         register(conf.name, self)
 
-    def build_context(self) -> 'RuntimeEngine':
-        """Create computing or storage engine runtime context.
+    def build_engine(self) -> 'RuntimeEngine':
+        """Create computing engine runtime.
 
-        If create more times in the same runtime instance, will get the same context instance, like getOrCreate.
+        If create more times in the same runtime instance, will get the same engine instance, like getOrCreate.
         """
         if self.runtime is not None:
             return self
-        self._build_context()
+        self._build_engine()
         return self
 
     @abc.abstractmethod
-    def _build_context(self) -> None:
-        raise NotImplementedError("Base _build_context not implemented!")
+    def _build_engine(self) -> None:
+        raise NotImplementedError("Base _build_engine not implemented!")
 
     @abc.abstractmethod
     def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
@@ -57,7 +57,7 @@ class LocalRuntime(RuntimeEngine):
     Local runtime is used to verify or test locally.
     """
 
-    def _build_context(self):
+    def _build_engine(self):
         self.runtime = self
 
     def func_wrapper(self, func, *args, **kwargs):
@@ -69,7 +69,7 @@ class LocalRuntime(RuntimeEngine):
             res = func(*args, **kwargs)
         return res
 
-    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs):
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
         # opt of the one task process
         if len(funcs) == 1:
             func = funcs[0]
@@ -117,7 +117,7 @@ class SparkRuntime(RuntimeEngine):
     def __init__(self, engine_options):
         super(SparkRuntime, self).__init__(engine_options)
 
-    def _build_context(self):
+    def _build_engine(self):
         from pyspark.sql import SparkSession
 
         conf = self.conf
@@ -128,7 +128,7 @@ class SparkRuntime(RuntimeEngine):
             if 'PYSPARK_PYTHON' not in os.environ:
                 raise Exception('`PYSPARK_PYTHON` need to set first in environment variables.')
 
-            spark_builder = spark_builder.master('local[2]').config('spark.executor.instances', '1')
+            spark_builder = spark_builder.master('local[1]').config('spark.executor.instances', '1')
 
         self.runtime = spark_builder.appName(conf.job_name).getOrCreate()
 
@@ -141,7 +141,7 @@ class SparkRuntime(RuntimeEngine):
             re_args.append(arg)
         return re_args
 
-    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs):
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
         re_args = self.args_process(*args)
         res_rdd = self.runtime.sparkContext.parallelize(funcs, len(funcs)).map(
             lambda func: func(*re_args, **kwargs))
@@ -161,7 +161,7 @@ class RayRuntime(RuntimeEngine):
     def __init__(self, engine_options):
         super(RayRuntime, self).__init__(engine_options)
 
-    def _build_context(self):
+    def _build_engine(self):
         import ray
 
         if not ray.is_initialized():
@@ -171,7 +171,7 @@ class RayRuntime(RuntimeEngine):
         self.num_executors = self.conf.get('num_executors', 1)
         logger.info("ray init finished, executor number {}".format(str(self.num_executors)))
 
-    def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs):
+    def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
         @self.runtime.remote
         def fn_wrapper(fn, *args):
             real_args = [arg for arg in args if not isinstance(arg, MethodType)]
@@ -194,7 +194,7 @@ class ODPSRuntime(RuntimeEngine):
     def __init__(self, engine_options):
         super(ODPSRuntime, self).__init__(engine_options)
 
-    def _build_context(self):
+    def _build_engine(self):
         import odps
 
         if hasattr(self.conf, 'options'):
