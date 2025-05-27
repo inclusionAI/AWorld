@@ -40,6 +40,8 @@ extended_browser_system_prompt = """
 
 # Efficiecy Guidelines
 
+0. if download option is available, always **DOWNLOAD** as possible!
+
 1. Use specific search queries with key terms from the task
 
 2. Avoid getting distracted by tangential information
