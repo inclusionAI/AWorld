@@ -29,7 +29,6 @@ class AWorldAgent:
             )
 
         from examples.gaia.gaia_agent_runner import GaiaAgentRunner
-        import asyncio
 
         runner = GaiaAgentRunner(
             llm_provider=llm_provider,
