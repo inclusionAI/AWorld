@@ -31,6 +31,7 @@ class TaskType:
 
 
 class TaskEventRunner(TaskRunner):
+    """Event driven task runner."""
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, task: Task, *args, **kwargs):
@@ -130,7 +131,7 @@ class TaskEventRunner(TaskRunner):
 
     @abc.abstractmethod
     async def _do_run(self):
-        """"""
+        """Task execution process in real."""
 
     async def do_run(self, context: Context = None):
         if not self.swarm.initialized:

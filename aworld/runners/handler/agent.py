@@ -46,7 +46,7 @@ class DefaultAgentHandler(DefaultHandler):
         if isinstance(data, Observation):
             agent = self.swarm.agents.get(message.receiver)
             # agent + tool completion protocol.
-            if agent.finished and data.info.get('done'):
+            if agent and agent.finished and data.info.get('done'):
                 self.swarm.cur_step += 1
                 if agent.name() == self.swarm.communicate_agent.name():
                     yield Message(

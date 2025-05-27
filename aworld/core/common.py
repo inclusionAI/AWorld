@@ -45,6 +45,7 @@ class Observation(BaseModel):
     action_result: Optional[List[ActionResult]] = []
     # for video or image list
     images: Optional[List[str]] = []
+    # extend key value pair. `done` is an internal key
     info: Optional[Dict[str, Any]] = {}
 
 

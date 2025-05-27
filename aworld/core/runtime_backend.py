@@ -9,7 +9,6 @@ from types import MethodType
 from typing import List, Callable, Any
 
 from aworld.core.common import Config
-from aworld.core.task import Task
 
 from aworld.logs.util import logger
 from aworld.utils.common import sync_exec
@@ -18,10 +17,11 @@ LOCAL = "local"
 SPARK = "spark"
 RAY = "ray"
 ODPS = "odps"
+K8S = "k8s"
 
 
 class RuntimeBackend(object):
-    """Lightweight wrapper of computing and storage engine runtime."""
+    """Lightweight wrapper of computing engine runtime."""
 
     __metaclass__ = abc.ABCMeta
 
@@ -45,34 +45,41 @@ class RuntimeBackend(object):
     def _build_context(self):
         raise NotImplementedError("Base _build_context not implemented!")
 
+
+class TaskRuntimeBackend(RuntimeBackend):
+    """The runtime base class for task execution."""
+
     @abc.abstractmethod
-    def execute(self, tasks: List[Task]):
-        raise NotImplementedError("Base execute not implemented!")
+    def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs):
+        raise NotImplementedError("Base task execute not implemented!")
 
 
-class LocalRuntime(RuntimeBackend):
-    """Local runtime is used to verify or test locally."""
+class LocalRuntime(TaskRuntimeBackend):
+    """Local runtime key is 'local', and execute tasks in local machine.
+
+    Local runtime is used to verify or test locally.
+    """
 
     def _build_context(self):
         self.runtime = self
 
-    def func_wrapper(self, func):
+    def func_wrapper(self, func, *args, **kwargs):
         """Function is used to adapter computing form."""
 
         if inspect.iscoroutinefunction(func):
-            res = sync_exec(func, )
+            res = sync_exec(func, *args, **kwargs)
         else:
-            res = func()
+            res = func(*args, **kwargs)
         return res
 
-    async def execute(self, funcs: List[Callable[..., Any]]):
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs):
         # opt of the one task process
         if len(funcs) == 1:
             func = funcs[0]
             if inspect.iscoroutinefunction(func):
-                res = await func()
+                res = await func(*args, **kwargs)
             else:
-                res = func()
+                res = func(*args, **kwargs)
             return {res.id: res}
 
         num_executor = self.conf.get('num_executor', os.cpu_count() - 1)
@@ -86,7 +93,7 @@ class LocalRuntime(RuntimeBackend):
         futures = []
         with ProcessPoolExecutor(num_process) as pool:
             for func in funcs:
-                futures.append(pool.submit(self.func_wrapper, func))
+                futures.append(pool.submit(self.func_wrapper, func, *args, **kwargs))
 
         results = {}
         for future in futures:
@@ -96,10 +103,18 @@ class LocalRuntime(RuntimeBackend):
         return results
 
 
-class SparkRuntime(RuntimeBackend):
-    """Spark runtime must keep unique and RUNTIME key is 'spark'.
+class K8sRuntime(LocalRuntime):
+    """K8s runtime key is 'k8s', and execute tasks in kubernetes cluster."""
 
-    Spark runtime must in driver end, the implement is AntSpark runtime.
+
+class KubernetesRuntime(LocalRuntime):
+    """kubernetes runtime key is 'kubernetes', and execute tasks in kubernetes cluster."""
+
+
+class SparkRuntime(TaskRuntimeBackend):
+    """Spark runtime key is 'spark', and execute tasks in spark cluster.
+
+    Note: Spark runtime must in driver end.
     """
 
     def __init__(self, engine_options):
@@ -113,18 +128,38 @@ class SparkRuntime(RuntimeBackend):
         logger.info('build runtime is_local:{}'.format(is_local))
         spark_builder = SparkSession.builder
         if is_local:
-            if getattr(conf, 'use_python', False) and hasattr(conf, "python_command"):
-                assert (conf.python_command is
-                        not None), "e.g. python_command: /anaconda2/envs/new_env/bin/python3"
-                os.environ["PYSPARK_PYTHON"] = conf.python_command
-            else:
-                spark_builder = spark_builder.master('local[2]').config('spark.executor.instances', '1')
+            if 'PYSPARK_PYTHON' not in os.environ:
+                raise Exception('`PYSPARK_PYTHON` need to set first in environment variables.')
+
+            spark_builder = spark_builder.master('local[2]').config('spark.executor.instances', '1')
 
         self.runtime = spark_builder.appName(conf.job_name).getOrCreate()
 
+    def args_process(self, *args):
+        re_args = []
+        for arg in args:
+            if arg:
+                options = self.runtime.sparkContext.broadcast(arg)
+                arg = options.value
+            re_args.append(arg)
+        return re_args
 
-class RayRuntime(RuntimeBackend):
-    """Ray runtime is used to custom resources allocation and communication etc. advance features."""
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs):
+        re_args = self.args_process(*args)
+        res_rdd = self.runtime.sparkContext.parallelize(funcs, len(funcs)).map(
+            lambda func: func(*re_args, **kwargs))
+
+        res_list = res_rdd.collect()
+        results = {res.id: res for res in res_list}
+        return results
+
+
+class RayRuntime(TaskRuntimeBackend):
+    """Ray runtime key is 'ray', and execute tasks in ray cluster.
+
+    Ray runtime in TaskRuntimeBackend only execute function (stateless), can be used to custom
+    resource allocation and communication etc. advanced features.
+    """
 
     def __init__(self, engine_options):
         super(RayRuntime, self).__init__(engine_options)
@@ -139,9 +174,25 @@ class RayRuntime(RuntimeBackend):
         self.num_executors = self.conf.get('num_executors', 1)
         logger.info("ray init finished, executor number {}".format(str(self.num_executors)))
 
+    def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs):
+        @self.runtime.remote
+        def fn_wrapper(fn, *args):
+            real_args = [arg for arg in args if not isinstance(arg, MethodType)]
+            return fn(*real_args, **kwargs)
 
-class ODPSRuntime(RuntimeBackend):
-    """ODPS runtime can reused or create more instances to use."""
+        params = []
+        for arg in args:
+            params.append([arg] * len(funcs))
+
+        ray_map = lambda func, fn: [func.remote(x, *y) for x, *y in zip(fn, *params)]
+        return self.runtime.get(ray_map(fn_wrapper, funcs))
+
+
+class ODPSRuntime(TaskRuntimeBackend):
+    """ODPS runtime key is 'odps', and execute tasks in ODPS cluster.
+
+    ODPS runtime can reused or create more instances to use.
+    """
 
     def __init__(self, engine_options):
         super(ODPSRuntime, self).__init__(engine_options)

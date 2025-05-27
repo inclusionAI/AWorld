@@ -56,7 +56,7 @@ class DefaultTaskHandler(DefaultHandler):
                 topic=TaskType.START
             )
         elif topic == TaskType.FINISHED:
-            self.runner._task_response = TaskResponse(answer=message.payload,
+            self.runner._task_response = TaskResponse(answer=str(message.payload),
                                                       success=True,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),

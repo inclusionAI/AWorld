@@ -11,6 +11,7 @@ class EventManager:
     """The event manager is now used to build an event bus instance and store the messages recently."""
 
     def __init__(self, **kwargs):
+        # use conf to build event bus instance
         self.event_bus = InMemoryEventbus()
         self.context = Context.instance()
         # Record events in memory for re-consume.
