@@ -1,3 +1,5 @@
+#!/bin/bash
+cd "$(dirname "$0")"
 
 # Check your env file
 if [ ! -f ".env.docker" ]; then

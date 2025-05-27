@@ -1,3 +1,6 @@
+#!/bin/bash
+cd "$(dirname "$0")"
+
 pip install -r aworld/requirements.txt
 
 pip install -r examples/gaia/requirements.txt
