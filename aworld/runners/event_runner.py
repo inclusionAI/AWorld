@@ -20,6 +20,7 @@ from aworld.runners.handler.task import DefaultTaskHandler
 from aworld.runners.handler.tool import DefaultToolHandler
 
 from aworld.runners.task_runner import TaskRunner
+from aworld.runners.utils import TaskType
 from aworld.utils.common import override_in_subclass
 
 
@@ -35,7 +36,7 @@ class TaskEventRunner(TaskRunner):
     async def pre_run(self):
         await super().pre_run()
 
-        self.swarm.max_steps = self.task.conf.get('max_steps', 100)
+        self.swarm.max_steps = self.task.conf.get('max_steps', 10)
         observation = self.observation
         if not observation:
             raise RuntimeError("no observation, check run process")
