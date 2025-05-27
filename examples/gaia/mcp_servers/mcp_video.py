@@ -182,7 +182,7 @@ def create_video_content(prompt: str, video_frames: List[Dict[str, Any]]) -> Lis
 def mcp_analyze_video(
     video_url: str = Field(description="The input video in given filepath or url."),
     question: str = Field(description="The question to analyze."),
-    sample_rate: int = Field(default=2, description="Sample n frames per second."),
+    sample_rate: int = Field(default=1, description="Sample n frames per second."),
     start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
     end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
@@ -231,7 +231,7 @@ def mcp_analyze_video(
 @mcp.tool(description="Extract subtitles from the video.")
 def mcp_extract_video_subtitles(
     video_url: str = Field(description="The input video in given filepath or url."),
-    sample_rate: int = Field(default=2, description="Sample n frames per second."),
+    sample_rate: int = Field(default=1, description="Sample n frames per second."),
     start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
     end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
@@ -266,7 +266,7 @@ def mcp_extract_video_subtitles(
 @mcp.tool(description="Summarize the main content of the video.")
 def mcp_summarize_video(
     video_url: str = Field(description="The input video in given filepath or url."),
-    sample_rate: int = Field(default=2, description="Sample n frames per second."),
+    sample_rate: int = Field(default=1, description="Sample n frames per second."),
     start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
     end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
