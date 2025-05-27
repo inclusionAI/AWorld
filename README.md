@@ -1,12 +1,7 @@
-<p align="center">
-  <img src="readme_assets/aworld_logo.png" alt="AWorld Logo" width="100"/>
-  <br>
-  <span align="center" style="font-size: 24px;">
-    <b><span style="color: #1677FF;">A</span><span style="color: var(--color-fg-default, #333333);">World</span></b>
-  </span>
-</p>
-
 <div align="center">
+
+![](readme_assets/framework_logic.png)
+# AWorld: Advancing Agentic AI
 
 [![Twitter Follow](https://img.shields.io/twitter/follow/AWorld_AI?style=social)](https://x.com/InclusionAI666)
 [![WeChat QR Code](https://img.shields.io/badge/WeChat-Add%20us-green?logo=wechat&logoColor=white)](https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat_qr.png)
@@ -16,23 +11,51 @@
 </div>
 
 ## News
+- 🐳 [2024/05/22] For quick GAIA evaluation, MCP tools, AWorld, and models are now available in a single Docker image. See <code>./README-docker.md</code> for instructions and [youtube video](https://www.youtube.com/watch?v=kkYWeVvJKrg) for demo.
 - 🥳 [2024/05/13] AWorld has updated its state management for browser use and enhanced the video processing MCP server, achieving a score of 77.58 on GAIA validation (Pass@1 = 61.8) and maintaining its position as the top-ranked open-source framework. Learn more: [GAIA leaderboard](https://huggingface.co/spaces/gaia-benchmark/leaderboard)
 - ✨ [2025/04/23] AWorld ranks 3rd on GAIA benchmark (69.7 avg) with impressive Pass@1 = 58.8, 1st among open-source frameworks. Reproduce with <code>python examples/gaia/run.py</code>
 
 
-
 ## Introduction
 
-AWorld (short for Agent World) bridges the gap between theoretical MAS (Multi-Agent System) capabilities and practical implementation in real-world applications and guide you into the AGI World. *GLHF!* 🚀
+AWorld (short for Agent World) is an advanced framework where multiple AI agents collaborate to accomplish complex goals, such as those found in the GAIA benchmark. Its core features include:
 
-![AWorld Framework](readme_assets/framework.png)
+- **Collaboration**: Enables event-driven communication on two hierarchical levels—between agents, and between models and environments (e.g., MCP servers).
+- **Autonomy**: Features robust runtime state management for handling multi-step, intricate tasks.
+- **Evolution**: Supports a highly concurrent execution environment, empowering agents to learn and adapt across diverse tasks and environments.
 
-## [Core](aworld/core/README.md) concepts:
-- `agent`: AI-powered components that autonomously make decisions, use tools, do collaboration, and so on.
-- `swarm`: define the topology structure of a multiple agents system. 
-- `environment`: the runtime supporting communication among agents and tools.
-- `task`:  structure containing datasets, agents, tools, metrics, outputs, etc.
-- `runner`: complete a runnable specific workflow and obtain results.
+Unlock the power of intelligent teamwork and continuous improvement with AWorld!
+
+## What we offer:
+For quick evaluation, training, rapid prototyping, and other use cases, we provide Docker images that package the MCP tools, AWorld framework, and models together. This enables users to effortlessly utilize AWorld’s communication protocols and state management features right out of the box. The available Docker images are listed below:
+
+<table>
+  <tr>
+    <th>Scenario</th>
+    <th>Docker</th>
+    <th>Demo</th>
+  </tr>
+  <tr>
+    <td rowspan="1">Evalution</td>
+    <td>GAIA Evaluation Docker Image. For instructions on building the image, see <code>./README-docker.md</code>.</td>
+   <td>
+      <a href="https://www.youtube.com/watch?v=kkYWeVvJKrg" target="_blank">
+        <img src="https://img.youtube.com/vi/kkYWeVvJKrg/0.jpg" alt="AWorld Browser Demo on YouTube" width="95%">
+        <br>
+        <p align="left">▶️ Runing GAIA task in our image</p>
+      </a>
+   </td>
+  </tr>
+
+  <tr>
+    <td rowspan="1">Training</td>
+    <td>  GAIA Training Docker Images, supporting distributed and  high-concurrency deployments. Instructions for training are <i>coming soon</i>.
+</td>
+    <td></td>
+  </tr>
+</table>
+
+> **Want to build your own multi-agent system? Check out the detailed tutorials below to get started! ⬇️⬇️⬇️** 
 
 ## Installation
 With Python>=3.11:
