@@ -3,15 +3,16 @@ import json
 import os
 import sys
 import traceback
-from typing import List
+from typing import Dict, List
 
+import mutagen
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from openai import OpenAI
 from pydantic import Field
 
 from aworld.logs.util import logger
-from mcp_servers.utils import get_file_from_source
+from examples.gaia.mcp_servers.utils import get_file_from_source
 
 # Initialize MCP server
 mcp = FastMCP("audio-server")
@@ -107,6 +108,40 @@ async def mcp_transcribe_audio(
 
     logger.info(f"---get_text_by_transcribe-transcription:{transcriptions}")
     return json.dumps(transcriptions, ensure_ascii=False)
+
+
+@mcp.tool(description="Extract metadata from a given audio file path or URL.")
+async def mcp_audio_metadata(audio_url: str = Field(description="The input audio file path or URL.")) -> str:
+    """
+    Extract metadata from the given audio file path or URL.
+
+    Args:
+        audio_url: Path or URL to the audio file
+
+    Returns:
+        str: JSON string containing audio metadata
+    """
+    try:
+        file_path, _, _ = get_file_from_source(
+            audio_url,
+            allowed_mime_prefixes=["audio/"],
+            max_size_mb=50.0,
+            file_type="audio",
+        )
+        audio = mutagen.File(file_path, easy=True)
+        if audio is None:
+            raise ValueError("Unsupported or unreadable audio file format.")
+        metadata: Dict = dict(audio)
+        # Add duration if available
+        if hasattr(audio.info, "length"):
+            metadata["duration"] = audio.info.length
+        # Clean up temporary file if it was created for a URL
+        if file_path != os.path.abspath(audio_url) and os.path.exists(file_path):
+            os.unlink(file_path)
+        return json.dumps(metadata, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error extracting metadata from {audio_url}: {traceback.format_exc()}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 def main():
