@@ -127,3 +127,4 @@ package-lock.json
 
 # db files
 *.db
+*.db.lock
