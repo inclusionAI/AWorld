@@ -29,7 +29,7 @@ class RunnerArguments:
         --slice: A continuous range of question indices, e.g., 0:300
         --blacklist_file_path: Blacklist file path, e.g., blacklist.txt
         --skip: Skip the question if it has been processed before.
-        --is_submit: Whether to generate the submission file for GAIA leaderboard.
+        --submit: Whether to generate the submission file for GAIA leaderboard.
     """
 
     split: Literal["validation", "test"]
@@ -113,7 +113,7 @@ class GaiaRunner:
                 if self.runner_args.split == "validation":
                     self._report_results(self.results)
                 self._save_results()
-                if self.runner_args.is_submit:
+                if self.runner_args.submit:
                     self._export_submission()
                 # exit the program
                 sys.exit(0)
@@ -154,7 +154,7 @@ class GaiaRunner:
                 if task["task_id"] in self.retry_ids:
                     self.logger.info(f"🔄 Retrying task {task['task_id']}...")
                 else:
-                    self.logger.info(f"⏭️ Skipping task {task['task_id']}...")
+                    self.logger.debug(f"⏭️ Skipping task {task['task_id']}...")
                     continue
 
             self._color_log("=" * 20 + f" <START> {task['task_id']} <START/> " + "=" * 20, Color.darkgrey)
