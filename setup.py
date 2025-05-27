@@ -6,11 +6,7 @@ import sys
 import re
 import subprocess
 
-from aworld.utils.import_package import import_package
 from aworld.version_gen import generate_version_info, __version__
-
-# if no setuptools, install first
-import_package("setuptools")
 
 from setuptools import setup, find_packages
 from setuptools.command.sdist import sdist
@@ -205,20 +201,6 @@ class BinaryDistribution(Distribution):
 
 requirements = parse_requirements('aworld/requirements.txt')
 extra = os.getenv(AWorldInstaller.EXTRA_ENV, None)
-try:
-    import shutil
-
-    shutil.copytree(os.path.join(os.path.dirname(__file__), 'examples'),
-                    os.path.join(os.path.dirname(__file__), "aworld/examples"))
-    with open(f'{os.path.join(os.path.dirname(__file__), "aworld")}/examples/__init__.py', 'w+') as write:
-        write.write("")
-
-    shutil.copytree(os.path.join(os.path.dirname(__file__), 'mcp_servers'),
-                    os.path.join(os.path.dirname(__file__), "aworld/mcp_servers"))
-    with open(f'{os.path.join(os.path.dirname(__file__), "aworld")}/mcp_servers/__init__.py', 'w+') as write:
-        write.write("")
-except:
-    pass
 
 setup(
     name='aworld',
