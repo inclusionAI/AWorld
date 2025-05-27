@@ -288,7 +288,7 @@ class GaiaRunner:
         Filter the dataset whose `model_answer` is marked as <ERROR> or <TIMEOUT: 20>.
         """
         if self.runner_args.retry:
-            return set(task["task_id"] for task in self.results if task["answer"] in ["<ERROR>", "<TIMEOUT: 20>"])
+            return set(task["task_id"] for task in self.results if task["model_answer"] in ["<ERROR>", "<TIMEOUT: 20>"])
         return set()
 
     @timeout(seconds=RunnerArguments.task_timeout)
