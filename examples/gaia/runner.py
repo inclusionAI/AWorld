@@ -38,7 +38,8 @@ class RunnerArguments:
     slice: str = None
     blacklist_file_path: str = None
     skip: bool = False
-    is_submit: bool = False
+    retry: bool = False
+    submit: bool = False
     task_timeout: int = 20 * 60
 
 
@@ -84,9 +85,11 @@ class GaiaRunner:
         self.complete_dataset: List[Dict[str, Any]] = self._construct_dataset()
         self.target_dataset: List[Dict[str, Any]] = self._filter_dataset()
         self.results: List[Dict[str, Any]] = self._read_existing_results()
+        self.retry_ids: Set[str] = self._filter_retry_ids()
         self._color_log(f"📖 Fetched {len(self.complete_dataset)} tasks.", Color.bold)
         self._color_log(f"🧯 Filtered {len(self.target_dataset)} tasks.", Color.bold)
         self._color_log(f"💯 Read {len(self.results)} existing results.", Color.bold)
+        self._color_log(f"💪 Retry {len(self.retry_ids)} error results.", Color.bold)
 
     @staticmethod
     def cleanup(func: Callable) -> Callable:
@@ -148,7 +151,11 @@ class GaiaRunner:
         self._color_log("🎯 Task Submitted~~~", Color.red)
         for task in self.target_dataset:
             if self.runner_args.skip and any(result["task_id"] == task["task_id"] for result in self.results):
-                continue
+                if task["task_id"] in self.retry_ids:
+                    self.logger.info(f"🔄 Retrying task {task['task_id']}...")
+                else:
+                    self.logger.info(f"⏭️ Skipping task {task['task_id']}...")
+                    continue
 
             self._color_log("=" * 20 + f" <START> {task['task_id']} <START/> " + "=" * 20, Color.darkgrey)
             self._color_log(f"❓ Question: {task['Question']}", Color.lightblue)
@@ -275,6 +282,14 @@ class GaiaRunner:
                     self.logger.error(f"Error reading existing results: {traceback.format_exc()}")
                     self.logger.error(f"Original file path is: {output_file}. Check it carefully!")
         return results
+
+    def _filter_retry_ids(self) -> Set[str]:
+        """
+        Filter the dataset whose `model_answer` is marked as <ERROR> or <TIMEOUT: 20>.
+        """
+        if self.runner_args.retry:
+            return Set(task["task_id"] for task in self.results if task["answer"] in ["<ERROR>", "<TIMEOUT: 20>"])
+        return Set()
 
     @timeout(seconds=RunnerArguments.task_timeout)
     def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:

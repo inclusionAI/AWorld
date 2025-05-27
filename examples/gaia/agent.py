@@ -1,4 +1,5 @@
 import logging
+import os
 import traceback
 from typing import Any, Callable, Dict, List, Union
 
@@ -26,6 +27,7 @@ class GaiaAgent(Agent):
         self.logger: logging.Logger = self._setup_logger(
             logger_name=self.__class__.__name__, output_folder_path=output_folder_path
         )
+        self._color_log(f"Using {os.getenv('LLM_MODEL_NAME')} from {os.getenv('LLM_BASE_URL')}", Color.red)
 
     def policy(self, observation: Observation, info: Dict[str, Any] = None, **kwargs) -> Union[List[ActionModel], None]:
         """Adapted from the base class. Format necessary GAIA logs.

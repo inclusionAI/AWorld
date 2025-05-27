@@ -53,6 +53,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Dump the submission result",
     )
+    parser.add_argument(
+        "--retry",
+        action="store_true",
+        help="Retry the question if it fails (marked as <ERROR>)",
+    )
     args = parser.parse_args()
 
     dataset_path = os.getenv("GAIA_DATASET_PATH")
@@ -96,7 +101,8 @@ if __name__ == "__main__":
             slice=args.slice,
             blacklist_file_path=args.blacklist_file_path,
             skip=args.skip,
-            is_submit=args.submit,
+            retry=args.retry,
+            submit=args.submit,
         ),
         dataset_folder_path=dataset_path,
         output_folder_path=log_path,
