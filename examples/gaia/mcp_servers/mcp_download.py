@@ -76,7 +76,7 @@ async def download_file(
             logger.warning(
                 f"Output path is not absolute: {output_file_path}. Use enviroment variable instead: {fs_dir}"
             )
-            output_file_path = fs_dir + output_file_path
+            output_file_path = Path(fs_dir) / output_file_path
         else:
             return {
                 "status": "error",
