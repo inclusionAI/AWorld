@@ -1,10 +1,42 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import traceback
 from contextvars import ContextVar, Token
-from aworld.trace.base import TraceContext
+from aworld.trace.base import TraceContext, Propagator
 from aworld.trace.propagator.w3c import W3CTraceContextPropagator
+from aworld.trace.baggage.sofa_tracer import SofaTracerBaggagePropagator
+from aworld.trace.baggage.w3c import W3CBaggagePropagator
+from aworld.logs.util import logger
 
-_GLOBAL_TRACE_PROPAGATOR = W3CTraceContextPropagator()
+
+class CompositePropagator(Propagator):
+    """
+    Composite propagator.
+    """
+
+    def __init__(self, propagators: list[Propagator]):
+        self._propagators = propagators
+
+    def extract(self, carrier: dict) -> TraceContext:
+        trace_context = None
+        for propagator in self._propagators:
+            try:
+                context = propagator.extract(carrier)
+                if context and not trace_context:
+                    trace_context = context
+            except Exception:
+                stack_trace = traceback.format_exc()
+                logger.error(
+                    f"Failed to extract trace context: {stack_trace}, propagator: {propagator.__class__.__name__}")
+        return trace_context
+
+    def inject(self, trace_context: TraceContext, carrier: dict) -> None:
+        for propagator in self._propagators:
+            propagator.inject(trace_context, carrier)
+
+
+_GLOBAL_TRACE_PROPAGATOR = CompositePropagator(
+    [W3CTraceContextPropagator(), SofaTracerBaggagePropagator(), W3CBaggagePropagator()])
 
 
 def get_global_trace_propagator():

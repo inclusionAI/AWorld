@@ -41,6 +41,7 @@ from aworld.trace.base import (
 )
 from aworld.trace.span_cosumer import SpanConsumer
 from aworld.trace.propagator import get_global_trace_context
+from aworld.trace.baggage.sofa_tracer import SofaSpanHelper
 from aworld.logs.util import logger
 from aworld.utils.common import get_local_ip
 from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
@@ -122,6 +123,7 @@ class OTLPTracer(Tracer):
         start_time = start_time or time.time_ns()
         attributes = {**(attributes or {})}
         attributes.setdefault(ATTRIBUTES_MESSAGE_KEY, name)
+        SofaSpanHelper.set_sofa_context_to_attr(attributes)
 
         span_kind = self._convert_to_span_kind(
             span_type) if span_type else SpanKind.INTERNAL
@@ -149,6 +151,8 @@ class OTLPTracer(Tracer):
         start_time = start_time or time.time_ns()
         attributes = {**(attributes or {})}
         attributes.setdefault(ATTRIBUTES_MESSAGE_KEY, name)
+        SofaSpanHelper.set_sofa_context_to_attr(attributes)
+
         span_kind = self._convert_to_span_kind(
             span_type) if span_type else SpanKind.INTERNAL
         otel_context = None
@@ -294,6 +298,7 @@ class OTLPSpan(Span, ReadableSpan):
         otlp_context_api.detach(self._token)
         self._token = None
 
+
 def configure_otlp_provider(
         backends: Sequence[str] = None,
         base_url: str = None,
@@ -331,7 +336,8 @@ def configure_otlp_provider(
             if (os.getenv("START_TRACE_SERVER") or "true").lower() == "true":
                 logger.info("Starting trace server on port 8000.")
                 storage_dir = os.path.join("./", "trace_data", get_local_ip())
-                storage = kwargs.get("storage", InMemoryWithPersistStorage(storage_dir=storage_dir))
+                storage = kwargs.get(
+                    "storage", InMemoryWithPersistStorage(storage_dir=storage_dir))
                 processor.add_span_processor(
                     BatchSpanProcessor(InMemorySpanExporter(storage)))
                 start_trace_server(storage=storage, port=8000)
