@@ -40,7 +40,7 @@ extended_browser_system_prompt = """
 
 # Efficiecy Guidelines
 
-0. if download option is available, always **DOWNLOAD** as possible! Also, report the download link in your result.
+0. if download option is available, always **DOWNLOAD** as possible! Also, report the download url link in your result.
 
 1. Use specific search queries with key terms from the task
 
@@ -89,7 +89,7 @@ async def browser_use(
             downloads_dir=os.getenv("FILESYSTEM_SERVER_WORKDIR"),
         ),
         # Log path
-        save_conversation_path=os.getenv("LOG_FILE_PATH") + "/browser_trace.log",
+        save_conversation_path=os.getenv("LOG_FILE_PATH") + "/browser_log/trace.log",
     )
 
     try:

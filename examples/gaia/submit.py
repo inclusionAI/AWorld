@@ -78,6 +78,7 @@ if __name__ == "__main__":
                 "e2b-server",
                 "audio",
                 "browser",
+                "csv",
                 "docx",
                 "download",
                 "excel",
@@ -92,7 +93,7 @@ if __name__ == "__main__":
                 "wikipedia",
                 "yahoo-finance",
                 "youtube",
-                "vector-store",
+                # "vector-store",
             ],
         ),
         runner_args=RunnerArguments(

@@ -159,6 +159,13 @@
                 "examples.gaia.mcp_servers.mcp_browser"
             ]
         },
+        "csv": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_csv"
+            ]
+        },
         "docx": {
             "command": "python",
             "args": [
