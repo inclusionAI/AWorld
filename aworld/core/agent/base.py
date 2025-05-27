@@ -496,14 +496,15 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
         llm_response = None
         span_name = f"llm_call_{exp_id}"
+        serializable_messages = self._to_serializable(messages)
         with trace.span(span_name) as llm_span:
             llm_span.set_attributes({
                 "exp_id": exp_id,
                 "step": step,
-                "messages": json.dumps([str(m) for m in messages], ensure_ascii=False)
+                "messages": json.dumps(serializable_messages, ensure_ascii=False)
             })
             if source_span:
-                source_span.set_attribute("messages", json.dumps([str(m) for m in messages], ensure_ascii=False))
+                source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
 
             try:
                 llm_response = call_llm_model(
@@ -592,14 +593,16 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
         llm_response = None
         span_name = f"llm_call_{exp_id}"
+
+        serializable_messages = self._to_serializable(messages)
         with trace.span(span_name) as llm_span:
             llm_span.set_attributes({
                 "exp_id": exp_id,
                 "step": step,
-                "messages": json.dumps([str(m) for m in messages], ensure_ascii=False)
+                "messages": json.dumps(serializable_messages, ensure_ascii=False)
             })
             if source_span:
-                source_span.set_attribute("messages", json.dumps([str(m) for m in messages], ensure_ascii=False))
+                source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
 
             try:
                 llm_response = await acall_llm_model(
@@ -648,6 +651,20 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         if not agent_result.is_call_tool:
             self._finished = True
         return agent_result.actions
+
+    def _to_serializable(self, obj):
+        if isinstance(obj, dict):
+            return {k: self._to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._to_serializable(i) for i in obj]
+        elif hasattr(obj, "to_dict"):
+            return obj.to_dict()
+        elif hasattr(obj, "model_dump"):
+            return obj.model_dump()
+        elif hasattr(obj, "dict"):
+            return obj.dict()
+        else:
+            return obj
 
 
 class AgentManager(Factory):
