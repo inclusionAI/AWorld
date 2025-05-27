@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, Any, AsyncGenerator
 
 from aworld.models.llm import acall_llm_model, get_llm_model
@@ -14,6 +15,7 @@ class AworldTask(BaseModel):
     node_id: Optional[str] = Field(default=None, description="execute task node_id")
 
 class AworldTaskResult(BaseModel):
+    task: AworldTask = Field(default=None, description="task")
     server_host: str = Field(default=None, description="aworld server id")
     data: Any = Field(default=None, description="result data")
 
@@ -43,7 +45,7 @@ class AworldTaskClient(BaseModel):
         
     async def _submit_task(self, aworld_server, task: AworldTask):
         try:
-            print(f"submit task#{task.task_id} to cluster#[{aworld_server}]")
+            logging.info(f"submit task#{task.task_id} to cluster#[{aworld_server}]")
 
             return await self._submit_task_to_server(aworld_server, task)
         except Exception as e:
@@ -72,25 +74,25 @@ class AworldTaskClient(BaseModel):
             async for item in data:
                 if item.raw_response and item.raw_response.model_extra and item.raw_response.model_extra.get('node_id'):
                     if not task.node_id:
-                        print(f"submit task#{task.task_id} success. execute pod ip is [{item.raw_response.model_extra.get('node_id')}]")
+                        logging.info(f"submit task#{task.task_id} success. execute pod ip is [{item.raw_response.model_extra.get('node_id')}]")
                     task.node_id = item.raw_response.model_extra.get('node_id')
 
                 if item.content:
-                    print(item)
+                    logging.info(f"task#{task.task_id} response data chunk is: {item}")
                     result_data += item.content
 
 
         elif isinstance(data, ModelResponse):
             if data.raw_response and data.raw_response.model_extra and data.raw_response.model_extra.get('node_id'):
                 if not task.node_id:
-                    print(f"submit task#{task.task_id} success. execute pod ip is [{data.raw_response.model_extra.get('node_id')}]")
+                    logging.info(f"submit task#{task.task_id} success. execute pod ip is [{data.raw_response.model_extra.get('node_id')}]")
                 task.node_id = data.raw_response.model_extra.get('node_id')
 
-            print(data)
+            logging.info(f"task#{task.task_id} response data is: {data}")
             if data.content:
                 result_data = data.content
 
-        return AworldTaskResult(server_host=aworld_server, data=result_data)
+        return AworldTaskResult(task=task, server_host=aworld_server, data=result_data)
 
     async def get_task_state(self, task_id: str):
         if not isinstance(self.task_states, dict):
