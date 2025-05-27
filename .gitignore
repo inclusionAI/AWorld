@@ -124,3 +124,6 @@ gaia-benchmark/
 node_modules/
 package.json
 package-lock.json
+
+# db files
+*.db
