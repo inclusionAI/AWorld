@@ -6,6 +6,8 @@ import traceback
 import utils
 import importlib.util
 import inspect
+import aworld.trace as trace
+from trace_net import generate_trace_graph
 
 load_dotenv()
 
@@ -13,14 +15,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def agent_page():
-    with st.sidebar:
-        st.title("Agents List")
+def agent_page(trace_id):
 
-        for agent in utils.list_agents():
-            if st.button(agent):
-                st.session_state.selected_agent = agent
-                st.rerun()
+    with st.sidebar:
+        agent_list_tab, trace_tab = st.tabs(
+            [
+                "Agents List",
+                "Trace"
+            ]
+        )
+        with agent_list_tab:
+            st.title("Agents List")
+            for agent in utils.list_agents():
+                if st.button(agent):
+                    st.session_state.selected_agent = agent
+                    st.rerun()
+
+        with trace_tab:
+            st.title("Trace")
+            generate_trace_graph(trace_id)
+            st.components.v1.html(open("trace_graph.html").read(), height=800)
 
     if "selected_agent" not in st.session_state:
         st.session_state.selected_agent = None
@@ -61,8 +75,11 @@ def agent_page():
                 agent = Agent()
 
                 async def markdown_generator():
-                    async for line in agent.run(prompt):
-                        yield f"\n{line}\n"
+                    with trace.span("start") as span:
+                        trace_id = span.get_trace_id()
+                        logger.info(f"trace_id={trace_id}")
+                        async for line in agent.run(prompt):
+                            yield f"\n{line}\n"
 
                 st.write_stream(markdown_generator())
     else:
@@ -71,7 +88,7 @@ def agent_page():
 
 
 try:
-    agent_page()
+    agent_page("e9fefdf8904f4b82ae7ca8f6f51de564")
 except Exception as e:
     logger.error(f">>> Error: {traceback.format_exc()}")
     st.error(f"Error: {str(e)}")

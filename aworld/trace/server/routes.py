@@ -3,6 +3,7 @@ from aworld.trace.opentelemetry.memory_storage import SpanModel, TraceStorage
 
 app = Flask(__name__, template_folder='../../web/templates')
 
+
 def build_trace_tree(spans: list[SpanModel]):
     spans_dict = {span.span_id: span.dict() for span in spans}
     root_spans = [span for span in spans_dict.values()
@@ -35,5 +36,15 @@ def setup_routes(storage: TraceStorage):
                 'root_span': trace_tree,
             })
         return jsonify(trace_data)
+
+    @app.route('/api/traces/<trace_id>')
+    def get_trace(trace_id):
+        spans = storage.get_all_spans(trace_id)
+        spans_sorted = sorted(spans, key=lambda x: x.start_time)
+        trace_tree = build_trace_tree(spans_sorted)
+        return jsonify({
+            'trace_id': trace_id,
+            'root_span': trace_tree,
+        })
 
     return app
