@@ -9,6 +9,7 @@ xmltodict
 docx2markdown
 python-pptx
 browser_use
+faiss-cpu==1.9.0
 pycryptodome
 tabulate
 flask
