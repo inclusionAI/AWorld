@@ -92,6 +92,7 @@ if __name__ == "__main__":
                 "wikipedia",
                 "yahoo-finance",
                 "youtube",
+                "vector-store",
             ],
         ),
         runner_args=RunnerArguments(

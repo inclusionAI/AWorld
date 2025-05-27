@@ -256,6 +256,13 @@
                 "-m",
                 "examples.gaia.mcp_servers.mcp_youtube"
             ]
+        },
+        "vector-store": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_vector_store"
+            ]
         }
     }
 }
