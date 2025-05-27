@@ -1,8 +1,9 @@
 import logging
 import os
+import re
 import sys
 import traceback
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -236,6 +237,48 @@ async def get_pdf_metadata(file_path: str = Field(description="The absolute path
     except Exception as e:
         logger.error(f"Error getting metadata from {file_path}: {e}\n{traceback.format_exc()}")
         raise RuntimeError(f"Error processing PDF for metadata: {str(e)}")
+
+
+@mcp.tool(
+    description=(
+        "Count the number of specific text options that appear in a PDF file "
+        "and returns the exact occurence of each text option."
+    )
+)
+async def count_text_occurrences(
+    file_path: str = Field(description="The absolute path to the PDF file."),
+    text_options: Set[str] = Field(description="A set of text strings to search for in the PDF."),
+) -> Dict[str, int]:
+    """
+    Count the number of specific text options that appear in a PDF file
+    and returns the exact occurence of each text option.
+
+    Args:
+        file_path: The absolute path to the PDF file.
+        text_options: List of text strings to search for.
+
+    Returns:
+        A dictionary counts each text option found in the given PDF.
+    """
+    if not os.path.exists(file_path):
+        logger.error(f"File not found: {file_path}")
+        raise FileNotFoundError(f"File not found: {file_path}")
+    results = {option: 0 for option in text_options}
+    try:
+        doc = fitz.open(file_path)
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            page_text = page.get_text("text") or ""
+            for option in text_options:
+                matches = re.findall(option, page_text, re.IGNORECASE)
+                results[option] += len(matches)
+        return results
+    except Exception as e:
+        logger.error(f"Error searching text in PDF {file_path}: {e}\n{traceback.format_exc()}")
+        raise RuntimeError(f"Error searching text in PDF: {str(e)}")
+    finally:
+        if doc:
+            doc.close()
 
 
 @mcp.tool(
