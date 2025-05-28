@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "amap-amap-sse": {
+      "type": "sse",
+      "url": "https://mcp.amap.com/sse?key=",
+      "timeout": 5.0,
+      "sse_read_timeout": 300.0
+    }
+  }
+}
