@@ -196,6 +196,9 @@ class Memory(MemoryBase):
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)
 
+    def summary_content(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+        return to_be_summary.content
+
     def delete(self, memory_id):
         self.memory_store.delete(memory_id)
 

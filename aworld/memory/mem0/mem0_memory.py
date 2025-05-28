@@ -3,12 +3,14 @@ import os
 import traceback
 from typing import Optional
 
-from cohere.finetuning import BaseModel
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 
+from aworld.config import AgentConfig
 from aworld.core.memory import MemoryStore, MemoryConfig, MemoryBase, MemoryItem
 from aworld.logs.util import logger
-
+from aworld.memory.utils import count_tokens
+from aworld.models.llm import get_llm_model, call_llm_model
 
 class Mem0Memory(MemoryBase):
 
@@ -162,6 +164,56 @@ class Mem0Memory(MemoryBase):
 
     def delete(self, memory_id):
         self.memory_store.delete(memory_id)
+
+    def summary_content(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+        logger.info(f'summary_content: token length: {count_tokens(self.config.llm_instance.model_name, to_be_summary.content)}')
+        if self.config.enable_summary and len(to_be_summary.content) < self.config.summary_single_context_length:
+            return to_be_summary.content
+
+        # Get all messages
+        all_messages = self.memory_store.get_all(filters=filters)
+
+        # parsed_messages = []
+        parsed_messages = [
+            {
+                'role': message.metadata['role'],
+                'content': message.content,
+                'tool_calls': message.metadata.get('tool_calls') if message.metadata.get('tool_calls') else None
+            }
+            for message in all_messages]
+        parsed_messages.append({
+            "role": to_be_summary.metadata['role'],
+            "content": f"{to_be_summary.content[:10000]}",
+            'tool_call_id': to_be_summary.metadata['tool_call_id'],
+        })
+
+
+        agent_config = AgentConfig(
+            llm_provider="openai",
+            llm_model_name=os.environ["LLM_MODEL_NAME"],
+            llm_api_key=os.environ["LLM_API_KEY"],
+            llm_base_url=os.environ["LLM_BASE_URL"]
+        )
+        llm_model = get_llm_model(
+            conf=agent_config
+        )
+
+        history_context = ""
+        for item in parsed_messages:
+            history_context += f"\n\n{item['role']}: {item['content']}, {'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else '' }"
+
+        summary_messages = [
+            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+        ]
+        llm_response = call_llm_model(
+            llm_model,
+            messages=summary_messages,
+            stream=False
+        )
+        logger.info(f'summary_content:token length: {count_tokens("", llm_response.content)}, result is {llm_response.content[:400]+"...truncated"} ')
+
+        return llm_response.content
+
 
     def get(self, memory_id) -> Optional[MemoryItem]:
         # self.memory_store.get(memory_id)

@@ -14,7 +14,6 @@ from aworld.core.llm_provider_base import LLMProviderBase
 class MemoryItem(BaseModel):
     id: str = Field(description="id")
     content: Any = Field(description="content")
-    hash: str = Field(description="content hash")
     created_at: Optional[str] = Field(None, description="created at")
     updated_at: Optional[str] = Field(None, description="updated at")
     metadata: dict = Field(
@@ -29,8 +28,6 @@ class MemoryItem(BaseModel):
         # Set default values for optional fields
         if "id" not in data:
             data["id"] = str(uuid.uuid4())
-        if "hash" not in data:
-            data["hash"] = hashlib.md5((data.get("content", "") or "").encode()).hexdigest()
         if "created_at" not in data:
             data["created_at"] = datetime.datetime.now().isoformat()
         if "updated_at" not in data:
@@ -145,12 +142,36 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
+    def summary_content(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+        """
+        Summary msg use llm to create summary memory.
+        Use filters to get memory list, then use llm to create summary memory from content.
+        Ensure the completeness of the summary matched context, do not lose information.
+
+        Args:
+            to_be_summary (MemoryItem): msg to summary.
+            filters (dict): filters to get memory list.
+            last_rounds (int): last rounds of memory list.
+
+        Returns:
+            str: summary memory.
+        """
+
+    @abstractmethod
     def delete(self, memory_id):
         """Delete a memory by ID.
 
         Args:
             memory_id (str): ID of the memory to delete.
         """
+
+SUMMARY_PROMPT = """
+You are a helpful assistant that summarizes the conversation history.
+- 1. you should understand the topic of conversation.
+- 2. you need to ensure the completeness of the summary matched context, do not lose information.
+- 3. you need to ensure the summary is concise and clear.
+"""
+
 
 class MemoryConfig(BaseModel):
     """Configuration for procedural memory."""
@@ -164,6 +185,7 @@ class MemoryConfig(BaseModel):
     enable_summary: bool = Field(default=False, description="enable_summary use llm to create summary memory")
     summary_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
     summary_single_context_length: int = Field(default=4000, description=" when the content length is greater than the summary_single_context_length, the summary will be created")
+    summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
 
     # Embedder settings
     embedder_provider: Literal['openai', 'gemini', 'ollama', 'huggingface'] = 'huggingface'

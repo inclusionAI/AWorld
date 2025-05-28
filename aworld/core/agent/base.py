@@ -292,19 +292,13 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             content = agent_prompt.format(task=content)
 
         cur_msg = {'role': 'user', 'content': content}
-        histories = self.task_histories
+        histories = self.task_histories or []
         # query from memory,
-        histories = histories.extend(self.memory.get_last_n(self.history_messages, filters={
+        histories_filters = {
             "agent_id": self.id,
             "task_id": cur_task.id if cur_task else None,
-        }))
-        if histories:
-            pass
-        else:
-            histories = self.memory.get_last_n(self.history_messages, filters={
-                "agent_id": self.id,
-                "task_id": cur_task.id if cur_task else None,
-            })
+        }
+        histories.extend(self.memory.get_last_n(self.history_messages, filters=histories_filters))
         if histories:
             # default use the first tool call
             for history in histories:
@@ -332,8 +326,25 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 urls.append({'type': 'image_url', 'image_url': {"url": image_url}})
 
             cur_msg['content'] = urls
+        self.summary_cur_msg(cur_msg, cur_task, histories_filters)
         messages.append(cur_msg)
         return messages
+
+    def summary_cur_msg(self, cur_msg, cur_task, histories_filters):
+        to_be_summary = MemoryItem(
+            content=cur_msg['content'],
+            memory_type="message" if cur_msg['role'] in ["assistant", "tool"] else "init",
+            metadata={
+                "role": cur_msg['role'],
+                "agent_name": self.name(),
+                "agent_id": self.id,
+                "user_id": cur_task.user_id if cur_task else None,
+                "session_id": cur_task.session_id if cur_task else None,
+                "task_id": cur_task.id if cur_task else None,
+                "tool_call_id": cur_msg.get("tool_call_id")
+            }
+        )
+        cur_msg['content'] = self.memory.summary_content(to_be_summary, filters=histories_filters, last_rounds=self.history_messages)
 
     def use_tool_list(self, resp: ModelResponse) -> List[Dict[str, Any]]:
         tool_list = []
@@ -598,7 +609,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             self.task_histories = observation.context
 
         self._finished = False
-        await self.async_desc_transform()
+        if not self.tools:
+            await self.async_desc_transform()
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
