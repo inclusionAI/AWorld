@@ -7,7 +7,7 @@ from base import AworldTask
 from client.aworld_client import AworldTaskClient
 
 AWORLD_TASK_CLIENT = AworldTaskClient(
-    know_hosts=["nlb-lm8m8hityawuxbxvof.ap-southeast-1.nlb.aliyuncsslbintl.com:9099"]
+    know_hosts=["localhost:9999"]
 )
 
 
