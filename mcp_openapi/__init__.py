@@ -2,7 +2,7 @@
 MCP OpenAPI - A RESTful API proxy for Model Context Protocol (MCP) servers
 """
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 # 导入主模块和server模块
 from .mcp_openapi.main import run, cli_main

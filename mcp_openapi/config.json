@@ -16,7 +16,7 @@
       "command": "npx",
       "args": ["-y", "tavily-mcp@0.1.2"],
       "env": {
-        "TAVILY_API_KEY": "tvly-dev"
+        "TAVILY_API_KEY": "tvly-dev-"
       }
     }
   }

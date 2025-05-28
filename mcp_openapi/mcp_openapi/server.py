@@ -11,6 +11,12 @@ from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
 from mcp import StdioServerParameters
 
+logger = logging.getLogger("mcp_openapi")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+
 from mcp.types import (
     CallToolResult,
     PARSE_ERROR,
@@ -222,6 +228,7 @@ def get_tool_handler(
                     async with stdio_client(server_params) as (reader, writer):
                         async with ClientSession(reader, writer) as session:
                             # Use the newly created session to call the MCP tool
+                            logger.info(f"session.call_tool-stdio: {endpoint_name}, with args: {args}")
                             result = await session.call_tool(endpoint_name, arguments=args)
                             
                             # Process the result
@@ -254,6 +261,7 @@ def get_tool_handler(
                     async with sse_client(url=url, sse_read_timeout=sse_read_timeout) as (reader, writer):
                         async with ClientSession(reader, writer) as session:
                             # Use the newly created session to call the MCP tool
+                            logger.info(f"session.call_tool-sse: {endpoint_name}, with args: {args}")
                             result = await session.call_tool(endpoint_name, arguments=args)
                             
                             # Process the result

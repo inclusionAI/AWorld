@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="mcp_openapi",
-    version="0.1.4",
+    version="0.1.5",
     author="Your Name",
     author_email="your.email@example.com",
     description="OpenAPI proxy for Model Context Protocol (MCP) servers",
