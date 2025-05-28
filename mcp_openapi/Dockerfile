@@ -25,4 +25,4 @@ RUN pip install build
 RUN python -m build && \
     pip install dist/mcp_openapi-0.1.5-py3-none-any.whl
 
-CMD [ "mcp-openapi", "--config_path", "config.json", "--port", "9010" ]
+CMD [ "mcp-openapi", "--config_path", "config.json", "--port", "9090" ]

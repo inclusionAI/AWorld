@@ -173,7 +173,6 @@ async def lifespan(app: FastAPI):
 
 
 async def run(
-    host: str = "127.0.0.1",
     port: int = 9000,
     cors_allow_origins=["*"],
     **kwargs,
@@ -471,7 +470,7 @@ async def run(
     
     config = uvicorn.Config(
         app=main_app,
-        host=host,
+        host="0.0.0.0",
         port=port,
         log_level="info",
     )
@@ -486,7 +485,6 @@ def cli_main():
     
     parser = argparse.ArgumentParser(description="MCP OpenAPI Proxy Server")
     parser.add_argument("--config_path", "-c", help="Path to configuration file", default="")
-    parser.add_argument("--host", help="Host to bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, help="Port to bind", default=9002)
     
     args = parser.parse_args()
@@ -499,7 +497,6 @@ def cli_main():
         
     logger.info(f"Starting with config: {config_path}")
     asyncio.run(run(
-        host=args.host,
         port=args.port,
         config_path=config_path
     ))

@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     platform: linux/amd64
     ports:
-      - 127.0.0.1:9010:9010
+      - 9090:9090
     restart: on-failure:3
     deploy:
       resources:
