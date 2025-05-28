@@ -64,10 +64,21 @@ def test_csv():
     print(csv_file)
 
 
+def test_excel():
+    from examples.gaia.mcp_servers.mcp_excel import read_excel_sheet
+
+    excel_file_path = os.path.expanduser(
+        "~/Desktop/AWorld/gaia-benchmark/GAIA/2023/test/4033181f-1988-476b-bc33-6da0f96d7bd0.xlsx"
+    )
+    excel_file = asyncio.run(read_excel_sheet(excel_file_path, sheet_name="Sheet1"))
+    print(excel_file)
+
+
 if __name__ == "__main__":
     # test_wayback()
     # test_browser()
     # test_pdf()
     # test_audio()
     # test_vector_store()
-    test_csv()
+    # test_csv()
+    test_excel()

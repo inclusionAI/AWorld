@@ -182,7 +182,7 @@ def mcp_image_recognition(
                 )
             ),
             messages=[
-                {"role": "system", "content": IMAGE_REASONING},
+                # {"role": "system", "content": IMAGE_REASONING},
                 {"role": "user", "content": content},
             ],
             temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),

@@ -243,6 +243,8 @@ async def get_pdf_metadata(file_path: str = Field(description="The absolute path
     description=(
         "Count the number of specific text options that appear in a PDF file "
         "and returns the exact occurence of each text option."
+        "Usage Hint: Watch out for different fonts and styles, "
+        "so text_options should be as specific as possible."
     )
 )
 async def count_text_occurrences(

@@ -141,28 +141,6 @@ async def get_csv_metadata(
 )
 async def read_csv_data(
     file_path: str = Field(description="The absolute path to the CSV file (.csv)."),
-    start_row: Optional[int] = Field(
-        default=None, description="Optional. The 0-indexed starting row to read from (inclusive)."
-    ),
-    end_row: Optional[int] = Field(
-        default=None, description="Optional. The 0-indexed ending row to read up to (inclusive)."
-    ),
-    start_column: Optional[int] = Field(
-        default=None, description="Optional. The 0-indexed starting column to read from (inclusive)."
-    ),
-    end_column: Optional[int] = Field(
-        default=None, description="Optional. The 0-indexed ending column to read up to (inclusive)."
-    ),
-    max_rows: Optional[int] = Field(
-        default=None,
-        description="Optional. Maximum number of rows to read from the starting row. "
-        "Applied after start_row/end_row if specified.",
-    ),
-    max_columns: Optional[int] = Field(
-        default=None,
-        description="Optional. Maximum number of columns to read from the starting column. "
-        "Applied after start_column/end_column if specified.",
-    ),
     return_format: str = Field(
         default="list_of_dicts",
         description="Optional. Format of the returned data: 'list_of_dicts', 'list_of_lists', or 'markdown_table'.",
@@ -178,23 +156,6 @@ async def read_csv_data(
         raise FileNotFoundError(error)
     try:
         df = read_csv_file(file_path)
-
-        # Row slicing
-        start = start_row if start_row is not None else 0
-        end = end_row + 1 if end_row is not None else None
-        df = df.iloc[start:end]
-
-        # Column slicing
-        col_start = start_column if start_column is not None else 0
-        col_end = end_column + 1 if end_column is not None else None
-        df: pd.DataFrame = df.iloc[:, col_start:col_end]
-
-        # Max rows/columns
-        if max_rows is not None:
-            df = df.head(max_rows)
-        if max_columns is not None:
-            df = df.iloc[:, :max_columns]
-
         row_count_read = df.shape[0]
         column_count_read = df.shape[1]
 
@@ -233,28 +194,6 @@ async def read_csv_data(
 @mcp.tool(description="Converts data from a specific range in a CSV file to Markdown table format (string).")
 async def convert_csv_to_markdown(
     file_path: str = Field(description="The absolute path to the CSV file (.csv)."),
-    start_row: Optional[int] = Field(
-        default=None, description="Optional. The 0-indexed starting row to read from (inclusive)."
-    ),
-    end_row: Optional[int] = Field(
-        default=None, description="Optional. The 0-indexed ending row to read up to (inclusive)."
-    ),
-    start_column: Optional[int] = Field(
-        default=None, description="Optional. The 0-indexed starting column to read from (inclusive)."
-    ),
-    end_column: Optional[int] = Field(
-        default=None, description="Optional. The 0-indexed ending column to read up to (inclusive)."
-    ),
-    max_rows: Optional[int] = Field(
-        default=None,
-        description="Optional. Maximum number of rows to read from the starting row. "
-        "Applied after start_row/end_row if specified.",
-    ),
-    max_columns: Optional[int] = Field(
-        default=None,
-        description="Optional. Maximum number of columns to read from the starting column. "
-        "Applied after start_column/end_column if specified.",
-    ),
 ) -> str:
     """
     Converts data from a specific range in a CSV file to Markdown table format string.
@@ -265,22 +204,6 @@ async def convert_csv_to_markdown(
         raise FileNotFoundError(error)
     try:
         df = read_csv_file(file_path)
-
-        # Row slicing
-        start = start_row if start_row is not None else 0
-        end = end_row + 1 if end_row is not None else None
-        df: pd.DataFrame = df.iloc[start:end]
-
-        # Column slicing
-        col_start = start_column if start_column is not None else 0
-        col_end = end_column + 1 if end_column is not None else None
-        df = df.iloc[:, col_start:col_end]
-
-        if max_rows is not None:
-            df = df.head(max_rows)
-        if max_columns is not None:
-            df = df.iloc[:, :max_columns]
-
         markdown_table = tabulate(df, headers="keys", tablefmt="pipe")
         result = MarkdownTableContent(file_path=file_path, markdown_table=markdown_table)
         return result.markdown_table
