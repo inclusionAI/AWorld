@@ -10,11 +10,10 @@
      ```
 
 2. **Repository Setup**
-   - Clone the repository and switch to the benchmark branch:
+   - Clone the repository:
      ```bash
      git clone https://github.com/inclusionAI/AWorld
      cd AWorld
-     git checkout main
      ```
 
 3. **Dataset Preparation**
@@ -28,9 +27,9 @@
 4. **API Configuration**
    - Set up your environment variables:
      ```bash
-     cp .env.template .env.docker
+     cp .env.template .env
      ```
-   - Edit `.env.docker` file and replace all `{YOUR_CONFIG}` placeholders with your actual values
+   - Edit `.env` file and replace all `{YOUR_CONFIG}` placeholders with your actual values
 
 ## Running the Benchmark
 
@@ -53,11 +52,11 @@
 
 ## Troubleshooting
 
-- If you encounter any issues with Docker, ensure it's running properly
-- For dataset access problems, verify your Hugging Face SSH keys are correctly configured
-- Check the container logs if the interface is not accessible
+   - If you encounter any issues with Docker, ensure it's running properly
+   - For dataset access problems, verify your Hugging Face SSH keys are correctly configured
+   - Check the container logs if the interface is not accessible
 
 ## Additional Resources
 
-- [GAIA Benchmark Documentation](https://huggingface.co/datasets/gaia-benchmark/GAIA)
-- [Hugging Face SSH Keys Setup Guide](https://huggingface.co/settings/keys)
+   - [GAIA Benchmark Documentation](https://huggingface.co/datasets/gaia-benchmark/GAIA)
+   - [Hugging Face SSH Keys Setup Guide](https://huggingface.co/settings/keys)

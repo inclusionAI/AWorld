@@ -30,9 +30,9 @@ services:
     ports:
       - 127.0.0.1:8888:8888
     volumes:
-      - ./.env.docker:/app/aworld/.env
+      - ./.env:/app/aworld/.env
     env_file:
-      - ./.env.docker
+      - ./.env
     restart: on-failure:3
     deploy:
       resources:

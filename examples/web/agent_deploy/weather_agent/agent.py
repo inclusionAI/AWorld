@@ -2,12 +2,17 @@ import logging
 import os
 import json
 
-import aworld
+from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.core.agent.base import Agent
+from aworld.core.task import Task
+from aworld.output.ui.base import AworldUI
+from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
+from aworld.runner import Runners
 
 logger = logging.getLogger(__name__)
 
 
-class Agent:
+class AWorldAgent:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -15,18 +20,18 @@ class Agent:
         return {"name": "Weather Agent", "description": "Query Real-time Weather"}
 
     async def run(self, prompt: str):
-        llm_provider = os.getenv("LLM_PROVIDER", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME")
-        llm_api_key = os.getenv("LLM_API_KEY")
-        llm_base_url = os.getenv("LLM_BASE_URL")
-        llm_temperature = os.getenv("LLM_TEMPERATURE", 0.0)
+        llm_provider = os.getenv("LLM_PROVIDER_WEATHER", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_WEATHER")
+        llm_api_key = os.getenv("LLM_API_KEY_WEATHER")
+        llm_base_url = os.getenv("LLM_BASE_URL_WEATHER")
+        llm_temperature = os.getenv("LLM_TEMPERATURE_WEATHER", 0.0)
 
         if not llm_model_name or not llm_api_key or not llm_base_url:
             raise ValueError(
                 "LLM_MODEL_NAME, LLM_API_KEY, LLM_BASE_URL must be set in your envrionment variables"
             )
 
-        agent_config = aworld.config.conf.AgentConfig(
+        agent_config = AgentConfig(
             llm_provider=llm_provider,
             llm_model_name=llm_model_name,
             llm_api_key=llm_api_key,
@@ -39,7 +44,7 @@ class Agent:
         with open(mcp_path, "r") as f:
             mcp_config = json.load(f)
 
-        super_agent = aworld.core.agent.base.Agent(
+        super_agent = Agent(
             conf=agent_config,
             name="weather_agent",
             system_prompt="You are a weather agent, you can query real-time weather information",
@@ -48,12 +53,12 @@ class Agent:
                 "weather_server",
             ],
         )
-        
-        task = aworld.core.task.Task(input=prompt, agent=super_agent, conf=aworld.config.conf.TaskConfig())
 
-        rich_ui = aworld.output.ui.markdown_aworld_ui.MarkdownAworldUI()
-        async for output in aworld.runner.Runners.streamed_run_task(task).stream_events():
+        task = Task(input=prompt, agent=super_agent, conf=TaskConfig())
+
+        rich_ui = MarkdownAworldUI()
+        async for output in Runners.streamed_run_task(task).stream_events():
             logger.info(f"Agent Ouput: {output}")
-            res = await aworld.output.ui.base.AworldUI.parse_output(output, rich_ui)
+            res = await AworldUI.parse_output(output, rich_ui)
             for item in res if isinstance(res, list) else [res]:
                 yield item

@@ -80,7 +80,7 @@ class MarkdownAworldUI(AworldUI):
     async def step(self, output: StepOutput):
         emptyLine = "\n\n----\n\n"
         if output.status == "START":
-            return f"\n## {output.name} 🛫START"
+            return f"\n### {output.name} 🛫START"
         elif output.status == "FINISHED":
             return f"\n{output.name} 🛬FINISHED {emptyLine}"
         elif output.status == "FAILED":
