@@ -184,6 +184,8 @@ class Tool(BaseTool[Union[Observation], List[ActionModel]]):
             raise Exception(f'{self.name()} no observation has been made.')
 
         step_res[0].from_agent_name = action[0].agent_name
+        for idx, act in enumerate(action):
+            step_res[0].action_result[idx].tool_id = act.tool_id
         return AgentMessage(payload=step_res,
                             caller=action[0].agent_name,
                             sender=self.name(),
@@ -200,6 +202,8 @@ class AsyncTool(AsyncBaseTool[Union[Observation], List[ActionModel]]):
             raise Exception(f'{self.name()} no observation has been made.')
 
         step_res[0].from_agent_name = action[0].agent_name
+        for idx, act in enumerate(action):
+            step_res[0].action_result[idx].tool_id = act.tool_id
         return AgentMessage(payload=step_res,
                             caller=action[0].agent_name,
                             sender=self.name(),

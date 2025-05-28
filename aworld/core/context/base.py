@@ -20,6 +20,7 @@ class Context(InheritanceSingleton):
         self._trace_id = kwargs.get('trace_id')
         self._session: Session = kwargs.get('session')
         self.context_info = ConfigDict()
+        self.agent_info = ConfigDict()
         self.trajectories = OrderedDict()
         self._token_usage = {
             "completion_tokens": 0,

@@ -117,6 +117,48 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # MCP servers are tools
         self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
 
+    def _messages_transform(
+            self,
+            observation: Observation,
+            sys_prompt: str = None,
+            agent_prompt: str = None,
+    ):
+        messages = []
+        if sys_prompt:
+            messages.append({'role': 'system', 'content': sys_prompt if self.use_tools_in_prompt else sys_prompt.format(
+                tool_list=self.tools)})
+
+        content = observation.content
+        if agent_prompt and '{task}' in agent_prompt:
+            content = agent_prompt.format(task=observation.content)
+
+        cur_msg = {'role': 'user', 'content': content}
+        # query from memory,
+        # histories = self.memory.get_last_n(self.history_messages, filter={"session_id": self.context.session_id})
+        histories = self.memory.get_last_n(self.history_messages)
+        messages.extend(histories)
+
+        action_results = observation.action_result
+        if action_results:
+            for action_result in action_results:
+                cur_msg['role'] = 'tool'
+                cur_msg['tool_call_id'] = action_result.tool_id
+
+        agent_info = self.context.context_info.get(self.name())
+        if (not self.use_tools_in_prompt and "is_use_tool_prompt" in agent_info and "tool_calls"
+                in agent_info and agent_prompt):
+            cur_msg['content'] = agent_prompt.format(action_list=agent_info["tool_calls"],
+                                                     result=content)
+
+        if observation.images:
+            urls = [{'type': 'text', 'text': content}]
+            for image_url in observation.images:
+                urls.append({'type': 'image_url', 'image_url': {"url": image_url}})
+
+            cur_msg['content'] = urls
+        messages.append(cur_msg)
+        return messages
+
     def messages_transform(self,
                            content: str,
                            image_urls: List[str] = None,
@@ -226,12 +268,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if is_agent_by_name(tool_name):
                     param_info = params.get('content', "") + ' ' + params.get('info', '')
                     results.append(ActionModel(tool_name=tool_name,
+                                               tool_id=tool_call.id,
                                                agent_name=self.name(),
                                                params=params,
                                                policy_info=content + param_info))
                 else:
                     action_name = '__'.join(names[1:]) if len(names) > 1 else ''
                     results.append(ActionModel(tool_name=tool_name,
+                                               tool_id=tool_call.id,
                                                action_name=action_name,
                                                agent_name=self.name(),
                                                params=params,
@@ -252,12 +296,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if is_agent_by_name(tool_name):
                     param_info = params.get('content', "") + ' ' + params.get('info', '')
                     results.append(ActionModel(tool_name=tool_name,
+                                               tool_id=use_tool.get('id'),
                                                agent_name=self.name(),
                                                params=params,
                                                policy_info=content + param_info))
                 else:
                     action_name = '__'.join(names[1:]) if len(names) > 1 else ''
                     results.append(ActionModel(tool_name=tool_name,
+                                               tool_id=use_tool.get('id'),
                                                action_name=action_name,
                                                agent_name=self.name(),
                                                params=params,
@@ -386,8 +432,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
+            observation.images = images
         messages = self.messages_transform(content=observation.content,
-                                           image_urls=images,
+                                           image_urls=observation.images,
                                            sys_prompt=self.system_prompt,
                                            agent_prompt=self.agent_prompt)
 
@@ -432,15 +479,18 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     if llm_response.error:
                         logger.info(f"llm result error: {llm_response.error}")
                     else:
+                        info = {
+                            "role": "assistant",
+                            "agent_name": self.name(),
+                            "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
+                            "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
+                        }
                         self.memory.add(MemoryItem(
                             content=llm_response.content,
-                            metadata={
-                                "role": "assistant",
-                                "agent_name": self.name(),
-                                "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
-                                "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
-                            }
+                            metadata=info
                         ))
+                        # rewrite
+                        self.context.context_info[self.name()] = info
                 else:
                     logger.error(f"{self.name()} failed to get LLM response")
                     raise RuntimeError(f"{self.name()} failed to get LLM response")

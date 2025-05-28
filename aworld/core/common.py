@@ -19,6 +19,8 @@ class ActionResult(BaseModel):
     keep: bool = False
     action_name: str = None
     tool_name: str = None
+    # llm tool id
+    tool_id: str = None
 
 
 class Observation(BaseModel):
@@ -70,6 +72,7 @@ class ToolActionInfo(BaseModel):
 
 class ActionModel(BaseModel):
     tool_name: Optional[str] = None
+    tool_id: Optional[str] = None
     # agent name
     agent_name: Optional[str] = None
     # action_name is a tool action name by agent policy.
