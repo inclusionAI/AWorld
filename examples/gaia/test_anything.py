@@ -4,9 +4,23 @@ import os
 from examples.gaia.mcp_servers.mcp_audio import mcp_audio_metadata
 from examples.gaia.mcp_servers.mcp_browser import browser_use
 from examples.gaia.mcp_servers.mcp_csv import read_csv_file
+from examples.gaia.mcp_servers.mcp_excel import read_excel_sheet
 from examples.gaia.mcp_servers.mcp_pdf import count_text_occurrences
 from examples.gaia.mcp_servers.mcp_vector_store import index_text_file, search_text
 from examples.gaia.mcp_servers.mcp_wayback import get_archived_page_content, list_available_versions
+from examples.gaia.mcp_servers.mcp_yahoo_finance import get_historical_data
+
+
+def test_yahoo():
+    result = asyncio.run(
+        get_historical_data(
+            symbol="AUDUSD=X",
+            start="2020-01-01",
+            end="2020-01-02",
+            interval="1d",
+        )
+    )
+    print(result)
 
 
 def test_wayback():
@@ -65,8 +79,6 @@ def test_csv():
 
 
 def test_excel():
-    from examples.gaia.mcp_servers.mcp_excel import read_excel_sheet
-
     excel_file_path = os.path.expanduser(
         "~/Desktop/AWorld/gaia-benchmark/GAIA/2023/test/4033181f-1988-476b-bc33-6da0f96d7bd0.xlsx"
     )
@@ -81,4 +93,5 @@ if __name__ == "__main__":
     # test_audio()
     # test_vector_store()
     # test_csv()
-    test_excel()
+    # test_excel()
+    test_yahoo()

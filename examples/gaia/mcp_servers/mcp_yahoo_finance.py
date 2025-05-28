@@ -95,11 +95,10 @@ async def get_stock_quote(
 @mcp.tool(description="Retrieves historical stock data (OHLCV) for a given symbol.")
 async def get_historical_data(
     symbol: str = Field(description="The stock ticker symbol (e.g., AAPL, MSFT)."),
-    period: str = Field(
-        default="1mo",
-        description="The period for which to fetch data "
-        "(e.g., '1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max').",
+    start: str = Field(
+        description="Download start date string (YYYY-MM-DD) or _datetime, inclusive. Default is 99 years ago."
     ),
+    end: str = Field(description="Download end date string (YYYY-MM-DD) or _datetime, exclusive. Default is now."),
     interval: str = Field(
         default="1d",
         description="The interval of data points "
@@ -137,11 +136,11 @@ async def get_historical_data(
 
     try:
         ticker = yf.Ticker(symbol)
-        hist_df = ticker.history(period=period, interval=interval)
+        hist_df = ticker.history(start=start, end=end, interval=interval)
 
         if hist_df.empty:
             raise ValueError(
-                f"No historical data found for symbol {symbol} with period {period} and interval {interval}."
+                f"No historical data found for symbol {symbol} with {start=} {end=} and interval {interval}."
             )
 
         # Convert DataFrame to list of dictionaries
@@ -165,7 +164,8 @@ async def get_historical_data(
             summary_data = {
                 "message": f"Historical data is extensive ({len(historical_data)} rows). Showing a preview.",
                 "total_rows": len(historical_data),
-                "period": period,
+                "start": start,
+                "end": end,
                 "interval": interval,
                 "data_preview_start": historical_data[:preview_count],
                 "data_preview_end": historical_data[-preview_count:],

@@ -8,7 +8,6 @@ import pandas as pd
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
-from tabulate import tabulate  # For creating markdown tables
 
 # Import libraries for older .xls files if needed, though pandas often handles this
 try:
@@ -67,6 +66,7 @@ class SheetData(BaseModel):
     total_row_count: Optional[int] = None  # Total rows in the sheet
     total_column_count: Optional[int] = None  # Total columns in the sheet
     error: Optional[str] = None
+    truncated: bool = False
 
 
 class CsvContent(BaseModel):
@@ -163,16 +163,13 @@ async def get_sheet_dimensions(
         raise RuntimeError(f"Error processing file for sheet dimensions: {str(e)}")
 
 
-@mcp.tool(
-    description="Reads data from a specific sheet in an Excel file. "
-    "Supports reading specific ranges, limiting rows/columns, and different output formats."
-)
+@mcp.tool(description="Reads data from a specific sheet in an Excel file. Return sheet as a list of dicts.")
 async def read_excel_sheet(
     file_path: str = Field(description="The absolute path to the Excel file (.xlsx, .xls, )."),
     sheet_name: str = Field(description="The name of the sheet."),
-) -> str:
+) -> SheetData:
     """
-    Reads data from a specific sheet in an Excel file.
+    Reads data from a specific sheet in an Excel file. Returns sheet as a list of dictionaries (one per row).
     """
     error = check_file_readable(file_path)
     if error:
@@ -195,8 +192,8 @@ async def read_excel_sheet(
             total_column_count = full_df.shape[1]
         except Exception:
             pass
-        data = tabulate(df, headers="keys", tablefmt="pipe")
-        result = SheetData(
+        data = df.to_dict(orient="records")
+        return SheetData(
             file_path=file_path,
             sheet_name=sheet_name,
             data=data,
@@ -204,8 +201,9 @@ async def read_excel_sheet(
             column_count_read=column_count_read,
             total_row_count=total_row_count,
             total_column_count=total_column_count,
+            error=False,
+            truncated=False,
         )
-        return result.data
     except Exception as e:
         logger.error(f"Error reading sheet '{sheet_name}' in {file_path}: {e}\n{traceback.format_exc()}")
         raise RuntimeError(f"Error processing file for reading sheet: {str(e)}")

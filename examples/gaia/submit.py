@@ -91,7 +91,7 @@ if __name__ == "__main__":
                 "video",
                 "wayback",
                 "wikipedia",
-                "yahoo-finance",
+                # "yahoo-finance",
                 "youtube",
                 # "vector-store",
             ],

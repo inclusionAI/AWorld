@@ -13,13 +13,14 @@ import json
 import os
 import sys
 import traceback
+from typing import Optional
 
 from browser_use import Agent, AgentHistoryList, BrowserProfile
 from browser_use.agent.memory.views import MemoryConfig
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from aworld.logs.util import Color
 from examples.gaia.utils import color_log, setup_logger
@@ -54,10 +55,21 @@ extended_browser_system_prompt = """
 """
 
 
+class BrowserResult(BaseModel):
+    """
+    Browser Result
+    """
+
+    success: bool
+    task: str
+    detail: Optional[str]
+    summary: Optional[str]
+
+
 @mcp.tool(description="Perform browser actions using the browser-use package.")
 async def browser_use(
     task: str = Field(description="The task to perform using the browser."),
-) -> str:
+) -> BrowserResult:
     """
     Perform browser actions using the browser-use package.
     Args:
@@ -99,11 +111,26 @@ async def browser_use(
             exec_trace = browser_execution.extracted_content()
             color_log(logger, f"🎢 Detail: {json.dumps(exec_trace, ensure_ascii=False, indent=4)}", Color.darkgrey)
             color_log(logger, f"📈 Result: {browser_execution.final_result()}", Color.darkgrey)
-            return browser_execution.final_result()
-        return f"Browser execution failed for task: {task}"
+            return BrowserResult(
+                success=True,
+                task=task,
+                detail=json.dumps(exec_trace, ensure_ascii=False),
+                summary=browser_execution.final_result(),
+            )
+        return BrowserResult(
+            success=False,
+            task=task,
+            detail=None,
+            summary="Browser execution failed",
+        )
     except Exception as e:
         logger.error(f"Browser execution failed: {traceback.format_exc()}")
-        return f"Browser execution failed for task: {task} due to {str(e)}"
+        return BrowserResult(
+            success=False,
+            task=task,
+            detail=f"{traceback.format_exc()}",
+            summary=f"Browser execution failed due to {str(e)}",
+        )
 
 
 def main():
