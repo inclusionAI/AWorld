@@ -164,35 +164,42 @@ class SocialRunner(TaskRunner):
         response = None
         return_entry = False
         cur_agent = None
+        cur_observation = observation
         finished = False
         try:
             while step < max_steps:
                 terminated = False
                 exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
                 with trace.span(f"step_execution_{exp_id}") as step_span:
-                    step_span.set_attributes({
-                        "exp_id": exp_id,
-                        "task_id": self.task.id,
-                        "task_name": self.task.name,
-                        "trace_id": trace.get_current_span().get_trace_id(),
-                        "step": step,
-                        "agent_id": self.swarm.cur_agent.name(),
-                        "pre_agent": pre_agent_name,
-                        "observation": json.dumps(observation.model_dump(exclude_none=True), ensure_ascii=False),
-                        "actions": json.dumps([action.model_dump() for action in policy], ensure_ascii=False)
-                    })
+                    try:
+                        step_span.set_attributes({
+                            "exp_id": exp_id,
+                            "task_id": self.task.id,
+                            "task_name": self.task.name,
+                            "trace_id": trace.get_current_span().get_trace_id(),
+                            "step": step,
+                            "agent_id": self.swarm.cur_agent.name(),
+                            "pre_agent": pre_agent_name,
+                            "observation": json.dumps(cur_observation.model_dump(exclude_none=True), ensure_ascii=False),
+                            "actions": json.dumps([action.model_dump() for action in policy], ensure_ascii=False)
+                        })
+                    except:
+                        pass
 
                     if self.is_agent(policy[0]):
-                        status, info = await self._social_agent(policy, step)
+                        status, info, ob = await self._social_agent(policy, step)
                         if status == 'normal':
                             self.swarm.cur_agent = self.swarm.agents.get(policy[0].agent_name)
                             policy = info
+
+                        cur_observation = ob
                         # clear observation
                         observation = None
                     elif is_tool_by_name(policy[0].tool_name):
                         status, terminated, info = await self._social_tool_call(policy, step)
                         if status == 'normal':
                             observation = info
+                            cur_observation = observation
                     else:
                         logger.warning(f"Unrecognized policy: {policy[0]}")
                         return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
@@ -268,7 +275,7 @@ class SocialRunner(TaskRunner):
             # Current agent is entrance agent, means need to exit to the outer loop
             logger.info(f"{cur_agent.name()} exit to the outer loop")
             self.loop_detect.append(cur_agent.name())
-            return 'break', True
+            return 'break', True, None
 
         if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
             # Unable to hand off, exit to the outer loop
@@ -276,7 +283,7 @@ class SocialRunner(TaskRunner):
                                      f"by {cur_agent.name()} agent.",
                               "response": policy[0].policy_info if policy else "",
                               "steps": step,
-                              "success": False}
+                              "success": False}, None
         # Check if current agent done
         if cur_agent.finished:
             cur_agent._finished = False
@@ -307,9 +314,9 @@ class SocialRunner(TaskRunner):
             return "return", {"msg": f"{policy_for_agent.agent_name} invalid policy",
                               "response": "",
                               "steps": step,
-                              "success": False}
+                              "success": False}, None
         color_log(f"{cur_agent.name()} policy: {agent_policy}")
-        return 'normal', agent_policy
+        return 'normal', agent_policy, observation
 
     async def _social_tool_call(self, policy: List[ActionModel], step: int):
         observation = None
