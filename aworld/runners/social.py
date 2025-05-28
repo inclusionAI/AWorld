@@ -86,14 +86,16 @@ class SocialRunner(TaskRunner):
                                         time_cost=time_cost,
                                         usage=self.context.token_usage)
 
-                answer = results[-1].get('observation').content if results[-1].get('observation') else swarm_resp
+                answer = results[-1].get('observation').content if results[-1].get(
+                    'observation') else swarm_resp
                 return TaskResponse(answer=answer,
                                     success=True,
                                     id=self.task.id,
                                     time_cost=(time.time() - start),
                                     usage=self.context.token_usage)
             except Exception as e:
-                logger.error(f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
+                logger.error(
+                    f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
                 task_span.set_attributes({
                     "status": "failed",
                     "error": f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}"
@@ -140,7 +142,8 @@ class SocialRunner(TaskRunner):
                                                                              outputs=self.outputs,
                                                                              stream=self.conf.get("stream", False))
         if not policy:
-            logger.warning(f"current agent {self.swarm.cur_agent.name()} no policy to use.")
+            logger.warning(
+                f"current agent {self.swarm.cur_agent.name()} no policy to use.")
             exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
             with trace.span(f"step_execution_{exp_id}") as step_span:
                 step_span.set_attributes({
@@ -168,7 +171,8 @@ class SocialRunner(TaskRunner):
         try:
             while step < max_steps:
                 terminated = False
-                exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
+                exp_id = self._get_step_span_id(
+                    step, self.swarm.cur_agent.name())
                 with trace.span(f"step_execution_{exp_id}") as step_span:
                     step_span.set_attributes({
                         "exp_id": exp_id,
@@ -185,7 +189,8 @@ class SocialRunner(TaskRunner):
                     if self.is_agent(policy[0]):
                         status, info = await self._social_agent(policy, step)
                         if status == 'normal':
-                            self.swarm.cur_agent = self.swarm.agents.get(policy[0].agent_name)
+                            self.swarm.cur_agent = self.swarm.agents.get(
+                                policy[0].agent_name)
                             policy = info
                         # clear observation
                         observation = None
@@ -245,7 +250,8 @@ class SocialRunner(TaskRunner):
                     "msg": msg,
                     "success": True if not msg else False}
         except Exception as e:
-            logger.error(f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
+            logger.error(
+                f"Task execution failed with error: {str(e)}\n{traceback.format_exc()}")
             return {
                 "msg": str(e),
                 "response": "",
@@ -280,7 +286,8 @@ class SocialRunner(TaskRunner):
         # Check if current agent done
         if cur_agent.finished:
             cur_agent._finished = False
-            logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
+            logger.info(
+                f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
 
         observation = Observation(content=policy_for_agent.policy_info)
         self.loop_detect.append(cur_agent.name())
@@ -322,7 +329,8 @@ class SocialRunner(TaskRunner):
             if not self.tools or (self.tools and act.tool_name not in self.tools):
                 # dynamic only use default config in module.
                 conf: ToolConfig = self.tools_conf.get(act.tool_name)
-                tool = ToolFactory(act.tool_name, conf=conf, asyn=conf.use_async if conf else False)
+                tool = ToolFactory(act.tool_name, conf=conf,
+                                   asyn=conf.use_async if conf else False)
                 if isinstance(tool, Tool):
                     tool.reset()
                 elif isinstance(tool, AsyncTool):
@@ -335,27 +343,32 @@ class SocialRunner(TaskRunner):
             tool_mapping[act.tool_name].append(act)
 
         for tool_name, action in tool_mapping.items():
-            # Execute action using browser tool and unpack all return values
-            if isinstance(self.tools[tool_name], Tool):
-                observation, reward, terminated, _, info = self.tools[tool_name].step(action)
-            elif isinstance(self.tools[tool_name], AsyncTool):
-                observation, reward, terminated, _, info = await self.tools[tool_name].step(action)
-            else:
-                logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
-                continue
+            span_name, run_type = trace.get_tool_name(tool_name, action)
+            with trace.span(span_name, run_type=run_type) as tool_span:
+                # Execute action using browser tool and unpack all return values
+                if isinstance(self.tools[tool_name], Tool):
+                    observation, reward, terminated, _, info = self.tools[tool_name].step(
+                        action)
+                elif isinstance(self.tools[tool_name], AsyncTool):
+                    observation, reward, terminated, _, info = await self.tools[tool_name].step(action)
+                else:
+                    logger.warning(
+                        f"Unsupported tool type: {self.tools[tool_name]}")
+                    continue
 
-            for i, item in enumerate(action):
-                tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
-                    "function": {
-                        "name": item.action_name,
-                        "arguments": item.params,
-                    }
-                }))
-                await self.outputs.add_output(tool_output)
+                for i, item in enumerate(action):
+                    tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
+                        "function": {
+                            "name": item.action_name,
+                            "arguments": item.params,
+                        }
+                    }))
+                    await self.outputs.add_output(tool_output)
 
             # Check if there's an exception in info
             if info.get("exception"):
-                color_log(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
+                color_log(
+                    f"Step {step} failed with exception: {info['exception']}", color=Color.red)
             logger.info(f"step: {step} finished by tool action {action}.")
             log_ob = Observation(content='' if observation.content is None else observation.content,
                                  action_result=observation.action_result)
@@ -376,7 +389,8 @@ class SocialRunner(TaskRunner):
                 agent_name = policy_for_agent.tool_name
             cur_agent: Agent = self.swarm.agents.get(agent_name)
             if not cur_agent:
-                raise RuntimeError(f"Can not find {agent_name} agent in swarm.")
+                raise RuntimeError(
+                    f"Can not find {agent_name} agent in swarm.")
             if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
                 # Unable to hand off, exit to the outer loop
                 return "return", {"msg": f"Can not handoffs {agent_name} agent "
@@ -387,7 +401,8 @@ class SocialRunner(TaskRunner):
             # Check if current agent done
             if cur_agent.finished:
                 cur_agent._finished = False
-                logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
+                logger.info(
+                    f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
         return "normal", terminated, observation
 
     def _loop_detect(self):
@@ -416,14 +431,16 @@ class SocialRunner(TaskRunner):
                     if last_agent_name and last_agent_name == (self.loop_detect[i], self.loop_detect[i - 1]):
                         count += 1
                     elif last_agent_name is None:
-                        last_agent_name = (self.loop_detect[i], self.loop_detect[i - 1])
+                        last_agent_name = (
+                            self.loop_detect[i], self.loop_detect[i - 1])
                         count = 1
                     else:
                         last_agent_name = None
                         break
 
                     if count >= threshold:
-                        logger.warning(f"detect loop: {last_agent_name}, will exit the loop.")
+                        logger.warning(
+                            f"detect loop: {last_agent_name}, will exit the loop.")
                         return True
 
         return False

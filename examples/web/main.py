@@ -1,4 +1,4 @@
-import sys
+import webbrowser
 import streamlit as st
 from dotenv import load_dotenv
 import logging
@@ -6,9 +6,8 @@ import os
 import traceback
 import utils
 import importlib.util
-import inspect
 import aworld.trace as trace
-from trace_net import generate_trace_graph
+from trace_net import generate_trace_graph, generate_trace_graph_full
 
 load_dotenv()
 
@@ -22,9 +21,6 @@ def agent_page(trace_id):
         page_icon=":robot_face:",
         layout="wide",
     )
-
-    with st.sidebar:
-        st.title("Agents List")
 
     with st.sidebar:
         agent_list_tab, trace_tab = st.tabs(
@@ -42,9 +38,18 @@ def agent_page(trace_id):
 
         with trace_tab:
             st.title("Trace")
-            generate_trace_graph(trace_id)
-            st.components.v1.html(open("trace_graph.html").read(), height=800)
-
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                generate_trace_graph(trace_id)
+                st.components.v1.html(
+                    open("trace_graph.html").read(), height=800)
+            with col2:
+                generate_trace_graph_full(trace_id)
+                html_path = os.path.abspath('trace_graph_full.html')
+                html_url = f"file://{html_path}"
+                if st.button("全屏显示"):
+                    if os.path.exists(html_path):
+                        webbrowser.open_new_tab(html_url)
     if "selected_agent" not in st.session_state:
         st.session_state.selected_agent = None
 
@@ -80,7 +85,7 @@ def agent_page(trace_id):
                 agent = agent_module.AWorldAgent()
 
                 async def markdown_generator():
-                    with trace.span("start") as span:
+                    async with trace.span("start") as span:
                         trace_id = span.get_trace_id()
                         logger.info(f"trace_id={trace_id}")
                         async for line in agent.run(prompt):
@@ -93,7 +98,7 @@ def agent_page(trace_id):
 
 
 try:
-    agent_page("e9fefdf8904f4b82ae7ca8f6f51de564")
+    agent_page("26b118648c5ee5f90b71dcc61303892b")
 except Exception as e:
     logger.error(f">>> Error: {traceback.format_exc()}")
     st.error(f"Error: {str(e)}")

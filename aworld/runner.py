@@ -27,21 +27,19 @@ class Runners:
     @staticmethod
     def streamed_run_task(task: Task) -> StreamingOutputs:
         """Run the task in stream output."""
+        if not task.conf:
+            task.conf = TaskConfig()
 
-        with trace.span(f"streamed_{task.name}") as span:
-            if not task.conf:
-                task.conf = TaskConfig()
+        streamed_result = StreamingOutputs(
+            input=task.input,
+            usage={},
+            is_complete=False
+        )
+        task.outputs = streamed_result
 
-            streamed_result = StreamingOutputs(
-                input=task.input,
-                usage={},
-                is_complete=False
-            )
-            task.outputs = streamed_result
-
-            streamed_result._run_impl_task = asyncio.create_task(
-                Runners.run_task(task)
-            )
+        streamed_result._run_impl_task = asyncio.create_task(
+            Runners.run_task(task)
+        )
         return streamed_result
 
     @staticmethod
@@ -52,16 +50,15 @@ class Runners:
             task: User task define.
             parallel: Whether to process multiple tasks in parallel.
         """
-        with trace.span(task.name) as span:
-            if isinstance(task, Task):
-                task = [task]
+        if isinstance(task, Task):
+            task = [task]
 
-            res = {}
-            if parallel:
-                await Runners._parallel_run_in_local(task, res)
-            else:
-                await Runners._run_in_local(task, res)
-            return res
+        res = {}
+        if parallel:
+            await Runners._parallel_run_in_local(task, res)
+        else:
+            await Runners._run_in_local(task, res)
+        return res
 
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], parallel: bool = False) -> Dict[str, TaskResponse]:
@@ -116,8 +113,7 @@ class Runners:
         # also can use ProcessPoolExecutor
         parallel_tasks = []
         for t in tasks:
-            with trace.span(t.name) as span:
-                parallel_tasks.append(Runners._choose_runner(task=t).run())
+            parallel_tasks.append(Runners._choose_runner(task=t).run())
 
         results = await asyncio.gather(*parallel_tasks)
         for idx, t in enumerate(results):
@@ -126,10 +122,9 @@ class Runners:
     @staticmethod
     async def _run_in_local(tasks: List[Task], res: Dict[str, Any]) -> None:
         for idx, task in enumerate(tasks):
-            with trace.span(task.name) as span:
-                # Execute the task
-                result: TaskResponse = await Runners._choose_runner(task=task).run()
-                res[f'{result.id}'] = result
+            # Execute the task
+            result: TaskResponse = await Runners._choose_runner(task=task).run()
+            res[f'{result.id}'] = result
 
     @staticmethod
     def _choose_runner(task: Task):

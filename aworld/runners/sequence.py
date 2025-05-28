@@ -59,13 +59,16 @@ class SequenceRunner(TaskRunner):
 
                             terminated = False
 
-                            observation = self.swarm.action_to_observation(policy, observations)
+                            observation = self.swarm.action_to_observation(
+                                policy, observations)
                             observation.from_agent_name = observation.from_agent_name or cur_agent.name()
 
                             if observation.to_agent_name and observation.to_agent_name != cur_agent.name():
-                                cur_agent = self.swarm.agents.get(observation.to_agent_name)
+                                cur_agent = self.swarm.agents.get(
+                                    observation.to_agent_name)
 
-                            exp_id = self._get_step_span_id(step, cur_agent.name())
+                            exp_id = self._get_step_span_id(
+                                step, cur_agent.name())
                             with trace.span(f"step_execution_{exp_id}") as step_span:
                                 step_span.set_attributes({
                                     "exp_id": exp_id,
@@ -83,20 +86,25 @@ class SequenceRunner(TaskRunner):
                                     policy: List[ActionModel] = cur_agent.run(observation,
                                                                               step=step,
                                                                               outputs=self.outputs,
-                                                                              stream=self.conf.get("stream", False),
+                                                                              stream=self.conf.get(
+                                                                                  "stream", False),
                                                                               exp_id=exp_id)
                                 else:
                                     policy: List[ActionModel] = await cur_agent.async_run(observation,
                                                                                           step=step,
                                                                                           outputs=self.outputs,
-                                                                                          stream=self.conf.get("stream", False),
+                                                                                          stream=self.conf.get(
+                                                                                              "stream", False),
                                                                                           exp_id=exp_id)
 
-                                step_span.set_attribute("actions", json.dumps([action.model_dump() for action in policy], ensure_ascii=False))
+                                step_span.set_attribute("actions", json.dumps(
+                                    [action.model_dump() for action in policy], ensure_ascii=False))
                                 observation.content = None
-                                color_log(f"{cur_agent.name()} policy: {policy}")
+                                color_log(
+                                    f"{cur_agent.name()} policy: {policy}")
                                 if not policy:
-                                    logger.warning(f"current agent {cur_agent.name()} no policy to use.")
+                                    logger.warning(
+                                        f"current agent {cur_agent.name()} no policy to use.")
                                     await self.outputs.add_output(
                                         StepOutput.build_failed_output(name=f"Step{step}",
                                                                        step_num=step,
@@ -113,7 +121,8 @@ class SequenceRunner(TaskRunner):
                                                         answer="",
                                                         success=False,
                                                         id=self.task.id,
-                                                        time_cost=(time.time() - start),
+                                                        time_cost=(
+                                                            time.time() - start),
                                                         usage=self.context.token_usage)
 
                                 if self.is_agent(policy[0]):
@@ -122,11 +131,13 @@ class SequenceRunner(TaskRunner):
                                         if info:
                                             observations.append(observation)
                                     elif status == 'break':
-                                        observation = self.swarm.action_to_observation(policy, observations)
+                                        observation = self.swarm.action_to_observation(
+                                            policy, observations)
                                         break
                                     elif status == 'return':
                                         await self.outputs.add_output(
-                                            StepOutput.build_finished_output(name=f"Step{step}", step_num=step)
+                                            StepOutput.build_finished_output(
+                                                name=f"Step{step}", step_num=step)
                                         )
                                         info.time_cost = (time.time() - start)
                                         task_span.set_attributes({
@@ -140,7 +151,8 @@ class SequenceRunner(TaskRunner):
                                     step_span.set_attribute("reward", reward)
 
                                 else:
-                                    logger.warning(f"Unrecognized policy: {policy[0]}")
+                                    logger.warning(
+                                        f"Unrecognized policy: {policy[0]}")
                                     await self.outputs.add_output(
                                         StepOutput.build_failed_output(name=f"Step{step}",
                                                                        step_num=step,
@@ -184,7 +196,7 @@ class SequenceRunner(TaskRunner):
                 task_span.set_attributes({
                     "end_time": time.time(),
                     "duration": time.time() - start,
-                    "error": msg
+                    "error": msg if msg else ""
                 })
             return TaskResponse(msg=msg,
                                 answer=observation.content,
@@ -221,7 +233,8 @@ class SequenceRunner(TaskRunner):
         # Check if current agent done
         if cur_agent.finished:
             cur_agent._finished = False
-            logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
+            logger.info(
+                f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
 
         con = policy_for_agent.policy_info
         if policy_for_agent.params and 'content' in policy_for_agent.params:
@@ -248,7 +261,8 @@ class SequenceRunner(TaskRunner):
             if not self.tools or (self.tools and act.tool_name not in self.tools):
                 # dynamic only use default config in module.
                 conf = self.tools_conf.get(act.tool_name)
-                tool = ToolFactory(act.tool_name, conf=conf, asyn=conf.use_async if conf else False)
+                tool = ToolFactory(act.tool_name, conf=conf,
+                                   asyn=conf.use_async if conf else False)
                 if isinstance(tool, Tool):
                     tool.reset()
                 elif isinstance(tool, AsyncTool):
@@ -260,33 +274,39 @@ class SequenceRunner(TaskRunner):
             tool_mapping[act.tool_name].append(act)
 
         for tool_name, action in tool_mapping.items():
-            # Execute action using browser tool and unpack all return values
-            if isinstance(self.tools[tool_name], Tool):
-                observation, reward, terminated, _, info = self.tools[tool_name].step(action)
-            elif isinstance(self.tools[tool_name], AsyncTool):
-                observation, reward, terminated, _, info = await self.tools[tool_name].step(action)
-            else:
-                logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
-                continue
+            span_name, run_type = trace.get_tool_name(tool_name, action)
+            logger.info(f"create span={span_name}")
+            with trace.span(span_name, run_type=run_type) as tool_span:
+                # Execute action using browser tool and unpack all return values
+                if isinstance(self.tools[tool_name], Tool):
+                    observation, reward, terminated, _, info = self.tools[tool_name].step(
+                        action)
+                elif isinstance(self.tools[tool_name], AsyncTool):
+                    observation, reward, terminated, _, info = await self.tools[tool_name].step(action)
+                else:
+                    logger.warning(
+                        f"Unsupported tool type: {self.tools[tool_name]}")
+                    continue
 
-            observations.append(observation)
-            for i, item in enumerate(action):
-                tool_output = ToolResultOutput(
-                    tool_type=tool_name,
-                    tool_name=item.tool_name,
-                    data=observation.content,
-                    origin_tool_call=ToolCall.from_dict({
-                        "function": {
-                            "name": item.action_name,
-                            "arguments": item.params,
-                        }
-                    })
-                )
-                await self.outputs.add_output(tool_output)
+                observations.append(observation)
+                for i, item in enumerate(action):
+                    tool_output = ToolResultOutput(
+                        tool_type=tool_name,
+                        tool_name=item.tool_name,
+                        data=observation.content,
+                        origin_tool_call=ToolCall.from_dict({
+                            "function": {
+                                "name": item.action_name,
+                                "arguments": item.params,
+                            }
+                        })
+                    )
+                    await self.outputs.add_output(tool_output)
 
             # Check if there's an exception in info
             if info.get("exception"):
-                color_log(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
+                color_log(
+                    f"Step {step} failed with exception: {info['exception']}", color=Color.red)
                 msg = f"Step {step} failed with exception: {info['exception']}"
             logger.info(f"step: {step} finished by tool action: {action}.")
             log_ob = Observation(content='' if observation.content is None else observation.content,
@@ -302,4 +322,3 @@ class SequenceRunner(TaskRunner):
         exp_index = self.step_agent_counter[key]
 
         return f"{self.task.id}_{step}_{cur_agent_name}_{exp_index}"
-

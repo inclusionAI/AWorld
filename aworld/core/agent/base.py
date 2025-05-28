@@ -81,8 +81,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         else:
             logger.warning(f"Unknown conf type: {type(conf)}")
 
-        self._name = kwargs.pop("name", self.conf.get("name", convert_to_snake(self.__class__.__name__)))
-        self._desc = kwargs.pop("desc") if kwargs.get("desc") else self.conf.get('desc', '')
+        self._name = kwargs.pop("name", self.conf.get(
+            "name", convert_to_snake(self.__class__.__name__)))
+        self._desc = kwargs.pop("desc") if kwargs.get(
+            "desc") else self.conf.get('desc', '')
         # Unique flag based agent name
         self.id = f"{self.name()}_{uuid.uuid1().hex[0:6]}"
         self.task = None
@@ -110,18 +112,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._desc
 
     def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
-        List[ActionModel], None]:
-        self.pre_run()
-        result = self.policy(observation, info, **kwargs)
-        self.post_run()
-        return result
+            List[ActionModel], None]:
+        with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
+            self.pre_run()
+            result = self.policy(observation, info, **kwargs)
+            self.post_run()
+            return result
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
-        List[ActionModel], None]:
-        await self.async_pre_run()
-        result = await self.async_policy(observation, info, **kwargs)
-        await self.async_post_run()
-        return result
+            List[ActionModel], None]:
+        with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
+            await self.async_pre_run()
+            result = await self.async_policy(observation, info, **kwargs)
+            await self.async_post_run()
+            return result
 
     @abc.abstractmethod
     def policy(self, observation: INPUT, info: Dict[str, Any] = None, **kwargs) -> OUTPUT:
@@ -193,20 +197,26 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         self._llm = None
         self.memory = Memory.from_config(
             {"memory_store": kwargs.pop("memory_store") if kwargs.get("memory_store") else "inmemory"})
-        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
-        self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
+        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get(
+            "system_prompt") else conf.system_prompt
+        self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get(
+            "agent_prompt") else conf.agent_prompt
 
-        self.need_reset = kwargs.get('need_reset') if kwargs.get('need_reset') else conf.need_reset
+        self.need_reset = kwargs.get('need_reset') if kwargs.get(
+            'need_reset') else conf.need_reset
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
-        self.step_reset = kwargs.get('step_reset') if kwargs.get('step_reset') else True
+        self.step_reset = kwargs.get(
+            'step_reset') if kwargs.get('step_reset') else True
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = kwargs.get("black_tool_actions") if kwargs.get(
             "black_tool_actions") else self.conf.get('black_tool_actions', {})
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
-        self.history_messages = kwargs.get("history_messages") if kwargs.get("history_messages") else 100
+        self.history_messages = kwargs.get(
+            "history_messages") if kwargs.get("history_messages") else 100
         # task history messages
         self.task_histories: List[MemoryItem] = []
-        self.use_tools_in_prompt = kwargs.get('use_tools_in_prompt', conf.use_tools_in_prompt)
+        self.use_tools_in_prompt = kwargs.get(
+            'use_tools_in_prompt', conf.use_tools_in_prompt)
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
@@ -219,7 +229,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         if self._llm is None:
             llm_config = self.conf.llm_config or None
             conf = llm_config if llm_config and (
-                    llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
+                llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
             self._llm = get_llm_model(conf)
         return self._llm
 
@@ -291,7 +301,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         histories = self.task_histories
         # query from memory,
         if histories:
-            histories = histories.extend(self.memory.get_last_n(self.history_messages))
+            histories = histories.extend(
+                self.memory.get_last_n(self.history_messages))
         else:
             histories = self.memory.get_last_n(self.history_messages)
         if histories:
@@ -305,7 +316,7 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                                      "tool_call_id": history.metadata.get("tool_call_id")})
 
             if self.use_tools_in_prompt and "tool_calls" in histories[-1].metadata and histories[-1].metadata[
-                'tool_calls']:
+                    'tool_calls']:
                 tool_id = histories[-1].metadata["tool_calls"][0].id
                 if tool_id:
                     cur_msg['role'] = 'tool'
@@ -318,7 +329,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         if image_urls:
             urls = [{'type': 'text', 'text': content}]
             for image_url in image_urls:
-                urls.append({'type': 'image_url', 'image_url': {"url": image_url}})
+                urls.append(
+                    {'type': 'image_url', 'image_url': {"url": image_url}})
 
             cur_msg['content'] = urls
         messages.append(cur_msg)
@@ -344,7 +356,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
 
             return tool_list
         except Exception as e:
-            logger.debug(f"tool_parse error, content: {resp.content}, error msg: {e}")
+            logger.debug(
+                f"tool_parse error, content: {resp.content}, error msg: {e}")
             return tool_list
 
     def response_parse(self, resp: ModelResponse) -> AgentResult:
@@ -367,18 +380,21 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 try:
                     params = json.loads(tool_call.function.arguments)
                 except:
-                    logger.warning(f"{tool_call.function.arguments} parse to json fail.")
+                    logger.warning(
+                        f"{tool_call.function.arguments} parse to json fail.")
                     params = {}
                 # format in framework
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(tool_name):
-                    param_info = params.get('content', "") + ' ' + params.get('info', '')
+                    param_info = params.get(
+                        'content', "") + ' ' + params.get('info', '')
                     results.append(ActionModel(agent_name=tool_name,
                                                params=params,
                                                policy_info=content + param_info))
                 else:
-                    action_name = '__'.join(names[1:]) if len(names) > 1 else ''
+                    action_name = '__'.join(
+                        names[1:]) if len(names) > 1 else ''
                     results.append(ActionModel(tool_name=tool_name,
                                                action_name=action_name,
                                                params=params,
@@ -397,12 +413,14 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(tool_name):
-                    param_info = params.get('content', "") + ' ' + params.get('info', '')
+                    param_info = params.get(
+                        'content', "") + ' ' + params.get('info', '')
                     results.append(ActionModel(agent_name=tool_name,
                                                params=params,
                                                policy_info=content + param_info))
                 else:
-                    action_name = '__'.join(names[1:]) if len(names) > 1 else ''
+                    action_name = '__'.join(
+                        names[1:]) if len(names) > 1 else ''
                     results.append(ActionModel(tool_name=tool_name,
                                                action_name=action_name,
                                                params=params,
@@ -411,7 +429,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             if content:
                 content = content.replace("```json", "").replace("```", "")
             # no tool call, agent name is itself.
-            results.append(ActionModel(agent_name=self.name(), policy_info=content))
+            results.append(ActionModel(
+                agent_name=self.name(), policy_info=content))
         return AgentResult(actions=results, current_state=None, is_call_tool=is_call_tool)
 
     def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
@@ -419,17 +438,20 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
         for i, msg in enumerate(messages):
             prefix = msg.get('role')
-            logger.info(f"[agent] Message {i + 1}: {prefix} ===================================")
+            logger.info(
+                f"[agent] Message {i + 1}: {prefix} ===================================")
             if isinstance(msg['content'], list):
                 for item in msg['content']:
                     if item.get('type') == 'text':
-                        logger.info(f"[agent] Text content: {item.get('text')}")
+                        logger.info(
+                            f"[agent] Text content: {item.get('text')}")
                     elif item.get('type') == 'image_url':
                         image_url = item.get('image_url', {}).get('url', '')
                         if image_url.startswith('data:image'):
                             logger.info(f"[agent] Image: [Base64 image data]")
                         else:
-                            logger.info(f"[agent] Image URL: {image_url[:30]}...")
+                            logger.info(
+                                f"[agent] Image URL: {image_url[:30]}...")
             else:
                 content = str(msg['content'])
                 chunk_size = 500
@@ -443,16 +465,18 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
             if 'tool_calls' in msg and msg['tool_calls']:
                 for tool_call in msg.get('tool_calls'):
                     if isinstance(tool_call, dict):
-                        logger.info(f"[agent] Tool call: {tool_call.get('name')} - ID: {tool_call.get('id')}")
+                        logger.info(
+                            f"[agent] Tool call: {tool_call.get('name')} - ID: {tool_call.get('id')}")
                         args = str(tool_call.get('args', {}))[:1000]
                         logger.info(f"[agent] Tool args: {args}...")
                     elif isinstance(tool_call, ToolCall):
-                        logger.info(f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
+                        logger.info(
+                            f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
                         args = str(tool_call.function.arguments)[:1000]
                         logger.info(f"[agent] Tool args: {args}...")
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
-        List[ActionModel], None]:
+            List[ActionModel], None]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -503,7 +527,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 "messages": json.dumps([str(m) for m in messages], ensure_ascii=False)
             })
             if source_span:
-                source_span.set_attribute("messages", json.dumps([str(m) for m in messages], ensure_ascii=False))
+                source_span.set_attribute("messages", json.dumps(
+                    [str(m) for m in messages], ensure_ascii=False))
 
             try:
                 llm_response = call_llm_model(
@@ -536,19 +561,21 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                         ))
                 else:
                     logger.error(f"{self.name()} failed to get LLM response")
-                    raise RuntimeError(f"{self.name()} failed to get LLM response")
+                    raise RuntimeError(
+                        f"{self.name()} failed to get LLM response")
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
             self._finished = True
 
         if output:
-            output.add_part(MessageOutput(source=llm_response, json_parse=False))
+            output.add_part(MessageOutput(
+                source=llm_response, json_parse=False))
             output.mark_finished()
         return agent_result.actions
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
-        List[ActionModel], None]:
+            List[ActionModel], None]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -599,7 +626,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 "messages": json.dumps([str(m) for m in messages], ensure_ascii=False)
             })
             if source_span:
-                source_span.set_attribute("messages", json.dumps([str(m) for m in messages], ensure_ascii=False))
+                source_span.set_attribute("messages", json.dumps(
+                    [str(m) for m in messages], ensure_ascii=False))
 
             try:
                 llm_response = await acall_llm_model(
@@ -642,7 +670,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                         ))
                 else:
                     logger.error(f"{self.name()} failed to get LLM response")
-                    raise RuntimeError(f"{self.name()} failed to get LLM response")
+                    raise RuntimeError(
+                        f"{self.name()} failed to get LLM response")
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
@@ -674,7 +703,8 @@ class AgentManager(Factory):
             elif isinstance(user_conf, dict):
                 conf.update(user_conf)
             else:
-                logger.warning(f"Unknown conf type: {type(user_conf)}, ignored!")
+                logger.warning(
+                    f"Unknown conf type: {type(user_conf)}, ignored!")
 
         conf['name'] = name
         conf = ConfigDict(conf)
