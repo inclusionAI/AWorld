@@ -29,7 +29,8 @@ class TestBrowserTool(unittest.TestCase):
         action = [ActionModel(tool_name=Tools.BROWSER.value,
                               action_name=BrowserAction.NEW_TAB.value.name,
                               params={"url": url})]
-        ob, _, _, _, info = self.browser_tool.step(action)
+        message = self.browser_tool.step(action)
+        ob, _, _, _, info = message.payload
         self.assertEqual(info, {'exception': ''})
 
     def test_goto_url(self):
@@ -38,7 +39,8 @@ class TestBrowserTool(unittest.TestCase):
         action = [ActionModel(tool_name=Tools.BROWSER.value,
                               action_name=BrowserAction.GO_TO_URL.value.name,
                               params={"url": url})]
-        ob, _, _, _, info = self.browser_tool.step(action)
+        message = self.browser_tool.step(action)
+        ob, _, _, _, info = message.payload
         self.assertEqual(info, {'exception': ''})
         import time
         time.sleep(10)

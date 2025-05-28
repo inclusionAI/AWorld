@@ -79,8 +79,8 @@ x
             )
         ]
 
-        observation, reward, terminated, truncated, info = python_tool.step(actions)
-
+        message = python_tool.step(actions)
+        observation, reward, terminated, truncated, info = message.payload
         assert reward == 1
         assert len(observation.action_result) == 1
         assert observation.action_result[0].success == True

@@ -26,7 +26,9 @@ class OpenAIGymTest(unittest.TestCase):
         self.assertEqual(len(state), 2)
 
         self.gym.reset()
-        state, reward, terminal, _, _ = self.gym.step([ActionModel(action_name='play', params={'result': 0})])
+
+        message = self.gym.step([ActionModel(action_name='play', params={'result': 0})])
+        state, reward, terminated, truncated, info = message.payload
         transform_state = self.gym.transform_state(state)
         action = [0.1, 0.1, 0.1, -0.1]
         transform_action = self.gym.transform_action(action)
@@ -34,7 +36,8 @@ class OpenAIGymTest(unittest.TestCase):
 
     def test_gym(self):
         self.gym.reset()
-        state, reward, terminal, _, _ = self.gym.step([ActionModel(action_name='play', params={'result': 0})])
+        message = self.gym.step([ActionModel(action_name='play', params={'result': 0})])
+        state, reward, terminated, truncated, info = message.payload
         transform_state = self.gym.transform_state(state)
 
         logger.info(transform_state)
