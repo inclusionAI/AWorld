@@ -7,7 +7,7 @@
     },
     "amap-amap-sse": {
       "type": "sse",
-      "url": "https://mcp.amap.com/sse?key=f569d30e3e381f13b93ea4635652bcdf",
+      "url": "https://mcp.amap.com/sse?key=",
       "timeout": 5.0,
       "sse_read_timeout": 300.0
     },
@@ -16,7 +16,7 @@
       "command": "npx",
       "args": ["-y", "tavily-mcp@0.1.2"],
       "env": {
-        "TAVILY_API_KEY": "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"
+        "TAVILY_API_KEY": "tvly-dev"
       }
     }
   }
