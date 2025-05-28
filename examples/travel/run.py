@@ -9,8 +9,8 @@ from examples.common import Tools
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 from aworld.runner import Runners
-from aworld.virtual_environments.conf import BrowserToolConfig
-from aworld.virtual_environments.tool_action import SearchAction
+from examples.tools.conf import BrowserToolConfig
+from examples.tools.tool_action import SearchAction
 from examples.travel.prompts import *
 
 model_config = ModelConfig(

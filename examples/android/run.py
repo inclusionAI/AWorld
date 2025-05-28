@@ -6,7 +6,7 @@ from aworld.config import AgentConfig
 from examples.common import Agents, Tools
 from aworld.core.task import Task
 from aworld.runner import Runners
-from aworld.virtual_environments.conf import AndroidToolConfig
+from examples.tools.conf import AndroidToolConfig
 
 
 def main():

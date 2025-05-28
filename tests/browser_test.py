@@ -4,12 +4,12 @@ import os
 import unittest
 from pathlib import Path
 
-from aworld.virtual_environments.browsers.browser import BrowserTool
+from examples.tools.browsers.browser import BrowserTool
 
 from examples.common import Tools
-from aworld.virtual_environments.tool_action import BrowserAction
+from examples.tools.tool_action import BrowserAction
 from aworld.core.common import ActionModel
-from aworld.virtual_environments.conf import BrowserToolConfig
+from examples.tools.conf import BrowserToolConfig
 
 
 class TestBrowserTool(unittest.TestCase):

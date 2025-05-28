@@ -106,12 +106,6 @@ class AWorldInstaller(install):
         reqs = self._requirements.get(self.BASE_OPT, [])
         self._install_reqs(reqs, ignore_error=True)
 
-        try:
-            subprocess.check_call('playwright install', shell=True, timeout=60)
-        except Exception as e:
-            logger.error(f"Fail to execute playwright install\n {e}")
-        logger.info(f"Successfully installed aworld-{__version__}")
-
     def _contains_module(self, module):
         if self._extra is None:
             return False

@@ -9,11 +9,15 @@ from typing import Any
 import threading
 from aworld.replay_buffer.base import DataRow, Experience, ExpMeta
 from aworld.logs.util import logger
+from aworld.utils import import_package
 
 
 class ReplayBufferExporter:
     _file_locks = {}
     _lock_dict_lock = threading.Lock()
+
+    def __init__(self):
+        import_package("oss2")
 
     @classmethod
     def _get_file_lock(cls, file_path):

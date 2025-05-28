@@ -16,7 +16,7 @@ from aworld.core.common import Observation, ActionModel
 from aworld.core.envs.tool_desc import get_tool_desc
 from aworld.core.event.base import Message, ToolMessage, Constants
 from aworld.logs.util import logger
-from aworld.mcp.utils import mcp_tool_desc_transform
+from aworld.mcp_client.utils import mcp_tool_desc_transform
 from aworld.core.memory import MemoryItem
 from aworld.memory.main import Memory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model

@@ -5,7 +5,7 @@ from aworld.core.task import Task
 from aworld.agents.browser.agent import BrowserAgent
 from aworld.agents.browser.config import BrowserAgentConfig
 from aworld.runner import Runners
-from aworld.virtual_environments.conf import BrowserToolConfig
+from examples.tools.conf import BrowserToolConfig
 from aworld.config.conf import ModelConfig
 
 if __name__ == '__main__':

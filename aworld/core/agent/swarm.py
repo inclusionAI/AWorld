@@ -26,7 +26,7 @@ class Swarm(object):
         >>> Swarm((agent1, agent2), (agent1, agent3), (agent2, agent3), sequence=False)
     """
 
-    def __init__(self, *args, root_agent: Agent = None, sequence: bool = True, max_steps: int = 1, **kwargs):
+    def __init__(self, *args, root_agent: Agent = None, sequence: bool = True, max_steps: int = 0, **kwargs):
         self.communicate_agent = root_agent
         if root_agent and root_agent not in args:
             self._topology = [root_agent] + list(args)

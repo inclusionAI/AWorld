@@ -36,7 +36,8 @@ class TaskEventRunner(TaskRunner):
     async def pre_run(self):
         await super().pre_run()
 
-        self.swarm.max_steps = self.task.conf.get('max_steps', 10)
+        if not self.swarm.max_steps:
+            self.swarm.max_steps = self.task.conf.get('max_steps', 1)
         observation = self.observation
         if not observation:
             raise RuntimeError("no observation, check run process")

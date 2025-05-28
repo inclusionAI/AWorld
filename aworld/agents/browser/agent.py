@@ -20,7 +20,7 @@ from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.common import Observation, ActionModel, ToolActionInfo, ActionResult
 from aworld.logs.util import logger
 from aworld.agents.browser.prompts import AgentMessagePrompt
-from aworld.virtual_environments.tool_action import BrowserAction
+from examples.tools.tool_action import BrowserAction
 
 
 @dataclass

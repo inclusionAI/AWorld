@@ -1,9 +1,22 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
+import abc
 from enum import Enum, EnumMeta
+from typing import Tuple, Any
 
-from aworld.core.common import ToolActionInfo
+from aworld.core.common import ToolActionInfo, ActionModel, ActionResult
+
+
+class ExecutableAction(object):
+    __metaclass__ = abc.ABCMeta
+
+    @abc.abstractmethod
+    def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
+        """Execute the action."""
+
+    @abc.abstractmethod
+    async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
+        """Execute the action."""
 
 
 class DynamicEnumMeta(EnumMeta):

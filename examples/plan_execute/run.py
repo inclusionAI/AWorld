@@ -4,9 +4,9 @@ from examples.common import Agents, Tools
 from aworld.config.conf import ModelConfig, AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
-from aworld.dataset.mock import mock_dataset
 from aworld.runner import Runners
 from examples.plan_execute.agent import PlanAgent, ExecuteAgent
+from examples.plan_execute.mock import mock_dataset
 
 
 def main():
@@ -37,7 +37,7 @@ def main():
 
     # Define a task
     task_id = 'task'
-    task = Task(id=task_id, input=test_sample, swarm=swarm, endless_threshold=5)
+    task = Task(id=task_id, input=test_sample, swarm=swarm, endless_threshold=10)
 
     # Run task
     result = Runners.sync_run_task(task=task)
