@@ -14,33 +14,32 @@ class GaiaAgentServer:
 
     def _get_model_config(self):
         try:
-            model_cfg = os.getenv("GAIA_MODEL_CONFIG")
-            return json.loads(model_cfg)
+            llm_provider = os.getenv("LLM_PROVIDER_GAIA")
+            llm_model_name = os.getenv("LLM_MODEL_NAME_GAIA")
+            llm_api_key = os.getenv("LLM_API_KEY_GAIA")
+            llm_base_url = os.getenv("LLM_BASE_URL_GAIA")
+            llm_temperature = os.getenv("LLM_TEMPERATURE_GAIA", 0.0)
+            return {
+                "provider": llm_provider,
+                "model": llm_model_name,
+                "api_key": llm_api_key,
+                "base_url": llm_base_url,
+                "temperature": llm_temperature,
+            }
         except Exception as e:
-            logger.error(
-                f">>> Gaia Agent: Error loading model config, model_cfg={model_cfg}: {traceback.format_exc()}"
+            logger.warning(
+                f">>> Gaia Agent: GAIA_MODEL_CONFIG is not configured, using LLM"
             )
             raise e
 
-    def _get_selected_model_config(self, model: str):
-        selected_model = next(
-            (m for m in self._get_model_config() if m["id"] == model), None
-        )
-        if not selected_model:
-            raise Exception(
-                f">>> Gaia Agent: Model ID '{model}' not found in configuration!"
-            )
-        return selected_model
-
     def models(self):
-        models = self._get_model_config()
+        model = self._get_model_config()
 
         return [
             {
-                "id": model["id"],
-                "name": f"gaia_agent@{model['id']}",
+                "id": f"{model['provider']}/{model['model']}",
+                "name": f"gaia_agent@{model['provider']}/{model['model']}",
             }
-            for model in models
         ]
 
     async def chat_completions(self, body: dict) -> AsyncGenerator[str, None]:
@@ -63,7 +62,7 @@ class GaiaAgentServer:
 
             logger.info(f">>> Gaia Agent: prompt={prompt}, model={model}")
 
-            selected_model = self._get_selected_model_config(model=model)
+            selected_model = self._get_model_config()
 
             logger.info(f">>> Gaia Agent: Using model configuration: {selected_model}")
 

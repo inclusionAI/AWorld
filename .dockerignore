@@ -10,5 +10,7 @@
 .git
 .env
 __pycache__
-*.log.*
+*.log*
 .data
+build
+trace_data

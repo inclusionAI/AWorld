@@ -3,8 +3,8 @@
         "weather_server": {
             "command": "npx",
             "args": [
-                "-y",
-                "@h1deya/mcp-server-weather"
+                "hefeng-mcp-weather@latest",
+                "--apiKey=${HEFENG_API_KEY}"
             ]
         }
     }

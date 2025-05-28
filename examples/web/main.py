@@ -1,3 +1,4 @@
+import sys
 import streamlit as st
 from dotenv import load_dotenv
 import logging
@@ -5,15 +6,21 @@ import os
 import traceback
 import utils
 import importlib.util
-import inspect
 
-load_dotenv()
+load_dotenv(os.path.join(os.getcwd(), ".env"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+sys.path.insert(0, os.getcwd())
 
 def agent_page():
+    st.set_page_config(
+        page_title="AWorld Agent",
+        page_icon=":robot_face:",
+        layout="wide",
+    )
+
     with st.sidebar:
         st.title("Agents List")
 
@@ -35,30 +42,42 @@ def agent_page():
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                full_response = ""
-
                 agent_name = st.session_state.selected_agent
-                agent_path = os.path.join(
+                agent_package_path = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)),
                     "agent_deploy",
                     agent_name,
                 )
+
+                agent_module_file = os.path.join(agent_package_path, "agent.py")
+
                 try:
                     spec = importlib.util.spec_from_file_location(
-                        "agent_module", os.path.join(agent_path, "agent.py")
+                        agent_name, agent_module_file
                     )
+
+                    if spec is None or spec.loader is None:
+                        logger.error(
+                            f"Could not load spec for agent {agent_name} from {agent_module_file}"
+                        )
+                        st.error(f"Error: Could not load agent! {agent_name}")
+                        return
+
                     agent_module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(agent_module)
-                except Exception:
-                    logger.error(
-                        f"Error importing agent module: {traceback.format_exc()}"
-                    )
-                    st.error("Error importing agent module")
+                except ModuleNotFoundError as e:
+                    logger.error(f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
+                    st.error(f"Error: Could not load agent! {agent_name}")
                     return
 
-                Agent = agent_module.Agent
-                agent = Agent()
+                except Exception as e:
+                    logger.error(
+                        f"Error loading agent '{agent_name}': {traceback.format_exc()}"
+                    )
+                    st.error(f"Error: Could not load agent! {agent_name}")
+                    return
+
+                agent = agent_module.AWorldAgent()
 
                 async def markdown_generator():
                     async for line in agent.run(prompt):

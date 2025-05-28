@@ -10,6 +10,15 @@ COPY ./setup.py setup.py
 
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 
+RUN rm -fv /etc/apt/sources.list && \
+    rm -fv /etc/apt/sources.list.d/* && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN python setup.py install
 
 # GAIA Docker Image
@@ -38,5 +47,7 @@ RUN mkdir -p gaia-benchmark/fs && \
     mkdir -p static
 
 ENV PYTHONPATH=/app/aworld${PYTHONPATH:+:${PYTHONPATH}}
+ENV GAIA_DATASET_PATH=/app/aworld/examples/gaia/GAIA/2023
+ENV LOG_FILE_PATH=/app/aworld/gaia-benchmark/logs
 
 CMD [ "python", "examples/gaia/gaia_agent_server.py" ]

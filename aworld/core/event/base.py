@@ -54,7 +54,7 @@ class Message(Generic[DataType]):
         if self.topic:
             return f'{category}_{self.topic}'
         else:
-            return f'{category}_{self.sender if self.sender else ''}'
+            return f'{category}_{self.sender if self.sender else ""}'
 
 
 @dataclass
