@@ -8,8 +8,8 @@ from typing import Dict, Any, Optional, List, Union
 
 from langchain_core.messages import HumanMessage, BaseMessage, SystemMessage
 
-from aworld.agents.android.prompts import SYSTEM_PROMPT, LAST_STEP_PROMPT
-from aworld.agents.android.utils import (
+from examples.android.prompts import SYSTEM_PROMPT, LAST_STEP_PROMPT
+from examples.android.utils import (
     AgentState,
     AgentHistory,
     AgentHistoryList,
@@ -18,7 +18,7 @@ from aworld.agents.android.utils import (
     AgentBrain,
     Trajectory
 )
-from aworld.agents.browser.common import AgentStepInfo
+from examples.browsers.common import AgentStepInfo
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.base import AgentFactory, AgentResult
 from aworld.core.agent.llm_agent import Agent

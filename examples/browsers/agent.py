@@ -13,13 +13,13 @@ from pydantic import ValidationError
 
 from aworld.core.agent.base import AgentFactory, AgentResult
 from aworld.core.agent.llm_agent import Agent
-from aworld.agents.browser.prompts import SystemPrompt
-from aworld.agents.browser.utils import convert_input_messages, extract_json_from_model_output, estimate_messages_tokens
-from aworld.agents.browser.common import AgentState, AgentStepInfo, AgentHistory, PolicyMetadata, AgentBrain
+from examples.browsers.prompts import SystemPrompt
+from examples.browsers.utils import convert_input_messages, extract_json_from_model_output, estimate_messages_tokens
+from examples.browsers.common import AgentState, AgentStepInfo, AgentHistory, PolicyMetadata, AgentBrain
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.common import Observation, ActionModel, ToolActionInfo, ActionResult
 from aworld.logs.util import logger
-from aworld.agents.browser.prompts import AgentMessagePrompt
+from examples.browsers.prompts import AgentMessagePrompt
 from examples.tools.tool_action import BrowserAction
 
 

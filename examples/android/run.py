@@ -1,8 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from aworld.agents import AndroidAgent
 from aworld.config import AgentConfig
+from examples.android.agent import AndroidAgent
 from examples.common import Agents, Tools
 from aworld.core.task import Task
 from aworld.runner import Runners

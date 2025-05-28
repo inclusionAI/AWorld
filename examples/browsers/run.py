@@ -2,8 +2,8 @@
 # Copyright (c) 2025 inclusionAI.
 from examples.common import Agents, Tools
 from aworld.core.task import Task
-from aworld.agents.browser.agent import BrowserAgent
-from aworld.agents.browser.config import BrowserAgentConfig
+from examples.browsers.agent import BrowserAgent
+from examples.browsers.config import BrowserAgentConfig
 from aworld.runner import Runners
 from examples.tools.conf import BrowserToolConfig
 from aworld.config.conf import ModelConfig

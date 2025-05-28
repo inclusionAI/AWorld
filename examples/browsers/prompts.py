@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from aworld.agents.browser.common import AgentStepInfo
+from examples.browsers.common import AgentStepInfo
 from aworld.core.common import Observation, ActionResult
 
 PROMPT_TEMPLATE = """
