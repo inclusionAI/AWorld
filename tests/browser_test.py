@@ -31,7 +31,7 @@ class TestBrowserTool(unittest.TestCase):
                               params={"url": url})]
         message = self.browser_tool.step(action)
         ob, _, _, _, info = message.payload
-        self.assertEqual(info, {'exception': ''})
+        self.assertEqual(info.get('exception'), '')
 
     def test_goto_url(self):
         current_dir = Path(__file__).parent.absolute()
@@ -41,6 +41,4 @@ class TestBrowserTool(unittest.TestCase):
                               params={"url": url})]
         message = self.browser_tool.step(action)
         ob, _, _, _, info = message.payload
-        self.assertEqual(info, {'exception': ''})
-        import time
-        time.sleep(10)
+        self.assertEqual(info.get('exception'), '')

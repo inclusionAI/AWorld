@@ -33,7 +33,6 @@ class OpenAIGymTest(unittest.TestCase):
         action = [0.1, 0.1, 0.1, -0.1]
         transform_action = self.gym.transform_action(action)
 
-
     def test_gym(self):
         self.gym.reset()
         message = self.gym.step([ActionModel(action_name='play', params={'result': 0})])

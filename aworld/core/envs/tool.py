@@ -45,7 +45,7 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         action_executor.register(name=self.name(), tool=self)
         self.action_executor = action_executor
         self.event_driven = kwargs.pop('event_driven', self.conf.get('event_driven', False))
-        self.handler = kwargs.get('handler', conf.get('handler', None))
+        self.handler = kwargs.get('handler', self.conf.get('handler', None))
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -122,7 +122,7 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         action_executor.register(name=self.name(), tool=self)
         self.action_executor = action_executor
         self.event_driven = kwargs.pop('event_driven', self.conf.get('event_driven', False))
-        self.handler = kwargs.get('handler', conf.get('handler', None))
+        self.handler = kwargs.get('handler', self.conf.get('handler', None))
 
         for k, v in kwargs.items():
             setattr(self, k, v)

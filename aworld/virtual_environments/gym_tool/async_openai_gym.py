@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from aworld.config import ConfigDict
 from aworld.virtual_environments.tool_action import GymAction
-from aworld.core.common import ActionModel, Observation
+from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.core.envs.tool import AsyncTool, ToolFactory
 from aworld.utils.import_package import import_packages
 from aworld.virtual_environments.utils import build_observation
@@ -37,16 +37,19 @@ class OpenAIGym(AsyncTool):
         self.env = self._gym_env_wrappers(self.env_id, self.conf.get("wrappers", []), **kwargs)
         self.action_space = self.env.action_space
 
-    async def do_step(self, action: List[ActionModel], **kwargs) -> Tuple[
+    async def do_step(self, actions: List[ActionModel], **kwargs) -> Tuple[
         Observation, SupportsFloat, bool, bool, Dict[str, Any]]:
         if self._render:
             await self.render()
-        action = action[0].params['result']
+        action = actions[0].params['result']
         action = OpenAIGym.transform_action(action=action)
         state, reward, terminal, truncate, info = self.env.step(action)
         info.update(kwargs)
         self._finished = terminal
 
+        action_results = []
+        for _ in action:
+            action_results.append(ActionResult(content=OpenAIGym.transform_state(state=state), success=True))
         return (build_observation(observer=self.name(),
                                   ability=GymAction.PLAY.value.name,
                                   content=OpenAIGym.transform_state(state=state),

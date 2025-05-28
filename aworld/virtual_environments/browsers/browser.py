@@ -200,7 +200,7 @@ class BrowserTool(Tool):
         screenshot_base64 = base64.b64encode(screenshot).decode('utf-8')
         return screenshot_base64
 
-    def _get_observation(self, info: Dict[str, Any] = None) -> Observation:
+    def _get_observation(self, info: Dict[str, Any] = {}) -> Observation:
         fail_error = info.get('exception')
         if fail_error:
             return Observation(observer=self.name(), action_result=[ActionResult(error=fail_error)])
