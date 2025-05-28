@@ -7,7 +7,7 @@ from base import AworldTask
 from client.aworld_client import AworldTaskClient
 
 AWORLD_TASK_CLIENT = AworldTaskClient(
-    know_hosts=["localhost:9999"]
+    know_hosts=["nlb-lm8m8hityawuxbxvof.ap-southeast-1.nlb.aliyuncsslbintl.com:9099"]
 )
 
 
@@ -50,4 +50,4 @@ async def _batch_run_gaia_task(gaia_task_ids: list[str]) -> None:
 
 if __name__ == '__main__':
     # Run batch processing for questions 1-5
-    asyncio.run(_batch_run_gaia_task(["6359a0b1-8f7b-499b-9336-840f9ab90688"]))
+    asyncio.run(_batch_run_gaia_task(["32102e3e-d12a-4209-9163-7b3a104efe5d"]))

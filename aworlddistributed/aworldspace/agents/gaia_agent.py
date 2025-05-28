@@ -54,14 +54,6 @@ class Pipeline(AworldBaseAgent):
 
     def __init__(self):
         self.valves = self.Valves()
-        self.agent_config = AgentConfig(
-            name=self.agent_name(),
-            llm_provider=self.valves.llm_provider if self.valves.llm_provider else os.environ.get("LLM_PROVIDER"),
-            llm_model_name=self.valves.llm_model_name if self.valves.llm_model_name else os.environ.get("LLM_MODEL_NAME"),
-            llm_api_key=self.valves.llm_api_key if self.valves.llm_api_key else os.environ.get("LLM_API_KEY"),
-            llm_base_url=self.valves.llm_base_url if self.valves.llm_base_url else os.environ.get("LLM_BASE_URL"),
-            system_prompt=self.valves.system_prompt if self.valves.system_prompt else GAIA_SYSTEM_PROMPT
-        )
         self.gaia_files = os.path.abspath(os.path.join(os.path.curdir, "aworldspace", "datasets", "gaia_dataset"))
         logging.info(f"gaia_files path {self.gaia_files}")
         self.full_dataset = load_dataset(
@@ -82,13 +74,34 @@ class Pipeline(AworldBaseAgent):
         task = await self.get_gaia_task(user_message)
         return task['Question']
 
-    async def get_agent_config(self):
-        return self.agent_config
+    async def get_agent_config(self, body):
+        default_llm_provider = self.valves.llm_provider if self.valves.llm_provider else os.environ.get("LLM_PROVIDER")
+        llm_model_name = self.valves.llm_model_name if self.valves.llm_model_name else os.environ.get("LLM_MODEL_NAME")
+        llm_api_key = self.valves.llm_api_key if self.valves.llm_api_key else os.environ.get("LLM_API_KEY")
+        llm_base_url = self.valves.llm_base_url if self.valves.llm_base_url else os.environ.get("LLM_BASE_URL")
+        system_prompt = self.valves.system_prompt if self.valves.system_prompt else GAIA_SYSTEM_PROMPT
+
+        task = await self.get_task_from_body(body)
+        logging.info(f"task llm config is: {task.llm_provider}, {task.llm_model_name}, {task.llm_api_key}, {task.llm_base_url}")
+
+        return AgentConfig(
+            name=self.agent_name(),
+            llm_provider=task.llm_provider if task and task.llm_provider else default_llm_provider,
+            llm_model_name=task.llm_model_name if task and task.llm_model_name else llm_model_name,
+            llm_api_key=task.llm_api_key if task and task.llm_api_key else llm_api_key,
+            llm_base_url=task.llm_base_url if task and task.llm_base_url else llm_base_url,
+            system_prompt=task.task_system_prompt if task and task.task_system_prompt else system_prompt
+        )
 
     def agent_name(self) -> str:
         return "GaiaAgent"
 
-    async def get_mcp_servers(self) -> list[str]:
+    async def get_mcp_servers(self, body) -> list[str]:
+        task = await self.get_task_from_body(body)
+        if task.mcp_servers:
+            logging.info(f"mcp_servers from task: {task.mcp_servers}")
+            return task.mcp_servers
+
         return [
             "e2b-server",
             "terminal-controller",
