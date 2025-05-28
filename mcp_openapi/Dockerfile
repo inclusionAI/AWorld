@@ -2,6 +2,8 @@ FROM python:3.11-slim
 
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 
+RUN pip install --upgrade pip
+
 RUN rm -f /etc/apt/sources.list.d/* && \
     echo "deb http://mirrors.aliyun.com/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
     echo "deb http://mirrors.aliyun.com/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
@@ -16,7 +18,11 @@ WORKDIR /app/
 
 COPY . .
 
+RUN apt-get update && apt-get install -y nodejs npm 
+
+RUN pip install build
+
 RUN python -m build && \
-    pip install
+    pip install dist/mcp_openapi-0.1.5-py3-none-any.whl
 
 CMD [ "mcp-openapi", "--config_path", "config.json", "--port", "9010" ]
