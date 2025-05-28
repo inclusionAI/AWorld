@@ -9,7 +9,7 @@ from concurrent.futures.process import ProcessPoolExecutor
 from types import MethodType
 from typing import List, Callable, Any, Dict
 
-from aworld.core.common import Config
+from aworld.config import RunConfig
 from aworld.core.task import TaskResponse
 from aworld.logs.util import logger
 from aworld.utils.common import sync_exec
@@ -26,7 +26,7 @@ class RuntimeEngine(object):
 
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, conf: Config):
+    def __init__(self, conf: RunConfig):
         """Engine runtime instance initialize."""
         self.conf = conf
         self.runtime = None
@@ -79,7 +79,7 @@ class LocalRuntime(RuntimeEngine):
                 res = func(*args, **kwargs)
             return {res.id: res}
 
-        num_executor = self.conf.get('num_executor', os.cpu_count() - 1)
+        num_executor = self.conf.get('worker_num', os.cpu_count() - 1)
         num_process = len(funcs)
         if num_process > num_executor:
             num_process = num_executor
