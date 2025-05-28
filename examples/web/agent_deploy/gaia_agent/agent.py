@@ -18,11 +18,11 @@ class AWorldAgent:
         return {"name": "GAIA Agent", "description": "GAIA Agent is a world agent"}
 
     async def run(self, prompt: str):
-        llm_provider = os.getenv("LLM_PROVIDER", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME")
-        llm_api_key = os.getenv("LLM_API_KEY")
-        llm_base_url = os.getenv("LLM_BASE_URL")
-        llm_temperature = os.getenv("LLM_TEMPERATURE", 0.0)
+        llm_provider = os.getenv("LLM_PROVIDER_GAIA", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_GAIA")
+        llm_api_key = os.getenv("LLM_API_KEY_GAIA")
+        llm_base_url = os.getenv("LLM_BASE_URL_GAIA")
+        llm_temperature = os.getenv("LLM_TEMPERATURE_GAIA", 0.0)
 
         if not llm_model_name or not llm_api_key or not llm_base_url:
             raise ValueError(
