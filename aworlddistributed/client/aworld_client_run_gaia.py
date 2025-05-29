@@ -14,14 +14,14 @@ AWORLD_TASK_CLIENT = AworldTaskClient(
 )
 
 
-async def _run_gaia_task(gaia_task: AworldTask) -> None:
+async def _run_gaia_task(gaia_task: AworldTask, delay: int) -> None:
     """Run a single Gaia task with the given question ID.
 
     Args:
         gaia_task_id: The ID of the question to process
     """
     global AWORLD_TASK_CLIENT
-    await asyncio.sleep(random.random() * 10)
+    await asyncio.sleep(delay)
 
     # Submit task to Aworld server
     await AWORLD_TASK_CLIENT.submit_task(gaia_task)
@@ -36,8 +36,8 @@ async def _batch_run_gaia_task(gaia_tasks: list[AworldTask]) -> None:
 
     """
     tasks = [
-        _run_gaia_task(gaia_task)
-        for gaia_task in gaia_tasks
+        _run_gaia_task(gaia_task, index * 3)
+        for index,gaia_task in enumerate(gaia_tasks)
     ]
     await asyncio.gather(*tasks)
 

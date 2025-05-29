@@ -108,7 +108,7 @@ class AworldTaskClient(BaseModel):
             task_result = await self._submit_task_to_server(aworld_server, task)
             return task_result
         except Exception as e:
-            print(f"submit task to {aworld_server} failed: {e}")
+            print(f"process task to {aworld_server} failed: {e}")
             task_logger.log_task_submission(task, aworld_server, "failed", str(e))
             return None
 
