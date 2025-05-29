@@ -5,6 +5,7 @@ from examples.gaia.mcp_servers.mcp_audio import mcp_audio_metadata
 from examples.gaia.mcp_servers.mcp_browser import browser_use
 from examples.gaia.mcp_servers.mcp_csv import read_csv_file
 from examples.gaia.mcp_servers.mcp_excel import read_excel_sheet
+from examples.gaia.mcp_servers.mcp_image import mcp_image_recognition
 from examples.gaia.mcp_servers.mcp_pdf import count_text_occurrences
 from examples.gaia.mcp_servers.mcp_txt import find_text_in_which_line
 from examples.gaia.mcp_servers.mcp_vector_store import index_text_file, search_text
@@ -94,6 +95,18 @@ def test_txt():
     print(asyncio.run(find_text_in_which_line(txt_file_path, "culprit")))
 
 
+def test_image():
+    image_path = os.path.expanduser(
+        "~/Desktop/AWorld/gaia-benchmark/GAIA/2023/test/e14448e9-5243-4b07-86e1-22e657f96bcf.jpg"
+    )
+    print(
+        os.getenv("IMAGE_LLM_MODEL_NAME", "gpt-4o"),
+    )
+    question = "What animal is in this image?"
+    result = mcp_image_recognition(question, image_path)
+    print(result)
+
+
 if __name__ == "__main__":
     # test_wayback()
     # test_browser()
@@ -103,4 +116,5 @@ if __name__ == "__main__":
     # test_csv()
     # test_excel()
     # test_yahoo()
-    test_txt()
+    # test_txt()
+    test_image()

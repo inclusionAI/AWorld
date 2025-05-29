@@ -82,12 +82,12 @@ def optimize_image(image_data: bytes, max_size: int = 1024) -> bytes:
         return image_data  # Return original data if optimization fails
 
 
-def encode_images(image_sources: List[str], with_header: bool = True) -> List[str]:
+def encode_image(image_source: str, with_header: bool = True) -> List[str]:
     """
     Encode images to base64 format with robust file handling
 
     Args:
-        image_sources: List of URLs or local file paths of images
+        image_source: List of URLs or local file paths of images
         with_header: Whether to include MIME type header
 
     Returns:
@@ -96,40 +96,36 @@ def encode_images(image_sources: List[str], with_header: bool = True) -> List[st
     Raises:
         ValueError: When image source is invalid or image format is not supported
     """
-    if not image_sources:
+    if not image_source:
         raise ValueError("Image sources cannot be empty")
 
-    images = []
-    for image_source in image_sources:
-        try:
-            # Get file with validation (only image files allowed)
-            file_path, mime_type, content = get_file_from_source(
-                image_source,
-                allowed_mime_prefixes=["image/"],
-                max_size_mb=10.0,  # 10MB limit for images
-                file_type="image",
-            )
+    try:
+        # Get file with validation (only image files allowed)
+        file_path, mime_type, content = get_file_from_source(
+            image_source,
+            allowed_mime_prefixes=["image/"],
+            max_size_mb=10.0,  # 10MB limit for images
+            file_type="image",
+        )
 
-            # Optimize image
-            optimized_content = optimize_image(content)
+        # Optimize image
+        optimized_content = optimize_image(content)
 
-            # Encode to base64
-            image_base64 = base64.b64encode(optimized_content).decode()
+        # Encode to base64
+        image_base64 = base64.b64encode(optimized_content).decode()
 
-            # Format with header if requested
-            final_image = f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
+        # Format with header if requested
+        image = f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
 
-            images.append(final_image)
+        # Clean up temporary file if it was created for a URL
+        if file_path != os.path.abspath(image_source) and os.path.exists(file_path):
+            os.unlink(file_path)
 
-            # Clean up temporary file if it was created for a URL
-            if file_path != os.path.abspath(image_source) and os.path.exists(file_path):
-                os.unlink(file_path)
+    except Exception as e:
+        logger.error(f"Error encoding image from {image_source}: {str(e)}")
+        raise
 
-        except Exception as e:
-            logger.error(f"Error encoding image from {image_source}: {str(e)}")
-            raise
-
-    return images
+    return image
 
 
 def image_to_base64(image_path):
@@ -152,7 +148,8 @@ def create_image_contents(prompt: str, image_base64: List[str]) -> List[Dict[str
     content = [
         {"type": "text", "text": prompt},
     ]
-    content.extend([{"type": "image_url", "image_url": {"url": url}} for url in image_base64])
+    images = [{"type": "image_url", "image_url": {"url": image_to_base64(url)}} for url in image_base64]
+    content.extend(images)
     return content
 
 
@@ -163,15 +160,24 @@ def create_image_contents(prompt: str, image_base64: List[str]) -> List[Dict[str
     )
 )
 def mcp_image_recognition(
-    image_urls: List[str] = Field(description="The input image(s) in given a list of filepaths or urls."),
     question: str = Field(description="The question to ask."),
+    image_url: str = Field(description="The input image's  filepaths or urls."),
 ) -> str:
     """solve the question by careful reasoning given the image(s) in given filepath or url."""
 
     try:
         if not question:
             raise ValueError("Question cannot be empty")
-        content = create_image_contents(question, image_urls)
+        image = encode_image(image_url)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"role": "text", "content": question},
+                    {"type": "image_url", "image_url": {"url": image}},
+                ],
+            },
+        ]
         response: ModelResponse = call_llm_model(
             get_llm_model(
                 conf=AgentConfig(
@@ -181,10 +187,7 @@ def mcp_image_recognition(
                     llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
                 )
             ),
-            messages=[
-                # {"role": "system", "content": IMAGE_REASONING},
-                {"role": "user", "content": content},
-            ],
+            messages=messages,
             temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
         )
         logger.info(f"{response.content=}")
