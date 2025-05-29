@@ -182,11 +182,8 @@ class ToolsManager(Factory):
             tool = self._cls[name](conf=conf, **kwargs)
             self._tool_instance[name] = tool
         else:
-            # default browser env tool
-            logger.warning("Empty tool name, default use 'browser'")
-            asyn = kwargs.get('async', False)
-            name = "async_browser" if asyn else "browser"
-            tool = self._cls[name](conf=conf, **kwargs)
+            raise RuntimeError(f"can not find {name} tool in the ToolFactory, register it first.")
+
         action_executor.register(name, tool)
         return tool
 
