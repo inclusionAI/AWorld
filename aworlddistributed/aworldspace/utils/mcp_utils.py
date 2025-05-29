@@ -38,11 +38,8 @@ def load_all_mcp_config():
                 ]
             },
             "excel": {
-                "command": "npx",
-                "args": [
-                    "--yes",
-                    "@negokaz/excel-mcp-server"
-                ],
+                "command": "uvx",
+                "args": ["excel-mcp-server", "stdio"],
                 "env": {
                     "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000",
                     "SESSION_REQUEST_CONNECT_TIMEOUT": "120"

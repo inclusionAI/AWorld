@@ -1,5 +1,6 @@
 # Initialize AworldTaskClient with server endpoints
 import asyncio
+from datetime import datetime
 import os
 import random
 import uuid
@@ -47,11 +48,25 @@ if __name__ == '__main__':
     gaia_task_ids = ["32102e3e-d12a-4209-9163-7b3a104efe5d"]
     gaia_tasks = []
     custom_mcp_servers = [
-            "excel"
-    ]
+            # "e2b-server",
+            # "terminal-controller",
+            "excel",
+            "filesystem",
+            # "calculator",
+            # "ms-playwright",
+            # "audio_server",
+            # "image_server",
+            # "video_server",
+            # "search_server",
+            # "download_server",
+            # "document_server",
+            # "youtube_server",
+            # "reasoning_server"
+        ]
 
     for gaia_task_id in gaia_task_ids:
-        task_id = gaia_task_id + "_" + str(uuid.uuid4())
+        
+        task_id = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + gaia_task_id + "_" + str(uuid.uuid4())
         gaia_tasks.append(
             AworldTask(
                 task_id=task_id,
@@ -61,7 +76,7 @@ if __name__ == '__main__':
                 user_id=os.getenv("USER", "SYSTEM"),
                 client_id=get_local_ip(),
                 mcp_servers=custom_mcp_servers,
-                llm_model_name="DeepSeek-V3-Function-Call",
+                # llm_model_name="gpt-4o",
                 # task_system_prompt=CUSTOM_SYSTEM_PROMPT
             )
         )
