@@ -335,7 +335,7 @@ def configure_otlp_provider(
                 storage = kwargs.get("storage", InMemoryWithPersistStorage(storage_dir=storage_dir))
                 export_dir = os.path.join(storage_dir, timestamp, get_local_ip())
                 processor.add_span_processor(
-                    BatchSpanProcessor(InMemorySpanExporter(storage=storage, export_dir=export_dir)))
+                    BatchSpanProcessor(InMemorySpanExporter(storage=storage, export_dir=storage_dir)))
                 start_trace_server(storage=storage, port=8000)
             else:
                 processor.add_span_processor(

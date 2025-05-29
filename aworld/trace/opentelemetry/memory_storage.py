@@ -11,7 +11,6 @@ from opentelemetry.sdk.trace import Span, SpanContext
 from opentelemetry.sdk.trace.export import SpanExporter
 from aworld.logs.util import logger
 from aworld.replay_buffer.processor import ReplayBufferExporter
-from aworld.utils.common import get_local_ip
 
 
 class SpanStatus(BaseModel):
@@ -203,6 +202,7 @@ class InMemorySpanExporter(SpanExporter):
     def __init__(self, storage: TraceStorage, export_dir: str = None):
         self._storage = storage
         self._export_dir = export_dir
+        self._export_processor = ReplayBufferExporter()
 
     def export(self, spans):
         span_model_list = []
@@ -211,12 +211,8 @@ class InMemorySpanExporter(SpanExporter):
             span_model_list.append(SpanModel.from_span(span).model_dump())
 
         if (os.getenv("EXPORT_REPLAY_TRACE_TO_FILES") or "true").lower() == "true":
-            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             storage_dir = self._export_dir or self._storage.storage_dir if hasattr(self._storage, "storage_dir") else "./trace_data"
-            replay_dir = os.path.join(storage_dir, "replays")
-            replay_dataset_path = os.getenv("REPLAY_TRACE_DATASET_PATH", replay_dir)
-            output_dir = os.path.abspath(replay_dataset_path)
-            ReplayBufferExporter.replay_buffer_exporter(spans=span_model_list, output_dir=output_dir)
+            self._export_processor.replay_buffer_exporter(spans=span_model_list, output_dir=storage_dir)
 
     def shutdown(self):
         pass
