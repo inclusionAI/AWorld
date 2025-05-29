@@ -141,7 +141,7 @@ class ReplayBufferExporter:
                                 row['id']
                             ) for row in existing_data])
                     except Exception as e:
-                        print(f"Failed to read existing file {output_path}: {str(e)}")
+                        logger.warn(f"Failed to read existing file {output_path}: {str(e)}")
 
                 # Add new data
                 for exp_id, group in exp_groups.items():
@@ -155,7 +155,7 @@ class ReplayBufferExporter:
                 # Export to json
                 with open(output_path, 'w', encoding='utf-8') as f:
                     json.dump([row.to_dict() for row in data_rows], f, ensure_ascii=False, indent=2)
-                print(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
+                logger.info(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
 
                 if enable_oss_export:
                     # Upload to OSS
@@ -163,9 +163,9 @@ class ReplayBufferExporter:
                         # Get the relative path
                         abs_path = os.path.abspath(output_path)
                         path_parts = abs_path.split(os.sep)
-                        if len(path_parts) >= 4:
+                        if len(path_parts) >= 5:
                             # Get the last 4 parts of the path
-                            relative_path = os.sep.join(path_parts[-4:])
+                            relative_path = os.sep.join(path_parts[-5:])
                             oss_key = relative_path
                         else:
                             oss_key = f"replay_buffer/{os.path.basename(output_path)}"
