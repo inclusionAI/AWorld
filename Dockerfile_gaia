@@ -33,7 +33,7 @@ RUN wget https://storage.googleapis.com/chrome-for-testing-public/136.0.7103.92/
 ENV CHROME_DRIVER_PATH=/app/aworld/chromedriver-linux64/chromedriver
 
 # # Config Env
-# RUN npx playwright install chrome
+RUN npx playwright install chrome
 
 # Install Gaia requirements
 COPY ./examples/gaia/requirements.txt examples/gaia/requirements.txt
