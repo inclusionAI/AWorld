@@ -17,7 +17,6 @@ from aworld.utils.common import sync_exec
 LOCAL = "local"
 SPARK = "spark"
 RAY = "ray"
-ODPS = "odps"
 K8S = "k8s"
 
 
@@ -31,6 +30,9 @@ class RuntimeEngine(object):
         self.conf = conf
         self.runtime = None
         register(conf.name, self)
+
+        # Initialize clients running on top of distributed computing engines
+        pass
 
     def build_engine(self) -> 'RuntimeEngine':
         """Create computing engine runtime.
@@ -47,8 +49,23 @@ class RuntimeEngine(object):
         raise NotImplementedError("Base _build_engine not implemented!")
 
     @abc.abstractmethod
+    def broadcast(self, data: Any):
+        """"""
+        
+    
+
+    @abc.abstractmethod
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
+        """Submission focuses on the execution of stateless tasks on the special engine cluster."""
         raise NotImplementedError("Base task execute not implemented!")
+
+    def pre_execute(self):
+        """Define the pre execution logic."""
+        pass
+
+    def post_execute(self):
+        """Define the post execution logic."""
+        pass
 
 
 class LocalRuntime(RuntimeEngine):
@@ -184,27 +201,6 @@ class RayRuntime(RuntimeEngine):
         ray_map = lambda func, fn: [func.remote(x, *y) for x, *y in zip(fn, *params)]
         res_list = self.runtime.get(ray_map(fn_wrapper, funcs))
         return {res.id: res for res in res_list}
-
-
-class ODPSRuntime(RuntimeEngine):
-    """ODPS runtime key is 'odps', and execute tasks in ODPS cluster.
-
-    ODPS runtime can reused or create more instances to use.
-    """
-
-    def __init__(self, engine_options):
-        super(ODPSRuntime, self).__init__(engine_options)
-
-    def _build_engine(self):
-        import odps
-
-        if hasattr(self.conf, 'options'):
-            for k, v in self.conf.options.items():
-                odps.options.register_option(k, v)
-        else:
-            self.runtime = odps.ODPS(self.conf.get('accessid', self.conf.get('access_id', None)),
-                                     self.conf.get('accesskey', self.conf.get('access_key', None)),
-                                     self.conf.project, self.conf.endpoint)
 
 
 RUNTIME = {}
