@@ -3,10 +3,12 @@
 import base64
 from io import BytesIO
 
-import requests
-
 
 def encode_image_from_url(image_url):
+    from aworld.utils.import_package import import_package
+    import_package("requests")
+
+    import requests
     from PIL import Image
 
     response = requests.get(image_url)
@@ -26,6 +28,5 @@ def encode_image_from_url(image_url):
 
 
 def encode_image_from_file(image_path):
-    """从本地文件读取图片并编码为base64"""
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode()
