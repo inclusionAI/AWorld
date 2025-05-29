@@ -25,7 +25,7 @@ from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
 from aworld.utils.common import convert_to_snake, sync_exec
-from aworld.logs.util import logger, trace_logger
+from aworld.logs.util import logger, trace_logger, color_log, Color
 import aworld.trace as trace
 
 INPUT = TypeVar('INPUT')
@@ -523,6 +523,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 if llm_response:
                     use_tools = self.use_tool_list(llm_response)
                     is_use_tool_prompt = len(use_tools) > 0
+                    color_log(f"step_{step}: llm token usage: {json.dumps(llm_response.usage)}",
+                              color=Color.pink,
+                              logger_=trace_logger)
                     if llm_response.error:
                         logger.info(f"llm result error: {llm_response.error}")
                     else:
@@ -631,6 +634,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 if llm_response:
                     use_tools = self.use_tool_list(llm_response)
                     is_use_tool_prompt = len(use_tools) > 0
+                    color_log(f"step_{step}: llm token usage: {json.dumps(llm_response.usage)}",
+                              color=Color.pink,
+                              logger_=trace_logger)
                     if llm_response.error:
                         logger.info(f"llm result error: {llm_response.error}")
                     else:
