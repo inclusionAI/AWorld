@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import traceback
@@ -41,7 +42,7 @@ class GaiaAgent(Agent):
             ActionModel sequence from agent policy
         """
         # LOG CKPT: Agent's Observation
-        _log_obs = observation
+        _log_obs = copy.deepcopy(observation)
         if len(_log_obs.content) > self.truncated_length:
             _log_obs.content = _log_obs.content[: self.truncated_length] + "..."
         self._color_log(f"🌍 Observation: {_log_obs}", Color.pink)

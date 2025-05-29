@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
 
@@ -26,6 +26,17 @@ except ImportError:
 
 
 # pylint: disable=W0707
+class ExtractedImageInfo(BaseModel):
+    image_path: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    metadata: Optional[Dict] = None
+
+
+class ExtractedImagesResult(BaseModel):
+    images: List[ExtractedImageInfo]
+
+
 # Initialize MCP server
 mcp = FastMCP("pdf-server")
 
@@ -362,69 +373,59 @@ async def split_pdf(
         raise RuntimeError(f"Error splitting PDF: {str(e)}")
 
 
-@mcp.tool(description="Merges multiple PDF files into a single PDF file.")
-async def merge_pdfs(
-    input_file_paths: List[str] = Field(description="List of absolute paths to input PDF files."),
-    output_file_path: str = Field(description="Absolute path for the merged output PDF file."),
-) -> str:
-    """
-    Merges multiple PDF files into a single output PDF file.
+# @mcp.tool(description="Merges multiple PDF files into a single PDF file.")
+# async def merge_pdfs(
+#     input_file_paths: List[str] = Field(description="List of absolute paths to input PDF files."),
+#     output_file_path: str = Field(description="Absolute path for the merged output PDF file."),
+# ) -> str:
+#     """
+#     Merges multiple PDF files into a single output PDF file.
 
-    Args:
-        input_file_paths: List of absolute paths to the input PDF files.
-        output_file_path: Absolute path for the merged output PDF file.
+#     Args:
+#         input_file_paths: List of absolute paths to the input PDF files.
+#         output_file_path: Absolute path for the merged output PDF file.
 
-    Returns:
-        The absolute path to the generated merged PDF file.
+#     Returns:
+#         The absolute path to the generated merged PDF file.
 
-    Raises:
-        RuntimeError: If PyPDF2 is not installed.
-        FileNotFoundError: If any of the input files do not exist.
-        RuntimeError: If an error occurs during the merging process.
-    """
-    if PyPDF2 is None:
-        raise RuntimeError("PyPDF2 library is required for merge_pdfs but not found.")
-    merger = PyPDF2.PdfMerger()
-    try:
-        for pdf_path in input_file_paths:
-            if not os.path.exists(pdf_path):
-                raise FileNotFoundError(f"Input file not found: {pdf_path}")
-            merger.append(pdf_path)
+#     Raises:
+#         RuntimeError: If PyPDF2 is not installed.
+#         FileNotFoundError: If any of the input files do not exist.
+#         RuntimeError: If an error occurs during the merging process.
+#     """
+#     if PyPDF2 is None:
+#         raise RuntimeError("PyPDF2 library is required for merge_pdfs but not found.")
+#     merger = PyPDF2.PdfMerger()
+#     try:
+#         for pdf_path in input_file_paths:
+#             if not os.path.exists(pdf_path):
+#                 raise FileNotFoundError(f"Input file not found: {pdf_path}")
+#             merger.append(pdf_path)
 
-        output_dir = os.path.dirname(output_file_path)
-        if output_dir and not os.path.isdir(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
+#         output_dir = os.path.dirname(output_file_path)
+#         if output_dir and not os.path.isdir(output_dir):
+#             os.makedirs(output_dir, exist_ok=True)
 
-        merger.write(output_file_path)
-        merger.close()
-        return output_file_path
-    except Exception as e:
-        logger.error(f"Error merging PDFs: {e}\n{traceback.format_exc()}")
-        if hasattr(merger, "close"):
-            merger.close()
-        raise RuntimeError(f"Error merging PDFs: {str(e)}")
+#         merger.write(output_file_path)
+#         merger.close()
+#         return output_file_path
+#     except Exception as e:
+#         logger.error(f"Error merging PDFs: {e}\n{traceback.format_exc()}")
+#         if hasattr(merger, "close"):
+#             merger.close()
+#         raise RuntimeError(f"Error merging PDFs: {str(e)}")
 
 
-@mcp.tool(description="Extracts all images from a PDF file and saves them to a specified directory (uses PyMuPDF).")
+@mcp.tool(
+    description="Extracts all images from a PDF file and saves them to a specified directory (uses PyMuPDF). Returns image path, title, description, and metadata if available."
+)
 async def extract_images_from_pdf(
     file_path: str = Field(description="Absolute path to the input PDF file."),
-    output_directory: str = Field(description="Directory to save the extracted images."),
-) -> List[str]:
+    output_directory: str = Field(default="/tmp", description="Directory to save the extracted images."),
+) -> ExtractedImagesResult:
     """
     Extracts all images from a PDF file and saves them to a specified directory.
-
-    Args:
-        file_path: Absolute path to the input PDF file.
-        output_directory: Directory to save the extracted images.
-
-    Returns:
-        A list of absolute paths to the extracted image files.
-
-    Raises:
-        RuntimeError: If PyMuPDF (fitz) is not installed.
-        FileNotFoundError: If the input file does not exist.
-        ValueError: If the output directory cannot be created.
-        RuntimeError: If an error occurs during the image extraction process.
+    Returns an ExtractedImagesResult containing a list of ExtractedImageInfo.
     """
     if fitz is None:
         raise RuntimeError("PyMuPDF (fitz) library is required for image extraction but not found.")
@@ -436,8 +437,8 @@ async def extract_images_from_pdf(
         except Exception as e:
             raise ValueError(f"Cannot create output directory: {output_directory}, error: {str(e)}")
 
-    extracted_image_paths = []
-    doc = None  # Initialize doc to None
+    extracted_images = []
+    doc = None
     try:
         doc = fitz.open(file_path)
         for page_index in range(len(doc)):
@@ -451,9 +452,29 @@ async def extract_images_from_pdf(
                 image_filename = os.path.join(output_directory, f"page{page_index + 1}_img{img_index + 1}.{image_ext}")
                 with open(image_filename, "wb") as img_file:
                     img_file.write(image_bytes)
-                extracted_image_paths.append(image_filename)
+                metadata = {k: v for k, v in base_image.items() if k not in ["image", "ext"]}
+                title = None
+                description = None
+                try:
+                    blocks = page.get_text("dict")["blocks"]
+                    bbox = base_image.get("bbox")
+                    if bbox:
+                        for block in blocks:
+                            if block["type"] == 0:
+                                if abs(block["bbox"][1] - bbox[1]) < 50:
+                                    if not title:
+                                        title = block["lines"][0]["spans"][0]["text"]
+                                    elif not description:
+                                        description = block["lines"][0]["spans"][0]["text"]
+                except Exception:
+                    pass
+                extracted_images.append(
+                    ExtractedImageInfo(
+                        image_path=image_filename, title=title, description=description, metadata=metadata
+                    )
+                )
         doc.close()
-        return extracted_image_paths
+        return ExtractedImagesResult(images=extracted_images)
     except Exception as e:
         logger.error(f"Error extracting images from {file_path}: {e}\n{traceback.format_exc()}")
         if doc:

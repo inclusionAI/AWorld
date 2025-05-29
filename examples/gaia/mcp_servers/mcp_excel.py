@@ -65,7 +65,7 @@ class SheetData(BaseModel):
     column_count_read: int  # Actual number of columns read
     total_row_count: Optional[int] = None  # Total rows in the sheet
     total_column_count: Optional[int] = None  # Total columns in the sheet
-    error: Optional[str] = None
+    error: bool = False
     truncated: bool = False
 
 
