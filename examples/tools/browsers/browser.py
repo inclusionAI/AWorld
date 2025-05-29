@@ -349,7 +349,7 @@ class BrowserTool(Tool):
                     info)
         elif fail_error:
             # failed error observation
-            return (Observation(),
+            return (Observation(action_result=action_result, observer=self.name()),
                     reward,
                     terminated,
                     kwargs.get("truncated", False),

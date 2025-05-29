@@ -321,14 +321,13 @@ class BrowserTool(AsyncTool):
 
         info = {"exception": fail_error}
         terminated = kwargs.get("terminated", False)
-        if action_result:
-            for res in action_result:
-                if res.is_done:
-                    terminated = res.is_done
-                    info['done'] = True
-                    self._finish = True
-                if res.error:
-                    fail_error += res.error
+        for res in action_result:
+            if res.is_done:
+                terminated = res.is_done
+                info['done'] = True
+                self._finish = True
+            if res.error:
+                fail_error += res.error
 
         contains_write_to_file = any(act.action_name == BrowserAction.WRITE_TO_FILE.value.name for act in action if act)
         if contains_write_to_file:
@@ -343,7 +342,7 @@ class BrowserTool(AsyncTool):
                     info)
         elif fail_error:
             # failed error observation
-            return (Observation(),
+            return (Observation(action_result=action_result, observer=self.name()),
                     reward,
                     terminated,
                     kwargs.get("truncated", False),
