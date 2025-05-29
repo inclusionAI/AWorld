@@ -442,7 +442,7 @@ class GaiaRunner:
         # indexing results by task_id for easier lookup in submission
         results: Dict[str, Dict[str, Any]] = {result["task_id"]: result for result in self.results}
         # entire submission sets
-        task_ids: Set[str] = set(task["task_id"] for task in self.complete_dataset)
+        task_ids: List[str] = [task["task_id"] for task in self.complete_dataset]
         # crafting submission, is_correct if self.split is `validation`
         submission: List[Dict[str, Any]] = [
             {

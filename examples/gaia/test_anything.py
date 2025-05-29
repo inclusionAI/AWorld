@@ -6,6 +6,7 @@ from examples.gaia.mcp_servers.mcp_browser import browser_use
 from examples.gaia.mcp_servers.mcp_csv import read_csv_file
 from examples.gaia.mcp_servers.mcp_excel import read_excel_sheet
 from examples.gaia.mcp_servers.mcp_pdf import count_text_occurrences
+from examples.gaia.mcp_servers.mcp_txt import find_text_in_which_line
 from examples.gaia.mcp_servers.mcp_vector_store import index_text_file, search_text
 from examples.gaia.mcp_servers.mcp_wayback import get_archived_page_content, list_available_versions
 from examples.gaia.mcp_servers.mcp_yahoo_finance import get_historical_data
@@ -86,6 +87,13 @@ def test_excel():
     print(excel_file)
 
 
+def test_txt():
+    txt_file_path = os.path.expanduser(
+        "~/Desktop/AWorld/gaia-benchmark/GAIA/2023/test/f1ba834a-3bcb-4e55-836c-06cc1e2ccb9f.txt"
+    )
+    print(asyncio.run(find_text_in_which_line(txt_file_path, "culprit")))
+
+
 if __name__ == "__main__":
     # test_wayback()
     # test_browser()
@@ -94,4 +102,5 @@ if __name__ == "__main__":
     # test_vector_store()
     # test_csv()
     # test_excel()
-    test_yahoo()
+    # test_yahoo()
+    test_txt()

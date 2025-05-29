@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 import sys
@@ -6,6 +7,8 @@ from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from PIL import Image
+from pptx.slide import Slide
 from pydantic import Field
 
 from aworld.logs.util import logger
@@ -237,7 +240,7 @@ async def get_pptx_metadata(
         raise RuntimeError(f"Error processing PPTX for metadata: {str(e)}")
 
 
-@mcp.tool(description="Extracts all images from a PPTX file and saves them to a specified directory.")
+@mcp.tool(description="Extracts all images from a PPTX file and saves them to a specified directory as JPEG.")
 async def extract_images_from_pptx(
     file_path: str = Field(description="Absolute path to the input PPTX file."),
     output_directory: str = Field(description="Directory to save the extracted images."),
@@ -248,21 +251,7 @@ async def extract_images_from_pptx(
     ),
 ) -> List[str]:
     """
-    Extracts all images from specified slides of a PPTX file and saves them.
-
-    Args:
-        file_path: Absolute path to the input PPTX file.
-        output_directory: Directory to save the extracted images.
-        slide_numbers: Optional. List of 0-indexed slide numbers. Extracts from all if None.
-
-    Returns:
-        A list of absolute paths to the extracted image files.
-
-    Raises:
-        RuntimeError: If python-pptx is not installed.
-        FileNotFoundError: If the input file does not exist.
-        ValueError: If the output directory cannot be created.
-        Exception: If an error occurs during image extraction.
+    Extracts all images from specified slides of a PPTX file and saves them as JPEG.
     """
     if Presentation is None:
         raise RuntimeError("python-pptx library is required for image extraction but not found.")
@@ -280,20 +269,23 @@ async def extract_images_from_pptx(
         slides_to_process_indices = _get_slide_indices(prs, slide_numbers)
 
         for slide_idx in slides_to_process_indices:
-            slide = prs.slides[slide_idx]
+            slide: Slide = prs.slides[slide_idx]
             img_counter = 0
             for shape in slide.shapes:
                 if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:  # type: ignore
                     image = shape.image
                     image_bytes = image.blob
-                    image_ext = image.ext
-                    image_filename = os.path.join(
-                        output_directory, f"slide{slide_idx + 1}_img{img_counter + 1}.{image_ext}"
-                    )
-                    with open(image_filename, "wb") as img_file:
-                        img_file.write(image_bytes)
-                    extracted_image_paths.append(image_filename)
-                    img_counter += 1
+                    # Convert to JPEG using Pillow
+                    try:
+                        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                        image_filename = os.path.join(
+                            output_directory, f"slide{slide_idx + 1}_img{img_counter + 1}.jpeg"
+                        )
+                        img.save(image_filename, format="JPEG")
+                        extracted_image_paths.append(image_filename)
+                        img_counter += 1
+                    except Exception as e:
+                        logger.error(f"Failed to convert image to JPEG: {e}")
                 # Could also check for MSO_SHAPE_TYPE.GROUP and recurse if needed
         return extracted_image_paths
     except Exception as e:

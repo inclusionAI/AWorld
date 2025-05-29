@@ -270,6 +270,13 @@
                 "-m",
                 "examples.gaia.mcp_servers.mcp_vector_store"
             ]
+        },
+        "txt": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_txt"
+            ]
         }
     }
 }

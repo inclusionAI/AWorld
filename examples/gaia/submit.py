@@ -94,6 +94,7 @@ if __name__ == "__main__":
                 # "yahoo-finance",
                 "youtube",
                 # "vector-store",
+                "txt",
             ],
         ),
         runner_args=RunnerArguments(
