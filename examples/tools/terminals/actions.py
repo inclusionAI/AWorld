@@ -1,8 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from examples.tools.tool_action import ShellAction
-from aworld.core.envs.action_factory import ActionFactory
-from aworld.core.envs.action import ExecutableAction
+from aworld.core.tool.action_factory import ActionFactory
+from aworld.core.tool.action import ExecutableAction
 
 
 @ActionFactory.register(name=ShellAction.EXECUTE_SCRIPT.value.name,

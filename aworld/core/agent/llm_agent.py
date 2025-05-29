@@ -13,7 +13,7 @@ from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
 from aworld.core.common import Observation, ActionModel
-from aworld.core.envs.tool_desc import get_tool_desc
+from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.core.event.base import Message, ToolMessage, Constants
 from aworld.logs.util import logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform

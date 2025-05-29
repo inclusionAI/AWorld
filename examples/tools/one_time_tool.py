@@ -3,7 +3,7 @@
 import json
 from typing import List, Tuple, Dict, Any
 
-from aworld.core.envs.tool import Tool
+from aworld.core.tool.base import Tool
 from aworld.core.common import Observation, ActionModel, ActionResult, Config
 from aworld.logs.util import logger
 from examples.tools.utils import build_observation

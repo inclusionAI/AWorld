@@ -14,7 +14,7 @@ from typing import Any, Dict, Tuple, List
 from examples.tools.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
-from aworld.core.envs.tool import action_executor, ToolFactory, AsyncTool
+from aworld.core.tool.base import action_executor, ToolFactory, AsyncTool
 from aworld.utils.import_package import is_package_installed
 from examples.tools.browsers.action.executor import BrowserToolActionExecutor
 from examples.tools.browsers.util.dom import DomTree

@@ -6,7 +6,7 @@ import unittest
 from examples.common import Tools
 from aworld.core.common import ActionModel
 
-from aworld.core.envs.tool import ToolFactory
+from aworld.core.tool.base import ToolFactory
 from aworld.logs.util import logger
 
 

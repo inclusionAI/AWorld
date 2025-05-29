@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 from aworld.core.common import ToolActionInfo, ParamInfo
-from aworld.core.envs.action import ToolAction
+from aworld.core.tool.action import ToolAction
 
 
 class ChatAction(ToolAction):

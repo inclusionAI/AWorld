@@ -4,11 +4,11 @@
 import json
 
 from examples.tools.tool_action import AndroidAction
-from aworld.core.envs.action_factory import ActionFactory
+from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
 from examples.tools.android.action.adb_controller import ADBController
 from examples.tools.android.config.android_action_space import AndroidActionParamEnum
-from aworld.core.envs.action import ExecutableAction
+from aworld.core.tool.action import ExecutableAction
 
 
 @ActionFactory.register(name=AndroidAction.TAP.value.name,

@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from aworld.core.envs.tool import ToolFactory
+from aworld.core.tool.base import ToolFactory
 from examples.tools.one_time_tool import OneTimeTool
 from examples.tools.tool_action import SearchAction
 

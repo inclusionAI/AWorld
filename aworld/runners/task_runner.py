@@ -12,7 +12,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
-from aworld.core.envs.tool import Tool, AsyncTool
+from aworld.core.tool.base import Tool, AsyncTool
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
 from aworld import trace

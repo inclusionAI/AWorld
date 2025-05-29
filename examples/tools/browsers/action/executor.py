@@ -3,10 +3,10 @@
 
 from typing import Tuple, List, Any
 
-from aworld.core.envs.action_factory import ActionFactory
+from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.logs.util import logger
-from aworld.core.envs.tool import Tool, ToolActionExecutor
+from aworld.core.tool.base import Tool, ToolActionExecutor
 
 
 class BrowserToolActionExecutor(ToolActionExecutor):

@@ -8,11 +8,11 @@ import requests
 from typing import Tuple, Any, List, Dict
 
 from examples.tools.tool_action import SearchAction
-from aworld.core.envs.action_factory import ActionFactory
+from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
 from aworld.logs.util import logger
 from aworld.utils import import_package
-from aworld.core.envs.action import ExecutableAction
+from aworld.core.tool.action import ExecutableAction
 
 
 @ActionFactory.register(name=SearchAction.WIKI.value.name,

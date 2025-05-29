@@ -13,8 +13,8 @@ from aworld.core.agent.base import is_agent
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
-from aworld.core.envs.tool import ToolFactory, Tool, AsyncTool
-from aworld.core.envs.tool_desc import is_tool_by_name
+from aworld.core.tool.base import ToolFactory, Tool, AsyncTool
+from aworld.core.tool.tool_desc import is_tool_by_name
 from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.models.model_response import ToolCall

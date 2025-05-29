@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from aworld.config import ToolConfig
 from examples.tools.tool_action import DocumentExecuteAction
 from aworld.core.common import Observation, ActionModel, ActionResult
-from aworld.core.envs.tool import ToolFactory, Tool
+from aworld.core.tool.base import ToolFactory, Tool
 from aworld.logs.util import logger
 from examples.tools.document.utils import encode_image_from_file, encode_image_from_url
 from aworld.utils import import_package, import_packages

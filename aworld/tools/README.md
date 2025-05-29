@@ -6,12 +6,42 @@ Running on the local, we assume that the virtual environment completes startup w
 
 ![Environment Architecture](../../readme_assets/framework_environment.png)
 
+# Be tool
+
+You also can convert locally defined functions into tools for use in a task.
+
+NOTE: The function must have a return value, preferably a string, as observed content.
+
+```python
+from pydantic import Field
+
+from aworld.core.tool.func_to_tool import be_tool
+
+
+@be_tool(tool_name='example', tool_desc="example description")
+def example_1() -> str:
+    return "example_1"
+
+
+@be_tool(tool_name='example')
+def example_2(param: str) -> str:
+    return f"example_2{param}"
+
+
+@be_tool(tool_name='example', name="example_3_alias_name", desc="example_3 description")
+def example_3(param_1: str = "param",
+              param_2: str = Field(default="", description="param2 description")) -> str:
+    return f"example_3{param_1}{param_2}"
+```
+
+The name of the tool is `example`, now, you can use these functions as tools in the framework.
 
 # Write tool
 
 Detailed steps for building a tool:
+
 1. Register action of your tool to action factory, and inherit `ExecutableAction`
-2. Optional implement the `act` or `async_act` method 
+2. Optional implement the `act` or `async_act` method
 3. Register your tool to tool factory, and inherit `Tool` or `AsyncTool`
 4. Write the `step` method to execute the abilities in the tool and generate observation, update finished Status.
 
@@ -19,7 +49,7 @@ Detailed steps for building a tool:
 from typing import List, Tuple, Dict, Any
 
 from aworld.core.common import ActionModel, Observation
-from aworld.core.envs.tool import ActionFactory, Tool, ToolFactory, ToolInput, AgentInput
+from aworld.core.tool.base import ActionFactory, Tool, ToolFactory, ToolInput, AgentInput
 from examples.tools import ExecutableAction
 from examples.tools.tool_action import GymAction
 
@@ -43,33 +73,5 @@ class OpenAIGym(Tool[Observation, List[ActionModel]]):
 class Play(ExecutableAction):
     """There is only one Action, it can be implemented in the tool, registration is required here."""
 ```
+
 You can view the example [code](gym_tool/openai_gym.py) to learn more.
-
-# Be tool
-You also can convert locally defined functions into tools for use in a task.
-
-NOTE: The function must have a return value, preferably a string.
-
-```python
-from pydantic import Field
-
-from aworld.core.envs.func_to_tool import be_tool
-
-
-@be_tool(tool_name='example', tool_desc="example description")
-def example_1() -> str:
-    return "example_1"
-
-
-@be_tool(tool_name='example')
-def example_2(param: str) -> str:
-    return f"example_2{param}"
-
-
-@be_tool(tool_name='example', name="example_3_alias_name", desc="example_3 description")
-def example_3(param_1: str = "param",
-              param_2: str = Field(default="", description="param2 description")) -> str:
-    return f"example_3{param_1}{param_2}"
-```
-
-The name of the tool is `example`, now, you can use these functions as tools in the framework. 

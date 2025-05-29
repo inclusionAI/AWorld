@@ -15,8 +15,8 @@ from aworld.config import ConfigDict
 from examples.tools.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
-from aworld.core.envs.tool import action_executor, ToolFactory
-from aworld.core.envs.tool import Tool
+from aworld.core.tool.base import action_executor, ToolFactory
+from aworld.core.tool.base import Tool
 from aworld.utils.import_package import is_package_installed
 from examples.tools.browsers.action.executor import BrowserToolActionExecutor
 from examples.tools.browsers.util.dom import DomTree

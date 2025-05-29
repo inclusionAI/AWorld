@@ -2,7 +2,7 @@
 
 from examples.tools.one_time_tool import OneTimeTool
 from examples.tools.tool_action import WriteAction
-from aworld.core.envs.tool import ToolFactory
+from aworld.core.tool.base import ToolFactory
 
 
 @ToolFactory.register(name="html", desc="html tool", supported_action=WriteAction)

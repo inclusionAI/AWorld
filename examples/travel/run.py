@@ -2,13 +2,13 @@
 # Copyright (c) 2025 inclusionAI.
 from aworld.config.conf import AgentConfig, ToolConfig
 from aworld.core.agent.llm_agent import Agent
-from aworld.agents import BrowserAgent
-from examples.browsers.config import BrowserAgentConfig
 from aworld.config import ModelConfig
-from examples.common import Tools
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 from aworld.runner import Runners
+from examples.browsers.agent import BrowserAgent
+from examples.browsers.config import BrowserAgentConfig
+from examples.common import Tools
 from examples.tools.conf import BrowserToolConfig
 from examples.tools.tool_action import SearchAction
 from examples.travel.prompts import *
@@ -16,8 +16,7 @@ from examples.travel.prompts import *
 model_config = ModelConfig(
     llm_provider="openai",
     llm_model_name="gpt-4o",
-    llm_base_url="http://localhost:34567",
-    llm_api_key="dummy-key",
+    # need to set llm_api_key for use LLM
 )
 agent_config = AgentConfig(
     llm_config=model_config,
@@ -40,7 +39,8 @@ search = Agent(
     system_prompt=search_sys_prompt,
     agent_prompt=search_prompt,
     tool_names=[Tools.SEARCH_API.value],
-    black_tool_actions={Tools.SEARCH_API.value: [SearchAction.DUCK_GO.value.name, SearchAction.WIKI.value.name, SearchAction.GOOGLE.value.name]}
+    black_tool_actions={Tools.SEARCH_API.value: [SearchAction.DUCK_GO.value.name, SearchAction.WIKI.value.name,
+                                                 SearchAction.GOOGLE.value.name]}
 )
 
 write = Agent(

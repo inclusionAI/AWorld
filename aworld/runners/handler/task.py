@@ -5,7 +5,7 @@ import time
 from typing import AsyncGenerator
 
 from aworld.core.common import TaskItem
-from aworld.core.envs.tool import Tool, AsyncTool
+from aworld.core.tool.base import Tool, AsyncTool
 
 from aworld.core.event.base import Message, Constants
 from aworld.core.task import TaskResponse

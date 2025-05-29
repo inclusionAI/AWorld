@@ -5,7 +5,7 @@ from typing import Any, Dict, Tuple, Union
 
 from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.common import ActionModel, Observation
-from aworld.core.envs.tool import ToolFactory, AsyncTool
+from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
 from examples.tools.mcp.executor import MCPToolExecutor
 from examples.tools.utils import build_observation

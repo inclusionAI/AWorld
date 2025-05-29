@@ -11,11 +11,11 @@ from pydantic import create_model, Field, BaseModel
 from pydantic.fields import FieldInfo
 
 from aworld.core.common import ToolActionInfo, ParamInfo
-from aworld.core.envs.action import TOOL_ACTION
-from aworld.core.envs.action_factory import ActionFactory
-from aworld.core.envs.action_template import ACTION_TEMPLATE
-from aworld.core.envs.tool import ToolFactory
-from aworld.core.envs.tool_template import TOOL_TEMPLATE
+from aworld.core.tool.action import TOOL_ACTION
+from aworld.core.tool.action_factory import ActionFactory
+from aworld.core.tool.action_template import ACTION_TEMPLATE
+from aworld.core.tool.base import ToolFactory
+from aworld.core.tool.tool_template import TOOL_TEMPLATE
 from aworld.logs.util import logger
 
 

@@ -5,10 +5,10 @@ import re
 
 from typing import Tuple, Any
 
-from aworld.core.envs.action_factory import ActionFactory
+from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
 from aworld.logs.util import logger
-from aworld.core.envs.action import ExecutableAction
+from aworld.core.tool.action import ExecutableAction
 from aworld.models.llm import get_llm_model, call_llm_model
 
 

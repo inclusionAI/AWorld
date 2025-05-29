@@ -11,7 +11,7 @@ from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.context.base import Context
-from aworld.core.envs.tool import Tool, AsyncTool
+from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
 
 

@@ -10,12 +10,12 @@ from typing import Tuple, Any
 from langchain_core.prompts import PromptTemplate
 
 from examples.tools.tool_action import BrowserAction
-from aworld.core.envs.action_factory import ActionFactory
+from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult, Observation
 from examples.tools.browsers.util.dom import DOMElementNode
 from aworld.logs.util import logger
 from examples.tools.browsers.action.utils import DomUtil
-from aworld.core.envs.action import ExecutableAction
+from aworld.core.tool.action import ExecutableAction
 from aworld.utils import import_packages
 from aworld.models.llm import get_llm_model, call_llm_model
 

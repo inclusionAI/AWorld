@@ -8,8 +8,8 @@ from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 from pydantic import BaseModel
 
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
-from aworld.core.envs.action import ToolAction
-from aworld.core.envs.action_factory import ActionFactory
+from aworld.core.tool.action import ToolAction
+from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, ToolMessage, AgentMessage

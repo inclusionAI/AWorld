@@ -3,9 +3,9 @@
 
 from typing import List, Dict
 
-from aworld.core.envs.action_factory import ActionFactory
+from aworld.core.tool.action_factory import ActionFactory
 
-from aworld.core.envs.tool import ToolFactory
+from aworld.core.tool.base import ToolFactory
 from aworld.logs.util import logger
 
 
