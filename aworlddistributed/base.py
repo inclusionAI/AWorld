@@ -17,6 +17,7 @@ class AworldTask(BaseModel):
     mcp_servers: Optional[list[str]] = Field(default=None, description="mcp_servers")
     node_id: Optional[str] = Field(default=None, description="execute task node_id")
     client_id: Optional[str] = Field(default=None, description="submit client ip")
+    history_messages: Optional[int] = Field(default=100, description="history_message")
 
 class AworldTaskResult(BaseModel):
     task: AworldTask = Field(default=None, description="task")

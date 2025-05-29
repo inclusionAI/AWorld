@@ -92,7 +92,10 @@ class AworldBaseAgent:
         return user_input
 
     @abstractmethod
-    def get_history_messages(self):
+    async def get_history_messages(self, body) -> int:
+        task = await self.get_task_from_body(body)
+        if task:
+            return task.history_messages
         return 100
 
     @abstractmethod
@@ -113,7 +116,7 @@ class AworldBaseAgent:
             system_prompt=agent_config.system_prompt,
             mcp_servers=mcp_servers,
             mcp_config=await self.load_mcp_config(),
-            history_messages=self.get_history_messages()
+            history_messages=await self.get_history_messages(body)
         )
         return agent
 
