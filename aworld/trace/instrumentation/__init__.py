@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from abc import ABC, abstractmethod
-import re
 from typing import Any, Collection
 from packaging.requirements import Requirement, InvalidRequirement
 from importlib_metadata import version, PackageNotFoundError
