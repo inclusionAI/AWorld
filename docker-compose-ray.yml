@@ -1,0 +1,42 @@
+services:
+  ray-head:
+    build:
+      context: .
+      dockerfile: Dockerfile_ray
+    platform: linux/amd64
+    ports:
+      - "6379:6379" # Reddis port
+      - "8265:8265" # Ray dashboard
+      - "10001:10001" # Ray head node port
+    command: /bin/bash -c "ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --block"
+    shm_size: '2gb'
+    env_file:
+      - .env
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+
+  ray-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile_ray
+    platform: linux/amd64
+    depends_on:
+      - ray-head
+    command: /bin/bash -c "ray start --address=ray-head:6379 --block"
+    shm_size: '2gb'
+    env_file:
+      - .env
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G

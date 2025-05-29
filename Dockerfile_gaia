@@ -4,10 +4,6 @@ RUN mkdir -p /app/aworld
 
 WORKDIR /app/aworld
 
-COPY ./aworld aworld
-COPY ./mcp_servers mcp_servers
-COPY ./setup.py setup.py
-
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 
 RUN rm -fv /etc/apt/sources.list && \
@@ -18,6 +14,10 @@ RUN rm -fv /etc/apt/sources.list && \
     echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+COPY ./aworld aworld
+COPY ./mcp_servers mcp_servers
+COPY ./setup.py setup.py
 
 RUN python setup.py install
 

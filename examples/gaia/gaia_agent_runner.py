@@ -49,7 +49,6 @@ class GaiaAgentRunner:
             mcp_config=mcp_config,
             mcp_servers=[
                 "e2b-server",
-                # "filesystem",
                 "terminal-controller",
                 "excel",
                 "calculator",
@@ -60,7 +59,6 @@ class GaiaAgentRunner:
                 "search_server",
                 "download_server",
                 "document_server",
-                # "browser_server",
                 "youtube_server",
                 "reasoning_server",
             ],

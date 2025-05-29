@@ -1,0 +1,53 @@
+FROM rayproject/ray:2.46.0-py312-cpu-aarch64 as base
+
+USER root
+
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
+
+RUN echo "deb https://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse" > /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/ubuntu/ jammy-security main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse" >> /etc/apt/sources.list && \
+    rm -fv /etc/apt/sources.list.d/* && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
+
+RUN apt-get update && \
+    apt-get install -y npm
+
+USER ray
+
+RUN mkdir -p /home/ray/aworld
+
+WORKDIR /home/ray/aworld
+
+
+COPY ./aworld aworld
+COPY ./mcp_servers mcp_servers
+COPY ./setup.py setup.py
+
+RUN python setup.py install
+
+# Fix numpy ray compatibility issues
+RUN pip install "numpy>=1.19,<2.0" "pyarrow>=14.0.2"
+
+FROM base
+
+COPY ./ray_serve/mcp.json /home/ray/aworld/ray_serve/mcp.json
+COPY ./examples/gaia/requirements.txt /home/ray/aworld/mcp_servers/requirements.txt
+RUN pip install -r /home/ray/aworld/mcp_servers/requirements.txt
+
+# Ray memory configuration to prevent OOM issues
+ENV RAY_memory_monitor_refresh_ms=0
+ENV RAY_object_store_memory=200000000
+ENV RAY_memory_usage_threshold=0.8
+ENV RAY_DISABLE_IMPORT_WARNING=1
+ENV RAY_ENABLE_WINDOWS_OR_OSX_CLUSTER=1
+
+# Additional memory management settings
+ENV PYTHONUNBUFFERED=1
+ENV RAY_DEDUP_LOGS=0
+ENV RAY_ENABLE_RECORD_ACTOR_TASK_LOGGING=0
+ENV RAY_DISABLE_IMPORT_WARNING=1
+ENV RAY_OBJECT_SPILLING_ENABLED=1
+ENV RAY_OBJECT_SPILLING_THRESHOLD=0.8
