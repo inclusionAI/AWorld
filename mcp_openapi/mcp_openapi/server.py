@@ -34,6 +34,7 @@ MCP_ERROR_TO_HTTP_STATUS = {
     INTERNAL_ERROR: 500,
 }
 
+
 def process_tool_response(result: CallToolResult) -> list:
     """Universal response processor for all tool endpoints"""
     response = []
@@ -56,12 +57,12 @@ def process_tool_response(result: CallToolResult) -> list:
 
 
 def _process_schema_property(
-    _model_cache: Dict[str, Type],
-    prop_schema: Dict[str, Any],
-    model_name_prefix: str,
-    prop_name: str,
-    is_required: bool,
-    schema_defs: Optional[Dict] = None,
+        _model_cache: Dict[str, Type],
+        prop_schema: Dict[str, Any],
+        model_name_prefix: str,
+        prop_name: str,
+        is_required: bool,
+        schema_defs: Optional[Dict] = None,
 ) -> tuple[Union[Type, List, ForwardRef, Any], FieldInfo]:
     try:
         if "$ref" in prop_schema:
@@ -173,6 +174,7 @@ def _process_schema_property(
     except Exception as e:
         logging.warning(f"_process_schema_property error: {e}")
 
+
 def get_model_fields(form_model_name, properties, required_fields, schema_defs=None):
     model_fields = {}
     _model_cache: Dict[str, Type] = {}
@@ -191,11 +193,12 @@ def get_model_fields(form_model_name, properties, required_fields, schema_defs=N
         model_fields[param_name] = (python_type_hint, pydantic_field_info)
     return model_fields
 
+
 def get_tool_handler(
-    app,  # modified to receive app instead of session
-    endpoint_name,
-    form_model_fields,
-    response_model_fields=None,
+        app,  # modified to receive app instead of session
+        endpoint_name,
+        form_model_fields,
+        response_model_fields=None,
 ):
     if form_model_fields:
         FormModel = create_model(f"{endpoint_name}_form_model", **form_model_fields)
@@ -208,84 +211,37 @@ def get_tool_handler(
         async def tool(form_data: FormModel) -> ResponseModel:
             args = form_data.model_dump(exclude_none=True)
             print(f"Calling endpoint: {endpoint_name}, with args: {args}")
-            
-            # Create a new session for the current request
-            server_type = getattr(app.state, "server_type", "stdio")
-            
+
+            # Use session in app.state
+            session = app.state.session
+            if not session:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"message": "Service unavailable", "error": "Session not initialized"}
+                )
+
             try:
-                if server_type == "stdio":
-                    command = getattr(app.state, "command", None)
-                    args_list = getattr(app.state, "args", [])
-                    env = getattr(app.state, "env", {})
-                    
-                    server_params = StdioServerParameters(
-                        command=command,
-                        args=args_list,
-                        env={**env},
+                result = await session.call_tool(endpoint_name, arguments=args)
+
+                if result.isError:
+                    error_message = "Unknown tool execution error"
+                    error_data = None
+                    if result.content:
+                        if isinstance(result.content[0], types.TextContent):
+                            error_message = result.content[0].text
+                    detail = {"message": error_message}
+                    if error_data is not None:
+                        detail["data"] = error_data
+                    raise HTTPException(
+                        status_code=500,
+                        detail=detail,
                     )
-                    
-                    # Create a new connection and session for the current request
-                    async with stdio_client(server_params) as (reader, writer):
-                        async with ClientSession(reader, writer) as session:
-                            # Use the newly created session to call the MCP tool
-                            logger.info(f"session.call_tool-stdio: {endpoint_name}, with args: {args}")
-                            result = await session.call_tool(endpoint_name, arguments=args)
-                            
-                            # Process the result
-                            if result.isError:
-                                error_message = "Unknown tool execution error"
-                                error_data = None  # Initialize error_data
-                                if result.content:
-                                    if isinstance(result.content[0], types.TextContent):
-                                        error_message = result.content[0].text
-                                detail = {"message": error_message}
-                                if error_data is not None:
-                                    detail["data"] = error_data
-                                raise HTTPException(
-                                    status_code=500,
-                                    detail=detail,
-                                )
 
-                            response_data = process_tool_response(result)
-                            final_response = (
-                                response_data[0] if len(response_data) == 1 else response_data
-                            )
-                            return final_response
-                
-                elif server_type == "sse":
-                    args_list = getattr(app.state, "args", [])
-                    url = args_list if isinstance(args_list, str) else args_list[0]
-                    sse_read_timeout = getattr(app.state, "sse_read_timeout", None)
-                    
-                    # Create a new connection and session for the current request
-                    async with sse_client(url=url, sse_read_timeout=sse_read_timeout) as (reader, writer):
-                        async with ClientSession(reader, writer) as session:
-                            # Use the newly created session to call the MCP tool
-                            logger.info(f"session.call_tool-sse: {endpoint_name}, with args: {args}")
-                            result = await session.call_tool(endpoint_name, arguments=args)
-                            
-                            # Process the result
-                            if result.isError:
-                                error_message = "Unknown tool execution error"
-                                error_data = None  # Initialize error_data
-                                if result.content:
-                                    if isinstance(result.content[0], types.TextContent):
-                                        error_message = result.content[0].text
-                                detail = {"message": error_message}
-                                if error_data is not None:
-                                    detail["data"] = error_data
-                                raise HTTPException(
-                                    status_code=500,
-                                    detail=detail,
-                                )
-
-                            response_data = process_tool_response(result)
-                            final_response = (
-                                response_data[0] if len(response_data) == 1 else response_data
-                            )
-                            return final_response
-                else:
-                    raise ValueError(f"Unsupported server type: {server_type}")
+                response_data = process_tool_response(result)
+                final_response = (
+                    response_data[0] if len(response_data) == 1 else response_data
+                )
+                return final_response
 
             except McpError as e:
                 print(f"MCP Error calling {endpoint_name}: {e.error}")
@@ -299,91 +255,64 @@ def get_tool_handler(
                     ),
                 )
             except Exception as e:
-                print(f"Unexpected error calling {endpoint_name}: {e}")
-                raise HTTPException(
-                    status_code=500,
-                    detail={"message": "Unexpected error", "error": str(e)},
-                )
+                logger.error(f"Unexpected error calling {endpoint_name}: {str(e)}")
+
+                # Try to rebuild session and retry
+                try:
+                    logger.info(f"Attempting to recreate session and retry for {endpoint_name}")
+                    session = await recreate_session(app)
+                    result = await session.call_tool(endpoint_name, arguments=args)
+
+                    # Process successful retry response
+                    response_data = process_tool_response(result)
+                    final_response = (
+                        response_data[0] if len(response_data) == 1 else response_data
+                    )
+                    logger.info(f"Retry successful for {endpoint_name}")
+                    return final_response
+                except Exception as retry_e:
+                    logger.error(f"Retry failed for {endpoint_name}: {str(retry_e)}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail={"message": "Unexpected error", "error": str(e)}
+                    )
 
         return tool
     else:
         async def tool():  # No parameters
             print(f"Calling endpoint: {endpoint_name}, with no args")
-            
-            # Create a new session for the current request
-            server_type = getattr(app.state, "server_type", "stdio")
-            
+
+            # Use session in app.state
+            session = app.state.session
+            if not session:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"message": "Service unavailable", "error": "Session not initialized"}
+                )
+
             try:
-                if server_type == "stdio":
-                    command = getattr(app.state, "command", None)
-                    args_list = getattr(app.state, "args", [])
-                    env = getattr(app.state, "env", {})
-                    
-                    server_params = StdioServerParameters(
-                        command=command,
-                        args=args_list,
-                        env={**env},
+                result = await session.call_tool(endpoint_name, arguments={})
+
+                if result.isError:
+                    error_message = "Unknown tool execution error"
+                    if result.content:
+                        if isinstance(result.content[0], types.TextContent):
+                            error_message = result.content[0].text
+                    detail = {"message": error_message}
+                    raise HTTPException(
+                        status_code=500,
+                        detail=detail,
                     )
-                    
-                    # Create a new connection and session for the current request
-                    async with stdio_client(server_params) as (reader, writer):
-                        async with ClientSession(reader, writer) as session:
-                            # Use the newly created session to call the MCP tool
-                            result = await session.call_tool(endpoint_name, arguments={})
-                            
-                            # Process the result
-                            if result.isError:
-                                error_message = "Unknown tool execution error"
-                                if result.content:
-                                    if isinstance(result.content[0], types.TextContent):
-                                        error_message = result.content[0].text
-                                detail = {"message": error_message}
-                                raise HTTPException(
-                                    status_code=500,
-                                    detail=detail,
-                                )
 
-                            response_data = process_tool_response(result)
-                            final_response = (
-                                response_data[0] if len(response_data) == 1 else response_data
-                            )
-                            return final_response
-                
-                elif server_type == "sse":
-                    args_list = getattr(app.state, "args", [])
-                    url = args_list if isinstance(args_list, str) else args_list[0]
-                    sse_read_timeout = getattr(app.state, "sse_read_timeout", None)
-                    
-                    # Create a new connection and session for the current request
-                    async with sse_client(url=url, sse_read_timeout=sse_read_timeout) as (reader, writer):
-                        async with ClientSession(reader, writer) as session:
-                            # Use the newly created session to call the MCP tool
-                            result = await session.call_tool(endpoint_name, arguments={})
-                            
-                            # Process the result
-                            if result.isError:
-                                error_message = "Unknown tool execution error"
-                                if result.content:
-                                    if isinstance(result.content[0], types.TextContent):
-                                        error_message = result.content[0].text
-                                detail = {"message": error_message}
-                                raise HTTPException(
-                                    status_code=500,
-                                    detail=detail,
-                                )
-
-                            response_data = process_tool_response(result)
-                            final_response = (
-                                response_data[0] if len(response_data) == 1 else response_data
-                            )
-                            return final_response
-                else:
-                    raise ValueError(f"Unsupported server type: {server_type}")
+                response_data = process_tool_response(result)
+                final_response = (
+                    response_data[0] if len(response_data) == 1 else response_data
+                )
+                return final_response
 
             except McpError as e:
                 print(f"MCP Error calling {endpoint_name}: {e.error}")
                 status_code = MCP_ERROR_TO_HTTP_STATUS.get(e.error.code, 500)
-                # Propagate the error received from MCP as an HTTP exception
                 raise HTTPException(
                     status_code=status_code,
                     detail=(
@@ -393,10 +322,106 @@ def get_tool_handler(
                     ),
                 )
             except Exception as e:
-                print(f"Unexpected error calling {endpoint_name}: {e}")
-                raise HTTPException(
-                    status_code=500,
-                    detail={"message": "Unexpected error", "error": str(e)},
-                )
+                logger.error(f"Unexpected error calling {endpoint_name}: {str(e)}")
+
+                # Try to rebuild session and retry
+                try:
+                    logger.info(f"Attempting to recreate session and retry for {endpoint_name}")
+                    session = await recreate_session(app)
+                    result = await session.call_tool(endpoint_name, arguments={})
+
+                    # Process successful retry response
+                    response_data = process_tool_response(result)
+                    final_response = (
+                        response_data[0] if len(response_data) == 1 else response_data
+                    )
+                    logger.info(f"Retry successful for {endpoint_name}")
+                    return final_response
+                except Exception as retry_e:
+                    logger.error(f"Retry failed for {endpoint_name}: {str(retry_e)}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail={"message": "Unexpected error", "error": str(e)}
+                    )
 
         return tool
+
+
+async def recreate_session(app):
+    """
+    Recreate session and update app.state.session
+
+    Parameters:
+        app: FastAPI application instance
+
+    Returns:
+        Newly created ClientSession instance
+    """
+    logger.info(f"Recreating session for {app.title}")
+
+    # Clean up possible existing session resources
+    if hasattr(app.state, "session"):
+        try:
+            # Close the session if it exists
+            if app.state.session:
+                # Let's just set it to None to allow garbage collection
+                app.state.session = None
+        except Exception as e:
+            logger.warning(f"Error cleaning up existing session: {str(e)}")
+
+    # Get connection parameters
+    server_type = getattr(app.state, "server_type", "stdio")
+
+    # Create session based on server type
+    if server_type == "stdio":
+        command = getattr(app.state, "command", None)
+        args = getattr(app.state, "args", [])
+        env = getattr(app.state, "env", {})
+
+        if not command:
+            raise ValueError(f"Command not available for stdio server: {app.title}")
+
+        logger.info(f"Recreating stdio client for {app.title}: {command} {args}")
+        server_params = StdioServerParameters(
+            command=command,
+            args=args,
+            env={**env},
+        )
+
+        # Create new connection and session
+        async with stdio_client(server_params) as (reader, writer):
+            async with ClientSession(reader, writer) as session:
+                # Initialize session
+                await session.initialize()
+
+                # Update only the session in app.state
+                app.state.session = session
+
+                # Return the new session
+                logger.info(f"Stdio client reconnected for {app.title}")
+                return session
+
+    elif server_type == "sse":
+        args = getattr(app.state, "args", [])
+        url = args[0] if isinstance(args, list) and args else args
+        sse_read_timeout = getattr(app.state, "sse_read_timeout", None)
+
+        if not url:
+            raise ValueError(f"URL not available for SSE server: {app.title}")
+
+        logger.info(f"Recreating SSE client for {app.title} with URL: {url}")
+        # Create new connection and session
+        async with sse_client(url=url, sse_read_timeout=sse_read_timeout) as (reader, writer):
+            async with ClientSession(reader, writer) as session:
+                # Initialize session
+                await session.initialize()
+
+                # Update only the session in app.state
+                app.state.session = session
+
+                # Return the new session
+                logger.info(f"SSE client reconnected for {app.title}")
+                return session
+
+    else:
+        raise ValueError(f"Unsupported server type: {server_type} for {app.title}")

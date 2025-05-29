@@ -12,7 +12,10 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# todo back
 from .server import get_model_fields, get_tool_handler
+
+# from mcp_openapi.mcp_openapi.server import get_model_fields, get_tool_handler
 
 
 # Configure logging
@@ -22,12 +25,13 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
+
 async def create_dynamic_endpoints(app: FastAPI):
     session: ClientSession = app.state.session
     if not session:
         logger.error("Session is not initialized in the app state")
         raise ValueError("Session is not initialized in the app state.")
-    
+
     logger.info(f"Initializing MCP session for app: {app.title}")
     try:
         result = await session.initialize()
@@ -48,7 +52,7 @@ async def create_dynamic_endpoints(app: FastAPI):
         tools_result = await session.list_tools()
         logger.info(f"Tools result: {tools_result}")
         tools = tools_result.tools
-        logger.info(f"Found {len(tools)} tools: {[tool.name for tool in tools]}")   
+        logger.info(f"Found {len(tools)} tools: {[tool.name for tool in tools]}")
 
         for tool in tools:
             endpoint_name = tool.name
@@ -76,7 +80,7 @@ async def create_dynamic_endpoints(app: FastAPI):
                     outputSchema.get("$defs", {}),
                 )
 
-            # Use app instead of session, to create a new session for each request
+            # Use app instead of session
             tool_handler = get_tool_handler(
                 app,  # Pass app instead of session
                 endpoint_name,
@@ -87,7 +91,7 @@ async def create_dynamic_endpoints(app: FastAPI):
             # Use endpoint_name as the path, ensure the path is correct
             endpoint_path = f"/{endpoint_name}"
             logger.info(f"Registering endpoint at path: {endpoint_path}")
-            
+
             try:
                 endpoint = app.post(
                     endpoint_path,
@@ -112,10 +116,10 @@ async def lifespan(app: FastAPI):
     env = getattr(app.state, "env", {})
 
     logger.info(f"Initializing app: {app.title}, server_type: {server_type}")
-    
+
     # Convert non-list args to list
     args = args if isinstance(args, list) else [args]
-    
+
     if (server_type == "stdio" and not command) or (
             server_type == "sse" and not args[0]
     ):
@@ -123,7 +127,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"Managing main app lifespan with mounted sub-apps")
         from contextlib import AsyncExitStack
         from starlette.routing import Mount
-        
+
         async with AsyncExitStack() as stack:
             for route in app.routes:
                 if isinstance(route, Mount) and hasattr(route.app, "router"):
@@ -173,9 +177,10 @@ async def lifespan(app: FastAPI):
 
 
 async def run(
-    port: int = 9000,
-    cors_allow_origins=["*"],
-    **kwargs,
+        # host: str = "127.0.0.1",
+        port: int = 9000,
+        cors_allow_origins=["*"],
+        **kwargs,
 ):
     path_prefix = kwargs.get("path_prefix") or "/"
     # MCP Config
@@ -246,10 +251,10 @@ async def run(
 
     # 2. Check if mcp_servers configuration is valid
     for server_name_cfg, server_cfg_details in mcp_servers.items():
-        if server_cfg_details.get("type","") == "stdio":
+        if server_cfg_details.get("type", "") == "stdio":
             if not server_cfg_details.get("command"):
                 raise ValueError(f"Unknown configuration for MCP server: {server_name_cfg} not command")
-        elif server_cfg_details.get("type","") == "sse":
+        elif server_cfg_details.get("type", "") == "sse":
             if not server_cfg_details.get("url"):
                 raise ValueError(f"Unknown configuration for MCP server: {server_name_cfg} not url")
         else:
@@ -257,10 +262,10 @@ async def run(
 
     # 3. Process mcp_servers
     main_app.description += "\n\n- **available tools**："
-    
+
     # Store schema information for all servers' tools
     all_tools_schemas = {}
-    
+
     for server_name, server_cfg in mcp_servers.items():
         logger.info(f"Setting up MCP server: {server_name}")
         sub_app = FastAPI(
@@ -276,74 +281,121 @@ async def run(
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        
-        # Add health check endpoint
-        @sub_app.get("/health")
-        async def health_check():
-            return {"status": "ok", "server_name": server_name}
-            
-        # Add tool list endpoint
-        @sub_app.get("/list_tools")
-        async def list_tools():
-            """Get the list of all tools and their schema information from the current MCP server"""
-            try:
-                # Get connection configuration from app.state, consistent with server.py
-                server_type = getattr(sub_app.state, "server_type", "stdio")
-                
-                if server_type == "stdio":
-                    command = getattr(sub_app.state, "command", None)
-                    args_list = getattr(sub_app.state, "args", [])
-                    env = getattr(sub_app.state, "env", {})
-                    
-                    server_params = StdioServerParameters(
-                        command=command,
-                        args=args_list,
-                        env=env,
-                    )
-                    
-                    # Create a new connection and session for the current request
-                    async with stdio_client(server_params) as (reader, writer):
-                        async with ClientSession(reader, writer) as session:
-                            # Initialize session
-                            await session.initialize()
-                            # Use the newly created session to get the tools list
-                            tools_result = await session.list_tools()
-                            tools = tools_result.tools
-                
-                elif server_type == "sse":
-                    args_list = getattr(sub_app.state, "args", [])
-                    url = args_list if isinstance(args_list, str) else args_list[0]
-                    sse_read_timeout = getattr(sub_app.state, "sse_read_timeout", None)
-                    
-                    # Create a new connection and session for the current request
-                    async with sse_client(url=url, sse_read_timeout=sse_read_timeout) as (reader, writer):
-                        async with ClientSession(reader, writer) as session:
-                            # Initialize session
-                            await session.initialize()
-                            # Use the newly created session to get the tools list
-                            tools_result = await session.list_tools()
-                            tools = tools_result.tools
-                else:
-                    return {"error": f"Unsupported server type: {server_type}"}
-                
-                # Build tool information list
-                tools_info = [
-                    {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.inputSchema
-                    }
-                    for tool in tools
-                ]
-                
-                return {
-                    "server_name": server_name,
-                    "tools_count": len(tools_info),
-                    "tools": tools_info
-                }
-            except Exception as e:
-                logger.error(f"Error in list_tools for {server_name}: {str(e)}", exc_info=True)
-                return {"error": f"Failed to list tools: {str(e)}"}
+
+        # Store server name in sub-app state
+        sub_app.state.server_name = server_name
+
+        # Define health check endpoint using factory pattern
+        def create_health_check(server_name_val):
+            async def health_check():
+                # Use server name captured in factory function
+                return {"status": "ok", "server_name": server_name_val}
+
+            return health_check
+
+        # Register health check endpoint
+        sub_app.get("/health")(create_health_check(server_name))
+
+        # Define tools list endpoint using factory pattern
+        def create_list_tools(server_name_val, server_cfg):
+            async def list_tools():
+                """Get the list of all tools and their schema information from the current MCP server"""
+                try:
+                    logger.info(f"Getting tools for server: {server_name_val}")
+
+                    # Get server configuration
+                    server_config_type = server_cfg.get("type", "")
+
+                    if server_config_type == "stdio":
+                        logger.info(f"Connecting to stdio server: {server_name_val}")
+                        command = server_cfg.get("command")
+                        args_list = server_cfg.get("args", [])
+                        env_dict = {**os.environ, **server_cfg.get("env", {})}
+
+                        if not command:
+                            return {"error": f"Command not found for stdio server {server_name_val}"}
+
+                        server_params = StdioServerParameters(
+                            command=command,
+                            args=args_list,
+                            env=env_dict,
+                        )
+
+                        # Create dedicated connection to get tools list
+                        logger.info(
+                            f"Creating stdio connection for {server_name_val} with command: {command} args: {args_list}")
+                        async with stdio_client(server_params) as (reader, writer):
+                            async with ClientSession(reader, writer) as session:
+                                # Initialize session
+                                await session.initialize()
+                                # Get tools list
+                                tools_result = await session.list_tools()
+                                tools = tools_result.tools
+
+                                # Build tool information list
+                                tools_info = [
+                                    {
+                                        "name": tool.name,
+                                        "description": tool.description,
+                                        "parameters": tool.inputSchema
+                                    }
+                                    for tool in tools
+                                ]
+
+                                logger.info(f"Found {len(tools_info)} tools for stdio server {server_name_val}")
+                                return {
+                                    "server_name": server_name_val,
+                                    "server_type": "stdio",
+                                    "tools_count": len(tools_info),
+                                    "tools": tools_info
+                                }
+
+                    elif server_config_type == "sse":
+                        logger.info(f"Connecting to SSE server: {server_name_val}")
+                        url = server_cfg.get("url")
+                        if not url:
+                            return {"error": f"URL not found for SSE server {server_name_val}"}
+
+                        sse_read_timeout = server_cfg.get("sse_read_timeout")
+
+                        # Create dedicated connection to get tools list
+                        logger.info(f"Creating SSE connection for {server_name_val} with URL: {url}")
+                        async with sse_client(url=url, sse_read_timeout=sse_read_timeout) as (reader, writer):
+                            async with ClientSession(reader, writer) as session:
+                                # Initialize session
+                                await session.initialize()
+                                # Get tools list
+                                tools_result = await session.list_tools()
+                                tools = tools_result.tools
+
+                                # Build tool information list
+                                tools_info = [
+                                    {
+                                        "name": tool.name,
+                                        "description": tool.description,
+                                        "parameters": tool.inputSchema
+                                    }
+                                    for tool in tools
+                                ]
+
+                                logger.info(f"Found {len(tools_info)} tools for SSE server {server_name_val}")
+                                return {
+                                    "server_name": server_name_val,
+                                    "server_type": "sse",
+                                    "tools_count": len(tools_info),
+                                    "tools": tools_info
+                                }
+                    else:
+                        return {"error": f"Unsupported server type: {server_config_type}"}
+
+                except Exception as e:
+                    logger.error(f"Error in list_tools for {server_name_val}: {str(e)}", exc_info=True)
+                    return {"error": f"Failed to list tools: {str(e)}"}
+
+            return list_tools
+
+        # Register tools list endpoint, pass server configuration
+        sub_app.get("/list_tools")(create_list_tools(server_name, server_cfg))
 
         server_config_type = server_cfg.get("type")
         if server_config_type == "stdio":
@@ -370,7 +422,7 @@ async def run(
         logger.info(f"Mounting {server_name} at path: {mount_path}")
         main_app.mount(mount_path, sub_app)
         main_app.description += f"\n    - [{server_name}]({mount_path}/docs)"
-        
+
         # Store server information
         all_tools_schemas[server_name] = {
             "mount_path": mount_path
@@ -381,7 +433,7 @@ async def run(
     async def list_all_tools():
         """Get the list of available tools and their schema information from all MCP servers"""
         result = {}
-        
+
         for server_name, info in all_tools_schemas.items():
             try:
                 # Try to get the tools list from the sub-app
@@ -392,26 +444,26 @@ async def run(
                     if hasattr(route, "path") and route.path == mount_path:
                         sub_app = route.app
                         break
-                
+
                 if not sub_app:
                     logger.warning(f"Cannot find sub-app {server_name}")
                     result[server_name] = []
                     continue
-                
+
                 # Get server type and connection parameters
                 server_type = getattr(sub_app.state, "server_type", "stdio")
-                
+
                 if server_type == "stdio":
                     command = getattr(sub_app.state, "command", None)
                     args_list = getattr(sub_app.state, "args", [])
                     env = getattr(sub_app.state, "env", {})
-                    
+
                     server_params = StdioServerParameters(
                         command=command,
                         args=args_list,
                         env=env,
                     )
-                    
+
                     # Create a new connection and session for the current request
                     async with stdio_client(server_params) as (reader, writer):
                         async with ClientSession(reader, writer) as session:
@@ -420,7 +472,7 @@ async def run(
                             # Get tools list
                             tools_result = await session.list_tools()
                             tools = tools_result.tools
-                            
+
                             # Build tool information
                             tools_info = [
                                 {
@@ -431,12 +483,12 @@ async def run(
                                 for tool in tools
                             ]
                             result[server_name] = tools_info
-                
+
                 elif server_type == "sse":
                     args_list = getattr(sub_app.state, "args", [])
                     url = args_list if isinstance(args_list, str) else args_list[0]
                     sse_read_timeout = getattr(sub_app.state, "sse_read_timeout", None)
-                    
+
                     # Create a new connection and session for the current request
                     async with sse_client(url=url, sse_read_timeout=sse_read_timeout) as (reader, writer):
                         async with ClientSession(reader, writer) as session:
@@ -445,7 +497,7 @@ async def run(
                             # Get tools list
                             tools_result = await session.list_tools()
                             tools = tools_result.tools
-                            
+
                             # Build tool information
                             tools_info = [
                                 {
@@ -462,12 +514,12 @@ async def run(
             except Exception as e:
                 logger.warning(f"Error getting tools list for {server_name}: {str(e)}")
                 result[server_name] = []
-        
+
         return result
 
     # 4. Start
     logger.info("Uvicorn server starting...")
-    
+
     config = uvicorn.Config(
         app=main_app,
         host="0.0.0.0",
@@ -482,21 +534,24 @@ def cli_main():
     """Command line entry point function"""
     import argparse
     import sys
-    
+
     parser = argparse.ArgumentParser(description="MCP OpenAPI Proxy Server")
-    parser.add_argument("--config_path", "-c", help="Path to configuration file", default="")
+    parser.add_argument("--config_path", "-c", help="Path to configuration file",
+                        default="/Users/honglifeng/Documents/project/product/mcp_env/AWorld/mcp_openapi/config.json")
+    # parser.add_argument("--host", help="Host to bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, help="Port to bind", default=9002)
-    
+
     args = parser.parse_args()
-    
+
     config_path = args.config_path
 
     if not os.path.exists(config_path):
         print(f"Error: Config file not found at {config_path}")
         sys.exit(1)
-        
+
     logger.info(f"Starting with config: {config_path}")
     asyncio.run(run(
+        # host=args.host,
         port=args.port,
         config_path=config_path
     ))
