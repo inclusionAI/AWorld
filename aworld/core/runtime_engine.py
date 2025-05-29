@@ -50,9 +50,7 @@ class RuntimeEngine(object):
 
     @abc.abstractmethod
     def broadcast(self, data: Any):
-        """"""
-        
-    
+        """Broadcast the data to all workers."""
 
     @abc.abstractmethod
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:

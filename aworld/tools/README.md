@@ -49,14 +49,16 @@ Detailed steps for building a tool:
 from typing import List, Tuple, Dict, Any
 
 from aworld.core.common import ActionModel, Observation
-from aworld.core.tool.base import ActionFactory, Tool, ToolFactory, ToolInput, AgentInput
-from examples.tools import ExecutableAction
+from aworld.core.tool.action import ExecutableAction
+from aworld.core.tool.base import ActionFactory, ToolFactory, AgentInput
+from aworld.tools.template_tool import TemplateTool
+
 from examples.tools.tool_action import GymAction
 
 
 @ToolFactory.register(name="openai_gym", desc="gym classic control game", supported_action=GymAction)
-class OpenAIGym(Tool[Observation, List[ActionModel]]):
-    def step(self, action: ToolInput, **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
+class OpenAIGym(TemplateTool):
+    def step(self, action: List[ActionModel], **kwargs) -> Tuple[AgentInput, float, bool, bool, Dict[str, Any]]:
         ...
         state, reward, terminal, truncate, info = self.env.step(action)
         ...
