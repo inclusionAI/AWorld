@@ -14,3 +14,5 @@ pycryptodome
 tabulate
 flask
 fitz
+terminal_controller # mcp server: https://github.com/GongRzhe/terminal-controller-mcp
+mcp_server_calculator # mcp server: https://github.com/githejie/mcp-server-calculator

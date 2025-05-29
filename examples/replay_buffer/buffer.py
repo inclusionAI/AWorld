@@ -6,7 +6,7 @@ from aworld.replay_buffer.base import (
     ReplayBuffer,
     ExpMeta,
     Experience,
-    RandomSample
+    RandomTaskSample
 )
 from aworld.replay_buffer.query_filter import QueryBuilder
 from aworld.logs.util import logger
@@ -30,25 +30,26 @@ def write_data():
                     step=step,
                     execute_time=execute_time,
                 ),
-                exp_data=Experience(state=Observation(), action=ActionModel())
+                exp_data=Experience(state=Observation(),
+                                    actions=[ActionModel()])
             )
             buffer.store(row)
 
 
 def read_data():
     query = QueryBuilder().eq("exp_meta.task_id", "task_1").build()
-    datas = buffer.sample_and_convert(query_condition=query,
-                                      sampler=RandomSample(),
-                                      converter=DefaultConverter(),
-                                      batch_size=2)
+    datas = buffer.sample_task(query_condition=query,
+                               sampler=RandomTaskSample(),
+                               converter=DefaultConverter(),
+                               batch_size=2)
     for data in datas:
         logger.info(f"task_1 data: {data}")
 
     query = QueryBuilder().eq("exp_meta.agent_id", "agent_5").build()
-    datas = buffer.sample_and_convert(query_condition=query,
-                                      sampler=RandomSample(),
-                                      converter=DefaultConverter(),
-                                      batch_size=2)
+    datas = buffer.sample_task(query_condition=query,
+                               sampler=RandomTaskSample(),
+                               converter=DefaultConverter(),
+                               batch_size=2)
     for data in datas:
         logger.info(f"agent_5 data: {data}")
 

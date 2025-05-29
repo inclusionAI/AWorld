@@ -4,9 +4,9 @@
 import pytest
 from unittest.mock import patch
 
-from aworld.config.common import Tools
+from examples.tools.common import Tools
 from aworld.core.common import ActionModel
-from aworld.core.envs.tool import ToolFactory
+from aworld.core.tool.base import ToolFactory
 
 
 class TestPythonTool:
@@ -79,8 +79,8 @@ x
             )
         ]
 
-        observation, reward, terminated, truncated, info = python_tool.step(actions)
-
+        message = python_tool.step(actions)
+        observation, reward, terminated, truncated, info = message.payload
         assert reward == 1
         assert len(observation.action_result) == 1
         assert observation.action_result[0].success == True

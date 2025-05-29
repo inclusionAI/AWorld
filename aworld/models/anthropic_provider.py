@@ -1,7 +1,7 @@
 import os
 from typing import Any, Dict, List, Generator, AsyncGenerator
-from anthropic import Anthropic, AsyncAnthropic
 
+from aworld import import_package
 from aworld.logs.util import logger
 from aworld.core.llm_provider_base import LLMProviderBase
 from aworld.models.model_response import ModelResponse, LLMResponseError
@@ -11,12 +11,24 @@ class AnthropicProvider(LLMProviderBase):
     """Anthropic provider implementation.
     """
 
+    def __init__(self,
+                 api_key: str = None,
+                 base_url: str = None,
+                 model_name: str = None,
+                 sync_enabled: bool = None,
+                 async_enabled: bool = None,
+                 **kwargs):
+        super().__init__(api_key, base_url, model_name, sync_enabled, async_enabled, **kwargs)
+        import_package("anthropic")
+
     def _init_provider(self):
         """Initialize Anthropic provider.
 
         Returns:
             Anthropic provider instance.
         """
+        from anthropic import Anthropic
+
         # Get API key
         api_key = self.api_key
         if not api_key:
@@ -37,6 +49,8 @@ class AnthropicProvider(LLMProviderBase):
         Returns:
             Async Anthropic provider instance.
         """
+        from anthropic import Anthropic, AsyncAnthropic
+
         # Get API key
         api_key = self.api_key
         if not api_key:
@@ -99,7 +113,7 @@ class AnthropicProvider(LLMProviderBase):
         if not response or (isinstance(response, dict) and response.get('error')):
             error_msg = response.get('error', 'Unknown error') if isinstance(response, dict) else 'Empty response'
             raise LLMResponseError(error_msg, self.model_name or "claude", response)
-        
+
         return ModelResponse.from_anthropic_response(response)
 
     def postprocess_stream_response(self, chunk: Any) -> ModelResponse:
@@ -118,15 +132,15 @@ class AnthropicProvider(LLMProviderBase):
         if not chunk or (isinstance(chunk, dict) and chunk.get('error')):
             error_msg = chunk.get('error', 'Unknown error') if isinstance(chunk, dict) else 'Empty response'
             raise LLMResponseError(error_msg, self.model_name or "claude", chunk)
-            
+
         return ModelResponse.from_anthropic_stream_chunk(chunk)
 
-    def completion(self, 
-                messages: List[Dict[str, str]], 
-                temperature: float = 0.0, 
-                max_tokens: int = None, 
-                stop: List[str] = None, 
-                **kwargs) -> ModelResponse:
+    def completion(self,
+                   messages: List[Dict[str, str]],
+                   temperature: float = 0.0,
+                   max_tokens: int = None,
+                   stop: List[str] = None,
+                   **kwargs) -> ModelResponse:
         """Synchronously call Anthropic to generate response.
         
         Args:
@@ -140,7 +154,8 @@ class AnthropicProvider(LLMProviderBase):
             ModelResponse object.
         """
         if not self.provider:
-            raise RuntimeError("Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+            raise RuntimeError(
+                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
         try:
             processed_data = self.preprocess_messages(messages)
@@ -154,13 +169,13 @@ class AnthropicProvider(LLMProviderBase):
         except Exception as e:
             logger.warn(f"Error in Anthropic completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "claude"))
-    
-    def stream_completion(self, 
-                     messages: List[Dict[str, str]], 
-                     temperature: float = 0.0, 
-                     max_tokens: int = None, 
-                     stop: List[str] = None, 
-                     **kwargs) -> Generator[ModelResponse, None, None]:
+
+    def stream_completion(self,
+                          messages: List[Dict[str, str]],
+                          temperature: float = 0.0,
+                          max_tokens: int = None,
+                          stop: List[str] = None,
+                          **kwargs) -> Generator[ModelResponse, None, None]:
         """Synchronously call Anthropic to generate streaming response.
 
         Args:
@@ -174,7 +189,8 @@ class AnthropicProvider(LLMProviderBase):
             Generator yielding ModelResponse chunks.
         """
         if not self.provider:
-            raise RuntimeError("Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+            raise RuntimeError(
+                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
         try:
             processed_data = self.preprocess_messages(messages)
@@ -195,12 +211,12 @@ class AnthropicProvider(LLMProviderBase):
             logger.warn(f"Error in Anthropic stream_completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "claude"))
 
-    async def astream_completion(self, 
-                           messages: List[Dict[str, str]], 
-                           temperature: float = 0.0, 
-                           max_tokens: int = None, 
-                           stop: List[str] = None, 
-                           **kwargs) -> AsyncGenerator[ModelResponse, None]:
+    async def astream_completion(self,
+                                 messages: List[Dict[str, str]],
+                                 temperature: float = 0.0,
+                                 max_tokens: int = None,
+                                 stop: List[str] = None,
+                                 **kwargs) -> AsyncGenerator[ModelResponse, None]:
         """Asynchronously call Anthropic to generate streaming response.
         
         Args:
@@ -214,7 +230,8 @@ class AnthropicProvider(LLMProviderBase):
             AsyncGenerator yielding ModelResponse chunks.
         """
         if not self.async_provider:
-            raise RuntimeError("Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+            raise RuntimeError(
+                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
         try:
             processed_data = self.preprocess_messages(messages)
@@ -235,12 +252,12 @@ class AnthropicProvider(LLMProviderBase):
             logger.warn(f"Error in Anthropic astream_completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "claude"))
 
-    async def acompletion(self, 
-                    messages: List[Dict[str, str]], 
-                    temperature: float = 0.0, 
-                    max_tokens: int = None, 
-                    stop: List[str] = None, 
-                    **kwargs) -> ModelResponse:
+    async def acompletion(self,
+                          messages: List[Dict[str, str]],
+                          temperature: float = 0.0,
+                          max_tokens: int = None,
+                          stop: List[str] = None,
+                          **kwargs) -> ModelResponse:
         """Asynchronously call Anthropic to generate response.
         
         Args:
@@ -254,13 +271,15 @@ class AnthropicProvider(LLMProviderBase):
             ModelResponse object.
         """
         if not self.async_provider:
-            raise RuntimeError("Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+            raise RuntimeError(
+                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
         try:
             processed_data = self.preprocess_messages(messages)
             processed_messages = processed_data["messages"]
             system_content = processed_data["system"]
-            anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens, stop, **kwargs)
+            anthropic_params = self.get_anthropic_params(processed_messages, system_content, temperature, max_tokens,
+                                                         stop, **kwargs)
             response = await self.async_provider.visited_messages.create(**anthropic_params)
 
             return self.postprocess_response(response)
@@ -269,12 +288,12 @@ class AnthropicProvider(LLMProviderBase):
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "claude"))
 
     def get_anthropic_params(self,
-                           messages: List[Dict[str, str]],
-                           system: str = None,
-                           temperature: float = 0.0,
-                           max_tokens: int = None,
-                           stop: List[str] = None,
-                           **kwargs) -> Dict[str, Any]:
+                             messages: List[Dict[str, str]],
+                             system: str = None,
+                             temperature: float = 0.0,
+                             max_tokens: int = None,
+                             stop: List[str] = None,
+                             **kwargs) -> Dict[str, Any]:
         if "tools" in kwargs:
             openai_tools = kwargs["tools"]
             claude_tools = []

@@ -3,8 +3,7 @@ import os
 import traceback
 import time
 import datetime
-import requests
-import socket
+
 from threading import Lock
 from typing import Any, Iterator, Sequence, Optional, TYPE_CHECKING
 from contextvars import Token
@@ -376,8 +375,10 @@ def _configure_otlp_exporter(base_url: str = None) -> None:
         base_url: The base URL to use.
         **kwargs: Additional keyword arguments to pass to the exporter.
     """
+    import requests
     from opentelemetry.exporter.otlp.proto.http import Compression
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
     otlp_traces_endpoint = os.getenv("OTLP_TRACES_ENDPOINT")
     base_url = base_url or otlp_traces_endpoint
     session = requests.Session()

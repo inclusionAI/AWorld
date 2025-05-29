@@ -3,12 +3,11 @@
 
 import unittest
 
-from aworld.config.common import Tools
+from examples.tools.common import Tools
 from aworld.core.common import ActionModel
 
-from aworld.core.envs.tool import ToolFactory
+from aworld.core.tool.base import ToolFactory
 from aworld.logs.util import logger
-from aworld.virtual_environments.gym_tool.openai_gym import OpenAIGym
 
 
 class OpenAIGymTest(unittest.TestCase):
@@ -27,15 +26,17 @@ class OpenAIGymTest(unittest.TestCase):
         self.assertEqual(len(state), 2)
 
         self.gym.reset()
-        state, reward, terminal, _, _ = self.gym.step([ActionModel(action_name='play', params={'result': 0})])
+
+        message = self.gym.step([ActionModel(action_name='play', params={'result': 0})])
+        state, reward, terminated, truncated, info = message.payload
         transform_state = self.gym.transform_state(state)
         action = [0.1, 0.1, 0.1, -0.1]
         transform_action = self.gym.transform_action(action)
 
-
     def test_gym(self):
         self.gym.reset()
-        state, reward, terminal, _, _ = self.gym.step([ActionModel(action_name='play', params={'result': 0})])
+        message = self.gym.step([ActionModel(action_name='play', params={'result': 0})])
+        state, reward, terminated, truncated, info = message.payload
         transform_state = self.gym.transform_state(state)
 
         logger.info(transform_state)

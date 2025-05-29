@@ -3,6 +3,7 @@
 import os
 import traceback
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -71,11 +72,41 @@ def wipe_secret_info(config: Dict[str, Any], keys: List[str]) -> Dict[str, Any]:
         return config
     return _wipe_secret(config)
 
+
 class ClientType(Enum):
     SDK = "sdk"
     HTTP = "http"
 
-class ModelConfig(BaseModel):
+
+class ConfigDict(dict):
+    """Object mode operates dict, can read non-existent attributes through `get` method."""
+    __setattr__ = dict.__setitem__
+    __getattr__ = dict.__getitem__
+
+    def __init__(self, seq: dict = None, **kwargs):
+        if seq is None:
+            seq = OrderedDict()
+        super(ConfigDict, self).__init__(seq, **kwargs)
+        self.nested(self)
+
+    def nested(self, seq: dict):
+        """Nested recursive processing dict.
+
+        Args:
+            seq: Python original format dict
+        """
+        for k, v in seq.items():
+            if isinstance(v, dict):
+                seq[k] = ConfigDict(v)
+                self.nested(v)
+
+
+class BaseConfig(BaseModel):
+    def config_dict(self) -> ConfigDict:
+        return ConfigDict(self.model_dump())
+
+
+class ModelConfig(BaseConfig):
     llm_provider: str = None
     llm_model_name: str = None
     llm_temperature: float = 1.
@@ -86,7 +117,7 @@ class ModelConfig(BaseModel):
     llm_async_enabled: bool = True
 
 
-class AgentConfig(BaseModel):
+class AgentConfig(BaseConfig):
     name: str = None
     desc: str = None
     llm_config: ModelConfig = ModelConfig()
@@ -115,7 +146,7 @@ class AgentConfig(BaseModel):
     ext: dict = {}
 
 
-class TaskConfig(BaseModel):
+class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
@@ -124,7 +155,7 @@ class TaskConfig(BaseModel):
     ext: dict = {}
 
 
-class ToolConfig(BaseModel):
+class ToolConfig(BaseConfig):
     name: str = None
     custom_executor: bool = False
     enable_recording: bool = False
@@ -136,22 +167,9 @@ class ToolConfig(BaseModel):
     ext: dict = {}
 
 
-class ConfigDict(dict):
-    """Object mode operates dict, can read non-existent attributes through `get` method."""
-    __setattr__ = dict.__setitem__
-    __getattr__ = dict.__getitem__
-
-    def __init__(self, seq: dict = {}, **kwargs):
-        super(ConfigDict, self).__init__(seq, **kwargs)
-        self.nested(self)
-
-    def nested(self, seq: dict):
-        """Nested recursive processing dict.
-
-        Args:
-            seq: Python original format dict
-        """
-        for k, v in seq.items():
-            if isinstance(v, dict):
-                seq[k] = ConfigDict(v)
-                self.nested(v)
+class RunConfig(BaseConfig):
+    engine: str = 'local'
+    worker_num: int = 1
+    event_bus: Optional[Dict[str, Any]] = None
+    tracer: Optional[Dict[str, Any]] = None
+    replay_buffer: Optional[Dict[str, Any]] = None

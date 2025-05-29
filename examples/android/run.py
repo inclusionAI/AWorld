@@ -1,12 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from aworld.agents import AndroidAgent
 from aworld.config import AgentConfig
-from aworld.config.common import Agents, Tools
+from examples.android.agent import AndroidAgent
+from examples.tools.common import Agents, Tools
 from aworld.core.task import Task
 from aworld.runner import Runners
-from aworld.virtual_environments.conf import AndroidToolConfig
+from examples.tools.conf import AndroidToolConfig
 
 
 def main():
