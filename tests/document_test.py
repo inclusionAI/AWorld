@@ -3,13 +3,16 @@
 import os
 import unittest
 from pathlib import Path
+
+from aworld.config.conf import ToolConfig
+
 from examples.tools.common import Tools
-from aworld.core.tool.base import ToolFactory
+from examples.tools.document.document import DocumentTool
 
 
 class TestDocumentTool(unittest.TestCase):
     def setUp(self):
-        self.document_tool = ToolFactory(Tools.DOCUMENT_ANALYSIS.value)
+        self.document_tool = DocumentTool(name=Tools.DOCUMENT_ANALYSIS.value, conf=ToolConfig())
 
     def tearDown(self):
         self.document_tool.close()
