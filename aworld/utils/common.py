@@ -136,6 +136,7 @@ def _scan_package(package_name: str, base_classes: List[type], results: List[Tup
 
     try:
         for sub_package, name, is_pkg in pkgutil.walk_packages(package.__path__):
+            __import__(f"{package_name}.{name}")
             if is_pkg:
                 _scan_package(package_name + "." + name, base_classes, results)
             try:

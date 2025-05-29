@@ -4,14 +4,14 @@ import json
 from typing import List, Tuple, Dict, Any
 
 from aworld.core.tool.base import Tool
-from aworld.core.common import Observation, ActionModel, ActionResult, Config
+from aworld.core.common import Observation, ActionModel, Config
 from aworld.logs.util import logger
-from examples.tools.utils import build_observation
+from aworld.tools.utils import build_observation
 
 
-class OneTimeTool(Tool):
+class TemplateTool(Tool):
     def __init__(self, conf: Config, **kwargs) -> None:
-        super(OneTimeTool, self).__init__(conf, **kwargs)
+        super(TemplateTool, self).__init__(conf, **kwargs)
 
     def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         Observation, dict[str, Any]]:
@@ -21,8 +21,8 @@ class OneTimeTool(Tool):
                                  content=options.get("query", None) if options else None), {}
 
     def do_step(self,
-             action: List[ActionModel],
-             **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+                action: List[ActionModel],
+                **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         reward = 0
         fail_error = ""
         action_result = None
@@ -45,11 +45,10 @@ class OneTimeTool(Tool):
             fail_error = str(e)
 
         terminated = kwargs.get("terminated", False)
-        if action_result:
-            for res in action_result:
-                if res.is_done:
-                    terminated = res.is_done
-                    self._finish = True
+        for res in action_result:
+            if res.is_done:
+                terminated = res.is_done
+                self._finished = True
 
         info = {"exception": fail_error}
         info.update(kwargs)
@@ -58,11 +57,10 @@ class OneTimeTool(Tool):
         else:
             resp = action_result[0].content
 
-        action_result = [ActionResult(content=resp, keep=True, is_done=True)]
         observation = build_observation(observer=self.name(),
+                                        action_result=action_result,
                                         ability=action[-1].action_name,
                                         content=resp)
-        observation.action_result = action_result
         return (observation,
                 reward,
                 terminated,

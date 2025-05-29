@@ -175,7 +175,7 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         pass
 
 
-class Tool(BaseTool[Union[Observation], List[ActionModel]]):
+class Tool(BaseTool[Observation, List[ActionModel]]):
     def post_step(self,
                   step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                   action: List[ActionModel],
@@ -193,7 +193,7 @@ class Tool(BaseTool[Union[Observation], List[ActionModel]]):
                             session_id=Context.instance().session_id)
 
 
-class AsyncTool(AsyncBaseTool[Union[Observation], List[ActionModel]]):
+class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
     async def post_step(self,
                         step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                         action: List[ActionModel],
@@ -284,6 +284,7 @@ class ToolsManager(Factory):
         name = prefix + name
         self._tool_with_action[name] = supported_action
         self._tool_conf[name] = conf
+        logger.debug(f"{name} register to the tool factory.")
         return res
 
 

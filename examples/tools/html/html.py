@@ -1,10 +1,10 @@
 # coding: utf-8
 
-from examples.tools.one_time_tool import OneTimeTool
+from aworld.tools.template_tool import TemplateTool
 from examples.tools.tool_action import WriteAction
 from aworld.core.tool.base import ToolFactory
 
 
 @ToolFactory.register(name="html", desc="html tool", supported_action=WriteAction)
-class HtmlTool(OneTimeTool):
+class HtmlTool(TemplateTool):
     """Html tool"""

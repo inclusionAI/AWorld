@@ -7,8 +7,8 @@ from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.common import ActionModel, Observation
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
-from examples.tools.mcp.executor import MCPToolExecutor
-from examples.tools.utils import build_observation
+from examples.tools.mcp_tool.executor import MCPToolExecutor
+from aworld.tools.utils import build_observation
 
 
 @ToolFactory.register(name="mcp",

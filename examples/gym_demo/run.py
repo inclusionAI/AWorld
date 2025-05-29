@@ -4,7 +4,7 @@
 from aworld.config.conf import AgentConfig
 from aworld.core.task import Task
 from aworld.runner import Runners
-from examples.common import Tools, Agents
+from examples.tools.common import Tools, Agents
 from examples.gym_demo.agent import GymDemoAgent as GymAgent
 from examples.tools.gym_tool.async_openai_gym import OpenAIGym
 

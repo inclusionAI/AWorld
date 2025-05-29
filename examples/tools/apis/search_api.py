@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 from aworld.core.tool.base import ToolFactory
-from examples.tools.one_time_tool import OneTimeTool
+from aworld.tools.template_tool import TemplateTool
 from examples.tools.tool_action import SearchAction
 
 
@@ -10,5 +10,5 @@ from examples.tools.tool_action import SearchAction
                       desc="search tool",
                       supported_action=SearchAction,
                       conf_file_name=f'search_api_tool.yaml')
-class SearchTool(OneTimeTool):
+class SearchTool(TemplateTool):
     """Search Tool"""

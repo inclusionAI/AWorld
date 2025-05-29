@@ -2,6 +2,8 @@
 # Copyright (c) 2025 inclusionAI.
 from enum import Enum
 
+package = 'examples.tools'
+
 
 class Tools(Enum):
     """Tool list supported in the framework, pre-defined to avoid spelling errors."""

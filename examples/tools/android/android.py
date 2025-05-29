@@ -11,7 +11,7 @@ from examples.tools.android.action.adb_controller import ADBController
 from examples.tools.android.action.executor import AndroidToolActionExecutor
 from examples.tools.conf import AndroidToolConfig
 from aworld.core.tool.base import ToolFactory, Tool
-from examples.tools.utils import build_observation
+from aworld.tools.utils import build_observation
 
 ALL_UNICODE_CHARS = frozenset(chr(i) for i in range(0x10FFFF + 1))
 

@@ -3,7 +3,7 @@
 
 from aworld.config.conf import AgentConfig
 
-from examples.common import Tools
+from examples.tools.common import Tools
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners

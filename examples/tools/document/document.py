@@ -18,7 +18,7 @@ from aworld.core.tool.base import ToolFactory, Tool
 from aworld.logs.util import logger
 from examples.tools.document.utils import encode_image_from_file, encode_image_from_url
 from aworld.utils import import_package, import_packages
-from examples.tools.utils import build_observation
+from aworld.tools.utils import build_observation
 
 
 class InputDocument(BaseModel):

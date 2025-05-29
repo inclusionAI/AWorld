@@ -12,7 +12,7 @@ from examples.tools.tool_action import ShellAction
 from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.core.tool.base import Tool, AgentInput, ToolFactory
 from aworld.logs.util import logger
-from examples.tools.utils import build_observation
+from aworld.tools.utils import build_observation
 
 
 @ToolFactory.register(name='shell',

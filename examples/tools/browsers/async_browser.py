@@ -11,6 +11,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Dict, Tuple, List
 
+from examples.tools.common import package
 from examples.tools.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
@@ -21,7 +22,7 @@ from examples.tools.browsers.util.dom import DomTree
 from examples.tools.conf import BrowserToolConfig
 from examples.tools.browsers.util.dom_build import async_build_dom_tree
 from aworld.utils import import_package
-from examples.tools.utils import build_observation
+from aworld.tools.utils import build_observation
 
 URL_MAX_LENGTH = 4096
 UTF8 = "".join(chr(x) for x in range(0, 55290))
@@ -46,7 +47,7 @@ class BrowserTool(AsyncTool):
             with open(dom_js_path, 'r') as read:
                 self.js_code = read.read()
         else:
-            self.js_code = resources.read_text('aworld.virtual_environments.browsers.script',
+            self.js_code = resources.read_text(f'{package}.browsers.script',
                                                'buildDomTree.js')
         self.cur_observation = None
         if not is_package_installed('playwright'):
@@ -162,7 +163,7 @@ class BrowserTool(AsyncTool):
                 logger.info(f'Cookies load from {cookie_file} finished')
 
         if self.conf.get('private'):
-            js = resources.read_text("aworld.virtual_environments.browsers.script", "stealth.min.js")
+            js = resources.read_text(f"{package}.browsers.script", "stealth.min.js")
             await context.add_init_script(js)
 
         return context
@@ -203,9 +204,9 @@ class BrowserTool(AsyncTool):
             return Observation(observer=self.name(), action_result=[ActionResult(error=fail_error)])
 
         try:
-            dom_tree = self._parse_dom_tree()
-            image = self.screenshot()
-            pixels_above, pixels_below = self._scroll_info()
+            dom_tree = await self._parse_dom_tree()
+            image = await self.screenshot()
+            pixels_above, pixels_below = await self._scroll_info()
             info.update({"pixels_above": pixels_above,
                          "pixels_below": pixels_below,
                          "url": self.page.url})

@@ -4,7 +4,7 @@
 import pytest
 from unittest.mock import patch
 
-from examples.common import Tools
+from examples.tools.common import Tools
 from aworld.core.common import ActionModel
 from aworld.core.tool.base import ToolFactory
 

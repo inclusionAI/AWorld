@@ -6,7 +6,7 @@ from pathlib import Path
 
 from examples.tools.browsers.browser import BrowserTool
 
-from examples.common import Tools
+from examples.tools.common import Tools
 from examples.tools.tool_action import BrowserAction
 from aworld.core.common import ActionModel
 from examples.tools.conf import BrowserToolConfig

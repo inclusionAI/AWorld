@@ -1,18 +1,20 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from examples.common import Agents, Tools
+
+from aworld.config.conf import ModelConfig
 from aworld.core.task import Task
+from aworld.runner import Runners
 from examples.browsers.agent import BrowserAgent
 from examples.browsers.config import BrowserAgentConfig
-from aworld.runner import Runners
+from examples.tools.common import Agents, Tools
 from examples.tools.conf import BrowserToolConfig
-from aworld.config.conf import ModelConfig
 
 if __name__ == '__main__':
     llm_config = ModelConfig(
         llm_provider="openai",
         llm_model_name="gpt-4o",
         llm_temperature=0.3,
+
     )
     browser_tool_config = BrowserToolConfig(width=1280,
                                             height=720,

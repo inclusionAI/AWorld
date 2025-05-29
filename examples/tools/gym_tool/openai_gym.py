@@ -8,7 +8,7 @@ from examples.tools.tool_action import GymAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.tool.base import Tool, ToolFactory
 from aworld.utils.import_package import import_packages
-from examples.tools.utils import build_observation
+from aworld.tools.utils import build_observation
 
 
 class ActionType(object):

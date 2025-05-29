@@ -8,7 +8,7 @@ from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.browsers.agent import BrowserAgent
 from examples.browsers.config import BrowserAgentConfig
-from examples.common import Tools
+from examples.tools.common import Tools
 from examples.tools.conf import BrowserToolConfig
 from examples.tools.tool_action import SearchAction
 from examples.travel.prompts import *

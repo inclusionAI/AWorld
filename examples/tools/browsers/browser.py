@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple, List, Union
 
 from aworld.config import ConfigDict
+from examples.tools.common import package
 from examples.tools.tool_action import BrowserAction
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
@@ -23,7 +24,7 @@ from examples.tools.browsers.util.dom import DomTree
 from examples.tools.conf import BrowserToolConfig
 from examples.tools.browsers.util.dom_build import build_dom_tree
 from aworld.utils import import_package
-from examples.tools.utils import build_observation
+from aworld.tools.utils import build_observation
 
 URL_MAX_LENGTH = 4096
 UTF8 = "".join(chr(x) for x in range(0, 55290))
@@ -50,7 +51,7 @@ class BrowserTool(Tool):
             with open(dom_js_path, 'r') as read:
                 self.js_code = read.read()
         else:
-            self.js_code = resources.read_text('aworld.virtual_environments.browsers.script',
+            self.js_code = resources.read_text(f'{package}.browsers.script',
                                                'buildDomTree.js')
         self.cur_observation = None
         if not is_package_installed('playwright'):
@@ -165,7 +166,7 @@ class BrowserTool(Tool):
                 logger.info(f'Cookies load from {cookie_file} finished')
 
         if self.conf.get('private'):
-            js = resources.read_text("aworld.virtual_environments.browsers.script", "stealth.min.js")
+            js = resources.read_text(f"{package}.browsers.script", "stealth.min.js")
             context.add_init_script(js)
 
         return context
@@ -212,7 +213,10 @@ class BrowserTool(Tool):
             info.update({"pixels_above": pixels_above,
                          "pixels_below": pixels_below,
                          "url": self.page.url})
-            return Observation(observer=self.name(), dom_tree=dom_tree, image=image, info=info)
+            return Observation(observer=self.name(),
+                               dom_tree=dom_tree,
+                               image=image,
+                               info=info)
         except Exception as e:
             try:
                 self.page.go_back()

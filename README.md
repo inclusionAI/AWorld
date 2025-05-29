@@ -157,7 +157,7 @@ Here is a multi-agent example of running a level2 task from the [GAIA](https://h
 
 ```python
 from examples.plan_execute.agent import PlanAgent, ExecuteAgent
-from examples.common import Agents, Tools
+from examples.tools.common import Agents, Tools
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 from aworld.config.conf import AgentConfig, TaskConfig
