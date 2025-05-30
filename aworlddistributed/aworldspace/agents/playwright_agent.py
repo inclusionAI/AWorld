@@ -37,6 +37,7 @@ import aworld.trace as trace
 from aworldspace.base_agent import AworldBaseAgent
 from datasets import load_dataset
 
+from aworldspace.utils.mcp_utils import load_all_mcp_config
 from aworldspace.utils.utils import question_scorer
 import re
 import json
@@ -660,19 +661,5 @@ class Pipeline(AworldBaseAgent):
         return task
 
     async def load_mcp_config(self) -> dict:
-        return {
-            "mcpServers": {
-                "ms-playwright": {
-                    "command": "npx",
-                    "args": [
-                        "@playwright/mcp@latest",
-                        "--vision"
-                    ],
-                    "env": {
-                        "PLAYWRIGHT_TIMEOUT": "120000",
-                        "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-                    }
-                }
-            }
-        }
+        return load_all_mcp_config()
 
