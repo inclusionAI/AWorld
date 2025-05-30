@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "weather_server": {
+            "command": "npx",
+            "args": [
+                "hefeng-mcp-weather@latest",
+                "--apiKey=${HEFENG_API_KEY}"
+            ]
+        }
+    }
+}
