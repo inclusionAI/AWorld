@@ -20,7 +20,7 @@ from aworld.models.llm import call_llm_model, get_llm_model
 from aworld.models.model_response import ModelResponse
 from mcp_servers.utils import get_file_from_source
 
-client = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_BASE_URL"))
+client = OpenAI(api_key=os.getenv("VIDEO_LLM_API_KEY"), base_url=os.getenv("VIDEO_LLM_BASE_URL"))
 
 # Initialize MCP server
 mcp = FastMCP("Video Server")
@@ -204,9 +204,9 @@ def mcp_analyze_video(
                     get_llm_model(
                         conf=AgentConfig(
                             llm_provider="openai",
-                            llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-                            llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-                            llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+                            llm_model_name=os.getenv("VIDEO_LLM_MODEL_NAME", "gpt-4o"),
+                            llm_api_key=os.getenv("VIDEO_LLM_API_KEY", "your_openai_api_key"),
+                            llm_base_url=os.getenv("VIDEO_LLM_BASE_URL", "your_openai_base_url"),
                         )
                     ),
                     inputs,
@@ -246,9 +246,9 @@ def mcp_extract_video_subtitles(
             get_llm_model(
                 conf=AgentConfig(
                     llm_provider="openai",
-                    llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-                    llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-                    llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+                    llm_model_name=os.getenv("VIDEO_LLM_MODEL_NAME", "gpt-4o"),
+                    llm_api_key=os.getenv("VIDEO_LLM_API_KEY", "your_openai_api_key"),
+                    llm_base_url=os.getenv("VIDEO_LLM_BASE_URL", "your_openai_base_url"),
                 )
             ),
             inputs,
@@ -287,9 +287,9 @@ def mcp_summarize_video(
                     get_llm_model(
                         conf=AgentConfig(
                             llm_provider="openai",
-                            llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-                            llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-                            llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+                            llm_model_name=os.getenv("VIDEO_LLM_MODEL_NAME", "gpt-4o"),
+                            llm_api_key=os.getenv("VIDEO_LLM_API_KEY", "your_openai_api_key"),
+                            llm_base_url=os.getenv("VIDEO_LLM_BASE_URL", "your_openai_base_url"),
                         )
                     ),
                     inputs,

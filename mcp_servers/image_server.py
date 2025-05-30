@@ -176,9 +176,9 @@ def mcp_image_recognition(
             get_llm_model(
                 conf=AgentConfig(
                     llm_provider="openai",
-                    llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-                    llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-                    llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+                    llm_model_name=os.getenv("IMAGE_LLM_MODEL_NAME", "gpt-4o"),
+                    llm_api_key=os.getenv("IMAGE_LLM_API_KEY", "your_openai_api_key"),
+                    llm_base_url=os.getenv("IMAGE_LLM_BASE_URL", "your_openai_base_url"),
                 )
             ),
             messages=[
