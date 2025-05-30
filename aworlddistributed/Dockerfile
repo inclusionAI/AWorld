@@ -47,7 +47,7 @@ WORKDIR /app
 COPY ./requirements.txt .
 COPY ./requirements-minimum.txt .
 RUN pip3 install uv ${PIP_OPTIONS}
-RUN uv pip install --system -r requirements-minimum.txt --no-cache-dir ${PIP_OPTIONS};
+RUN uv pip install --system -r requirements-minimum.txt --no-cache-dir ${PIP_OPTIONS}
 RUN if [ "$MINIMUM_BUILD" != "true" ]; then \
         if [ "$USE_CUDA_DOCKER" = "true" ]; then \
             pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/$USE_CUDA_DOCKER_VER --no-cache-dir; \
