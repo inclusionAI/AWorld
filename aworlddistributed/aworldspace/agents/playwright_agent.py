@@ -665,8 +665,8 @@ class Pipeline(AworldBaseAgent):
                 "ms-playwright": {
                     "command": "npx",
                     "args": [
-                        "@playwright/mcp@latest",
-                        "--vision"
+                        "@playwright/mcp@0.0.27",
+                        "--vision",
                         "--no-sandbox",
                         "--headless"
                     ],
