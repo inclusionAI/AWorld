@@ -69,10 +69,10 @@ if __name__ == "__main__":
             name="gaia_agent",
             system_prompt=system_prompt,
             config=AgentConfig(
-                llm_provider="openai",
-                llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-                llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-                llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+                llm_provider=os.getenv("LLM_PROVIDER_GAIA", "openai"),
+                llm_model_name=os.getenv("LLM_MODEL_NAME_GAIA", "gpt-4o"),
+                llm_api_key=os.getenv("LLM_API_KEY_GAIA", "your_openai_api_key"),
+                llm_base_url=os.getenv("LLM_BASE_URL_GAIA", "your_openai_base_url"),
             ),
             mcp_servers=[
                 "e2b-server",
