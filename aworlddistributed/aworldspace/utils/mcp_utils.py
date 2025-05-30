@@ -185,6 +185,7 @@ def load_all_mcp_config():
                 ],
                 "env": {
                     "E2B_API_KEY": os.environ["E2B_API_KEY"],
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
                 }
             },
         }
