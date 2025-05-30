@@ -11,7 +11,7 @@ from aworld.utils.common import get_local_ip
 from client.aworld_client import AworldTask, AworldTaskClient
 
 AWORLD_TASK_CLIENT = AworldTaskClient(
-    know_hosts = ["localhost:9099"]
+    know_hosts = ["loaclhost:9099"]
 )
 
 
@@ -47,29 +47,27 @@ CUSTOM_SYSTEM_PROMPT = f""" **PLEASE CUSTOM IT **"""
 
 if __name__ == '__main__':
     gaia_task_ids = ['c61d22de-5f6c-4958-a7f6-5e9707bd3466']
-
     gaia_tasks = []
     custom_mcp_servers = [
             # "e2b-server",
-            # "terminal-controller",
+            "e2b-code-server",
+            "terminal-controller",
             "excel",
-            "filesystem",
-            # "calculator",
-            # "ms-playwright",
-            # "audio_server",
-            # "image_server",
+            # "filesystem",
+            "calculator",
+            "ms-playwright",
+            "audio_server",
+            "image_server",
+            "google-search",
             # "video_server",
             # "search_server",
             # "download_server",
             # "document_server",
             # "youtube_server",
             # "reasoning_server",
-            "e2b-code-server",
-            "google-search",
         ]
 
     for gaia_task_id in gaia_task_ids:
-        
         task_id = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + gaia_task_id + "_" + str(uuid.uuid4())
         gaia_tasks.append(
             AworldTask(
@@ -84,5 +82,4 @@ if __name__ == '__main__':
                 # task_system_prompt=CUSTOM_SYSTEM_PROMPT
             )
         )
-    # Run batch processing for questions 1-5
     asyncio.run(_batch_run_gaia_task(gaia_tasks))
