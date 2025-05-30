@@ -43,13 +43,6 @@
                 "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
             }
         },
-        "playwright": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@executeautomation/playwright-mcp-server"
-            ]
-        },
         "google-search": {
             "command": "npx",
             "args": [
