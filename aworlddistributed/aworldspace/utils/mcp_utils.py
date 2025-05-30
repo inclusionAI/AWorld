@@ -28,7 +28,10 @@ def load_all_mcp_config():
                 "args": [
                     "-m",
                     "terminal_controller"
-                ]
+                ],
+                "env": {
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "300"
+                }
             },
             "calculator": {
                 "command": "python",
