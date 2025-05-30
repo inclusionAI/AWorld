@@ -12,22 +12,28 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 logger = logging.getLogger("common")
 # for trace info
 trace_logger = logging.getLogger("traced")
+
 framework_log_level = os.getenv("FRAMEWORK_LOG_LEVEL")
 if framework_log_level == "DEBUG":
     logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)
     logger.setLevel(logging.DEBUG)
+    trace_logger.setLevel(logging.DEBUG)
 elif framework_log_level == "INFO":
     logging.basicConfig(level=logging.ERROR, format=LOG_FORMAT)
     logger.setLevel(logging.ERROR)
+    trace_logger.setLevel(logging.ERROR)
 elif framework_log_level == "WARNING":
     logging.basicConfig(level=logging.WARNING, format=LOG_FORMAT)
     logger.setLevel(logging.WARNING)
+    trace_logger.setLevel(logging.WARNING)
 elif framework_log_level == "ERROR":
     logging.basicConfig(level=logging.ERROR, format=LOG_FORMAT)
     logger.setLevel(logging.ERROR)
+    trace_logger.setLevel(logging.ERROR)
 else:
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     logger.setLevel(logging.INFO)
+    trace_logger.setLevel(logging.INFO)
 
 
 class Color:
@@ -54,23 +60,9 @@ class Color:
     strikethrough = "\033[09m"
 
 
-def color_log(value, color: str = Color.black, logger_: logging.Logger = logger, level: int = logging.INFO, hightlight_key=None):
-    """ Colored value or highlight key in log.
-def color_value(value, color: Color = Color.blue, hightlight_key=None):
-    """Colored value or highlight key in console.
-
-    Args:
-        value:
-        color: Color
-        hightlight_key: Color segment key.
-    """
-    if hightlight_key is None:
-        print(f"{color} {value} {Color.reset}")
-    else:
-        print(f"{color} {hightlight_key}: {Color.reset} {value}")
-
-
-def color_log(value, color: Color = Color.blue, hightlight_key=None):
+def color_log(
+    value, color: str = Color.black, logger_: logging.Logger = logger, level: int = logging.INFO, hightlight_key=None
+):
     """Colored value or highlight key in log.
 
     Args:
