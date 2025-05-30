@@ -62,7 +62,8 @@ if __name__ == '__main__':
             # "download_server",
             # "document_server",
             # "youtube_server",
-            # "reasoning_server"
+            # "reasoning_server",
+            "e2b-code-server"
         ]
 
     for gaia_task_id in gaia_task_ids:
