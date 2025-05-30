@@ -4,9 +4,9 @@ import os
 from dotenv import load_dotenv
 
 from aworld.config.conf import AgentConfig
-from examples.gaia.agent import GaiaAgent
-from examples.gaia.prompt import system_prompt
-from examples.gaia.runner import GaiaRunner, RunnerArguments
+from examples.gaia.v2.agent import GaiaAgent
+from examples.gaia.v2.prompt import system_prompt
+from examples.gaia.v2.runner import GaiaRunner, RunnerArguments
 
 if __name__ == "__main__":
     load_dotenv()

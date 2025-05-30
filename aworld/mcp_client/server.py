@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import abc
 import asyncio
-from datetime import timedelta
 import logging
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal
 
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from mcp import ClientSession, StdioServerParameters, Tool as MCPTool, stdio_client
+from mcp import ClientSession, StdioServerParameters, stdio_client
+from mcp import Tool as MCPTool
 from mcp.client.sse import sse_client
 from mcp.types import CallToolResult, JSONRPCMessage
 from typing_extensions import NotRequired, TypedDict
@@ -53,7 +54,7 @@ class MCPServer(abc.ABC):
 class _MCPServerWithClientSession(MCPServer, abc.ABC):
     """Base class for MCP servers that use a `ClientSession` to communicate with the server."""
 
-    def __init__(self, cache_tools_list: bool, session_connect_timeout_seconds: int = 5):
+    def __init__(self, cache_tools_list: bool, session_connect_timeout_seconds: int = 1800):
         """
         Args:
             cache_tools_list: Whether to cache the tools list. If `True`, the tools list will be
@@ -77,7 +78,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
 
     @abc.abstractmethod
     def create_streams(
-            self,
+        self,
     ) -> AbstractAsyncContextManager[
         tuple[
             MemoryObjectReceiveStream[JSONRPCMessage | Exception],
@@ -102,7 +103,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         """Connect to the server."""
         try:
             # Ensure closing previous exit_stack to avoid nested async contexts
-            if hasattr(self, 'exit_stack') and self.exit_stack:
+            if hasattr(self, "exit_stack") and self.exit_stack:
                 try:
                     await self.exit_stack.aclose()
                 except Exception as e:
@@ -113,7 +114,9 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             # Use a single task context to create the connection
             transport = await self.exit_stack.enter_async_context(self.create_streams())
             read, write = transport
-            session = await self.exit_stack.enter_async_context(ClientSession(read, write, read_timeout_seconds=self.session_connect_timeout_seconds))
+            session = await self.exit_stack.enter_async_context(
+                ClientSession(read, write, read_timeout_seconds=self.session_connect_timeout_seconds)
+            )
             await session.initialize()
             self.session = session
         except Exception as e:
@@ -207,10 +210,10 @@ class MCPServerStdio(_MCPServerWithClientSession):
     """
 
     def __init__(
-            self,
-            params: MCPServerStdioParams,
-            cache_tools_list: bool = False,
-            name: str | None = None,
+        self,
+        params: MCPServerStdioParams,
+        cache_tools_list: bool = False,
+        name: str | None = None,
     ):
         """Create a new MCP server based on the stdio transport.
 
@@ -242,7 +245,7 @@ class MCPServerStdio(_MCPServerWithClientSession):
         self._name = name or f"stdio: {self.params.command}"
 
     def create_streams(
-            self,
+        self,
     ) -> AbstractAsyncContextManager[
         tuple[
             MemoryObjectReceiveStream[JSONRPCMessage | Exception],
@@ -281,10 +284,10 @@ class MCPServerSse(_MCPServerWithClientSession):
     """
 
     def __init__(
-            self,
-            params: MCPServerSseParams,
-            cache_tools_list: bool = False,
-            name: str | None = None,
+        self,
+        params: MCPServerSseParams,
+        cache_tools_list: bool = False,
+        name: str | None = None,
     ):
         """Create a new MCP server based on the HTTP with SSE transport.
 
@@ -309,7 +312,7 @@ class MCPServerSse(_MCPServerWithClientSession):
         self._name = name or f"sse: {self.params['url']}"
 
     def create_streams(
-            self,
+        self,
     ) -> AbstractAsyncContextManager[
         tuple[
             MemoryObjectReceiveStream[JSONRPCMessage | Exception],

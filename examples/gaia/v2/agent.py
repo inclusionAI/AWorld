@@ -5,10 +5,10 @@ import traceback
 from typing import Any, Callable, Dict, List, Union
 
 from aworld.config.conf import AgentConfig, ConfigDict
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.common import ActionModel, Observation
+from aworld.core.memory import MemoryItem
 from aworld.logs.util import Color
-from aworld.memory.base import MemoryItem
 from aworld.models.llm import call_llm_model
 from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput
@@ -63,7 +63,6 @@ class GaiaAgent(Agent):
             image_urls=images,
             sys_prompt=self.system_prompt,
             agent_prompt=self.agent_prompt,
-            output_prompt=self.output_prompt,
         )
 
         self.memory.add(

@@ -6,34 +6,19 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+framework_log_level = os.getenv("FRAMEWORK_LOG_LEVEL", "INFO")
 
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 # common logger info
 logger = logging.getLogger("common")
 # for trace info
 trace_logger = logging.getLogger("traced")
+# werkzeug
+werkzeug_logger = logging.getLogger("werkzeug")
 
-framework_log_level = os.getenv("FRAMEWORK_LOG_LEVEL")
-if framework_log_level == "DEBUG":
-    logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)
-    logger.setLevel(logging.DEBUG)
-    trace_logger.setLevel(logging.DEBUG)
-elif framework_log_level == "INFO":
-    logging.basicConfig(level=logging.ERROR, format=LOG_FORMAT)
-    logger.setLevel(logging.ERROR)
-    trace_logger.setLevel(logging.ERROR)
-elif framework_log_level == "WARNING":
-    logging.basicConfig(level=logging.WARNING, format=LOG_FORMAT)
-    logger.setLevel(logging.WARNING)
-    trace_logger.setLevel(logging.WARNING)
-elif framework_log_level == "ERROR":
-    logging.basicConfig(level=logging.ERROR, format=LOG_FORMAT)
-    logger.setLevel(logging.ERROR)
-    trace_logger.setLevel(logging.ERROR)
-else:
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-    logger.setLevel(logging.INFO)
-    trace_logger.setLevel(logging.INFO)
+logger.setLevel(framework_log_level)
+trace_logger.setLevel(framework_log_level)
+werkzeug_logger.setLevel(framework_log_level)
+logging.basicConfig(level=framework_log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 
 class Color:
@@ -61,7 +46,11 @@ class Color:
 
 
 def color_log(
-    value, color: str = Color.black, logger_: logging.Logger = logger, level: int = logging.INFO, hightlight_key=None
+    value,
+    color: str = Color.black,
+    logger_: logging.Logger = logger,
+    level: int = logging.INFO,
+    hightlight_key=None,
 ):
     """Colored value or highlight key in log.
 
@@ -76,7 +65,7 @@ def color_log(
         logger_._log(level, f"{color} {hightlight_key}: {Color.reset} {value}", None)
 
 
-def aworld_log(logger, color: str = Color.black, level: int = logging.INFO):
+def aworld_log(logger_, color: str = Color.black, level: int = logging.INFO):
     """Colored log style in the Aworld.
 
     Args:
@@ -88,20 +77,20 @@ def aworld_log(logger, color: str = Color.black, level: int = logging.INFO):
     def decorator(value, color: str = None):
         # Set color in the called.
         if color:
-            color_log(value, color, logger, level)
+            color_log(value, color, logger_, level)
         else:
-            color_log(value, def_color, logger, level)
+            color_log(value, def_color, logger_, level)
 
     return decorator
 
 
-def init_logger(logger: logging.Logger):
-    logger.debug = aworld_log(logger, color=Color.lightgrey, level=logging.DEBUG)
-    logger.info = aworld_log(logger, color=Color.black, level=logging.INFO)
-    logger.warning = aworld_log(logger, color=Color.lightred, level=logging.WARNING)
-    logger.warn = logger.warning
-    logger.error = aworld_log(logger, color=Color.red, level=logging.ERROR)
-    logger.fatal = logger.error
+def init_logger(logger_: logging.Logger):
+    # logger_.debug = aworld_log(logger_, color=Color.lightgrey, level=logging.DEBUG)
+    # logger_.info = aworld_log(logger_, color=Color.black, level=logging.INFO)
+    # logger_.warning = aworld_log(logger_, color=Color.lightred, level=logging.WARNING)
+    logger_.warn = logger_.warning
+    # logger_.error = aworld_log(logger_, color=Color.red, level=logging.ERROR)
+    logger_.fatal = logger_.error
 
 
 init_logger(logger)
