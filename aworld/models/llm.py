@@ -5,7 +5,6 @@ from typing import (
     Generator,
     AsyncGenerator,
 )
-from langchain_openai import ChatOpenAI
 from aworld.config import ConfigDict
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.logs.util import logger
@@ -90,30 +89,31 @@ class LLMModel:
 
         # Create model provider based on provider_name
         self._create_provider(**kwargs)
-    
+
     def _transfer_conf_to_args(self, conf: Union[ConfigDict, AgentConfig] = None) -> dict:
         """
         Transfer parameters from conf to args
-        
+
         Args:
             conf: config object
         """
         if not conf:
             return {}
-            
+
         # Get all parameters from conf
         if type(conf).__name__ == 'AgentConfig':
             conf_dict = conf.model_dump()
         else:  # ConfigDict
             conf_dict = conf
 
-        ignored_keys = ["llm_provider", "llm_base_url", "llm_model_name", "llm_api_key", "llm_sync_enabled", "llm_async_enabled", "llm_client_type"]
+        ignored_keys = ["llm_provider", "llm_base_url", "llm_model_name", "llm_api_key", "llm_sync_enabled",
+                        "llm_async_enabled", "llm_client_type"]
         args = {}
         # Filter out used parameters and add remaining parameters to args
         for key, value in conf_dict.items():
             if key not in ignored_keys and value is not None:
                 args[key] = value
-                
+
         return args
 
     def _identify_provider(self, provider: str = None, base_url: str = None, model_name: str = None) -> str:
@@ -287,11 +287,11 @@ class LLMModel:
         """
         # Call provider's astream_completion method directly
         async for chunk in self.provider.astream_completion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            **kwargs
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                **kwargs
         ):
             yield chunk
 
@@ -322,7 +322,9 @@ def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key:str) -> bool:
     else:
         return key in conf
 
-def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None, custom_provider: LLMProviderBase = None, **kwargs) -> Union[LLMModel, ChatOpenAI]:
+def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
+                  custom_provider: LLMProviderBase = None,
+                  **kwargs) -> Union[LLMModel, 'ChatOpenAI']:
     """Get a unified LLM model instance.
 
     Args:
@@ -341,6 +343,8 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None, custom_provider: 
     llm_provider = conf.llm_provider if conf_contains_key(conf, "llm_provider") else None
 
     if (llm_provider == "chatopenai"):
+        from langchain_openai import ChatOpenAI
+
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf_contains_key(conf, "llm_base_url") else None)
         model_name = kwargs.get("model_name") or (conf.llm_model_name if conf_contains_key(conf, "llm_model_name") else None)
         api_key = kwargs.get("api_key") or (conf.llm_api_key if conf_contains_key(conf, "llm_api_key") else None)
@@ -395,6 +399,7 @@ def call_llm_model(
             **kwargs
         )
 
+
 async def acall_llm_model(
         llm_model: LLMModel,
         messages: List[Dict[str, str]],
@@ -421,11 +426,11 @@ async def acall_llm_model(
     if stream:
         async def _stream_wrapper():
             async for chunk in llm_model.astream_completion(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                **kwargs
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stop=stop,
+                    **kwargs
             ):
                 yield chunk
 

@@ -99,6 +99,22 @@ def load_dataset_meta(path: str, split: str = "validation", is_sample: bool = Fa
     return dataset
 
 
+def load_dataset_meta_dict(path: str, split: str = "validation"):
+    data_dir = Path(path) / split
+
+    dataset = {}
+    with open(data_dir / "metadata.jsonl", "r", encoding="utf-8") as metaf:
+        lines = metaf.readlines()
+        for line in lines:
+            data = json.loads(line)
+            if data["task_id"] == "0-0-0-0-0":
+                continue
+            if data["file_name"]:
+                data["file_name"] = data_dir / data["file_name"]
+            dataset[data["task_id"]] = data
+    return dataset
+
+
 def add_file_path(task: Dict[str, Any], file_path: str = "./gaia_dataset", split: str = "validation"):
     if task["file_name"]:
         file_path = Path(f"{file_path}/{split}") / task["file_name"]

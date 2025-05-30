@@ -2,9 +2,9 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 
-from aworld.config.common import Tools
+from examples.tools.common import Tools
 
-from aworld.core.envs.tool import ToolFactory
+from aworld.core.tool.base import ToolFactory
 
 
 class TestShellTool(unittest.TestCase):

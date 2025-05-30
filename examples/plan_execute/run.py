@@ -1,15 +1,13 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from aworld.agents.gaia.agent import PlanAgent, ExecuteAgent
 
-from aworld.config.common import Agents, Tools
-from aworld.config.conf import ModelConfig, AgentConfig, TaskConfig
-
-from aworld.core.task import Task
-
+from aworld.config.conf import ModelConfig, AgentConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.dataset.mock import mock_dataset
+from aworld.core.task import Task
 from aworld.runner import Runners
+from examples.plan_execute.agent import PlanAgent, ExecuteAgent
+from examples.plan_execute.mock import mock_dataset
+from examples.tools.common import Agents, Tools
 
 
 def main():
@@ -19,6 +17,7 @@ def main():
         llm_provider="openai",
         llm_temperature=1,
         llm_model_name="gpt-4o",
+        # need to set llm_api_key for use LLM
     )
 
     agent1_config = AgentConfig(
@@ -38,13 +37,14 @@ def main():
     swarm = Swarm((agent1, agent2), sequence=False)
 
     # Define a task
-    task = Task(input=test_sample, swarm=swarm, conf=TaskConfig())
+    task_id = 'task'
+    task = Task(id=task_id, input=test_sample, swarm=swarm, endless_threshold=10)
 
     # Run task
     result = Runners.sync_run_task(task=task)
 
-    print(f"Time cost: {result['time_cost']}")
-    print(f"Task Answer: {result['task_0']['answer']}")
+    print(f"Time cost: {result[task_id].time_cost}")
+    print(f"Task Answer: {result[task_id].answer}")
 
 
 if __name__ == '__main__':

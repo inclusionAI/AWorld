@@ -1,11 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import os
 
 from aworld.config.conf import AgentConfig
 
-from aworld.config.common import Tools
-from aworld.core.agent.base import Agent
+from examples.tools.common import Tools
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 
@@ -39,7 +38,6 @@ if __name__ == "__main__":
         llm_model_name="gpt-4o",
         llm_temperature=1,
         # need to set llm_api_key for use LLM
-        llm_api_key=""
     )
 
     search = Agent(
@@ -66,4 +64,4 @@ if __name__ == "__main__":
         input=prefix + """What is an agent.""",
         swarm=swarm
     )
-    print(res['answer'])
+    print(res.answer)

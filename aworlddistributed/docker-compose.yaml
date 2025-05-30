@@ -1,0 +1,28 @@
+services:
+  aworldserver-1:
+      image: aworldserver:main
+      volumes:
+        - ./.env:/app/.env
+      ports:
+        - "9299:9099"
+      restart: always
+      environment:
+        - PIPELINES_API_KEY=0p3n-w3bu!
+  aworldserver-2:
+    image: aworldserver:main
+    volumes:
+      - ./.env:/app/.env
+    ports:
+      - "9399:9099"
+    restart: always
+    environment:
+      - PIPELINES_API_KEY=0p3n-w3bu!
+  aworldserver-3:
+    image: aworldserver:main
+    volumes:
+      - ./.env:/app/.env
+    ports:
+      - "9499:9099"
+    restart: always
+    environment:
+      - PIPELINES_API_KEY=0p3n-w3bu!

@@ -3,6 +3,6 @@
 
 try:
     from aworld.agents import agent_desc
-    from aworld.virtual_environments import tool_action_desc
+    from examples.tools import tool_action_desc
 except:
     pass

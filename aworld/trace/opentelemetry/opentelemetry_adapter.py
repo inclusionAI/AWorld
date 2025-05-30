@@ -1,13 +1,22 @@
 import sys
+import os
 import traceback
 import time
-import requests
+import datetime
+
 from threading import Lock
 from typing import Any, Iterator, Sequence, Optional, TYPE_CHECKING
 from contextvars import Token
 from urllib.parse import urljoin
 import opentelemetry.context as otlp_context_api
-from opentelemetry.trace import SpanKind, set_span_in_context, get_current_span as get_current_otlp_span
+from opentelemetry.trace import (
+    SpanKind,
+    set_span_in_context,
+    get_current_span as get_current_otlp_span,
+    NonRecordingSpan,
+    SpanContext,
+    TraceFlags
+)
 from opentelemetry.sdk.trace import (
     ReadableSpan,
     SynchronousMultiSpanProcessor,
@@ -19,16 +28,24 @@ from opentelemetry.context import Context as OTLPContext
 from opentelemetry.semconv.trace import SpanAttributes
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from aworld.trace.trace import (
+from aworld.trace.base import (
     AttributeValueType,
     NoOpTracer,
     SpanType,
     TraceProvider,
     Tracer,
     Span,
+    TraceContext,
     set_tracer_provider
 )
+from aworld.trace.span_cosumer import SpanConsumer
+from aworld.trace.propagator import get_global_trace_context
+from aworld.logs.util import logger
+from aworld.utils.common import get_local_ip
+from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
 from ..constants import ATTRIBUTES_MESSAGE_KEY
+from .export import FileSpanExporter, NoOpSpanExporter, SpanConsumerExporter
+from ..server import start_trace_server
 
 
 class OTLPTraceProvider(TraceProvider):
@@ -94,14 +111,22 @@ class OTLPTracer(Tracer):
             start_time: Optional[int] = None,
             record_exception: bool = True,
             set_status_on_exception: bool = True,
+            trace_context: Optional[TraceContext] = None
     ) -> "Span":
+        otel_context = None
+        trace_context = trace_context or get_global_trace_context().get_and_clear()
+        if trace_context:
+            otel_context = self._get_otel_context_from_trace_context(
+                trace_context)
         start_time = start_time or time.time_ns()
         attributes = {**(attributes or {})}
         attributes.setdefault(ATTRIBUTES_MESSAGE_KEY, name)
 
-        span_kind = self._convert_to_span_kind(span_type) if span_type else SpanKind.INTERNAL
+        span_kind = self._convert_to_span_kind(
+            span_type) if span_type else SpanKind.INTERNAL
         span = self._tracer.start_span(name=name,
                                        kind=span_kind,
+                                       context=otel_context,
                                        attributes=attributes,
                                        start_time=start_time,
                                        record_exception=record_exception,
@@ -117,21 +142,43 @@ class OTLPTracer(Tracer):
             record_exception: bool = True,
             set_status_on_exception: bool = True,
             end_on_exit: bool = True,
+            trace_context: Optional[TraceContext] = None
     ) -> Iterator["Span"]:
 
         start_time = start_time or time.time_ns()
         attributes = {**(attributes or {})}
         attributes.setdefault(ATTRIBUTES_MESSAGE_KEY, name)
-        span_kind = self._convert_to_span_kind(span_type) if span_type else SpanKind.INTERNAL
+        span_kind = self._convert_to_span_kind(
+            span_type) if span_type else SpanKind.INTERNAL
+        otel_context = None
+        trace_context = trace_context or get_global_trace_context().get_and_clear()
+        if trace_context:
+            otel_context = self._get_otel_context_from_trace_context(
+                trace_context)
 
-        with self._tracer.start_as_current_span(name=name,
-                                                kind=span_kind,
-                                                attributes=attributes,
-                                                start_time=start_time,
-                                                record_exception=record_exception,
-                                                set_status_on_exception=set_status_on_exception,
-                                                end_on_exit=end_on_exit) as span:
-            yield OTLPSpan(span)
+        class _OTLPSpanContextManager:
+            def __init__(self, tracer: SDKTracer):
+                self._span_cm = None
+                self._tracer = tracer
+
+            def __enter__(self):
+                self._span_cm = self._tracer.start_as_current_span(
+                    name=name,
+                    kind=span_kind,
+                    context=otel_context,
+                    attributes=attributes,
+                    start_time=start_time,
+                    record_exception=record_exception,
+                    set_status_on_exception=set_status_on_exception,
+                    end_on_exit=end_on_exit
+                )
+                inner_span = self._span_cm.__enter__()
+                return OTLPSpan(inner_span)
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return self._span_cm.__exit__(exc_type, exc_val, exc_tb)
+
+        return _OTLPSpanContextManager(self._tracer)
 
     def _convert_to_span_kind(self, span_type: SpanType) -> str:
         if span_type == SpanType.INTERNAL:
@@ -146,6 +193,23 @@ class OTLPTracer(Tracer):
             return SpanKind.CONSUMER
         else:
             return SpanKind.INTERNAL
+
+    def _get_otel_context_from_trace_context(self, trace_context: TraceContext) -> OTLPContext:
+        trace_flags = None
+        if trace_context.trace_flags:
+            trace_flags = TraceFlags(int(trace_context.trace_flags, 16))
+        otel_context = otlp_context_api.Context()
+        return set_span_in_context(
+            NonRecordingSpan(
+                SpanContext(
+                    trace_id=int(trace_context.trace_id, 16),
+                    span_id=int(trace_context.span_id, 16),
+                    is_remote=True,
+                    trace_flags=trace_flags
+                )
+            ),
+            otel_context,
+        )
 
 
 class OTLPSpan(Span, ReadableSpan):
@@ -191,7 +255,8 @@ class OTLPSpan(Span, ReadableSpan):
             # OTEL's record_exception uses `traceback.format_exc()` which is for the current exception,
             # ignoring the passed exception.
             # So we override the stacktrace attribute with the correct one.
-            stacktrace = ''.join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+            stacktrace = ''.join(traceback.format_exception(
+                type(exception), exception, exception.__traceback__))
             attributes[SpanAttributes.EXCEPTION_STACKTRACE] = stacktrace
 
         self._span.record_exception(exception=exception,
@@ -208,7 +273,7 @@ class OTLPSpan(Span, ReadableSpan):
             return ""
         return f"{self._span.get_span_context().trace_id:032x}"
 
-    def get_span_id( self) -> str:
+    def get_span_id(self) -> str:
         """Get the span ID of the span.
         Returns:
             The span ID of the span.
@@ -228,11 +293,11 @@ class OTLPSpan(Span, ReadableSpan):
         otlp_context_api.detach(self._token)
         self._token = None
 
-
 def configure_otlp_provider(
         backends: Sequence[str] = None,
         base_url: str = None,
         write_token: str = None,
+        span_consumers: Optional[Sequence[SpanConsumer]] = None,
         **kwargs
 ) -> None:
     """Configure the OTLP provider.
@@ -244,13 +309,40 @@ def configure_otlp_provider(
     from aworld.metrics.opentelemetry.opentelemetry_adapter import build_otel_resource
     backends = backends or ["logfire"]
     processor = SynchronousMultiSpanProcessor()
+    processor.add_span_processor(BatchSpanProcessor(
+        SpanConsumerExporter(span_consumers)))
     for backend in backends:
         if backend == "logfire":
-            span_exporter = _configure_logfire_exporter(write_token=write_token, base_url=base_url, **kwargs)
+            span_exporter = _configure_logfire_exporter(
+                write_token=write_token, base_url=base_url, **kwargs)
             processor.add_span_processor(BatchSpanProcessor(span_exporter))
         elif backend == "console":
             from opentelemetry.sdk.trace.export import ConsoleSpanExporter
-            processor.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+            processor.add_span_processor(
+                BatchSpanProcessor(ConsoleSpanExporter()))
+        elif backend == "file":
+            timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            file_path = kwargs.get("file_path", f"traces_{timestamp}.json")
+            processor.add_span_processor(
+                BatchSpanProcessor(FileSpanExporter(file_path)))
+        elif backend == "memory":
+            logger.info("Using in-memory storage for traces.")
+            if (os.getenv("START_TRACE_SERVER") or "true").lower() == "true":
+                logger.info("Starting trace server on port 8000.")
+                storage_dir = os.path.join("./", "trace_data", get_local_ip())
+                storage = kwargs.get("storage", InMemoryWithPersistStorage(storage_dir=storage_dir))
+                processor.add_span_processor(
+                    BatchSpanProcessor(InMemorySpanExporter(storage)))
+                start_trace_server(storage=storage, port=8000)
+            else:
+                processor.add_span_processor(
+                    BatchSpanProcessor(NoOpSpanExporter()))
+                logger.info("Trace server is not started.")
+        else:
+            span_exporter = _configure_otlp_exporter(
+                base_url=base_url, **kwargs)
+            processor.add_span_processor(BatchSpanProcessor(span_exporter))
+
     set_tracer_provider(OTLPTraceProvider(SDKTracerProvider(active_span_processor=processor,
                                                             resource=build_otel_resource())))
 
@@ -271,6 +363,27 @@ def _configure_logfire_exporter(write_token: str, base_url: str = None) -> None:
     session.headers.update(headers)
     return OTLPSpanExporter(
         endpoint=urljoin(base_url, '/v1/traces'),
+        session=session,
+        compression=Compression.Gzip,
+    )
+
+
+def _configure_otlp_exporter(base_url: str = None) -> None:
+    """Configure the OTLP exporter.
+    Args:
+        write_token: The write token to use.
+        base_url: The base URL to use.
+        **kwargs: Additional keyword arguments to pass to the exporter.
+    """
+    import requests
+    from opentelemetry.exporter.otlp.proto.http import Compression
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+    otlp_traces_endpoint = os.getenv("OTLP_TRACES_ENDPOINT")
+    base_url = base_url or otlp_traces_endpoint
+    session = requests.Session()
+    return OTLPSpanExporter(
+        endpoint=base_url,
         session=session,
         compression=Compression.Gzip,
     )

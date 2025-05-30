@@ -42,6 +42,7 @@ ENV/
 env.bak/
 venv.bak/
 .env
+.env.docker
 
 # IDE specific files
 .idea/
@@ -77,6 +78,7 @@ data/raw/
 data/processed/
 data/workspaces/
 gaia-benchmark/
+examples/gaia/gaia_dataset/
 
 # Compiled files
 *.com
@@ -124,6 +126,13 @@ gaia-benchmark/
 node_modules/
 package.json
 package-lock.json
+
+.data/
+examples/gaia/GAIA/
+traces*.json
+trace_data
+
+examples/gaia/output
 
 # db files
 *.db

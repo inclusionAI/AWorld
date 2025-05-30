@@ -1,9 +1,9 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import Agent
-from aworld.core.task import Task
+from aworld.runner import Runners
 
 if __name__ == '__main__':
     agent_config = AgentConfig(
@@ -21,7 +21,8 @@ if __name__ == '__main__':
         mcp_servers=["text_to_audio_local_sse"]  # MCP server name for agent to use
     )
 
-    # Define a task
-    Task(
-        input="use text_to_audio_local_sse to convert text to audio: Hello, world!", agent=edu, conf=TaskConfig()
-    ).run()
+    # run
+    Runners.sync_run(
+        input="use text_to_audio_local_sse to convert text to audio: Hello, world!",
+        agent=edu
+    )
