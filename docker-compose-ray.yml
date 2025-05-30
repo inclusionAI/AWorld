@@ -1,24 +1,29 @@
+version: '3.8'
+
 services:
   ray-head:
     build:
       context: .
       dockerfile: Dockerfile_ray
     platform: linux/amd64
+    container_name: ray-head
+    hostname: ray-head
     ports:
-      - "6379:6379" # Reddis port
-      - "8265:8265" # Ray dashboard
-      - "10001:10001" # Ray head node port
-    command: /bin/bash -c "ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --block"
-    shm_size: '2gb'
+      - "8265:8265" # Ray Dashboard
+      - "10001:10001" # Ray Client Server
+      - "6379:6379" # Redis port for Ray GCS
+    command: >
+      ray start --head  --dashboard-host=0.0.0.0  --dashboard-port=8265 --port=6379 --redis-password="" --object-manager-port=8076 --node-manager-port=8077 --gcs-server-port=6379 --min-worker-port=10002 --max-worker-port=19999 --block
     env_file:
       - .env
+    networks:
+      - ray-network
+    restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: '4'
           memory: 8G
         reservations:
-          cpus: '2'
           memory: 4G
 
   ray-worker:
@@ -26,17 +31,28 @@ services:
       context: .
       dockerfile: Dockerfile_ray
     platform: linux/amd64
+    container_name: ray-worker
+    hostname: ray-worker
     depends_on:
       - ray-head
-    command: /bin/bash -c "ray start --address=ray-head:6379 --block"
-    shm_size: '2gb'
+    command: >
+      ray start  --address=ray-head:6379 --object-manager-port=8076 --node-manager-port=8077 --min-worker-port=10002 --max-worker-port=19999 --block
     env_file:
       - .env
+    networks:
+      - ray-network
+    restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: '4'
           memory: 8G
         reservations:
-          cpus: '2'
           memory: 4G
+
+networks:
+  ray-network:
+    driver: bridge
+
+volumes:
+  workspace:
+    driver: local

@@ -148,7 +148,7 @@ async def _main_async():
     agent = AgentActor.remote()
     print(f"agent: {agent}")
 
-    run_task = agent.run.remote(prompt)
+    agent.run.remote(prompt)
     print(f"Started agent task")
 
     # 轮询获取结果
