@@ -176,6 +176,16 @@ def load_all_mcp_config():
                     "LLM_BASE_URL": os.environ.get("LLM_BASE_URL"),
                     "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
                 }
-            }
+            },
+            "e2b-code-server": {
+                "command": "python",
+                "args": [
+                    "-m",
+                    "mcp_servers.e2b_code_server"
+                ],
+                "env": {
+                    "E2B_API_KEY": os.environ["E2B_API_KEY"],
+                }
+            },
         }
     }
