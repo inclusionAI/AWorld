@@ -1,6 +1,8 @@
+
+
 import wrapt
 import time
-import openai
+import inspect
 import traceback
 from typing import Collection, Any, Union
 from aworld.trace.instrumentation import Instrumentor
@@ -10,39 +12,41 @@ from aworld.trace.base import (
     get_tracer_provider_silent
 )
 from aworld.trace.constants import ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType
-from aworld.trace.instrumentation.openai.inout_parse import (
-    run_async,
-    handle_openai_request,
-    is_streaming_response,
-    record_stream_response_chunk,
-    parse_openai_response,
-    record_stream_token_usage,
-    model_as_dict,
-    parse_response_message,
-)
 from aworld.trace.instrumentation.llm_metrics import (
     record_exception_metric,
     record_chat_response_metric,
     record_streaming_time_to_first_token,
     record_streaming_time_to_generate
 )
+from aworld.trace.instrumentation.uni_llmmodel.model_response_parse import (
+    accumulate_stream_response,
+    get_common_attributes_from_response,
+    record_stream_token_usage,
+    parse_response_message,
+    response_to_dic
+)
+
+from aworld.metrics.template import MetricTemplate
+from aworld.metrics.context_manager import MetricContext
+from aworld.metrics.metric import MetricType
+from aworld.models.llm import LLMModel
+from aworld.models.model_response import ModelResponse
 from aworld.logs.util import logger
 
 
-def _chat_wrapper(tracer: Tracer):
+def _completion_wrapper(tracer: Tracer):
 
     @wrapt.decorator
     def wrapper(wrapped, instance, args, kwargs):
-        model_name = kwargs.get("model", "")
+        model_name = instance.provider.model_name
         if not model_name:
-            model_name = "OpenAI"
+            model_name = "LLMModel"
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
         span = tracer.start_span(
             name=model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
-        run_async(handle_openai_request(span, kwargs, instance))
         start_time = time.time()
         try:
             response = wrapped(*args, **kwargs)
@@ -54,19 +58,19 @@ def _chat_wrapper(tracer: Tracer):
             span.end()
             raise e
 
-        if is_streaming_response(response):
-            return WrappedStreamResponse(span=span,
-                                         response=response,
-                                         instance=instance,
-                                         start_time=start_time,
-                                         request_kwargs=kwargs
-                                         )
-
+        if (is_streaming_response(response)):
+            return WrappedGeneratorResponse(span=span,
+                                            response=response,
+                                            instance=instance,
+                                            start_time=start_time,
+                                            request_kwargs=kwargs
+                                            )
         record_completion(span=span,
                           start_time=start_time,
                           response=response,
                           request_kwargs=kwargs,
-                          instance=instance
+                          instance=instance,
+                          is_async=False
                           )
         span.end()
         return response
@@ -74,20 +78,19 @@ def _chat_wrapper(tracer: Tracer):
     return wrapper
 
 
-def _achat_wrapper(tracer: Tracer):
+def _acompletion_wrapper(tracer: Tracer):
 
     @wrapt.decorator
     async def awrapper(wrapped, instance, args, kwargs):
-        model_name = kwargs.get("model", "")
+        model_name = instance.provider.model_name
         if not model_name:
-            model_name = "OpenAI"
+            model_name = "LLMModel"
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
         span = tracer.start_span(
             name=model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
-        await handle_openai_request(span, kwargs, instance)
         start_time = time.time()
         try:
             response = await wrapped(*args, **kwargs)
@@ -99,23 +102,28 @@ def _achat_wrapper(tracer: Tracer):
             span.end()
             raise e
 
-        if is_streaming_response(response):
-            return WrappedStreamResponse(span=span,
-                                         response=response,
-                                         instance=instance,
-                                         start_time=start_time,
-                                         request_kwargs=kwargs
-                                         )
+        if (is_streaming_response(response)):
+            return WrappedGeneratorResponse(span=span,
+                                            response=response,
+                                            instance=instance,
+                                            start_time=start_time,
+                                            request_kwargs=kwargs
+                                            )
         record_completion(span=span,
                           start_time=start_time,
                           response=response,
                           request_kwargs=kwargs,
-                          instance=instance
+                          instance=instance,
+                          is_async=True
                           )
         span.end()
         return response
 
     return awrapper
+
+
+def is_streaming_response(response):
+    return inspect.isgenerator(response)
 
 
 def record_exception(span, start_time, exception):
@@ -135,14 +143,14 @@ def record_completion(span,
                       start_time,
                       response,
                       request_kwargs,
-                      instance):
+                      instance,
+                      is_async):
     '''
     Record chat completion to trace and metrics
     '''
     duration = time.time() - start_time if "start_time" in locals() else 0
-    response_dict = model_as_dict(response)
-    attributes = parse_openai_response(
-        response_dict, request_kwargs, instance, False)
+    response_dict = response_to_dic(response)
+    attributes = get_common_attributes_from_response(instance, is_async, False)
     usage = response_dict.get("usage")
     choices = response_dict.get("choices")
     prompt_tokens = usage.get("prompt_tokens")
@@ -164,7 +172,7 @@ def record_completion(span,
                                 )
 
 
-class WrappedStreamResponse(wrapt.ObjectProxy):
+class WrappedGeneratorResponse(wrapt.ObjectProxy):
 
     def __init__(
         self,
@@ -180,19 +188,8 @@ class WrappedStreamResponse(wrapt.ObjectProxy):
         self._start_time = start_time
         self._complete_response = {"choices": [], "model": ""}
         self._first_token_recorded = False
+        self._time_of_first_token = None
         self._request_kwargs = request_kwargs
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.__wrapped__.__exit__(exc_type, exc_val, exc_tb)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.__wrapped__.__aexit__(exc_type, exc_val, exc_tb)
 
     def __iter__(self):
         return self
@@ -205,10 +202,10 @@ class WrappedStreamResponse(wrapt.ObjectProxy):
             chunk = self.__wrapped__.__next__()
         except Exception as e:
             if isinstance(e, StopIteration):
-                self._close_span()
+                self._close_span(False)
             raise e
         else:
-            self._process_stream_chunk(chunk)
+            self._process_stream_chunk(chunk, False)
             return chunk
 
     async def __anext__(self):
@@ -216,23 +213,24 @@ class WrappedStreamResponse(wrapt.ObjectProxy):
             chunk = await self.__wrapped__.__anext__()
         except Exception as e:
             if isinstance(e, StopAsyncIteration):
-                self._close_span()
+                self._close_span(True)
             raise e
         else:
-            self._process_stream_chunk(chunk)
+            self._process_stream_chunk(chunk, True)
             return chunk
 
-    def _process_stream_chunk(self, chunk):
-        record_stream_response_chunk(chunk, self._complete_response)
+    def _process_stream_chunk(self, chunk: ModelResponse, is_async):
+        accumulate_stream_response(chunk, self._complete_response)
+
         if not self._first_token_recorded:
             self._time_of_first_token = time.time()
             duration = self._time_of_first_token - self._start_time
-            attribute = parse_openai_response(
-                self._complete_response, self._request_kwargs, self._instance, True)
+            attribute = get_common_attributes_from_response(
+                self._instance, is_async, True)
             record_streaming_time_to_first_token(duration, attribute)
             self._first_token_recorded = True
 
-    def _close_span(self):
+    def _close_span(self, is_async):
         duration = None
         first_token_duration = None
         first_token_to_generate_duration = None
@@ -241,10 +239,13 @@ class WrappedStreamResponse(wrapt.ObjectProxy):
         if self._time_of_first_token and self._start_time and isinstance(self._start_time, (float, int)):
             first_token_duration = self._time_of_first_token - self._start_time
             first_token_to_generate_duration = time.time() - self._time_of_first_token
+
         prompt_usage, completion_usage = record_stream_token_usage(
             self._complete_response, self._request_kwargs)
-        attributes = parse_openai_response(
-            self._complete_response, self._request_kwargs, self._instance, True)
+
+        attributes = get_common_attributes_from_response(
+            self._instance, is_async, True)
+
         choices = self._complete_response.get("choices")
         span_attributes = {
             **attributes,
@@ -254,6 +255,7 @@ class WrappedStreamResponse(wrapt.ObjectProxy):
             "llm.first_token_duration": first_token_duration
         }
         span_attributes.update(parse_response_message(choices))
+
         self._span.set_attributes(span_attributes)
         record_chat_response_metric(attributes=attributes,
                                     prompt_tokens=prompt_usage,
@@ -267,57 +269,12 @@ class WrappedStreamResponse(wrapt.ObjectProxy):
         self._span.end()
 
 
-class OpenAIInstrumentor(Instrumentor):
+class LLMModelInstrumentor(Instrumentor):
 
     def instrumentation_dependencies(self) -> Collection[str]:
-        return ("openai >= 1.0.0",)
+        return ()
 
     def _instrument(self, **kwargs):
         tracer_provider = kwargs.get("tracer_provider")
         tracer = tracer_provider.get_tracer(
-            "aworld.trace.instrumentation.openai")
-
-        wrapt.wrap_function_wrapper(
-            "openai.resources.chat.completions",
-            "Completions.create",
-            _chat_wrapper(tracer=tracer)
-        )
-
-        wrapt.wrap_function_wrapper(
-            "openai.resources.chat.completions",
-            "AsyncCompletions.create",
-            _achat_wrapper(tracer)
-        )
-
-    def _instrument(self, **kwargs: Any):
-        pass
-
-
-def wrap_openai(client: Union[openai.OpenAI, openai.AsyncOpenAI]):
-    """Patch the OpenAI client to make it traceable.
-       Example:
-       client = wrap_openai(openai.OpenAI())
-    """
-    try:
-        tracer_provider = get_tracer_provider_silent()
-        if not tracer_provider:
-            return
-        tracer = tracer_provider.get_tracer(
-            "aworld.trace.instrumentation.openai")
-
-        if isinstance(client, openai.OpenAI):
-            wrapper = _chat_wrapper(tracer)
-            client.chat.completions.create = wrapper(
-                client.chat.completions.create)
-            logger.info(
-                f"[{client.__class__}]client.chat.completions.create be warpped")
-        if isinstance(client, openai.AsyncOpenAI):
-            awrapper = _achat_wrapper(tracer)
-            client.chat.completions.create = awrapper(
-                client.chat.completions.create)
-            logger.info(
-                f"[{client.__class__}]client.chat.completions.create be warpped")
-    except Exception:
-        logger.warning(traceback.format_exc())
-
-    return client
+            "aworld.trace.instrumentation.llmmodel")
