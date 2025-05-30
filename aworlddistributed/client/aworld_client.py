@@ -25,12 +25,12 @@ class TaskLogger:
             os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
             with open(self.log_file, 'w', encoding='utf-8') as f:
                 f.write("# Aworld Task Submission Log\n")
-                f.write("# Format: [timestamp] task_id | agent_id | server | status | details\n\n")
+                f.write("# Format: [timestamp] task_id | agent_id | server | status | agent_answer | correct_answer | is_correct | details\n\n")
     
-    def log_task_submission(self, task: AworldTask, server: str, status: str, details: str = ""):
+    def log_task_submission(self, task: AworldTask, server: str, status: str, details: str = "", task_result: AworldTaskResult = None):
         """记录任务提交日志"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] {task.task_id} | {task.agent_id} | {task.node_id} | {status} | {details}\n"
+        log_entry = f"[{timestamp}] {task.task_id} | {task.agent_id} | {task.node_id} | {status} | { task_result.data.get('agent_answer') if task_result and task_result.data else None } | {task_result.data.get('correct_answer') if task_result and task_result.data else None} | {task_result.data.get('gaia_correct') if task_result and task_result.data else None} |{details}\n"
         
         try:
             with open(self.log_file, 'a', encoding='utf-8') as f:
@@ -108,8 +108,8 @@ class AworldTaskClient(BaseModel):
             task_result = await self._submit_task_to_server(aworld_server, task)
             return task_result
         except Exception as e:
-            print(f"process task to {aworld_server} failed: {e}")
-            task_logger.log_task_submission(task, aworld_server, "failed", str(e))
+            print(f"execute task to {task.node_id} execute_failed: {e}, please see logs from server ")
+            task_logger.log_task_submission(task, aworld_server, "execute_failed", str(e))
             return None
 
     async def _submit_task_to_server(self, aworld_server, task: AworldTask):
@@ -130,9 +130,11 @@ class AworldTaskClient(BaseModel):
             "task_id": task.task_id,
             "aworld_task": task.model_dump_json()
         })
-        result_data = ""
+        items = []
+        task_result = {}
         if isinstance(data, AsyncGenerator):
             async for item in data:
+                items.append(item)
                 if item.raw_response and item.raw_response.model_extra and item.raw_response.model_extra.get('node_id'):
                     if not task.node_id:
                         logging.info(f"submit task#{task.task_id} success. execute pod ip is [{item.raw_response.model_extra.get('node_id')}]")
@@ -142,7 +144,10 @@ class AworldTaskClient(BaseModel):
                 if item.content:
                     task_logger.log_task_result(task, item)
                     logging.info(f"task#{task.task_id} response data chunk is: {item}")
-                    result_data += item.content
+
+                if item.raw_response and item.raw_response.model_extra and item.raw_response.model_extra.get(
+                        'task_output_meta'):
+                    task_result = item.raw_response.model_extra.get('task_output_meta')
 
 
         elif isinstance(data, ModelResponse):
@@ -153,11 +158,12 @@ class AworldTaskClient(BaseModel):
 
             logging.info(f"task#{task.task_id} response data is: {data}")
             task_logger.log_task_result(task, data)
-            if data.content:
-                result_data = data.content
+            if data.raw_response and data.raw_response.model_extra and data.raw_response.model_extra.get('task_output_meta'):
+                task_result = data.raw_response.model_extra.get('task_output_meta')
 
-        task_logger.log_task_submission(task, aworld_server, "success")
-        return AworldTaskResult(task=task, server_host=aworld_server, data=result_data)
+        result = AworldTaskResult(task=task, server_host=aworld_server, data=task_result)
+        task_logger.log_task_submission(task, aworld_server, "execute_finished", task_result=result)
+        return result
 
     async def get_task_state(self, task_id: str):
         if not isinstance(self.task_states, dict):

@@ -204,6 +204,7 @@ class Pipeline(AworldBaseAgent):
         match = re.search(r"<answer>(.*?)</answer>", agent_result)
         is_correct = False
         result = ""
+        answer = ""
         if match:
             answer = match.group(1)
             logging.info(f"Agent answer: {answer}")
@@ -223,7 +224,8 @@ class Pipeline(AworldBaseAgent):
             metadata = await outputs.get_metadata()
         metadata['gaia_correct'] = is_correct
         metadata['gaia_result'] = result
-        metadata['gaia_task'] = gaia_task
+        metadata['agent_answer'] = answer
+        metadata['correct_answer'] = gaia_task['Final answer']
         return result
 
 

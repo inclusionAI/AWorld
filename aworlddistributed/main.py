@@ -15,6 +15,7 @@ from typing import Generator, Iterator, AsyncGenerator, Optional
 from urllib.parse import urlparse
 
 import aiohttp
+from aworld.core.task import Task
 from aworld.utils.common import get_local_ip
 from fastapi import FastAPI, Request, Depends, status, HTTPException, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
@@ -22,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
+from base import AworldTask
 from config import API_KEY, PIPELINES_DIR, LOG_LEVELS
 from schemas import FilterForm, OpenAIChatCompletionForm
 from utils.pipelines.auth import get_current_user
@@ -702,6 +704,10 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
             pipe = PIPELINE_MODULES[pipeline_id].pipe
 
         def process_line(model, line):
+            if isinstance(line, Task):
+                task_output_meta = line.outputs._metadata
+                line = openai_chat_chunk_message_template(model, "", task_output_meta=task_output_meta)
+                return f"data: {json.dumps(line)}\n\n"
             if isinstance(line, BaseModel):
                 line = line.model_dump_json()
                 line = f"data: {line}"
@@ -826,8 +832,9 @@ def openai_chat_chunk_message_template(
     content: Optional[str] = None,
     tool_calls: Optional[list[dict]] = None,
     usage: Optional[dict] = None,
+    **kwargs
 ) -> dict:
-    template = openai_chat_message_template(model)
+    template = openai_chat_message_template(model, **kwargs)
     template["object"] = "chat.completion.chunk"
 
     template["choices"][0]["index"] = 0
@@ -846,12 +853,13 @@ def openai_chat_chunk_message_template(
         template["usage"] = usage
     return template
 
-def openai_chat_message_template(model: str):
+def openai_chat_message_template(model: str, **kwargs):
     return {
         "id": f"{model}-{str(uuid.uuid4())}",
         "created": int(time.time()),
         "model": model,
         "node_id": get_local_ip(),
+        "task_output_meta": kwargs.get("task_output_meta"),
         "choices": [{"index": 0, "logprobs": None, "finish_reason": None}],
     }
 
