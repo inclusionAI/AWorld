@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import AsyncGenerator
@@ -102,15 +103,19 @@ class AworldTaskClient(BaseModel):
         self.task_states[task.task_id] = result
 
         
-    async def _submit_task(self, aworld_server, task: AworldTask):
+    async def _submit_task(self, aworld_server, task: AworldTask, retry_num: int = 0):
+        if retry_num > 3:
+            print(f"execute task#{task.task_id} to {aworld_server} retry = {retry_num}")
+            return
         try:
+            await asyncio.sleep(3)
             logging.info(f"submit task#{task.task_id} to cluster#[{aworld_server}]")
             task_result = await self._submit_task_to_server(aworld_server, task)
             return task_result
         except Exception as e:
             print(f"execute task to {task.node_id} execute_failed: {e}, please see logs from server ")
             task_logger.log_task_submission(task, aworld_server, "execute_failed", str(e))
-            return None
+            await self._submit_task(aworld_server, task, retry_num + 1)
 
     async def _submit_task_to_server(self, aworld_server, task: AworldTask):
         # build params
@@ -143,7 +148,7 @@ class AworldTaskClient(BaseModel):
 
                 if item.content:
                     task_logger.log_task_result(task, item)
-                    logging.info(f"task#{task.task_id} response data chunk is: {item}")
+                    logging.info(f"task#{task.task_id} response data chunk is: {item}"[:500])
 
                 if item.raw_response and item.raw_response.model_extra and item.raw_response.model_extra.get(
                         'task_output_meta'):

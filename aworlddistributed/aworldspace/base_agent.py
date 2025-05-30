@@ -52,7 +52,7 @@ class AworldBaseAgent:
             agent = await self.build_agent(body = body)
 
             # return task
-            task = await self.build_task(agent=agent, task_id=task_id, user_input=user_input, user_message=user_message)
+            task = await self.build_task(agent=agent, task_id=task_id, user_input=user_input, user_message=user_message, body=body)
 
             # render output
             async_generator = await self.parse_task_output(task_id, task)
@@ -120,7 +120,8 @@ class AworldBaseAgent:
         )
         return agent
 
-    async def build_task(self, agent, task_id, user_input, user_message):
+    async def build_task(self, agent, task_id, user_input, user_message, body):
+        aworld_task = await self.get_task_from_body(body)
         task = Task(
             id=task_id,
             name=task_id,
@@ -131,7 +132,8 @@ class AworldBaseAgent:
                 stream=False,
                 ext={
                     "origin_message": user_message
-                }
+                },
+                max_steps=aworld_task.max_steps
             )
         )
         return task
