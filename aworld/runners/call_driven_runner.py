@@ -29,6 +29,7 @@ class SequenceRunner(TaskRunner):
         super().__init__(task=task, *args, **kwargs)
 
     async def do_run(self, context: Context = None) -> TaskResponse:
+        self.swarm.max_steps = self.task.conf.get("max_steps", 10)
         resp = await self._do_run(context)
         self._task_response = resp
         return resp
@@ -92,19 +93,19 @@ class SequenceRunner(TaskRunner):
                                 pre_agent_name = cur_agent.name()
 
                                 if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                                    policy: List[ActionModel] = cur_agent.run(observation,
-                                                                              step=step,
-                                                                              outputs=self.outputs,
-                                                                              stream=self.conf.get("stream", False),
-                                                                              exp_id=exp_id)
+                                    message = cur_agent.run(observation,
+                                                            step=step,
+                                                            outputs=self.outputs,
+                                                            stream=self.conf.get("stream", False),
+                                                            exp_id=exp_id)
                                 else:
-                                    policy: List[ActionModel] = await cur_agent.async_run(observation,
-                                                                                          step=step,
-                                                                                          outputs=self.outputs,
-                                                                                          stream=self.conf.get("stream",
-                                                                                                               False),
-                                                                                          exp_id=exp_id)
-
+                                    message = await cur_agent.async_run(observation,
+                                                                        step=step,
+                                                                        outputs=self.outputs,
+                                                                        stream=self.conf.get("stream",
+                                                                                             False),
+                                                                        exp_id=exp_id)
+                                policy = message.payload
                                 step_span.set_attribute("actions",
                                                         json.dumps([action.model_dump() for action in policy],
                                                                    ensure_ascii=False))
