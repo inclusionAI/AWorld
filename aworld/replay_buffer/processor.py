@@ -131,7 +131,7 @@ class ReplayBufferExporter:
             # Read existing data (if any)
             output_path = self._task_output_paths.get(task_id)
             if not output_path:
-                timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+                timestamp = datetime.datetime.now().strftime("%Y%m%d")
                 replay_dir = os.path.join(output_dir or "./trace_data", timestamp, get_local_ip(), "replays")
                 replay_dataset_path = os.getenv("REPLAY_TRACE_DATASET_PATH", replay_dir)
                 export_dir = os.path.abspath(replay_dataset_path)
