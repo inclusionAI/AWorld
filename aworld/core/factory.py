@@ -37,10 +37,12 @@ class Factory(Generic[T]):
 
     def __iter__(self):
         for name in self._cls:
+            name = "async_" + name if name in self._asyn else name
             yield name
 
     def __contains__(self, name: str) -> bool:
         """Whether the name in the factory."""
+        name = "async_" + name if name in self._asyn else name
         return name in self._cls
 
     def get_class(self, name: str, asyn: bool = False) -> T | None:
@@ -72,11 +74,11 @@ class Factory(Generic[T]):
             if prefix + name in self._cls:
                 equal = True
                 if asyn:
-                    equal = self._asyn[prefix + name] == asyn
+                    equal = self._asyn[name] == asyn
                 if equal:
                     logger.warning(f"{name} already in {self._type} factory, will override it.")
 
-            self._asyn[prefix + name] = asyn
+            self._asyn[name] = asyn
             self._cls[prefix + name] = cls
             self._desc[prefix + name] = desc
             self._ext_info[prefix + name] = kwargs
