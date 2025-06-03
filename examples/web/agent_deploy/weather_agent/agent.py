@@ -3,7 +3,7 @@ import os
 import json
 
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
 from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
