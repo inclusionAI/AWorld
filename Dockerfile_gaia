@@ -26,11 +26,13 @@ RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs
 
 # Config Env
 RUN npx playwright install chrome
+RUN npm install @playwright/mcp @negokaz/excel-mcp-server
 
 # Install mcp servers requirements
 COPY ./mcp_servers mcp_servers
 RUN pip install -r mcp_servers/requirements.txt
 
+# Copy examples
 COPY ./examples/ examples
 
 # Create GAIA benchmark directory
