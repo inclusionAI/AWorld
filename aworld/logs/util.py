@@ -60,9 +60,9 @@ def color_log(
         hightlight_key: Color segment key.
     """
     if hightlight_key is None:
-        logger_._log(level, f"{color} {value} {Color.reset}", None)
+        logger_.log(level, f"{color} {value} {Color.reset}")
     else:
-        logger_._log(level, f"{color} {hightlight_key}: {Color.reset} {value}", None)
+        logger_.log(level, f"{color} {hightlight_key}: {Color.reset} {value}")
 
 
 def aworld_log(logger_, color: str = Color.black, level: int = logging.INFO):

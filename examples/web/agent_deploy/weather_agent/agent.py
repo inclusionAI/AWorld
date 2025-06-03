@@ -2,8 +2,8 @@ import logging
 import os
 import json
 
-from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.base import Agent
+from aworld.config.conf import AgentConfig
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
 from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
@@ -54,7 +54,7 @@ class AWorldAgent:
             ],
         )
 
-        task = Task(input=prompt, agent=super_agent, conf=TaskConfig())
+        task = Task(input=prompt, agent=super_agent, event_driven=False)
 
         rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():
