@@ -172,6 +172,7 @@ class SequenceRunner(TaskRunner):
                                     logger.info("swarm finished")
                                     break
             except Exception as err:
+                await self.outputs.add_output(StepOutput.build_failed_output(name=f"Step{step}", step_num=step, data=f"Runner run failed, err is {err}"))
                 logger.error(f"Runner run failed, err is {err}")
                 raise err
             finally:
