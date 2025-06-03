@@ -1,47 +1,26 @@
 import logging
 import os
-from pathlib import Path
-from typing import Dict, Any, List, Optional
-
-from pydantic_core.core_schema import arguments_schema
-
-from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.task import Task
-from aworld.output import Outputs, Output, StreamingOutputs
-from aworld.core.agent.base import Agent
-from aworld.core.common import Observation, ActionModel
-from pydantic import BaseModel, Field
 import traceback
-import base64
+from typing import Dict, Any, List, Union
+from typing import Optional
 
-from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union, Callable
-from aworld.config.conf import AgentConfig, load_config, ConfigDict
-from aworld.core.agent.agent_desc import get_agent_desc
-from aworld.core.common import Observation, ActionModel
-from aworld.core.context.base import Context
-from aworld.core.envs.tool_desc import get_tool_desc
-from aworld.core.factory import Factory
-from aworld.logs.util import logger
-from aworld.mcp.utils import mcp_tool_desc_transform
-from aworld.core.memory import MemoryItem
-from aworld.memory.main import Memory
-from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
-from aworld.models.model_response import ModelResponse, ToolCall, Function
-from aworld.models.utils import tool_desc_transform, agent_desc_transform
-from aworld.output import Outputs
-from aworld.output.base import StepOutput, MessageOutput
-from aworld.utils.common import convert_to_snake, sync_exec
-from aworld.logs.util import logger, trace_logger
 import aworld.trace as trace
+from aworld.config.conf import AgentConfig, ConfigDict
+from aworld.config.conf import TaskConfig
+from aworld.core.agent.llm_agent import Agent
+from aworld.core.common import Observation, ActionModel
+from aworld.core.memory import MemoryItem
+from aworld.core.task import Task
+from aworld.logs.util import logger
+from aworld.models.llm import call_llm_model, acall_llm_model
+from aworld.models.model_response import ToolCall, Function
+from aworld.output import Output, StreamingOutputs
+from aworld.output import Outputs
+from aworld.output.base import MessageOutput
+from aworld.utils.common import sync_exec
+from pydantic import BaseModel, Field
 
 from aworldspace.base_agent import AworldBaseAgent
-from datasets import load_dataset
-
-from aworldspace.utils.utils import question_scorer
-import re
-import json
-import aworld.trace as trace
-
 
 BROWSER_SYSTEM_PROMPT = """You are a GUI agent. You are given a task and your action history, with screenshots. You need to perform the next action to complete the task.
 ## Output Format
