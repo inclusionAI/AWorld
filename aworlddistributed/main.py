@@ -44,7 +44,7 @@ logging.basicConfig(level=LOG_LEVELS[log_level])
 def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    log_dir = os.getenv("LOG_DIR_PATH", "logs")
+    log_dir = os.path.join(os.getenv("LOG_DIR_PATH", "logs") , get_local_ip())
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     log_path = os.path.join(log_dir, "aworldserver.log")
