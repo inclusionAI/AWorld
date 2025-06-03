@@ -1,19 +1,21 @@
 # Initialize AworldTaskClient with server endpoints
 import asyncio
+import random
 import uuid
 
-from aworld_client import AworldTask, AworldTaskClient
+from base import AworldTask
+from client.aworld_client import AworldTaskClient
 
 AWORLD_TASK_CLIENT = AworldTaskClient(
     know_hosts=["localhost:9999"]
 )
 
 
-async def _run_gaia_task(gaia_question_id: str) -> None:
-    """Run a single Gaia task with the given question ID.
+async def _run_web_task(web_question_id: str) -> None:
+    """Run a single Web task with the given question ID.
 
     Args:
-        gaia_question_id: The ID of the question to process
+        web_question_id: The ID of the question to process
     """
     global AWORLD_TASK_CLIENT
     task_id = str(uuid.uuid4())
@@ -22,8 +24,8 @@ async def _run_gaia_task(gaia_question_id: str) -> None:
     await AWORLD_TASK_CLIENT.submit_task(
         AworldTask(
             task_id=task_id,
-            agent_id="gaia_agent",
-            agent_input=gaia_question_id,
+            agent_id="playwright_agent",
+            agent_input=web_question_id,
             session_id="session_id",
             user_id="SYSTEM"
         )
@@ -34,15 +36,15 @@ async def _run_gaia_task(gaia_question_id: str) -> None:
     print(task_result)
 
 
-async def _batch_run_gaia_task(start_i: int, end_i: int) -> None:
-    """Run multiple Gaia tasks in parallel.
+async def _batch_run_web_task(start_i: int, end_i: int) -> None:
+    """Run multiple Web tasks in parallel.
 
     Args:
         start_i: Starting question ID
         end_i: Ending question ID
     """
     tasks = [
-        _run_gaia_task(str(i))
+        _run_web_task(str(i))
         for i in range(start_i, end_i + 1)
     ]
     await asyncio.gather(*tasks)
@@ -50,4 +52,4 @@ async def _batch_run_gaia_task(start_i: int, end_i: int) -> None:
 
 if __name__ == '__main__':
     # Run batch processing for questions 1-5
-    asyncio.run(_batch_run_gaia_task(138, 138))
+    asyncio.run(_batch_run_web_task(25, 25))

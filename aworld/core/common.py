@@ -76,9 +76,9 @@ class ActionModel(BaseModel):
     # agent name
     agent_name: Optional[str] = None
     # action_name is a tool action name by agent policy.
-    action_name: str = None
-    params: Dict[str, Any] = {}
-    policy_info: Any = None
+    action_name: Optional[str] = None
+    params: Optional[Dict[str, Any]] = {}
+    policy_info: Optional[Any] = None
 
 
 class TaskItem(BaseModel):
