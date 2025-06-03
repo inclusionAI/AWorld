@@ -37,12 +37,10 @@ class Factory(Generic[T]):
 
     def __iter__(self):
         for name in self._cls:
-            name = "async_" + name if name in self._asyn else name
             yield name
 
     def __contains__(self, name: str) -> bool:
         """Whether the name in the factory."""
-        name = "async_" + name if name in self._asyn else name
         return name in self._cls
 
     def get_class(self, name: str, asyn: bool = False) -> T | None:
