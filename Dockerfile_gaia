@@ -1,44 +1,45 @@
-# FROM ghcr.io/open-webui/open-webui:main as base
-FROM ghcr.io/open-webui/open-webui:main as base
+FROM python:3.11-slim AS aworld_base
 
-RUN mkdir /app/aworld
+RUN mkdir -p /app/aworld
 
-RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm
+WORKDIR /app/aworld
 
-ARG PIP_OPTIONS='-i https://mirrors.aliyun.com/pypi/simple/'
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 
-# Install Chrome Driver
-RUN cd /app/aworld/ && \
-    wget https://storage.googleapis.com/chrome-for-testing-public/136.0.7103.92/linux64/chromedriver-linux64.zip && \
-    unzip chromedriver-linux64.zip && \
-    rm chromedriver-linux64.zip
-ENV CHROME_DRIVER_PATH=/app/aworld/chromedriver-linux64/chromedriver
+RUN rm -fv /etc/apt/sources.list.d/* && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY ./aworld aworld
+COPY ./setup.py setup.py
+
+RUN python setup.py install
+
+# GAIA Docker Image
+FROM aworld_base AS gaia_env
+
+RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm 
 
 # Config Env
 RUN npx playwright install chrome
 
-# Install AWorld Dependencies
-COPY ./aworld/requirements.txt /app/aworld/aworld/requirements.txt
-RUN pip install -r /app/aworld/aworld/requirements.txt ${PIP_OPTIONS}
+# Install mcp servers requirements
+COPY ./mcp_servers mcp_servers
+RUN pip install -r mcp_servers/requirements.txt
 
-COPY ./examples/gaia/requirements.txt /app/aworld/examples/gaia/requirements.txt
-# Install Gaia
-RUN pip install -r /app/aworld/examples/gaia/requirements.txt ${PIP_OPTIONS}
-
-FROM base as runner
-
-COPY . /app/aworld
+COPY ./examples/ examples
 
 # Create GAIA benchmark directory
-RUN mkdir -p /app/aworld/gaia-benchmark/fs && \
-    mkdir -p /app/aworld/gaia-benchmark/logs && \
-    mkdir -p /app/aworld/static
+RUN mkdir -p gaia-benchmark/fs && \
+    mkdir -p gaia-benchmark/logs && \
+    mkdir -p static
 
-ENV HF_HUB_OFFLINE=1
-ENV ENABLE_OLLAMA_API=False
-ENV ENABLE_OPENAI_API=False
-ENV ENABLE_DIRECT_CONNECTIONS=False
-ENV ENABLE_EVALUATION_ARENA_MODELS=False
-ENV ENABLE_TITLE_GENERATION=False
-ENV ENABLE_AUTOCOMPLETE_GENERATION=False
-ENV ENABLE_TAGS_GENERATION=False
+ENV PYTHONPATH=/app/aworld${PYTHONPATH:+:${PYTHONPATH}}
+ENV GAIA_DATASET_PATH=/app/aworld/examples/gaia/GAIA/2023
+ENV LOG_FILE_PATH=/app/aworld/gaia-benchmark/logs
+
+CMD [ "python", "examples/gaia/gaia_agent_server.py" ]

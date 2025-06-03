@@ -45,7 +45,6 @@ class Factory(Generic[T]):
 
     def get_class(self, name: str, asyn: bool = False) -> T | None:
         """Get the object instance by name."""
-        name = "async_" + name if asyn else name
         return self._cls.get(name, None)
 
     def count(self) -> int:
@@ -72,11 +71,11 @@ class Factory(Generic[T]):
             if prefix + name in self._cls:
                 equal = True
                 if asyn:
-                    equal = self._asyn[prefix + name] == asyn
+                    equal = self._asyn[name] == asyn
                 if equal:
                     logger.warning(f"{name} already in {self._type} factory, will override it.")
 
-            self._asyn[prefix + name] = asyn
+            self._asyn[name] = asyn
             self._cls[prefix + name] = cls
             self._desc[prefix + name] = desc
             self._ext_info[prefix + name] = kwargs

@@ -2,7 +2,6 @@ import os
 from typing import Any, Dict, List, Generator, AsyncGenerator
 
 from openai import OpenAI, AsyncOpenAI
-from langchain_openai import AzureChatOpenAI
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider_base import LLMProviderBase
@@ -455,6 +454,8 @@ class AzureOpenAIProvider(OpenAIProvider):
         Returns:
             Azure OpenAI provider instance.
         """
+        from langchain_openai import AzureChatOpenAI
+
         # Get API key
         api_key = self.api_key
         if not api_key:

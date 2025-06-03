@@ -16,8 +16,7 @@ We provide a complete and simple example for writing an agent and multi-agent:
 
 ```python
 from aworld.config.conf import AgentConfig
-from aworld.config.common import Tools
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 
 prompt = """
 Please act as a search agent, constructing appropriate keywords and searach terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
@@ -40,15 +39,14 @@ Your output should be like the followings (at most 3 relevant pages from coa):
 ]
 """
 
-
 # Step1
 agent_config = AgentConfig(
-        llm_provider="openai",
-        llm_model_name="gpt-4o",
-        llm_temperature=1,
-        # need to set llm_api_key for use LLM
-        llm_api_key=""
-    )
+    llm_provider="openai",
+    llm_model_name="gpt-4o",
+    llm_temperature=1,
+    # need to set llm_api_key for use LLM
+    llm_api_key=""
+)
 
 search = Agent(
     conf=agent_config,
@@ -56,7 +54,7 @@ search = Agent(
     system_prompt="You are a helpful search agent.",
     # used to opt the result, also choose not to set it
     agent_prompt=prompt,
-    tool_names=[Tools.SEARCH_API.value]
+    tool_names=["search_api"]
 )
 
 ```
@@ -66,14 +64,14 @@ It can also quickly develop multi-agent based on the framework.
 On the basis of the above agent(SearchAgent), we provide a multi-agent example:
 
 ```python
-from aworld.core.agent.base import AgentFactory, Agent
+from aworld.core.agent.llm_agent import Agent
 
 summary_prompt = """
 Summarize the following text in one clear and concise paragraph, capturing the key ideas without missing critical points. 
 Ensure the summary is easy to understand and avoids excessive detail.
 
 Here are the content: 
-{content}
+{task}
 """
 
 summary = Agent(

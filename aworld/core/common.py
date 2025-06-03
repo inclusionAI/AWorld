@@ -19,6 +19,8 @@ class ActionResult(BaseModel):
     keep: bool = False
     action_name: str = None
     tool_name: str = None
+    # llm tool id
+    tool_id: str = None
 
 
 class Observation(BaseModel):
@@ -45,6 +47,7 @@ class Observation(BaseModel):
     action_result: Optional[List[ActionResult]] = []
     # for video or image list
     images: Optional[List[str]] = []
+    # extend key value pair. `done` is an internal key
     info: Optional[Dict[str, Any]] = {}
 
 
@@ -69,9 +72,20 @@ class ToolActionInfo(BaseModel):
 
 class ActionModel(BaseModel):
     tool_name: Optional[str] = None
+    tool_id: Optional[str] = None
     # agent name
     agent_name: Optional[str] = None
     # action_name is a tool action name by agent policy.
+    action_name: Optional[str] = None
+    params: Optional[Dict[str, Any]] = {}
+    policy_info: Optional[Any] = None
+
+
+class TaskItem(BaseModel):
+    data: Any
+    msg: str = None
+    stop: bool = False
+    success: bool = False
     action_name: Optional[str] = None
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None

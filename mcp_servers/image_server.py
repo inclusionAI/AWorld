@@ -119,11 +119,7 @@ def encode_images(image_sources: List[str], with_header: bool = True) -> List[st
             image_base64 = base64.b64encode(optimized_content).decode()
 
             # Format with header if requested
-            final_image = (
-                f"data:{mime_type};base64,{image_base64}"
-                if with_header
-                else image_base64
-            )
+            final_image = f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
 
             images.append(final_image)
 
@@ -158,9 +154,7 @@ def create_image_contents(prompt: str, image_base64: List[str]) -> List[Dict[str
     content = [
         {"type": "text", "text": prompt},
     ]
-    content.extend(
-        [{"type": "image_url", "image_url": {"url": url}} for url in image_base64]
-    )
+    content.extend([{"type": "image_url", "image_url": {"url": url}} for url in image_base64])
     return content
 
 
@@ -168,9 +162,7 @@ def create_image_contents(prompt: str, image_base64: List[str]) -> List[Dict[str
     description="solve the question by careful reasoning given the image(s) in given filepath or url, including reasoning, ocr, etc."
 )
 def mcp_image_recognition(
-    image_urls: List[str] = Field(
-        description="The input image(s) in given a list of filepaths or urls."
-    ),
+    image_urls: List[str] = Field(description="The input image(s) in given a list of filepaths or urls."),
     question: str = Field(description="The question to ask."),
 ) -> str:
     """solve the question by careful reasoning given the image(s) in given filepath or url."""
@@ -193,15 +185,13 @@ def mcp_image_recognition(
             },
         ]
 
-        client = OpenAI(
-            api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_BASE_URL")
-        )
+        client = OpenAI(api_key=os.getenv("IMAGE_LLM_API_KEY"), base_url=os.getenv("IMAGE_LLM_BASE_URL"))
         response = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL_NAME"),
+            model=os.getenv("IMAGE_LLM_MODEL_NAME"),
             messages=messages,
         )
 
-        logger.info(f"response:{ response.choices[0]}")
+        logger.info(f"response:{response.choices[0]}")
         image_reasoning_result = response.choices[0].message.content
 
     except Exception as e:
@@ -211,9 +201,7 @@ def mcp_image_recognition(
         traceback.print_exc()
         logger.error(f"image_reasoning_result-Execute error: {e}")
 
-    logger.info(
-        f"---get_reasoning_by_image-image_reasoning_result:{image_reasoning_result}"
-    )
+    logger.info(f"---get_reasoning_by_image-image_reasoning_result:{image_reasoning_result}")
 
     return image_reasoning_result
 
