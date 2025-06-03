@@ -41,6 +41,7 @@ class OpenAIProvider(LLMProviderBase):
                 base_url=base_url,
                 api_key=api_key,
                 model_name=self.model_name,
+                max_retries=self.kwargs.get("max_retries", 3)
             )
             self.is_http_provider = True
             return self.http_provider

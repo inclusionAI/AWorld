@@ -84,6 +84,7 @@ class ModelConfig(BaseModel):
     llm_client_type: ClientType = ClientType.SDK
     llm_sync_enabled: bool = True
     llm_async_enabled: bool = True
+    max_retries: int = 3
 
 
 class AgentConfig(BaseModel):
