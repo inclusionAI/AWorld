@@ -1,0 +1,62 @@
+FROM rayproject/ray:2.46.0-py312-cpu-aarch64 as base
+
+USER root
+
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
+
+RUN wget --quiet https://deb.nodesource.com/setup_lts.x && \
+    bash setup_lts.x && \
+    rm -fv setup_lts.x && \
+    apt-get update
+
+RUN apt-get install -y nodejs
+
+RUN apt-get clean
+
+FROM base as ray
+
+USER ray
+
+RUN mkdir -p /home/ray/aworld
+
+WORKDIR /home/ray/aworld
+
+COPY ./aworld aworld
+COPY ./mcp_servers mcp_servers
+COPY ./setup.py setup.py
+
+RUN python setup.py install
+
+# Fix numpy ray compatibility issues
+RUN pip install "numpy>=1.19,<2.0" "pyarrow>=14.0.2"
+
+FROM ray
+
+COPY ./ray_serve/mcp.json /home/ray/aworld/ray_serve/mcp.json
+COPY ./examples/gaia/requirements.txt /home/ray/aworld/mcp_servers/requirements.txt
+RUN pip install -r /home/ray/aworld/mcp_servers/requirements.txt
+
+# Ray memory configuration to prevent OOM issues
+ENV RAY_memory_monitor_refresh_ms=0
+# 调整内存配置
+ENV RAY_object_store_memory=1000000000
+ENV RAY_memory_usage_threshold=0.9
+
+# 添加dashboard agent配置
+ENV RAY_DASHBOARD_AGENT_CHECK_PARENT_INTERVAL_S=10
+
+# 添加调试配置
+ENV RAY_BACKEND_LOG_LEVEL=info
+
+# 增加心跳超时配置
+ENV RAY_raylet_heartbeat_timeout_milliseconds=60000
+ENV RAY_num_heartbeats_timeout=30
+ENV RAY_raylet_death_check_interval_milliseconds=1000
+
+# 优化GCS配置
+ENV RAY_gcs_rpc_server_reconnect_timeout_s=60
+ENV RAY_gcs_server_request_timeout_seconds=60
+
+# 网络优化
+ENV RAY_enable_multi_tenancy=0
+ENV RAY_max_direct_call_object_size=0
