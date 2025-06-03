@@ -37,7 +37,6 @@ class Factory(Generic[T]):
 
     def __iter__(self):
         for name in self._cls:
-            name = "async_" + name if self._asyn.get(name, False) else name
             yield name
 
     def __contains__(self, name: str) -> bool:
