@@ -3,9 +3,10 @@ import re
 import string
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-from loguru import logger
+import logging
 from tabulate import tabulate
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_str(input_str, remove_punct=True) -> str:

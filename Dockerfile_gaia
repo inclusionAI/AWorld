@@ -15,7 +15,6 @@ RUN rm -fv /etc/apt/sources.list.d/* && \
     rm -rf /var/lib/apt/lists/*
 
 COPY ./aworld aworld
-COPY ./mcp_servers mcp_servers
 COPY ./setup.py setup.py
 
 RUN python setup.py install
@@ -25,18 +24,12 @@ FROM aworld_base AS gaia_env
 
 RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm 
 
-# Install Chrome Driver
-RUN wget https://storage.googleapis.com/chrome-for-testing-public/136.0.7103.92/linux64/chromedriver-linux64.zip && \
-    unzip chromedriver-linux64.zip && \
-    rm chromedriver-linux64.zip
-ENV CHROME_DRIVER_PATH=/app/aworld/chromedriver-linux64/chromedriver
-
 # Config Env
 RUN npx playwright install chrome
 
-# Install Gaia requirements
-COPY ./examples/gaia/requirements.txt examples/gaia/requirements.txt
-RUN pip install -r examples/gaia/requirements.txt
+# Install mcp servers requirements
+COPY ./mcp_servers mcp_servers
+RUN pip install -r mcp_servers/requirements.txt
 
 COPY ./examples/ examples
 

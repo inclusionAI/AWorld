@@ -33,7 +33,6 @@ RUN pip install "numpy>=1.19,<2.0" "pyarrow>=14.0.2"
 FROM ray
 
 COPY ./ray_serve/mcp.json /home/ray/aworld/ray_serve/mcp.json
-COPY ./examples/gaia/requirements.txt /home/ray/aworld/mcp_servers/requirements.txt
 RUN pip install -r /home/ray/aworld/mcp_servers/requirements.txt
 
 # Ray memory configuration to prevent OOM issues
