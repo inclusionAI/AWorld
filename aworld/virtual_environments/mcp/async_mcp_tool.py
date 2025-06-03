@@ -50,6 +50,8 @@ class McpTool(AsyncTool[Observation, List[ActionModel]]):
         reward = 0
         fail_error = ""
         terminated = kwargs.get("terminated", False)
+        # todo sandbox
+        agent = kwargs.get("agent", False)
         if not actions:
             self._finished = True
             observation = build_observation(observer=self.name(),
@@ -87,7 +89,12 @@ class McpTool(AsyncTool[Observation, List[ActionModel]]):
 
         action_results = None
         try:
-            action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
+            # todo sandbox
+            if agent and agent.sandbox:
+                sand_box = agent.sandbox
+                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions)
+            else:
+                action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1
         except Exception as e:
             fail_error = str(e)
