@@ -65,7 +65,8 @@ def load_all_mcp_config():
                 "args": [
                     "@playwright/mcp@latest",
                     "--no-sandbox",
-                    "--headless"
+                    "--headless",
+                    "--isolated"
                 ],
                 "env": {
                     "PLAYWRIGHT_TIMEOUT": "120000",
