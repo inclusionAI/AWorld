@@ -216,7 +216,7 @@ class OpenAworldUI(AworldUI):
         elif output.status == "FINISHED":
             return f"{output.name} 🛬FINISHED {emptyLine}"
         elif output.status == "FAILED":
-            return f"{output.name} 💥FAILED {emptyLine}"
+            return f"{output.name} 💥FAILED: reason is {output.data} {emptyLine}"
         else:
             return f"{output.name} ❓❓❓UNKNOWN#{output.status} {emptyLine}"
 
