@@ -166,7 +166,7 @@ class ReplayBufferExporter:
                 # Export to json
                 with open(output_path, 'w', encoding='utf-8') as f:
                     json.dump([row.to_dict() for row in data_rows], f, ensure_ascii=False, indent=2)
-                print(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
+                logger.info(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
 
                 if enable_oss_export:
                     # Upload to OSS
