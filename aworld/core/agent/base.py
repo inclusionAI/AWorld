@@ -207,6 +207,8 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         # task history messages
         self.task_histories: List[MemoryItem] = []
         self.use_tools_in_prompt = kwargs.get('use_tools_in_prompt', conf.use_tools_in_prompt)
+        # todo sandbox
+        self.sandbox = kwargs.get('sandbox', None)
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
@@ -261,7 +263,13 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
         # Agents as tool
         self.tools.extend(self._handoffs_agent_as_tool())
         # MCP servers are tools
-        self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
+        # todo sandbox
+        if self.sandbox:
+            sand_box = self.sandbox
+            mcp_tools = await sand_box.mcpservers.list_tools()
+            self.tools.extend(mcp_tools)
+        else:
+            self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
 
     def messages_transform(self,
                            content: str,
