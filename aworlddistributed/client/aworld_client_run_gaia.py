@@ -11,7 +11,7 @@ from aworld.utils.common import get_local_ip
 from client.aworld_client import AworldTask, AworldTaskClient
 
 AWORLD_TASK_CLIENT = AworldTaskClient(
-    know_hosts = ["loaclhost:9099"]
+    know_hosts = ["localhost:9999"]
 )
 
 
@@ -78,6 +78,7 @@ if __name__ == '__main__':
                 user_id=os.getenv("USER", "SYSTEM"),
                 client_id=get_local_ip(),
                 mcp_servers=custom_mcp_servers,
+                max_retries=5
                 # llm_model_name="gpt-4o",
                 # task_system_prompt=CUSTOM_SYSTEM_PROMPT
             )

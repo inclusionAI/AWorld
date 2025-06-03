@@ -1,20 +1,20 @@
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.config import ModelConfig
+from aworld.config.conf import AgentConfig, TaskConfig, ClientType
 from aworld.core.task import Task
 from aworld.output import Outputs, Output, StreamingOutputs
 from aworld.utils.common import get_local_ip
+from datasets import load_dataset
 from pydantic import BaseModel, Field
 
 from aworldspace.base_agent import AworldBaseAgent
-from datasets import load_dataset
-
 from aworldspace.utils.mcp_utils import load_all_mcp_config
 from aworldspace.utils.utils import question_scorer
-import re
 
 GAIA_SYSTEM_PROMPT = f"""You are an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.
 Please note that the task may be complex. Do not attempt to solve it all at once. You should break the task down and use different tools step by step to solve it. After using each tool, clearly explain the execution results and suggest the next steps.
@@ -84,12 +84,18 @@ class Pipeline(AworldBaseAgent):
         task = await self.get_task_from_body(body)
         logging.info(f"task llm config is: {task.llm_provider}, {task.llm_model_name}, {task.llm_api_key}, {task.llm_base_url}")
 
-        return AgentConfig(
-            name=self.agent_name(),
+        llm_config = ModelConfig(
+            llm_client_type=ClientType.HTTP,
             llm_provider=task.llm_provider if task and task.llm_provider else default_llm_provider,
             llm_model_name=task.llm_model_name if task and task.llm_model_name else llm_model_name,
             llm_api_key=task.llm_api_key if task and task.llm_api_key else llm_api_key,
             llm_base_url=task.llm_base_url if task and task.llm_base_url else llm_base_url,
+            max_retries=task.max_retries if task and task.max_retries else 3
+        )
+
+        return AgentConfig(
+            name=self.agent_name(),
+            llm_config=llm_config,
             system_prompt=task.task_system_prompt if task and task.task_system_prompt else system_prompt
         )
 

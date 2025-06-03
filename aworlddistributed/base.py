@@ -19,6 +19,7 @@ class AworldTask(BaseModel):
     client_id: Optional[str] = Field(default=None, description="submit client ip")
     history_messages: Optional[int] = Field(default=100, description="history_message")
     max_steps: Optional[int] = Field(default=100, description="max_steps")
+    max_retries: Optional[int] = Field(default=5, description="max_retries use Exponential backoff with jitter")
 
 class AworldTaskResult(BaseModel):
     task: AworldTask = Field(default=None, description="task")
