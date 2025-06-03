@@ -66,7 +66,7 @@ class Factory(Generic[T]):
             asyn = kwargs.pop("asyn", False)
             prefix = "async_" if asyn else ""
             if len(prefix) > 0:
-                logger.info(f"{name} has an async type, will add `async_` prefix.")
+                logger.debug(f"{name} has an async type, will add `async_` prefix.")
 
             if prefix + name in self._cls:
                 equal = True
