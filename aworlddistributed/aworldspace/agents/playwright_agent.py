@@ -668,7 +668,8 @@ class Pipeline(AworldBaseAgent):
                         "@playwright/mcp@0.0.27",
                         "--vision",
                         "--no-sandbox",
-                        "--headless"
+                        "--headless",
+                        "--isolated"
                     ],
                     "env": {
                         "PLAYWRIGHT_TIMEOUT": "120000",
