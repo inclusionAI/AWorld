@@ -74,8 +74,7 @@ def tool_action_desc():
                 action_dict = process(info.value)
                 actions.append(action_dict)
         else:
-            if tool != 'mcp':
-                logger.warning(f"{tool} no action!")
+            logger.debug(f"{tool} no action!")
         tool_val_dict["actions"] = actions
     return descs
 

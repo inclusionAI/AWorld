@@ -181,7 +181,7 @@ class AgentManager(Factory):
 
         conf = self._agent_conf.get(name)
         if not conf:
-            logger.warning(f"{name} not find conf in tool factory")
+            logger.warning(f"{name} not find conf in agent factory")
             conf = dict()
         elif isinstance(conf, BaseModel):
             conf = conf.model_dump()

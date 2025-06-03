@@ -4,7 +4,7 @@ import os
 import re
 import traceback
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.runner import Runners
 from aworld.output.ui.base import AworldUI
