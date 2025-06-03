@@ -54,7 +54,7 @@ class AWorldAgent:
             ],
         )
 
-        task = Task(input=prompt, agent=super_agent, event_driven=False, conf=TaskConfig(max_steps=1))
+        task = Task(input=prompt, agent=super_agent, event_driven=False, conf=TaskConfig(max_steps=20))
 
         rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():

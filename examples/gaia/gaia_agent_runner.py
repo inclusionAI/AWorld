@@ -107,7 +107,7 @@ class GaiaAgentRunner:
                 input=question,
                 agent=self.super_agent,
                 event_driven=False,
-                conf=TaskConfig(max_steps=1),
+                conf=TaskConfig(max_steps=20),
             )
 
             last_output: Output = None
