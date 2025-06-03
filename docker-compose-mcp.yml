@@ -1,0 +1,15 @@
+services:
+  mcp_openapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    ports:
+      - 9090:9090
+    env_file:
+      - ./.env
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 4G

@@ -1,0 +1,4 @@
+include LICENSE
+include README.md
+include mcp_openapi/config.json
+recursive-include mcp_openapi/examples *.json *.py 

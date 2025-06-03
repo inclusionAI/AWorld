@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "demo-server": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["path/to/your/mcp_server.py"],
+      "env": {
+        "MODEL_PATH": "/path/to/model"
+      }
+    },
+    "external-server": {
+      "type": "sse",
+      "url": "https://example.com/mcp/sse",
+      "timeout": 5.0,
+      "sse_read_timeout": 300.0
+    }
+  }
+} 
