@@ -29,7 +29,7 @@ async def _run_gaia_task(gaia_task: AworldTask, delay: int) -> None:
 
     # Get and print task result
     task_result = await AWORLD_TASK_CLIENT.get_task_state(task_id=gaia_task.task_id)
-    logging.info(f"execute task_result#{gaia_task.task_id} is {task_result.data}")
+    logging.info(f"execute task_result#{gaia_task.task_id} is {task_result.data if task_result else None}")
 
 
 async def _batch_run_gaia_task(gaia_tasks: list[AworldTask]) -> None:
