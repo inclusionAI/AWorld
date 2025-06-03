@@ -218,6 +218,16 @@ class ToolsManager(Factory):
         self._tool_conf = {}
         self._tool_instance = {}
 
+    def __iter__(self):
+        for name in self._cls:
+            name = "async_" + name if self._asyn.get(name, False) else name
+            yield name
+
+    def __contains__(self, name: str) -> bool:
+        """Whether the name in the factory."""
+        name = "async_" + name if self._asyn.get(name, False) else name
+        return name in self._cls
+
     def __call__(self, name: str = None, *args, **kwargs):
         if name is None:
             return self

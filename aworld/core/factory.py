@@ -47,7 +47,6 @@ class Factory(Generic[T]):
 
     def get_class(self, name: str, asyn: bool = False) -> T | None:
         """Get the object instance by name."""
-        name = "async_" + name if asyn else name
         return self._cls.get(name, None)
 
     def count(self) -> int:
