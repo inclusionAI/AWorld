@@ -29,7 +29,6 @@ class Pipeline(AworldBaseAgent):
         logging.info(f"task llm config is: {task.llm_provider}, {task.llm_model_name},{task.llm_base_url}")
 
         llm_config = ModelConfig(
-            llm_client_type=ClientType.HTTP,
             llm_provider=task.llm_provider if task and task.llm_provider else default_llm_provider,
             llm_model_name=task.llm_model_name if task and task.llm_model_name else llm_model_name,
             llm_api_key=task.llm_api_key if task and task.llm_api_key else llm_api_key,
