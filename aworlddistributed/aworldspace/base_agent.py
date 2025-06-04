@@ -37,8 +37,8 @@ class AworldBaseAgent:
     ):
 
         try:
-            print(f"body is {body}")
-            print(f"user_message is {user_message}")
+            logging.info(f"body is {body}")
+            logging.info(f"user_message is {user_message}")
 
             task = await self.get_task_from_body(body)
             if task:
