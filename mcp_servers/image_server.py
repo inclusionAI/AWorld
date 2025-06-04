@@ -109,7 +109,7 @@ def encode_images(image_sources: List[str], with_header: bool = True) -> List[st
                 image_source,
                 allowed_mime_prefixes=["image/"],
                 max_size_mb=10.0,  # 10MB limit for images
-                type="image",
+                file_type="image",
             )
 
             # Optimize image

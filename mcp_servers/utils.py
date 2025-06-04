@@ -6,7 +6,6 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
-from mcp.server import FastMCP
 
 from aworld.logs.util import logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform
@@ -77,7 +76,7 @@ def get_file_from_source(
     allowed_mime_prefixes: List[str] = None,
     max_size_mb: float = 100.0,
     timeout: int = 60,
-    type: str = "image",
+    file_type: str = "image",
 ) -> Tuple[str, str, bytes]:
     """
     Unified function to get file content from a URL or local path with validation.
@@ -130,14 +129,7 @@ def get_file_from_source(
             temp_file.close()
 
             # Get MIME type
-            if type == "audio":
-                mime_type = "audio/mpeg"
-            elif type == "image":
-                mime_type = "image/jpeg"
-            elif type == "video":
-                mime_type = "video/mp4"
-
-            # mime_type = get_mime_type(file_path)
+            mime_type = get_mime_type(file_path)
 
             # For URLs where magic fails, try to use Content-Type header
             if mime_type == "application/octet-stream":
@@ -158,11 +150,11 @@ def get_file_from_source(
                 raise ValueError(f"File size exceeds limit of {max_size_mb}MB")
 
             # Get MIME type
-            if type == "audio":
+            if file_type == "audio":
                 mime_type = "audio/mpeg"
-            elif type == "image":
+            elif file_type == "image":
                 mime_type = "image/jpeg"
-            elif type == "video":
+            elif file_type == "video":
                 mime_type = "video/mp4"
             # mime_type = get_mime_type(file_path)
 
@@ -172,13 +164,9 @@ def get_file_from_source(
 
         # Validate MIME type if allowed_mime_prefixes is provided
         if allowed_mime_prefixes:
-            if not any(
-                mime_type.startswith(prefix) for prefix in allowed_mime_prefixes
-            ):
+            if not any(mime_type.startswith(prefix) for prefix in allowed_mime_prefixes):
                 allowed_types = ", ".join(allowed_mime_prefixes)
-                raise ValueError(
-                    f"Invalid file type: {mime_type}. Allowed types: {allowed_types}"
-                )
+                raise ValueError(f"Invalid file type: {mime_type}. Allowed types: {allowed_types}")
 
         return file_path, mime_type, content
 

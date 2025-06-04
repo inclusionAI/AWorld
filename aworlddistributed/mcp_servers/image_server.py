@@ -20,12 +20,13 @@ import os
 from io import BytesIO
 from typing import Any, Dict, List
 
-from PIL import Image
-from pydantic import Field
-from aworld.logs.util import logger
-from mcp_servers.utils import get_file_from_source
 from mcp.server.fastmcp import FastMCP
 from openai import OpenAI
+from PIL import Image
+from pydantic import Field
+
+from aworld.logs.util import logger
+from mcp_servers.utils import get_file_from_source
 
 # Initialize MCP server
 mcp = FastMCP("image-server")
@@ -108,7 +109,7 @@ def encode_images(image_sources: List[str], with_header: bool = True) -> List[st
                 image_source,
                 allowed_mime_prefixes=["image/"],
                 max_size_mb=10.0,  # 10MB limit for images
-                type="image",
+                file_type="image",
             )
 
             # Optimize image
@@ -118,11 +119,7 @@ def encode_images(image_sources: List[str], with_header: bool = True) -> List[st
             image_base64 = base64.b64encode(optimized_content).decode()
 
             # Format with header if requested
-            final_image = (
-                f"data:{mime_type};base64,{image_base64}"
-                if with_header
-                else image_base64
-            )
+            final_image = f"data:{mime_type};base64,{image_base64}" if with_header else image_base64
 
             images.append(final_image)
 
@@ -136,6 +133,7 @@ def encode_images(image_sources: List[str], with_header: bool = True) -> List[st
 
     return images
 
+
 def image_to_base64(image_path):
     try:
         # todo 解析pdf或其他文件的图片
@@ -144,7 +142,7 @@ def image_to_base64(image_path):
             image_format = image.format if image.format else "JPEG"
             image.save(buffered, format=image_format)
             image_bytes = buffered.getvalue()
-            base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
+            base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
             return base64_encoded
     except Exception as e:
         print(f"Base64 error: {e}")
@@ -156,17 +154,15 @@ def create_image_contents(prompt: str, image_base64: List[str]) -> List[Dict[str
     content = [
         {"type": "text", "text": prompt},
     ]
-    content.extend(
-        [{"type": "image_url", "image_url": {"url": url}} for url in image_base64]
-    )
+    content.extend([{"type": "image_url", "image_url": {"url": url}} for url in image_base64])
     return content
 
 
-@mcp.tool(description="solve the question by careful reasoning given the image(s) in given local filepath or url, including reasoning, ocr, etc.")
+@mcp.tool(
+    description="solve the question by careful reasoning given the image(s) in given local filepath or url, including reasoning, ocr, etc."
+)
 def mcp_image_recognition(
-    image_urls: List[str] = Field(
-        description="The input image(s) in given a list of local filepaths or urls."
-    ),
+    image_urls: List[str] = Field(description="The input image(s) in given a list of local filepaths or urls."),
     question: str = Field(description="The question to ask."),
 ) -> str:
     """solve the question by careful reasoning given the image(s) in given filepath or url."""
@@ -175,27 +171,20 @@ def mcp_image_recognition(
         image_base64 = image_to_base64(image_urls[0])
         logger.info(f"image_url: {image_urls[0]}")
         reasoning_prompt = question
-        messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": 
-                [
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {
+                "role": "user",
+                "content": [
                     {"type": "text", "text": reasoning_prompt},
-                    {
-                        "type": "image_url", 
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}"
-                        }
-                    },
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
                 ],
-                },
-            ]
-        
-        client = OpenAI(
-            api_key=os.getenv("LLM_API_KEY"), 
-            base_url=os.getenv("LLM_BASE_URL")
-        )
+            },
+        ]
+
+        client = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_BASE_URL"))
         response = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL_NAME"),  
+            model=os.getenv("LLM_MODEL_NAME"),
             messages=messages,
         )
 
@@ -205,22 +194,23 @@ def mcp_image_recognition(
     except Exception as e:
         image_reasoning_result = ""
         import traceback
+
         traceback.print_exc()
         logger.error(f"image_reasoning_result-Execute error: {e}")
 
-    logger.info(
-        f"---get_reasoning_by_image-image_reasoning_result:{image_reasoning_result}"
-    )
+    logger.info(f"---get_reasoning_by_image-image_reasoning_result:{image_reasoning_result}")
 
     return image_reasoning_result
 
 
 def main():
     from dotenv import load_dotenv
+
     load_dotenv()
 
     print("Starting Image MCP Server...", file=sys.stderr)
-    mcp.run(transport='stdio')
+    mcp.run(transport="stdio")
+
 
 # Make the module callable
 def __call__():
@@ -233,6 +223,7 @@ def __call__():
 
 # Add this for compatibility with uvx
 import sys
+
 sys.modules[__name__].__call__ = __call__
 
 # Run the server when the script is executed directly

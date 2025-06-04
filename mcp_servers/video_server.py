@@ -99,7 +99,7 @@ def get_video_frames(
             video_source,
             allowed_mime_prefixes=["video/"],
             max_size_mb=2500.0,  # 2500MB limit for videos
-            type="video",  # Specify type as video to handle video files
+            file_type="video",  # Specify type as video to handle video files
         )
 
         # Open video file

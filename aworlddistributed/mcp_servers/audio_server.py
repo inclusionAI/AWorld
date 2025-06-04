@@ -15,9 +15,7 @@ from mcp_servers.utils import get_file_from_source
 mcp = FastMCP("audio-server")
 
 
-client = OpenAI(
-    api_key=os.getenv("AUDIO_LLM_API_KEY"), base_url=os.getenv("AUDIO_LLM_BASE_URL")
-)
+client = OpenAI(api_key=os.getenv("AUDIO_LLM_API_KEY"), base_url=os.getenv("AUDIO_LLM_BASE_URL"))
 
 AUDIO_TRANSCRIBE = (
     "Input is a base64 encoded audio. Transcribe the audio content. "
@@ -50,16 +48,14 @@ def encode_audio(audio_source: str, with_header: bool = True) -> str:
             audio_source,
             allowed_mime_prefixes=["audio/"],
             max_size_mb=200.0,  # 200MB limit for audio files
-            type="audio",  # Specify type as audio to handle audio files
+            file_type="audio",  # Specify type as audio to handle audio files
         )
 
         # Encode to base64
         audio_base64 = base64.b64encode(content).decode()
 
         # Format with header if requested
-        final_audio = (
-            f"data:{mime_type};base64,{audio_base64}" if with_header else audio_base64
-        )
+        final_audio = f"data:{mime_type};base64,{audio_base64}" if with_header else audio_base64
 
         # Clean up temporary file if it was created for a URL
         if file_path != os.path.abspath(audio_source) and os.path.exists(file_path):
@@ -68,17 +64,13 @@ def encode_audio(audio_source: str, with_header: bool = True) -> str:
         return final_audio
 
     except Exception:
-        logger.error(
-            f"Error encoding audio from {audio_source}: {traceback.format_exc()}"
-        )
+        logger.error(f"Error encoding audio from {audio_source}: {traceback.format_exc()}")
         raise
 
 
 @mcp.tool(description="Transcribe the given audio in a list of filepaths or urls.")
 async def mcp_transcribe_audio(
-    audio_urls: List[str] = Field(
-        description="The input audio in given a list of filepaths or urls."
-    ),
+    audio_urls: List[str] = Field(description="The input audio in given a list of filepaths or urls."),
 ) -> str:
     """
     Transcribe the given audio in a list of filepaths or urls.
@@ -97,7 +89,7 @@ async def mcp_transcribe_audio(
                 audio_url,
                 allowed_mime_prefixes=["audio/"],
                 max_size_mb=200.0,  # 200MB limit for audio files
-                type="audio",  # Specify type as audio to handle audio files
+                file_type="audio",  # Specify type as audio to handle audio files
             )
 
             # Use the file for transcription
