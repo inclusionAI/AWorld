@@ -121,7 +121,8 @@ async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Di
                     }
                 })
             # Handle stdio server
-            elif "stdio" == server_config.get("type", ""):
+            else:
+            #elif "stdio" == server_config.get("type", ""):
                 server_configs.append({
                     "name": "mcp__" + server_name,
                     "type": "stdio",
@@ -336,7 +337,8 @@ async def call_tool(
                     name=server_name,
                     params=params
                 )
-            elif "stdio" == server_config.get("type", ""):
+            #elif "stdio" == server_config.get("type", ""):
+            else:
                 params = {
                     "command": server_config["command"],
                     "args": server_config.get("args", []),
@@ -349,10 +351,6 @@ async def call_tool(
                     name=server_name,
                     params=params
                 )
-            elif "api" == server_config.get("type", ""):
-                pass
-            else:
-                return action_result
             server = await stack.enter_async_context(server)
 
             call_result = await run_to_call(server, tool_name, parameter)
