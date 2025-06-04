@@ -103,19 +103,14 @@ class AworldTaskClient(BaseModel):
         self.task_states[task.task_id] = result
 
         
-    async def _submit_task(self, aworld_server, task: AworldTask, retry_num: int = 0):
-        if retry_num > 3:
-            print(f"execute task#{task.task_id} to {aworld_server} retry = {retry_num}")
-            return
+    async def _submit_task(self, aworld_server, task: AworldTask):
         try:
-            await asyncio.sleep(3)
             logging.info(f"submit task#{task.task_id} to cluster#[{aworld_server}]")
             task_result = await self._submit_task_to_server(aworld_server, task)
             return task_result
         except Exception as e:
             print(f"execute task to {task.node_id} execute_failed: {e}, please see logs from server ")
             task_logger.log_task_submission(task, aworld_server, "execute_failed", str(e))
-            await self._submit_task(aworld_server, task, retry_num + 1)
 
     async def _submit_task_to_server(self, aworld_server, task: AworldTask):
         # build params
