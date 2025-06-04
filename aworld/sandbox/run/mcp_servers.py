@@ -3,7 +3,10 @@ import logging
 from typing_extensions import Optional,List,Dict,Any
 
 from aworld.sandbox.models import SandboxEnvType
-from aworld.sandbox.run.mcp.utils import sandbox_mcp_tool_desc_transform, call_tool
+from aworld.sandbox.run.mcp.utils import sandbox_mcp_tool_desc_transform, call_tool, call_api, get_server_instance, cleanup_server
+from mcp.types import TextContent, ImageContent
+
+from aworld.core.common import ActionResult
 
 
 class McpServers:
@@ -15,14 +18,20 @@ class McpServers:
     ) -> None:
         self.mcp_servers = mcp_servers
         self.mcp_config = mcp_config
+        # Dictionary to store server instances {server_name: server_instance}
+        self.server_instances = {}
+        self.tool_list = None
 
     async def list_tools(
             self,
     )->None:
+        if self.tool_list:
+            return self.tool_list
         if not self.mcp_servers or not self.mcp_config:
             return None
         try:
-            return await sandbox_mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
+            self.tool_list = await sandbox_mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
+            return self.tool_list
         except Exception as e:
             logging.warning(f"Failed to list tools: {e}")
             return None
@@ -50,15 +59,89 @@ class McpServers:
                 if not server_name or not tool_name:
                     continue
 
-                call_result = await call_tool(
-                    server_name, tool_name, parameter, self.mcp_config
-                )
-                results.append(call_result)
+                # Check server type
+                server_type = None
+                if self.mcp_config and self.mcp_config.get("mcpServers"):
+                    server_config = self.mcp_config.get("mcpServers").get(server_name, {})
+                    server_type = server_config.get("type", "")
+
+                # For API type servers, use call_api function directly
+                if server_type == "api":
+                    call_result = await call_api(
+                        server_name, tool_name, parameter, self.mcp_config
+                    )
+                    results.append(call_result)
+                    continue
+
+                # Prioritize using existing server instances
+                server = self.server_instances.get(server_name)
+                if server is None:
+                    # If it doesn't exist, create a new instance and save it
+                    server = await get_server_instance(server_name, self.mcp_config)
+                    if server:
+                        self.server_instances[server_name] = server
+                        logging.debug(f"Created and cached new server instance for {server_name}")
+                    else:
+                        # If unable to create server instance, fall back to the original method
+                        call_result = await call_tool(
+                            server_name, tool_name, parameter, self.mcp_config
+                        )
+                        results.append(call_result)
+                        continue
+
+                # Use server instance to call the tool
+                try:
+                    call_result_raw = await server.call_tool(tool_name, parameter)
+                    
+                    # Process the return result, consistent with the original logic
+                    action_result = ActionResult(
+                        content="",
+                        keep=True
+                    )
+                    
+                    if call_result_raw and call_result_raw.content:
+                        if isinstance(call_result_raw.content[0], TextContent):
+                            action_result = ActionResult(
+                                content=call_result_raw.content[0].text,
+                                keep=True
+                            )
+                        elif isinstance(call_result_raw.content[0], ImageContent):
+                            action_result = ActionResult(
+                                content=f"data:image/jpeg;base64,{call_result_raw.content[0].data}",
+                                keep=True
+                            )
+                    
+                    results.append(action_result)
+                except Exception as e:
+                    logging.warning(f"Error calling tool with cached server: {e}")
+                    # If using cached server instance fails, try to clean up and recreate
+                    if server_name in self.server_instances:
+                        try:
+                            await cleanup_server(self.server_instances[server_name])
+                            del self.server_instances[server_name]
+                        except:
+                            pass
+                    # Fall back to the original method
+                    call_result = await call_tool(
+                        server_name, tool_name, parameter, self.mcp_config
+                    )
+                    results.append(call_result)
         except Exception as e:
             logging.warning(f"Failed to call_tool: {e}")
             return None
 
         return results
+
+    # Add cleanup method, called when Sandbox is destroyed
+    async def cleanup(self):
+        """Clean up all server connections"""
+        for server_name, server in list(self.server_instances.items()):
+            try:
+                await cleanup_server(server)
+                del self.server_instances[server_name]
+                logging.debug(f"Cleaned up server instance for {server_name}")
+            except Exception as e:
+                logging.warning(f"Failed to cleanup server {server_name}: {e}")
 
     def get_mcp_configs(
             self,
