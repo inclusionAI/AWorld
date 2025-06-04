@@ -56,7 +56,13 @@ def setup_logging():
     )
     file_handler.setFormatter(formatter)
 
+    error_log_path = os.path.join(log_dir, "aworldserver_error.log")
+    error_file_handler = TimedRotatingFileHandler(error_log_path, when='D', interval=1, backupCount=24)
+    error_file_handler.setLevel(logging.WARNING)
+    error_file_handler.setFormatter(formatter)
+
     logger.addHandler(file_handler)
+    logger.addHandler(error_file_handler)
 setup_logging()
 
 def get_all_pipelines():

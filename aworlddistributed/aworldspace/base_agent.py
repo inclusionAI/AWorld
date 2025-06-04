@@ -37,22 +37,27 @@ class AworldBaseAgent:
     ):
 
         try:
-            print(f"body is {body}")
-            print(f"user_message is {user_message}")
+            logging.info(f"🤖{self.agent_name()} received user_message is {user_message}")
 
             task = await self.get_task_from_body(body)
+
             if task:
+                logging.info(f"🤖{self.agent_name()} received task is {task.task_id}_{task.client_id}_{task.user_id}")
                 task_id = task.task_id
             else:
                 task_id = str(uuid.uuid4())
 
             user_input = await self.get_custom_input(user_message, model_id, messages, body)
+            logging.info(f"🤖{self.agent_name()} call llm input is [{user_input}]")
 
             # build agent task read from config
             agent = await self.build_agent(body = body)
+            logging.info(f"🤖{self.agent_name()} build agent finished")
+
 
             # return task
             task = await self.build_task(agent=agent, task_id=task_id, user_input=user_input, user_message=user_message, body=body)
+            logging.info(f"🤖{self.agent_name()} build task finished, task_id is {task_id}")
 
             # render output
             async_generator = await self.parse_task_output(task_id, task)
@@ -191,6 +196,7 @@ class AworldBaseAgent:
                     break
                 yield item
             await consumer_task
+            logging.info(f"🤖{self.agent_name()} task#{task.task_id} output finished🔚🔚🔚")
 
         return async_generator
 
