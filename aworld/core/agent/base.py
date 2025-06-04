@@ -16,6 +16,7 @@ from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
+from aworld.sandbox.main import Sandbox
 from aworld.utils.common import convert_to_snake
 
 INPUT = TypeVar('INPUT')
@@ -93,6 +94,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.context = Context.instance()
         self.state = AgentStatus.START
         self._finished = True
+        # todo sandbox
+        self.sandbox = kwargs.pop("sandbox", Sandbox(mcp_servers=self.mcp_servers, mcp_config=self.mcp_config))
 
         for k, v in kwargs.items():
             setattr(self, k, v)

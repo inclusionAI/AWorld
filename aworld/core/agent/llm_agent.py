@@ -63,8 +63,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
         self.history_messages = kwargs.get("history_messages") if kwargs.get("history_messages") else 100
         self.use_tools_in_prompt = kwargs.get('use_tools_in_prompt', conf.use_tools_in_prompt)
-        # todo sandbox
-        self.sandbox = sandbox
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
