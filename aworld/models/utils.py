@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import copy
 import inspect
+import json
 import os.path
 from typing import Dict, Any, List, Union
 
@@ -51,9 +52,12 @@ def num_tokens_from_messages(messages, model="gpt-4o"):
     for message in messages:
         num_tokens += tokens_per_message
         for key, value in message.items():
-            num_tokens += len(encoding.encode(value))
-            if key == "name":
-                num_tokens += tokens_per_name
+            try:
+                num_tokens += len(encoding.encode(str(value)))
+                if key == "name":
+                    num_tokens += tokens_per_name
+            except Exception as e:
+                logger.warn(f"Error occurred when encode {value}: {str(e)}")
     num_tokens += 3
     return num_tokens
 

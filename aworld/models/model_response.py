@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 import json
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LLMResponseError(Exception):
@@ -24,7 +24,7 @@ class LLMResponseError(Exception):
         self.message = message
         self.model = model
         self.response = response
-        super().__init__(f"LLM Error ({model}): {message}")
+        super().__init__(f"LLM Error ({model}): {message}. response: {response}")
 
 
 class Function(BaseModel):
@@ -108,10 +108,22 @@ class ToolCall(BaseModel):
         yield from self.to_dict().items()
 
 
-class ModelResponse:
+class ModelResponse(BaseModel):
     """
     Unified model response class for encapsulating responses from different LLM providers
     """
+    id: str
+    model: str
+    content: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    usage: Dict[str, Any] = Field(default_factory=lambda: {
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "total_tokens": 0
+    })
+    error: Optional[str] = None
+    raw_response: Any = None
+    message: Dict[str, Any] = Field(default_factory=dict)
 
     def __init__(
             self,
@@ -119,7 +131,7 @@ class ModelResponse:
             model: str,
             content: str = None,
             tool_calls: List[ToolCall] = None,
-            usage: Dict[str, int] = None,
+            usage: Dict[str, Any] = None,
             error: str = None,
             raw_response: Any = None,
             message: Dict[str, Any] = None
@@ -137,29 +149,30 @@ class ModelResponse:
             raw_response: Original response object
             message: Complete message object, can be used for subsequent API calls
         """
-        self.id = id
-        self.model = model
-        self.content = content
-        self.tool_calls = tool_calls
-        self.usage = usage or {
-            "completion_tokens": 0,
-            "prompt_tokens": 0,
-            "total_tokens": 0
-        }
-        self.error = error
-        self.raw_response = raw_response
-
         # If message is not provided, construct one from other fields
         if message is None:
-            self.message = {
+            message = {
                 "role": "assistant",
                 "content": content
             }
 
             if tool_calls:
-                self.message["tool_calls"] = [tool_call.to_dict() for tool_call in tool_calls]
-        else:
-            self.message = message
+                message["tool_calls"] = [tool_call.to_dict() for tool_call in tool_calls]
+
+        super().__init__(
+            id=id,
+            model=model,
+            content=content,
+            tool_calls=tool_calls,
+            usage=usage or {
+                "completion_tokens": 0,
+                "prompt_tokens": 0,
+                "total_tokens": 0
+            },
+            error=error,
+            raw_response=raw_response,
+            message=message
+        )
 
     @classmethod
     def from_openai_response(cls, response: Any) -> 'ModelResponse':
@@ -561,19 +574,7 @@ class ModelResponse:
         Returns:
             Dictionary representation
         """
-        tool_calls_dict = None
-        if self.tool_calls:
-            tool_calls_dict = [tool_call.to_dict() for tool_call in self.tool_calls]
-
-        return {
-            "id": self.id,
-            "model": self.model,
-            "content": self.content,
-            "tool_calls": tool_calls_dict,
-            "usage": self.usage,
-            "error": self.error,
-            "message": self.message
-        }
+        return self.model_dump(exclude={'raw_response'})
 
     def get_message(self) -> Dict[str, Any]:
         """
@@ -605,8 +606,13 @@ class ModelResponse:
         return result
 
     def __repr__(self):
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=None,
-                          default=lambda obj: obj.to_dict() if hasattr(obj, 'to_dict') else str(obj))
+        return self.model_dump_json(indent=None)
+
+    def __json__(self):
+        """
+        Support JSON serialization
+        """
+        return self.to_dict()
 
     def _serialize_message(self) -> Dict[str, Any]:
         """

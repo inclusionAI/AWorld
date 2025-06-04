@@ -558,6 +558,12 @@ class AntProvider(LLMProviderBase):
             error_msg = ""
             if hasattr(response, 'error') and response.error and isinstance(response.error, dict):
                 error_msg = response.error.get('message', '')
+            elif hasattr(response, 'errorCode') and response.errorCode:
+                msg = response.errorMsg if hasattr(response, 'errorMsg') else ''
+                error_msg = f"API Error: [{response.errorCode}]{msg}"
+            elif isinstance(response, dict):
+                msg = response.get('error') or response.get('errorMsg', '')
+                error_msg = f"API Error: [{response.get('errorCode', '')}]{msg}"
             elif hasattr(response, 'msg'):
                 error_msg = response.msg
 
@@ -754,11 +760,11 @@ class AntProvider(LLMProviderBase):
                         elif chunk["status"] == "fail":
                             # Fail marker
                             logger.error("Received [FAIL] marker, request failed")
-                            raise LLMResponseError("Request failed", self.model_name or "unknown")
+                            raise LLMResponseError("Request failed", self.model_name or "unknown", chunk)
                         elif chunk["status"] == "cancel":
                             # Request was cancelled
                             logger.warning("Received [CANCEL] marker, stream was cancelled")
-                            raise LLMResponseError("Stream was cancelled", self.model_name or "unknown")
+                            raise LLMResponseError("Stream was cancelled", self.model_name or "unknown", chunk)
                         continue
 
                     # Process normal response chunks

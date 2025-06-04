@@ -188,7 +188,7 @@ class SequenceRunner(TaskRunner):
                 task_span.set_attributes({
                     "end_time": time.time(),
                     "duration": time.time() - start,
-                    "error": msg
+                    "error": msg or ''
                 })
             return TaskResponse(msg=msg,
                                 answer=observation.content,

@@ -118,6 +118,12 @@ class OpenAIProvider(LLMProviderBase):
             error_msg = ""
             if hasattr(response, 'error') and response.error and isinstance(response.error, dict):
                 error_msg = response.error.get('message', '')
+            elif hasattr(response, 'errorCode') and response.errorCode:
+                msg = response.errorMsg if hasattr(response, 'errorMsg') else ''
+                error_msg = f"API Error: [{response.errorCode}]{msg}"
+            elif isinstance(response, dict):
+                msg = response.get('error') or response.get('errorMsg', '')
+                error_msg = f"API Error: [{response.get('errorCode', '')}]{msg}"
             elif hasattr(response, 'msg'):
                 error_msg = response.msg
 
