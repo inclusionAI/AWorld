@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
@@ -16,22 +17,32 @@ class SandboxStatus(StrEnum):
 
 class SandboxEnvType(IntEnum):
     """Sandbox env type enumeration."""
-    K8S = 1
-    SUPERCOMPUTER = 2
+    LOCAL = 1
+    K8S = 2
+    SUPERCOMPUTER = 3
+
 
 
 @dataclass
 class SandboxCreateResponse:
-    sandbox_id: str
+    sandbox_id: str = str(uuid.uuid4())
+    env_type: int = SandboxEnvType.LOCAL
+    status: Optional[str] = None
+    mcp_config: Optional[Any] = None
 
 @dataclass
 class SandboxK8sResponse(SandboxCreateResponse):
     pod_name: Optional[str] = None
     service_name: Optional[str] = None
-    status: Optional[str] = None
     cluster_ip: Optional[str] = None
     host: Optional[str] = None
-    mcp_config: Optional[Any] = None,
+
+
+class SandboxLocalResponse(SandboxCreateResponse):
+    host: Optional[str] = None
+
+class SandboxSuperResponse(SandboxCreateResponse):
+    host: Optional[str] = None
 
 @dataclass
 class SandboxInfo:

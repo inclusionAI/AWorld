@@ -222,10 +222,29 @@ class GaiaAgentRunner:
 
     def __init__(
         self,
-        agent: GaiaAgent,
+        llm_provider: str,
+        llm_model_name: str,
+        llm_base_url: str,
+        llm_api_key: str,
+        llm_temperature: float = 0.0,
+        mcp_config: dict = {},
     ):
-        self.super_agent = agent
-        print(f"Agent: {self.super_agent}")
+        self.agent_config = AgentConfig(
+            llm_provider=llm_provider,
+            llm_model_name=llm_model_name,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_temperature=llm_temperature,
+        )
+
+        self.super_agent = Agent(
+            conf=self.agent_config,
+            name="gaia_super_agent",
+            system_prompt=system_prompt,
+            mcp_config=mcp_config,
+            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
+        )
+
         self.gaia_dataset_path = os.path.abspath(
             os.getenv(
                 "GAIA_DATASET_PATH",
