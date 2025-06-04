@@ -68,7 +68,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                  conf: Union[Dict[str, Any],
                  ConfigDict, AgentConfig],
                  sandbox: Sandbox = None,
-                 mcp_servers:List[str] = [],
+                 mcp_servers: List[str] = [],
                  mcp_config: Dict[str, Any] = {},
                  **kwargs
                  ):
@@ -218,6 +218,11 @@ class AgentManager(Factory):
         if self._agent_instance.get(name, None) and self._agent_instance[name].desc:
             return self._agent_instance[name].desc
         return self._desc.get(name, "")
+
+    def agent_instance(self, name: str) -> BaseAgent | None:
+        if self._agent_instance.get(name, None) and self._agent_instance[name].desc:
+            return self._agent_instance[name]
+        return None
 
     def register(self, name: str, desc: str, conf_file_name: str = None, **kwargs):
         """Register a tool to tool factory.
