@@ -110,7 +110,7 @@ class Sandbox(SandboxSetup,SandboxApi):
         """
             Initialize sandbox env type.
         """
-        self._env_type = env_type or SandboxEnvType.K8S
+        self._env_type = env_type or SandboxEnvType.LOCAL
         """
             Initialize sandbox_id with a default value
         """
@@ -148,6 +148,7 @@ class Sandbox(SandboxSetup,SandboxApi):
                     "cluster_ip": getattr(response, 'cluster_ip', None),
                     "host": getattr(response, 'host', None),
                     "mcp_config": getattr(response, 'mcp_config', None),
+                    "env_type": getattr(response, 'env_type', None),
                 }
                 self._mcp_config = getattr(response, 'mcp_config', None)
 

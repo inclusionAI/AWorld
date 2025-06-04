@@ -148,7 +148,6 @@ async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Di
                         params=server_config["params"]
                     )
                 elif server_config["type"] == "stdio":
-                    from aworld.mcp.server import MCPServerStdio
                     server = MCPServerStdio(
                         name=server_config["name"],
                         params=server_config["params"]
