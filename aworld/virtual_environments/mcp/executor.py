@@ -248,6 +248,9 @@ class MCPToolExecutor(ToolActionExecutor):
                     keep=True
                 )
                 results.append(action_result)
+            finally:
+                if server:
+                    await server.cleanup()
 
         return results, None
 
