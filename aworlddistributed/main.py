@@ -52,7 +52,7 @@ def setup_logging():
     file_handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        '%(asctime)s - [trace_%(trace_id)s] - [%(span_id)s] - %(name)s - %(levelname)s - %(message)s'
     )
     file_handler.setFormatter(formatter)
 
@@ -247,6 +247,7 @@ async def load_modules_from_directory(directory):
     PIPELINES = get_all_pipelines()
 
 async def on_startup():
+    logging.info("on_startup...")
     await load_modules_from_directory(PIPELINES_DIR)
     
 
@@ -256,12 +257,14 @@ async def on_startup():
 
 
 async def on_shutdown():
+    logging.info("on_shutdown...")
     for module in PIPELINE_MODULES.values():
         if hasattr(module, "on_shutdown"):
             await module.on_shutdown()
 
 
 async def reload():
+    logging.info("reload...")
     await on_shutdown()
     # Clear existing pipelines
     PIPELINES.clear()
@@ -695,14 +698,10 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
             detail=f"Pipeline {form_data.model} not found",
         )
 
-    def job():
-        print(form_data.model)
 
+    def job():
         pipeline = app.state.PIPELINES[form_data.model]
         pipeline_id = form_data.model
-
-        print(pipeline_id)
-
         if pipeline["type"] == "manifold":
             manifold_id, pipeline_id = pipeline_id.split(".", 1)
             pipe = PIPELINE_MODULES[manifold_id].pipe
@@ -829,7 +828,6 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
                         }
                     ],
                 }
-
 
     return await run_in_threadpool(job)
 
