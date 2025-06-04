@@ -47,21 +47,7 @@ class GaiaAgentRunner:
             name="gaia_super_agent",
             system_prompt=system_prompt,
             mcp_config=mcp_config,
-            mcp_servers=[
-                "e2b-server",
-                "terminal-controller",
-                "excel",
-                "calculator",
-                "ms-playwright",
-                "audio_server",
-                "image_server",
-                "video_server",
-                "search_server",
-                "download_server",
-                "document_server",
-                "youtube_server",
-                "reasoning_server",
-            ],
+            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
         )
 
         self.gaia_dataset_path = os.path.abspath(
