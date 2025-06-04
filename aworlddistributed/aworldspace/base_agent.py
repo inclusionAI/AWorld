@@ -146,7 +146,7 @@ class AworldBaseAgent:
 
 
 
-    async def parse_task_output(self, chat_id, task):
+    async def parse_task_output(self, chat_id, task: Task):
         _SENTINEL = object()
 
         async def async_generator():
@@ -196,7 +196,7 @@ class AworldBaseAgent:
                     break
                 yield item
             await consumer_task
-            logging.info(f"🤖{self.agent_name()} task#{task.task_id} output finished🔚🔚🔚")
+            logging.info(f"🤖{self.agent_name()} task#{task.id} output finished🔚🔚🔚")
 
         return async_generator
 
