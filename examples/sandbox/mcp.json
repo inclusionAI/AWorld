@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "amap-amap-sse": {
+      "type": "sse",
+      "url": "https://mcp.amap.com/sse?key=",
+      "timeout": 5.0,
+      "sse_read_timeout": 300.0
+    },
+    "tavily-mcp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "tavily-mcp@0.1.2"],
+      "env": {
+        "TAVILY_API_KEY": "tvly-dev-"
+      }
+    }
+  }
+}

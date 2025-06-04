@@ -1,31 +1,72 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import asyncio
+import json
+import os
 
-from aworld.config.conf import AgentConfig
-from aworld.core.agent.base import Agent
+from dotenv import load_dotenv
+
+from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.core.agent.llm_agent import Agent
+from aworld.core.agent.swarm import Swarm
+from aworld.core.task import Task
+
 from aworld.runner import Runners
 from aworld.sandbox.main import Sandbox
+from aworld.sandbox.models import SandboxEnvType
 
-if __name__ == '__main__':
+
+async def run():
+    load_dotenv()
+    llm_provider = os.getenv("LLM_PROVIDER_WEATHER", "openai")
+    llm_model_name = os.getenv("LLM_MODEL_NAME_WEATHER")
+    llm_api_key = os.getenv("LLM_API_KEY_WEATHER")
+    llm_base_url = os.getenv("LLM_BASE_URL_WEATHER")
+    llm_temperature = os.getenv("LLM_TEMPERATURE_WEATHER", 0.0)
+
     agent_config = AgentConfig(
-        llm_provider="openai",
-        llm_model_name="gpt-4o",
-        llm_api_key="sk-",
-        llm_base_url="https:"
+        llm_provider=llm_provider,
+        llm_model_name=llm_model_name,
+        llm_api_key=llm_api_key,
+        llm_base_url=llm_base_url,
+        llm_temperature=llm_temperature,
     )
     mcp_servers = ["tavily-mcp"]
-    sand_box = Sandbox(mcp_servers=mcp_servers)
+
+    path_cwd = os.path.dirname(os.path.abspath(__file__))
+    mcp_path = os.path.join(path_cwd, "mcp.json")
+    with open(mcp_path, "r") as f:
+        mcp_config = json.load(f)
+
+    #sand_box = Sandbox(mcp_servers=mcp_servers,mcp_config=mcp_config)
+    # You can specify sandbox
+    #sand_box = Sandbox(mcp_servers=mcp_servers, mcp_config=mcp_config,env_type=SandboxEnvType.K8S)
+    #sand_box = Sandbox(mcp_servers=mcp_servers, mcp_config=mcp_config,env_type=SandboxEnvType.SUPERCOMPUTER)
 
     search_sys_prompt = "You are a versatile assistant"
     search = Agent(
         conf=agent_config,
         name="search_agent",
         system_prompt=search_sys_prompt,
+        mcp_config=mcp_config,
         mcp_servers=mcp_servers,
-        sandbox=sand_box,
-        #mcp_servers=["amap-amap-sse"],  # MCP server name for agent to use
-        #mcp_servers = ["simple-calculator"]  # MCP server name for agent to use
+        #sandbox=sand_box,
     )
 
     # Run agent
-    Runners.sync_run(input="Use tavily-mcp to check what tourist attractions are in Hangzhou", agent=search)
+    # Runners.sync_run(input="Use tavily-mcp to check what tourist attractions are in Hangzhou", agent=search)
+    task = Task(
+        input="Use tavily-mcp to check what tourist attractions are in Hangzhou",
+        agent=search,
+        conf=TaskConfig(),
+    )
+
+    result = Runners.sync_run_task(task)
+    print(
+        "----------------------------------------------------------------------------------------------"
+    )
+    print(result)
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
