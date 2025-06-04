@@ -34,7 +34,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def __init__(self,
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
                  resp_parse_func: Callable[..., Any] = None,
-                 sandbox: Sandbox = None,
                  **kwargs):
         """A base class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 

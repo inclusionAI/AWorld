@@ -64,7 +64,14 @@ class MemoryModel(BaseModel):
 class BaseAgent(Generic[INPUT, OUTPUT]):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
+    def __init__(self,
+                 conf: Union[Dict[str, Any],
+                 ConfigDict, AgentConfig],
+                 sandbox: Sandbox = None,
+                 mcp_servers:List[str] = [],
+                 mcp_config: Dict[str, Any] = {},
+                 **kwargs
+                 ):
         self.conf = conf
         if isinstance(conf, ConfigDict):
             pass
@@ -86,8 +93,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = kwargs.pop("agent_names", [])
         # Supported MCP server
-        self.mcp_servers: List[str] = kwargs.pop("mcp_servers", [])
-        self.mcp_config: Dict[str, Any] = kwargs.pop("mcp_config", {})
+        self.mcp_servers: List[str] = mcp_servers
+        self.mcp_config: Dict[str, Any] = mcp_config
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
@@ -95,7 +102,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.state = AgentStatus.START
         self._finished = True
         # todo sandbox
-        self.sandbox = kwargs.pop("sandbox", Sandbox(mcp_servers=self.mcp_servers, mcp_config=self.mcp_config))
+        self.sandbox = sandbox or Sandbox(mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
 
         for k, v in kwargs.items():
             setattr(self, k, v)

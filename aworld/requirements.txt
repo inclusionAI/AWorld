@@ -6,3 +6,4 @@ openai~=1.66.3
 mcp[cli]~=1.6.0
 python-dotenv~=1.0.1
 executing~=2.2.0
+kubernetes~=32.0.1
