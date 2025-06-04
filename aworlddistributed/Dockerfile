@@ -3,7 +3,7 @@ FROM python:3.11-slim-bookworm AS base
 
 ## Basis ##
 ENV ENV=prod \
-    PORT=9099 \
+    PORT=9099
 
 # Install GCC and build tools. 
 # These are kept in the final image to enable installing packages on the fly.
