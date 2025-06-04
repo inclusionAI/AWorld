@@ -62,6 +62,15 @@ class DefaultTaskHandler(DefaultHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
             await self.runner.stop()
+
+            # clean sandbox
+            swarm = self.runner.task.swarm
+            for agent in swarm.agents.items():
+                try:
+                    await agent.sandbox.remove()
+                except:
+                    pass
+
             logger.info(f"{self.runner.task.id} finished.")
             return
         elif topic == TaskType.START:
