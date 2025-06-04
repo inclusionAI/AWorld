@@ -249,8 +249,9 @@ class MCPToolExecutor(ToolActionExecutor):
                 )
                 results.append(action_result)
             finally:
-                if server:
-                    await server.cleanup()
+                pass
+                # if server:
+                #     await server.cleanup()
 
         return results, None
 
