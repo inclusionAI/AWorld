@@ -223,6 +223,11 @@ class AgentManager(Factory):
             return self._agent_instance[name].desc
         return self._desc.get(name, "")
 
+    def agent_instance(self, name: str) -> BaseAgent | None:
+        if self._agent_instance.get(name, None):
+            return self._agent_instance[name]
+        return None
+
     def register(self, name: str, desc: str, conf_file_name: str = None, **kwargs):
         """Register a tool to tool factory.
 
