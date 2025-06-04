@@ -1,12 +1,17 @@
 import json
 import time
+import traceback
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Literal
 
 import markdown
-from marker import convert_single_file, convert_single_pdf
-from marker.models import load_all_models
+from marker.converters.pdf import PdfConverter
+from marker.models import create_model_dict
+from marker.output import text_from_rendered
+from marker.settings import settings
 from pydantic import BaseModel, Field
+from pydantic.fields import FieldInfo
 
 from aworld.logs.util import Color
 from examples.nanami.actions.base import ActionArguments, ActionCollection, ActionResponse
@@ -54,7 +59,7 @@ class DocumentExtractionCollection(ActionCollection):
         if not self._models_loaded:
             try:
                 self._color_log("Loading marker models...", Color.yellow)
-                self._marker_models = load_all_models()
+                self._marker_models = create_model_dict()
                 self._models_loaded = True
                 self._color_log("Marker models loaded successfully", Color.green)
             except Exception as e:
@@ -104,7 +109,9 @@ class DocumentExtractionCollection(ActionCollection):
 
         return path
 
-    def _extract_content_with_marker(self, file_path: Path, page_range: str, force_ocr: bool = False) -> dict[str, Any]:
+    def _extract_content_with_marker(
+        self, file_path: Path, page_range: str | None, force_ocr: bool = False
+    ) -> dict[str, Any]:
         """Extract content using marker package.
 
         Args:
@@ -124,6 +131,7 @@ class DocumentExtractionCollection(ActionCollection):
             "max_pages": None,
             "langs": None,
             "batch_multiplier": 1,
+            "force_ocr": force_ocr,
         }
 
         # Handle page range
@@ -137,25 +145,16 @@ class DocumentExtractionCollection(ActionCollection):
                 else:
                     pages.append(int(part))
             marker_args["page_range"] = pages
-
-        # Extract content based on file type
-        if file_path.suffix.lower() == ".pdf":
-            # Use marker's PDF conversion
-            full_text, images, metadata = convert_single_pdf(**marker_args, ocr_all_pages=force_ocr)
-        else:
-            # For non-PDF files, marker handles them through its unified interface
-            try:
-                full_text, images, metadata = convert_single_file(str(file_path), self._marker_models)
-            except ImportError:
-                # Fallback for older marker versions
-                full_text, images, metadata = convert_single_pdf(**marker_args)
+        converter: PdfConverter = PdfConverter(artifact_dict=self._marker_models)
+        rendered = converter(str(file_path))
+        text, _, images = text_from_rendered(rendered)
+        text = text.encode(settings.OUTPUT_ENCODING, errors="replace").decode(settings.OUTPUT_ENCODING)
 
         processing_time = time.time() - start_time
-
         return {
-            "content": full_text,
+            "content": text,
             "images": images or {},
-            "metadata": metadata or {},
+            "metadata": defaultdict(),
             "processing_time": processing_time,
         }
 
@@ -258,6 +257,21 @@ class DocumentExtractionCollection(ActionCollection):
             ActionResponse with extracted content, metadata, and media file paths
         """
         try:
+            if isinstance(file_path, FieldInfo):
+                file_path = file_path.default
+            if isinstance(output_format, FieldInfo):
+                output_format = output_format.default
+            if isinstance(extract_images, FieldInfo):
+                extract_images = extract_images.default
+            if isinstance(page_range, FieldInfo):
+                page_range = page_range.default
+            if isinstance(use_llm, FieldInfo):
+                use_llm = use_llm.default
+            if isinstance(force_ocr, FieldInfo):
+                force_ocr = force_ocr.default
+            if isinstance(format_lines, FieldInfo):
+                format_lines = format_lines.default
+
             # Validate input file
             file_path: Path = self._validate_file_path(file_path)
             self._color_log(f"Processing document: {file_path.name}", Color.cyan)
@@ -300,17 +314,19 @@ class DocumentExtractionCollection(ActionCollection):
             return ActionResponse(success=True, message=formatted_content, metadata=document_metadata.model_dump())
 
         except FileNotFoundError as e:
-            self.logger.error(f"File not found: {str(e)}")
+            self.logger.error(f"File not found: {str(e)}: {traceback.format_exc()}")
             return ActionResponse(
                 success=False, message=f"File not found: {str(e)}", metadata={"error_type": "file_not_found"}
             )
         except ValueError as e:
-            self.logger.error(f"Invalid input: {str(e)}")
+            self.logger.error(f"Invalid input: {str(e)}: {traceback.format_exc()}")
             return ActionResponse(
-                success=False, message=f"Invalid input: {str(e)}", metadata={"error_type": "invalid_input"}
+                success=False,
+                message=f"Invalid input: {str(e)}: {traceback.format_exc()}",
+                metadata={"error_type": "invalid_input"},
             )
         except Exception as e:
-            self.logger.error(f"Document extraction failed: {str(e)}")
+            self.logger.error(f"Document extraction failed: {str(e)}: {traceback.format_exc()}")
             return ActionResponse(
                 success=False,
                 message=f"Document extraction failed: {str(e)}",
@@ -346,21 +362,19 @@ class DocumentExtractionCollection(ActionCollection):
 
 # Example usage and entry point
 if __name__ == "__main__":
-    import sys
-
     # Default arguments for testing
     args = ActionArguments(
         name="document_extraction_service",
         transport="stdio",
         workspace=None,  # Will use environment variable or home directory
+        unittest=True,
     )
 
+    # Initialize and run the document extraction service
+    service = DocumentExtractionCollection(args)
     try:
-        # Initialize and run the document extraction service
-        service = DocumentExtractionCollection(args)
-    except KeyboardInterrupt:
-        print("\nService interrupted by user")
-        sys.exit(0)
+        # resp = service.mcp_extract_document_content(file_path="/Users/arac/Desktop/Qwen3_Technical_Report.pdf")
+        resp = service.mcp_extract_document_content(file_path="/Users/arac/Desktop/file-sample_100kB.doc")
+        print(resp)
     except Exception as e:
-        print(f"Failed to start service: {str(e)}")
-        sys.exit(1)
+        print(f"An error occurred: {e}: {traceback.format_exc()}")

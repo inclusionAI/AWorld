@@ -20,6 +20,7 @@ class ActionArguments(BaseModel):
         description="The workspace of the action."
         " If not specified or invalid, the workspace will be read from the environment variable AWORLD_WORKSPACE.",
     )
+    unittest: bool = Field(default=False, description="Whether to run in unittest mode")
 
 
 class ActionResponse(BaseModel):
@@ -46,7 +47,8 @@ class ActionCollection:
             if callable(getattr(self.__class__, tool_name)) and tool_name.startswith("mcp_"):
                 tool = getattr(self.__class__, tool_name)
                 self.server.add_tool(tool)
-        self.server.run(transport=arguments.transport)
+        if not arguments.unittest:
+            self.server.run(transport=arguments.transport)
 
     def _color_log(self, value: str, color: Color = None):
         return color_log(self.logger, value, color)
@@ -60,8 +62,8 @@ class ActionCollection:
           3. home directory
         """
         path = Path(workspace) if workspace else os.getenv("AWORLD_WORKSPACE")
-        if path.expanduser().is_dir():
+        if path and path.expanduser().is_dir():
             return path.expanduser().resolve()
 
-        self._color_log("Invalid workspace path, using home directory instead.", Color.yellow)
+        # self._color_log("Invalid workspace path, using home directory instead.", Color.yellow)
         return Path.home().expanduser().resolve()
