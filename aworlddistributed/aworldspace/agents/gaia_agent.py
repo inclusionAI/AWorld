@@ -143,7 +143,7 @@ class Pipeline(AworldBaseAgent):
         if task_id in self.task_id_to_index:
             index = self.task_id_to_index[task_id]
             gaia_task = self.full_dataset[index]
-            logging.info(f"Found task by task_id: {task_id} at index: {index}")
+            logging.info(f"🤖{self.agent_name()} Found GaiaTask by task_id: {task_id} at index: {index}")
         else:
             raise ValueError(f"Task with task_id '{task_id}' not found in dataset")
 
