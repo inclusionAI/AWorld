@@ -1,17 +1,16 @@
-from typing import AsyncGenerator
-import traceback
+import json
 import logging
 import os
-import json
 import sys
-import uuid
 import time
+import traceback
+import uuid
+from typing import AsyncGenerator
 
 logger = logging.getLogger(__name__)
 
 
 class GaiaAgentServer:
-
     def _get_model_config(self):
         try:
             llm_provider = os.getenv("LLM_PROVIDER_GAIA")
@@ -27,9 +26,7 @@ class GaiaAgentServer:
                 "temperature": llm_temperature,
             }
         except Exception as e:
-            logger.warning(
-                f">>> Gaia Agent: GAIA_MODEL_CONFIG is not configured, using LLM"
-            )
+            logger.warning(">>> Gaia Agent: GAIA_MODEL_CONFIG is not configured, using LLM")
             raise e
 
     def models(self):
@@ -47,9 +44,7 @@ class GaiaAgentServer:
             return {
                 "object": "chat.completion.chunk",
                 "id": str(uuid.uuid4()).replace("-", ""),
-                "choices": [
-                    {"index": 0, "delta": {"content": line, "role": "assistant"}}
-                ],
+                "choices": [{"index": 0, "delta": {"content": line, "role": "assistant"}}],
                 "created": int(time.time()),
                 "model": model,
             }
@@ -91,13 +86,13 @@ class GaiaAgentServer:
                 logger.info(f">>> Gaia Agent Line: {line}")
                 yield line
 
-        except Exception as e:
+        except Exception:
             emsg = traceback.format_exc()
             logger.error(f">>> Gaia Agent Error: exception {emsg}")
             yield response_line(f"Gaia Agent Error: {emsg}", model)
 
         finally:
-            logger.info(f">>> Gaia Agent Done")
+            logger.info(">>> Gaia Agent Done")
 
 
 import fastapi

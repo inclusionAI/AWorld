@@ -1,4 +1,7 @@
+import argparse
 import json
+import logging
+import os
 import re
 import string
 from pathlib import Path
@@ -6,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 from tabulate import tabulate
+
+from aworld.logs.util import Color
 
 
 def normalize_str(input_str, remove_punct=True) -> str:
@@ -109,9 +114,7 @@ def load_dataset_meta_dict(path: str, split: str = "validation"):
     return dataset
 
 
-def add_file_path(
-    task: Dict[str, Any], file_path: str = "./gaia_dataset", split: str = "validation"
-):
+def add_file_path(task: Dict[str, Any], file_path: str = "./gaia_dataset", split: str = "validation"):
     if task["file_name"]:
         file_path = Path(f"{file_path}/{split}") / task["file_name"]
         if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
@@ -183,8 +186,87 @@ def report_results(entries):
 
     for level in sorted(level_stats.keys()):
         stats = level_stats[level]
-        level_table.append(
-            [level, stats["total"], stats["correct"], f"{stats['accuracy']:.2f}%"]
-        )
+        level_table.append([level, stats["total"], stats["correct"], f"{stats['accuracy']:.2f}%"])
 
     logger.success(tabulate(level_table, headers=headers, tablefmt="grid"))
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="Start index of the dataset",
+    )
+    parser.add_argument(
+        "--end",
+        type=int,
+        default=165,
+        help="End index of the dataset",
+    )
+    parser.add_argument(
+        "--q",
+        type=str,
+        help=("Question Index, e.g., 0-0-0-0-0. Highest priority: override other arguments if provided."),
+    )
+    parser.add_argument(
+        "--skip",
+        action="store_true",
+        help="Skip the question if it has been processed before.",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="validation",
+        choices=["validation", "test"],
+        help="Split of the dataset, e.g., validation, test",
+    )
+    parser.add_argument(
+        "--blacklist_file_path",
+        type=str,
+        nargs="?",
+        help="Blacklist file path, e.g., blacklist.txt",
+    )
+    parser.add_argument(
+        "--is_sample",
+        action="store_true",
+        default=False,
+        help="Whether to use the sampled dataset",
+    )
+    return parser.parse_args()
+
+
+def setup_logger(logger_name, output_folder_path, file_name="main.log"):
+    """
+    Set up a logger with the given name that writes to the specified file.
+    Returns a configured logger instance.
+    """
+    if not os.path.exists(output_folder_path):
+        os.makedirs(output_folder_path)
+
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+    log_file = os.path.join(output_folder_path, file_name)
+
+    # Check if the logger already has handlers to avoid duplicates
+    logger = logging.getLogger(logger_name)
+
+    # Remove existing handlers if any
+    if logger.hasHandlers():
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+
+    # Add file handler
+    handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(formatter)
+
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+    return logger
+
+
+def color_log(logger: logging.Logger, value: str, color: Color):
+    logger.info(f"{color} {value} {Color.reset}")

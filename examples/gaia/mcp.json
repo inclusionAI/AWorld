@@ -7,133 +7,140 @@
                 "@e2b/mcp-server"
             ],
             "env": {
-                "E2B_API_KEY": "${E2B_API_KEY}",
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+                "E2B_API_KEY": "${E2B_API_KEY}"
             }
         },
-        "filesystem": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                "${FILESYSTEM_SERVER_WORKDIR}"
-            ]
-        },
-        "terminal-controller": {
+        "audio": {
             "command": "python",
             "args": [
                 "-m",
-                "terminal_controller"
+                "examples.gaia.mcp_servers.mcp_audio"
             ]
         },
-        "calculator": {
+        "browser": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_server_calculator"
+                "examples.gaia.mcp_servers.mcp_browser"
+            ]
+        },
+        "csv": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_csv"
+            ]
+        },
+        "docx": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_docx"
+            ]
+        },
+        "download": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_download"
             ]
         },
         "excel": {
-            "command": "npx",
-            "args": [
-                "--yes",
-                "@negokaz/excel-mcp-server"
-            ],
-            "env": {
-                "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
-            }
-        },
-        "playwright": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@executeautomation/playwright-mcp-server"
-            ]
-        },
-        "google-search": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@adenot/mcp-google-search"
-            ],
-            "env": {
-                "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
-                "GOOGLE_SEARCH_ENGINE_ID": "${GOOGLE_SEARCH_ENGINE_ID}"
-            }
-        },
-        "ms-playwright": {
-            "command": "npx",
-            "args": [
-                "@playwright/mcp@latest",
-                "--no-sandbox",
-                "--headless"
-            ],
-            "env": {
-                "PLAYWRIGHT_TIMEOUT": "120000",
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-            }
-        },
-        "audio_server": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.audio_server"
+                "examples.gaia.mcp_servers.mcp_excel"
             ]
         },
-        "image_server": {
+        "image": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.image_server"
+                "examples.gaia.mcp_servers.mcp_image"
             ]
         },
-        "youtube_server": {
+        "pdf": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.youtube_server"
+                "examples.gaia.mcp_servers.mcp_pdf"
             ]
         },
-        "video_server": {
+        "pptx": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.video_server"
+                "examples.gaia.mcp_servers.mcp_pptx"
             ]
         },
-        "search_server": {
+        "reasoning": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.search_server"
+                "examples.gaia.mcp_servers.mcp_reasoning"
             ]
         },
-        "download_server": {
+        "search": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.download_server"
+                "examples.gaia.mcp_servers.mcp_search"
             ]
         },
-        "document_server": {
+        "terminal": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.document_server"
+                "examples.gaia.mcp_servers.mcp_terminal"
             ]
         },
-        "browser_server": {
+        "video": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.browser_server"
+                "examples.gaia.mcp_servers.mcp_video"
             ]
         },
-        "reasoning_server": {
+        "wayback": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.reasoning_server"
+                "examples.gaia.mcp_servers.mcp_wayback"
+            ]
+        },
+        "wikipedia": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_wikipedia"
+            ]
+        },
+        "yahoo-finance": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_yahoo_finance"
+            ]
+        },
+        "youtube": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_youtube"
+            ]
+        },
+        "vector-store": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_vector_store"
+            ]
+        },
+        "txt": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_servers.mcp_txt"
             ]
         }
     }
