@@ -7,8 +7,9 @@ import string
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from loguru import logger
 from tabulate import tabulate
+
+logger = logging.getLogger(__name__)
 
 from aworld.logs.util import Color
 

@@ -158,10 +158,44 @@ class DefaultAgentHandler(DefaultHandler):
             async for event in self._social_stop_check(action, caller):
                 yield event
         else:
-            async for event in self._sequence_stop_check(action, caller):
-                yield event
+            if 'loop' in self.swarm.topology_type:
+                async for event in self._loop_sequence_stop_check(action, caller):
+                    yield event
+            else:
+                async for event in self._sequence_stop_check(action, caller):
+                    yield event
 
     async def _sequence_stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
+        agent = self.swarm.agents.get(action.agent_name)
+        idx = next((i for i, x in enumerate(self.swarm.ordered_agents) if x == agent), -1)
+        if idx == -1:
+            yield Message(
+                category=Constants.TASK,
+                payload=action,
+                sender=self.name(),
+                session_id=Context.instance().session_id,
+                topic=TaskType.ERROR,
+            )
+        elif idx == len(self.swarm.ordered_agents) - 1:
+            logger.info(f"execute loop {self.swarm.cur_step}.")
+            yield Message(
+                category=Constants.TASK,
+                payload=action.policy_info,
+                sender=agent.name(),
+                session_id=Context.instance().session_id,
+                topic=TaskType.FINISHED
+            )
+        else:
+            # means the loop finished
+            yield Message(
+                category=Constants.AGENT,
+                payload=Observation(content=action.policy_info),
+                sender=agent.name(),
+                session_id=Context.instance().session_id,
+                receiver=self.swarm.ordered_agents[idx + 1].name()
+            )
+
+    async def _loop_sequence_stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
         agent = self.swarm.agents.get(action.agent_name)
         idx = next((i for i, x in enumerate(self.swarm.ordered_agents) if x == agent), -1)
         if idx == -1:

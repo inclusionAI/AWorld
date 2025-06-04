@@ -264,7 +264,12 @@ class GaiaAgentRunner:
             question = prompt
 
         try:
-            task = Task(input=question, agent=self.super_agent, conf=TaskConfig())
+            task = Task(
+                input=question,
+                agent=self.super_agent,
+                event_driven=False,
+                conf=TaskConfig(max_steps=20),
+            )
 
             last_output: Output = None
             rich_ui = MarkdownAworldUI()

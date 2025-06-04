@@ -44,9 +44,9 @@ def color_log(value, color: str = Color.black, logger_: logging.Logger = logger,
         hightlight_key: Color segment key.
     """
     if hightlight_key is None:
-        logger_._log(level, f"{color} {value} {Color.reset}", None)
+        logger_.log(level, f"{color} {value} {Color.reset}")
     else:
-        logger_._log(level, f"{color} {hightlight_key}: {Color.reset} {value}", None)
+        logger_.log(level, f"{color} {hightlight_key}: {Color.reset} {value}")
 
 
 def aworld_log(logger, color: str = Color.black, level: int = logging.INFO):
@@ -71,7 +71,7 @@ def aworld_log(logger, color: str = Color.black, level: int = logging.INFO):
 def init_logger(logger: logging.Logger):
     logger.debug = aworld_log(logger, color=Color.lightgrey, level=logging.DEBUG)
     logger.info = aworld_log(logger, color=Color.black, level=logging.INFO)
-    logger.warning = aworld_log(logger, color=Color.lightred, level=logging.WARNING)
+    logger.warning = aworld_log(logger, color=Color.orange, level=logging.WARNING)
     logger.warn = logger.warning
     logger.error = aworld_log(logger, color=Color.red, level=logging.ERROR)
     logger.fatal = logger.error

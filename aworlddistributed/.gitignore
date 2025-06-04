@@ -7,6 +7,8 @@ pipelines/*
 !pipelines/.gitignore
 .DS_Store
 datasets/gaia_dataset/**
+task_logs/**/*
+task_logs/result/**/*
 
 aworldspace/agents/**/*.json
 
