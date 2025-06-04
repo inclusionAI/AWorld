@@ -1,38 +1,34 @@
+import importlib.util
 import inspect
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import time
 import traceback
-from logging.handlers import TimedRotatingFileHandler
-
-from aworld.utils.common import get_local_ip
-from fastapi import FastAPI, Request, Depends, status, HTTPException, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.concurrency import run_in_threadpool
-
-from starlette.responses import StreamingResponse, Response
-from pydantic import BaseModel, ConfigDict
-from typing import List, Union, Generator, Iterator, AsyncGenerator, AsyncIterator, Optional
-
-from utils.pipelines.auth import bearer_security, get_current_user
-from utils.pipelines.main import get_last_user_message, stream_message_template
-from utils.pipelines.misc import convert_to_raw_url
-
+import uuid
 from contextlib import asynccontextmanager
-from concurrent.futures import ThreadPoolExecutor
-from schemas import FilterForm, OpenAIChatCompletionForm
+from logging.handlers import TimedRotatingFileHandler
+from typing import Generator, Iterator, AsyncGenerator, Optional
 from urllib.parse import urlparse
 
-import shutil
 import aiohttp
-import os
-import importlib.util
-import logging
-import time
-import json
-import uuid
-import sys
-import subprocess
+from aworld.core.task import Task
+from aworld.utils.common import get_local_ip
+from fastapi import FastAPI, Request, Depends, status, HTTPException, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
-
+from base import AworldTask
 from config import API_KEY, PIPELINES_DIR, LOG_LEVELS
+from schemas import FilterForm, OpenAIChatCompletionForm
+from utils.pipelines.auth import get_current_user
+from utils.pipelines.main import get_last_user_message
+from utils.pipelines.misc import convert_to_raw_url
 
 if not os.path.exists(PIPELINES_DIR):
     os.makedirs(PIPELINES_DIR)
@@ -48,7 +44,7 @@ logging.basicConfig(level=LOG_LEVELS[log_level])
 def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    log_dir = os.getenv("LOG_DIR_PATH", "logs")
+    log_dir = os.path.join(os.getenv("LOG_DIR_PATH", "logs") , get_local_ip())
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     log_path = os.path.join(log_dir, "aworldserver.log")
@@ -708,6 +704,10 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
             pipe = PIPELINE_MODULES[pipeline_id].pipe
 
         def process_line(model, line):
+            if isinstance(line, Task):
+                task_output_meta = line.outputs._metadata
+                line = openai_chat_chunk_message_template(model, "", task_output_meta=task_output_meta)
+                return f"data: {json.dumps(line)}\n\n"
             if isinstance(line, BaseModel):
                 line = line.model_dump_json()
                 line = f"data: {line}"
@@ -767,11 +767,9 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
                         yield process_line(form_data.model, line)
 
                 if isinstance(res, AsyncGenerator):
-                    print(f"AsyncGenerator start...")
                     async for line in res:
-                        print(f"AsyncGenerator-Pipe-Dataline:::: {line}")
                         yield process_line(form_data.model, line)
-                    print(f"AsyncGenerator end...")
+                    logging.info(f"AsyncGenerator end...")
 
                 if isinstance(res, str) or isinstance(res, Generator) or isinstance(res, AsyncGenerator):
                     finish_message = openai_chat_chunk_message_template(
@@ -834,8 +832,9 @@ def openai_chat_chunk_message_template(
     content: Optional[str] = None,
     tool_calls: Optional[list[dict]] = None,
     usage: Optional[dict] = None,
+    **kwargs
 ) -> dict:
-    template = openai_chat_message_template(model)
+    template = openai_chat_message_template(model, **kwargs)
     template["object"] = "chat.completion.chunk"
 
     template["choices"][0]["index"] = 0
@@ -854,12 +853,13 @@ def openai_chat_chunk_message_template(
         template["usage"] = usage
     return template
 
-def openai_chat_message_template(model: str):
+def openai_chat_message_template(model: str, **kwargs):
     return {
         "id": f"{model}-{str(uuid.uuid4())}",
         "created": int(time.time()),
         "model": model,
         "node_id": get_local_ip(),
+        "task_output_meta": kwargs.get("task_output_meta"),
         "choices": [{"index": 0, "logprobs": None, "finish_reason": None}],
     }
 

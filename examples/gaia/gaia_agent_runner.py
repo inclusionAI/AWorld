@@ -4,7 +4,7 @@ import os
 import re
 import traceback
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.runner import Runners
 from aworld.output.ui.base import AworldUI
@@ -49,7 +49,6 @@ class GaiaAgentRunner:
             mcp_config=mcp_config,
             mcp_servers=[
                 "e2b-server",
-                # "filesystem",
                 "terminal-controller",
                 "excel",
                 "calculator",
@@ -60,7 +59,6 @@ class GaiaAgentRunner:
                 "search_server",
                 "download_server",
                 "document_server",
-                # "browser_server",
                 "youtube_server",
                 "reasoning_server",
             ],
@@ -69,9 +67,7 @@ class GaiaAgentRunner:
         self.gaia_dataset_path = os.path.abspath(
             os.getenv(
                 "GAIA_DATASET_PATH",
-                os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), "GAIA", "2023"
-                ),
+                os.path.join(os.getcwd(), "examples", "gaia", "GAIA", "2023"),
             )
         )
         self.full_dataset = load_dataset_meta_dict(self.gaia_dataset_path)
@@ -107,7 +103,12 @@ class GaiaAgentRunner:
             question = prompt
 
         try:
-            task = Task(input=question, agent=self.super_agent, conf=TaskConfig())
+            task = Task(
+                input=question,
+                agent=self.super_agent,
+                event_driven=False,
+                conf=TaskConfig(max_steps=20),
+            )
 
             last_output: Output = None
             rich_ui = MarkdownAworldUI()

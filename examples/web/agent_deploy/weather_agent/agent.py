@@ -2,9 +2,8 @@ import logging
 import os
 import json
 
-import aworld
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
 from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
@@ -21,11 +20,11 @@ class AWorldAgent:
         return {"name": "Weather Agent", "description": "Query Real-time Weather"}
 
     async def run(self, prompt: str):
-        llm_provider = os.getenv("LLM_PROVIDER", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME")
-        llm_api_key = os.getenv("LLM_API_KEY")
-        llm_base_url = os.getenv("LLM_BASE_URL")
-        llm_temperature = os.getenv("LLM_TEMPERATURE", 0.0)
+        llm_provider = os.getenv("LLM_PROVIDER_WEATHER", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_WEATHER")
+        llm_api_key = os.getenv("LLM_API_KEY_WEATHER")
+        llm_base_url = os.getenv("LLM_BASE_URL_WEATHER")
+        llm_temperature = os.getenv("LLM_TEMPERATURE_WEATHER", 0.0)
 
         if not llm_model_name or not llm_api_key or not llm_base_url:
             raise ValueError(
@@ -55,7 +54,7 @@ class AWorldAgent:
             ],
         )
 
-        task = Task(input=prompt, agent=super_agent, conf=TaskConfig())
+        task = Task(input=prompt, agent=super_agent, event_driven=False, conf=TaskConfig(max_steps=20))
 
         rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():

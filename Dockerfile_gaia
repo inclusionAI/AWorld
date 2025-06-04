@@ -4,11 +4,18 @@ RUN mkdir -p /app/aworld
 
 WORKDIR /app/aworld
 
-COPY ./aworld aworld
-COPY ./mcp_servers mcp_servers
-COPY ./setup.py setup.py
-
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
+
+RUN rm -fv /etc/apt/sources.list.d/* && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian bookworm-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY ./aworld aworld
+COPY ./setup.py setup.py
 
 RUN python setup.py install
 
@@ -17,19 +24,15 @@ FROM aworld_base AS gaia_env
 
 RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm 
 
-# Install Chrome Driver
-RUN wget https://storage.googleapis.com/chrome-for-testing-public/136.0.7103.92/linux64/chromedriver-linux64.zip && \
-    unzip chromedriver-linux64.zip && \
-    rm chromedriver-linux64.zip
-ENV CHROME_DRIVER_PATH=/app/aworld/chromedriver-linux64/chromedriver
+# Config Env
+RUN npx playwright install chrome
+RUN npm install @playwright/mcp @negokaz/excel-mcp-server
 
-# # Config Env
-# RUN npx playwright install chrome
+# Install mcp servers requirements
+COPY ./mcp_servers mcp_servers
+RUN pip install -r mcp_servers/requirements.txt
 
-# Install Gaia requirements
-COPY ./examples/gaia/requirements.txt examples/gaia/requirements.txt
-RUN pip install -r examples/gaia/requirements.txt
-
+# Copy examples
 COPY ./examples/ examples
 
 # Create GAIA benchmark directory
@@ -38,5 +41,7 @@ RUN mkdir -p gaia-benchmark/fs && \
     mkdir -p static
 
 ENV PYTHONPATH=/app/aworld${PYTHONPATH:+:${PYTHONPATH}}
+ENV GAIA_DATASET_PATH=/app/aworld/examples/gaia/GAIA/2023
+ENV LOG_FILE_PATH=/app/aworld/gaia-benchmark/logs
 
 CMD [ "python", "examples/gaia/gaia_agent_server.py" ]

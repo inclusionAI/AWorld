@@ -1,7 +1,9 @@
+#!/bin/bash
+cd "$(dirname "$0")"
 
 # Check your env file
-if [ ! -f ".env.docker" ]; then
-    echo "Please add your own .env.docker config file from template .env.template before running gaia test!"
+if [ ! -f ".env" ]; then
+    echo "Please add your own .env config file from template .env.template before running gaia test!"
     exit 1
 fi
 
@@ -12,4 +14,6 @@ if [ ! -d "examples/gaia/GAIA" ]; then
 fi
 
 # Build docker image
-docker compose up --build -d && docker compose logs -f
+docker compose -f docker-compose-gaia.yml build && \
+  docker compose -f docker-compose-gaia.yml up -d && \
+  docker compose -f docker-compose-gaia.yml logs -f

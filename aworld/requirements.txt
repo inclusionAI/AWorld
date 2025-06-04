@@ -2,45 +2,8 @@
 # framework requirements will be installed by all extensions
 pydantic~=2.9.2
 pyyaml~=6.0.2
-langchain~=0.3.20
 openai~=1.66.3
-langchain-openai~=0.3.8
-langchain-ollama~=0.2.3
-langchain-anthropic~=0.3.9
-langchain-mistralai~=0.2.7
-langchain-google-genai~=2.1.0
-numpy~=2.2.3
-pandas~=2.2.3
-pydantic_settings~=2.8.0
 mcp[cli]~=1.6.0
 python-dotenv~=1.0.1
-datasets>=2.16.0,<2.19.0
-tornado~=6.4.2
-terminal_controller # mcp server: https://github.com/GongRzhe/terminal-controller-mcp
-mcp_server_calculator # mcp server: https://github.com/githejie/mcp-server-calculator
 executing~=2.2.0
-oss2~=2.19.1
-
-######### [optional] #########
-# optional requirements will also be installed by all extensions,
-# but when the installation fails, it will be ignored
-opencv-python~=4.11.0.86
-pyshine~=0.0.9
-playwright~=1.50.0
-gymnasium~=1.1.0
-pygame~=2.6.1
-openpyxl~=3.1.5
-xls2xlsx~=0.2.0
-wikipedia~=1.4.0
-duckduckgo_search~=7.5.2
-baidusearch~=1.0.3
-langchain-experimental~=0.3.4
-prometheus_client~=0.21.1
-opentelemetry-sdk~=1.32.1
-opentelemetry-api~=1.32.1
-opentelemetry-exporter-otlp~=1.32.1
-opentelemetry-instrumentation-system-metrics~=0.53b1
-aiohttp~=3.11.16
-requests~=2.32.3
-loguru~=0.7.3
-oss2
+kubernetes~=32.0.1

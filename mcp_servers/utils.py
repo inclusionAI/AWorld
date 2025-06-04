@@ -9,7 +9,7 @@ import requests
 from mcp.server import FastMCP
 
 from aworld.logs.util import logger
-from aworld.mcp.utils import mcp_tool_desc_transform
+from aworld.mcp_client.utils import mcp_tool_desc_transform
 
 
 def get_mime_type(file_path: str, default_mime: Optional[str] = None) -> str:

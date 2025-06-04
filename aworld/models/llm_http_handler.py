@@ -6,6 +6,8 @@ when direct SDK usage is not desired.
 
 import json
 import asyncio
+import random
+import time
 from typing import Any, Dict, List, Optional, Union, Generator, AsyncGenerator
 import requests
 from requests import HTTPError
@@ -280,6 +282,9 @@ class LLMHTTPHandler:
                 retries += 1
                 if retries < self.max_retries:
                     logger.warning(f"Request failed, retrying ({retries}/{self.max_retries}): {str(e)}")
+                    # Exponential backoff with jitter
+                    backoff = min(2 ** retries + random.uniform(0, 1), 10)
+                    time.sleep(backoff)
                 else:
                     logger.error(f"Request failed after {self.max_retries} retries: {str(e)}")
                     raise last_error
@@ -315,7 +320,9 @@ class LLMHTTPHandler:
                 retries += 1
                 if retries < self.max_retries:
                     logger.warning(f"Request failed, retrying ({retries}/{self.max_retries}): {str(e)}")
-                    await asyncio.sleep(1)  # Wait one second before retrying
+                    # Exponential backoff with jitter
+                    backoff = min(2 ** retries + random.uniform(0, 1), 10)
+                    await asyncio.sleep(backoff)
                 else:
                     logger.error(f"Request failed after {self.max_retries} retries: {str(e)}")
                     raise last_error

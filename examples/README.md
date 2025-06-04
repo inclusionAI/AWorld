@@ -23,4 +23,4 @@ When constructing the `AgentConfig`, you can set the parameters as follows:
   To write an agent, please refer to the [Agent README](../aworld/agents/README.md).
 
 - **Tool in Environment**:  
-  For instructions on writing a tool within the environment, please refer to the [Virtual Environments README](../aworld/virtual_environments/README.md).
+  For instructions on writing a tool within the environment, please refer to the [Virtual Environments README](tools/README.md).

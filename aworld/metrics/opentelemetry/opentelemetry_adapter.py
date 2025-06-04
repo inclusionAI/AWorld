@@ -1,4 +1,4 @@
-import requests
+
 import os
 from urllib.parse import urljoin
 from typing import Optional, Sequence
@@ -278,11 +278,13 @@ def configure_otlp_provider(backend: Sequence[str] = None,
         write_token: The write token of the backend.
         **kwargs: The keyword arguments to pass to the backend.
     """
+    import requests
+    from opentelemetry.exporter.otlp.proto.http import Compression
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+
     if backend == "console":
         set_metric_provider(OpentelemetryMetricProvider())
     elif backend == "logfire":
-        from opentelemetry.exporter.otlp.proto.http import Compression
-        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
         base_url = base_url or "https://logfire-us.pydantic.dev"
         headers = {'User-Agent': f'logfire/3.14.0', 'Authorization': write_token}
         session = requests.Session()
@@ -294,8 +296,6 @@ def configure_otlp_provider(backend: Sequence[str] = None,
         )
         set_metric_provider(OpentelemetryMetricProvider(exporter))
     elif backend == "antmonitor":
-        from opentelemetry.exporter.otlp.proto.http import Compression
-        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
         ant_otlp_endpoint = os.getenv("ANT_OTEL_ENDPOINT")
         base_url = base_url or ant_otlp_endpoint
         session = requests.Session()

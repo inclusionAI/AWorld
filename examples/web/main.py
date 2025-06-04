@@ -1,4 +1,4 @@
-import webbrowser
+import sys
 import streamlit as st
 from dotenv import load_dotenv
 import logging
@@ -9,11 +9,12 @@ import importlib.util
 import aworld.trace as trace
 from trace_net import generate_trace_graph, generate_trace_graph_full
 
-load_dotenv()
+load_dotenv(os.path.join(os.getcwd(), ".env"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+sys.path.insert(0, os.getcwd())
 
 def agent_page(trace_id):
     st.set_page_config(
@@ -64,22 +65,38 @@ def agent_page(trace_id):
 
             with st.chat_message("assistant"):
                 agent_name = st.session_state.selected_agent
-                agent_path = os.path.join(
+                agent_package_path = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)),
                     "agent_deploy",
                     agent_name,
                 )
+
+                agent_module_file = os.path.join(agent_package_path, "agent.py")
+
                 try:
                     spec = importlib.util.spec_from_file_location(
-                        "agent_module", os.path.join(agent_path, "agent.py")
+                        agent_name, agent_module_file
                     )
+
+                    if spec is None or spec.loader is None:
+                        logger.error(
+                            f"Could not load spec for agent {agent_name} from {agent_module_file}"
+                        )
+                        st.error(f"Error: Could not load agent! {agent_name}")
+                        return
+
                     agent_module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(agent_module)
-                except Exception:
+                except ModuleNotFoundError as e:
+                    logger.error(f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
+                    st.error(f"Error: Could not load agent! {agent_name}")
+                    return
+
+                except Exception as e:
                     logger.error(
-                        f"Error importing agent module: {traceback.format_exc()}"
+                        f"Error loading agent '{agent_name}': {traceback.format_exc()}"
                     )
-                    st.error("Error importing agent module")
+                    st.error(f"Error: Could not load agent! {agent_name}")
                     return
 
                 agent = agent_module.AWorldAgent()

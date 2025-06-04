@@ -1,5 +1,10 @@
-python setup.py install
+#!/bin/bash
+cd "$(dirname "$0")"
 
-pip install -r examples/web/requirements.txt
+pip install -r aworld/requirements.txt && \
 
-streamlit run examples/web/main.py
+pip install -r mcp_servers/requirements.txt && \
+
+pip install -r examples/web/requirements.txt && \
+
+streamlit run examples/web/main.py --server.port 8000
