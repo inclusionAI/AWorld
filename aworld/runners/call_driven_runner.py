@@ -59,7 +59,7 @@ class SequenceRunner(TaskRunner):
             try:
                 await self._common_process(task_span)
             except Exception as err:
-                logger.error(f"Runner run failed, err is {err}", exc_info=True)
+                logger.error(f"Runner run failed, err is {err}")
             finally:
                 await self.outputs.mark_completed()
                 color_log(f"task token usage: {self.context.token_usage}",
