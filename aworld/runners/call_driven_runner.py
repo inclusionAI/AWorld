@@ -184,7 +184,9 @@ class SequenceRunner(TaskRunner):
                             })
                             return info
                     elif is_tool_by_name(policy[0].tool_name):
-                        msg, reward, terminated = await self._tool_call(policy, observations, step)
+                        # todo sandbox
+                        msg, reward, terminated = await self._tool_call(policy, observations, step,
+                                                                        cur_agent)
                         step_span.set_attribute("reward", reward)
 
                     else:
@@ -259,7 +261,8 @@ class SequenceRunner(TaskRunner):
             return status, observation
         return status, None
 
-    async def _tool_call(self, policy: List[ActionModel], observations: List[Observation], step: int):
+    # todo sandbox
+    async def _tool_call(self, policy: List[ActionModel], observations: List[Observation], step: int,agent: Agent):
         msg = None
         terminated = False
         # group action by tool name
@@ -286,7 +289,8 @@ class SequenceRunner(TaskRunner):
             if isinstance(self.tools[tool_name], Tool):
                 message = self.tools[tool_name].step(action)
             elif isinstance(self.tools[tool_name], AsyncTool):
-                message = await self.tools[tool_name].step(action)
+                # todo sandbox
+                message = await self.tools[tool_name].step(action, agent=agent)
             else:
                 logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
                 continue
