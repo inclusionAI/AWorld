@@ -21,7 +21,7 @@ from aworld.core.memory import MemoryItem
 from aworld.memory.main import Memory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse, ToolCall
-from aworld.models.utils import tool_desc_transform, agent_desc_transform
+from aworld.models.utils import tool_desc_transform, agent_desc_transform, num_tokens_from_messages
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
 from aworld.utils.common import convert_to_snake, sync_exec
@@ -493,6 +493,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                                            agent_prompt=self.agent_prompt)
 
         self._log_messages(messages)
+        # count input tokens
+        input_tokens = num_tokens_from_messages(messages, model=self.model_name)
+        logger.info(f"[agent] input tokens: {input_tokens}")
         self.memory.add(MemoryItem(
             content=messages[-1]['content'],
             metadata={
@@ -593,6 +596,9 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                                            agent_prompt=self.agent_prompt)
 
         self._log_messages(messages)
+        # count input tokens
+        input_tokens = num_tokens_from_messages(messages, model=self.model_name)
+        logger.info(f"[agent] input tokens: {input_tokens}")
         self.memory.add(MemoryItem(
             content=messages[-1]['content'],
             metadata={
