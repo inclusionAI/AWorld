@@ -220,7 +220,7 @@ class AgentManager(Factory):
         return self._desc.get(name, "")
 
     def agent_instance(self, name: str) -> BaseAgent | None:
-        if self._agent_instance.get(name, None) and self._agent_instance[name].desc:
+        if self._agent_instance.get(name, None):
             return self._agent_instance[name]
         return None
 
