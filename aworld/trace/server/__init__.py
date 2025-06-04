@@ -8,7 +8,7 @@ GLOBAL_TRACE_SERVER = None
 
 
 class TraceServer:
-    def __init__(self, storage, port: int = 8000):
+    def __init__(self, storage, port: int = 7079):
         self._storage = storage
         self._port = port
         self._thread = None

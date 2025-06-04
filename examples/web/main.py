@@ -1,4 +1,5 @@
 import sys
+import webbrowser
 import streamlit as st
 from dotenv import load_dotenv
 import logging
@@ -15,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.getcwd())
+
 
 def agent_page(trace_id):
     st.set_page_config(
@@ -71,7 +73,8 @@ def agent_page(trace_id):
                     agent_name,
                 )
 
-                agent_module_file = os.path.join(agent_package_path, "agent.py")
+                agent_module_file = os.path.join(
+                    agent_package_path, "agent.py")
 
                 try:
                     spec = importlib.util.spec_from_file_location(
@@ -88,7 +91,8 @@ def agent_page(trace_id):
                     agent_module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(agent_module)
                 except ModuleNotFoundError as e:
-                    logger.error(f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
+                    logger.error(
+                        f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
                     st.error(f"Error: Could not load agent! {agent_name}")
                     return
 
@@ -115,7 +119,7 @@ def agent_page(trace_id):
 
 
 try:
-    agent_page("e35df2ff9e82c41b0d2a5ed86436eb52")
+    agent_page("7bbe26ef80b7310c573322a07a8f9437")
 except Exception as e:
     logger.error(f">>> Error: {traceback.format_exc()}")
     st.error(f"Error: {str(e)}")

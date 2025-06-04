@@ -66,9 +66,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def __init__(self,
                  conf: Union[Dict[str, Any],
-                 ConfigDict, AgentConfig],
+                             ConfigDict, AgentConfig],
                  sandbox: Sandbox = None,
-                 mcp_servers:List[str] = [],
+                 mcp_servers: List[str] = [],
                  mcp_config: Dict[str, Any] = {},
                  **kwargs
                  ):
@@ -104,7 +104,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.state = AgentStatus.START
         self._finished = True
         # todo sandbox
-        self.sandbox = sandbox or Sandbox(mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
+        self.sandbox = sandbox or Sandbox(
+            mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -115,21 +116,19 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def desc(self) -> str:
         return self._desc
 
-    def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
-            List[ActionModel], None]:
+    def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self.pre_run()
             result = self.policy(observation, info, **kwargs)
-            self.post_run()
-            return result
+            final_result = self.post_run(result, observation)
+            return final_result if final_result else result
 
-    async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
-            List[ActionModel], None]:
+    async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             await self.async_pre_run()
             result = await self.async_policy(observation, info, **kwargs)
-            await self.async_post_run()
-            return result
+            final_result = await self.async_post_run(result, observation)
+            return final_result if final_result else result
 
     @abc.abstractmethod
     def policy(self, observation: INPUT, info: Dict[str, Any] = None, **kwargs) -> OUTPUT:

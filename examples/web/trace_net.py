@@ -2,6 +2,7 @@ import requests
 import json
 import aworld.trace
 from pyvis.network import Network
+from aworld.logs.util import logger
 
 run_type_colors = {
     "LLM": "#E6E6FA",
@@ -18,12 +19,15 @@ def get_span_color(span):
 
 
 def fetch_trace_data(trace_id=None):
-    if trace_id:
-        response = requests.get(f'http://localhost:8000/api/traces/{trace_id}')
-        if response.status_code != 200 or not response.json():
-            return {"root_span": []}
-        return response.json()
-    return {"root_span": []}
+    try:
+        if trace_id:
+            response = requests.get(
+                f'http://localhost:7079/api/traces/{trace_id}')
+            response.raise_for_status()
+            return response.json() or {"root_span": []}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching trace data: {e}")
+        return {"root_span": []}
 
 
 def flatten_spans(node, result=None):
