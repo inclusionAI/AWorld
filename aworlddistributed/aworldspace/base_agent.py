@@ -48,6 +48,8 @@ class AworldBaseAgent:
                 task_id = str(uuid.uuid4())
 
             user_input = await self.get_custom_input(user_message, model_id, messages, body)
+            if task and task.llm_custom_input:
+                user_input = task.llm_custom_input
             logging.info(f"🤖{self.agent_name()} call llm input is [{user_input}]")
 
             # build agent task read from config

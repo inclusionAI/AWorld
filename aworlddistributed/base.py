@@ -13,6 +13,7 @@ class AworldTask(BaseModel):
     llm_model_name: Optional[str] = Field(default=None, description="llm model name")
     llm_api_key: Optional[str] = Field(default=None, description="llm api key")
     llm_base_url: Optional[str] = Field(default=None, description="llm base url")
+    llm_custom_input: Optional[str] = Field(default=None, description="custom_input")
     task_system_prompt: Optional[str] = Field(default=None, description="task_system_prompt")
     mcp_servers: Optional[list[str]] = Field(default=None, description="mcp_servers")
     node_id: Optional[str] = Field(default=None, description="execute task node_id")
