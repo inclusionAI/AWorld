@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import Union, Dict, AsyncGenerator, Any
+import abc
+from typing import AsyncGenerator, Any
 
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem
@@ -12,11 +13,19 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.utils import TaskType
 
 
-class DefaultToolHandler(DefaultHandler):
-    def __init__(self, tools: Dict[str, Union[Tool, AsyncTool]], tools_conf: Dict[str, Any]):
-        self.tools = tools
-        self.tools_conf = tools_conf
+class ToolHandler(DefaultHandler):
+    __metaclass__ = abc.ABCMeta
 
+    def __init__(self, runner: 'TaskEventRunner'):
+        self.tools = runner.tools
+        self.tools_conf = runner.tools_conf
+
+    @classmethod
+    def name(cls):
+        return "_tool_handler"
+
+
+class DefaultToolHandler(ToolHandler):
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
         if message.category != Constants.TOOL:
             return
