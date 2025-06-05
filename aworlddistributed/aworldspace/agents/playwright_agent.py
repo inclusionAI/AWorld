@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from openpyxl.styles.builtins import output
 from pydantic_core.core_schema import arguments_schema
 
 from aworld.config.conf import AgentConfig, TaskConfig
@@ -50,7 +51,7 @@ Thought: ...
 Action: ...
 ```
 ## Action Space
-navigate(website='') #Open the target website, usually the first action to open browser.
+navigate(website='xxx') #Open the target website, usually the first action to open browser.
 click(start_box='[x1, y1, x2, y2]')
 left_double(start_box='[x1, y1, x2, y2]')
 right_single(start_box='[x1, y1, x2, y2]')
@@ -72,6 +73,7 @@ import re
 
 def parse_action_output(output_text):
     # 提取Thought部分
+    logger.info(f"{output_text=}")
     thought_match = re.search(r'Thought:(.*?)\nAction:', output_text, re.DOTALL)
     thought = thought_match.group(1).strip() if thought_match else ""
 
@@ -106,7 +108,7 @@ def parse_action_output(output_text):
 
         # gpt-4o兼容
         if 'start_box' in params_text:
-            params_text = params_text.replace(",", "")
+            params_text = params_text.replace(", ", " ").replace(","," ")
         if 'end_box' in params_text:
             params_text = params_text.replace(" end_box", ", end_box")
 
@@ -279,7 +281,7 @@ class PlayWrightAgent(Agent):
         if "data:image/jpeg;base64," in observation.content:
             logger.info("transfer base64 content to image")
             observation.image = observation.content
-            observation.content = "observation:"
+            observation.content = ""
 
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
@@ -294,6 +296,13 @@ class PlayWrightAgent(Agent):
 
         if isinstance(messages[-1]['content'], list):
             messages[-1]['role'] = 'user'  # 有image的话必须使用user请求，而且不写入历史对话
+            self.memory.add(MemoryItem(
+                content=messages[-1]['content'],
+                metadata={
+                    "role": messages[-1]['role'],
+                    "agent_name": self.name(),
+                }
+            ))
         else:
             self.memory.add(MemoryItem(
                 content=messages[-1]['content'],
@@ -302,6 +311,16 @@ class PlayWrightAgent(Agent):
                     "agent_name": self.name(),
                 }
             ))
+
+        # 这里只保留2张screenshot
+        messages_len = len(messages)
+        new_message = []
+        for i in range(messages_len):
+            if (i > 1) and (i < (messages_len-3)) and messages[i]['role'] == 'user':
+                continue
+            else:
+                new_message.append(messages[i])
+        messages = new_message
 
         llm_response = None
         span_name = f"llm_call_{exp_id}"
@@ -315,9 +334,6 @@ class PlayWrightAgent(Agent):
                 source_span.set_attribute("messages", json.dumps([str(m) for m in messages], ensure_ascii=False))
 
             try:
-                logger.info("start")
-                logger.info(messages)
-                logger.info("end")
                 llm_response = call_llm_model(
                     self.llm,
                     messages=messages,
@@ -346,6 +362,7 @@ class PlayWrightAgent(Agent):
                                 "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
                             }
                         ))
+                        logger.info(llm_response)
                         function = parse_tool_call(llm_response.message['content'])
                         if function.name == "finished":
                             self._finished = True
@@ -428,7 +445,15 @@ class PlayWrightAgent(Agent):
 
         self._log_messages(messages)
         if isinstance(messages[-1]['content'], list):
-            messages[-1]['role'] = 'user'  # 有image的话必须使用user请求，而且不写入历史对话
+            messages[-1]['role'] = 'user'  # 有image的话必须使用user请求，而且不写入历史对话'
+
+            self.memory.add(MemoryItem(
+                content=messages[-1]['content'],
+                metadata={
+                    "role": messages[-1]['role'],
+                    "agent_name": self.name(),
+                }
+            ))
         else:
             self.memory.add(MemoryItem(
                 content=messages[-1]['content'],
@@ -454,7 +479,8 @@ class PlayWrightAgent(Agent):
                     self.llm,
                     messages=messages,
                     model=self.model_name,
-                    temperature=self.conf.llm_config.llm_temperature,
+                    # temperature=self.conf.llm_config.llm_temperature,
+                    temperature=1.0,
                     tools=self.tools if self.use_tools_in_prompt and self.tools else None,
                     stream=kwargs.get("stream", False)
                 )
@@ -668,7 +694,7 @@ class Pipeline(AworldBaseAgent):
                         "@playwright/mcp@0.0.27",
                         "--vision",
                         "--no-sandbox",
-                        "--headless",
+                        # "--headless",
                         "--isolated"
                     ],
                     "env": {
