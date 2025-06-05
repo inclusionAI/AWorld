@@ -44,7 +44,7 @@ from aworld.trace.propagator import get_global_trace_context
 from aworld.trace.baggage.sofa_tracer import SofaSpanHelper
 from aworld.logs.util import logger
 from aworld.utils.common import get_local_ip
-from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter
+from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter, InMemoryStorage
 from ..constants import ATTRIBUTES_MESSAGE_KEY
 from .export import FileSpanExporter, NoOpSpanExporter, SpanConsumerExporter
 from ..server import start_trace_server
@@ -337,7 +337,7 @@ def configure_otlp_provider(
                 logger.info("Starting trace server on port 8000.")
                 storage_dir = os.path.join("./", "trace_data")
                 storage = kwargs.get(
-                    "storage", InMemoryWithPersistStorage(storage_dir=storage_dir))
+                    "storage", InMemoryStorage())
                 processor.add_span_processor(
                     BatchSpanProcessor(InMemorySpanExporter(storage=storage, export_dir=storage_dir)))
                 start_trace_server(storage=storage, port=8000)

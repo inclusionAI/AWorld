@@ -1,3 +1,4 @@
+
 import importlib.util
 import inspect
 import json
@@ -14,7 +15,6 @@ from typing import Generator, Iterator, AsyncGenerator, Optional
 
 import aworld.trace as trace  # noqa
 from aworld.core.task import Task
-from aworld.trace.opentelemetry.memory_storage import InMemoryStorage
 from aworld.utils.common import get_local_ip
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -28,11 +28,6 @@ from config import AGENTS_DIR, LOG_LEVELS
 
 if not os.path.exists(AGENTS_DIR):
     os.makedirs(AGENTS_DIR)
-
-trace.trace_configure(
-    backends=["memory"],
-    storage=InMemoryStorage()
-)
 
 PIPELINES = {}
 PIPELINE_MODULES = {}
