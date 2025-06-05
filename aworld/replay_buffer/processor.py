@@ -5,26 +5,29 @@ Used to clean raw trace data into standard storage structure for reinforcement l
 """
 import json
 import os
+import datetime
 from typing import Any
 import threading
 from aworld.replay_buffer.base import DataRow, Experience, ExpMeta
 from aworld.logs.util import logger
+from aworld.utils.common import get_local_ip
 
 
 class ReplayBufferExporter:
-    _file_locks = {}
-    _lock_dict_lock = threading.Lock()
+    def __init__(self):
+        """Initialize ReplayBufferExporter instance"""
+        self._file_locks = {}
+        self._lock_dict_lock = threading.Lock()
+        self._task_output_paths = {}
 
-    @classmethod
-    def _get_file_lock(cls, file_path):
+    def _get_file_lock(self, file_path):
         """Get the lock for the specified file"""
-        with cls._lock_dict_lock:
-            if file_path not in cls._file_locks:
-                cls._file_locks[file_path] = threading.Lock()
-            return cls._file_locks[file_path]
+        with self._lock_dict_lock:
+            if file_path not in self._file_locks:
+                self._file_locks[file_path] = threading.Lock()
+            return self._file_locks[file_path]
 
-    @classmethod
-    def replay_buffer_exporter(cls, spans: list[dict[str, Any]], output_dir: str):
+    def replay_buffer_exporter(self, spans: list[dict[str, Any]], output_dir: str):
         """
         Process spans, only process spans with 'step_execution_' prefix, and group by task_id to output to different files
 
@@ -126,10 +129,18 @@ class ReplayBufferExporter:
             data_rows = []
 
             # Read existing data (if any)
-            output_path = os.path.join(output_dir, f"task_replay_{task_id}.json")
+            output_path = self._task_output_paths.get(task_id)
+            if not output_path:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d")
+                replay_dir = os.path.join(output_dir or "./trace_data", timestamp, get_local_ip(), "replays")
+                replay_dataset_path = os.getenv("REPLAY_TRACE_DATASET_PATH", replay_dir)
+                export_dir = os.path.abspath(replay_dataset_path)
+                os.makedirs(export_dir, exist_ok=True)
+                output_path = os.path.join(export_dir, f"task_replay_{task_id}.json")
+                self._task_output_paths[task_id] = output_path
 
             # Use thread lock to protect read and write operations
-            file_lock = cls._get_file_lock(output_path)
+            file_lock = self._get_file_lock(output_path)
             with file_lock:
                 if os.path.exists(output_path):
                     try:
@@ -155,7 +166,7 @@ class ReplayBufferExporter:
                 # Export to json
                 with open(output_path, 'w', encoding='utf-8') as f:
                     json.dump([row.to_dict() for row in data_rows], f, ensure_ascii=False, indent=2)
-                print(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
+                logger.info(f"Processing completed, exported {len(data_rows)} experiences to {output_path}")
 
                 if enable_oss_export:
                     # Upload to OSS

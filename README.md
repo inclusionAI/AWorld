@@ -156,8 +156,8 @@ Below are demonstration videos showcasing AWorld's capabilities across different
 Here is a multi-agent example of running a level2 task from the [GAIA](https://huggingface.co/gaia-benchmark) benchmark:
 
 ```python
-from aworld.agents.gaia.agent import PlanAgent, ExecuteAgent
-from aworld.config.common import Agents, Tools
+from examples.plan_execute.agent import PlanAgent, ExecuteAgent
+from examples.tools.common import Agents, Tools
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 from aworld.config.conf import AgentConfig, TaskConfig
@@ -165,6 +165,7 @@ from aworld.dataset.mock import mock_dataset
 from aworld.runner import Runners
 
 import os
+
 # Need OPENAI_API_KEY
 os.environ['OPENAI_API_KEY'] = "your key"
 # Optional endpoint settings, default `https://api.openai.com/v1`

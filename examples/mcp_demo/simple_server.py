@@ -11,7 +11,7 @@ import time
 from typing import List, Dict, Any, Optional
 from pydantic import Field
 
-from aworld.mcp.decorator import mcp_server
+from aworld.mcp_client.decorator import mcp_server
 
 
 @mcp_server(

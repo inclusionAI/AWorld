@@ -5,9 +5,12 @@ import inspect
 import os
 import pkgutil
 import re
+import socket
 import sys
 import threading
-import socket
+import time
+
+from functools import wraps
 from types import FunctionType
 from typing import Callable, Any, Tuple, List, Iterator, Dict, Union
 
@@ -19,6 +22,11 @@ def convert_to_snake(name: str) -> str:
     if '_' not in name:
         name = re.sub(r'([a-z])([A-Z])', r'\1_\2', name)
     return name.lower()
+
+
+def snake_to_camel(snake):
+    words = snake.split('_')
+    return ''.join([w.capitalize() for w in words])
 
 
 def is_abstract_method(cls, method_name):
@@ -128,6 +136,11 @@ def _scan_package(package_name: str, base_classes: List[type], results: List[Tup
 
     try:
         for sub_package, name, is_pkg in pkgutil.walk_packages(package.__path__):
+            try:
+                __import__(f"{package_name}.{name}")
+            except:
+                continue
+
             if is_pkg:
                 _scan_package(package_name + "." + name, base_classes, results)
             try:
@@ -204,6 +217,49 @@ def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
             result[elem] = count
     return result
 
+
+def get_class(module_class: str):
+    import importlib
+
+    assert module_class
+    module_class = module_class.strip()
+    idx = module_class.rfind('.')
+    if idx != -1:
+        module = importlib.import_module(module_class[0:idx])
+        class_names = module_class[idx + 1:].split(":")
+        cls_obj = getattr(module, class_names[0])
+        for inner_class_name in class_names[1:]:
+            cls_obj = getattr(cls_obj, inner_class_name)
+        return cls_obj
+    else:
+        raise Exception("{} can not find!".format(module_class))
+
+
+def new_instance(module_class: str, *args, **kwargs):
+    """Create module class instance based on module name."""
+    return get_class(module_class)(*args, **kwargs)
+
+
+def retryable(tries: int = 3, delay: int = 1):
+    def inner_retry(f):
+        @wraps(f)
+        def f_retry(*args, **kwargs):
+            mtries, mdelay = tries, delay
+            while mtries > 0:
+                try:
+                    return f(*args, **kwargs)
+                except Exception as e:
+                    msg = f"{str(e)}, Retrying in {mdelay} seconds..."
+                    logger.warning(msg)
+                    time.sleep(mdelay)
+                    mtries -= 1
+            return f(*args, **kwargs)
+
+        return f_retry
+
+    return inner_retry
+
+
 def get_local_ip():
     try:
         # build UDP socket
@@ -216,3 +272,44 @@ def get_local_ip():
         return local_ip
     except Exception:
         return "127.0.0.1"
+
+def replace_env_variables(
+        config) -> Any:
+    """
+    Replace environment variables in configuration.
+    Environment variables should be in the format ${ENV_VAR_NAME}.
+
+    Args:
+        config: Configuration to process (dict, list, or other value)
+
+    Returns:
+        Processed configuration with environment variables replaced
+    """
+    if config is None:
+        return config
+
+    try:
+        if isinstance(config, dict):
+            for key, value in config.items():
+                if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+                    env_var_name = value[2:-1]
+                    env_value = os.getenv(env_var_name)
+                    if env_value is not None:
+                        config[key] = env_value
+                        logger.info(f"Replaced {value} with {config[key]}")
+                elif isinstance(value, (dict, list)):
+                    config[key] = replace_env_variables(value)
+        elif isinstance(config, list):
+            for index, item in enumerate(config):
+                if isinstance(item, str) and item.startswith("${") and item.endswith("}"):
+                    env_var_name = item[2:-1]
+                    env_value = os.getenv(env_var_name)
+                    if env_value is not None:
+                        config[index] = env_value
+                        logger.info(f"Replaced {item} with {config[index]}")
+                elif isinstance(item, (dict, list)):
+                    config[index] = replace_env_variables(item)
+    except Exception as e:
+        logger.error(f"_replace_env_variables error: {e}")
+
+    return config

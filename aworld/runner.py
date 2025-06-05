@@ -1,24 +1,17 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Union
 
 from aworld.config.conf import TaskConfig
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.task import Task, TaskResponse
+from aworld.core.common import Config
+from aworld.core.task import Task, TaskResponse, Runner
 from aworld.output import StreamingOutputs
 from aworld import trace
-from aworld.runners.sequence import SequenceRunner
-from aworld.runners.social import SocialRunner
+from aworld.runners.utils import choose_runners, execute_runner
 from aworld.utils.common import sync_exec
-
-SEQUENCE = "sequence"
-SOCIAL = "social"
-RUNNERS = {
-    SEQUENCE: SequenceRunner,
-    SOCIAL: SocialRunner
-}
 
 
 class Runners:
@@ -45,27 +38,23 @@ class Runners:
         return streamed_result
 
     @staticmethod
-    async def run_task(task: Union[Task, List[Task]], parallel: bool = False) -> Dict[str, TaskResponse]:
+    async def run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:
         """Run tasks for some complex scenarios where agents cannot be directly used.
 
         Args:
             task: User task define.
-            parallel: Whether to process multiple tasks in parallel.
+            run_conf:
         """
-        with trace.span(task.name) as span:
+        with trace.span('run_task') as span:
             if isinstance(task, Task):
                 task = [task]
 
-            res = {}
-            if parallel:
-                await Runners._parallel_run_in_local(task, res)
-            else:
-                await Runners._run_in_local(task, res)
-            return res
+            runners: List[Runner] = await choose_runners(task)
+            return await execute_runner(runners, run_conf)
 
     @staticmethod
-    def sync_run_task(task: Union[Task, List[Task]], parallel: bool = False) -> Dict[str, TaskResponse]:
-        return sync_exec(Runners.run_task, task=task, parallel=parallel)
+    def sync_run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:
+        return sync_exec(Runners.run_task, task=task, run_conf=run_conf)
 
     @staticmethod
     def sync_run(
@@ -107,35 +96,6 @@ class Runners:
             agent.task = input
             swarm = Swarm(agent)
 
-        task = Task(input=input, swarm=swarm, tool_names=tool_names)
+        task = Task(input=input, swarm=swarm, tool_names=tool_names, event_driven=swarm.event_driven)
         res = await Runners.run_task(task)
         return res.get(task.id)
-
-    @staticmethod
-    async def _parallel_run_in_local(tasks: List[Task], res):
-        # also can use ProcessPoolExecutor
-        parallel_tasks = []
-        for t in tasks:
-            with trace.span(t.name) as span:
-                parallel_tasks.append(Runners._choose_runner(task=t).run())
-
-        results = await asyncio.gather(*parallel_tasks)
-        for idx, t in enumerate(results):
-            res[f'{t.id}'] = t
-
-    @staticmethod
-    async def _run_in_local(tasks: List[Task], res: Dict[str, Any]) -> None:
-        for idx, task in enumerate(tasks):
-            with trace.span(task.name) as span:
-                # Execute the task
-                result: TaskResponse = await Runners._choose_runner(task=task).run()
-                res[f'{result.id}'] = result
-
-    @staticmethod
-    def _choose_runner(task: Task):
-        if not task.swarm:
-            return SequenceRunner(task=task)
-
-        task.swarm.reset(task.input)
-        topology = task.swarm.topology_type
-        return RUNNERS.get(topology, SequenceRunner)(task=task)

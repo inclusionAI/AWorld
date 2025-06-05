@@ -357,8 +357,19 @@ class Propagator(ABC):
     """Propagator is a protocol that represents a propagator for trace context.
     """
 
+    def _get_value(self, carrier: Carrier, name: str) -> str:
+        """
+        Get value from carrier.
+        Args:
+            carrier: The carrier to get value from.
+            name: The name of the value.
+        Returns:
+            The value of the name.
+        """
+        return carrier.get(name) or carrier.get('HTTP_' + name.upper().replace('-', '_'))
+
     @abstractmethod
-    def extract(self, carrier: Carrier) -> TraceContext:
+    def extract(self, carrier: Carrier) -> Optional[TraceContext]:
         """Extracts a trace context from the given carrier.
         Args:
             carrier: The carrier to extract the trace context from.

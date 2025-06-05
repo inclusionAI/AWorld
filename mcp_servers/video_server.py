@@ -17,7 +17,7 @@ from pydantic import Field
 from aworld.logs.util import logger
 from mcp_servers.utils import get_file_from_source
 
-client = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_BASE_URL"))
+client = OpenAI(api_key=os.getenv("VIDEO_LLM_API_KEY"), base_url=os.getenv("VIDEO_LLM_BASE_URL"))
 
 # Initialize MCP server
 mcp = FastMCP("Video Server")
@@ -168,17 +168,10 @@ def get_video_frames(
         raise
 
 
-def create_video_content(
-    prompt: str, video_frames: List[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
+def create_video_content(prompt: str, video_frames: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Create uniform video format for querying llm."""
     content = [{"type": "text", "text": prompt}]
-    content.extend(
-        [
-            {"type": "image_url", "image_url": {"url": frame["data"]}}
-            for frame in video_frames
-        ]
-    )
+    content.extend([{"type": "image_url", "image_url": {"url": frame["data"]}} for frame in video_frames])
     return content
 
 
@@ -187,12 +180,8 @@ def mcp_analyze_video(
     video_url: str = Field(description="The input video in given filepath or url."),
     question: str = Field(description="The question to analyze."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
-    start_time: float = Field(
-        default=0, description="Start time of the video segment in seconds."
-    ),
-    end_time: float = Field(
-        default=None, description="End time of the video segment in seconds."
-    ),
+    start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
+    end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
     """analyze the video content by the given question."""
 
@@ -205,22 +194,18 @@ def mcp_analyze_video(
         for i in range(0, len(video_frames), interval):
             inputs = []
             cur_frames = video_frames[i : i + frame_nums]
-            content = create_video_content(
-                VIDEO_ANALYZE.format(task=question), cur_frames
-            )
+            content = create_video_content(VIDEO_ANALYZE.format(task=question), cur_frames)
             inputs.append({"role": "user", "content": content})
             try:
                 response = client.chat.completions.create(
-                    model=os.getenv("LLM_MODEL_NAME"),
+                    model=os.getenv("VIDEO_LLM_MODEL_NAME"),
                     messages=inputs,
                     temperature=0,
                 )
                 cur_video_analysis_result = response.choices[0].message.content
             except Exception:
                 cur_video_analysis_result = ""
-            all_res.append(
-                f"result of video part {int(i / interval + 1)}: {cur_video_analysis_result}"
-            )
+            all_res.append(f"result of video part {int(i / interval + 1)}: {cur_video_analysis_result}")
             if i + frame_nums >= len(video_frames):
                 break
         video_analysis_result = "\n".join(all_res)
@@ -229,9 +214,7 @@ def mcp_analyze_video(
         video_analysis_result = ""
         logger.error(f"video_analysis-Execute error: {traceback.format_exc()}")
 
-    logger.info(
-        f"---get_analysis_by_video-video_analysis_result:{video_analysis_result}"
-    )
+    logger.info(f"---get_analysis_by_video-video_analysis_result:{video_analysis_result}")
     return video_analysis_result
 
 
@@ -239,12 +222,8 @@ def mcp_analyze_video(
 def mcp_extract_video_subtitles(
     video_url: str = Field(description="The input video in given filepath or url."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
-    start_time: float = Field(
-        default=0, description="Start time of the video segment in seconds."
-    ),
-    end_time: float = Field(
-        default=None, description="End time of the video segment in seconds."
-    ),
+    start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
+    end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
     """extract subtitles from the video."""
     inputs = []
@@ -254,7 +233,7 @@ def mcp_extract_video_subtitles(
         inputs.append({"role": "user", "content": content})
 
         response = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL_NAME"),
+            model=os.getenv("VIDEO_LLM_MODEL_NAME"),
             messages=inputs,
             temperature=0,
         )
@@ -271,12 +250,8 @@ def mcp_extract_video_subtitles(
 def mcp_summarize_video(
     video_url: str = Field(description="The input video in given filepath or url."),
     sample_rate: int = Field(default=2, description="Sample n frames per second."),
-    start_time: float = Field(
-        default=0, description="Start time of the video segment in seconds."
-    ),
-    end_time: float = Field(
-        default=None, description="End time of the video segment in seconds."
-    ),
+    start_time: float = Field(default=0, description="Start time of the video segment in seconds."),
+    end_time: float = Field(default=None, description="End time of the video segment in seconds."),
 ) -> str:
     """summarize the main content of the video."""
     try:
@@ -292,7 +267,7 @@ def mcp_summarize_video(
             inputs.append({"role": "user", "content": content})
             try:
                 response = client.chat.completions.create(
-                    model=os.getenv("LLM_MODEL_NAME"),
+                    model=os.getenv("VIDEO_LLM_MODEL_NAME"),
                     messages=inputs,
                     temperature=0,
                 )
@@ -300,12 +275,8 @@ def mcp_summarize_video(
                 cur_video_summary = response.choices[0].message.content
             except Exception:
                 cur_video_summary = ""
-            all_res.append(
-                f"summary of video part {int(i / interval + 1)}: {cur_video_summary}"
-            )
-            logger.info(
-                f"summary of video part {int(i / interval + 1)}: {cur_video_summary}"
-            )
+            all_res.append(f"summary of video part {int(i / interval + 1)}: {cur_video_summary}")
+            logger.info(f"summary of video part {int(i / interval + 1)}: {cur_video_summary}")
         video_summary = "\n".join(all_res)
 
     except (ValueError, IOError, RuntimeError):
@@ -321,9 +292,7 @@ def get_video_keyframes(
     video_path: str = Field(description="The input video in given filepath or url."),
     target_time: int = Field(
         description=(
-            "The specific time point for extraction,"
-            " centered within the window_size argument,"
-            " the unit is of second."
+            "The specific time point for extraction, centered within the window_size argument, the unit is of second."
         )
     ),
     window_size: int = Field(
@@ -379,9 +348,7 @@ def get_video_keyframes(
 
         return saved_paths, saved_timestamps
 
-    def extract_keyframes(
-        video_path, target_time, window_size
-    ) -> Tuple[List[Any], List[float]]:
+    def extract_keyframes(video_path, target_time, window_size) -> Tuple[List[Any], List[float]]:
         """Extract key frames around the target time with scene detection"""
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)

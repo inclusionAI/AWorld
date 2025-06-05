@@ -1,19 +1,9 @@
 FROM python:3.11-slim-bookworm AS base
 
-# Use args
-ARG MINIMUM_BUILD
-ARG USE_CUDA
-ARG USE_CUDA_VER
-ARG PIPELINES_URLS
-ARG PIPELINES_REQUIREMENTS_PATH
 
 ## Basis ##
 ENV ENV=prod \
-    PORT=9099 \
-    # pass build args to the build
-    MINIMUM_BUILD=${MINIMUM_BUILD} \
-    USE_CUDA_DOCKER=${USE_CUDA} \
-    USE_CUDA_DOCKER_VER=${USE_CUDA_VER}
+    PORT=9099
 
 # Install GCC and build tools. 
 # These are kept in the final image to enable installing packages on the fly.
@@ -28,7 +18,6 @@ ARG PIP_OPTIONS='-i https://mirrors.aliyun.com/pypi/simple/'
 
 RUN pip install -U pip pysocks ${PIP_OPTIONS}
 
-
 # Install Chrome Driver
 RUN mkdir /app
 
@@ -38,7 +27,6 @@ RUN cd /app/ && \
     rm chromedriver-linux64.zip
 ENV CHROME_DRIVER_PATH=/app/chromedriver-linux64/chromedriver
 
-RUN npx playwright install chrome
 
 
 FROM base as runner
@@ -47,29 +35,16 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY ./requirements.txt .
-COPY ./requirements-minimum.txt .
 RUN pip3 install uv ${PIP_OPTIONS}
-RUN uv pip install --system -r requirements-minimum.txt --no-cache-dir ${PIP_OPTIONS};
-RUN if [ "$MINIMUM_BUILD" != "true" ]; then \
-        if [ "$USE_CUDA_DOCKER" = "true" ]; then \
-            pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/$USE_CUDA_DOCKER_VER --no-cache-dir; \
-        else \
-            pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir; \
-        fi \
-    fi
-RUN if [ "$MINIMUM_BUILD" = "true" ]; then \
-        uv pip install --system -r requirements-minimum.txt --no-cache-dir ${PIP_OPTIONS}; \
-        # Config Env
-    else \
-        uv pip install --system -r requirements.txt --no-cache-dir; \
-    fi
+RUN uv pip install --system -r requirements.txt --no-cache-dir ${PIP_OPTIONS}
 
 # Copy the application code
 RUN echo "start install aworld"
 RUN mkdir -p /app/lib
 RUN cd /app/lib && git clone https://github.com/inclusionAI/AWorld.git
-RUN cd /app/lib/AWorld && git checkout framework_upgrade_aworldserver && pip install -r aworld/requirements.txt ${PIP_OPTIONS} && python setup.py install
+RUN cd /app/lib/AWorld && git checkout framework_upgrade_aworldserver_gaia && pip install -r aworld/requirements.txt ${PIP_OPTIONS} && python setup.py install
 
+RUN npx playwright install chrome --with-deps --no-shell
 
 RUN cd /app
 
@@ -81,17 +56,6 @@ FROM runner AS app
 WORKDIR /app
 
 COPY . .
-
-ENV PIPELINES_URLS=${PIPELINES_URLS} \
-    PIPELINES_REQUIREMENTS_PATH=${PIPELINES_REQUIREMENTS_PATH}
-
-
-
-# Run a docker command if either PIPELINES_URLS or PIPELINES_REQUIREMENTS_PATH is not empty
-RUN if [ -n "$PIPELINES_URLS" ] || [ -n "$PIPELINES_REQUIREMENTS_PATH" ]; then \
-    echo "Running docker command with PIPELINES_URLS or PIPELINES_REQUIREMENTS_PATH"; \
-    ./start.sh --mode setup; \
-    fi
 
 # Expose the port
 ENV HOST="0.0.0.0"

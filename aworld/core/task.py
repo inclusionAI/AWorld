@@ -3,15 +3,15 @@
 import abc
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Dict, Callable
+from typing import Any, Union, List, Dict, Callable, Optional
 
 from pydantic import BaseModel
 
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.context.base import Context
-from aworld.core.envs.tool import Tool, AsyncTool
+from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
 
 
@@ -32,12 +32,15 @@ class Task:
     tools_conf: Config = field(default_factory=dict)
     # custom mcp servers conf
     mcp_servers_conf: Config = field(default_factory=dict)
-    swarm: Swarm = None
-    agent: Agent = None
+    swarm: Optional[Swarm] = None
+    agent: Optional[Agent] = None
+    event_driven: bool = True
     # for loop detect
     endless_threshold: int = 3
     # task_outputs
     outputs: Outputs = field(default_factory=DefaultOutputs)
+    # task special runner class, for example: package.XXRunner
+    runner_cls: Optional[str] = None
 
 
 class TaskResponse(BaseModel):

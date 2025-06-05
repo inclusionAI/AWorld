@@ -3,16 +3,30 @@
 from typing import Dict, List
 
 from aworld.core.agent.agent_desc import agent_handoffs_desc
-from aworld.core.agent.base import Agent, AgentFactory
+from aworld.core.agent.base import AgentFactory
+from aworld.core.agent.llm_agent import Agent
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
 
+SEQUENCE = "sequence"
+SOCIAL = "social"
+SEQUENCE_EVENT = "sequence_event"
+SOCIAL_EVENT = "social_event"
+
 
 class Swarm(object):
-    """Simple implementation of interactive collaboration between multi-agent and supported env tools."""
+    """Multi-agent topology.
 
-    def __init__(self, *args, root_agent: Agent = None, sequence: bool = True, max_steps: int = 1, **kwargs):
+    Examples:
+        >>> agent1 = Agent(name='agent1'); agent2 = Agent(name='agent2'); agent3 = Agent(name='agent3')
+        # sequencial
+        >>> Swarm(agent1, agent2, agent3)
+        # social
+        >>> Swarm((agent1, agent2), (agent1, agent3), (agent2, agent3), sequence=False)
+    """
+
+    def __init__(self, *args, root_agent: Agent = None, sequence: bool = True, max_steps: int = 0, **kwargs):
         self.communicate_agent = root_agent
         if root_agent and root_agent not in args:
             self._topology = [root_agent] + list(args)
@@ -22,13 +36,34 @@ class Swarm(object):
         self.sequence = sequence
         self.max_steps = max_steps
         self.initialized = False
+        self._finished = False
+        self._cur_step = 0
+        self._event_driven = kwargs.get('event_driven', False)
+        for agent in self._topology:
+            if isinstance(agent, Agent):
+                agent = [agent]
+            for a in agent:
+                if a and a.event_driven:
+                    self._event_driven = True
+                    break
+            if self._event_driven:
+                break
+
+    @property
+    def event_driven(self):
+        return self._event_driven
+
+    @event_driven.setter
+    def event_driven(self, event_driven):
+        self._event_driven = event_driven
 
     def _init(self, **kwargs):
+        """Swarm init, build the agent or agent pairs to the topology of agents."""
         # prebuild
         valid_agent_pair = []
         for pair in self._topology:
             if isinstance(pair, (list, tuple)):
-                self.topology_type = 'social'
+                self.topology_type = SOCIAL
                 # (agent1, agent2)
                 if len(pair) != 2:
                     raise RuntimeError(f"{pair} is not a pair value, please check it.")
@@ -39,7 +74,7 @@ class Swarm(object):
                 # agent
                 if not isinstance(pair, Agent):
                     raise RuntimeError(f"agent in {pair} is not a base agent instance, please check it.")
-                self.topology_type = 'sequence'
+                self.topology_type = SEQUENCE
                 valid_agent_pair.append((pair,))
 
         if not valid_agent_pair:
@@ -55,7 +90,7 @@ class Swarm(object):
 
         # agent handoffs build.
         for pair in valid_agent_pair:
-            if self.sequence:
+            if self.sequence or self.topology_type == SEQUENCE:
                 self.ordered_agents.append(pair[0])
                 if len(pair) == 2:
                     self.ordered_agents.append(pair[1])
@@ -66,6 +101,7 @@ class Swarm(object):
                 AgentFactory._cls[pair[0].name()] = pair[0].__class__
                 AgentFactory._desc[pair[0].name()] = pair[0].desc()
                 AgentFactory._agent_conf[pair[0].name()] = pair[0].conf
+                AgentFactory._agent_instance[pair[0].name()] = pair[0]
             elif pair[0].desc():
                 AgentFactory._desc[pair[0].name()] = pair[0].desc()
 
@@ -78,15 +114,26 @@ class Swarm(object):
                     AgentFactory._cls[pair[1].name()] = pair[1].__class__
                     AgentFactory._desc[pair[1].name()] = pair[1].desc()
                     AgentFactory._agent_conf[pair[1].name()] = pair[1].conf
+                    AgentFactory._agent_instance[pair[1].name()] = pair[1]
                 elif pair[1].desc():
                     AgentFactory._desc[pair[1].name()] = pair[1].desc()
 
-            if self.topology_type == 'social':
+            if self.topology_type == SOCIAL:
                 # need to explicitly set handoffs in the agent
                 pair[0].handoffs.append(pair[1].name())
 
         if self.sequence:
-            self.topology_type = 'sequence'
+            self.topology_type = SEQUENCE
+
+        self._cur_step = 1
+        # event driven
+        if self.event_driven:
+            for _, agent in self.agents.items():
+                agent.event_driven = True
+            if self.topology_type == SEQUENCE:
+                self.topology_type = SEQUENCE_EVENT
+            elif self.topology_type == SOCIAL:
+                self.topology_type = SOCIAL_EVENT
 
     def reset(self, content: str, context: Context = None, tools: List[str] = []):
         """Resets the initial internal state, and init supported tools in agent in swarm.
@@ -120,7 +167,7 @@ class Swarm(object):
 
     def _check(self):
         if not self.initialized:
-            self.reset()
+            self.reset('')
 
     def handoffs_desc(self, agent_name: str = None, use_all: bool = False):
         """Get agent description by name for handoffs.
@@ -174,7 +221,21 @@ class Swarm(object):
         return self.tools
 
     @property
+    def cur_step(self) -> int:
+        return self._cur_step
+
+    @cur_step.setter
+    def cur_step(self, step):
+        self._cur_step = step
+
+    @property
     def finished(self) -> bool:
         """Need all agents in a finished state."""
         self._check()
-        return all([agent.finished for _, agent in self.agents.items()])
+        if not self._finished:
+            self._finished = all([agent.finished for _, agent in self.agents.items()])
+        return self._finished
+
+    @finished.setter
+    def finished(self, finished):
+        self._finished = finished

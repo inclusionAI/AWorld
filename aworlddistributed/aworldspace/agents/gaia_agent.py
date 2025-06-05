@@ -1,20 +1,20 @@
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.config import ModelConfig
+from aworld.config.conf import AgentConfig, TaskConfig, ClientType
 from aworld.core.task import Task
 from aworld.output import Outputs, Output, StreamingOutputs
 from aworld.utils.common import get_local_ip
+from datasets import load_dataset
 from pydantic import BaseModel, Field
 
 from aworldspace.base_agent import AworldBaseAgent
-from datasets import load_dataset
-
 from aworldspace.utils.mcp_utils import load_all_mcp_config
 from aworldspace.utils.utils import question_scorer
-import re
 
 GAIA_SYSTEM_PROMPT = f"""You are an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.
 Please note that the task may be complex. Do not attempt to solve it all at once. You should break the task down and use different tools step by step to solve it. After using each tool, clearly explain the execution results and suggest the next steps.
@@ -54,14 +54,6 @@ class Pipeline(AworldBaseAgent):
 
     def __init__(self):
         self.valves = self.Valves()
-        self.agent_config = AgentConfig(
-            name=self.agent_name(),
-            llm_provider=self.valves.llm_provider if self.valves.llm_provider else os.environ.get("LLM_PROVIDER"),
-            llm_model_name=self.valves.llm_model_name if self.valves.llm_model_name else os.environ.get("LLM_MODEL_NAME"),
-            llm_api_key=self.valves.llm_api_key if self.valves.llm_api_key else os.environ.get("LLM_API_KEY"),
-            llm_base_url=self.valves.llm_base_url if self.valves.llm_base_url else os.environ.get("LLM_BASE_URL"),
-            system_prompt=self.valves.system_prompt if self.valves.system_prompt else GAIA_SYSTEM_PROMPT
-        )
         self.gaia_files = os.path.abspath(os.path.join(os.path.curdir, "aworldspace", "datasets", "gaia_dataset"))
         logging.info(f"gaia_files path {self.gaia_files}")
         self.full_dataset = load_dataset(
@@ -69,20 +61,59 @@ class Pipeline(AworldBaseAgent):
             name="2023_all",
             split="validation",
         )
-
+        
+        # Create task_id to index mapping for improved lookup performance
+        self.task_id_to_index = {}
+        for i, task in enumerate(self.full_dataset):
+            self.task_id_to_index[task['task_id']] = i
+        
+        logging.info(f"Loaded {len(self.full_dataset)} tasks, created task_id mapping")
         logging.info("gaia_agent init success")
 
     async def get_custom_input(self, user_message: str, model_id: str, messages: List[dict], body: dict) -> Any:
-        task = await self.get_gaia_task(int(user_message))
+        task = await self.get_gaia_task(user_message)
+        logging.info(f"🌈 -----------------------------------------------")
+        logging.info(f"🚀 Start to process: gaia_task_{task['task_id']}")
+        logging.info(f"📝 Detail: {task}")
+        logging.info(f"❓ Question: {task['Question']}")
+        logging.info(f"⭐ Level: {task['Level']}")
+        logging.info(f"🛠️ Tools: {task['Annotator Metadata']['Tools']}")
+        logging.info(f"🌈 -----------------------------------------------")
         return task['Question']
 
-    async def get_agent_config(self):
-        return self.agent_config
+    async def get_agent_config(self, body):
+        default_llm_provider = self.valves.llm_provider if self.valves.llm_provider else os.environ.get("LLM_PROVIDER")
+        llm_model_name = self.valves.llm_model_name if self.valves.llm_model_name else os.environ.get("LLM_MODEL_NAME")
+        llm_api_key = self.valves.llm_api_key if self.valves.llm_api_key else os.environ.get("LLM_API_KEY")
+        llm_base_url = self.valves.llm_base_url if self.valves.llm_base_url else os.environ.get("LLM_BASE_URL")
+        system_prompt = self.valves.system_prompt if self.valves.system_prompt else GAIA_SYSTEM_PROMPT
+
+        task = await self.get_task_from_body(body)
+        logging.info(f"task llm config is: {task.llm_provider}, {task.llm_model_name}, {task.llm_api_key}, {task.llm_base_url}")
+
+        llm_config = ModelConfig(
+            llm_provider=task.llm_provider if task and task.llm_provider else default_llm_provider,
+            llm_model_name=task.llm_model_name if task and task.llm_model_name else llm_model_name,
+            llm_api_key=task.llm_api_key if task and task.llm_api_key else llm_api_key,
+            llm_base_url=task.llm_base_url if task and task.llm_base_url else llm_base_url,
+            max_retries=task.max_retries if task and task.max_retries else 3
+        )
+
+        return AgentConfig(
+            name=self.agent_name(),
+            llm_config=llm_config,
+            system_prompt=task.task_system_prompt if task and task.task_system_prompt else system_prompt
+        )
 
     def agent_name(self) -> str:
         return "GaiaAgent"
 
-    async def get_mcp_servers(self) -> list[str]:
+    async def get_mcp_servers(self, body) -> list[str]:
+        task = await self.get_task_from_body(body)
+        if task.mcp_servers:
+            logging.info(f"mcp_servers from task: {task.mcp_servers}")
+            return task.mcp_servers
+
         return [
             "e2b-server",
             "terminal-controller",
@@ -99,19 +130,56 @@ class Pipeline(AworldBaseAgent):
             "reasoning_server",
         ]
 
-    async def get_gaia_task(self, index) -> dict:
-        logging.info(f"Start to process: gaia_task_{index}")
-        gaia_task = self.full_dataset[index]
-        logging.info(f"Detail: {gaia_task}")
-        logging.info(f"Question: {gaia_task['Question']}")
-        logging.info(f"Level: {gaia_task['Level']}")
-        logging.info(f"Tools: {gaia_task['Annotator Metadata']['Tools']}")
+    async def get_gaia_task(self, task_id: str) -> dict:
+        """
+        Get GAIA task by task_id
+        Args:
+            task_id: Unique identifier of the task
+        Returns:
+            Corresponding task dictionary
+        """
+
+        # Search by task_id
+        if task_id in self.task_id_to_index:
+            index = self.task_id_to_index[task_id]
+            gaia_task = self.full_dataset[index]
+        else:
+            raise ValueError(f"Task with task_id '{task_id}' not found in dataset")
 
         return self.add_file_path(gaia_task)
 
+    def get_all_task_ids(self) -> List[str]:
+        """
+        Get list of all available task_ids
+        Returns:
+            List of all task_ids
+        """
+        return list(self.task_id_to_index.keys())
+    
+    def get_task_count(self) -> int:
+        """
+        Get total number of tasks
+        Returns:
+            Total task count
+        """
+        return len(self.full_dataset)
+    
+    def get_task_index_by_id(self, task_id: str) -> int:
+        """
+        Get task index in dataset by task_id
+        Args:
+            task_id: Unique identifier of the task
+        Returns:
+            Index of the task in the dataset
+        """
+        if task_id in self.task_id_to_index:
+            return self.task_id_to_index[task_id]
+        else:
+            raise ValueError(f"Task with task_id '{task_id}' not found in dataset")
+
     async def custom_output_before_task(self, outputs: Outputs, chat_id: str, task: Task) -> None:
         task_config:TaskConfig = task.conf
-        gaia_task = await self.get_gaia_task(int(task_config.ext['origin_message']))
+        gaia_task = await self.get_gaia_task(task_config.ext['origin_message'])
 
         result = f"\n\n`{get_local_ip()}` execute `GAIA TASK#{task_config.ext['origin_message']}`:\n\n---\n\n"
         result += f"**Question**: {gaia_task['Question']}\n"
@@ -133,7 +201,7 @@ class Pipeline(AworldBaseAgent):
 
         """
         task_config: TaskConfig = task.conf
-        gaia_task_id = int(task_config['ext']['origin_message'])
+        gaia_task_id = task_config['ext']['origin_message']
         gaia_task = await self.get_gaia_task(gaia_task_id)
         agent_result = ""
         if isinstance(outputs, StreamingOutputs):
@@ -141,18 +209,19 @@ class Pipeline(AworldBaseAgent):
         match = re.search(r"<answer>(.*?)</answer>", agent_result)
         is_correct = False
         result = ""
+        answer = ""
         if match:
             answer = match.group(1)
-            logging.info(f"Agent answer: {answer}")
-            logging.info(f"Correct answer: {gaia_task['Final answer']}")
+            logging.info(f"🤖 Agent answer: {answer}")
+            logging.info(f"👨‍🏫 Correct answer: {gaia_task['Final answer']}")
             is_correct = question_scorer(answer, gaia_task["Final answer"])
 
             if is_correct:
-                logging.info(f"Question {gaia_task_id} Correct!")
-                result = f"\n\n**Question: {gaia_task_id} -> Agent Answer:[{answer}] is `Correct`**"
+                logging.info(f"📝Question {gaia_task_id} Correct! 🎉")
+                result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:[{answer}] is `Correct`**"
             else:
-                logging.info(f"Question {gaia_task_id} Incorrect!")
-                result = f"\n\n**Question: {gaia_task_id} -> Agent Answer:`{answer}` != Correct answer: `{gaia_task['Final answer']}` is `Incorrect`**"
+                logging.info(f"📝Question {gaia_task_id} Incorrect! ❌")
+                result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:`{answer}` != Correct answer: `{gaia_task['Final answer']}` is `Incorrect` ❌**"
 
         metadata = await outputs.get_metadata()
         if not metadata:
@@ -160,7 +229,8 @@ class Pipeline(AworldBaseAgent):
             metadata = await outputs.get_metadata()
         metadata['gaia_correct'] = is_correct
         metadata['gaia_result'] = result
-        metadata['gaia_task'] = gaia_task
+        metadata['agent_answer'] = answer
+        metadata['correct_answer'] = gaia_task['Final answer']
         return result
 
 

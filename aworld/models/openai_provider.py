@@ -2,7 +2,6 @@ import os
 from typing import Any, Dict, List, Generator, AsyncGenerator
 
 from openai import OpenAI, AsyncOpenAI
-from langchain_openai import AzureChatOpenAI
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider_base import LLMProviderBase
@@ -41,6 +40,7 @@ class OpenAIProvider(LLMProviderBase):
                 base_url=base_url,
                 api_key=api_key,
                 model_name=self.model_name,
+                max_retries=self.kwargs.get("max_retries", 3)
             )
             self.is_http_provider = True
             return self.http_provider
@@ -454,6 +454,8 @@ class AzureOpenAIProvider(OpenAIProvider):
         Returns:
             Azure OpenAI provider instance.
         """
+        from langchain_openai import AzureChatOpenAI
+
         # Get API key
         api_key = self.api_key
         if not api_key:

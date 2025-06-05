@@ -47,6 +47,7 @@ venv.bak/
 # IDE specific files
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 .DS_Store
@@ -132,4 +133,4 @@ examples/gaia/GAIA/
 traces*.json
 trace_data
 
-gaia/output
+examples/gaia/output

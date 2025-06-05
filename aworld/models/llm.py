@@ -5,7 +5,6 @@ from typing import (
     Generator,
     AsyncGenerator,
 )
-from langchain_openai import ChatOpenAI
 from aworld.config import ConfigDict
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.logs.util import logger
@@ -325,7 +324,7 @@ def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key:str) -> bool:
 
 def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
                   custom_provider: LLMProviderBase = None,
-                  **kwargs) -> Union[LLMModel, ChatOpenAI]:
+                  **kwargs) -> Union[LLMModel, 'ChatOpenAI']:
     """Get a unified LLM model instance.
 
     Args:
@@ -344,6 +343,8 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
     llm_provider = conf.llm_provider if conf_contains_key(conf, "llm_provider") else None
 
     if (llm_provider == "chatopenai"):
+        from langchain_openai import ChatOpenAI
+
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf_contains_key(conf, "llm_base_url") else None)
         model_name = kwargs.get("model_name") or (conf.llm_model_name if conf_contains_key(conf, "llm_model_name") else None)
         api_key = kwargs.get("api_key") or (conf.llm_api_key if conf_contains_key(conf, "llm_api_key") else None)

@@ -28,23 +28,27 @@ def load_all_mcp_config():
                 "args": [
                     "-m",
                     "terminal_controller"
-                ]
+                ],
+                "env": {
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "300"
+                }
             },
             "calculator": {
                 "command": "python",
                 "args": [
                     "-m",
                     "mcp_server_calculator"
-                ]
-            },
-            "excel": {
-                "command": "npx",
-                "args": [
-                    "--yes",
-                    "@negokaz/excel-mcp-server"
                 ],
                 "env": {
-                    "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "20"
+                }
+            },
+            "excel": {
+                "command": "uvx",
+                "args": ["excel-mcp-server", "stdio"],
+                "env": {
+                    "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000",
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
                 }
             },
             "google-search": {
@@ -55,7 +59,8 @@ def load_all_mcp_config():
                 ],
                 "env": {
                     "GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"],
-                    "GOOGLE_SEARCH_ENGINE_ID": os.environ["GOOGLE_CSE_ID"]
+                    "GOOGLE_SEARCH_ENGINE_ID": os.environ["GOOGLE_CSE_ID"],
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
                 }
             },
             "ms-playwright": {
@@ -63,7 +68,8 @@ def load_all_mcp_config():
                 "args": [
                     "@playwright/mcp@latest",
                     "--no-sandbox",
-                    "--headless"
+                    "--headless",
+                    "--isolated"
                 ],
                 "env": {
                     "PLAYWRIGHT_TIMEOUT": "120000",
@@ -80,6 +86,7 @@ def load_all_mcp_config():
                     "AUDIO_LLM_API_KEY": os.environ["AUDIO_LLM_API_KEY"],
                     "AUDIO_LLM_BASE_URL": os.environ["AUDIO_LLM_BASE_URL"],
                     "AUDIO_LLM_MODEL_NAME": os.environ["AUDIO_LLM_MODEL_NAME"],
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
                 }
             },
             "image_server": {
@@ -92,6 +99,7 @@ def load_all_mcp_config():
                     "LLM_API_KEY": os.environ.get("LLM_API_KEY"),
                     "LLM_MODEL_NAME": os.environ.get("LLM_MODEL_NAME"),
                     "LLM_BASE_URL": os.environ.get("LLM_BASE_URL"),
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
                 }
             },
             "youtube_server": {
@@ -101,7 +109,8 @@ def load_all_mcp_config():
                     "mcp_servers.youtube_server"
                 ],
                 "env": {
-                    "CHROME_DRIVER_PATH": os.environ['CHROME_DRIVER_PATH']
+                    "CHROME_DRIVER_PATH": os.environ['CHROME_DRIVER_PATH'],
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
                 }
             },
             "video_server": {
@@ -114,6 +123,7 @@ def load_all_mcp_config():
                     "LLM_API_KEY": os.environ.get("LLM_API_KEY"),
                     "LLM_MODEL_NAME": os.environ.get("LLM_MODEL_NAME"),
                     "LLM_BASE_URL": os.environ.get("LLM_BASE_URL"),
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
                 }
             },
             "search_server": {
@@ -124,7 +134,8 @@ def load_all_mcp_config():
                 ],
                 "env": {
                     "GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"],
-                    "GOOGLE_CSE_ID": os.environ["GOOGLE_CSE_ID"]
+                    "GOOGLE_CSE_ID": os.environ["GOOGLE_CSE_ID"],
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
                 }
             },
             "download_server": {
@@ -142,7 +153,10 @@ def load_all_mcp_config():
                 "args": [
                     "-m",
                     "mcp_servers.document_server"
-                ]
+                ],
+                "env": {
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+                }
             },
             "browser_server": {
                 "command": "python",
@@ -154,6 +168,7 @@ def load_all_mcp_config():
                     "LLM_API_KEY": os.environ.get("LLM_API_KEY"),
                     "LLM_MODEL_NAME": os.environ.get("LLM_MODEL_NAME"),
                     "LLM_BASE_URL": os.environ.get("LLM_BASE_URL"),
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
                 }
             },
             "reasoning_server": {
@@ -166,7 +181,19 @@ def load_all_mcp_config():
                     "LLM_API_KEY": os.environ.get("LLM_API_KEY"),
                     "LLM_MODEL_NAME": os.environ.get("LLM_MODEL_NAME"),
                     "LLM_BASE_URL": os.environ.get("LLM_BASE_URL"),
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
                 }
-            }
+            },
+            "e2b-code-server": {
+                "command": "python",
+                "args": [
+                    "-m",
+                    "mcp_servers.e2b_code_server"
+                ],
+                "env": {
+                    "E2B_API_KEY": os.environ["E2B_API_KEY"],
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+                }
+            },
         }
     }
