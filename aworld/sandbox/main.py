@@ -182,7 +182,7 @@ class Sandbox(SandboxSetup,SandboxApi):
         try:
             if hasattr(self, '_mcpservers') and self._mcpservers:
                 await self._mcpservers.cleanup()
-                logging.debug(f"Cleaned up MCP servers for sandbox {self.sandbox_id}")
+                logging.info(f"Cleaned up MCP servers for sandbox {self.sandbox_id}")
         except Exception as e:
             logging.warning(f"Failed to cleanup MCP servers: {e}")
         
