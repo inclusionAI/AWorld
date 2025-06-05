@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import List, Dict, Any
 from contextlib import AsyncExitStack
 
@@ -68,6 +69,8 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
 
     return openai_tools
 
+
+
 async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -78,6 +81,7 @@ async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Di
     server_configs = []
     openai_tools = []
     mcp_openai_tools = []
+
     for server_name, server_config in mcp_servers_config.items():
         # Skip disabled servers
         if server_config.get("disabled", False):

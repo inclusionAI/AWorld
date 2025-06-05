@@ -17,7 +17,7 @@ from aworld.core.event.base import Message
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.sandbox.main import Sandbox
-from aworld.utils.common import convert_to_snake
+from aworld.utils.common import convert_to_snake, replace_env_variables
 
 INPUT = TypeVar('INPUT')
 OUTPUT = TypeVar('OUTPUT')
@@ -94,7 +94,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.handoffs: List[str] = kwargs.pop("agent_names", [])
         # Supported MCP server
         self.mcp_servers: List[str] = mcp_servers
-        self.mcp_config: Dict[str, Any] = mcp_config
+        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config)
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
