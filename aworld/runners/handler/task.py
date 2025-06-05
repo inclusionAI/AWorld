@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import abc
 import time
 
 from typing import AsyncGenerator
@@ -14,10 +15,18 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.utils import TaskType
 
 
-class DefaultTaskHandler(DefaultHandler):
+class TaskHandler(DefaultHandler):
+    __metaclass__ = abc.ABCMeta
+
     def __init__(self, runner: 'TaskEventRunner'):
         self.runner = runner
 
+    @classmethod
+    def name(cls):
+        return "_task_handler"
+
+
+class DefaultTaskHandler(TaskHandler):
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
         if message.category != Constants.TASK:
             return
@@ -74,7 +83,13 @@ class DefaultTaskHandler(DefaultHandler):
                         logger.warning(f"Failed to cleanup sandbox for agent {agent_name}: {e}")
 
             logger.info(f"{self.runner.task.id} finished.")
-            return
+            yield Message(
+                category=Constants.TASK,
+                payload='',
+                sender=self.name(),
+                session_id=self.runner.context.session_id,
+                topic=TaskType.FINISHED
+            )
         elif topic == TaskType.START:
             logger.info(f"task start event: {message}, will send init message.")
             if message.payload:
