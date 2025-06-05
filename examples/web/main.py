@@ -9,6 +9,7 @@ import utils
 import importlib.util
 import aworld.trace as trace
 from trace_net import generate_trace_graph, generate_trace_graph_full
+import aworld.trace as trace
 
 load_dotenv(os.path.join(os.getcwd(), ".env"))
 
@@ -18,43 +19,35 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.getcwd())
 
 
-def agent_page(trace_id):
+def agent_page():
     st.set_page_config(
         page_title="AWorld Agent",
         page_icon=":robot_face:",
         layout="wide",
     )
 
-    with st.sidebar:
-        agent_list_tab, trace_tab = st.tabs(
-            [
-                "Agents List",
-                "Trace"
-            ]
-        )
-        with agent_list_tab:
-            st.title("Agents List")
-            for agent in utils.list_agents():
-                if st.button(agent):
-                    st.session_state.selected_agent = agent
-                    st.rerun()
-
-        with trace_tab:
-            st.title("Trace")
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                generate_trace_graph(trace_id)
-                st.components.v1.html(
-                    open("trace_graph.html").read(), height=800)
-            with col2:
-                generate_trace_graph_full(trace_id)
-                html_path = os.path.abspath('trace_graph_full.html')
-                html_url = f"file://{html_path}"
-                if st.button("全屏显示"):
-                    if os.path.exists(html_path):
-                        webbrowser.open_new_tab(html_url)
+    # 从URL查询参数中获取选中的agent
+    query_params = st.query_params
+    selected_agent_from_url = query_params.get("agent", None)
+    
+    # 初始化session state
     if "selected_agent" not in st.session_state:
-        st.session_state.selected_agent = None
+        # 如果URL中有agent参数，使用它；否则设为None
+        st.session_state.selected_agent = selected_agent_from_url
+        logger.info(f"Initialized selected_agent from URL: {selected_agent_from_url}")
+    
+    # 如果URL参数和session state不一致，以URL为准
+    if selected_agent_from_url != st.session_state.selected_agent:
+        st.session_state.selected_agent = selected_agent_from_url
+
+    with st.sidebar:
+        st.title("Agents List")
+        for agent in utils.list_agents():
+            if st.button(agent):
+                st.session_state.selected_agent = agent
+                # 更新URL参数
+                st.query_params["agent"] = agent
+                logger.info(f"selected_agent={st.session_state.selected_agent}")
 
     if st.session_state.selected_agent:
         agent_name = st.session_state.selected_agent
@@ -112,6 +105,11 @@ def agent_page(trace_id):
                         async for line in agent.run(prompt):
                             yield f"\n{line}\n"
 
+                        generate_trace_graph_full(trace_id, base_path=xxx, file_name=xxx)
+                        html_path = os.path.abspath(f'trace_graph_full.{task.id}.html')
+                        html_url = f"file://{html_path}"
+                        yield f"\n---\n[View Trace]({html_url})"
+
                 st.write_stream(markdown_generator())
     else:
         st.title("AWorld Agent Chat Assistant")
@@ -119,7 +117,7 @@ def agent_page(trace_id):
 
 
 try:
-    agent_page("7bbe26ef80b7310c573322a07a8f9437")
+    agent_page()
 except Exception as e:
     logger.error(f">>> Error: {traceback.format_exc()}")
     st.error(f"Error: {str(e)}")
