@@ -32,7 +32,9 @@ class McpTool(AsyncTool):
     async def close(self) -> None:
         self._finished = True
         # default only close playwright
-        await self.action_executor.close(self.conf.get('close_servers', ['ms-playwright']))
+        logger.info("---------------------clean all server----------------------------")
+        await self.action_executor.cleanup()
+        #await self.action_executor.close(self.conf.get('close_servers', ['ms-playwright']))
 
     async def do_step(self,
              actions: list[ActionModel],

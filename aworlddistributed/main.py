@@ -3,7 +3,6 @@ import inspect
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -12,26 +11,21 @@ import uuid
 from contextlib import asynccontextmanager
 from logging.handlers import TimedRotatingFileHandler
 from typing import Generator, Iterator, AsyncGenerator, Optional
-from urllib.parse import urlparse
 
-import aiohttp
 from aworld.core.task import Task
 from aworld.utils.common import get_local_ip
-from fastapi import FastAPI, Request, Depends, status, HTTPException, UploadFile, File
+from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
-from base import AworldTask
-from config import API_KEY, PIPELINES_DIR, LOG_LEVELS
-from schemas import FilterForm, OpenAIChatCompletionForm
-from utils.pipelines.auth import get_current_user
-from utils.pipelines.main import get_last_user_message
-from utils.pipelines.misc import convert_to_raw_url
+from config import AGENTS_DIR, LOG_LEVELS
+from base import OpenAIChatCompletionForm
+from aworldspace.utils.utils import get_last_user_message
 
-if not os.path.exists(PIPELINES_DIR):
-    os.makedirs(PIPELINES_DIR)
+if not os.path.exists(AGENTS_DIR):
+    os.makedirs(AGENTS_DIR)
 
 
 PIPELINES = {}
@@ -52,7 +46,7 @@ def setup_logging():
     file_handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
-        '%(asctime)s - [trace_%(trace_id)s] - [%(span_id)s] - %(name)s - %(levelname)s - %(message)s'
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     file_handler.setFormatter(formatter)
 
@@ -184,7 +178,7 @@ async def load_module_from_path(module_name, module_path):
         logging.info(f"Error loading module: {module_name}, error is {e}")
         traceback.print_exc()
         # Move the file to the error folder
-        failed_pipelines_folder = os.path.join(PIPELINES_DIR, "failed")
+        failed_pipelines_folder = os.path.join(AGENTS_DIR, "failed")
         if not os.path.exists(failed_pipelines_folder):
             os.makedirs(failed_pipelines_folder)
 
@@ -247,8 +241,7 @@ async def load_modules_from_directory(directory):
     PIPELINES = get_all_pipelines()
 
 async def on_startup():
-    logging.info("on_startup...")
-    await load_modules_from_directory(PIPELINES_DIR)
+    await load_modules_from_directory(AGENTS_DIR)
     
 
     for module in PIPELINE_MODULES.values():
@@ -257,14 +250,12 @@ async def on_startup():
 
 
 async def on_shutdown():
-    logging.info("on_shutdown...")
     for module in PIPELINE_MODULES.values():
         if hasattr(module, "on_shutdown"):
             await module.on_shutdown()
 
 
 async def reload():
-    logging.info("reload...")
     await on_shutdown()
     # Clear existing pipelines
     PIPELINES.clear()
@@ -308,380 +299,10 @@ async def check_url(request: Request, call_next):
 
     return response
 
-
-@app.get("/v1/models")
-@app.get("/models")
-async def get_models(user: str = Depends(get_current_user)):
-    """
-    Returns the available pipelines
-    """
-    app.state.PIPELINES = get_all_pipelines()
-    return {
-        "data": [
-            {
-                "id": pipeline["id"],
-                "name": pipeline["name"],
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "openai",
-                "pipeline": {
-                    "type": pipeline["type"],
-                    **(
-                        {
-                            "pipelines": (
-                                pipeline["valves"].pipelines
-                                if pipeline.get("valves", None)
-                                else []
-                            ),
-                            "priority": pipeline.get("priority", 0),
-                        }
-                        if pipeline.get("type", "pipe") == "filter"
-                        else {}
-                    ),
-                    "valves": pipeline["valves"] != None,
-                },
-            }
-            for pipeline in app.state.PIPELINES.values()
-        ],
-        "object": "list",
-        "pipelines": True,
-    }
-
-
 @app.get("/v1")
 @app.get("/")
 async def get_status():
     return {"status": True}
-
-
-@app.get("/v1/pipelines")
-@app.get("/pipelines")
-async def list_pipelines(user: str = Depends(get_current_user)):
-    if user == API_KEY:
-        return {
-            "data": [
-                {
-                    "id": pipeline_id,
-                    "name": PIPELINE_NAMES[pipeline_id],
-                    "type": (
-                        PIPELINE_MODULES[pipeline_id].type
-                        if hasattr(PIPELINE_MODULES[pipeline_id], "type")
-                        else "pipe"
-                    ),
-                    "valves": (
-                        True
-                        if hasattr(PIPELINE_MODULES[pipeline_id], "valves")
-                        else False
-                    ),
-                }
-                for pipeline_id in list(PIPELINE_MODULES.keys())
-            ]
-        }
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
-
-
-class AddPipelineForm(BaseModel):
-    url: str
-
-
-async def download_file(url: str, dest_folder: str):
-    filename = os.path.basename(urlparse(url).path)
-    if not filename.endswith(".py"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="URL must point to a Python file",
-        )
-
-    file_path = os.path.join(dest_folder, filename)
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status != 200:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Failed to download file",
-                )
-            with open(file_path, "wb") as f:
-                f.write(await response.read())
-
-    return file_path
-
-
-@app.post("/v1/pipelines/add")
-@app.post("/pipelines/add")
-async def add_pipeline(
-    form_data: AddPipelineForm, user: str = Depends(get_current_user)
-):
-    if user != API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
-
-    try:
-        url = convert_to_raw_url(form_data.url)
-
-        print(url)
-        file_path = await download_file(url, dest_folder=PIPELINES_DIR)
-        await reload()
-        return {
-            "status": True,
-            "detail": f"Pipeline added successfully from {file_path}",
-        }
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
-
-
-@app.post("/v1/pipelines/upload")
-@app.post("/pipelines/upload")
-async def upload_pipeline(
-    file: UploadFile = File(...), user: str = Depends(get_current_user)
-):
-    if user != API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
-
-    file_ext = os.path.splitext(file.filename)[1]
-    if file_ext != ".py":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only Python files are allowed.",
-        )
-
-    try:
-        # Ensure the destination folder exists
-        os.makedirs(PIPELINES_DIR, exist_ok=True)
-
-        # Define the file path
-        file_path = os.path.join(PIPELINES_DIR, file.filename)
-
-        # Save the uploaded file to the specified directory
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        # Perform any necessary reload or processing
-        await reload()
-
-        return {
-            "status": True,
-            "detail": f"Pipeline uploaded successfully to {file_path}",
-        }
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
-
-
-class DeletePipelineForm(BaseModel):
-    id: str
-
-
-@app.delete("/v1/pipelines/delete")
-@app.delete("/pipelines/delete")
-async def delete_pipeline(
-    form_data: DeletePipelineForm, user: str = Depends(get_current_user)
-):
-    if user != API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
-
-    pipeline_id = form_data.id
-    pipeline_name = PIPELINE_NAMES.get(pipeline_id.split(".")[0], None)
-
-    if PIPELINE_MODULES[pipeline_id]:
-        if hasattr(PIPELINE_MODULES[pipeline_id], "on_shutdown"):
-            await PIPELINE_MODULES[pipeline_id].on_shutdown()
-
-    pipeline_path = os.path.join(PIPELINES_DIR, f"{pipeline_name}.py")
-    if os.path.exists(pipeline_path):
-        os.remove(pipeline_path)
-        await reload()
-        return {
-            "status": True,
-            "detail": f"Pipeline {pipeline_id} deleted successfully",
-        }
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pipeline {pipeline_id} not found",
-        )
-
-
-@app.post("/v1/pipelines/reload")
-@app.post("/pipelines/reload")
-async def reload_pipelines(user: str = Depends(get_current_user)):
-    if user == API_KEY:
-        await reload()
-        return {"message": "Pipelines reloaded successfully."}
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
-
-
-@app.get("/v1/{pipeline_id}/valves")
-@app.get("/{pipeline_id}/valves")
-async def get_valves(pipeline_id: str):
-    if pipeline_id not in PIPELINE_MODULES:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pipeline {pipeline_id} not found",
-        )
-
-    pipeline = PIPELINE_MODULES[pipeline_id]
-
-    if hasattr(pipeline, "valves") is False:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Valves for {pipeline_id} not found",
-        )
-
-    return pipeline.valves
-
-
-@app.get("/v1/{pipeline_id}/valves/spec")
-@app.get("/{pipeline_id}/valves/spec")
-async def get_valves_spec(pipeline_id: str):
-    if pipeline_id not in PIPELINE_MODULES:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pipeline {pipeline_id} not found",
-        )
-
-    pipeline = PIPELINE_MODULES[pipeline_id]
-
-    if hasattr(pipeline, "valves") is False:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Valves for {pipeline_id} not found",
-        )
-
-    return pipeline.valves.schema()
-
-
-@app.post("/v1/{pipeline_id}/valves/update")
-@app.post("/{pipeline_id}/valves/update")
-async def update_valves(pipeline_id: str, form_data: dict):
-
-    if pipeline_id not in PIPELINE_MODULES:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Pipeline {pipeline_id} not found",
-        )
-
-    pipeline = PIPELINE_MODULES[pipeline_id]
-
-    if hasattr(pipeline, "valves") is False:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Valves for {pipeline_id} not found",
-        )
-
-    try:
-        ValvesModel = pipeline.valves.__class__
-        valves = ValvesModel(**form_data)
-        pipeline.valves = valves
-
-        # Determine the directory path for the valves.json file
-        subfolder_path = os.path.join(PIPELINES_DIR, PIPELINE_NAMES[pipeline_id])
-        valves_json_path = os.path.join(subfolder_path, "valves.json")
-
-        # Save the updated valves data back to the valves.json file
-        with open(valves_json_path, "w") as f:
-            json.dump(valves.model_dump(), f)
-
-        if hasattr(pipeline, "on_valves_updated"):
-            await pipeline.on_valves_updated()
-    except Exception as e:
-        print(e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"{str(e)}",
-        )
-
-    return pipeline.valves
-
-
-@app.post("/v1/{pipeline_id}/filter/inlet")
-@app.post("/{pipeline_id}/filter/inlet")
-async def filter_inlet(pipeline_id: str, form_data: FilterForm):
-    if pipeline_id not in app.state.PIPELINES:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Filter {pipeline_id} not found",
-        )
-
-    try:
-        pipeline = app.state.PIPELINES[form_data.body["model"]]
-        if pipeline["type"] == "manifold":
-            pipeline_id = pipeline_id.split(".")[0]
-    except:
-        pass
-
-    pipeline = PIPELINE_MODULES[pipeline_id]
-
-    try:
-        if hasattr(pipeline, "inlet"):
-            body = await pipeline.inlet(form_data.body, form_data.user)
-            return body
-        else:
-            return form_data.body
-    except Exception as e:
-        print(e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"{str(e)}",
-        )
-
-
-@app.post("/v1/{pipeline_id}/filter/outlet")
-@app.post("/{pipeline_id}/filter/outlet")
-async def filter_outlet(pipeline_id: str, form_data: FilterForm):
-    if pipeline_id not in app.state.PIPELINES:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Filter {pipeline_id} not found",
-        )
-
-    try:
-        pipeline = app.state.PIPELINES[form_data.body["model"]]
-        if pipeline["type"] == "manifold":
-            pipeline_id = pipeline_id.split(".")[0]
-    except:
-        pass
-
-    pipeline = PIPELINE_MODULES[pipeline_id]
-
-    try:
-        if hasattr(pipeline, "outlet"):
-            body = await pipeline.outlet(form_data.body, form_data.user)
-            return body
-        else:
-            return form_data.body
-    except Exception as e:
-        print(e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"{str(e)}",
-        )
-
 
 @app.post("/v1/chat/completions")
 @app.post("/chat/completions")
@@ -698,10 +319,14 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
             detail=f"Pipeline {form_data.model} not found",
         )
 
-
     def job():
+        print(form_data.model)
+
         pipeline = app.state.PIPELINES[form_data.model]
         pipeline_id = form_data.model
+
+        print(pipeline_id)
+
         if pipeline["type"] == "manifold":
             manifold_id, pipeline_id = pipeline_id.split(".", 1)
             pipe = PIPELINE_MODULES[manifold_id].pipe
@@ -828,6 +453,7 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
                         }
                     ],
                 }
+
 
     return await run_in_threadpool(job)
 
