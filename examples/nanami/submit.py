@@ -1,11 +1,11 @@
 import argparse
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 from aworld.config.conf import AgentConfig
 from examples.gaia.agent import GaiaAgent
-from examples.gaia.prompt import system_prompt
 from examples.gaia.runner import GaiaRunner, RunnerArguments
 
 if __name__ == "__main__":
@@ -62,6 +62,9 @@ if __name__ == "__main__":
 
     dataset_path = os.getenv("GAIA_DATASET_PATH")
     log_path = os.getenv("LOG_FILE_PATH")
+
+    with open(Path(__file__) / "prompt.md", "r", encoding="utf-8") as f:
+        system_prompt = f.read()
 
     runner = GaiaRunner(
         agent=GaiaAgent(
