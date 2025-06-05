@@ -1,5 +1,6 @@
 import requests
 import json
+import os
 import aworld.trace
 from pyvis.network import Network
 from aworld.logs.util import logger
@@ -135,7 +136,7 @@ def generate_trace_graph(trace_id=None):
         """)
 
 
-def generate_trace_graph_full(trace_id=None):
+def generate_trace_graph_full(trace_id=None, base_path="", file_name="trace_graph_full.html"):
     trace_data = fetch_trace_data(trace_id)
     net = Network(height="100%", width="100%",
                   notebook=False, cdn_resources='in_line')
@@ -180,9 +181,10 @@ def generate_trace_graph_full(trace_id=None):
         if span.get('parent_id') and span['parent_id'] in spans:
             net.add_edge(span['parent_id'], span_id, arrows='to')
 
-    net.show('trace_graph_full.html', notebook=False)
+    file_path = os.path.join(base_path, file_name)
+    net.show(file_path, notebook=False)
 
-    with open('trace_graph_full.html', 'a') as f:
+    with open(file_path, 'a') as f:
         f.write(f"""
         <style>
             body {{ margin: 0; padding: 0; }}

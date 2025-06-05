@@ -29,13 +29,14 @@ def agent_page():
     # 从URL查询参数中获取选中的agent
     query_params = st.query_params
     selected_agent_from_url = query_params.get("agent", None)
-    
+
     # 初始化session state
     if "selected_agent" not in st.session_state:
         # 如果URL中有agent参数，使用它；否则设为None
         st.session_state.selected_agent = selected_agent_from_url
-        logger.info(f"Initialized selected_agent from URL: {selected_agent_from_url}")
-    
+        logger.info(
+            f"Initialized selected_agent from URL: {selected_agent_from_url}")
+
     # 如果URL参数和session state不一致，以URL为准
     if selected_agent_from_url != st.session_state.selected_agent:
         st.session_state.selected_agent = selected_agent_from_url
@@ -47,7 +48,8 @@ def agent_page():
                 st.session_state.selected_agent = agent
                 # 更新URL参数
                 st.query_params["agent"] = agent
-                logger.info(f"selected_agent={st.session_state.selected_agent}")
+                logger.info(
+                    f"selected_agent={st.session_state.selected_agent}")
 
     if st.session_state.selected_agent:
         agent_name = st.session_state.selected_agent
@@ -105,8 +107,9 @@ def agent_page():
                         async for line in agent.run(prompt):
                             yield f"\n{line}\n"
 
-                        generate_trace_graph_full(trace_id, base_path=xxx, file_name=xxx)
-                        html_path = os.path.abspath(f'trace_graph_full.{task.id}.html')
+                        generate_trace_graph_full(
+                            trace_id, base_path="static", file_name="test.html")
+                        html_path = os.path.abspath(f'static/test.html')
                         html_url = f"file://{html_path}"
                         yield f"\n---\n[View Trace]({html_url})"
 
