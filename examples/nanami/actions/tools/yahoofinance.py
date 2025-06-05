@@ -25,7 +25,7 @@ import asyncio
 import time
 import traceback
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any
 
 import yfinance as yf
 from pydantic import BaseModel, Field
@@ -85,7 +85,7 @@ class YahooFinanceActionCollection(ActionCollection):
 
         return str(data)
 
-    def _format_quote_data(self, quote: Dict[str, Any]) -> str:
+    def _format_quote_data(self, quote: dict[str, Any]) -> str:
         """Format stock quote data for LLM."""
         lines = [f"# Stock Quote: {quote.get('symbol', 'N/A')}"]
 
@@ -112,7 +112,7 @@ class YahooFinanceActionCollection(ActionCollection):
 
         return "\n".join(lines)
 
-    def _format_company_data(self, company: Dict[str, Any]) -> str:
+    def _format_company_data(self, company: dict[str, Any]) -> str:
         """Format company information for LLM."""
         lines = [f"# Company Information: {company.get('symbol', 'N/A')}"]
 
@@ -147,7 +147,7 @@ class YahooFinanceActionCollection(ActionCollection):
 
         return "\n".join(lines)
 
-    def _format_historical_data(self, data: List[Dict[str, Any]]) -> str:
+    def _format_historical_data(self, data: list[dict[str, Any]]) -> str:
         """Format historical data for LLM."""
         if not data:
             return "No historical data available."
@@ -177,7 +177,7 @@ class YahooFinanceActionCollection(ActionCollection):
 
         return "\n".join(lines)
 
-    def _format_news_list_data(self, news_list: List[Dict[str, Any]]) -> str:
+    def _format_news_list_data(self, news_list: list[dict[str, Any]]) -> str:
         """Format news list for LLM."""
         if not news_list:
             return "No news articles found."
@@ -195,7 +195,7 @@ class YahooFinanceActionCollection(ActionCollection):
 
         return "\n".join(lines)
 
-    def _format_market_summary_data(self, summaries: List[Dict[str, Any]]) -> str:
+    def _format_market_summary_data(self, summaries: list[dict[str, Any]]) -> str:
         """Format market summary for LLM."""
         if not summaries:
             return "No market data available."
