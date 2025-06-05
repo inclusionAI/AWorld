@@ -136,7 +136,7 @@ def generate_trace_graph(trace_id=None):
         """)
 
 
-def generate_trace_graph_full(trace_id=None, base_path="", file_name="trace_graph_full.html"):
+def generate_trace_graph_full(trace_id=None, folder_name="", file_name="trace_graph_full.html"):
     trace_data = fetch_trace_data(trace_id)
     net = Network(height="100%", width="100%",
                   notebook=False, cdn_resources='in_line')
@@ -181,7 +181,9 @@ def generate_trace_graph_full(trace_id=None, base_path="", file_name="trace_grap
         if span.get('parent_id') and span['parent_id'] in spans:
             net.add_edge(span['parent_id'], span_id, arrows='to')
 
-    file_path = os.path.join(base_path, file_name)
+    folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), folder_name)
+    os.makedirs(folder_path, exist_ok=True)
+    file_path = os.path.join(folder_path, file_name)
     net.show(file_path, notebook=False)
 
     with open(file_path, 'a') as f:
