@@ -17,7 +17,6 @@ class SpanStatus(BaseModel):
     code: str = "UNSET"
     description: Optional[str] = None
 
-
 class SpanModel(BaseModel):
     trace_id: str
     span_id: str
@@ -91,12 +90,18 @@ class InMemoryStorage(TraceStorage):
     In-memory storage for spans.
     """
 
-    def __init__(self):
+    def __init__(self,  max_traces=1000):
         self._traces = defaultdict(list)
-        # {trace_id: [span1, span2, ...]}
+        self._trace_order = []
+        self.max_traces = max_traces
 
     def add_span(self, span: Span):
         trace_id = f"{span.get_span_context().trace_id:032x}"
+        if trace_id not in self._traces:
+            self._trace_order.append(trace_id)
+            if len(self._trace_order) > self.max_traces:
+                oldest_trace = self._trace_order.pop(0)
+                del self._traces[oldest_trace]
         self._traces[trace_id].append(SpanModel.from_span(span))
 
     def get_all_traces(self):
@@ -120,13 +125,11 @@ class InMemoryWithPersistStorage(TraceStorage):
         self._persist_thread = None
         self._load_today_traces()
         self.current_filename = None
-
     def _get_today_filename(self):
         if not self.current_filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.current_filename = f"trace_{timestamp}.json"
         return self.current_filename
-
     def _load_today_traces(self):
         today = datetime.now().strftime("%Y%m%d")
         for filename in os.listdir(self.storage_dir):

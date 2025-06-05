@@ -1,3 +1,4 @@
+
 import importlib.util
 import inspect
 import json
@@ -12,6 +13,7 @@ from contextlib import asynccontextmanager
 from logging.handlers import TimedRotatingFileHandler
 from typing import Generator, Iterator, AsyncGenerator, Optional
 
+import aworld.trace as trace  # noqa
 from aworld.core.task import Task
 from aworld.utils.common import get_local_ip
 from fastapi import FastAPI, Request, status, HTTPException
@@ -20,13 +22,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
-from config import AGENTS_DIR, LOG_LEVELS
-from base import OpenAIChatCompletionForm
 from aworldspace.utils.utils import get_last_user_message
+from base import OpenAIChatCompletionForm
+from config import AGENTS_DIR, LOG_LEVELS
 
 if not os.path.exists(AGENTS_DIR):
     os.makedirs(AGENTS_DIR)
-
 
 PIPELINES = {}
 PIPELINE_MODULES = {}
