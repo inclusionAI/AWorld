@@ -89,7 +89,8 @@ class Pipeline(AworldBaseAgent):
         system_prompt = self.valves.system_prompt if self.valves.system_prompt else GAIA_SYSTEM_PROMPT
 
         task = await self.get_task_from_body(body)
-        logging.info(f"task llm config is: {task.llm_provider}, {task.llm_model_name}, {task.llm_api_key}, {task.llm_base_url}")
+        if task:
+            logging.info(f"task llm config is: {task.llm_provider}, {task.llm_model_name}, {task.llm_api_key}, {task.llm_base_url}")
 
         llm_config = ModelConfig(
             llm_provider=task.llm_provider if task and task.llm_provider else default_llm_provider,
