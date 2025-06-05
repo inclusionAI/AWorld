@@ -11,11 +11,13 @@ from opentelemetry.sdk.trace import Span, SpanContext
 from opentelemetry.sdk.trace.export import SpanExporter
 from aworld.logs.util import logger
 from aworld.replay_buffer.processor import ReplayBufferExporter
+from aworld.trace.constants import ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType
 
 
 class SpanStatus(BaseModel):
     code: str = "UNSET"
     description: Optional[str] = None
+
 
 class SpanModel(BaseModel):
     trace_id: str
@@ -28,6 +30,7 @@ class SpanModel(BaseModel):
     status: SpanStatus
     parent_id: Optional[str]
     children: list['SpanModel'] = []
+    run_type: Optional[str] = RunType.OTHER.value
 
     @staticmethod
     def from_span(span):
@@ -52,7 +55,9 @@ class SpanModel(BaseModel):
                 description=span.status.description or None
             ),
             parent_id=SpanModel.get_span_id(
-                span.parent) if span.parent else None
+                span.parent) if span.parent else None,
+            run_type=span.attributes.get(
+                ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType.OTHER.value)
         )
 
     @staticmethod
@@ -125,11 +130,13 @@ class InMemoryWithPersistStorage(TraceStorage):
         self._persist_thread = None
         self._load_today_traces()
         self.current_filename = None
+
     def _get_today_filename(self):
         if not self.current_filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.current_filename = f"trace_{timestamp}.json"
         return self.current_filename
+
     def _load_today_traces(self):
         today = datetime.now().strftime("%Y%m%d")
         for filename in os.listdir(self.storage_dir):
