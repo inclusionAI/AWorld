@@ -304,16 +304,16 @@ async def call_api(
         parameter: Dict[str, Any] = None,
         mcp_config: Dict[str, Any] = None,
 ) -> ActionResult:
-    """专门处理API类型服务器的调用
-    
+    """Specifically handle API type server calls
+
     Args:
-        server_name: 服务器名称
-        tool_name: 工具名称
-        parameter: 参数
-        mcp_config: MCP配置
-        
+        server_name: Server name
+        tool_name: Tool name
+        parameter: Parameters
+        mcp_config: MCP configuration
+
     Returns:
-        ActionResult: 调用结果
+        ActionResult: Call result
     """
     action_result = ActionResult(
         content="",
@@ -373,14 +373,12 @@ async def call_tool(
         return action_result
     
     server_config = mcp_servers.get(server_name)
-    
-    # 如果是API类型服务器，使用call_api函数处理
+
     if "api" == server_config.get("type", ""):
         return await call_api(server_name, tool_name, parameter, mcp_config)
     
     try:
         async with AsyncExitStack() as stack:
-            # 只处理非API类型服务器
             if "sse" == server_config.get("type", ""):
                 server = MCPServerSse(
                     name=server_name,
@@ -391,7 +389,7 @@ async def call_tool(
                         "sse_read_timeout": server_config.get("sse_read_timeout", 300.0)
                     }
                 )
-            else:  # stdio类型
+            else:  # stdiotype
                 params = {
                     "command": server_config["command"],
                     "args": server_config.get("args", []),
