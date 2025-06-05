@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from abc import ABC, abstractmethod
-import re
 from typing import Any, Collection
 from packaging.requirements import Requirement, InvalidRequirement
 from importlib_metadata import version, PackageNotFoundError
@@ -23,7 +22,8 @@ class Instrumentor(ABC):
         Instrument the library.
         """
         if self._has_instrumented:
-            logger.warning("Instrumentor has already instrumented, skip")
+            logger.warning(
+                f"Instrumentor[{self.__class__.__name__}] has already instrumented, skip")
             return
 
         if not self._check_dependency_conflicts():
