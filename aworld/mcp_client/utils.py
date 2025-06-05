@@ -93,8 +93,6 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                                 "description": param_desc,
                                 "type": param_type
                             }
-                        if param_info.get("required", False):
-                            required.append(param_name)
 
                 openai_function_schema = {
                     "name": f'{server.name}__{tool.name}',

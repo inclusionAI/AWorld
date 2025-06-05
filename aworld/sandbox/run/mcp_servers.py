@@ -39,7 +39,7 @@ class McpServers:
     async def call_tool(
             self,
             action_list: List[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> List[ActionResult]:
         results = []
         if not action_list:
             return None
@@ -114,13 +114,8 @@ class McpServers:
                         try:
                             await cleanup_server(self.server_instances[server_name])
                             del self.server_instances[server_name]
-                        except:
-                            pass
-                    # Fall back to the original method
-                    call_result = await call_tool(
-                        server_name, tool_name, parameter, self.mcp_config
-                    )
-                    results.append(call_result)
+                        except Exception as e:
+                            logging.warning(f"Failed to cleanup server {server_name}: {e}")
         except Exception as e:
             logging.warning(f"Failed to call_tool: {e}")
             return None
@@ -144,7 +139,7 @@ class McpServers:
             mcp_config: Optional[Any] = None,
             metadata: Optional[Dict[str, str]] = None,
             env_type: Optional[int] = None,
-    ) -> None:
+    ) -> Any:
         try:
             if env_type == SandboxEnvType.LOCAL:
                 return mcp_config
@@ -165,7 +160,7 @@ class McpServers:
             mcp_config: Optional[Any] = None,
             metadata: Optional[Dict[str, str]] = None,
             env_type: Optional[int] = None,
-    ) -> None:
+    ) -> Any:
         try:
             if env_type != SandboxEnvType.SUPERCOMPUTER or not metadata or not metadata.get("host"):
                 return mcp_config
@@ -197,7 +192,7 @@ class McpServers:
             mcp_config: Optional[Any] = None,
             metadata: Optional[Dict[str, str]] = None,
             env_type: Optional[int] = None,
-    ) -> None:
+    ) -> Any:
         try:
             if env_type != SandboxEnvType.K8S or not metadata or (
                     not metadata.get("cluster_ip") and not metadata.get("host")):
