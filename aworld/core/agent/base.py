@@ -16,7 +16,8 @@ from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
-from aworld.utils.common import convert_to_snake
+from aworld.sandbox.main import Sandbox
+from aworld.utils.common import convert_to_snake, replace_env_variables
 
 INPUT = TypeVar('INPUT')
 OUTPUT = TypeVar('OUTPUT')
@@ -63,7 +64,14 @@ class MemoryModel(BaseModel):
 class BaseAgent(Generic[INPUT, OUTPUT]):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
+    def __init__(self,
+                 conf: Union[Dict[str, Any],
+                 ConfigDict, AgentConfig],
+                 sandbox: Sandbox = None,
+                 mcp_servers: List[str] = [],
+                 mcp_config: Dict[str, Any] = {},
+                 **kwargs
+                 ):
         self.conf = conf
         if isinstance(conf, ConfigDict):
             pass
@@ -85,14 +93,16 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = kwargs.pop("agent_names", [])
         # Supported MCP server
-        self.mcp_servers: List[str] = kwargs.pop("mcp_servers", [])
-        self.mcp_config: Dict[str, Any] = kwargs.pop("mcp_config", {})
+        self.mcp_servers: List[str] = mcp_servers
+        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config)
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
         self.context = Context.instance()
         self.state = AgentStatus.START
         self._finished = True
+        # todo sandbox
+        self.sandbox = sandbox or Sandbox(mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -208,6 +218,11 @@ class AgentManager(Factory):
         if self._agent_instance.get(name, None) and self._agent_instance[name].desc:
             return self._agent_instance[name].desc
         return self._desc.get(name, "")
+
+    def agent_instance(self, name: str) -> BaseAgent | None:
+        if self._agent_instance.get(name, None):
+            return self._agent_instance[name]
+        return None
 
     def register(self, name: str, desc: str, conf_file_name: str = None, **kwargs):
         """Register a tool to tool factory.

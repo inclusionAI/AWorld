@@ -4,10 +4,11 @@
 from typing import Any, Dict, Tuple, Union
 
 from aworld.config.conf import ToolConfig, ConfigDict
+from aworld.core.agent.base import AgentFactory
 from aworld.core.common import ActionModel, Observation
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
-from examples.tools.mcp_tool.executor import MCPToolExecutor
+from aworld.tools.mcp_tool.executor import MCPToolExecutor
 from aworld.tools.utils import build_observation
 
 
@@ -49,6 +50,8 @@ class McpTool(AsyncTool):
         reward = 0
         fail_error = ""
         terminated = kwargs.get("terminated", False)
+        # todo sandbox
+        agent = AgentFactory.agent_instance(actions[0].agent_name)
         if not actions:
             self._finished = True
             observation = build_observation(observer=self.name(),
@@ -86,7 +89,12 @@ class McpTool(AsyncTool):
 
         action_results = None
         try:
-            action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
+            # todo sandbox
+            if agent and agent.sandbox:
+                sand_box = agent.sandbox
+                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions)
+            else:
+                action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1
         except Exception as e:
             fail_error = str(e)

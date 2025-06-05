@@ -272,3 +272,44 @@ def get_local_ip():
         return local_ip
     except Exception:
         return "127.0.0.1"
+
+def replace_env_variables(
+        config) -> Any:
+    """
+    Replace environment variables in configuration.
+    Environment variables should be in the format ${ENV_VAR_NAME}.
+
+    Args:
+        config: Configuration to process (dict, list, or other value)
+
+    Returns:
+        Processed configuration with environment variables replaced
+    """
+    if config is None:
+        return config
+
+    try:
+        if isinstance(config, dict):
+            for key, value in config.items():
+                if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+                    env_var_name = value[2:-1]
+                    env_value = os.getenv(env_var_name)
+                    if env_value is not None:
+                        config[key] = env_value
+                        logger.info(f"Replaced {value} with {config[key]}")
+                elif isinstance(value, (dict, list)):
+                    config[key] = replace_env_variables(value)
+        elif isinstance(config, list):
+            for index, item in enumerate(config):
+                if isinstance(item, str) and item.startswith("${") and item.endswith("}"):
+                    env_var_name = item[2:-1]
+                    env_value = os.getenv(env_var_name)
+                    if env_value is not None:
+                        config[index] = env_value
+                        logger.info(f"Replaced {item} with {config[index]}")
+                elif isinstance(item, (dict, list)):
+                    config[index] = replace_env_variables(item)
+    except Exception as e:
+        logger.error(f"_replace_env_variables error: {e}")
+
+    return config

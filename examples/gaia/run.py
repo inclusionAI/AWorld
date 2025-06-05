@@ -9,7 +9,8 @@ from typing import Any, Dict, List
 from dotenv import load_dotenv
 
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
+from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.gaia.prompt import system_prompt
 from examples.gaia.utils import (
@@ -201,11 +202,10 @@ if __name__ == "__main__":
                     dataset_i, file_path=gaia_dataset_path, split=args.split
                 )["Question"]
 
-                result = Runners.sync_run_task(
-                    task=Task(input=question, agent=super_agent, conf=TaskConfig())
-                )
+                task = Task(input=question, agent=super_agent, conf=TaskConfig())
+                result = Runners.sync_run_task(task=task)
 
-                match = re.search(r"<answer>(.*?)</answer>", result["task_0"]["answer"])
+                match = re.search(r"<answer>(.*?)</answer>", result[task.id].get('answer'))
                 if match:
                     answer = match.group(1)
                     logging.info(f"Agent answer: {answer}")

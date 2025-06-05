@@ -49,12 +49,10 @@ class AWorldAgent:
             name="weather_agent",
             system_prompt="You are a weather agent, you can query real-time weather information",
             mcp_config=mcp_config,
-            mcp_servers=[
-                "weather_server",
-            ],
+            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
         )
 
-        task = Task(input=prompt, agent=super_agent, event_driven=False, conf=TaskConfig(max_steps=1))
+        task = Task(input=prompt, agent=super_agent, event_driven=False, conf=TaskConfig(max_steps=20))
 
         rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():

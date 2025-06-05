@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import string
 import uuid
 import datetime
@@ -7,12 +8,13 @@ import time
 import random
 from typing import Optional
 
+from dotenv import load_dotenv
 from typing_extensions import List, Any, Dict
 
 from aworld.sandbox.base.apibase import SandboxApiBase
 from aworld.sandbox.env_client.kubernetes.client import KubernetesApiClient
 from aworld.sandbox.models import SandboxCreateResponse, EnvConfig, SandboxEnvType, SandboxStatus, SandboxK8sResponse, \
-    SandboxInfo
+    SandboxInfo, SandboxLocalResponse, SandboxSuperResponse
 from aworld.sandbox.run.mcp_servers import McpServers
 
 
@@ -30,10 +32,74 @@ class SandboxApi(SandboxApiBase):
         #todo
 
         #2. Build actual environment based on env_type
-        if env_type == SandboxEnvType.K8S:
-            return cls._create_sandbox_by_k8s(mcp_servers,mcp_config)
+        if env_type == SandboxEnvType.LOCAL:
+            return cls._create_sandbox_by_local(mcp_servers, mcp_config)
+        elif env_type == SandboxEnvType.SUPERCOMPUTER:
+            return cls._create_sandbox_by_super(mcp_servers, mcp_config)
+        elif env_type == SandboxEnvType.K8S:
+            return cls._create_sandbox_by_k8s(mcp_servers, mcp_config)
         else:
             return None
+
+
+    @classmethod
+    def _create_sandbox_by_local(
+            cls,
+            mcp_servers: Optional[List[str]] = None,
+            mcp_config: Optional[Any] = None,
+    ) -> SandboxLocalResponse:
+        try:
+            if not mcp_servers:
+                logging.warning("_create_sandbox_by_local mcp_servers is not exist")
+                return None
+            return SandboxLocalResponse(
+                status=SandboxStatus.RUNNING,
+                mcp_config=mcp_config,
+                env_type=SandboxEnvType.LOCAL
+            )
+        except Exception as e:
+            logging.warning(f"Failed to _create_sandbox_by_local: {e}")
+            return None
+
+    @classmethod
+    def _create_sandbox_by_super(
+            cls,
+            mcp_servers: Optional[List[str]] = None,
+            mcp_config: Optional[Any] = None,
+    ) -> SandboxSuperResponse:
+        try:
+            if not mcp_servers:
+                logging.warning("_create_sandbox_by_super mcp_servers is not exist")
+                return None
+            load_dotenv()
+            host = os.getenv("SUPERCOMPUTER_HOST")
+            if not host:
+                logging.warning("_create_sandbox_by_super SUPERCOMPUTER_HOST is null")
+                return
+            metadata = {
+                "status": SandboxStatus.RUNNING,
+                "host": host,
+            }
+            response = SandboxApi._get_mcp_configs(
+                mcp_servers=mcp_servers,
+                mcp_config=mcp_config,
+                metadata=metadata,
+                env_type=SandboxEnvType.SUPERCOMPUTER
+            )
+            if not response:
+                return None
+
+            return SandboxSuperResponse(
+                status=SandboxStatus.RUNNING,
+                host=host,
+                mcp_config=mcp_config,
+                env_type=SandboxEnvType.SUPERCOMPUTER
+            )
+        except Exception as e:
+            logging.warning(f"Failed to _create_sandbox_by_super: {e}")
+            return None
+
+
 
     @classmethod
     def _create_sandbox_by_k8s(
@@ -50,7 +116,6 @@ class SandboxApi(SandboxApiBase):
         service_name = None
 
         try:
-            sandbox_id = str(uuid.uuid4())
             # Generate current date and time as prefix, format is yymmddHHMMSS
             date_prefix = datetime.datetime.now().strftime("%y%m%d%H%M%S")
             random_str = cls.generate_random_string()
@@ -116,7 +181,6 @@ class SandboxApi(SandboxApiBase):
                     # Use asyncio.run to call async method
                     try:
                         metadata={
-                            sandbox_id: sandbox_id,
                             "pod_name": pod_name,
                             "service_name": service_name,
                             "status": pod_info.get("status"),
@@ -136,13 +200,13 @@ class SandboxApi(SandboxApiBase):
 
 
             return SandboxK8sResponse(
-                sandbox_id=sandbox_id,
                 pod_name=pod_name,
                 service_name=service_name,
                 status=pod_info.get("status"),
                 cluster_ip=service_info.get("cluster_ip"),
                 host=service_info.get("host"),
                 mcp_config=mcp_config,
+                env_type=SandboxEnvType.K8S,
             )
 
         except Exception as e:

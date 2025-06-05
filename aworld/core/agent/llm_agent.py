@@ -24,6 +24,7 @@ from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
+from aworld.sandbox.main import Sandbox
 from aworld.utils.common import sync_exec
 
 
@@ -115,7 +116,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # Agents as tool
         self.tools.extend(self._handoffs_agent_as_tool())
         # MCP servers are tools
-        self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
+        # todo sandbox
+        if self.sandbox:
+            sand_box = self.sandbox
+            mcp_tools = await sand_box.mcpservers.list_tools()
+            self.tools.extend(mcp_tools)
+        else:
+            self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
 
     def _messages_transform(
             self,
