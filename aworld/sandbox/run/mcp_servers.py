@@ -2,8 +2,8 @@ import logging
 
 from typing_extensions import Optional,List,Dict,Any
 
+from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server
 from aworld.sandbox.models import SandboxEnvType
-from aworld.sandbox.run.mcp.utils import sandbox_mcp_tool_desc_transform, call_tool, call_api, get_server_instance, cleanup_server
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
@@ -80,13 +80,9 @@ class McpServers:
                     server = await get_server_instance(server_name, self.mcp_config)
                     if server:
                         self.server_instances[server_name] = server
-                        logging.debug(f"Created and cached new server instance for {server_name}")
+                        logging.info(f"Created and cached new server instance for {server_name}")
                     else:
-                        # If unable to create server instance, fall back to the original method
-                        call_result = await call_tool(
-                            server_name, tool_name, parameter, self.mcp_config
-                        )
-                        results.append(call_result)
+                        logging.warning(f"Created new server failed: {server_name}")
                         continue
 
                 # Use server instance to call the tool
@@ -139,7 +135,7 @@ class McpServers:
             try:
                 await cleanup_server(server)
                 del self.server_instances[server_name]
-                logging.debug(f"Cleaned up server instance for {server_name}")
+                logging.info(f"Cleaned up server instance for {server_name}")
             except Exception as e:
                 logging.warning(f"Failed to cleanup server {server_name}: {e}")
 

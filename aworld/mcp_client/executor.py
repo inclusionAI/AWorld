@@ -4,7 +4,7 @@ import asyncio
 
 from typing import Any, Dict
 
-from aworld.sandbox.run.mcp.server import MCPServer, MCPServerSse, MCPServerStdio
+from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio
 
 
 class MCPToolExecutor:
