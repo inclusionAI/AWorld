@@ -44,7 +44,7 @@ RUN mkdir -p /app/lib
 RUN cd /app/lib && git clone https://github.com/inclusionAI/AWorld.git
 RUN cd /app/lib/AWorld && git checkout framework_upgrade_aworldserver_gaia && pip install -r aworld/requirements.txt ${PIP_OPTIONS} && python setup.py install
 
-RUN npx playwright install chrome
+RUN npx playwright install chrome --with-deps --no-shell
 
 RUN cd /app
 
