@@ -17,6 +17,7 @@ class SpanStatus(BaseModel):
     code: str = "UNSET"
     description: Optional[str] = None
 
+
 class SpanModel(BaseModel):
     trace_id: str
     span_id: str
@@ -40,15 +41,19 @@ class SpanModel(BaseModel):
             trace_id=f"{span.get_span_context().trace_id:032x}",
             span_id=SpanModel.get_span_id(span),
             name=span.name,
-            start_time=time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_timestamp)) + f'.{start_ms:03d}',
-            end_time=time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_timestamp)) + f'.{end_ms:03d}',
+            start_time=time.strftime(
+                '%Y-%m-%d %H:%M:%S', time.localtime(start_timestamp)) + f'.{start_ms:03d}',
+            end_time=time.strftime(
+                '%Y-%m-%d %H:%M:%S', time.localtime(end_timestamp)) + f'.{end_ms:03d}',
             duration_ms=(span.end_time - span.start_time)/1e6,
             attributes={k: v for k, v in span.attributes.items()},
             status=SpanStatus(
-                code=str(span.status.status_code) if span.status.status_code else "UNSET",
+                code=str(
+                    span.status.status_code) if span.status.status_code else "UNSET",
                 description=span.status.description or None
             ),
-            parent_id=SpanModel.get_span_id(span.parent) if span.parent else None
+            parent_id=SpanModel.get_span_id(
+                span.parent) if span.parent else None
         )
 
     @staticmethod
@@ -85,6 +90,7 @@ class InMemoryStorage(TraceStorage):
     """
     In-memory storage for spans.
     """
+
     def __init__(self):
         self._traces = defaultdict(list)
         # {trace_id: [span1, span2, ...]}
@@ -99,10 +105,12 @@ class InMemoryStorage(TraceStorage):
     def get_all_spans(self, trace_id):
         return self._traces.get(trace_id, [])
 
+
 class InMemoryWithPersistStorage(TraceStorage):
     """
     In-memory storage for spans with optimized disk persistence.
     """
+
     def __init__(self, storage_dir: str = "./trace_data"):
         self._traces = defaultdict(list)
         self._pending_spans = []
@@ -111,11 +119,14 @@ class InMemoryWithPersistStorage(TraceStorage):
         self._lock = threading.Lock()
         self._persist_thread = None
         self._load_today_traces()
-        
+        self.current_filename = None
+
     def _get_today_filename(self):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return f"trace_{timestamp}.json"
-        
+        if not self.current_filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.current_filename = f"trace_{timestamp}.json"
+        return self.current_filename
+
     def _load_today_traces(self):
         today = datetime.now().strftime("%Y%m%d")
         for filename in os.listdir(self.storage_dir):
@@ -127,33 +138,38 @@ class InMemoryWithPersistStorage(TraceStorage):
                         for span_data in data:
                             trace_id = span_data.get("trace_id")
                             span_json = span_data.get("span")
-                            self._traces[trace_id].append(SpanModel.parse_raw(span_json))
+                            self._traces[trace_id].append(
+                                SpanModel.parse_raw(span_json))
                 except Exception as e:
-                    logger.error(f"Error loading trace file {filename}: {str(e)}")
-    
+                    logger.error(
+                        f"Error loading trace file {filename}: {str(e)}")
+
     def _start_persist_thread(self):
         if self._persist_thread is None:
-            self._persist_thread = threading.Thread(target=self._persist_worker, daemon=True)
+            self._persist_thread = threading.Thread(
+                target=self._persist_worker, daemon=True)
             self._persist_thread.start()
-    
+
     def _persist_worker(self):
         while True:
             time.sleep(5)
             self._persist()
-    
+
     def _persist(self):
         if not self._pending_spans:
             return
-            
-        temp_filepath = os.path.join(self.storage_dir, f"temp_{time.time_ns()}.json")
-        final_filepath = os.path.join(self.storage_dir, self._get_today_filename())
-        
+
+        temp_filepath = os.path.join(
+            self.storage_dir, f"temp_{time.time_ns()}.json")
+        final_filepath = os.path.join(
+            self.storage_dir, self._get_today_filename())
+
         try:
             spans_to_persist = []
             with self._lock:
                 spans_to_persist = self._pending_spans.copy()
                 self._pending_spans.clear()
-            
+
             if spans_to_persist:
                 existing_data = []
                 if os.path.exists(final_filepath):
@@ -161,10 +177,11 @@ class InMemoryWithPersistStorage(TraceStorage):
                         with open(final_filepath, 'r') as f:
                             existing_data = json.load(f)
                     except Exception as e:
-                        logger.error(f"Error reading existing trace file: {str(e)}")
-                
+                        logger.error(
+                            f"Error reading existing trace file: {str(e)}")
+
                 merged_spans = existing_data + spans_to_persist
-                
+
                 with open(temp_filepath, 'w') as f:
                     json.dump(merged_spans, f, default=str)
                 os.replace(temp_filepath, final_filepath)
@@ -184,7 +201,7 @@ class InMemoryWithPersistStorage(TraceStorage):
                 "span": span_model.model_dump_json()
             })
         self._start_persist_thread()
-    
+
     def get_all_traces(self):
         with self._lock:
             return list(self._traces.keys())
@@ -194,11 +211,11 @@ class InMemoryWithPersistStorage(TraceStorage):
             return self._traces.get(trace_id, [])
 
 
-
 class InMemorySpanExporter(SpanExporter):
     """
     Span exporter that stores spans in memory.
     """
+
     def __init__(self, storage: TraceStorage, export_dir: str = None):
         self._storage = storage
         self._export_dir = export_dir
@@ -211,8 +228,10 @@ class InMemorySpanExporter(SpanExporter):
             span_model_list.append(SpanModel.from_span(span).model_dump())
 
         if (os.getenv("EXPORT_REPLAY_TRACE_TO_FILES") or "true").lower() == "true":
-            storage_dir = self._export_dir or self._storage.storage_dir if hasattr(self._storage, "storage_dir") else "./trace_data"
-            self._export_processor.replay_buffer_exporter(spans=span_model_list, output_dir=storage_dir)
+            storage_dir = self._export_dir or self._storage.storage_dir if hasattr(
+                self._storage, "storage_dir") else "./trace_data"
+            self._export_processor.replay_buffer_exporter(
+                spans=span_model_list, output_dir=storage_dir)
 
     def shutdown(self):
         pass
