@@ -7,8 +7,6 @@ import asyncio
 import time
 from typing import Tuple, Any
 
-from langchain_core.prompts import PromptTemplate
-
 from examples.tools.tool_action import BrowserAction
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult, Observation
@@ -446,6 +444,7 @@ class GoBack(ExecutableAction):
 class ExtractContent(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         import markdownify
+        from langchain_core.prompts import PromptTemplate
 
         logger.info(f"exec {BrowserAction.EXTRACT_CONTENT.value.name} action")
         page = get_page(**kwargs)
@@ -512,6 +511,7 @@ class ExtractContent(ExecutableAction):
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         import markdownify
+        from langchain_core.prompts import PromptTemplate
 
         logger.info(f"exec {BrowserAction.EXTRACT_CONTENT.value.name} action")
         page = get_page(**kwargs)

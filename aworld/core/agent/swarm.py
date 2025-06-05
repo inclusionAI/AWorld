@@ -101,6 +101,7 @@ class Swarm(object):
                 AgentFactory._cls[pair[0].name()] = pair[0].__class__
                 AgentFactory._desc[pair[0].name()] = pair[0].desc()
                 AgentFactory._agent_conf[pair[0].name()] = pair[0].conf
+                AgentFactory._agent_instance[pair[0].name()] = pair[0]
             elif pair[0].desc():
                 AgentFactory._desc[pair[0].name()] = pair[0].desc()
 
@@ -113,6 +114,7 @@ class Swarm(object):
                     AgentFactory._cls[pair[1].name()] = pair[1].__class__
                     AgentFactory._desc[pair[1].name()] = pair[1].desc()
                     AgentFactory._agent_conf[pair[1].name()] = pair[1].conf
+                    AgentFactory._agent_instance[pair[1].name()] = pair[1]
                 elif pair[1].desc():
                     AgentFactory._desc[pair[1].name()] = pair[1].desc()
 
