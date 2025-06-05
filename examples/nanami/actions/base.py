@@ -38,15 +38,17 @@ class ActionCollection:
     logger: logging.Logger
 
     def __init__(self, arguments: ActionArguments) -> None:
-        self.workspace = self._obtain_valid_workspace(arguments.workspace)
+        self.workspace: Path = self._obtain_valid_workspace(arguments.workspace)
 
-        self.logger = setup_logger(self.__class__.__name__, self.workspace)
+        self.logger: logging.Logger = setup_logger(self.__class__.__name__, self.workspace)
+
+        self.supported_extensions: set = set()
 
         self.server = FastMCP(arguments.name)
         for tool_name in self.__class__.__dict__:
             if callable(getattr(self.__class__, tool_name)) and tool_name.startswith("mcp_"):
                 tool = getattr(self.__class__, tool_name)
-                self.server.add_tool(tool)
+                self.server.add_tool(tool, description=tool.__doc__)
         if not arguments.unittest:
             self.server.run(transport=arguments.transport)
 
@@ -67,3 +69,30 @@ class ActionCollection:
 
         # self._color_log("Invalid workspace path, using home directory instead.", Color.yellow)
         return Path.home().expanduser().resolve()
+
+    def _validate_file_path(self, file_path: str) -> Path:
+        """Validate and resolve file path. Rely on the predefined supported_extensions class variable.
+
+        Args:
+            file_path: Path to the document or media file
+
+        Returns:
+            Resolved Path object
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+            ValueError: If file type is not supported
+        """
+        path = Path(file_path).expanduser()
+        if not path.is_absolute():
+            path = self.workspace / path
+
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        if path.suffix.lower() not in self.supported_extensions:
+            raise ValueError(
+                f"Unsupported file type: {path.suffix}. Supported types: {', '.join(self.supported_extensions)}"
+            )
+
+        return path

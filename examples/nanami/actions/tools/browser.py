@@ -8,11 +8,11 @@ Main functions:
 - mcp_browser_use: Performs browser automation tasks with LLM-friendly output
 """
 
+import asyncio
 import json
 import os
 import time
 import traceback
-from typing import Optional
 
 from browser_use import Agent, AgentHistoryList, BrowserProfile
 from browser_use.agent.memory.views import MemoryConfig
@@ -29,12 +29,12 @@ class BrowserMetadata(BaseModel):
 
     task: str
     execution_successful: bool
-    steps_taken: Optional[int] = None
+    steps_taken: int | None = None
     downloaded_files: list[str] = Field(default_factory=list)
     visited_urls: list[str] = Field(default_factory=list)
-    execution_time: Optional[float] = None
-    error_type: Optional[str] = None
-    trace_log_path: Optional[str] = None
+    execution_time: float | None = None
+    error_type: str | None = None
+    trace_log_path: str | None = None
 
 
 class BrowserActionCollection(ActionCollection):
@@ -56,21 +56,21 @@ class BrowserActionCollection(ActionCollection):
 
         # Extended system prompt for browser automation
         self.extended_browser_system_prompt = """
-        10. Download:
-        -  Save the most relevant files (text/image/pdf/...) to local path for further processing
-        -  **ALWAYS** download the .pdf files for further processing. DO NOT click the link to open the pdf file in new tabs.
+10. Download:
+-  Save the most relevant files (text/image/pdf/...) to local path for further processing
+-  **ALWAYS** download the .pdf files for further processing. DO NOT click the link to open the pdf file in new tabs.
 
-        11. Robot Detection:
-        - If the page is a robot detection page, abort immediately. Then navigate to the most authoritative source for similar information instead
+11. Robot Detection:
+- If the page is a robot detection page, abort immediately. Then navigate to the most authoritative source for similar information instead
 
-        # Efficiency Guidelines
-        0. if download option is available, always **DOWNLOAD** as possible! Also, report the download url link in your result.
-        1. Use specific search queries with key terms from the task
-        2. Avoid getting distracted by tangential information
-        3. If blocked by paywalls, try archive.org or similar alternatives
-        4. Document each significant finding clearly and concisely
-        5. Precisely extract the necessary information with minimal browsing steps.
-        """
+# Efficiency Guidelines
+0. if download option is available, always **DOWNLOAD** as possible! Also, report the download url link in your result.
+1. Use specific search queries with key terms from the task
+2. Avoid getting distracted by tangential information
+3. If blocked by paywalls, try archive.org or similar alternatives
+4. Document each significant finding clearly and concisely
+5. Precisely extract the necessary information with minimal browsing steps.
+"""
 
         # Initialize LLM configuration
         self.llm_config = ChatOpenAI(
@@ -83,11 +83,11 @@ class BrowserActionCollection(ActionCollection):
         # Browser profile configuration
         self.browser_profile = BrowserProfile(
             cookies_file=os.getenv("COOKIES_FILE_PATH"),
-            downloads_dir=str(self.workspace),
+            downloads_dir=os.getenv("FILESYSTEM_SERVER_WORKDIR", str(self.workspace)),
         )
 
         # Log configuration
-        self.trace_log_dir = str(self.workspace / "logs")
+        self.trace_log_dir = os.getenv("LOG_FILE_PATH", str(self.workspace / "logs"))
         os.makedirs(f"{self.trace_log_dir}/browser_log", exist_ok=True)
 
         self._color_log("Browser automation service initialized", Color.green)
@@ -183,7 +183,6 @@ class BrowserActionCollection(ActionCollection):
             # Create browser agent
             agent = self._create_browser_agent(task)
 
-            # Execute browser automation
             start_time = time.time()
 
             browser_execution: AgentHistoryList = await agent.run(max_steps=max_steps)
@@ -204,8 +203,7 @@ class BrowserActionCollection(ActionCollection):
                     formatted_content = f"{final_result}\n\n{self._format_extracted_content(extracted_content)}"
                 else:  # markdown (default)
                     formatted_content = (
-                        f"## Browser Automation Result\n\n**Summary:** "
-                        f"{final_result}\n\n"
+                        f"## Browser Automation Result\n\n**Summary:** {final_result}\n\n"
                         f"{self._format_extracted_content(extracted_content)}"
                     )
 
@@ -287,20 +285,20 @@ class BrowserActionCollection(ActionCollection):
 
         formatted_info = f"""# Browser Automation Service Capabilities
 
-        ## Features
-        {chr(10).join(f"- {feature}" for feature in capabilities["automation_features"])}
+## Features
+{chr(10).join(f"- {feature}" for feature in capabilities["automation_features"])}
 
-        ## Supported Output Formats
-        {chr(10).join(f"- {fmt}" for fmt in capabilities["supported_formats"])}
+## Supported Output Formats
+{chr(10).join(f"- {fmt}" for fmt in capabilities["supported_formats"])}
 
-        ## Current Configuration
-        - **LLM Model:** {capabilities["configuration"]["llm_model"]}
-        - **Downloads Directory:** {capabilities["configuration"]["downloads_directory"]}
-        - **Cookies Enabled:** {capabilities["configuration"]["cookies_enabled"]}
-        - **Vision Enabled:** {capabilities["configuration"]["vision_enabled"]}
-        - **Memory Enabled:** {capabilities["configuration"]["memory_enabled"]}
-        - **Trace Logging:** {capabilities["configuration"]["trace_logging"]}
-        """
+## Current Configuration
+- **LLM Model:** {capabilities["configuration"]["llm_model"]}
+- **Downloads Directory:** {capabilities["configuration"]["downloads_directory"]}
+- **Cookies Enabled:** {capabilities["configuration"]["cookies_enabled"]}
+- **Vision Enabled:** {capabilities["configuration"]["vision_enabled"]}
+- **Memory Enabled:** {capabilities["configuration"]["memory_enabled"]}
+- **Trace Logging:** {capabilities["configuration"]["trace_logging"]}
+"""
 
         return ActionResponse(success=True, message=formatted_info, metadata=capabilities)
 
@@ -319,9 +317,7 @@ if __name__ == "__main__":
     service = BrowserActionCollection(args)
     try:
         # Example usage (commented out for production)
-        # import asyncio
-        # resp = asyncio.run(service.mcp_browser_use(task="Search for information about Python web scraping"))
-        # print(resp)
-        pass
+        resp = asyncio.run(service.mcp_browser_use(task="Search for information about Python web scraping"))
+        print(resp)
     except Exception as e:
         print(f"An error occurred: {e}: {traceback.format_exc()}")

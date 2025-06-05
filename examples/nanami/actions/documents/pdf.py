@@ -10,34 +10,18 @@ from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
 from marker.settings import settings
-from pydantic import BaseModel, Field
+from pydantic import Field
 from pydantic.fields import FieldInfo
 
 from aworld.logs.util import Color
 from examples.nanami.actions.base import ActionArguments, ActionCollection, ActionResponse
-
-
-class DocumentMetadata(BaseModel):
-    """Metadata extracted from document processing."""
-
-    file_name: str = Field(description="Original file name")
-    file_size: int = Field(description="File size in bytes")
-    file_type: str = Field(description="Document file type/extension")
-    page_count: int | None = Field(default=None, description="Number of pages in document")
-    processing_time: float = Field(description="Time taken to process the document in seconds")
-    extracted_images: list[str] = Field(default_factory=list, description="Paths to extracted image files")
-    extracted_media: list[dict[str, str]] = Field(
-        default_factory=list, description="list of extracted media files with type and path"
-    )
-    output_format: str = Field(description="Format of the extracted content")
-    llm_enhanced: bool = Field(default=False, description="Whether LLM enhancement was used")
-    ocr_applied: bool = Field(default=False, description="Whether OCR was applied")
+from examples.nanami.actions.documents.models import DocumentMetadata
 
 
 class DocumentExtractionCollection(ActionCollection):
-    """MCP service for comprehensive document content extraction using marker package.
+    """MCP service for PDF document content extraction using marker package.
 
-    Supports extraction from PDF, PPTX, DOCX, XLSX, HTML, and EPUB files.
+    Supports extraction from PDF files only.
     Provides LLM-friendly text output with structured metadata and media file handling.
     """
 
@@ -48,7 +32,9 @@ class DocumentExtractionCollection(ActionCollection):
         self._media_output_dir = self.workspace / "extracted_media"
         self._media_output_dir.mkdir(exist_ok=True)
 
-        self._color_log("Document Extraction Service initialized", Color.green)
+        self.supported_extensions = {".pdf"}
+
+        self._color_log("PDF Extraction Service initialized", Color.green)
         self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue)
 
     def _load_marker_models(self) -> None:
@@ -65,49 +51,6 @@ class DocumentExtractionCollection(ActionCollection):
             except Exception as e:
                 self.logger.error(f"Failed to load marker models: {str(e)}")
                 raise
-
-    def _validate_file_path(self, file_path: str) -> Path:
-        """Validate and resolve file path.
-
-        Args:
-            file_path: Path to the document file
-
-        Returns:
-            Resolved Path object
-
-        Raises:
-            FileNotFoundError: If file doesn't exist
-            ValueError: If file type is not supported
-        """
-        path = Path(file_path)
-        if not path.is_absolute():
-            path = self.workspace / path
-
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
-
-        supported_extensions = {
-            ".pdf",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".tiff",
-            ".bmp",
-            ".gif",
-            ".pptx",
-            ".docx",
-            ".xlsx",
-            ".html",
-            ".htm",
-            ".epub",
-        }
-
-        if path.suffix.lower() not in supported_extensions:
-            raise ValueError(
-                f"Unsupported file type: {path.suffix}. Supported types: {', '.join(supported_extensions)}"
-            )
-
-        return path
 
     def _extract_content_with_marker(
         self, file_path: Path, page_range: str | None, force_ocr: bool = False
@@ -229,7 +172,7 @@ class DocumentExtractionCollection(ActionCollection):
 
     def mcp_extract_document_content(
         self,
-        file_path: str = Field(description="Path to the document file to extract content from"),
+        file_path: str = Field(description="Path to the PDF document file to extract content from"),
         output_format: Literal["markdown", "json", "html"] = Field(
             default="markdown", description="Output format: 'markdown', 'json', or 'html'"
         ),
@@ -241,10 +184,10 @@ class DocumentExtractionCollection(ActionCollection):
             default=False, description="Reformat lines using local OCR model for better quality"
         ),
     ) -> ActionResponse:
-        """Extract content from various document formats using marker package.
+        """Extract content from PDF documents using marker package.
 
-        This tool provides comprehensive document content extraction with support for:
-        - PDF, PPTX, DOCX, XLSX, HTML, EPUB files
+        This tool provides comprehensive PDF document content extraction with support for:
+        - PDF files
         - Text extraction with proper formatting
         - Image and media extraction
         - Metadata collection
@@ -296,6 +239,7 @@ class DocumentExtractionCollection(ActionCollection):
                 file_name=file_path.name,
                 file_size=file_stats.st_size,
                 file_type=file_path.suffix.lower(),
+                absolute_path=str(file_path.absolute()),
                 page_count=extraction_result["metadata"].get("page_count"),
                 processing_time=extraction_result["processing_time"],
                 extracted_images=[media["path"] for media in saved_media if media["type"] == "image"],
@@ -341,12 +285,6 @@ class DocumentExtractionCollection(ActionCollection):
         """
         supported_formats = {
             "PDF": "Portable Document Format files (.pdf)",
-            "Images": "Image files (.png, .jpg, .jpeg, .tiff, .bmp, .gif)",
-            "PowerPoint": "Microsoft PowerPoint presentations (.pptx)",
-            "Word": "Microsoft Word documents (.docx)",
-            "Excel": "Microsoft Excel spreadsheets (.xlsx)",
-            "HTML": "Web pages and HTML documents (.html, .htm)",
-            "EPUB": "Electronic publication format (.epub)",
         }
 
         format_list = "\n".join(
