@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import traceback
+import uuid
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
@@ -90,6 +91,7 @@ class GaiaAgentRunner:
 
         try:
             task = Task(
+                id=task_id + "." + uuid.uuid1().hex if task_id else uuid.uuid1().hex,
                 input=question,
                 agent=self.super_agent,
                 event_driven=False,

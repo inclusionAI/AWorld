@@ -17,7 +17,6 @@ class SpanStatus(BaseModel):
     code: str = "UNSET"
     description: Optional[str] = None
 
-
 class SpanModel(BaseModel):
     trace_id: str
     span_id: str
@@ -125,11 +124,12 @@ class InMemoryWithPersistStorage(TraceStorage):
         self._lock = threading.Lock()
         self._persist_thread = None
         self._load_today_traces()
-
+        self.current_filename = None
     def _get_today_filename(self):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return f"trace_{timestamp}.json"
-
+        if not self.current_filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.current_filename = f"trace_{timestamp}.json"
+        return self.current_filename
     def _load_today_traces(self):
         today = datetime.now().strftime("%Y%m%d")
         for filename in os.listdir(self.storage_dir):
