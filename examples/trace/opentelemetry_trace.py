@@ -1,16 +1,6 @@
-from aworld.trace.server import get_trace_server
-from aworld.logs.util import logger, trace_logger
-import aworld.trace as trace
-import os
-
-# os.environ["START_TRACE_SERVER"] = "false"
-
-from aworld.trace.server import get_trace_server
-from aworld.logs.util import logger, trace_logger
-import aworld.trace as trace
-
-
-os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
+import os  # noqa
+# os.environ["START_TRACE_SERVER"] = "false"  # noqa
+os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"  # noqa
 # os.environ["OTLP_TRACES_ENDPOINT"] = "http://localhost:4318/v1/traces"
 # os.environ["METRICS_SYSTEM_ENABLED"] = "true"
 # os.environ["LOGFIRE_WRITE_TOKEN"] = (
@@ -18,6 +8,17 @@ os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 #     "create guide refer to "
 #     "https://logfire.pydantic.dev/docs/how-to-guides/create-write-tokens/"
 # )
+
+import aworld.trace as trace  # noqa
+from aworld.logs.util import logger, trace_logger
+from aworld.trace.server import get_trace_server
+from aworld.trace.opentelemetry.memory_storage import InMemoryStorage
+
+
+trace.trace_configure(
+    backends=["memory"],
+    storage=InMemoryStorage()
+)
 
 
 @trace.func_span(span_name="test_func", attributes={"test_attr": "test_value"}, extract_args=["param1"], add_attr="add_attr_value")
@@ -61,7 +62,8 @@ def main():
     # b.classb_function_2()
     # b.classb_function_1()
     # b.classb_function_2()
-    get_trace_server().join()
+    if get_trace_server():
+        get_trace_server().join()
 
 
 if __name__ == "__main__":
