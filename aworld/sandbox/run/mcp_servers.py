@@ -1,6 +1,6 @@
 import logging
 
-from typing_extensions import Optional,List,Dict,Any
+from typing_extensions import Optional, List, Dict, Any
 
 from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server
 from aworld.sandbox.models import SandboxEnvType
@@ -24,23 +24,22 @@ class McpServers:
 
     async def list_tools(
             self,
-    )->None:
+    ) -> List[Dict[str, Any]]:
         if self.tool_list:
             return self.tool_list
         if not self.mcp_servers or not self.mcp_config:
-            return None
+            return []
         try:
             self.tool_list = await sandbox_mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
             return self.tool_list
         except Exception as e:
             logging.warning(f"Failed to list tools: {e}")
-            return None
-
+            return []
 
     async def call_tool(
             self,
             action_list: List[Dict[str, Any]] = None,
-    )->None:
+    ) -> None:
         results = []
         if not action_list:
             return None
@@ -88,13 +87,13 @@ class McpServers:
                 # Use server instance to call the tool
                 try:
                     call_result_raw = await server.call_tool(tool_name, parameter)
-                    
+
                     # Process the return result, consistent with the original logic
                     action_result = ActionResult(
                         content="",
                         keep=True
                     )
-                    
+
                     if call_result_raw and call_result_raw.content:
                         if isinstance(call_result_raw.content[0], TextContent):
                             action_result = ActionResult(
@@ -106,7 +105,7 @@ class McpServers:
                                 content=f"data:image/jpeg;base64,{call_result_raw.content[0].data}",
                                 keep=True
                             )
-                    
+
                     results.append(action_result)
                 except Exception as e:
                     logging.warning(f"Error calling tool with cached server: {e}")
@@ -150,9 +149,11 @@ class McpServers:
             if env_type == SandboxEnvType.LOCAL:
                 return mcp_config
             elif env_type == SandboxEnvType.SUPERCOMPUTER:
-                return self.get_mcp_configs_from_super(mcp_servers=mcp_servers, mcp_config=mcp_config, metadata=metadata, env_type=env_type)
+                return self.get_mcp_configs_from_super(mcp_servers=mcp_servers, mcp_config=mcp_config,
+                                                       metadata=metadata, env_type=env_type)
             elif env_type == SandboxEnvType.K8S:
-                return self.get_mcp_configs_from_k8s(mcp_servers=mcp_servers, mcp_config=mcp_config, metadata=metadata, env_type=env_type)
+                return self.get_mcp_configs_from_k8s(mcp_servers=mcp_servers, mcp_config=mcp_config, metadata=metadata,
+                                                     env_type=env_type)
             return None
         except Exception as e:
             logging.warning(f"Failed to get_mcp_configs: {e}")
@@ -168,13 +169,13 @@ class McpServers:
         try:
             if env_type != SandboxEnvType.SUPERCOMPUTER or not metadata or not metadata.get("host"):
                 return mcp_config
-            host =  metadata.get("host")
+            host = metadata.get("host")
 
             if not mcp_servers:
                 return None
             if not mcp_config or mcp_config.get("mcpServers") is None:
                 mcp_config = {
-                    "mcpServers":{}
+                    "mcpServers": {}
                 }
             _mcp_servers = mcp_config.get("mcpServers")
 
@@ -198,15 +199,16 @@ class McpServers:
             env_type: Optional[int] = None,
     ) -> None:
         try:
-            if env_type != SandboxEnvType.K8S or not metadata or (not metadata.get("cluster_ip") and not metadata.get("host")):
+            if env_type != SandboxEnvType.K8S or not metadata or (
+                    not metadata.get("cluster_ip") and not metadata.get("host")):
                 return mcp_config
-            host =  metadata.get("host") or metadata.get("cluster_ip")
+            host = metadata.get("host") or metadata.get("cluster_ip")
 
             if not mcp_servers:
                 return None
             if not mcp_config or mcp_config.get("mcpServers") is None:
                 mcp_config = {
-                    "mcpServers":{}
+                    "mcpServers": {}
                 }
             _mcp_servers = mcp_config.get("mcpServers")
 
