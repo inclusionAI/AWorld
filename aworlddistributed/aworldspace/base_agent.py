@@ -6,6 +6,7 @@ import uuid
 from abc import abstractmethod
 from typing import List, AsyncGenerator, Any
 
+from aworld import trace
 from aworld.config import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
@@ -35,35 +36,39 @@ class AworldBaseAgent:
             messages: List[dict],
             body: dict
     ):
-
         try:
-            print(f"body is {body}")
-            print(f"user_message is {user_message}")
-
             task = await self.get_task_from_body(body)
-            if task:
-                task_id = task.task_id
-            else:
-                task_id = str(uuid.uuid4())
+            with trace.span(f"{self.agent_name()}.run") as span:
+                if task:
+                    logging.info(
+                        f"🤖{self.agent_name()} received task is {task.task_id}_{task.client_id}_{task.user_id}")
+                    task_id = task.task_id
+                else:
+                    task_id = str(uuid.uuid4())
 
-            user_input = await self.get_custom_input(user_message, model_id, messages, body)
+                user_input = await self.get_custom_input(user_message, model_id, messages, body)
+                logging.info(f"🤖{self.agent_name()} call llm input is [{user_input}]")
 
-            # build agent task read from config
-            agent = await self.build_agent(body = body)
+                # build agent task read from config
+                agent = await self.build_agent(body=body)
+                logging.info(f"🤖{self.agent_name()} build agent finished")
 
-            # return task
-            task = await self.build_task(agent=agent, task_id=task_id, user_input=user_input, user_message=user_message, body=body)
+                # return task
+                task = await self.build_task(agent=agent, task_id=task_id, user_input=user_input,
+                                             user_message=user_message, body=body)
+                logging.info(f"🤖{self.agent_name()} build task finished, task_id is {task_id}")
 
-            # render output
-            async_generator = await self.parse_task_output(task_id, task)
+                # render output
+                async_generator = await self.parse_task_output(task_id, task)
 
-            return async_generator()
+                return async_generator()
 
         except Exception as e:
+            logging.error("💥💥💥agent process error is {e}")
+            traceback.print_exc()
             return await self._format_exception(e)
 
     async def _format_exception(self, e: Exception) -> str:
-        traceback.print_exc()
         # tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
         # detailed_error = "".join(tb_lines)
         # logging.error(e)
@@ -141,7 +146,7 @@ class AworldBaseAgent:
 
 
 
-    async def parse_task_output(self, chat_id, task):
+    async def parse_task_output(self, chat_id, task: Task):
         _SENTINEL = object()
 
         async def async_generator():
@@ -191,6 +196,7 @@ class AworldBaseAgent:
                     break
                 yield item
             await consumer_task
+            logging.info(f"🤖{self.agent_name()} task#{task.id} output finished🔚🔚🔚")
 
         return async_generator
 
