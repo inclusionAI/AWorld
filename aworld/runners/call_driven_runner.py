@@ -89,6 +89,14 @@ class SequenceRunner(TaskRunner):
                     "duration": time.time() - start,
                     "error": msg
                 })
+                # todo sandbox cleanup
+                if self.swarm and hasattr(self.swarm, 'agents') and self.swarm.agents:
+                    for agent_name, agent in self.swarm.agents.items():
+                        try:
+                            if hasattr(agent, 'sandbox') and agent.sandbox:
+                                await agent.sandbox.cleanup()
+                        except Exception as e:
+                            logger.warning(f"call_driven_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
             return TaskResponse(msg=msg,
                                 answer=observation.content,
                                 success=True if not msg else False,

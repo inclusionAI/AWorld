@@ -3,6 +3,8 @@
 
 from typing import Any, Dict, Tuple, Union
 
+from aworld.core.event.base import Message
+
 from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.agent.base import AgentFactory
 from aworld.core.common import ActionModel, Observation
@@ -93,6 +95,8 @@ class McpTool(AsyncTool):
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
                 action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions)
+                message = Message()
+                message.payload= action_results
             else:
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1
