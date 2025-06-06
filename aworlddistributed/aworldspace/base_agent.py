@@ -140,7 +140,7 @@ class AworldBaseAgent:
                 ext={
                     "origin_message": user_message
                 },
-                max_steps=aworld_task.max_steps
+                max_steps=aworld_task.max_steps if aworld_task else 100
             )
         )
         return task
