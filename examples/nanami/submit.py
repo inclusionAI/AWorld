@@ -63,7 +63,7 @@ if __name__ == "__main__":
     dataset_path = os.getenv("GAIA_DATASET_PATH")
     log_path = os.getenv("AWORLD_WORKSPACE", "~") + "/logs"
 
-    with open(Path(__file__) / "prompt.md", "r", encoding="utf-8") as f:
+    with open(Path(__file__).parent / "prompt.md", "r", encoding="utf-8") as f:
         system_prompt = f.read()
 
     runner = GaiaRunner(
