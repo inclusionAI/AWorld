@@ -212,7 +212,7 @@ class InMemorySpanExporter(SpanExporter):
 
         if (os.getenv("EXPORT_REPLAY_TRACE_TO_FILES") or "true").lower() == "true":
             storage_dir = self._export_dir or self._storage.storage_dir if hasattr(self._storage, "storage_dir") else "./trace_data"
-            # self._export_processor.replay_buffer_exporter(spans=span_model_list, output_dir=storage_dir)
+            self._export_processor.replay_buffer_exporter(spans=span_model_list, output_dir=storage_dir)
 
     def shutdown(self):
         pass
