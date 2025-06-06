@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS aworld_base
+FROM python:3.11-slim AS base
 
 RUN mkdir -p /app/aworld
 
@@ -14,19 +14,19 @@ RUN rm -fv /etc/apt/sources.list.d/* && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-COPY ./aworld aworld
-COPY ./setup.py setup.py
-
-RUN python setup.py install
-
-# GAIA Docker Image
-FROM aworld_base AS gaia_env
-
 RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm 
 
 # Config Env
 RUN npx playwright install chrome
 RUN npm install @playwright/mcp @negokaz/excel-mcp-server
+
+# GAIA Docker Image
+FROM base AS gaia_env
+
+# Install aworld
+COPY ./aworld aworld
+COPY ./setup.py setup.py
+RUN python setup.py install
 
 # Install mcp servers requirements
 COPY ./mcp_servers mcp_servers

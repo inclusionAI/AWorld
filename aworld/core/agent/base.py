@@ -66,7 +66,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def __init__(self,
                  conf: Union[Dict[str, Any],
-                 ConfigDict, AgentConfig],
+                             ConfigDict, AgentConfig],
                  sandbox: Sandbox = None,
                  mcp_servers: List[str] = [],
                  mcp_config: Dict[str, Any] = {},
@@ -83,8 +83,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         else:
             logger.warning(f"Unknown conf type: {type(conf)}")
 
-        self._name = kwargs.pop("name", self.conf.get("name", convert_to_snake(self.__class__.__name__)))
-        self._desc = kwargs.pop("desc") if kwargs.get("desc") else self.conf.get('desc', '')
+        self._name = kwargs.pop("name", self.conf.get(
+            "name", convert_to_snake(self.__class__.__name__)))
+        self._desc = kwargs.pop("desc") if kwargs.get(
+            "desc") else self.conf.get('desc', '')
         # Unique flag based agent name
         self.id = f"{self.name()}_{uuid.uuid1().hex[0:6]}"
         self.task = None
@@ -102,7 +104,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.state = AgentStatus.START
         self._finished = True
         # todo sandbox
-        self.sandbox = sandbox or Sandbox(mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
+        self.sandbox = sandbox or Sandbox(
+            mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
 
         for k, v in kwargs.items():
             setattr(self, k, v)
@@ -114,14 +117,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._desc
 
     def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
-        with trace.span(f"{self.name()}.run") as span:
+        with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self.pre_run()
             result = self.policy(observation, info, **kwargs)
             final_result = self.post_run(result, observation)
             return final_result if final_result else result
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
-        with trace.span(f"{self.name()}.async_run") as span:
+        with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             await self.async_pre_run()
             result = await self.async_policy(observation, info, **kwargs)
             final_result = await self.async_post_run(result, observation)
@@ -203,7 +206,8 @@ class AgentManager(Factory):
             elif isinstance(user_conf, dict):
                 conf.update(user_conf)
             else:
-                logger.warning(f"Unknown conf type: {type(user_conf)}, ignored!")
+                logger.warning(
+                    f"Unknown conf type: {type(user_conf)}, ignored!")
 
         conf['name'] = name
         conf = ConfigDict(conf)

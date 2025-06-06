@@ -1,10 +1,8 @@
 #!/bin/bash
 cd "$(dirname "$0")"
 
-pip install -r aworld/requirements.txt && \
+pip install -e . && \
 
 pip install -r mcp_servers/requirements.txt && \
 
-pip install -r examples/web/requirements.txt && \
-
-streamlit run examples/web/main.py --server.port 8000
+cd examples/web && aworld run

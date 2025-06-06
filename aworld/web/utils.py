@@ -1,10 +1,8 @@
 import os
 
-base_dir = os.path.dirname(__file__)
-
 
 def list_agents():
-    agents_dir = os.path.join(base_dir, "agent_deploy")
+    agents_dir = os.path.join(os.getcwd(), "agent_deploy")
 
     if not os.path.exists(agents_dir):
         return []
@@ -24,3 +22,11 @@ def list_agents():
         # 处理权限错误或其他文件系统错误
         print(f"Error listing agents: {e}")
         return []
+
+
+def get_agent_package_path(agent_name):
+    return os.path.join(
+        os.getcwd(),
+        "agent_deploy",
+        agent_name,
+    )

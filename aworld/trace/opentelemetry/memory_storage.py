@@ -228,8 +228,6 @@ class InMemorySpanExporter(SpanExporter):
 
     def __init__(self, storage: TraceStorage, export_dir: str = None):
         self._storage = storage
-        self._export_dir = export_dir
-        self._export_processor = ReplayBufferExporter()
 
     def export(self, spans):
         span_model_list = []
