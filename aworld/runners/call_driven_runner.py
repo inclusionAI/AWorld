@@ -6,13 +6,14 @@ import traceback
 
 import aworld.trace as trace
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 from aworld.config.conf import ToolConfig
 from aworld.core.agent.base import is_agent
 from aworld.core.agent.llm_agent import Agent
-from aworld.core.common import Observation, ActionModel
+from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message
 from aworld.core.tool.base import ToolFactory, Tool, AsyncTool
 from aworld.core.tool.tool_desc import is_tool_by_name
 from aworld.core.task import Task, TaskResponse
@@ -21,8 +22,21 @@ from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.runners.task_runner import TaskRunner
 from aworld.runners.utils import endless_detect
+from aworld.sandbox import Sandbox
+from aworld.tools.utils import build_observation
 from aworld.utils.common import override_in_subclass
 from aworld.utils.json_encoder import NumpyEncoder
+
+
+def action_result_transform(message: Message, sandbox: Sandbox) -> Tuple[Observation, float, bool, bool, dict]:
+    action_results = message.payload
+    result: ActionResult = action_results[-1]
+    # ignore image, dom_tree attribute, need to process them from action_results in the agent.
+    return build_observation(container_id=sandbox.sandbox_id,
+                             observer=result.tool_name,
+                             ability=result.action_name,
+                             content=result.content,
+                             action_result=action_results), 1.0, result.is_done, result.is_done, {}
 
 
 class SequenceRunner(TaskRunner):
@@ -75,6 +89,14 @@ class SequenceRunner(TaskRunner):
                     "duration": time.time() - start,
                     "error": msg
                 })
+                # todo sandbox cleanup
+                if self.swarm and hasattr(self.swarm, 'agents') and self.swarm.agents:
+                    for agent_name, agent in self.swarm.agents.items():
+                        try:
+                            if hasattr(agent, 'sandbox') and agent.sandbox:
+                                await agent.sandbox.cleanup()
+                        except Exception as e:
+                            logger.warning(f"call_driven_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
             return TaskResponse(msg=msg,
                                 answer=observation.content,
                                 success=True if not msg else False,
@@ -220,7 +242,6 @@ class SequenceRunner(TaskRunner):
                         logger.info("swarm finished")
                         break
 
-
     async def _agent(self, agent: Agent, observation: Observation, policy: List[ActionModel], step: int):
         # only one agent, and get agent from policy
         policy_for_agent = policy[0]
@@ -262,7 +283,7 @@ class SequenceRunner(TaskRunner):
         return status, None
 
     # todo sandbox
-    async def _tool_call(self, policy: List[ActionModel], observations: List[Observation], step: int,agent: Agent):
+    async def _tool_call(self, policy: List[ActionModel], observations: List[Observation], step: int, agent: Agent):
         msg = None
         terminated = False
         # group action by tool name
@@ -296,6 +317,7 @@ class SequenceRunner(TaskRunner):
                 continue
 
             observation, reward, terminated, _, info = message.payload
+            # observation, reward, terminated, _, info = action_result_transform(message, sandbox=None)
             observations.append(observation)
             for i, item in enumerate(action):
                 tool_output = ToolResultOutput(
@@ -593,14 +615,14 @@ class SocialRunner(TaskRunner):
                         cur_agent = self.swarm.cur_agent
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
                         message = cur_agent.run(observation,
-                                               step=step,
-                                               outputs=self.outputs,
-                                               stream=self.conf.get("stream", False))
+                                                step=step,
+                                                outputs=self.outputs,
+                                                stream=self.conf.get("stream", False))
                     else:
                         message = await cur_agent.async_run(observation,
-                                                           step=step,
-                                                           outputs=self.outputs,
-                                                           stream=self.conf.get("stream", False))
+                                                            step=step,
+                                                            outputs=self.outputs,
+                                                            stream=self.conf.get("stream", False))
                     policy = message.payload
                     color_log(f"{cur_agent.name()} policy: {policy}")
 
