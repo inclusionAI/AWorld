@@ -319,7 +319,7 @@ class YouTubeActionCollection(ActionCollection):
                 video_id = url.split("youtu.be/")[-1].split("?")[0]
 
             # Check if video already exists
-            base_path = Path(os.getenv("FILESYSTEM_SERVER_WORKDIR", str(self.workspace)))
+            base_path = self.workspace
             existing_file = self._find_existing_video(str(base_path), video_id)
 
             if existing_file:

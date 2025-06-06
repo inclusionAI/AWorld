@@ -82,11 +82,11 @@ class BrowserActionCollection(ActionCollection):
         # Browser profile configuration
         self.browser_profile = BrowserProfile(
             cookies_file=os.getenv("COOKIES_FILE_PATH"),
-            downloads_dir=os.getenv("FILESYSTEM_SERVER_WORKDIR", str(self.workspace)),
+            downloads_dir=str(self.workspace),
         )
 
         # Log configuration
-        self.trace_log_dir = os.getenv("LOG_FILE_PATH", str(self.workspace / "logs"))
+        self.trace_log_dir = str(self.workspace / "logs")
         os.makedirs(f"{self.trace_log_dir}/browser_log", exist_ok=True)
 
         self._color_log("Browser automation service initialized", Color.green)

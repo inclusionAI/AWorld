@@ -61,7 +61,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     dataset_path = os.getenv("GAIA_DATASET_PATH")
-    log_path = os.getenv("LOG_FILE_PATH")
+    log_path = os.getenv("AWORLD_WORKSPACE", "~") + "/logs"
 
     with open(Path(__file__) / "prompt.md", "r", encoding="utf-8") as f:
         system_prompt = f.read()
