@@ -111,7 +111,7 @@ class Pipeline(AworldBaseAgent):
 
     async def get_mcp_servers(self, body) -> list[str]:
         task = await self.get_task_from_body(body)
-        if task.mcp_servers:
+        if task and task.mcp_servers:
             logging.info(f"mcp_servers from task: {task.mcp_servers}")
             return task.mcp_servers
 
