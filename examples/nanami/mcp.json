@@ -14,133 +14,119 @@
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_audio"
+                "examples.nanami.collections.media.audio"
             ]
         },
         "browser": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_browser"
+                "examples.nanami.collections.tools.browser"
             ]
         },
         "csv": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_csv"
+                "examples.nanami.collections.documents.mscsv"
             ]
         },
         "docx": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_docx"
+                "examples.nanami.collections.documents.msdocx"
             ]
         },
         "download": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_download"
+                "examples.nanami.collections.tools.download"
             ]
         },
-        "excel": {
+        "xlsx": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_excel"
+                "examples.nanami.collections.documents.msxlsx"
             ]
         },
         "image": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_image"
+                "examples.nanami.collections.media.image"
             ]
         },
         "pdf": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_pdf"
+                "examples.nanami.collections.documents.pdf"
             ]
         },
         "pptx": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_pptx"
+                "examples.nanami.collections.documents.mspptx"
             ]
         },
         "reasoning": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_reasoning"
+                "examples.nanami.collections.intelligence.think"
             ]
         },
         "search": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_search"
+                "examples.nanami.collections.tools.search"
             ]
         },
         "terminal": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_terminal"
+                "examples.nanami.collections.tools.terminal"
             ]
         },
         "video": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_video"
+                "examples.nanami.collections.media.video"
             ]
         },
         "wayback": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_wayback"
+                "examples.nanami.collections.tools.wayback"
             ]
         },
         "wikipedia": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_wikipedia"
-            ]
-        },
-        "yahoo-finance": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_servers.mcp_yahoo_finance"
+                "examples.nanami.collections.tools.wiki"
             ]
         },
         "youtube": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_youtube"
-            ]
-        },
-        "vector-store": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_servers.mcp_vector_store"
+                "examples.nanami.collections.tools.youtube"
             ]
         },
         "txt": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_servers.mcp_txt"
+                "examples.nanami.collections.documents.txt"
             ]
         }
     }

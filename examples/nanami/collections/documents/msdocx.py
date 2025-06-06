@@ -31,13 +31,8 @@ class DOCXExtractionCollection(ActionCollection):
 
         self.supported_extensions = {".docx", ".doc"}
 
-        # Check if python-docx is available
-        if Document is None:
-            self.logger.error("python-docx package not found. Please install: pip install python-docx")
-            raise ImportError("python-docx package is required for DOCX extraction")
-
-        self._color_log("DOCX Extraction Service initialized", Color.green)
-        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue)
+        self._color_log("DOCX Extraction Service initialized", Color.green, "debug")
+        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue, "debug")
 
     def _extract_images_from_docx(self, file_path: Path, file_stem: str) -> list[dict[str, str]]:
         """Extract embedded images from DOCX file.

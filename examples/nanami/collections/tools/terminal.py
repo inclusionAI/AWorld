@@ -99,8 +99,8 @@ class TerminalActionCollection(ActionCollection):
             "architecture": platform.architecture()[0],
         }
 
-        self._color_log("Terminal service initialized", Color.green)
-        self._color_log(f"Platform: {self.platform_info['system']}", Color.blue)
+        self._color_log("Terminal service initialized", Color.green, "debug")
+        self._color_log(f"Platform: {self.platform_info['system']}", Color.blue, "debug")
 
     def _check_command_safety(self, command: str) -> tuple[bool, str | None]:
         """Check if command is safe to execute.

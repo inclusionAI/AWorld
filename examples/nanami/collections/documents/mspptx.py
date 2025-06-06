@@ -31,8 +31,8 @@ class PPTXExtractionCollection(ActionCollection):
 
         self.supported_extensions = {".pptx", ".ppt"}
 
-        self._color_log("PPTX Extraction Service initialized", Color.green)
-        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue)
+        self._color_log("PPTX Extraction Service initialized", Color.green, "debug")
+        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue, "debug")
 
     def _extract_images_from_pptx(self, file_path: Path, file_stem: str) -> list[dict[str, str]]:
         """Extract embedded images from PPTX file.

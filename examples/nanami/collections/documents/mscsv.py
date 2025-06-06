@@ -30,8 +30,8 @@ class CSVExtractionCollection(ActionCollection):
 
         self.supported_extensions: set = {".csv", ".tsv", ".txt"}
 
-        self._color_log("CSV Extraction Service initialized", Color.green)
-        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue)
+        self._color_log("CSV Extraction Service initialized", Color.green, "debug")
+        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue, "debug")
 
     def _detect_encoding(self, file_path: Path) -> str:
         """Detect file encoding using chardet.

@@ -35,8 +35,8 @@ class IntelligenceCollection(ActionCollection):
             llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
         )
 
-        self._color_log("Intelligence Reasoning Service initialized", Color.green)
-        self._color_log(f"Using model: {self._llm_config.llm_model_name}", Color.blue)
+        self._color_log("Intelligence Reasoning Service initialized", Color.green, "debug")
+        self._color_log(f"Using model: {self._llm_config.llm_model_name}", Color.blue, "debug")
 
     def _prepare_reasoning_prompt(self, question: str, original_task: str = "") -> str:
         """Prepare the reasoning prompt with question and optional context.

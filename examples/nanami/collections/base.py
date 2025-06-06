@@ -56,8 +56,8 @@ class ActionCollection:
         if not self.unittest:
             self.server.run(transport=self.transport)
 
-    def _color_log(self, value: str, color: Color = None):
-        return color_log(self.logger, value, color)
+    def _color_log(self, value: str, color: Color = None, level: str = "info"):
+        return color_log(self.logger, value, color, level=level)
 
     def _obtain_valid_workspace(self, workspace: str | None = None) -> Path:
         r"""

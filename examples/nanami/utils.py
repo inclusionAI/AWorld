@@ -253,7 +253,29 @@ def setup_logger(logger_name, output_folder_path, file_name="main.log"):
     return logger
 
 
-def color_log(logger: logging.Logger, value: str, color: Color | None):
+def color_log(logger: logging.Logger, value: str, color: Color | None, level: str | None = None):
+    # Default to 'info' level if none specified
+    if level is None:
+        level = "info"
+
+    # Format the message with color
     if color is None:
-        logger.info(f"{Color.black} {value} {Color.reset}")
-    logger.info(f"{color} {value} {Color.reset}")
+        message = f"{Color.black} {value} {Color.reset}"
+    else:
+        message = f"{color} {value} {Color.reset}"
+
+    # Log according to the specified level
+    level_lower = level.lower()
+    if level_lower == "debug":
+        logger.debug(message)
+    elif level_lower == "info":
+        logger.info(message)
+    elif level_lower == "warning" or level_lower == "warn":
+        logger.warning(message)
+    elif level_lower == "error":
+        logger.error(message)
+    elif level_lower == "critical":
+        logger.critical(message)
+    else:
+        # Default to info for unknown levels
+        logger.info(message)

@@ -35,8 +35,8 @@ class XLSXExtractionCollection(ActionCollection):
             ".xls",
         }
 
-        self._color_log("Excel Extraction Service initialized", Color.green)
-        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue)
+        self._color_log("Excel Extraction Service initialized", Color.green, "debug")
+        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue, "debug")
 
     def _extract_embedded_media_xlsx(self, file_path: Path) -> list[dict[str, str]]:
         """Extract embedded media from XLSX files.

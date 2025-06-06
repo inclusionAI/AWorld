@@ -80,8 +80,8 @@ class WaybackActionCollection(ActionCollection):
         self.default_timeout = 30
         self.max_content_length = 8192
 
-        self._color_log("Wayback Machine service initialized", Color.green)
-        self._color_log(f"User Agent: {self.user_agent}", Color.blue)
+        self._color_log("Wayback Machine service initialized", Color.green, "debug")
+        self._color_log(f"User Agent: {self.user_agent}", Color.blue, "debug")
 
     def _format_versions_for_llm(self, versions: list[ArchivedVersion], query_info: dict) -> str:
         """Format archived versions list for LLM consumption.

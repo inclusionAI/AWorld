@@ -115,7 +115,7 @@ class VideoCollection(ActionCollection):
             "Include key points, main topics, and important visual elements. "
         )
 
-        self._color_log("Video service initialized", Color.green)
+        self._color_log("Video service initialized", Color.green, "debug")
 
     def _get_video_frames(
         self,

@@ -74,8 +74,8 @@ class ImageCollection(ActionCollection):
             llm_base_url=os.getenv("IMAGE_LLM_BASE_URL", "your_openai_base_url"),
         )
 
-        self._color_log("Image Processing Service initialized", Color.green)
-        self._color_log(f"Image output directory: {self._image_output_dir}", Color.blue)
+        self._color_log("Image Processing Service initialized", Color.green, "debug")
+        self._color_log(f"Image output directory: {self._image_output_dir}", Color.blue, "debug")
 
     def _load_image(self, file_path: Path) -> Image.Image:
         """Load image from file path.

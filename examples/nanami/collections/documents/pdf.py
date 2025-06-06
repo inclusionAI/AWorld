@@ -36,8 +36,8 @@ class DocumentExtractionCollection(ActionCollection):
 
         self.supported_extensions = {".pdf"}
 
-        self._color_log("PDF Extraction Service initialized", Color.green)
-        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue)
+        self._color_log("PDF Extraction Service initialized", Color.green, "debug")
+        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue, "debug")
 
     def _load_marker_models(self) -> None:
         """Load marker models for document processing.

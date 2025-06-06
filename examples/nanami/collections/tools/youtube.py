@@ -83,7 +83,7 @@ class YouTubeActionCollection(ActionCollection):
         self.supported_extensions = {".mp4", ".webm", ".mkv"}
 
         super().__init__(arguments)
-        self._color_log("YouTube service initialized", Color.green)
+        self._color_log("YouTube service initialized", Color.green, "debug")
 
     def _format_transcript_output(self, result: TranscriptResult, format_type: str = "markdown") -> str:
         """Format transcript results for LLM consumption.

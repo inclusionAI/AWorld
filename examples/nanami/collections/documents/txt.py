@@ -76,8 +76,8 @@ class TextExtractionCollection(ActionCollection):
             ".bib",
         }
 
-        self._color_log("Text Extraction Service initialized", Color.green)
-        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue)
+        self._color_log("Text Extraction Service initialized", Color.green, "debug")
+        self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue, "debug")
 
     def _validate_file_path(self, file_path: str) -> Path:
         """Validate and resolve file path.

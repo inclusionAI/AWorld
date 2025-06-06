@@ -71,8 +71,8 @@ class AudioCollection(ActionCollection):
             ".amr",
         }
 
-        self._color_log("Audio Processing Service initialized", Color.green)
-        self._color_log(f"Audio output directory: {self._audio_output_dir}", Color.blue)
+        self._color_log("Audio Processing Service initialized", Color.green, "debug")
+        self._color_log(f"Audio output directory: {self._audio_output_dir}", Color.blue, "debug")
 
         # Check ffmpeg availability
         self._check_ffmpeg_availability()
@@ -86,7 +86,7 @@ class AudioCollection(ActionCollection):
         try:
             result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=10, check=False)
             if result.returncode == 0:
-                self._color_log("FFmpeg is available", Color.green)
+                self._color_log("FFmpeg is available", Color.green, "debug")
             else:
                 self._color_log("FFmpeg not found in system PATH", Color.red)
             return result.returncode == 0

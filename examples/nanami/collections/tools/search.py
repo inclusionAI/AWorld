@@ -76,10 +76,10 @@ class SearchActionCollection(ActionCollection):
         self.google_cse_id = os.getenv("GOOGLE_CSE_ID")
 
         # Log initialization status
-        self._color_log("Search service initialized", Color.green)
+        self._color_log("Search service initialized", Color.green, "debug")
 
         if self.google_api_key and self.google_cse_id:
-            self._color_log("Google Search API credentials found", Color.blue)
+            self._color_log("Google Search API credentials found", Color.blue, "debug")
         else:
             self._color_log("Google Search API credentials missing - some features may be unavailable", Color.yellow)
 

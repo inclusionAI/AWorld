@@ -109,7 +109,7 @@ class WikipediaCollection(ActionCollection):
 
         wikipedia.set_lang(self.default_language)
 
-        self._color_log("Wikipedia service initialized", Color.green)
+        self._color_log("Wikipedia service initialized", Color.green, "debug")
 
     def _format_search_results(self, results: list[WikipediaSearchResult], output_format: str = "markdown") -> str:
         """Format search results for LLM consumption.
