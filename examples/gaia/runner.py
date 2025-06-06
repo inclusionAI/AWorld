@@ -153,6 +153,10 @@ class GaiaRunner:
             if self.runner_args.skip and any(result["task_id"] == task["task_id"] for result in self.results):
                 if task["task_id"] in self.retry_ids:
                     self.logger.info(f"🔄 Retrying task {task['task_id']}...")
+                elif self.runner_args.split == "validation" and any(
+                    result["is_correct"] is False for result in self.results if result["task_id"] == task["task_id"]
+                ):
+                    self.logger.info(f"🔄 Retrying task {task['task_id']}...")
                 else:
                     self.logger.debug(f"⏭️ Skipping task {task['task_id']}...")
                     continue
