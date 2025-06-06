@@ -31,6 +31,7 @@ def traced_func(param1: str = None, param2: int = None):
 @trace.func_span(span_name="test_func_2", add_attr="add_attr_value")
 def traced_func2(param1: str = None, param2: int = None):
     trace_logger.info("this is a traced func2")
+    raise Exception("this is a traced func2 exception")
 
 
 @trace.func_span
@@ -53,9 +54,10 @@ def main():
             logger.info("child hello aworld")
             current_span = trace.get_current_span()
             logger.info("trace_id=%s", current_span.get_trace_id())
-
-    traced_func(param1="func1_param1_value", param2=111)
-
+    try:
+        traced_func(param1="func1_param1_value", param2=111)
+    except Exception as e:
+        logger.error(f"exception: {e}")
     # from examples.trace.autotrace_demo import TestClassB
     # b = TestClassB()
     # b.classb_function_1()

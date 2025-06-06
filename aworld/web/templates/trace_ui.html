@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/element-plus"></script>
+    <script src="https://unpkg.com/@element-plus/icons-vue"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         .trace-container {
@@ -178,7 +179,17 @@
                 <el-descriptions-item label="Parent Span ID">{{ selectedSpan.parent_id || 'None'
                     }}</el-descriptions-item>
                 <el-descriptions-item label="Name">{{ selectedSpan.name }}</el-descriptions-item>
-                <el-descriptions-item label="Status">{{ selectedSpan.status.code }}</el-descriptions-item>
+                <el-descriptions-item label="Status">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span :style="{color: selectedSpan.status.code === 'StatusCode.ERROR' ? '#F56C6C' : ''}">
+                            {{ selectedSpan.status.code }}
+                        </span>
+                        <el-button v-if="selectedSpan.status.code === 'StatusCode.ERROR'" type="text" size="small"
+                            @click="showStacktrace = true" icon="View" style="color: #F56C6C">
+                            View Stack
+                        </el-button>
+                    </div>
+                </el-descriptions-item>
                 <el-descriptions-item label="Start Time">{{ selectedSpan.start_time}}</el-descriptions-item>
                 <el-descriptions-item label="End Time">{{ selectedSpan.end_time }}</el-descriptions-item>
                 <el-descriptions-item label="Duration">{{ selectedSpan.duration_ms.toFixed(2) }}
@@ -191,12 +202,15 @@
                 <pre>{{ formatAttributes(selectedSpan.attributes) }}</pre>
             </el-card>
         </el-dialog>
+        <el-dialog v-model="showStacktrace" title="Stacktrace Details" width="70%">
+            <pre>{{ formatStacktrace(selectedSpan.attributes?.['exception.stacktrace'] || "No stacktrace available") }}</pre>
+        </el-dialog>
     </div>
     {% endraw %}
 
     <script>
         const { createApp, ref, onMounted, nextTick } = Vue;
-
+        const { Search } = ElementPlusIconsVue;
         createApp({
             setup() {
                 const traces = ref([]);
@@ -204,6 +218,8 @@
                 const selectedSpan = ref(null);
                 const expandedNodes = ref([]);
                 const searchTraceId = ref('');
+                const showStacktrace = ref(false);
+
                 const treeProps = {
                     label: 'name',
                     children: 'children'
@@ -369,12 +385,12 @@
                                 return childHtml;
                             }).join('');
                         }
-
                         return `
                             <div class="span-visualization" 
                                 style="top: ${row}px; 
                                         left: ${position}%; 
                                         width: ${adjustedWidth}%;
+                                        background: ${span.status.code === 'StatusCode.ERROR' ? '#F56C6C' : '#409EFF'};
                                         opacity: ${span.span_id === selectedSpan.value.span_id ? 1 : 0.6}"
                                         onclick="window.handleSpanClick.call(this, ${JSON.stringify(span).replace(/"/g, '&quot;')})">
                                 <span class="span-label">${span.duration_ms} ${span.name}</span>
@@ -448,7 +464,6 @@
                 }
 
                 function handleSpanClick(data) {
-                    console.log("handleNodeDblClick=", data)
                     selectedSpan.value = data;
                     dialogVisible.value = true;
                     if (!expandedNodes.value.includes(data.span_id)) {
@@ -462,6 +477,15 @@
 
                 function formatAttributes(attrs) {
                     return JSON.stringify(attrs, null, 2);
+                }
+
+                function formatStacktrace(stacktrace) {
+                    if (!stacktrace) return 'No stacktrace available';
+                    try {
+                        return JSON.stringify(JSON.parse(stacktrace), null, 2);
+                    } catch {
+                        return stacktrace;
+                    }
                 }
 
                 onMounted(() => {
@@ -483,10 +507,12 @@
                     dialogVisible,
                     renderTimelineVisualization,
                     searchTraceId,
-                    searchByTraceId
+                    searchByTraceId,
+                    showStacktrace,
+                    formatStacktrace
                 };
             }
-        }).use(ElementPlus).mount('#app');
+        }).use(ElementPlus).component('search', Search).mount('#app');
     </script>
 </body>
 
