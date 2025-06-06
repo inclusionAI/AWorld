@@ -22,7 +22,7 @@ from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.runners.task_runner import TaskRunner
 from aworld.runners.utils import endless_detect
-from aworld.sandbox.main import Sandbox
+from aworld.sandbox import Sandbox
 from aworld.tools.utils import build_observation
 from aworld.utils.common import override_in_subclass
 from aworld.utils.json_encoder import NumpyEncoder
