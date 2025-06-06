@@ -79,10 +79,11 @@ class YouTubeActionCollection(ActionCollection):
     """
 
     def __init__(self, arguments: ActionArguments) -> None:
+        super().__init__(arguments)
+
         # Initialize supported file extensions
         self.supported_extensions = {".mp4", ".webm", ".mkv"}
 
-        super().__init__(arguments)
         self._color_log("YouTube service initialized", Color.green, "debug")
 
     def _format_transcript_output(self, result: TranscriptResult, format_type: str = "markdown") -> str:
@@ -267,10 +268,6 @@ class YouTubeActionCollection(ActionCollection):
     async def mcp_download_youtube_video(
         self,
         url: str = Field(description="The URL of YouTube video to download."),
-        output_dir: str = Field(
-            "/tmp/mcp_downloads",
-            description="Directory to save the downloaded files (default: /tmp/mcp_downloads).",
-        ),
         timeout: int = Field(180, description="Download timeout in seconds (default: 180)."),
         output_format: str = Field(
             "markdown", description="Output format: 'markdown', 'json', or 'text' (default: markdown)."
@@ -286,7 +283,6 @@ class YouTubeActionCollection(ActionCollection):
 
         Args:
             url: The URL of YouTube video to download
-            output_dir: Directory to save the downloaded files
             timeout: Maximum download time in seconds
             output_format: Format for the response output
 
@@ -304,7 +300,7 @@ class YouTubeActionCollection(ActionCollection):
                 raise ValueError("URL must be a valid YouTube URL")
 
             # Create output directory if it doesn't exist
-            output_path = Path(output_dir)
+            output_path = self.workspace / "youtube_downloads"
             output_path.mkdir(parents=True, exist_ok=True)
 
             # Generate filename based on timestamp

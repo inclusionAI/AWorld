@@ -349,7 +349,7 @@ class WikipediaCollection(ActionCollection):
     def mcp_get_article_content(
         self,
         title: str = Field(..., description="Title of the Wikipedia article"),
-        auto_suggest: bool = Field(True, description="Whether to use Wikipedia's auto-suggest feature"),
+        auto_suggest: bool = Field(False, description="Whether to use Wikipedia's auto-suggest feature"),
         redirect: bool = Field(True, description="Whether to follow redirects"),
         language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
         output_format: str = Field("markdown", description="Output format: 'markdown', 'json', or 'text'"),
@@ -470,7 +470,7 @@ class WikipediaCollection(ActionCollection):
         self,
         title: str = Field(..., description="Title of the Wikipedia article"),
         sentences: int = Field(5, description="Number of sentences to return in the summary"),
-        auto_suggest: bool = Field(True, description="Whether to use Wikipedia's auto-suggest feature"),
+        auto_suggest: bool = Field(False, description="Whether to use Wikipedia's auto-suggest feature"),
         redirect: bool = Field(True, description="Whether to follow redirects"),
         language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
         output_format: str = Field("markdown", description="Output format: 'markdown', 'json', or 'text'"),
@@ -803,7 +803,7 @@ class WikipediaCollection(ActionCollection):
         ),
         language: str = Field("en", description="Language code for Wikipedia (e.g., 'en', 'es', 'fr')"),
         auto_suggest: bool = Field(
-            True,
+            False,
             description="Whether to use Wikipedia's auto-suggest feature and handle redirects",
         ),
         output_format: str = Field("markdown", description="Output format: 'markdown', 'json', or 'text'"),

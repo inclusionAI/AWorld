@@ -54,7 +54,7 @@ class SearchMetadata(BaseModel):
     api_quota_used: bool = False
 
 
-class SearchActionCollection(ActionCollection):
+class SearchCollection(ActionCollection):
     """MCP service for web search operations using various search engines.
 
     Provides comprehensive web search capabilities including:
@@ -381,7 +381,7 @@ if __name__ == "__main__":
 
     # Initialize and run the search service
     try:
-        service = SearchActionCollection(args)
+        service = SearchCollection(args)
         service.run()
     except Exception as e:
         print(f"An error occurred: {e}: {traceback.format_exc()}")

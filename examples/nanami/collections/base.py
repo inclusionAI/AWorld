@@ -49,7 +49,7 @@ class ActionCollection:
         self.server = FastMCP(arguments.name)
         for tool_name in self.__class__.__dict__:
             if tool_name.startswith("mcp_") and callable(getattr(self.__class__, tool_name)):
-                tool = getattr(self.__class__, tool_name)
+                tool = getattr(self, tool_name)
                 self.server.add_tool(tool, description=tool.__doc__)
 
     def run(self) -> None:

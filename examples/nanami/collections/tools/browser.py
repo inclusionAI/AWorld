@@ -10,6 +10,7 @@ Main functions:
 
 import json
 import os
+import re
 import time
 import traceback
 
@@ -113,11 +114,30 @@ class BrowserActionCollection(ActionCollection):
             save_conversation_path=f"{self.trace_log_dir}/browser_log/trace.log",
         )
 
-    def _format_extracted_content(self, extracted_content: dict) -> str:
+    def _extract_visited_urls(self, extracted_content: list[str]) -> list[str]:
+        """Inner method to extract URLs from content using regex.
+
+        Args:
+            content_list: List of content strings to search for URLs
+
+        Returns:
+            List of unique URLs found in the content
+        """
+        url_pattern = r'https?://[^\s<>"\[\]{}|\\^`]+'
+        visited_urls = set()
+
+        for content in extracted_content:
+            if content and isinstance(content, str):
+                urls = re.findall(url_pattern, content)
+                visited_urls.update(urls)
+
+        return list(visited_urls)
+
+    def _format_extracted_content(self, extracted_content: list[str]) -> str:
         """Format extracted content to be LLM-friendly.
 
         Args:
-            extracted_content: Raw extracted content from browser execution
+            extracted_content: List of extracted content strings from browser execution
 
         Returns:
             Formatted string suitable for LLM consumption
@@ -125,31 +145,22 @@ class BrowserActionCollection(ActionCollection):
         if not extracted_content:
             return "No content extracted from browser execution."
 
-        # Structure the content for better LLM understanding
-        formatted_parts = []
+        # Handle list of strings
+        if len(extracted_content) == 1:
+            # Single item - return it directly with formatting
+            return f"**Extracted Content:**\n{extracted_content[0]}"
+        else:
+            # Multiple items - format as numbered list
+            formatted_parts = ["**Extracted Content:**"]
+            for i, content in enumerate(extracted_content, 1):
+                if content.strip():  # Only include non-empty content
+                    formatted_parts.append(f"{i}. {content}")
 
-        # Add main content if available
-        if "text" in extracted_content:
-            formatted_parts.append(f"**Extracted Text:**\n{extracted_content['text']}")
-
-        # Add URLs if available
-        if "urls" in extracted_content:
-            urls = extracted_content["urls"]
-            if urls:
-                formatted_parts.append("**Visited URLs:**\n" + "\n".join(f"- {url}" for url in urls))
-
-        # Add downloaded files if available
-        if "downloads" in extracted_content:
-            downloads = extracted_content["downloads"]
-            if downloads:
-                formatted_parts.append("**Downloaded Files:**\n" + "\n".join(f"- {file}" for file in downloads))
-
-        # Add any other structured data
-        for key, value in extracted_content.items():
-            if key not in ["text", "urls", "downloads"] and value:
-                formatted_parts.append(f"**{key.title()}:**\n{value}")
-
-        return "\n\n".join(formatted_parts) if formatted_parts else json.dumps(extracted_content, indent=2)
+            return (
+                "\n".join(formatted_parts)
+                if len(formatted_parts) > 1
+                else "No meaningful content extracted from browser execution."
+            )
 
     async def mcp_browser_use(
         self,
@@ -211,13 +222,14 @@ class BrowserActionCollection(ActionCollection):
                     task=task,
                     execution_successful=True,
                     steps_taken=len(browser_execution.history) if hasattr(browser_execution, "history") else None,
-                    downloaded_files=extracted_content.get("downloads", []) if extracted_content else [],
-                    visited_urls=extracted_content.get("urls", []) if extracted_content else [],
+                    downloaded_files=[],
+                    visited_urls=self._extract_visited_urls(extracted_content),
                     execution_time=execution_time,
                     trace_log_path=f"{self.trace_log_dir}/browser_log/trace.log",
                 )
 
-                self._color_log(f"✅ Browser task completed successfully in {execution_time:.2f}s", Color.green)
+                self._color_log(f"🗒️ Detail: {extracted_content}", Color.lightgrey)
+                self._color_log(f"🌏 Result: {final_result}", Color.green)
 
                 return ActionResponse(success=True, message=formatted_content, metadata=metadata.model_dump())
 
@@ -284,20 +296,20 @@ class BrowserActionCollection(ActionCollection):
 
         formatted_info = f"""# Browser Automation Service Capabilities
 
-## Features
-{chr(10).join(f"- {feature}" for feature in capabilities["automation_features"])}
+        ## Features
+        {chr(10).join(f"- {feature}" for feature in capabilities["automation_features"])}
 
-## Supported Output Formats
-{chr(10).join(f"- {fmt}" for fmt in capabilities["supported_formats"])}
+        ## Supported Output Formats
+        {chr(10).join(f"- {fmt}" for fmt in capabilities["supported_formats"])}
 
-## Current Configuration
-- **LLM Model:** {capabilities["configuration"]["llm_model"]}
-- **Downloads Directory:** {capabilities["configuration"]["downloads_directory"]}
-- **Cookies Enabled:** {capabilities["configuration"]["cookies_enabled"]}
-- **Vision Enabled:** {capabilities["configuration"]["vision_enabled"]}
-- **Memory Enabled:** {capabilities["configuration"]["memory_enabled"]}
-- **Trace Logging:** {capabilities["configuration"]["trace_logging"]}
-"""
+        ## Current Configuration
+        - **LLM Model:** {capabilities["configuration"]["llm_model"]}
+        - **Downloads Directory:** {capabilities["configuration"]["downloads_directory"]}
+        - **Cookies Enabled:** {capabilities["configuration"]["cookies_enabled"]}
+        - **Vision Enabled:** {capabilities["configuration"]["vision_enabled"]}
+        - **Memory Enabled:** {capabilities["configuration"]["memory_enabled"]}
+        - **Trace Logging:** {capabilities["configuration"]["trace_logging"]}
+        """
 
         return ActionResponse(success=True, message=formatted_info, metadata=capabilities)
 
