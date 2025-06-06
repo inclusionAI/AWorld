@@ -209,6 +209,8 @@ class AworldBaseAgent:
 
     async def get_task_from_body(self, body: dict) -> AworldTask | None:
         try:
+            if not body.get("user").get("aworld_task"):
+                return None
             return AworldTask.model_validate_json(body.get("user").get("aworld_task"))
         except Exception as err:
             logging.error(f"Error parsing AworldTask: {err}; data: {body.get('user_message')}")
