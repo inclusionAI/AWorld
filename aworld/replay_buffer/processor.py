@@ -8,6 +8,8 @@ import os
 import datetime
 from typing import Any
 import threading
+
+from aworld import import_package
 from aworld.replay_buffer.base import DataRow, Experience, ExpMeta
 from aworld.logs.util import logger
 from aworld.utils.common import get_local_ip
@@ -36,6 +38,7 @@ class ReplayBufferExporter:
             output_dir: output directory path
         """
         # Ensure output directory exists
+        import_package("oss2")
         import oss2
 
         os.makedirs(output_dir, exist_ok=True)
