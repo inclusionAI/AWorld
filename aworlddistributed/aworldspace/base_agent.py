@@ -37,7 +37,7 @@ class AworldBaseAgent:
     ):
 
         try:
-            logging.info(f"🤖{self.agent_name()} received user_message is {user_message}")
+            logging.info(f"🤖{self.agent_name()} received user_message is {user_message}, form-data = {body}")
 
             task = await self.get_task_from_body(body)
 
@@ -209,7 +209,7 @@ class AworldBaseAgent:
 
     async def get_task_from_body(self, body: dict) -> AworldTask | None:
         try:
-            if not body.get("user").get("aworld_task"):
+            if not body.get("user") or not body.get("user").get("aworld_task"):
                 return None
             return AworldTask.model_validate_json(body.get("user").get("aworld_task"))
         except Exception as err:
