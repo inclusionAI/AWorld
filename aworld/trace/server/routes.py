@@ -7,6 +7,7 @@ current_storage = None
 routes_setup = False
 
 
+
 def build_trace_tree(spans: list[SpanModel]):
     spans_dict = {span.span_id: span.dict() for span in spans}
     root_spans = [span for span in spans_dict.values()

@@ -8,6 +8,7 @@ from typing import (
 from aworld.config import ConfigDict
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.logs.util import logger
+import aworld.trace as trace
 
 from aworld.core.llm_provider_base import LLMProviderBase
 from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
@@ -59,31 +60,39 @@ class LLMModel:
         # If custom_provider instance is provided, use it directly
         if custom_provider is not None:
             if not isinstance(custom_provider, LLMProviderBase):
-                raise TypeError("custom_provider must be an instance of LLMProviderBase")
+                raise TypeError(
+                    "custom_provider must be an instance of LLMProviderBase")
             self.provider_name = "custom"
             self.provider = custom_provider
             return
 
         # Get basic parameters
-        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
-        model_name = kwargs.get("model_name") or (conf.llm_model_name if conf else None)
-        llm_provider = conf.llm_provider if conf_contains_key(conf, "llm_provider") else None
+        base_url = kwargs.get("base_url") or (
+            conf.llm_base_url if conf else None)
+        model_name = kwargs.get("model_name") or (
+            conf.llm_model_name if conf else None)
+        llm_provider = conf.llm_provider if conf_contains_key(
+            conf, "llm_provider") else None
 
         # Get API key from configuration (if any)
         if conf and conf.llm_api_key:
             kwargs["api_key"] = conf.llm_api_key
 
         # Identify provider
-        self.provider_name = self._identify_provider(llm_provider, base_url, model_name)
+        self.provider_name = self._identify_provider(
+            llm_provider, base_url, model_name)
 
         # Fill basic parameters
         kwargs['base_url'] = base_url
         kwargs['model_name'] = model_name
 
         # Fill parameters for llm provider
-        kwargs['sync_enabled'] = conf.llm_sync_enabled if conf_contains_key(conf, "llm_sync_enabled") else True
-        kwargs['async_enabled'] = conf.llm_async_enabled if conf_contains_key(conf, "llm_async_enabled") else True
-        kwargs['client_type'] = conf.llm_client_type if conf_contains_key(conf, "llm_client_type") else ClientType.SDK
+        kwargs['sync_enabled'] = conf.llm_sync_enabled if conf_contains_key(
+            conf, "llm_sync_enabled") else True
+        kwargs['async_enabled'] = conf.llm_async_enabled if conf_contains_key(
+            conf, "llm_async_enabled") else True
+        kwargs['client_type'] = conf.llm_client_type if conf_contains_key(
+            conf, "llm_client_type") else ClientType.SDK
 
         kwargs.update(self._transfer_conf_to_args(conf))
 
@@ -141,7 +150,8 @@ class LLMModel:
             for p, patterns in ENDPOINT_PATTERNS.items():
                 if any(pattern in base_url for pattern in patterns):
                     identified_provider = p
-                    logger.info(f"Identified provider: {identified_provider} based on base_url: {base_url}")
+                    logger.info(
+                        f"Identified provider: {identified_provider} based on base_url: {base_url}")
                     return identified_provider
 
         # Identify provider based on model_name
@@ -149,11 +159,13 @@ class LLMModel:
             for p, models in MODEL_NAMES.items():
                 if model_name in models or any(model_name.startswith(model) for model in models):
                     identified_provider = p
-                    logger.info(f"Identified provider: {identified_provider} based on model_name: {model_name}")
+                    logger.info(
+                        f"Identified provider: {identified_provider} based on model_name: {model_name}")
                     break
 
         if provider and provider in PROVIDER_CLASSES and identified_provider and identified_provider != provider:
-            logger.warning(f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider")
+            logger.warning(
+                f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider")
             identified_provider = provider
 
         return identified_provider
@@ -307,7 +319,8 @@ def register_llm_provider(provider: str, provider_class: type):
         raise TypeError("provider_class must be a subclass of LLMProviderBase")
     PROVIDER_CLASSES[provider] = provider_class
 
-def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key:str) -> bool:
+
+def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key: str) -> bool:
     """Check if conf contains key.
     Args:
         conf: Config object.
@@ -321,6 +334,7 @@ def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key:str) -> bool:
         return hasattr(conf, key)
     else:
         return key in conf
+
 
 def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
                   custom_provider: LLMProviderBase = None,
@@ -340,7 +354,8 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
         Unified model interface.
     """
     # Create and return LLMModel instance directly
-    llm_provider = conf.llm_provider if conf_contains_key(conf, "llm_provider") else None
+    llm_provider = conf.llm_provider if conf_contains_key(
+        conf, "llm_provider") else None
 
     if (llm_provider == "chatopenai"):
         from langchain_openai import ChatOpenAI
@@ -351,7 +366,8 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
 
         return ChatOpenAI(
             model=model_name,
-            temperature=kwargs.get("temperature", conf.llm_temperature if conf_contains_key(conf, "llm_temperature") else 0.0),
+            temperature=kwargs.get("temperature", conf.llm_temperature if conf_contains_key(
+                conf, "llm_temperature") else 0.0),
             base_url=base_url,
             api_key=api_key,
         )
@@ -382,22 +398,23 @@ def call_llm_model(
     Returns:
         Model response or response generator.
     """
-    if stream:
-        return llm_model.stream_completion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            **kwargs
-        )
-    else:
-        return llm_model.completion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            **kwargs
-        )
+    with trace.span(llm_model.provider.model_name, run_type=trace.RunType.LLM) as llm_span:
+        if stream:
+            return llm_model.stream_completion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                **kwargs
+            )
+        else:
+            return llm_model.completion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                **kwargs
+            )
 
 
 async def acall_llm_model(
@@ -423,23 +440,24 @@ async def acall_llm_model(
     Returns:
         Model response or response generator.
     """
-    if stream:
-        async def _stream_wrapper():
-            async for chunk in llm_model.astream_completion(
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stop=stop,
-                    **kwargs
-            ):
-                yield chunk
+    async with trace.span(llm_model.provider.model_name, run_type=trace.RunType.LLM) as llm_span:
+        if stream:
+            async def _stream_wrapper():
+                async for chunk in llm_model.astream_completion(
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stop=stop,
+                        **kwargs
+                ):
+                    yield chunk
 
-        return _stream_wrapper()
-    else:
-        return await llm_model.acompletion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            **kwargs
-        )
+            return _stream_wrapper()
+        else:
+            return await llm_model.acompletion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                **kwargs
+            )

@@ -228,7 +228,7 @@ class MCPServerStdio(_MCPServerWithClientSession):
             name: A readable name for the server. If not provided, we'll create one from the
                 command.
         """
-        super().__init__(cache_tools_list, int(params.get("env").get("SESSION_REQUEST_CONNECT_TIMEOUT", "60")))
+        super().__init__(cache_tools_list, int(params.get("env").get("SESSION_REQUEST_CONNECT_TIMEOUT", "5")))
 
         self.params = StdioServerParameters(
             command=params["command"],
