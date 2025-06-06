@@ -1,4 +1,3 @@
-import sys
 import streamlit as st
 from dotenv import load_dotenv
 import logging
@@ -8,8 +7,6 @@ load_dotenv(os.path.join(os.getcwd(), ".env"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-sys.path.insert(0, os.getcwd())
 
 chat = st.Page("chat.py", title="Chat", icon=":material/message:")
 trace = st.Page("trace.py", title="Trace")

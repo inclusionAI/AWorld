@@ -1,7 +1,6 @@
 import requests
 import json
 import os
-import aworld.trace
 from pyvis.network import Network
 from aworld.logs.util import logger
 
@@ -181,7 +180,7 @@ def generate_trace_graph_full(trace_id=None, folder_name="", file_name="trace_gr
         if span.get('parent_id') and span['parent_id'] in spans:
             net.add_edge(span['parent_id'], span_id, arrows='to')
 
-    folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), folder_name)
+    folder_path = os.path.join(os.getcwd(), folder_name)
     os.makedirs(folder_path, exist_ok=True)
     file_path = os.path.join(folder_path, file_name)
     net.show(file_path, notebook=False)

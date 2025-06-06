@@ -54,7 +54,7 @@ class GaiaAgentRunner:
         self.gaia_dataset_path = os.path.abspath(
             os.getenv(
                 "GAIA_DATASET_PATH",
-                os.path.join(os.getcwd(), "examples", "gaia", "GAIA", "2023"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "GAIA", "2023"),
             )
         )
         self.full_dataset = load_dataset_meta_dict(self.gaia_dataset_path)
@@ -70,6 +70,7 @@ class GaiaAgentRunner:
 
         question = None
         data_item = None
+        task_id = None
         try:
             json_data = json.loads(prompt)
             task_id = json_data["task_id"]

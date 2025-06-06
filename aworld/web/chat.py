@@ -4,11 +4,11 @@ from dotenv import load_dotenv
 import logging
 import os
 import traceback
-import utils
 import importlib.util
+import utils
 import aworld.trace as trace
 from trace_net import generate_trace_graph_full
-import aworld.trace as trace
+
 
 load_dotenv(os.path.join(os.getcwd(), ".env"))
 
@@ -55,11 +55,7 @@ def agent_page():
 
             with st.chat_message("assistant"):
                 agent_name = st.session_state.selected_agent
-                agent_package_path = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "agent_deploy",
-                    agent_name,
-                )
+                agent_package_path = utils.get_agent_package_path(agent_name)
 
                 agent_module_file = os.path.join(
                     agent_package_path, "agent.py")
@@ -78,16 +74,9 @@ def agent_page():
 
                     agent_module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(agent_module)
-                except ModuleNotFoundError as e:
-                    logger.error(
-                        f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
-                    st.error(f"Error: Could not load agent! {agent_name}")
-                    return
-
                 except Exception as e:
                     logger.error(
-                        f"Error loading agent '{agent_name}': {traceback.format_exc()}"
-                    )
+                        f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
                     st.error(f"Error: Could not load agent! {agent_name}")
                     return
 

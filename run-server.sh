@@ -3,4 +3,6 @@ cd "$(dirname "$0")"
 
 pip install -e . && \
 
-streamlit run examples/web/main.py --server.port 8000
+pip install -r mcp_servers/requirements.txt && \
+
+cd examples/web && aworld run
