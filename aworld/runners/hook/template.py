@@ -19,9 +19,6 @@ from aworld.utils.common import convert_to_snake
 class {name}({point}Hook):
     def name(self):
         return convert_to_snake("{name}")
-    
-    def point(self):
-        return convert_to_snake("{point}")
 
     async def exec(self, message: Message) -> Message:
         {func_import}import {func}
