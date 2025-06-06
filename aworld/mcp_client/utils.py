@@ -5,8 +5,13 @@ import os
 from contextlib import AsyncExitStack
 import traceback
 
+import requests
+from mcp.types import CallToolResult
+
+from aworld.core.common import ActionResult
+
 from aworld.logs.util import logger
-from aworld.mcp_client.server import MCPServer, MCPServerSse
+from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio
 from aworld.utils.common import find_file
 
 MCP_SERVERS_CONFIG = {}
@@ -88,8 +93,6 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                                 "description": param_desc,
                                 "type": param_type
                             }
-                        if param_info.get("required", False):
-                            required.append(param_name)
 
                 openai_function_schema = {
                     "name": f'{server.name}__{tool.name}',
@@ -230,3 +233,244 @@ async def mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, 
         openai_tools = await run(servers)
 
     return openai_tools
+
+
+
+async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    # todo sandbox mcp_config get from registry
+
+    if not mcp_config:
+        return None
+    config = mcp_config
+    mcp_servers_config = config.get("mcpServers", {})
+    server_configs = []
+    openai_tools = []
+    mcp_openai_tools = []
+
+    for server_name, server_config in mcp_servers_config.items():
+        # Skip disabled servers
+        if server_config.get("disabled", False):
+            continue
+
+        if tools is None or server_name in tools:
+            # Handle SSE server
+            if "api" == server_config.get("type", ""):
+                api_result = requests.get(server_config["url"]+"/list_tools")
+                try:
+                    if not api_result or not api_result.text:
+                        continue
+                        # return None
+                    data = json.loads(api_result.text)
+                    if not data or not data.get("tools"):
+                        continue
+                    for item in data.get("tools"):
+                        tmp_function = {
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__" + server_name + "__" + item["name"],
+                                "description": item["description"],
+                                "parameters": {
+                                    **item["parameters"],
+                                    "properties": {k: v for k, v in item["parameters"].get("properties", {}).items()
+                                                   if
+                                                   'default' not in v}
+                                }
+                            }
+                        }
+                        openai_tools.append(tmp_function)
+                except Exception as e:
+                    logging.warning(f"server_name:{server_name} translate failed: {e}")
+            elif "sse" == server_config.get("type", ""):
+                server_configs.append({
+                    "name": "mcp__" + server_name,
+                    "type": "sse",
+                    "params": {
+                        "url": server_config["url"],
+                        "headers": server_config.get("headers")
+                    }
+                })
+            # Handle stdio server
+            else:
+            #elif "stdio" == server_config.get("type", ""):
+                server_configs.append({
+                    "name": "mcp__" + server_name,
+                    "type": "stdio",
+                    "params": {
+                        "command": server_config["command"],
+                        "args": server_config.get("args", []),
+                        "env": server_config.get("env", {}),
+                        "cwd": server_config.get("cwd"),
+                        "encoding": server_config.get("encoding", "utf-8"),
+                        "encoding_error_handler": server_config.get("encoding_error_handler", "strict")
+                    }
+                })
+
+    if not server_configs:
+        return openai_tools
+
+    async with AsyncExitStack() as stack:
+        servers = []
+        for server_config in server_configs:
+            try:
+                if server_config["type"] == "sse":
+                    server = MCPServerSse(
+                        name=server_config["name"],
+                        params=server_config["params"]
+                    )
+                elif server_config["type"] == "stdio":
+                    server = MCPServerStdio(
+                        name=server_config["name"],
+                        params=server_config["params"]
+                    )
+                else:
+                    logging.warning(f"Unsupported MCP server type: {server_config['type']}")
+                    continue
+
+                server = await stack.enter_async_context(server)
+                servers.append(server)
+            except BaseException as err:
+                # single
+                logging.error(
+                    f"Failed to get tools for MCP server '{server_config['name']}'.\n"
+                    f"Error: {err}\n"
+                )
+
+        mcp_openai_tools = await run(servers)
+
+    if mcp_openai_tools:
+        openai_tools.extend(mcp_openai_tools)
+
+    return openai_tools
+
+
+async def call_api(
+        server_name: str,
+        tool_name: str,
+        parameter: Dict[str, Any] = None,
+        mcp_config: Dict[str, Any] = None,
+) -> ActionResult:
+    """Specifically handle API type server calls
+
+    Args:
+        server_name: Server name
+        tool_name: Tool name
+        parameter: Parameters
+        mcp_config: MCP configuration
+
+    Returns:
+        ActionResult: Call result
+    """
+    action_result = ActionResult(
+        content="",
+        keep=True
+    )
+
+    if not mcp_config or mcp_config.get("mcpServers") is None:
+        return action_result
+
+    mcp_servers = mcp_config.get("mcpServers")
+    if not mcp_servers.get(server_name):
+        return action_result
+
+    server_config = mcp_servers.get(server_name)
+    if "api" != server_config.get("type", ""):
+        logging.warning(f"Server {server_name} is not API type, should use call_tool instead")
+        return action_result
+
+    try:
+        headers = {
+            "Content-Type": "application/json"
+        }
+        response = requests.post(
+            url=server_config["url"] + "/" + tool_name,
+            headers=headers,
+            json=parameter
+        )
+        action_result = ActionResult(
+            content=response.text,
+            keep=True
+        )
+    except Exception as e:
+        logging.warning(f"call_api ({server_name})({tool_name}) failed: {e}")
+        action_result = ActionResult(
+            content=f"Error calling API: {str(e)}",
+            keep=True
+        )
+
+    return action_result
+
+
+
+async def get_server_instance(server_name: str, mcp_config: Dict[str, Any] = None) -> Any:
+    """Get server instance, create a new one if it doesn't exist
+
+    Args:
+        server_name: Server name
+        mcp_config: MCP configuration
+
+    Returns:
+        Server instance or None (if creation fails)
+    """
+    if not mcp_config or mcp_config.get("mcpServers") is None:
+        return None
+
+    mcp_servers = mcp_config.get("mcpServers")
+    if not mcp_servers.get(server_name):
+        return None
+
+    server_config = mcp_servers.get(server_name)
+    try:
+        # API type servers use special handling, no need for persistent connections
+        # Note: We've already handled API type in McpServers.call_tool method
+        # Here we don't return None, but let the caller handle it
+        if "api" == server_config.get("type", ""):
+            logging.info(f"API server {server_name} doesn't need persistent connection")
+            return None
+        elif "sse" == server_config.get("type", ""):
+            server = MCPServerSse(
+                name=server_name,
+                params={
+                    "url": server_config["url"],
+                    "headers": server_config.get("headers"),
+                    "timeout": server_config.get("timeout", 5.0),
+                    "sse_read_timeout": server_config.get("sse_read_timeout", 300.0)
+                }
+            )
+            await server.connect()
+            logging.info(f"Successfully connected to SSE server: {server_name}")
+            return server
+        else:  # stdio type
+            params = {
+                "command": server_config["command"],
+                "args": server_config.get("args", []),
+                "env": server_config.get("env", {}),
+                "cwd": server_config.get("cwd"),
+                "encoding": server_config.get("encoding", "utf-8"),
+                "encoding_error_handler": server_config.get("encoding_error_handler", "strict")
+            }
+            server = MCPServerStdio(
+                name=server_name,
+                params=params
+            )
+            await server.connect()
+            logging.info(f"Successfully connected to stdio server: {server_name}")
+            return server
+    except Exception as e:
+        logging.warning(f"Failed to create server instance for {server_name}: {e}")
+        return None
+
+
+async def cleanup_server(server):
+    """Clean up server connection
+
+    Args:
+        server: Server instance
+    """
+    try:
+        if hasattr(server, 'cleanup'):
+            await server.cleanup()
+        elif hasattr(server, 'close'):
+            await server.close()
+        logging.info(f"Successfully cleaned up server: {getattr(server, 'name', 'unknown')}")
+    except Exception as e:
+        logging.warning(f"Failed to cleanup server: {e}")

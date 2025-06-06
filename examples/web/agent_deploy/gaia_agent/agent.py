@@ -13,6 +13,7 @@ class AWorldAgent:
         mcp_path = os.path.join(path_cwd, "mcp.json")
         with open(mcp_path, "r") as f:
             self.mcp_config = json.load(f)
+        os.makedirs(os.path.join(os.getcwd(), "static"), exist_ok=True)
 
     def get_agent_info(self):
         return {"name": "GAIA Agent", "description": "GAIA Agent is a world agent"}

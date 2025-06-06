@@ -4,6 +4,7 @@
 from typing import Any, Dict, Tuple, Union
 
 from aworld.config.conf import ToolConfig, ConfigDict
+from aworld.core.agent.base import AgentFactory
 from aworld.core.common import ActionModel, Observation
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
@@ -50,7 +51,7 @@ class McpTool(AsyncTool):
         fail_error = ""
         terminated = kwargs.get("terminated", False)
         # todo sandbox
-        agent = kwargs.get("agent", False)
+        agent = AgentFactory.agent_instance(actions[0].agent_name)
         if not actions:
             self._finished = True
             observation = build_observation(observer=self.name(),

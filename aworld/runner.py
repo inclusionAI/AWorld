@@ -20,21 +20,19 @@ class Runners:
     @staticmethod
     def streamed_run_task(task: Task) -> StreamingOutputs:
         """Run the task in stream output."""
+        if not task.conf:
+            task.conf = TaskConfig()
 
-        with trace.span(f"streamed_{task.name}") as span:
-            if not task.conf:
-                task.conf = TaskConfig()
+        streamed_result = StreamingOutputs(
+            input=task.input,
+            usage={},
+            is_complete=False
+        )
+        task.outputs = streamed_result
 
-            streamed_result = StreamingOutputs(
-                input=task.input,
-                usage={},
-                is_complete=False
-            )
-            task.outputs = streamed_result
-
-            streamed_result._run_impl_task = asyncio.create_task(
-                Runners.run_task(task)
-            )
+        streamed_result._run_impl_task = asyncio.create_task(
+            Runners.run_task(task)
+        )
         return streamed_result
 
     @staticmethod
@@ -45,9 +43,8 @@ class Runners:
             task: User task define.
             run_conf:
         """
-        with trace.span('run_task') as span:
-            if isinstance(task, Task):
-                task = [task]
+        if isinstance(task, Task):
+            task = [task]
 
             runners: List[Runner] = await choose_runners(task)
             return await execute_runner(runners, run_conf)

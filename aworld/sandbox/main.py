@@ -1,6 +1,7 @@
 import uuid
 from enum import IntEnum
 import asyncio
+import logging
 
 from typing_extensions import Optional, List, Any, Dict
 
@@ -173,3 +174,33 @@ class Sandbox(SandboxSetup,SandboxApi):
             Remove sandbox.
         """
         await SandboxApi._remove_sandbox(sandbox_id=self.sandbox_id,metadata=self._metadata,env_type=self._env_type)
+        
+    async def cleanup(self) -> None:
+        """
+            Clean up Sandbox resources, including MCP server connections
+        """
+        try:
+            if hasattr(self, '_mcpservers') and self._mcpservers:
+                await self._mcpservers.cleanup()
+                logging.info(f"Cleaned up MCP servers for sandbox {self.sandbox_id}")
+        except Exception as e:
+            logging.warning(f"Failed to cleanup MCP servers: {e}")
+        
+        # Call the original remove method
+        try:
+            await self.remove()
+        except Exception as e:
+            logging.warning(f"Failed to remove sandbox: {e}")
+            
+    def __del__(self):
+        """
+            Ensure resources are cleaned up when the object is garbage collected
+        """
+        try:
+            # Create a new event loop to run the cleanup task
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self.cleanup())
+            loop.close()
+        except Exception as e:
+            logging.warning(f"Failed to cleanup sandbox resources during garbage collection: {e}")
