@@ -4,6 +4,7 @@
 import abc
 import uuid
 
+
 import aworld.trace as trace
 
 from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union
@@ -16,7 +17,8 @@ from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
-from aworld.sandbox.main import Sandbox
+from aworld.sandbox.base import Sandbox
+
 from aworld.utils.common import convert_to_snake, replace_env_variables
 
 INPUT = TypeVar('INPUT')

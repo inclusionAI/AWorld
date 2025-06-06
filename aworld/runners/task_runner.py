@@ -19,7 +19,7 @@ from aworld import trace
 
 
 class TaskRunner(Runner):
-    """Task based runner base class."""
+    """Task based runner api class."""
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, task: Task, *args, **kwargs):

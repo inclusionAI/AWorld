@@ -24,7 +24,7 @@ from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
-from aworld.sandbox.main import Sandbox
+from aworld.sandbox.base import Sandbox
 from aworld.utils.common import sync_exec
 
 
@@ -35,7 +35,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
                  resp_parse_func: Callable[..., Any] = None,
                  **kwargs):
-        """A base class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
+        """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
         Args:
             conf: Agent config, supported AgentConfig, ConfigDict or dict.

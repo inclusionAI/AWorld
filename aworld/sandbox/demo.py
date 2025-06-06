@@ -1,5 +1,7 @@
-from aworld.sandbox.main import Sandbox
 import asyncio
+
+from aworld.sandbox import Sandbox, SandboxEnvType
+
 
 # Define an asynchronous function to call asynchronous methods
 async def run_async_tasks(sand_box):
@@ -8,7 +10,8 @@ async def run_async_tasks(sand_box):
     return tools
 
 if __name__ == "__main__":
-    mcp_servers = ["tavily-mcp","memory"]
+    # 只使用memory服务器
+    mcp_servers = ["memory","amap-amap-sse"]
     mcp_config = {
       "mcpServers": {
         "memory": {
@@ -19,9 +22,10 @@ if __name__ == "__main__":
             "@modelcontextprotocol/server-memory"
           ]
         }
+
       }
     }
-    sand_box = Sandbox(mcp_servers=mcp_servers, mcp_config=mcp_config)
+    sand_box = Sandbox(mcp_servers=mcp_servers, mcp_config=mcp_config,env_type=SandboxEnvType.SUPERCOMPUTER)
     print(f"Sandbox ID: {sand_box.sandbox_id}")
     print(f"Status: {sand_box.status}")
     print(f"Timeout: {sand_box.timeout}")
