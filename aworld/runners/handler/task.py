@@ -12,6 +12,8 @@ from aworld.core.event.base import Message, Constants
 from aworld.core.task import TaskResponse
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
+from aworld.runners.hook.hook_factory import HookFactory
+from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.utils import TaskType
 
 
@@ -45,6 +47,9 @@ class DefaultTaskHandler(TaskHandler):
         elif topic == TaskType.SUBSCRIBE_AGENT:
             return
         elif topic == TaskType.ERROR:
+            async for event in self.run_hooks(message, HookPoint.ERROR):
+                yield event
+
             if task_item.stop:
                 await self.runner.stop()
                 logger.warning(f"task {self.runner.task.id} stop, cause: {task_item.msg}")
@@ -65,22 +70,15 @@ class DefaultTaskHandler(TaskHandler):
                 topic=TaskType.START
             )
         elif topic == TaskType.FINISHED:
+            async for event in self.run_hooks(message, HookPoint.FINISHED):
+                yield event
+
             self.runner._task_response = TaskResponse(answer=str(message.payload),
                                                       success=True,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
             await self.runner.stop()
-
-            # clean sandbox
-            swarm = self.runner.task.swarm
-            if swarm and hasattr(swarm, 'agents') and swarm.agents:
-                for agent_name, agent in swarm.agents.items():
-                    try:
-                        if hasattr(agent, 'sandbox') and agent.sandbox:
-                            await agent.sandbox.cleanup()
-                    except Exception as e:
-                        logger.warning(f"Failed to cleanup sandbox for agent {agent_name}: {e}")
 
             logger.info(f"{self.runner.task.id} finished.")
             yield Message(
@@ -91,6 +89,9 @@ class DefaultTaskHandler(TaskHandler):
                 topic=TaskType.FINISHED
             )
         elif topic == TaskType.START:
+            async for event in self.run_hooks(message, HookPoint.START):
+                yield event
+
             logger.info(f"task start event: {message}, will send init message.")
             if message.payload:
                 yield message
@@ -98,3 +99,13 @@ class DefaultTaskHandler(TaskHandler):
                 yield self.runner.init_message
         elif topic == TaskType.OUTPUT:
             yield message
+
+    async def run_hooks(self, message: Message, hook_point: str) -> AsyncGenerator[Message, None]:
+        hooks = HookFactory.hooks(hook_point).get(hook_point)
+        for hook in hooks:
+            try:
+                msg = hook(message)
+                if msg:
+                    yield msg
+            except:
+                logger.warning(f"{hook.point()} {hook.name()} execute fail.")
