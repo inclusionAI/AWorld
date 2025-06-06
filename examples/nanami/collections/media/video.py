@@ -663,9 +663,9 @@ class VideoCollection(ActionCollection):
             frame_paths, frame_timestamps = self._save_keyframes(frames, frame_times, str(output_path))
 
             # Cleanup if requested
-            if cleanup and validated_path.exists():
-                validated_path.unlink()
-                self._color_log("🗑️ Cleaned up original video file", Color.yellow)
+            # if cleanup and validated_path.exists():
+            #     validated_path.unlink()
+            #     self._color_log("🗑️ Cleaned up original video file", Color.yellow)
 
             # Create result
             result = KeyframeResult(
