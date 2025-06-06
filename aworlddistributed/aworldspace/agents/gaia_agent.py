@@ -72,6 +72,13 @@ class Pipeline(AworldBaseAgent):
 
     async def get_custom_input(self, user_message: str, model_id: str, messages: List[dict], body: dict) -> Any:
         task = await self.get_gaia_task(user_message)
+        logging.info(f"🌈 -----------------------------------------------")
+        logging.info(f"🚀 Start to process: gaia_task_{task['task_id']}")
+        logging.info(f"📝 Detail: {task}")
+        logging.info(f"❓ Question: {task['Question']}")
+        logging.info(f"⭐ Level: {task['Level']}")
+        logging.info(f"🛠️ Tools: {task['Annotator Metadata']['Tools']}")
+        logging.info(f"🌈 -----------------------------------------------")
         return task['Question']
 
     async def get_agent_config(self, body):
@@ -131,20 +138,13 @@ class Pipeline(AworldBaseAgent):
         Returns:
             Corresponding task dictionary
         """
-        logging.info(f"Start to process: gaia_task_{task_id}")
-        
+
         # Search by task_id
         if task_id in self.task_id_to_index:
             index = self.task_id_to_index[task_id]
             gaia_task = self.full_dataset[index]
-            logging.info(f"Found task by task_id: {task_id} at index: {index}")
         else:
             raise ValueError(f"Task with task_id '{task_id}' not found in dataset")
-        
-        logging.info(f"Detail: {gaia_task}")
-        logging.info(f"Question: {gaia_task['Question']}")
-        logging.info(f"Level: {gaia_task['Level']}")
-        logging.info(f"Tools: {gaia_task['Annotator Metadata']['Tools']}")
 
         return self.add_file_path(gaia_task)
 
@@ -212,16 +212,16 @@ class Pipeline(AworldBaseAgent):
         answer = ""
         if match:
             answer = match.group(1)
-            logging.info(f"Agent answer: {answer}")
-            logging.info(f"Correct answer: {gaia_task['Final answer']}")
+            logging.info(f"🤖 Agent answer: {answer}")
+            logging.info(f"👨‍🏫 Correct answer: {gaia_task['Final answer']}")
             is_correct = question_scorer(answer, gaia_task["Final answer"])
 
             if is_correct:
-                logging.info(f"Question {gaia_task_id} Correct!")
-                result = f"\n\n**Question: {gaia_task_id} -> Agent Answer:[{answer}] is `Correct`**"
+                logging.info(f"📝Question {gaia_task_id} Correct! 🎉")
+                result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:[{answer}] is `Correct`**"
             else:
-                logging.info(f"Question {gaia_task_id} Incorrect!")
-                result = f"\n\n**Question: {gaia_task_id} -> Agent Answer:`{answer}` != Correct answer: `{gaia_task['Final answer']}` is `Incorrect`**"
+                logging.info(f"📝Question {gaia_task_id} Incorrect! ❌")
+                result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:`{answer}` != Correct answer: `{gaia_task['Final answer']}` is `Incorrect` ❌**"
 
         metadata = await outputs.get_metadata()
         if not metadata:

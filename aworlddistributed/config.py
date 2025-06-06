@@ -20,5 +20,4 @@ LOG_LEVELS = {
     'CRITICAL': logging.CRITICAL
 }
 
-API_KEY = os.getenv("PIPELINES_API_KEY", "0p3n-w3bu!")
-PIPELINES_DIR = os.getenv("PIPELINES_DIR", "./aworldspace/agents")
+AGENTS_DIR = os.getenv("AGENTS_DIR", "./aworldspace/agents")

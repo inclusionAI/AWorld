@@ -4,8 +4,11 @@ from dotenv import load_dotenv
 import logging
 import os
 import traceback
-import utils
 import importlib.util
+import utils
+import aworld.trace as trace
+from trace_net import generate_trace_graph_full
+
 
 load_dotenv(os.path.join(os.getcwd(), ".env"))
 
@@ -21,16 +24,25 @@ def agent_page():
         layout="wide",
     )
 
-    with st.sidebar:
-        st.title("Agents List")
+    st.markdown("<style> .stAppHeader { display: none; }</style>", unsafe_allow_html=True)
 
-        for agent in utils.list_agents():
-            if st.button(agent):
-                st.session_state.selected_agent = agent
-                st.rerun()
+    query_params = st.query_params
+    selected_agent_from_url = query_params.get("agent", None)
 
     if "selected_agent" not in st.session_state:
-        st.session_state.selected_agent = None
+        st.session_state.selected_agent = selected_agent_from_url
+        logger.info(f"Initialized selected_agent from URL: {selected_agent_from_url}")
+
+    if selected_agent_from_url != st.session_state.selected_agent:
+        st.session_state.selected_agent = selected_agent_from_url
+
+    with st.sidebar:
+        st.title("AWorld Agents List")
+        for agent in utils.list_agents():
+            if st.button(agent):
+                st.query_params["agent"] = agent
+                st.session_state.selected_agent = agent
+                logger.info(f"selected_agent={st.session_state.selected_agent}")
 
     if st.session_state.selected_agent:
         agent_name = st.session_state.selected_agent
@@ -43,13 +55,10 @@ def agent_page():
 
             with st.chat_message("assistant"):
                 agent_name = st.session_state.selected_agent
-                agent_package_path = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "agent_deploy",
-                    agent_name,
-                )
+                agent_package_path = utils.get_agent_package_path(agent_name)
 
-                agent_module_file = os.path.join(agent_package_path, "agent.py")
+                agent_module_file = os.path.join(
+                    agent_package_path, "agent.py")
 
                 try:
                     spec = importlib.util.spec_from_file_location(
@@ -65,23 +74,29 @@ def agent_page():
 
                     agent_module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(agent_module)
-                except ModuleNotFoundError as e:
-                    logger.error(f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
-                    st.error(f"Error: Could not load agent! {agent_name}")
-                    return
-
                 except Exception as e:
                     logger.error(
-                        f"Error loading agent '{agent_name}': {traceback.format_exc()}"
-                    )
+                        f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
                     st.error(f"Error: Could not load agent! {agent_name}")
                     return
 
                 agent = agent_module.AWorldAgent()
 
                 async def markdown_generator():
-                    async for line in agent.run(prompt):
-                        yield f"\n{line}\n"
+                    async with trace.span("start") as span:
+                        trace_id = span.get_trace_id()
+                        logger.info(f"trace_id={trace_id}")
+                        async for line in agent.run(prompt):
+                            yield f"\n{line}\n"
+
+                        trace_id = span.get_trace_id()
+                        file_name = f"graph.{trace_id}.html"
+                        folder_name = "trace_data"
+                        generate_trace_graph_full(
+                            trace_id, folder_name=folder_name, file_name=file_name
+                        )
+                        view_page_url = f"/trace?trace_id={trace_id}"
+                        yield f"\n---\n[View Trace]({view_page_url})\n"
 
                 st.write_stream(markdown_generator())
     else:

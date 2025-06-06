@@ -129,7 +129,7 @@ package.json
 package-lock.json
 
 .data/
-examples/gaia/GAIA/
+examples/gaia/GAIA
 traces*.json
 trace_data
 

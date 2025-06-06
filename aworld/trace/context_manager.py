@@ -1,6 +1,7 @@
+import asyncio
 import types
 import inspect
-
+import contextvars
 from typing import Union, Optional, Any, Type, Sequence, Callable, Iterable
 from aworld.trace.base import (
     AttributeValueType,
@@ -16,7 +17,9 @@ from aworld.trace.auto_trace import AutoTraceModule, install_auto_tracing
 from aworld.trace.stack_info import get_user_stack_info
 from aworld.trace.constants import (
     ATTRIBUTES_MESSAGE_KEY,
-    ATTRIBUTES_MESSAGE_TEMPLATE_KEY
+    ATTRIBUTES_MESSAGE_RUN_TYPE_KEY,
+    ATTRIBUTES_MESSAGE_TEMPLATE_KEY,
+    RunType
 )
 from aworld.trace.msg_format import (
     chunks_formatter,
@@ -116,7 +119,8 @@ class TraceManager:
              msg_template: str,
              attributes: dict[str, AttributeValueType] = None,
              *,
-             span_name: str = None) -> "ContextSpan":
+             span_name: str = None,
+             run_type: RunType = RunType.OTHER) -> "ContextSpan":
 
         try:
             attributes = attributes or {}
@@ -136,7 +140,7 @@ class TraceManager:
             merged_attributes[ATTRIBUTES_MESSAGE_KEY] = log_message
             merged_attributes.update(extra_attrs)
             merged_attributes[ATTRIBUTES_MESSAGE_TEMPLATE_KEY] = msg_template
-
+            merged_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = run_type.value
             span_name = span_name or msg_template
             tracer = get_tracer_provider().get_tracer(
                 name=self._tracer_name, version=self._version)
@@ -192,6 +196,7 @@ class ContextSpan(Span):
         self._tracer = tracer
         self._attributes = attributes
         self._span: Span = None
+        self._coro_context = None
 
     def _start(self):
         if self._span is not None:
@@ -213,9 +218,37 @@ class ContextSpan(Span):
             traceback: Optional[Any],
     ) -> None:
         """Ends context manager and calls `end` on the `Span`."""
-        if self._span and self._span.is_recording() and isinstance(exc_val, BaseException):
-            self._span.record_exception(exc_val, escaped=True)
-        self._span.end()
+        self._handle_exit(exc_type, exc_val, traceback)
+
+    async def __aenter__(self) -> "Span":
+        self._coro_context = contextvars.copy_context()
+        await asyncio.get_event_loop().run_in_executor(None, lambda: self._coro_context.run(self._start)
+                                                       )
+        return self
+
+    async def __aexit__(
+            self,
+            exc_type: Optional[Type[BaseException]],
+            exc_val: Optional[BaseException],
+            traceback: Optional[Any],
+    ) -> None:
+        await asyncio.get_event_loop().run_in_executor(None,
+                                                       lambda: self._coro_context.run(lambda: self._handle_exit(exc_type, exc_val, traceback)))
+
+    def _handle_exit(
+            self,
+            exc_type: Optional[Type[BaseException]],
+            exc_val: Optional[BaseException],
+            traceback: Optional[Any],
+    ) -> None:
+        try:
+            if self._span and self._span.is_recording() and isinstance(exc_val, BaseException):
+                self._span.record_exception(exc_val, escaped=True)
+        except ValueError as e:
+            logger.warning(f"Failed to record_exception: {e}")
+        finally:
+            if self._span:
+                self._span.end()
 
     def end(self, end_time: Optional[int] = None) -> None:
         if self._span:

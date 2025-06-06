@@ -62,6 +62,17 @@ class DefaultTaskHandler(DefaultHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
             await self.runner.stop()
+
+            # clean sandbox
+            swarm = self.runner.task.swarm
+            if swarm and hasattr(swarm, 'agents') and swarm.agents:
+                for agent_name, agent in swarm.agents.items():
+                    try:
+                        if hasattr(agent, 'sandbox') and agent.sandbox:
+                            await agent.sandbox.cleanup()
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanup sandbox for agent {agent_name}: {e}")
+
             logger.info(f"{self.runner.task.id} finished.")
             return
         elif topic == TaskType.START:
