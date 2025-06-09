@@ -38,9 +38,11 @@ class SandboxK8sResponse(SandboxCreateResponse):
     host: Optional[str] = None
 
 
+@dataclass
 class SandboxLocalResponse(SandboxCreateResponse):
     host: Optional[str] = None
 
+@dataclass
 class SandboxSuperResponse(SandboxCreateResponse):
     host: Optional[str] = None
 

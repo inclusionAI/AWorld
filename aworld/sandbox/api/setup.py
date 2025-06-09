@@ -5,7 +5,7 @@ class SandboxSetup(ABC):
 
 
     default_sandbox_timeout = 3000
-    default_template = "base"
+    default_template = "api"
 
     @property
     @abstractmethod

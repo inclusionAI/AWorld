@@ -2,11 +2,12 @@ import os  # noqa: E402
 
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"  # noqa
 os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"  # noqa
-os.environ["OTLP_TRACES_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/traces"  # noqa
+os.environ["OTLP_TRACES_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld_trace/otlp/api/v1/traces"  # noqa
 
 from aworld.metrics.context_manager import MetricContext
 from aworld.logs.util import logger
 from aworld.trace.baggage import BaggageContext
+from aworld.trace.base import get_tracer_provider
 from aworld.trace.instrumentation.requests import instrument_requests
 from aworld.trace.instrumentation.flask import instrument_flask
 import flask
@@ -60,4 +61,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    get_tracer_provider().force_flush(1000)
     thread.join()

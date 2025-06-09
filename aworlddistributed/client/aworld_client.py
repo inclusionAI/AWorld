@@ -4,7 +4,7 @@ import logging
 from typing import AsyncGenerator
 
 from aworld.models.llm import acall_llm_model, get_llm_model
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import ModelResponse, LLMResponseError
 from pydantic import BaseModel, Field
 
 from base import AworldTask, AworldTaskResult
@@ -103,19 +103,19 @@ class AworldTaskClient(BaseModel):
         self.task_states[task.task_id] = result
 
         
-    async def _submit_task(self, aworld_server, task: AworldTask, retry_num: int = 0):
-        if retry_num > 3:
-            print(f"execute task#{task.task_id} to {aworld_server} retry = {retry_num}")
-            return
+    async def _submit_task(self, aworld_server, task: AworldTask):
         try:
-            await asyncio.sleep(3)
             logging.info(f"submit task#{task.task_id} to cluster#[{aworld_server}]")
             task_result = await self._submit_task_to_server(aworld_server, task)
             return task_result
         except Exception as e:
-            print(f"execute task to {task.node_id} execute_failed: {e}, please see logs from server ")
+            if isinstance(e, LLMResponseError):
+                if e.message and 'peer closed connection without sending complete message body (incomplete chunked read)' == e.message:
+                    task_logger.log_task_submission(task, aworld_server, "server_close_connection", str(e))
+                    logging.error(f"execute task to {task.node_id} server_close_connection: [{e}], please see replays wait a moment")
+                    return
+            logging.error(f"execute task to {task.node_id} execute_failed: [{e}], please see logs from server ")
             task_logger.log_task_submission(task, aworld_server, "execute_failed", str(e))
-            await self._submit_task(aworld_server, task, retry_num + 1)
 
     async def _submit_task_to_server(self, aworld_server, task: AworldTask):
         # build params

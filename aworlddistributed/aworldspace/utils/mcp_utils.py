@@ -38,7 +38,10 @@ def load_all_mcp_config():
                 "args": [
                     "-m",
                     "mcp_server_calculator"
-                ]
+                ],
+                "env": {
+                    "SESSION_REQUEST_CONNECT_TIMEOUT": "20"
+                }
             },
             "excel": {
                 "command": "uvx",
