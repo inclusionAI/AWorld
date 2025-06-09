@@ -15,7 +15,7 @@ import asyncio
 from aworld.models.model_response import ModelResponse
 from pydantic import BaseModel, Field, PrivateAttr
 
-from aworldspace.db.db import AworldTaskDB, SqliteTaskDB
+from aworldspace.db.db import AworldTaskDB, SqliteTaskDB, PostgresTaskDB
 from aworldspace.utils.job import generate_openai_chat_completion, call_pipeline
 from aworldspace.utils.log import task_logger
 from base import AworldTask, AworldTaskResult, OpenAIChatCompletionForm, OpenAIChatMessage, AworldTaskForm
@@ -215,8 +215,10 @@ if task_db_path.startswith("sqlite://"):
     task_db = SqliteTaskDB(db_path = task_db_path)
 elif task_db_path.startswith("mysql://"):
     task_db = None  # todo: add mysql task db
+elif task_db_path.startswith("postgresql://") or task_db_path.startswith("postgresql+"):
+    task_db = PostgresTaskDB(db_url=task_db_path)
 else:
-    raise ValueError("❌ task_db_path is not a valid sqlite or mysql path")
+    raise ValueError("❌ task_db_path is not a valid sqlite, mysql or postgresql path")
 
 task_manager = AworldTaskManager(task_db)
 
