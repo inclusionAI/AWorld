@@ -210,12 +210,26 @@ class YouTubeActionCollection(ActionCollection):
             download_button.click()
             time.sleep(5)
 
+            # try:
+            #     # Handle bot detection popup
+            #     driver.find_element(
+            #         By.CLASS_NAME,
+            #         "button.elevated.popup-button.undefined.svelte-nnawom.active",
+            #     ).click()
+            # except Exception as e:
+            #     self._color_log(f"Bot detection handling: {str(e)}", Color.yellow)
+
             try:
-                # Handle bot detection popup
-                driver.find_element(
-                    By.CLASS_NAME,
-                    "button.elevated.popup-button.undefined.svelte-nnawom.active",
-                ).click()
+                t = 0
+                while t < timeout:
+                    if (
+                        "downloading" not in driver.find_element(By.CLASS_NAME, "status-text.svelte-dmosdd").text
+                        and "starting" not in driver.find_element(By.CLASS_NAME, "status-text.svelte-dmosdd").text
+                    ):
+                        driver.find_element(By.CLASS_NAME, "button.action-button.svelte-dmosdd").click()
+                        break
+                    t += 3
+                    time.sleep(3)
             except Exception as e:
                 self._color_log(f"Bot detection handling: {str(e)}", Color.yellow)
 

@@ -84,6 +84,8 @@ class BrowserActionCollection(ActionCollection):
         self.browser_profile = BrowserProfile(
             cookies_file=os.getenv("COOKIES_FILE_PATH"),
             downloads_dir=str(self.workspace),
+            save_recording_path=str(self.workspace),
+            save_downloads_path=str(self.workspace),
         )
 
         # Log configuration

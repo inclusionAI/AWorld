@@ -1,8 +1,9 @@
 import copy
 import logging
 import os
+import re
 import traceback
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Callable, Union
 
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.base import Agent
@@ -20,7 +21,7 @@ class GaiaAgent(Agent):
     def __init__(
         self,
         output_folder_path: str,
-        config: Union[Dict[str, Any], ConfigDict, AgentConfig],
+        config: Union[dict[str, Any], ConfigDict, AgentConfig],
         resp_parse_func: Callable[..., Any] = None,
         **kwargs,
     ):
@@ -31,7 +32,7 @@ class GaiaAgent(Agent):
         )
         self._color_log(f"Using {os.getenv('LLM_MODEL_NAME')} from {os.getenv('LLM_BASE_URL')}", Color.red)
 
-    def policy(self, observation: Observation, info: Dict[str, Any] = None, **kwargs) -> Union[List[ActionModel], None]:
+    def policy(self, observation: Observation, info: dict[str, Any] = None, **kwargs) -> Union[list[ActionModel], None]:
         """Adapted from the base class. Format necessary GAIA logs.
 
         Args:
@@ -45,7 +46,7 @@ class GaiaAgent(Agent):
         _log_obs = copy.deepcopy(observation)
         if len(_log_obs.content) > self.truncated_length:
             _log_obs.content = _log_obs.content[: self.truncated_length] + "..."
-        self._color_log(f"🌍 Observation: {_log_obs}", Color.pink)
+        self._color_log(f"🌍 Observation: {_log_obs.content}", Color.pink)
 
         if info is None:
             info = {}
@@ -115,12 +116,60 @@ class GaiaAgent(Agent):
             self._finished = True
         # output.mark_finished()
 
-        actions: List[ActionModel] = agent_result.actions
+        actions: list[ActionModel] = self._format_policy_info(agent_result.actions)
 
         # LOG CKPT: Agent's Policy
-        self._color_log(f"💡 Policy: {actions}", Color.cyan)
+        _log_acts = []
+        for action in actions:
+            if action.action_name is not None:
+                call_args = ",".join([f"{k}: {v}" for k, v in action.params.items()])
+                _log_acts.append(f"🔨 func={action.action_name} 🧾 arguments={call_args}")
+            else:
+                _log_acts.append(f"💯 result={action.policy_info}")
+        _log_policy = "\n".join(_log_acts)
+        self._color_log(f"💡 Policy: {_log_policy}", Color.cyan)
 
         return actions
+
+    def _format_policy_info(self, actions: list[ActionModel]) -> list[ActionModel]:
+        clean_actions: list[ActionModel] = []
+        for action in actions:
+            clean_action = copy.deepcopy(action)
+            if (
+                clean_action.policy_info is not None
+                and clean_action.action_name is None
+                and clean_action.params is not None
+            ):
+                full_match: re.Match | None = re.search(
+                    r"<think>(.*?)<\/think>([\w\s]+)<answer>(.*?)<\/answer>", clean_action.policy_info, re.DOTALL
+                )
+                think_match: re.Match | None = re.search(r"<think>(.*?)</think>", clean_action.policy_info, re.DOTALL)
+                answer_match: re.Match | None = re.search(
+                    r"<answer>(.*?)</answer>", clean_action.policy_info, re.DOTALL
+                )
+                after_think_match: re.Match | None = re.search(
+                    r"<think>.*?</think>\s*(.*)", clean_action.policy_info, re.DOTALL
+                )
+                if full_match:
+                    pass
+                elif think_match and answer_match:
+                    policy = after_think_match.group(1).strip().replace("<answer>", "").replace("</answer>", "")
+                    clean_action.policy_info = (
+                        f"<think>{think_match.group(1)}</think><answer>{answer_match.group(1)}</answer>"
+                    )
+                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
+                elif answer_match:
+                    policy = answer_match.group(1).strip()
+                    clean_action.policy_info = f"<answer>{policy}</answer>"
+                elif think_match and after_think_match:
+                    policy = after_think_match.group(1).strip()
+                    clean_action.policy_info = f"<think>{think_match.group(1)}</think><answer>{policy}</answer>"
+                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
+                else:
+                    clean_action.policy_info = f"<answer>{clean_action.policy_info}</answer>"
+                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
+            clean_actions.append(clean_action)
+        return clean_actions
 
     def _setup_logger(self, logger_name: str, output_folder_path: str, file_name: str = "app.log") -> logging.Logger:
         return setup_logger(
@@ -132,7 +181,7 @@ class GaiaAgent(Agent):
     def _color_log(self, message: str, color: Color) -> None:
         color_log(self.logger, message, color)
 
-    def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
+    def _log_messages(self, messages: list[dict[str, Any]]) -> None:
         """Log the sequence of messages for debugging purposes"""
         self.logger.debug(f"[agent] Invoking LLM with {len(messages)} messages:")
         for i, msg in enumerate(messages):

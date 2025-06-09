@@ -7,7 +7,7 @@ import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Set
+from typing import Any, Callable, Literal
 
 from tabulate import tabulate
 
@@ -33,7 +33,7 @@ class RunnerArguments:
     """
 
     split: Literal["validation", "test"]
-    level: List = None
+    level: list = None
     q: str = None
     slice: str = None
     blacklist_file_path: str = None
@@ -82,10 +82,10 @@ class GaiaRunner:
             self.logger.info(f"{os.getenv('FRAMEWORK_LOG_LEVEL')=}")
 
         self._color_log("🏃 GaiaRunner Initialization", Color.bold)
-        self.complete_dataset: List[Dict[str, Any]] = self._construct_dataset()
-        self.target_dataset: List[Dict[str, Any]] = self._filter_dataset()
-        self.results: List[Dict[str, Any]] = self._read_existing_results()
-        self.retry_ids: Set[str] = self._filter_retry_ids()
+        self.complete_dataset: list[dict[str, Any]] = self._construct_dataset()
+        self.target_dataset: list[dict[str, Any]] = self._filter_dataset()
+        self.results: list[dict[str, Any]] = self._read_existing_results()
+        self.retry_ids: set[str] = self._filter_retry_ids()
         self._color_log(f"📖 Fetched {len(self.complete_dataset)} tasks.", Color.bold)
         self._color_log(f"🧯 Filtered {len(self.target_dataset)} tasks.", Color.bold)
         self._color_log(f"💯 Read {len(self.results)} existing results.", Color.bold)
@@ -161,8 +161,8 @@ class GaiaRunner:
             self._color_log(f"❓ Question: {task['Question']}", Color.lightblue)
             self._color_log(f"🪜 Level: {task['Level']}", Color.lightblue)
             try:
-                result: Dict[str, Any] = self._execute_task(task=task)
-                answer: Optional[str] = self._extract_answer(result)
+                result: dict[str, Any] = self._execute_task(task=task)
+                answer: str | None = self._extract_answer(result)
                 self._update_results(task, answer)
             except GaiaTimeoutException:
                 self.logger.error(f"Task {task['task_id']} timed out after {self.task_timeout} seconds.")
@@ -183,8 +183,8 @@ class GaiaRunner:
     def _color_log(self, message: str, color: Color) -> None:
         color_log(self.logger, message, color)
 
-    def _construct_dataset(self) -> List[Dict[str, Any]]:
-        def _add_file_path(task: Dict[str, Any], data_dir: Path) -> str:
+    def _construct_dataset(self) -> list[dict[str, Any]]:
+        def _add_file_path(task: dict[str, Any], data_dir: Path) -> str:
             file_path: Path = data_dir / task["file_name"]
             if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
                 question = task["Question"] + f" Here are the necessary document files: {file_path}."
@@ -202,7 +202,7 @@ class GaiaRunner:
         data_file = data_dir / "metadata.jsonl"
         assert data_file.exists(), f"{data_file} not exists"
 
-        dataset: List[Dict[str, Any]] = []
+        dataset: list[dict[str, Any]] = []
         with open(data_file, "r", encoding="utf-8") as metaf:
             lines = metaf.readlines()
             for line in lines:
@@ -219,7 +219,7 @@ class GaiaRunner:
             task["Question"] += " Please solve the task as best as you can. Now, let's start!"
         return dataset
 
-    def _filter_dataset(self) -> List[Dict[str, Any]]:
+    def _filter_dataset(self) -> list[dict[str, Any]]:
         """
         Filter the dataset based on the command line arguments.
         """
@@ -228,9 +228,9 @@ class GaiaRunner:
                 f"Blacklist file path {self.runner_args.blacklist_file_path} not exists"
             )
             with open(self.runner_args.blacklist_file_path, "r", encoding="utf-8") as f:
-                blacklist: Set[str] = set(f.read().splitlines())
+                blacklist: set[str] = set(f.read().splitlines())
         else:
-            blacklist: Set[str] = set()
+            blacklist: set[str] = set()
 
         try:
             # Default setting where user want to run full dataset
@@ -266,8 +266,8 @@ class GaiaRunner:
             self.logger.warning("Error filtering dataset. Returning full dataset instead.")
             return list(self.complete_dataset)
 
-    def _read_existing_results(self) -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
+    def _read_existing_results(self) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
         output_file = os.path.join(self.output_folder_path, "results.json")
         if os.path.exists(output_file):
             with open(output_file, "r", encoding="utf-8") as f:
@@ -278,7 +278,7 @@ class GaiaRunner:
                     self.logger.error(f"Original file path is: {output_file}. Check it carefully!")
         return results
 
-    def _filter_retry_ids(self) -> Set[str]:
+    def _filter_retry_ids(self) -> set[str]:
         """
         Filter the dataset whose `model_answer` is marked as <ERROR> or <TIMEOUT: 20>.
         """
@@ -286,28 +286,28 @@ class GaiaRunner:
             return set(task["task_id"] for task in self.results if task["model_answer"] in ["<ERROR>", "<TIMEOUT: 20>"])
         return set()
 
-    def _execute_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+    def _execute_task(self, task: dict[str, Any]) -> dict[str, Any]:
         task_id = task["task_id"]
         question = task["Question"]
-        execution: Dict[str, Dict[str, Any]] = Runners.sync_run_task(
+        execution: dict[str, dict[str, Any]] = Runners.sync_run_task(
             task=Task(input=question, agent=self.agent, conf=TaskConfig(task_id=task_id))
         )
-        result: Dict[str, Any] = execution.get("task_0", {})
+        result: dict[str, Any] = execution.get("task_0", {})
         if not result:
             self.logger.warning(f"⚠️ Task {task_id} with EMPTY return!")
         return result
 
-    def _extract_answer(self, result: Dict[str, Any]) -> str:
-        match: Optional[re.Match] = re.search(r"<answer>(.*?)</answer>", result["answer"])
+    def _extract_answer(self, result: dict[str, Any]) -> str:
+        match: re.Match | None = re.search(r"<answer>(.*?)</answer>", result["answer"])
         if match:
             answer: str = match.group(1)
             self._color_log(f"Agent answer: {answer}", Color.green)
         else:
-            answer: Optional[str] = None
+            answer: str | None = None
             self.logger.error(f"Failed to get answer! Original output: {result['answer']}")
         return answer
 
-    def _update_results(self, task: Dict[str, Any], answer: Optional[str]) -> None:
+    def _update_results(self, task: dict[str, Any], answer: str | None) -> None:
         # execution failed
         if answer is None:
             return
@@ -339,7 +339,7 @@ class GaiaRunner:
             raise ValueError("split must be one of `validation` and `test`")
 
         # Check if this task_id already exists in results
-        existing_index: Optional[int] = next(
+        existing_index: int | None = next(
             (i for i, result in enumerate(self.results) if result["task_id"] == task_id),
             None,
         )
@@ -382,7 +382,7 @@ class GaiaRunner:
                 except Exception as e2:
                     self.logger.error(f"Fallback save also failed: {str(e2)}")
 
-    def _report_results(self, entries: List[Dict[str, Any]]) -> None:
+    def _report_results(self, entries: list[dict[str, Any]]) -> None:
         # Initialize counters
         total_correct = 0
         total_entries = len(entries)
@@ -440,11 +440,11 @@ class GaiaRunner:
         Export the results to a submission file.
         """
         # indexing results by task_id for easier lookup in submission
-        results: Dict[str, Dict[str, Any]] = {result["task_id"]: result for result in self.results}
+        results: dict[str, dict[str, Any]] = {result["task_id"]: result for result in self.results}
         # entire submission sets
-        task_ids: List[str] = [task["task_id"] for task in self.complete_dataset]
+        task_ids: list[str] = [task["task_id"] for task in self.complete_dataset]
         # crafting submission, is_correct if self.split is `validation`
-        submission: List[Dict[str, Any]] = [
+        submission: list[dict[str, Any]] = [
             {
                 "task_id": task_id,
                 "model_answer": results.get(task_id, {}).get("model_answer", ""),

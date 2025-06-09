@@ -108,7 +108,7 @@ class IntelligenceCollection(ActionCollection):
         This tool provides comprehensive reasoning capabilities for:
         - Mathematical problems and proofs
         - Programming and algorithm challenges
-        - Logic puzzles and brain teasers
+        - Logic puzzles, brain teasers, and fun riddles
         - Competition-level STEM problems
         - Multi-step analytical reasoning tasks
 

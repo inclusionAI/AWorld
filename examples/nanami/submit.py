@@ -5,8 +5,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from aworld.config.conf import AgentConfig
-from examples.gaia.agent import GaiaAgent
-from examples.gaia.runner import GaiaRunner, RunnerArguments
+from examples.nanami.agent import GaiaAgent
+from examples.nanami.runner import GaiaRunner, RunnerArguments
 
 if __name__ == "__main__":
     load_dotenv()
@@ -78,7 +78,7 @@ if __name__ == "__main__":
                 llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
             ),
             mcp_servers=[
-                "e2b-server",
+                # "e2b-server",
                 "audio",
                 "browser",
                 "csv",

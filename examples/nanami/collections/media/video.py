@@ -610,9 +610,6 @@ class VideoCollection(ActionCollection):
             description="The specific time point for extraction (in seconds), centered within the window_size."
         ),
         window_size: int = Field(default=5, description="The window size for extraction (in seconds, default: 5)."),
-        cleanup: bool = Field(
-            default=False, description="Whether to delete the original video file after processing (default: False)."
-        ),
         output_dir: str = Field(
             default=None, description="Directory where extracted frames will be saved (default: workspace/keyframes)."
         ),
@@ -736,6 +733,19 @@ class VideoCollection(ActionCollection):
         # Calculate frame numbers for the time window
         start_frame = int((target_time - window_size / 2) * fps)
         end_frame = int((target_time + window_size / 2) * fps)
+        total_frames_in_window = end_frame - start_frame
+
+        max_frames = 384  # Maximum allowed frames to prevent memory issues
+
+        # Calculate sampling interval for even distribution
+        if total_frames_in_window <= max_frames:
+            # If total frames is within limit, use scene detection normally
+            frame_interval = 1
+            use_scene_detection = True
+        else:
+            # If exceeds limit, sample evenly across the window
+            frame_interval = total_frames_in_window // max_frames
+            use_scene_detection = False  # Skip scene detection for even sampling
 
         frames = []
         frame_times = []
@@ -744,7 +754,9 @@ class VideoCollection(ActionCollection):
         cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, start_frame))  # pylint: disable=E1101
 
         prev_frame = None
-        while cap.isOpened():
+        frame_count = 0
+
+        while cap.isOpened() and len(frames) < max_frames:
             frame_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)  # pylint: disable=E1101
             if frame_pos >= end_frame:
                 break
@@ -753,24 +765,32 @@ class VideoCollection(ActionCollection):
             if not ret:
                 break
 
-            # Convert frame to grayscale for scene detection
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # pylint: disable=E1101
+            if use_scene_detection:
+                # Use original scene detection logic
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # pylint: disable=E1101
 
-            # If this is the first frame, save it
-            if prev_frame is None:
-                frames.append(frame)
-                frame_times.append(frame_pos / fps)
+                # If this is the first frame, save it
+                if prev_frame is None:
+                    frames.append(frame)
+                    frame_times.append(frame_pos / fps)
+                else:
+                    # Calculate difference between current and previous frame
+                    diff = cv2.absdiff(gray, prev_frame)  # pylint: disable=E1101
+                    mean_diff = np.mean(diff)
+
+                    # If significant change detected, save frame
+                    if mean_diff > 20:  # Threshold for scene change
+                        frames.append(frame)
+                        frame_times.append(frame_pos / fps)
+
+                prev_frame = gray
             else:
-                # Calculate difference between current and previous frame
-                diff = cv2.absdiff(gray, prev_frame)  # pylint: disable=E1101
-                mean_diff = np.mean(diff)
-
-                # If significant change detected, save frame
-                if mean_diff > 20:  # Threshold for scene change
+                # Use even sampling for large windows
+                if frame_count % frame_interval == 0:
                     frames.append(frame)
                     frame_times.append(frame_pos / fps)
 
-            prev_frame = gray
+                frame_count += 1
 
         cap.release()
         return frames, frame_times
