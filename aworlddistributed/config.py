@@ -1,5 +1,7 @@
 import os
 import logging
+from pathlib import Path
+
 ####################################
 # Load .env file
 ####################################
@@ -19,5 +21,5 @@ LOG_LEVELS = {
     'ERROR': logging.ERROR,
     'CRITICAL': logging.CRITICAL
 }
-
+ROOT_DIR = Path(__file__).parent  # the path containing this file
 AGENTS_DIR = os.getenv("AGENTS_DIR", "./aworldspace/agents")

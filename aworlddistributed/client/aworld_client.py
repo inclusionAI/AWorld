@@ -1,17 +1,14 @@
-import asyncio
-import json
 import logging
+import os
+from datetime import datetime
 from typing import AsyncGenerator
 
 from aworld.models.llm import acall_llm_model, get_llm_model
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from pydantic import BaseModel, Field
 
-from base import AworldTask, AworldTaskResult
+from base import AworldTask, AworldTaskResult, AworldTaskForm
 
-
-import os
-from datetime import datetime
 
 class TaskLogger:
     """任务提交日志记录器"""
@@ -88,7 +85,7 @@ class AworldTaskClient(BaseModel):
     tasks: list[AworldTask] = Field(default_factory=list, description="submitted task list")
     task_states: dict[str, AworldTaskResult] = Field(default_factory=dict, description="task_states")
 
-    async def submit_task(self, task: AworldTask):
+    async def submit_task(self, task: AworldTask, async_result: bool = True):
         if not self.know_hosts:
             raise ValueError("No aworld server hosts configured.")
         # 1. select aworld server from know_hosts using round-robin
@@ -98,15 +95,18 @@ class AworldTaskClient(BaseModel):
         self._current_server_index = (self._current_server_index + 1) % len(self.know_hosts)
 
         # 2. call _submit_task
-        result = await self._submit_task(aworld_server, task)
+        result = await self._submit_task(aworld_server, task, async_result)
         # 3. update task_states
         self.task_states[task.task_id] = result
 
         
-    async def _submit_task(self, aworld_server, task: AworldTask):
+    async def _submit_task(self, aworld_server, task: AworldTask, async_result: bool = True):
         try:
             logging.info(f"submit task#{task.task_id} to cluster#[{aworld_server}]")
-            task_result = await self._submit_task_to_server(aworld_server, task)
+            if not async_result:
+                task_result = await self._submit_task_to_server(aworld_server, task)
+            else:
+                task_result = await self._async_submit_task_to_server(aworld_server, task)
             return task_result
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -116,6 +116,17 @@ class AworldTaskClient(BaseModel):
                     return
             logging.error(f"execute task to {task.node_id} execute_failed: [{e}], please see logs from server ")
             task_logger.log_task_submission(task, aworld_server, "execute_failed", str(e))
+
+    async def _async_submit_task_to_server(self, aworld_server, task: AworldTask):
+        import httpx
+        from base import AworldTaskForm, AworldTaskResult
+        # 构建 AworldTaskForm
+        form_data = AworldTaskForm(task=task)
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(f"{aworld_server}/submit_task", json=form_data.model_dump())
+            resp.raise_for_status()
+            data = resp.json()
+            return AworldTaskResult(**data)
 
     async def _submit_task_to_server(self, aworld_server, task: AworldTask):
         # build params
