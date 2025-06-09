@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import traceback
-from typing import Any, Callable, Union
+from typing import Any, Callable
 
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.base import Agent
@@ -14,14 +14,14 @@ from aworld.models.llm import call_llm_model
 from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput
 from aworld.utils.common import sync_exec
-from examples.gaia.utils import color_log, setup_logger
+from examples.nanami.utils import color_log, setup_logger
 
 
 class GaiaAgent(Agent):
     def __init__(
         self,
         output_folder_path: str,
-        config: Union[dict[str, Any], ConfigDict, AgentConfig],
+        config: dict[str, Any] | ConfigDict | AgentConfig,
         resp_parse_func: Callable[..., Any] = None,
         **kwargs,
     ):
@@ -32,7 +32,7 @@ class GaiaAgent(Agent):
         )
         self._color_log(f"Using {os.getenv('LLM_MODEL_NAME')} from {os.getenv('LLM_BASE_URL')}", Color.red)
 
-    def policy(self, observation: Observation, info: dict[str, Any] = None, **kwargs) -> Union[list[ActionModel], None]:
+    def policy(self, observation: Observation, info: dict[str, Any] = None, **kwargs) -> list[ActionModel] | None:
         """Adapted from the base class. Format necessary GAIA logs.
 
         Args:

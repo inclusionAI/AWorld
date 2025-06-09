@@ -5,12 +5,14 @@ import os
 import re
 import string
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from loguru import logger
 from tabulate import tabulate
 
 from aworld.logs.util import Color
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 
 def normalize_str(input_str, remove_punct=True) -> str:
@@ -22,7 +24,7 @@ def normalize_str(input_str, remove_punct=True) -> str:
         return no_spaces.lower()
 
 
-def split_string(s: str, char_list: Optional[List[str]] = None) -> list[str]:
+def split_string(s: str, char_list: list[str] | None = None) -> list[str]:
     if char_list is None:
         char_list = [",", ";"]
     pattern = f"[{''.join(char_list)}]"
@@ -82,7 +84,7 @@ def question_scorer(model_answer: str, ground_truth: str) -> bool:
         return False
 
 
-def load_dataset_meta(path: str, split: str = "validation", is_sample: bool = False) -> List[Dict[str, Any]]:
+def load_dataset_meta(path: str, split: str = "validation", is_sample: bool = False) -> list[dict[str, Any]]:
     data_dir = Path(path) / split
     data_file = data_dir / "metadata.jsonl" if not is_sample else data_dir / "sample_metadata.jsonl"
 
@@ -99,7 +101,7 @@ def load_dataset_meta(path: str, split: str = "validation", is_sample: bool = Fa
     return dataset
 
 
-def add_file_path(task: Dict[str, Any], file_path: str = "./gaia_dataset", split: str = "validation"):
+def add_file_path(task: dict[str, Any], file_path: str = "./gaia_dataset", split: str = "validation"):
     if task["file_name"]:
         file_path = Path(f"{file_path}/{split}") / task["file_name"]
         if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
@@ -161,8 +163,7 @@ def report_results(entries):
         ["Total Correct", total_correct],
         ["Overall Accuracy", f"{overall_accuracy:.2f}%"],
     ]
-    logger.success(tabulate(overall_table, tablefmt="grid"))
-    logger.info("")
+    color_log(logger, "\n" + tabulate(overall_table, tablefmt="grid"), Color.green)
 
     # Create level statistics table
     logger.info("Statistics by Level:")
@@ -172,8 +173,7 @@ def report_results(entries):
     for level in sorted(level_stats.keys()):
         stats = level_stats[level]
         level_table.append([level, stats["total"], stats["correct"], f"{stats['accuracy']:.2f}%"])
-
-    logger.success(tabulate(level_table, headers=headers, tablefmt="grid"))
+    color_log(logger, "\n" + tabulate(level_table, headers=headers, tablefmt="grid"), Color.green)
 
 
 def parse_arguments():

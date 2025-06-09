@@ -15,8 +15,8 @@ from aworld.config.conf import TaskConfig
 from aworld.core.task import Task
 from aworld.logs.util import Color
 from aworld.runner import Runners
-from examples.gaia.agent import GaiaAgent
-from examples.gaia.utils import color_log, question_scorer, setup_logger
+from examples.nanami.agent import GaiaAgent
+from examples.nanami.utils import color_log, question_scorer, setup_logger
 
 
 @dataclass
