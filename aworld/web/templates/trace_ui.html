@@ -199,7 +199,15 @@
                 <template #header>
                     <h4>Attributes</h4>
                 </template>
-                <pre>{{ formatAttributes(selectedSpan.attributes) }}</pre>
+                <pre style="
+                    max-height: 400px;
+                    overflow: auto;
+                    white-space: pre-wrap;
+                    word-break: break-all;
+                    background: #f8f8f8;
+                    padding: 10px;
+                    border-radius: 4px;
+                ">{{ formatAttributes(selectedSpan.attributes) }}</pre>
             </el-card>
         </el-dialog>
         <el-dialog v-model="showStacktrace" title="Stacktrace Details" width="70%">

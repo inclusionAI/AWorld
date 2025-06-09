@@ -30,7 +30,8 @@ def traced_func(param1: str = None, param2: int = None):
 
 @trace.func_span(span_name="test_func_2", add_attr="add_attr_value")
 def traced_func2(param1: str = None, param2: int = None):
-    trace_logger.info("this is a traced func2")
+    name = 'func2'
+    trace_logger.info(f"this is a traced {name}")
     raise Exception("this is a traced func2 exception")
 
 
