@@ -1,6 +1,8 @@
 import json
 import os
 import time
+from datetime import datetime
+
 from aworld.utils.common import get_local_ip
 from fastapi import APIRouter
 
@@ -125,6 +127,8 @@ class AworldTaskExecutor(BaseModel):
         data = await generate_openai_chat_completion(form_data)
         task_result = {}
         task.node_id = get_local_ip()
+        items = []
+        md_file = ""
         if data.body_iterator:
             if isinstance(data.body_iterator, AsyncGenerator):
 
@@ -136,17 +140,23 @@ class AworldTaskExecutor(BaseModel):
 
                     # if isinstance(item, ModelResponse)
                     item = await parse_item(item_content)
+                    items.append(item)
                     if not item:
                         continue
 
                     if item.content:
-                        task_logger.log_task_result(task, item)
+                        md_file = task_logger.log_task_result(task, item)
                         logging.info(f"task#{task.task_id} response data chunk is: {item}"[:500])
 
-                    if item.raw_response and item.raw_response and isinstance(item.raw_response, dict):
+                    if item.raw_response and item.raw_response and isinstance(item.raw_response, dict) and item.raw_response.get('task_output_meta'):
                         task_result = item.raw_response.get('task_output_meta')
 
-        result = AworldTaskResult(task=task, data=task_result)
+        data = {
+            "task_result": task_result,
+            "md_file": md_file,
+            "replays_file": f"trace_data/{datetime.now().strftime('%Y%m%d')}/{get_local_ip()}/replays/task_replay_{task.task_id}.json"
+        }
+        result = AworldTaskResult(task=task, server_host=get_local_ip(), data=data)
         return result
 
 

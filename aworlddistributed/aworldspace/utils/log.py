@@ -37,17 +37,13 @@ class TaskLogger:
             logging.error(f"Failed to write task submission log: {e}")
 
     def log_task_result(self, task: AworldTask, result: ModelResponse):
-        """记录任务结果为markdown文件"""
         try:
-            # 创建结果目录
             date_str = datetime.now().strftime("%Y%m%d")
             result_dir = os.path.join(ROOT_LOG, 'task_logs', 'result', date_str)
             os.makedirs(result_dir, exist_ok=True)
 
-            # 创建markdown文件
             md_file = f"{result_dir}/{task.task_id}.md"
 
-            # 拼接content内容
             content_parts = []
             if hasattr(result, 'content') and result.content:
                 if isinstance(result.content, list):
@@ -55,25 +51,25 @@ class TaskLogger:
                 else:
                     content_parts.append(str(result.content))
 
-            # 写入markdown文件
             file_exists = os.path.exists(md_file)
             with open(md_file, 'a', encoding='utf-8') as f:
-                # 只有文件不存在时才写入标题信息
                 if not file_exists:
                     f.write(f"# Task Result: {task.task_id}\n\n")
                     f.write(f"**Agent ID:** {task.agent_id}\n\n")
                     f.write(f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                     f.write("## Content\n\n")
 
-                # 每次都写入内容部分
                 if content_parts:
                     for i, content in enumerate(content_parts, 1):
                         f.write(f"{content}\n\n")
                 else:
                     f.write("No content available.\n\n")
 
+            return md_file
+
         except Exception as e:
             logging.error(f"Failed to write task result log: {e}")
+            return None
 
 
 task_logger = TaskLogger(log_file=f"aworld_task_submissions_{datetime.now().strftime('%Y%m%d')}.log")
