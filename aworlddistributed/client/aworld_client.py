@@ -123,7 +123,7 @@ class AworldTaskClient(BaseModel):
         # 构建 AworldTaskForm
         form_data = AworldTaskForm(task=task)
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{aworld_server}/submit_task", json=form_data.model_dump())
+            resp = await client.post(f"http://{aworld_server}/api/v1/tasks/submit_task", json=form_data.model_dump())
             resp.raise_for_status()
             data = resp.json()
             return AworldTaskResult(**data)

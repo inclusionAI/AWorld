@@ -15,14 +15,15 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
-from aworldspace.utils.agents_utils import PIPELINE_MODULES, PIPELINES
+from aworldspace.base import AGENT_SPACE
 from aworldspace.utils.utils import get_last_user_message
 from base import OpenAIChatCompletionForm
 
 async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
     messages = [message.model_dump() for message in form_data.messages]
     user_message = get_last_user_message(messages)
-
+    PIPELINES = await AGENT_SPACE.get_agents_meta()
+    PIPELINE_MODULES = await AGENT_SPACE.get_agent_modules()
     if (
         form_data.model not in PIPELINES
         or PIPELINES[form_data.model]["type"] == "filter"
@@ -165,6 +166,62 @@ async def generate_openai_chat_completion(form_data: OpenAIChatCompletionForm):
 
 
     return await run_in_threadpool(job)
+
+
+async def call_pipeline(form_data: OpenAIChatCompletionForm):
+    messages = [message.model_dump() for message in form_data.messages]
+    user_message = get_last_user_message(messages)
+    PIPELINES = await AGENT_SPACE.get_agents_meta()
+    PIPELINE_MODULES = await AGENT_SPACE.get_agent_modules()
+    if (
+        form_data.model not in PIPELINES
+        or PIPELINES[form_data.model]["type"] == "filter"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Pipeline {form_data.model} not found",
+        )
+
+    pipeline = PIPELINES[form_data.model]
+    pipeline_id = form_data.model
+
+    if pipeline["type"] == "manifold":
+        manifold_id, pipeline_id = pipeline_id.split(".", 1)
+        pipe = PIPELINE_MODULES[manifold_id].pipe
+    else:
+        pipe = PIPELINE_MODULES[pipeline_id].pipe
+
+    if form_data.stream:
+        async def execute_pipe(_pipe):
+            if inspect.iscoroutinefunction(_pipe):
+                return await _pipe(user_message=user_message,
+                                   model_id=pipeline_id,
+                                   messages=messages,
+                                   body=form_data.model_dump())
+            else:
+                return _pipe(user_message=user_message,
+                             model_id=pipeline_id,
+                             messages=messages,
+                             body=form_data.model_dump())
+
+        res = await execute_pipe(pipe)
+        return res
+    else:
+        if not inspect.iscoroutinefunction(pipe):
+            return await run_in_threadpool(
+                pipe,
+                user_message=user_message,
+                model_id=pipeline_id,
+                messages=messages,
+                body=form_data.model_dump()
+            )
+        else:
+            return await pipe(
+                user_message=user_message,
+                model_id=pipeline_id,
+                messages=messages,
+                body=form_data.model_dump()
+            )
 
 def openai_chat_chunk_message_template(
     model: str,

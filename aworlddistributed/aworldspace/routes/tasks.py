@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from aworld.utils.common import get_local_ip
@@ -13,7 +14,7 @@ from aworld.models.model_response import ModelResponse
 from pydantic import BaseModel, Field, PrivateAttr
 
 from aworldspace.db.db import AworldTaskDB, SqliteTaskDB
-from aworldspace.utils.job import generate_openai_chat_completion
+from aworldspace.utils.job import generate_openai_chat_completion, call_pipeline
 from aworldspace.utils.log import task_logger
 from base import AworldTask, AworldTaskResult, OpenAIChatCompletionForm, OpenAIChatMessage, AworldTaskForm
 
@@ -21,6 +22,9 @@ from base import AworldTask, AworldTaskResult, OpenAIChatCompletionForm, OpenAIC
 from config import ROOT_DIR
 
 __STOP_TASK__ = object()
+
+
+
 
 class AworldTaskExecutor(BaseModel):
     """
@@ -42,12 +46,14 @@ class AworldTaskExecutor(BaseModel):
         """
         execute task in a loop
         """
+        logging.info(f"🚀[task executor] start, max concurrent is {self.max_concurrent}")
         while True:
-            if self._tasks.empty():
+            # load task if no task and semaphore is not full
+            if self._tasks.empty() and self._semaphore._value > 0:
                 await self.load_task()
             task = await self._tasks.get()
             if task == __STOP_TASK__:
-                logging.info("✅ task executor stop, all tasks finished")
+                logging.info("✅[task executor] stop, all tasks finished")
                 break
             asyncio.create_task(self._run_with_semaphore(task))
 
@@ -61,21 +67,24 @@ class AworldTaskExecutor(BaseModel):
         execute task with semaphore
         """
         start_time = time.time()
-        logging.info(f"🚀 execute task#{task.task_id} start")   
+        logging.info(f"🚀[task executor] execute task#{task.task_id} start, wait lock ...")
         async with self._semaphore:
+            logging.info(f"🚀[task executor] execute task#{task.task_id} start, lock acquired")
             start_time_in_semaphore = time.time()
             await self.execute_task(task)
-        logging.info(f"✅ execute task#{task.task_id} success, wait time is {start_time_in_semaphore - start_time:.2f}s, use time {time.time() - start_time:.2f}s")
+        logging.info(f"✅[task executor] execute task#{task.task_id} success, wait time is {start_time_in_semaphore - start_time:.2f}s, use time {time.time() - start_time:.2f}s")
 
     async def load_task(self):
         tasks = await self._task_db.query_tasks_by_status(status="INIT", nums=self.max_concurrent)
-        logging.info(f"🔍 load {len(tasks)} tasks from db")
+        logging.info(f"🔍[task executor] load {len(tasks)} tasks from db")
         if not tasks or len(tasks) == 0:
             interval = os.environ.get("AWORLD_TASK_LOAD_INTERVAL", 10)
-            logging.info(f"🔍 no task to load, wait {interval}s and retry")
+            logging.info(f"🔍[task executor] no task to load, wait {interval}s and retry")
             await asyncio.sleep(interval)
             return await self.load_task()
         for task in tasks:
+            task.mark_running()
+            await self._task_db.update_task(task)
             await self._tasks.put(task)
         return True
 
@@ -86,6 +95,8 @@ class AworldTaskExecutor(BaseModel):
         try:
             result = await self._execute_task(task)
             task.mark_success()
+            await self._task_db.update_task(task)
+            await self._task_db.save_task_result(result)
             task_logger.log_task_submission(task, "execute_finished", task_result=result)
         except Exception as err:
             task.mark_failed()
@@ -112,37 +123,28 @@ class AworldTaskExecutor(BaseModel):
             }
         )
         data = await generate_openai_chat_completion(form_data)
-        items = []
         task_result = {}
-        if isinstance(data, AsyncGenerator):
-            async for item in data:
-                items.append(item)
-                if item.raw_response and item.raw_response.model_extra and item.raw_response.model_extra.get('node_id'):
-                    if not task.node_id:
-                        logging.info(
-                            f"submit task#{task.task_id} success. execute pod ip is [{item.raw_response.model_extra.get('node_id')}]")
-                        task.node_id = item.raw_response.model_extra.get('node_id')
+        task.node_id = get_local_ip()
+        if data.body_iterator:
+            if isinstance(data.body_iterator, AsyncGenerator):
 
-                if item.content:
-                    task_logger.log_task_result(task, item)
-                    logging.info(f"task#{task.task_id} response data chunk is: {item}"[:500])
+                async for item_content in data.body_iterator:
+                    async def parse_item(_item_content) -> Optional[ModelResponse]:
+                        if item_content == "data: [DONE]":
+                            return None
+                        return ModelResponse.from_openai_stream_chunk(json.loads(item_content.replace("data:", "")))
 
-                if item.raw_response and item.raw_response.model_extra and item.raw_response.model_extra.get(
-                        'task_output_meta'):
-                    task_result = item.raw_response.model_extra.get('task_output_meta')
+                    # if isinstance(item, ModelResponse)
+                    item = await parse_item(item_content)
+                    if not item:
+                        continue
 
-        elif isinstance(data, ModelResponse):
-            if data.raw_response and data.raw_response.model_extra and data.raw_response.model_extra.get('node_id'):
-                if not task.node_id:
-                    logging.info(
-                        f"submit task#{task.task_id} success. execute pod ip is [{data.raw_response.model_extra.get('node_id')}]")
-                task.node_id = data.raw_response.model_extra.get('node_id')
+                    if item.content:
+                        task_logger.log_task_result(task, item)
+                        logging.info(f"task#{task.task_id} response data chunk is: {item}"[:500])
 
-            logging.info(f"task#{task.task_id} response data is: {data}")
-            task_logger.log_task_result(task, data)
-            if data.raw_response and data.raw_response.model_extra and data.raw_response.model_extra.get(
-                    'task_output_meta'):
-                task_result = data.raw_response.model_extra.get('task_output_meta')
+                    if item.raw_response and item.raw_response and isinstance(item.raw_response, dict):
+                        task_result = item.raw_response.get('task_output_meta')
 
         result = AworldTaskResult(task=task, data=task_result)
         return result

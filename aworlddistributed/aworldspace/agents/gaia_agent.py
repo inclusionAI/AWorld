@@ -209,21 +209,20 @@ class Pipeline(AworldBaseAgent):
         if isinstance(outputs, StreamingOutputs):
             agent_result = await outputs._visited_outputs[-2].get_finished_response() # read llm result
         match = re.search(r"<answer>(.*?)</answer>", agent_result)
-        is_correct = False
-        result = ""
-        answer = ""
+        answer = agent_result
         if match:
             answer = match.group(1)
-            logging.info(f"🤖 Agent answer: {answer}")
-            logging.info(f"👨‍🏫 Correct answer: {gaia_task['Final answer']}")
-            is_correct = question_scorer(answer, gaia_task["Final answer"])
 
-            if is_correct:
-                logging.info(f"📝Question {gaia_task_id} Correct! 🎉")
-                result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:[{answer}] is `Correct`**"
-            else:
-                logging.info(f"📝Question {gaia_task_id} Incorrect! ❌")
-                result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:`{answer}` != Correct answer: `{gaia_task['Final answer']}` is `Incorrect` ❌**"
+        logging.info(f"🤖 Agent answer: {answer}")
+        logging.info(f"👨‍🏫 Correct answer: {gaia_task['Final answer']}")
+        is_correct = question_scorer(answer, gaia_task["Final answer"])
+
+        if is_correct:
+            logging.info(f"📝Question {gaia_task_id} Correct! 🎉")
+            result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:[{answer}] is `Correct`**"
+        else:
+            logging.info(f"📝Question {gaia_task_id} Incorrect! ❌")
+            result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:`{answer}` != Correct answer: `{gaia_task['Final answer']}` is `Incorrect` ❌**"
 
         metadata = await outputs.get_metadata()
         if not metadata:

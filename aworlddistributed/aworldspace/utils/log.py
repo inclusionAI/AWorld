@@ -5,13 +5,14 @@ from datetime import datetime
 from aworld.models.model_response import ModelResponse
 
 from base import AworldTask, AworldTaskResult
+from config import ROOT_LOG
 
 
 class TaskLogger:
     """任务提交日志记录器"""
 
     def __init__(self, log_file: str = "aworld_task_submissions.log"):
-        self.log_file = 'logs/task_logs/' + log_file
+        self.log_file = os.path.join(ROOT_LOG, 'task_logs' , log_file)
         self._ensure_log_file_exists()
 
     def _ensure_log_file_exists(self):
@@ -40,7 +41,7 @@ class TaskLogger:
         try:
             # 创建结果目录
             date_str = datetime.now().strftime("%Y%m%d")
-            result_dir = f"task_logs/result/{date_str}"
+            result_dir = os.path.join(ROOT_LOG, 'task_logs', 'result', date_str)
             os.makedirs(result_dir, exist_ok=True)
 
             # 创建markdown文件

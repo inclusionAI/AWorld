@@ -9,7 +9,7 @@ from base import AworldTask, AworldTaskResult
 from aworldspace.db.models import (
     Base, AworldTaskModel, AworldTaskResultModel,
     orm_to_pydantic_task, pydantic_to_orm_task,
-    orm_to_pydantic_result
+    orm_to_pydantic_result, pydantic_to_orm_result
 )
 
 
@@ -37,6 +37,10 @@ class AworldTaskDB(ABC):
 
     @abstractmethod
     async def page_query_tasks(self, filter: dict, page_size: int, page_num: int) -> dict:
+        pass
+
+    @abstractmethod
+    async def save_task_result(self, result: AworldTaskResult):
         pass
 
 
@@ -86,6 +90,12 @@ class SqliteTaskDB(AworldTaskDB):
                     setattr(orm_task, k, v)
                 orm_task.updated_at = datetime.utcnow()
                 session.commit()
+
+    async def save_task_result(self, result: AworldTaskResult):
+        with self.Session() as session:
+            orm_task = pydantic_to_orm_result(result)
+            session.add(orm_task)
+            session.commit()
 
     async def page_query_tasks(self, filter: dict, page_size: int, page_num: int) -> dict:
         with self.Session() as session:

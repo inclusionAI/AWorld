@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import traceback
-
+from aworldspace.base import AGENT_SPACE
 import aworld.trace as trace  # noqa
 
 from config import AGENTS_DIR
@@ -15,7 +15,6 @@ if not os.path.exists(AGENTS_DIR):
 
 PIPELINES = {}
 PIPELINE_MODULES = {}
-PIPELINE_NAMES = {}
 
 def get_all_pipelines():
     pipelines = {}
@@ -150,7 +149,6 @@ async def load_module_from_path(module_name, module_path):
 async def load_modules_from_directory(directory):
     logging.info(f"load_modules_from_directory: {directory}")
     global PIPELINE_MODULES
-    global PIPELINE_NAMES
 
     for filename in os.listdir(directory):
         if filename.endswith(".py"):
@@ -190,10 +188,10 @@ async def load_modules_from_directory(directory):
 
                 pipeline_id = pipeline.id if hasattr(pipeline, "id") else module_name
                 PIPELINE_MODULES[pipeline_id] = pipeline
-                PIPELINE_NAMES[pipeline_id] = module_name
+
                 logging.info(f"Loaded module success: {module_name}")
             else:
                 logging.warning(f"No Pipeline class found in {module_name}")
 
-    global PIPELINES
-    PIPELINES = get_all_pipelines()
+    AGENT_SPACE.agent_modules = PIPELINE_MODULES
+    AGENT_SPACE.agents_meta = get_all_pipelines()

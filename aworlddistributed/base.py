@@ -38,12 +38,11 @@ class AworldTask(BaseModel):
 
 class AworldTaskResult(BaseModel):
     task: AworldTask = Field(default=None, description="task")
-    server_host: str = Field(default=None, description="aworld server id")
+    server_host: Optional[str] = Field(default=None, description="aworld server id")
     data: Any = Field(default=None, description="result data")
 
 class AworldTaskForm(BaseModel):
     batch_id: str = Field(default=str(uuid.uuid4()), description="batch_id")
-    tasks: Optional[list[AworldTask]] = Field(default=list, description="task list")
     task: Optional[AworldTask] = Field(default=None, description="task")
     user_id: Optional[str] = Field(default=None, description="user id")
     client_id: Optional[str] = Field(default=None, description="submit client ip")

@@ -12,11 +12,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from aworldspace.routes import tasks
-from aworldspace.utils.agents_utils import load_modules_from_directory, PIPELINE_MODULES, PIPELINES, PIPELINE_NAMES, \
+from aworldspace.utils.loader import load_modules_from_directory, PIPELINE_MODULES, PIPELINES, \
     get_all_pipelines
 from aworldspace.utils.job import generate_openai_chat_completion
 from base import OpenAIChatCompletionForm
-from config import AGENTS_DIR, LOG_LEVELS
+from config import AGENTS_DIR, LOG_LEVELS, ROOT_LOG
 
 if not os.path.exists(AGENTS_DIR):
     os.makedirs(AGENTS_DIR)
@@ -27,7 +27,7 @@ logging.basicConfig(level=LOG_LEVELS[log_level])
 def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    log_dir = os.path.join(os.getenv("LOG_DIR_PATH", "logs") , get_local_ip())
+    log_dir = ROOT_LOG
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     log_path = os.path.join(log_dir, "aworldserver.log")
@@ -69,7 +69,6 @@ async def reload():
     # Clear existing pipelines
     PIPELINES.clear()
     PIPELINE_MODULES.clear()
-    PIPELINE_NAMES.clear()
     # Load pipelines afresh
     await on_startup()
 
