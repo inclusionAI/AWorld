@@ -15,7 +15,7 @@ AWORLD_TASK_CLIENT = AworldTaskClient(
 )
 
 
-async def _run_gaia_task(gaia_task: AworldTask, delay: int) -> None:
+async def _run_gaia_task(gaia_task: AworldTask, delay: int, background: bool = False) -> None:
     """Run a single Gaia task with the given question ID.
 
     Args:
@@ -25,11 +25,15 @@ async def _run_gaia_task(gaia_task: AworldTask, delay: int) -> None:
     await asyncio.sleep(delay)
 
     # Submit task to Aworld server
-    await AWORLD_TASK_CLIENT.submit_task(gaia_task)
+    await AWORLD_TASK_CLIENT.submit_task(gaia_task, background=background)
 
     # Get and print task result
     task_result = await AWORLD_TASK_CLIENT.get_task_state(task_id=gaia_task.task_id)
-    logging.info(f"execute task_result#{gaia_task.task_id} is {task_result.data if task_result else None}")
+    if not background:
+        logging.info(f"execute task_result#{gaia_task.task_id} is {task_result.data if task_result else None}")
+    else:
+        logging.info(f"submit task_result#{gaia_task.task_id} background success, please use task_id get task_result await a moment")
+
 
 
 async def _batch_run_gaia_task(gaia_tasks: list[AworldTask]) -> None:
@@ -37,8 +41,8 @@ async def _batch_run_gaia_task(gaia_tasks: list[AworldTask]) -> None:
 
     """
     tasks = [
-        _run_gaia_task(gaia_task, index * 3)
-        for index,gaia_task in enumerate(gaia_tasks)
+        _run_gaia_task(gaia_task, index * 3, background=False)
+        for index, gaia_task in enumerate(gaia_tasks)
     ]
     await asyncio.gather(*tasks)
 
