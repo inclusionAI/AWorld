@@ -17,13 +17,13 @@
 
 
 ## Introduction
-As illustrated in the figure below, AWorld (Agent World) is designed to achieve two primary objectives: (1) provide the effiecent forward process, and (2) facilitate diverse backward processes, including but not limit foundation model training and system design meta-learning.
+For self-improving, AWorld (Agent World) is designed to achieve two primary objectives: (1) provide the effiecent forward process, and (2) facilitate diverse backward processes, including but not limit foundation model training and system design meta-learning.
 ![](readme_assets/aworld_overview.jpg)
 
 ### Forward process
 | 1. Agent Construction | 2. Topology Orchestration | 3. Environments |
 |-------------------|------------------------|--------------|
-| - [x] Support different model services <br> - [x] Support MCP tools  <br> - [x] Support custom tools| - [x] Encapsulate protocol between models and tools <br> - [x] Encapsulate protocol among agents | - [x] Encapsulate runtime state management <br> - [x] Support state tracing <br> - [x] Support distributed high-concurrency envs|
+| • ✅ Support different model services <br> • ✅ Support MCP tools <br> • ✅ Support custom tools | • ✅ Encapsulate protocol between models and tools <br> • ✅ Encapsulate protocol among agents | • ✅ Encapsulate runtime state management <br> • ✅ Support state tracing <br> • ✅ Support distributed high-concurrency envs |
 
 Follow the instructions in `./README-local.md` to run a forward process on the GAIA benchmark. Watch the demo on [Youtube](https://www.youtube.com/watch?v=Z_B8D9CsAFI)
 
