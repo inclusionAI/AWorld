@@ -36,51 +36,66 @@ class AworldTaskExecutor(BaseModel):
     """
     _task_db: AworldTaskDB = PrivateAttr()
     _tasks: Queue = PrivateAttr()
-    max_concurrent: int = Field(default=os.environ.get("AWORLD_MAX_CONCURRENT_TASKS", 1), description="max concurrent tasks")
+    max_concurrent: int = Field(default=os.environ.get("AWORLD_MAX_CONCURRENT_TASKS", 2), description="max concurrent tasks")
 
-    def __init__(self, task_db: AworldTaskDB, max_concurrent: int = 2):
+    def __init__(self, task_db: AworldTaskDB):
         super().__init__()
         self._task_db = task_db
         self._tasks = Queue()
-        self._semaphore = asyncio.BoundedSemaphore(max_concurrent)  # 限制并发
+        self._semaphore = asyncio.BoundedSemaphore(self.max_concurrent)
 
     async def start(self):
         """
         execute task in a loop
         """
+        await asyncio.sleep(5)
         logging.info(f"🚀[task executor] start, max concurrent is {self.max_concurrent}")
         while True:
-            # load task if no task and semaphore is not full
-            if self._tasks.empty() and self._semaphore._value > 0:
+            # load task if queue is empty and semaphore is not full
+            if self._tasks.empty():
                 await self.load_task()
             task = await self._tasks.get()
+            if not task:
+                logging.info("task is none")
+                continue
             if task == __STOP_TASK__:
                 logging.info("✅[task executor] stop, all tasks finished")
                 break
-            asyncio.create_task(self._run_with_semaphore(task))
+            # acquire semaphore
+            await self._semaphore.acquire()
+            asyncio.create_task(self._run_task_and_release_semaphore(task))
 
 
     async def stop(self):
         logging.info("🛑 task executor stop, wait for all tasks to finish")
         await self._tasks.put(__STOP_TASK__)
 
-    async def _run_with_semaphore(self, task: AworldTask):
+    async def _run_task_and_release_semaphore(self, task: AworldTask):
         """
-        execute task with semaphore
+        execute task and release semaphore when done
         """
         start_time = time.time()
-        logging.info(f"🚀[task executor] execute task#{task.task_id} start, wait lock ...")
-        async with self._semaphore:
-            logging.info(f"🚀[task executor] execute task#{task.task_id} start, lock acquired")
-            start_time_in_semaphore = time.time()
+        logging.info(f"🚀[task executor] execute task#{task.task_id} start, lock acquired")
+        try:
             await self.execute_task(task)
-        logging.info(f"✅[task executor] execute task#{task.task_id} success, wait time is {start_time_in_semaphore - start_time:.2f}s, use time {time.time() - start_time:.2f}s")
+        finally:
+            # release semaphore
+            self._semaphore.release()
+        logging.info(f"✅[task executor] execute task#{task.task_id} success, use time {time.time() - start_time:.2f}s")
 
     async def load_task(self):
-        tasks = await self._task_db.query_tasks_by_status(status="INIT", nums=self.max_concurrent)
-        logging.info(f"🔍[task executor] load {len(tasks)} tasks from db")
+        interval = os.environ.get("AWORLD_TASK_LOAD_INTERVAL", 10)
+        # calculate the number of tasks to load
+        need_load = self._semaphore._value
+        if need_load <= 0:
+            logging.info(f"🔍[task executor] runner is busy, wait {interval}s and retry")
+            await asyncio.sleep(interval)
+            return await self.load_task()
+        tasks = await self._task_db.query_tasks_by_status(status="INIT", nums=need_load)
+        logging.info(f"🔍[task executor] load {len(tasks)} tasks from db (need {need_load})")
+
+
         if not tasks or len(tasks) == 0:
-            interval = os.environ.get("AWORLD_TASK_LOAD_INTERVAL", 10)
             logging.info(f"🔍[task executor] no task to load, wait {interval}s and retry")
             await asyncio.sleep(interval)
             return await self.load_task()
