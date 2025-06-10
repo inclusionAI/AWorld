@@ -17,43 +17,20 @@
 
 
 ## Introduction
+As illustrated in the figure below, AWorld (Agent World) is designed to achieve two primary objectives: (1) provide the effiecent forward process, and (2) facilitate diverse backward processes, including but not limit foundation model training and system design meta-learning.
+![](readme_assets/aworld_overview.jpg)
 
-AWorld (short for Agent World) is an advanced framework where multiple AI agents collaborate to accomplish complex goals, such as those found in the GAIA benchmark. Its core features include:
+### Forward process
+| Agent Construction | Topology Orchestration | Environments |
+|-------------------|------------------------|--------------|
+| - [x] Support different model services <br> - [x] Support MCP tools  <br> - [x] Support custom tools| - [x] Encapsulate protocol between models and tools <br> - [x] Encapsulate protocol among agents | - [x] Encapsulate runtime state management <br> - [x] Support state tracing <br> - [x] Support distributed high-concurrency envs|
 
-- **Collaboration**: Enables event-driven communication on two hierarchical levels—between agents, and between models and environments (e.g., MCP servers).
-- **Autonomy**: Features robust runtime state management for handling multi-step, intricate tasks.
-- **Evolution**: Supports a highly concurrent execution environment, empowering agents to learn and adapt across diverse tasks and environments.
+Follow the instructions in `./README-local.md` to run a forward process on the GAIA benchmark. Watch the demo on [Youtube](https://www.youtube.com/watch?v=Z_B8D9CsAFI)
 
-Unlock the power of intelligent teamwork and continuous improvement with AWorld!
-
-## What we offer:
-For quick evaluation, training, rapid prototyping, and other use cases, we provide Docker images that package the MCP tools, AWorld framework, and models together. This enables users to effortlessly utilize AWorld’s communication protocols and state management features right out of the box. The available Docker images are listed below:
-
-<table>
-  <tr>
-    <th>Scenario</th>
-    <th>Docker</th>
-    <th>Demo</th>
-  </tr>
-  <tr>
-    <td rowspan="1">Evalution</td>
-    <td>GAIA Evaluation Docker Image. For instructions on building the image, see <code>./README-docker.md</code>.</td>
-   <td>
-      <a href="https://www.youtube.com/watch?v=kkYWeVvJKrg" target="_blank">
-        <img src="https://img.youtube.com/vi/kkYWeVvJKrg/0.jpg" alt="AWorld Browser Demo on YouTube" width="95%">
-        <br>
-        <p align="left">▶️ Runing GAIA task in our image</p>
-      </a>
-   </td>
-  </tr>
-
-  <tr>
-    <td rowspan="1">Training</td>
-    <td>  GAIA Training Docker Images, supporting distributed and  high-concurrency deployments. Instructions for training are <i>coming soon</i>.
-</td>
-    <td></td>
-  </tr>
-</table>
+### Incubated backward methods
+| Method Category | Description | Key Information |
+|----------------|-------------|--------------|
+| Foundation Model Training | Improving Function call ability of large language models | [![Dataset](https://img.shields.io/badge/Dataset-Coming%20Soon-007ACC?style=for-the-badge&logo=dataset&logoColor=white)]() <br> [![Model](https://img.shields.io/badge/Model-Hugging%20Face-FF6B6B?style=for-the-badge&logo=huggingface&logoColor=white)](https://huggingface.co/Bingguang/FunReason) <br> [![Paper](https://img.shields.io/badge/Paper-arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/pdf/2505.20192) <br> [![Blog](https://img.shields.io/badge/Blog-Coming%20Soon-FF5722?style=for-the-badge&logo=blogger&logoColor=white)]() <br> [![Code](https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/BingguangHao/FunReason)|
 
 > **Want to build your own multi-agent system? Check out the detailed tutorials below to get started! ⬇️⬇️⬇️** 
 
