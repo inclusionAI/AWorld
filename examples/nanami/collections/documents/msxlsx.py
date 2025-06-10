@@ -1,14 +1,15 @@
 import json
 import os
+import subprocess
+import sys
 import time
 import traceback
 import zipfile
 from pathlib import Path
 from typing import Any, Literal
 
-# Add new imports for screenshot functionality
-import matplotlib.pyplot as plt
 import pandas as pd
+import pyautogui
 from dotenv import load_dotenv
 from openpyxl import load_workbook
 from pydantic import Field
@@ -46,127 +47,54 @@ class XLSXExtractionCollection(ActionCollection):
         self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue, "debug")
         self._color_log(f"Screenshots directory: {self._screenshots_dir}", Color.blue, "debug")
 
-    def _create_excel_screenshot(
-        self, file_path: Path, sheet_name: str = None, max_rows: int = 50, max_cols: int = 20
-    ) -> str:
-        """Create a JPEG screenshot of the valid Excel area.
+    def _create_excel_screenshot(self, file_path: Path, sheet_name: str = None) -> str:
+        """Create a JPEG screenshot of the valid Excel area using pyautogui.
 
         Args:
             file_path: Path to the Excel file
             sheet_name: Specific sheet to screenshot (None for first sheet)
-            max_rows: Maximum number of rows to include in screenshot
-            max_cols: Maximum number of columns to include in screenshot
 
         Returns:
             Path to the generated JPEG screenshot
         """
         try:
-            # Load the Excel file
-            if file_path.suffix.lower() == ".xlsx":
-                excel_file = pd.ExcelFile(file_path, engine="openpyxl")
-            else:
-                excel_file = pd.ExcelFile(file_path, engine="xlrd")
-
-            # Get the target sheet
-            if sheet_name is None:
-                sheet_name = excel_file.sheet_names[0]
-
-            # Read the sheet data
-            df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
-
-            # Remove completely empty rows and columns
-            df = df.dropna(how="all").dropna(axis=1, how="all")
-
-            if df.empty:
-                # Create a simple "empty sheet" image
-                _, ax = plt.subplots(figsize=(10, 6))
-                ax.text(
-                    0.5,
-                    0.5,
-                    f'Sheet "{sheet_name}" is empty',
-                    horizontalalignment="center",
-                    verticalalignment="center",
-                    transform=ax.transAxes,
-                    fontsize=16,
-                )
-                ax.set_xlim(0, 1)
-                ax.set_ylim(0, 1)
-                ax.axis("off")
-            else:
-                # Limit the data to max_rows and max_cols for better visualization
-                df_display: pd.DataFrame = df.iloc[:max_rows, :max_cols]
-
-                # Replace NaN values with empty strings for display
-                df_display = df_display.fillna("")
-
-                # Create figure and axis
-                _, ax = plt.subplots(figsize=(max(12, len(df_display.columns) * 1.5), max(8, len(df_display) * 0.5)))
-
-                # Hide axes
-                ax.axis("off")
-
-                # Create table
-                table_data = []
-
-                # Add column headers (A, B, C, etc.)
-                col_headers = [chr(65 + i) for i in range(len(df_display.columns))]
-                table_data.append(col_headers)
-
-                # Add data rows with row numbers
-                for _, (_, row) in enumerate(df_display.iterrows()):
-                    row_data = [str(cell) if cell != "" else "" for cell in row.values]
-                    table_data.append(row_data)
-
-                # Create the table
-                table = ax.table(
-                    cellText=table_data[1:],  # Data rows
-                    colLabels=table_data[0],  # Column headers
-                    rowLabels=[str(i + 1) for i in range(len(table_data) - 1)],  # Row numbers
-                    cellLoc="left",
-                    loc="center",
-                    colWidths=[0.1] * len(df_display.columns),
-                )
-
-                # Style the table
-                table.auto_set_font_size(False)
-                table.set_fontsize(9)
-                table.scale(1, 2)
-
-                # Style header cells
-                for i in range(len(df_display.columns)):
-                    table[(0, i)].set_facecolor("#4CAF50")
-                    table[(0, i)].set_text_props(weight="bold", color="white")
-
-                # Style row label cells
-                for i in range(1, len(table_data)):
-                    table[(i, -1)].set_facecolor("#E0E0E0")
-                    table[(i, -1)].set_text_props(weight="bold")
-
-                # Add title
-                plt.title(f"Excel Sheet: {sheet_name}\nFile: {file_path.name}", fontsize=14, fontweight="bold", pad=20)
-
-                # Add info about truncation if necessary
-                if len(df) > max_rows or len(df.columns) > max_cols:
-                    info_text = f"Showing {min(len(df), max_rows)} of {len(df)} rows, {min(len(df.columns), max_cols)} of {len(df.columns)} columns"
-                    plt.figtext(0.5, 0.02, info_text, ha="center", fontsize=10, style="italic")
-
             # Generate unique filename
             timestamp = int(time.time())
-            screenshot_filename = f"{file_path.stem}_{sheet_name}_{timestamp}.jpg"
+            screenshot_filename = f"{file_path.stem}_{sheet_name or 'sheet'}_{timestamp}.jpg"
             screenshot_path = self._screenshots_dir / screenshot_filename
 
-            # Save as JPEG
-            plt.tight_layout()
-            plt.savefig(
-                screenshot_path, format="jpeg", dpi=300, bbox_inches="tight", facecolor="white", edgecolor="none"
-            )
-            plt.close()
+            # Open Excel file with default application
+            if sys.platform == "darwin":  # macOS
+                subprocess.run(["open", str(file_path)], check=True)
+            elif sys.platform == "win32":  # Windows
+                subprocess.run(["start", str(file_path)], shell=True, check=True)
+            else:  # Linux
+                subprocess.run(["xdg-open", str(file_path)], check=True)
+
+            # Wait for Excel to open
+            time.sleep(3)
+
+            # Take screenshot of the entire screen
+            screenshot = pyautogui.screenshot()
+
+            # Convert RGBA to RGB before saving as JPEG
+            if screenshot.mode == "RGBA":
+                screenshot = screenshot.convert("RGB")
+
+            screenshot.save(screenshot_path, "JPEG", quality=95)
+
+            if sys.platform == "darwin":  # macOS
+                pyautogui.hotkey("cmd", "q")
+            elif sys.platform == "win32":  # Windows
+                pyautogui.hotkey("alt", "f4")
+            else:  # Linux
+                pass
 
             self._color_log(f"Created Excel screenshot: {screenshot_filename}", Color.green)
             return str(screenshot_path)
 
         except Exception as e:
-            self.logger.error(f"Failed to create Excel screenshot: {str(e)}")
+            self.logger.error(f"Failed to create Excel screenshot with pyautogui: {str(e)}")
             raise
 
     def _extract_embedded_media_xlsx(self, file_path: Path) -> list[dict[str, str]]:
@@ -574,9 +502,7 @@ class XLSXExtractionCollection(ActionCollection):
             screenshot_path = None
             if create_screenshot:
                 target_sheet = target_sheets[0] if target_sheets else None
-                screenshot_path = self._create_excel_screenshot(
-                    file_path, target_sheet, screenshot_max_rows, screenshot_max_cols
-                )
+                screenshot_path = self._create_excel_screenshot(file_path, target_sheet)
 
             # Format content for LLM consumption
             formatted_content = self._format_content_for_llm(extraction_result, output_format, include_empty_cells)
@@ -688,7 +614,7 @@ class XLSXExtractionCollection(ActionCollection):
             self._color_log(f"Creating screenshot for Excel document: {file_path.name}", Color.cyan)
 
             # Create screenshot
-            screenshot_path = self._create_excel_screenshot(file_path, sheet_name, max_rows, max_cols)
+            screenshot_path = self._create_excel_screenshot(file_path, sheet_name)
 
             # Prepare metadata
             file_stats = file_path.stat()
