@@ -14,14 +14,13 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import FetchedTranscript, YouTubeTranscriptApi
 
 from aworld.logs.util import Color
 from examples.nanami.collections.base import ActionArguments, ActionCollection, ActionResponse
@@ -47,7 +46,7 @@ class TranscriptResult(BaseModel):
     """Transcript result model with transcript information"""
 
     video_id: str
-    transcript: list[dict[str, Any]]
+    transcript: FetchedTranscript
     success: bool
     error: str | None = None
 
@@ -96,7 +95,7 @@ class YouTubeActionCollection(ActionCollection):
         Returns:
             Formatted string suitable for LLM consumption
         """
-        if not result.success:
+        if result is None or not result.success:
             return f"Failed to extract transcript: {result.error}"
 
         if format_type == "json":
@@ -104,9 +103,10 @@ class YouTubeActionCollection(ActionCollection):
         elif format_type == "text":
             output = [f"Transcript for video ID: {result.video_id}\n"]
 
-            for entry in result.transcript:
-                start_time = entry.get("start", 0)
-                text = entry.get("text", "")
+            # Access snippets from FetchedTranscript
+            for entry in result.transcript.snippets:
+                start_time = entry["start"]
+                text = entry["text"]
 
                 minutes, seconds = divmod(int(start_time), 60)
                 timestamp = f"{minutes:02d}:{seconds:02d}"
@@ -119,9 +119,10 @@ class YouTubeActionCollection(ActionCollection):
             output.append("| Timestamp | Text |")
             output.append("| --- | --- |")
 
-            for entry in result.transcript:
-                start_time = entry.get("start", 0)
-                text: str = entry.get("text", "")
+            # Access snippets from FetchedTranscript
+            for entry in result.transcript.snippets:
+                start_time = entry["start"]
+                text: str = entry["text"]
 
                 minutes, seconds = divmod(int(start_time), 60)
                 timestamp = f"{minutes:02d}:{seconds:02d}"
@@ -480,8 +481,16 @@ class YouTubeActionCollection(ActionCollection):
                 transcript_data = transcript.translate(translate_to_language).fetch()
 
             else:
-                # Get transcript without translation
-                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[language_code])
+                try:
+                    # Get transcript without translation
+                    transcript_data: FetchedTranscript = (
+                        YouTubeTranscriptApi()
+                        .list(video_id)
+                        .find_transcript((language_code,))
+                        .fetch(preserve_formatting=False)
+                    )
+                except Exception:
+                    transcript_data = None
 
             result = TranscriptResult(video_id=video_id, transcript=transcript_data, success=True, error=None)
 

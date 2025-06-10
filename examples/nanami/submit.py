@@ -110,6 +110,37 @@ if __name__ == "__main__":
         ),
         dataset_folder_path=dataset_path,
         output_folder_path=log_path,
+        retry_agent=GaiaAgent(
+            output_folder_path=log_path,
+            name="retry_agent",
+            system_prompt=system_prompt,
+            config=AgentConfig(
+                llm_provider="openai",
+                llm_model_name="anthropic/claude-3.7-sonnet",
+                llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
+                llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+            ),
+            mcp_servers=[
+                "e2b-server",
+                "audio",
+                "browser",
+                "csv",
+                "docx",
+                "download",
+                "xlsx",
+                "image",
+                "pdf",
+                "pptx",
+                "reasoning",
+                "search",
+                "terminal",
+                "video",
+                "wayback",
+                "wikipedia",
+                "youtube",
+                "txt",
+            ],
+        ),
     )
 
     runner.submit()

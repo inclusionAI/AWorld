@@ -17,6 +17,11 @@ Your `FORMATTED ANSWER` should be a number OR as few words as possible OR a comm
     - `month in years` means that `2020-04-30` becomes `<answer>April in 2020</answer>`
 - **Prohibited**: NEVER output your formatted answer without <answer></answer> tag!
 
+### Examples:
+1. <think>This is exactly what I'm talking about: apple tree<think/><answer>apple tree</answer>
+2. <answer>3, 4, 5</answer>
+3. <answer>(.*?)</answer>
+
 ## Workflow:
 1. **Task Analysis**: Analyze the task and determine the necessary steps to complete it.
 2. **Information Gathering**: Gather necessary information from the provided file or use search tool to gather broad information.

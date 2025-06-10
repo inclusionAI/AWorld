@@ -52,6 +52,7 @@ class GaiaRunner:
         self,
         *,
         agent: GaiaAgent,
+        retry_agent: GaiaAgent | None,
         runner_args: RunnerArguments,
         dataset_folder_path: str,
         output_folder_path: str,
@@ -68,6 +69,8 @@ class GaiaRunner:
         self.runner_args: RunnerArguments = runner_args
         self.dataset_folder_path: str = dataset_folder_path
         self.output_folder_path: str = output_folder_path
+
+        self.retry_agent: GaiaAgent | None = retry_agent
 
         self.task_timeout: int = runner_args.task_timeout
 
@@ -162,8 +165,13 @@ class GaiaRunner:
             self._color_log(f"🪜 Level: {task['Level']}", Color.lightblue)
             try:
                 result: dict[str, Any] = self._execute_task(task=task)
-                answer: str | None = self._extract_answer(result)
-                self._update_results(task, answer)
+                answer, success = self._extract_answer(result)
+                if not success and self.retry_agent is not None:
+                    result: dict[str, Any] = self._execute_task(task=task, retry=True)
+                    answer, success = self._extract_answer(result)
+                    self._update_results(task, answer)
+                else:
+                    self._update_results(task, answer)
             except GaiaTimeoutException:
                 self.logger.error(f"Task {task['task_id']} timed out after {self.task_timeout} seconds.")
                 self._update_results(task, answer="<TIMEOUT: 20>")
@@ -286,26 +294,29 @@ class GaiaRunner:
             return set(task["task_id"] for task in self.results if task["model_answer"] in ["<ERROR>", "<TIMEOUT: 20>"])
         return set()
 
-    def _execute_task(self, task: dict[str, Any]) -> dict[str, Any]:
+    def _execute_task(self, task: dict[str, Any], retry: bool = False) -> dict[str, Any]:
         task_id = task["task_id"]
         question = task["Question"]
         execution: dict[str, dict[str, Any]] = Runners.sync_run_task(
-            task=Task(input=question, agent=self.agent, conf=TaskConfig(task_id=task_id))
+            task=Task(
+                input=question, agent=self.agent if not retry else self.retry_agent, conf=TaskConfig(task_id=task_id)
+            )
         )
         result: dict[str, Any] = execution.get("task_0", {})
         if not result:
             self.logger.warning(f"⚠️ Task {task_id} with EMPTY return!")
         return result
 
-    def _extract_answer(self, result: dict[str, Any]) -> str:
+    def _extract_answer(self, result: dict[str, Any]) -> tuple[str, bool]:
         match: re.Match | None = re.search(r"<answer>(.*?)</answer>", result["answer"])
         if match:
             answer: str = match.group(1)
             self._color_log(f"Agent answer: {answer}", Color.green)
+            return answer, True
         else:
-            answer: str | None = None
+            answer: str = result.get("answer", "<ERROR>")
             self.logger.error(f"Failed to get answer! Original output: {result['answer']}")
-        return answer
+            return answer, False
 
     def _update_results(self, task: dict[str, Any], answer: str | None) -> None:
         # execution failed
