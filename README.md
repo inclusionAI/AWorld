@@ -21,7 +21,7 @@ As illustrated in the figure below, AWorld (Agent World) is designed to achieve 
 ![](readme_assets/aworld_overview.jpg)
 
 ### Forward process
-| Agent Construction | Topology Orchestration | Environments |
+| 1. Agent Construction | 2. Topology Orchestration | 3. Environments |
 |-------------------|------------------------|--------------|
 | - [x] Support different model services <br> - [x] Support MCP tools  <br> - [x] Support custom tools| - [x] Encapsulate protocol between models and tools <br> - [x] Encapsulate protocol among agents | - [x] Encapsulate runtime state management <br> - [x] Support state tracing <br> - [x] Support distributed high-concurrency envs|
 
