@@ -1,6 +1,5 @@
 import copy
 import logging
-import os
 import re
 import traceback
 from typing import Any, Callable
@@ -30,7 +29,7 @@ class GaiaAgent(Agent):
         self.logger: logging.Logger = self._setup_logger(
             logger_name=self.__class__.__name__, output_folder_path=output_folder_path
         )
-        self._color_log(f"Using {os.getenv('LLM_MODEL_NAME')} from {os.getenv('LLM_BASE_URL')}", Color.red)
+        self._color_log(f"Using {config.llm_model_name} from {config.llm_base_url}", Color.red)
 
     def policy(self, observation: Observation, info: dict[str, Any] = None, **kwargs) -> list[ActionModel] | None:
         """Adapted from the base class. Format necessary GAIA logs.
@@ -137,13 +136,13 @@ class GaiaAgent(Agent):
             clean_action = copy.deepcopy(action)
             if (
                 clean_action.policy_info is not None
+                and len(clean_action.policy_info) > 0
                 and clean_action.action_name is None
                 and clean_action.params is not None
             ):
                 full_match: re.Match | None = re.search(
                     r"<think>(.*?)<\/think>([\w\s]+)<answer>(.*?)<\/answer>", clean_action.policy_info, re.DOTALL
                 )
-                think_match: re.Match | None = re.search(r"<think>(.*?)</think>", clean_action.policy_info, re.DOTALL)
                 answer_match: re.Match | None = re.search(
                     r"<answer>(.*?)</answer>", clean_action.policy_info, re.DOTALL
                 )
@@ -153,22 +152,16 @@ class GaiaAgent(Agent):
                 boxed_match: re.Match | None = re.search(r"\\boxed\{([^}]*)\}", clean_action.policy_info, re.DOTALL)
                 if full_match:
                     pass
-                elif think_match and answer_match:
-                    policy = after_think_match.group(1).strip().replace("<answer>", "").replace("</answer>", "")
-                    clean_action.policy_info = (
-                        f"<think>{think_match.group(1)}</think><answer>{answer_match.group(1)}</answer>"
-                    )
-                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
                 elif answer_match:
                     policy = answer_match.group(1).strip()
                     clean_action.policy_info = f"<answer>{policy}</answer>"
-                elif after_think_match:
-                    policy = after_think_match.group(1).strip()
-                    clean_action.policy_info = f"<think>{think_match.group(1)}</think><answer>{policy}</answer>"
-                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
                 elif boxed_match:
                     policy = boxed_match.group(1).strip()
                     clean_action.policy_info = f"<answer>{policy}</answer>"
+                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
+                elif after_think_match:
+                    policy = after_think_match.group(1).strip().replace("<answer>", "").replace("</answer>", "")
+                    clean_action.policy_info = f"<answer>{after_think_match.group(1)}</answer>"
                     self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
                 else:
                     clean_action.policy_info = f"<answer>{clean_action.policy_info}</answer>"
