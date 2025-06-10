@@ -39,6 +39,8 @@ class McpServers:
     async def call_tool(
             self,
             action_list: List[Dict[str, Any]] = None,
+            task_id: str = None,
+            session_id: str = None
     ) -> List[ActionResult]:
         results = []
         if not action_list:
@@ -54,6 +56,12 @@ class McpServers:
                 server_name = action_dict.get("tool_name")
                 tool_name = action_dict.get("action_name")
                 parameter = action_dict.get("params")
+                if parameter is None:
+                    parameter = {}
+                if task_id:
+                    parameter["task_id"] = task_id
+                if session_id:
+                    parameter["session_id"] = session_id
 
                 if not server_name or not tool_name:
                     continue

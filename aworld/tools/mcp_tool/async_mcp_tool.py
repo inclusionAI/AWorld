@@ -3,6 +3,7 @@
 
 from typing import Any, Dict, Tuple, Union
 
+from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 
 from aworld.config.conf import ToolConfig, ConfigDict
@@ -54,6 +55,9 @@ class McpTool(AsyncTool):
         terminated = kwargs.get("terminated", False)
         # todo sandbox
         agent = AgentFactory.agent_instance(actions[0].agent_name)
+        task_id = Context.instance().task_id
+        session_id = Context.instance().session_id
+
         if not actions:
             self._finished = True
             observation = build_observation(observer=self.name(),
@@ -94,7 +98,7 @@ class McpTool(AsyncTool):
             # todo sandbox
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
-                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions)
+                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions,task_id=task_id,session_id=session_id)
                 message = Message()
                 message.payload= action_results
             else:
