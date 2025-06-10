@@ -1,6 +1,6 @@
 <div align="center">
 
-![](readme_assets/framework_logic.png)
+![](readme_assets/framework_logic.jpg)
 # AWorld: Advancing Agentic AI
 
 [![Twitter Follow](https://img.shields.io/twitter/follow/AWorld_AI?style=social)](https://x.com/InclusionAI666)
