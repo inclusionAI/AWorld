@@ -83,13 +83,6 @@ class XLSXExtractionCollection(ActionCollection):
 
             screenshot.save(screenshot_path, "JPEG", quality=95)
 
-            if sys.platform == "darwin":  # macOS
-                pyautogui.hotkey("cmd", "q")
-            elif sys.platform == "win32":  # Windows
-                pyautogui.hotkey("alt", "f4")
-            else:  # Linux
-                pass
-
             self._color_log(f"Created Excel screenshot: {screenshot_filename}", Color.green)
             return str(screenshot_path)
 
