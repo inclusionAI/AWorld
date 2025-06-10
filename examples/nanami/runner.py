@@ -414,7 +414,6 @@ class GaiaRunner:
                 stats["accuracy"] = (stats["correct"] / stats["total"]) * 100
 
         # Print overall statistics with colorful logging
-        self.logger.info("Overall Statistics:")
         overall_accuracy = (total_correct / total_entries) * 100
 
         # Create overall statistics table
@@ -423,17 +422,18 @@ class GaiaRunner:
             ["Total Correct", total_correct],
             ["Overall Accuracy", f"{overall_accuracy:.2f}%"],
         ]
-        self.logger.info(tabulate(overall_table, tablefmt="grid"))
+        self._color_log("Overall Statistics:", Color.green)
+        self._color_log("\n" + tabulate(overall_table, tablefmt="grid"), Color.green)
 
         # Create level statistics table
-        self.logger.info("Statistics by Level:")
         level_table = []
         headers = ["Level", "Total Entries", "Correct Answers", "Accuracy"]
 
         for level in sorted(level_stats.keys()):
             stats = level_stats[level]
             level_table.append([level, stats["total"], stats["correct"], f"{stats['accuracy']:.2f}%"])
-        self.logger.info(tabulate(level_table, headers=headers, tablefmt="grid"))
+        self._color_log("Statistics by Level:", Color.green)
+        self._color_log("\n" + tabulate(level_table, headers=headers, tablefmt="grid"), Color.green)
 
     def _export_submission(self) -> None:
         """

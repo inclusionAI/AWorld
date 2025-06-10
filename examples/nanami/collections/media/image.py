@@ -192,7 +192,11 @@ class ImageCollection(ActionCollection):
             image = background
 
         image.save(buffer, format=output_format, quality=85 if output_format.upper() == "JPEG" else None)
-        return base64.b64encode(buffer.getvalue()).decode()
+
+        mime_type = f"image/{output_format.lower()}"
+        img_base64 = base64.b64encode(buffer.getvalue()).decode()
+
+        return f"data:{mime_type};base64,{img_base64}"
 
     def mcp_extract_text_ocr(
         self,
