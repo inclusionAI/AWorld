@@ -30,10 +30,6 @@ class AudioMetadata(BaseModel):
     processing_time: float = Field(description="Time taken to process the audio in seconds")
     output_files: list[str] = Field(default_factory=list, description="Paths to generated output files")
     transcription: str | None = Field(default=None, description="Transcribed text from audio")
-    transcription_confidence: float | None = Field(default=None, description="Transcription confidence score (0-1)")
-    transcription_language: str | None = Field(
-        default=None, description="Detected or specified language for transcription"
-    )
     word_count: int | None = Field(default=None, description="Number of words in transcription")
     output_format: str = Field(description="Format of the processed output")
 
@@ -217,9 +213,6 @@ class AudioCollection(ActionCollection):
     def mcp_transcribe_audio(
         self,
         file_path: str = Field(description="Path to the audio file to transcribe"),
-        language: str | None = Field(
-            default=None, description="Language code for transcription (e.g., 'en', 'es', 'fr'). If None, auto-detect"
-        ),
         model_size: Literal["tiny", "base", "small", "medium", "large"] = Field(
             default="base",
             description="Whisper model size: tiny (fastest), base (balanced), small, medium, large (most accurate)",
@@ -237,7 +230,6 @@ class AudioCollection(ActionCollection):
 
         Args:
             file_path: Path to the audio file to transcribe
-            language: Target language for transcription (auto-detect if None)
             model_size: Whisper model size affecting speed vs accuracy trade-off
             output_format: Format of transcription output
 
@@ -248,8 +240,6 @@ class AudioCollection(ActionCollection):
             # Handle FieldInfo objects
             if isinstance(file_path, FieldInfo):
                 file_path = file_path.default
-            if isinstance(language, FieldInfo):
-                language = language.default
             if isinstance(model_size, FieldInfo):
                 model_size = model_size.default
             if isinstance(output_format, FieldInfo):
@@ -292,8 +282,6 @@ class AudioCollection(ActionCollection):
                 processing_time=processing_time,
                 output_files=[str(prepared_audio)],
                 transcription=transcription_result["text"],
-                transcription_confidence=transcription_result["confidence"],
-                transcription_language=transcription_result["language"],
                 word_count=word_count,
                 output_format=f"transcription_{output_format}",
             )
@@ -308,7 +296,6 @@ class AudioCollection(ActionCollection):
                 result_message = (
                     f"Transcription Results for {file_path.name}:\n\n"
                     f"**Text:** {transcription_result['text']}\n\n"
-                    f"**Language:** {transcription_result['language']}\n"
                     f"**Confidence:** {confidence_str}\n"
                     f"**Word Count:** {word_count}\n"
                     f"**Duration:** {original_metadata.get('duration', 0):.2f} seconds\n"

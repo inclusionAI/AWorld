@@ -15,6 +15,7 @@ import base64
 import os
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
@@ -351,35 +352,70 @@ class VideoCollection(ActionCollection):
 
             return "\n".join(output_parts)
 
-    async def mcp_analyze_video(
-        self,
-        video_url: str = Field(description="The input video filepath or URL to analyze."),
-        question: str = Field(description="The specific question or task for video analysis."),
-        sample_rate: int = Field(default=1, description="Sample n frames per second (default: 1)."),
-        start_time: float = Field(default=0, description="Start time of the video segment in seconds (default: 0)."),
-        end_time: float | None = Field(
-            default=None, description="End time of the video segment in seconds (default: None)."
-        ),
-        output_format: str = Field(
-            default="markdown", description="Output format: 'markdown', 'json', or 'text' (default: markdown)."
-        ),
-    ) -> ActionResponse:
-        """Analyze video content using AI to answer specific questions or tasks.
-
-        This tool provides AI-powered video analysis with:
-        - Temporal sequence understanding
-        - Motion and action analysis
-        - Scene context interpretation
-        - Object and person tracking
-        - LLM-optimized result formatting
+    def _analyze_frame_chunk(self, chunk_data: tuple[int, list, str]) -> tuple[int, str]:
+        """Analyze a chunk of video frames using LLM.
 
         Args:
-            video_url: The input video filepath or URL to analyze
-            question: The specific question or task for video analysis
-            sample_rate: Sample n frames per second
+            chunk_data: Tuple containing (chunk_index, frames, question)
+
+        Returns:
+            Tuple of (chunk_index, analysis_result)
+        """
+        chunk_index, frames, question = chunk_data
+
+        try:
+            content = self._create_video_content(self.video_analyze_prompt.format(task=question), frames)
+            inputs = [{"role": "user", "content": content}]
+
+            response: ModelResponse = call_llm_model(
+                get_llm_model(
+                    conf=AgentConfig(
+                        llm_provider="openai",
+                        llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
+                        llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
+                        llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+                    )
+                ),
+                inputs,
+                temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
+            )
+            analysis_result = response.content
+            self._color_log(f"✅ Completed analysis for chunk {chunk_index + 1}", Color.green)
+
+        except Exception as e:
+            self._color_log(f"❌ LLM analysis error for chunk {chunk_index + 1}: {str(e)}", Color.yellow)
+            analysis_result = f"Analysis failed for video segment {chunk_index + 1}: {str(e)}"
+
+        return chunk_index, analysis_result
+
+    async def mcp_analyze_video(
+        self,
+        video_url: str = Field(description="Path or URL to the video file to analyze"),
+        question: str = Field(description="Question or task for video analysis"),
+        sample_rate: float = Field(default=1.0, description="Frame sampling rate (frames per second)"),
+        start_time: float = Field(default=0.0, description="Start time in seconds"),
+        end_time: float | None = Field(default=None, description="End time in seconds (None for full video)"),
+        output_format: str = Field(default="markdown", description="Output format: 'markdown', 'json', or 'text'"),
+        max_workers: int = Field(default=4, description="Maximum number of parallel workers for analysis"),
+    ) -> ActionResponse:
+        """Analyze video content using AI with parallel processing.
+
+        This tool provides comprehensive video analysis capabilities including:
+        - Content understanding and description
+        - Object and scene detection
+        - Action and movement analysis
+        - Temporal event tracking
+        - Question-answering about video content
+        - Parallel processing for faster analysis
+
+        Args:
+            video_url: Path or URL to the video file
+            question: Specific question or analysis task
+            sample_rate: Frame sampling rate for analysis
             start_time: Start time of the video segment in seconds
             end_time: End time of the video segment in seconds
             output_format: Format for the response output
+            max_workers: Maximum number of parallel workers
 
         Returns:
             ActionResponse with video analysis results and metadata
@@ -397,40 +433,38 @@ class VideoCollection(ActionCollection):
             video_frames = self._get_video_frames(str(video_path), sample_rate, start_time, end_time)
             self._color_log(f"📸 Extracted {len(video_frames)} frames", Color.blue)
 
-            # Process frames in chunks for analysis
-            interval = 20
-            frame_nums = 30
-            all_results = []
+            # Process frames in chunks of 64 frames for parallel analysis
+            chunk_size = 128
+            chunks = []
 
-            for i in range(0, len(video_frames), interval):
-                cur_frames = video_frames[i : i + frame_nums]
-                content = self._create_video_content(self.video_analyze_prompt.format(task=question), cur_frames)
-                inputs = [{"role": "user", "content": content}]
+            # Create chunks of `chunk_size` continuous frames
+            for i in range(0, len(video_frames), chunk_size):
+                chunk_frames = video_frames[i : i + chunk_size]
+                chunks.append((i // chunk_size, chunk_frames, question))
 
-                try:
-                    response: ModelResponse = call_llm_model(
-                        get_llm_model(
-                            conf=AgentConfig(
-                                llm_provider="openai",
-                                llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-                                llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-                                llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
-                            )
-                        ),
-                        inputs,
-                        temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
-                    )
-                    cur_analysis_result = response.content
-                except Exception as e:
-                    self._color_log(f"LLM analysis error for chunk {i // interval + 1}: {str(e)}", Color.yellow)
-                    cur_analysis_result = f"Analysis failed for video segment {i // interval + 1}"
+            self._color_log(f"🔄 Processing {len(chunks)} chunks with {max_workers} parallel workers", Color.blue)
 
-                all_results.append(f"Result of video part {i // interval + 1}: {cur_analysis_result}")
+            # Process chunks in parallel
+            all_results = [None] * len(chunks)  # Pre-allocate to maintain order
 
-                if i + frame_nums >= len(video_frames):
-                    break
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all chunk analysis tasks
+                future_to_chunk = {
+                    executor.submit(self._analyze_frame_chunk, chunk_data): chunk_data[0] for chunk_data in chunks
+                }
 
-            analysis_result = "\n".join(all_results)
+                # Collect results as they complete
+                for future in as_completed(future_to_chunk):
+                    try:
+                        chunk_index, result = future.result()
+                        all_results[chunk_index] = f"Result of video part {chunk_index + 1}: {result}"
+                    except Exception as e:
+                        chunk_index = future_to_chunk[future]
+                        self._color_log(f"❌ Error processing chunk {chunk_index + 1}: {str(e)}", Color.red)
+                        all_results[chunk_index] = f"Result of video part {chunk_index + 1}: Analysis failed - {str(e)}"
+
+            # Filter out None results and join
+            analysis_result = "\n".join([result for result in all_results if result is not None])
             duration_analyzed = end_time - start_time if end_time else len(video_frames) / sample_rate
 
             # Create result
@@ -448,36 +482,45 @@ class VideoCollection(ActionCollection):
             execution_time = time.time() - start_exec_time
 
             # Create metadata
-            metadata = VideoMetadata(
-                operation="analyze",
-                video_source=video_url,
-                sample_rate=sample_rate,
-                start_time=start_time,
-                end_time=end_time,
-                frame_count=len(video_frames),
-                execution_time=execution_time,
-            ).model_dump()
+            metadata = {
+                "video_source": video_url,
+                "frame_count": len(video_frames),
+                "chunks_processed": len(chunks),
+                "chunk_size": chunk_size,
+                "parallel_workers": max_workers,
+                "duration_analyzed": duration_analyzed,
+                "sample_rate": sample_rate,
+                "start_time": start_time,
+                "end_time": end_time,
+                "execution_time": execution_time,
+                "output_format": output_format,
+                "success": True,
+            }
 
-            self._color_log("✅ Video analysis completed successfully", Color.green)
+            self._color_log(
+                f"✅ Video analysis completed in {execution_time:.2f}s "
+                f"({len(chunks)} chunks, {len(video_frames)} frames)",
+                Color.green,
+            )
+
             return ActionResponse(success=True, message=message, metadata=metadata)
 
         except Exception as e:
-            error_msg = str(e)
-            self._color_log(f"❌ Video analysis error: {traceback.format_exc()}", Color.red)
-
-            # Format error for LLM
-            message = f"Failed to analyze video: {error_msg}"
             execution_time = time.time() - start_exec_time
+            error_msg = f"Video analysis failed: {str(e)}"
+            self._color_log(f"❌ {error_msg}", Color.red)
+            self.logger.error(f"{error_msg}: {traceback.format_exc()}")
 
-            # Create metadata
-            metadata = VideoMetadata(
-                operation="analyze",
-                video_source=video_url,
-                error_type="analysis_failure",
-                execution_time=execution_time,
-            ).model_dump()
-
-            return ActionResponse(success=False, message=message, metadata=metadata)
+            return ActionResponse(
+                success=False,
+                message=error_msg,
+                metadata={
+                    "video_source": video_url,
+                    "execution_time": execution_time,
+                    "error": str(e),
+                    "success": False,
+                },
+            )
 
     async def mcp_summarize_video(
         self,

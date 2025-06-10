@@ -150,6 +150,7 @@ class GaiaAgent(Agent):
                 after_think_match: re.Match | None = re.search(
                     r"<think>.*?</think>\s*(.*)", clean_action.policy_info, re.DOTALL
                 )
+                boxed_match: re.Match | None = re.search(r"\\boxed\{([^}]*)\}", clean_action.policy_info, re.DOTALL)
                 if full_match:
                     pass
                 elif think_match and answer_match:
@@ -161,9 +162,13 @@ class GaiaAgent(Agent):
                 elif answer_match:
                     policy = answer_match.group(1).strip()
                     clean_action.policy_info = f"<answer>{policy}</answer>"
-                elif think_match and after_think_match:
+                elif after_think_match:
                     policy = after_think_match.group(1).strip()
                     clean_action.policy_info = f"<think>{think_match.group(1)}</think><answer>{policy}</answer>"
+                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
+                elif boxed_match:
+                    policy = boxed_match.group(1).strip()
+                    clean_action.policy_info = f"<answer>{policy}</answer>"
                     self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
                 else:
                     clean_action.policy_info = f"<answer>{clean_action.policy_info}</answer>"

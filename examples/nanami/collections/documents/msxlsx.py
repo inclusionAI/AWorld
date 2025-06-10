@@ -6,6 +6,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Literal
 
+# Add new imports for screenshot functionality
+import matplotlib.pyplot as plt
 import pandas as pd
 from dotenv import load_dotenv
 from openpyxl import load_workbook
@@ -23,12 +25,17 @@ class XLSXExtractionCollection(ActionCollection):
     Supports extraction from XLSX and XLS files.
     Provides LLM-friendly text output with structured metadata and media file handling.
     Extracts worksheets, formulas, charts, and embedded images.
+    Includes screenshot functionality for visual representation of Excel data.
     """
 
     def __init__(self, arguments: ActionArguments) -> None:
         super().__init__(arguments)
         self._media_output_dir = self.workspace / "extracted_media"
         self._media_output_dir.mkdir(exist_ok=True)
+
+        # Create screenshots directory
+        self._screenshots_dir = self.workspace / "excel_screenshots"
+        self._screenshots_dir.mkdir(exist_ok=True)
 
         self.supported_extensions: set = {
             ".xlsx",
@@ -37,6 +44,130 @@ class XLSXExtractionCollection(ActionCollection):
 
         self._color_log("Excel Extraction Service initialized", Color.green, "debug")
         self._color_log(f"Media output directory: {self._media_output_dir}", Color.blue, "debug")
+        self._color_log(f"Screenshots directory: {self._screenshots_dir}", Color.blue, "debug")
+
+    def _create_excel_screenshot(
+        self, file_path: Path, sheet_name: str = None, max_rows: int = 50, max_cols: int = 20
+    ) -> str:
+        """Create a JPEG screenshot of the valid Excel area.
+
+        Args:
+            file_path: Path to the Excel file
+            sheet_name: Specific sheet to screenshot (None for first sheet)
+            max_rows: Maximum number of rows to include in screenshot
+            max_cols: Maximum number of columns to include in screenshot
+
+        Returns:
+            Path to the generated JPEG screenshot
+        """
+        try:
+            # Load the Excel file
+            if file_path.suffix.lower() == ".xlsx":
+                excel_file = pd.ExcelFile(file_path, engine="openpyxl")
+            else:
+                excel_file = pd.ExcelFile(file_path, engine="xlrd")
+
+            # Get the target sheet
+            if sheet_name is None:
+                sheet_name = excel_file.sheet_names[0]
+
+            # Read the sheet data
+            df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+
+            # Remove completely empty rows and columns
+            df = df.dropna(how="all").dropna(axis=1, how="all")
+
+            if df.empty:
+                # Create a simple "empty sheet" image
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.text(
+                    0.5,
+                    0.5,
+                    f'Sheet "{sheet_name}" is empty',
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    transform=ax.transAxes,
+                    fontsize=16,
+                )
+                ax.set_xlim(0, 1)
+                ax.set_ylim(0, 1)
+                ax.axis("off")
+            else:
+                # Limit the data to max_rows and max_cols for better visualization
+                df_display = df.iloc[:max_rows, :max_cols]
+
+                # Replace NaN values with empty strings for display
+                df_display = df_display.fillna("")
+
+                # Create figure and axis
+                fig, ax = plt.subplots(figsize=(max(12, len(df_display.columns) * 1.5), max(8, len(df_display) * 0.5)))
+
+                # Hide axes
+                ax.axis("off")
+
+                # Create table
+                table_data = []
+
+                # Add column headers (A, B, C, etc.)
+                col_headers = [chr(65 + i) for i in range(len(df_display.columns))]
+                table_data.append(col_headers)
+
+                # Add data rows with row numbers
+                for idx, (_, row) in enumerate(df_display.iterrows()):
+                    row_data = [str(cell) if cell != "" else "" for cell in row.values]
+                    table_data.append(row_data)
+
+                # Create the table
+                table = ax.table(
+                    cellText=table_data[1:],  # Data rows
+                    colLabels=table_data[0],  # Column headers
+                    rowLabels=[str(i + 1) for i in range(len(table_data) - 1)],  # Row numbers
+                    cellLoc="left",
+                    loc="center",
+                    colWidths=[0.1] * len(df_display.columns),
+                )
+
+                # Style the table
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+                table.scale(1, 2)
+
+                # Style header cells
+                for i in range(len(df_display.columns)):
+                    table[(0, i)].set_facecolor("#4CAF50")
+                    table[(0, i)].set_text_props(weight="bold", color="white")
+
+                # Style row label cells
+                for i in range(1, len(table_data)):
+                    table[(i, -1)].set_facecolor("#E0E0E0")
+                    table[(i, -1)].set_text_props(weight="bold")
+
+                # Add title
+                plt.title(f"Excel Sheet: {sheet_name}\nFile: {file_path.name}", fontsize=14, fontweight="bold", pad=20)
+
+                # Add info about truncation if necessary
+                if len(df) > max_rows or len(df.columns) > max_cols:
+                    info_text = f"Showing {min(len(df), max_rows)} of {len(df)} rows, {min(len(df.columns), max_cols)} of {len(df.columns)} columns"
+                    plt.figtext(0.5, 0.02, info_text, ha="center", fontsize=10, style="italic")
+
+            # Generate unique filename
+            timestamp = int(time.time())
+            screenshot_filename = f"{file_path.stem}_{sheet_name}_{timestamp}.jpg"
+            screenshot_path = self._screenshots_dir / screenshot_filename
+
+            # Save as JPEG
+            plt.tight_layout()
+            plt.savefig(
+                screenshot_path, format="jpeg", dpi=300, bbox_inches="tight", facecolor="white", edgecolor="none"
+            )
+            plt.close()
+
+            self._color_log(f"Created Excel screenshot: {screenshot_filename}", Color.green)
+            return str(screenshot_path)
+
+        except Exception as e:
+            self.logger.error(f"Failed to create Excel screenshot: {str(e)}")
+            raise
 
     def _extract_embedded_media_xlsx(self, file_path: Path) -> list[dict[str, str]]:
         """Extract embedded media from XLSX files.
@@ -367,10 +498,15 @@ class XLSXExtractionCollection(ActionCollection):
             default="markdown", description="Output format: 'markdown', 'json', 'html', or 'text'"
         ),
         extract_images: bool = Field(default=True, description="Whether to extract and save images from the document"),
+        create_screenshot: bool = Field(
+            default=False, description="Whether to create a JPEG screenshot of the Excel data"
+        ),
         sheet_names: str | None = Field(
             default=None, description="Comma-separated list of specific sheet names to process (None for all sheets)"
         ),
         include_empty_cells: bool = Field(default=False, description="Whether to include empty cells in the output"),
+        screenshot_max_rows: int = Field(default=50, description="Maximum rows to include in screenshot"),
+        screenshot_max_cols: int = Field(default=20, description="Maximum columns to include in screenshot"),
     ) -> ActionResponse:
         """Extract content from Excel documents using pandas and xlrd.
 
@@ -379,6 +515,7 @@ class XLSXExtractionCollection(ActionCollection):
         - Multiple worksheets
         - Text and numeric data extraction
         - Image and media extraction (XLSX only)
+        - JPEG screenshot generation of Excel data
         - Metadata collection
         - LLM-optimized output formatting
 
@@ -386,11 +523,14 @@ class XLSXExtractionCollection(ActionCollection):
             file_path: Path to the Excel file
             output_format: Desired output format
             extract_images: Whether to extract embedded images
+            create_screenshot: Whether to create a JPEG screenshot
             sheet_names: Specific sheets to process
             include_empty_cells: Whether to include empty cells
+            screenshot_max_rows: Maximum rows in screenshot
+            screenshot_max_cols: Maximum columns in screenshot
 
         Returns:
-            ActionResponse with extracted content, metadata, and media file paths
+            ActionResponse with extracted content, metadata, media file paths, and screenshot path
         """
         try:
             # Handle FieldInfo objects
@@ -400,10 +540,16 @@ class XLSXExtractionCollection(ActionCollection):
                 output_format = output_format.default
             if isinstance(extract_images, FieldInfo):
                 extract_images = extract_images.default
+            if isinstance(create_screenshot, FieldInfo):
+                create_screenshot = create_screenshot.default
             if isinstance(sheet_names, FieldInfo):
                 sheet_names = sheet_names.default
             if isinstance(include_empty_cells, FieldInfo):
                 include_empty_cells = include_empty_cells.default
+            if isinstance(screenshot_max_rows, FieldInfo):
+                screenshot_max_rows = screenshot_max_rows.default
+            if isinstance(screenshot_max_cols, FieldInfo):
+                screenshot_max_cols = screenshot_max_cols.default
 
             # Validate input file
             file_path: Path = self._validate_file_path(file_path)
@@ -424,6 +570,14 @@ class XLSXExtractionCollection(ActionCollection):
             elif extract_images and file_path.suffix.lower() == ".xls":
                 self._color_log("Image extraction not supported for XLS files", Color.yellow)
 
+            # Create screenshot if requested
+            screenshot_path = None
+            if create_screenshot:
+                target_sheet = target_sheets[0] if target_sheets else None
+                screenshot_path = self._create_excel_screenshot(
+                    file_path, target_sheet, screenshot_max_rows, screenshot_max_cols
+                )
+
             # Format content for LLM consumption
             formatted_content = self._format_content_for_llm(extraction_result, output_format, include_empty_cells)
 
@@ -439,6 +593,7 @@ class XLSXExtractionCollection(ActionCollection):
                 "processing_engine": extraction_result["file_engine"],
                 "extracted_images": [media["path"] for media in saved_media if media["type"] == "image"],
                 "extracted_media": saved_media,
+                "screenshot_path": screenshot_path,
                 "include_empty_cells": include_empty_cells,
                 "processed_sheets": target_sheets or extraction_result["sheet_names"],
             }
@@ -461,12 +616,16 @@ class XLSXExtractionCollection(ActionCollection):
             combined_metadata = document_metadata.model_dump()
             combined_metadata.update(excel_metadata)
 
-            self._color_log(
+            success_message = (
                 f"Successfully extracted content from {file_path.name} "
                 f"({len(formatted_content)} characters, {extraction_result['total_sheets']} sheets, "
-                f"{len(saved_media)} media files)",
-                Color.green,
+                f"{len(saved_media)} media files"
             )
+
+            if screenshot_path:
+                success_message += f", screenshot saved to: {screenshot_path}"
+
+            self._color_log(success_message, Color.green)
 
             return ActionResponse(success=True, message=formatted_content, metadata=combined_metadata)
 
@@ -488,6 +647,76 @@ class XLSXExtractionCollection(ActionCollection):
                 success=False,
                 message=f"Excel extraction failed: {str(e)}",
                 metadata={"error_type": "extraction_error"},
+            )
+
+    def mcp_create_excel_screenshot(
+        self,
+        file_path: str = Field(description="Path to the Excel document file"),
+        sheet_name: str | None = Field(
+            default=None, description="Specific sheet name to screenshot (None for first sheet)"
+        ),
+        max_rows: int = Field(default=50, description="Maximum number of rows to include"),
+        max_cols: int = Field(default=20, description="Maximum number of columns to include"),
+    ) -> ActionResponse:
+        """Create a JPEG screenshot of the valid Excel area.
+
+        This tool creates a visual representation of Excel data as a JPEG image,
+        useful for further image processing or visual analysis.
+
+        Args:
+            file_path: Path to the Excel file
+            sheet_name: Specific sheet to screenshot
+            max_rows: Maximum rows to include in screenshot
+            max_cols: Maximum columns to include in screenshot
+
+        Returns:
+            ActionResponse with screenshot file path and metadata
+        """
+        try:
+            # Handle FieldInfo objects
+            if isinstance(file_path, FieldInfo):
+                file_path = file_path.default
+            if isinstance(sheet_name, FieldInfo):
+                sheet_name = sheet_name.default
+            if isinstance(max_rows, FieldInfo):
+                max_rows = max_rows.default
+            if isinstance(max_cols, FieldInfo):
+                max_cols = max_cols.default
+
+            # Validate input file
+            file_path: Path = self._validate_file_path(file_path)
+            self._color_log(f"Creating screenshot for Excel document: {file_path.name}", Color.cyan)
+
+            # Create screenshot
+            screenshot_path = self._create_excel_screenshot(file_path, sheet_name, max_rows, max_cols)
+
+            # Prepare metadata
+            file_stats = file_path.stat()
+            screenshot_stats = Path(screenshot_path).stat()
+
+            metadata = {
+                "source_file": str(file_path.absolute()),
+                "source_file_size": file_stats.st_size,
+                "screenshot_path": screenshot_path,
+                "screenshot_size": screenshot_stats.st_size,
+                "sheet_name": sheet_name,
+                "max_rows_displayed": max_rows,
+                "max_cols_displayed": max_cols,
+                "format": "JPEG",
+            }
+
+            return ActionResponse(
+                success=True,
+                message=f"Excel screenshot created successfully. File saved to: {screenshot_path}",
+                metadata=metadata,
+            )
+
+        except Exception as e:
+            self.logger.error(f"Screenshot creation failed: {str(e)}: {traceback.format_exc()}")
+            return ActionResponse(
+                success=False,
+                message=f"Screenshot creation failed: {str(e)}",
+                metadata={"error_type": "screenshot_error"},
             )
 
     def mcp_list_supported_formats(self) -> ActionResponse:
