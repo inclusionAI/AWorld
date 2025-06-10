@@ -79,7 +79,7 @@ class XLSXExtractionCollection(ActionCollection):
 
             if df.empty:
                 # Create a simple "empty sheet" image
-                fig, ax = plt.subplots(figsize=(10, 6))
+                _, ax = plt.subplots(figsize=(10, 6))
                 ax.text(
                     0.5,
                     0.5,
@@ -94,13 +94,13 @@ class XLSXExtractionCollection(ActionCollection):
                 ax.axis("off")
             else:
                 # Limit the data to max_rows and max_cols for better visualization
-                df_display = df.iloc[:max_rows, :max_cols]
+                df_display: pd.DataFrame = df.iloc[:max_rows, :max_cols]
 
                 # Replace NaN values with empty strings for display
                 df_display = df_display.fillna("")
 
                 # Create figure and axis
-                fig, ax = plt.subplots(figsize=(max(12, len(df_display.columns) * 1.5), max(8, len(df_display) * 0.5)))
+                _, ax = plt.subplots(figsize=(max(12, len(df_display.columns) * 1.5), max(8, len(df_display) * 0.5)))
 
                 # Hide axes
                 ax.axis("off")
@@ -113,7 +113,7 @@ class XLSXExtractionCollection(ActionCollection):
                 table_data.append(col_headers)
 
                 # Add data rows with row numbers
-                for idx, (_, row) in enumerate(df_display.iterrows()):
+                for _, (_, row) in enumerate(df_display.iterrows()):
                     row_data = [str(cell) if cell != "" else "" for cell in row.values]
                     table_data.append(row_data)
 
