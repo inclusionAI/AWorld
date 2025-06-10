@@ -318,6 +318,10 @@ class Agent(BaseAgent[Observation, Union[List[ActionModel], None]]):
                 if tool_id:
                     cur_msg['role'] = 'tool'
                     cur_msg['tool_call_id'] = tool_id
+                    try:
+                        cur_msg['content'] = content.replace(histories[-1].content, "")
+                    except:
+                        cur_msg['content'] = content
             if not self.use_tools_in_prompt and "is_use_tool_prompt" in histories[-1].metadata and "tool_calls" in \
                     histories[-1].metadata and agent_prompt:
                 cur_msg['content'] = agent_prompt.format(action_list=histories[-1].metadata["tool_calls"],
