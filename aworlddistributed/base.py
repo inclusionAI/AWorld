@@ -1,6 +1,7 @@
 import uuid
 from typing import Any
 from typing import List, Optional
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field
@@ -26,6 +27,8 @@ class AworldTask(BaseModel):
     max_steps: Optional[int] = Field(default=100, description="max_steps")
     max_retries: Optional[int] = Field(default=5, description="max_retries use Exponential backoff with jitter")
     ext_info: Optional[dict] = Field(default_factory=dict, description="custom")
+    created_at: Optional[datetime] = Field(default=None, description="created time")
+    updated_at: Optional[datetime] = Field(default=None, description="updated time")
 
     def mark_running(self):
         self.status = 'RUNNING'
