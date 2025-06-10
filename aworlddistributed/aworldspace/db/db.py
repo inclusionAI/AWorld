@@ -99,8 +99,22 @@ class SqliteTaskDB(AworldTaskDB):
     async def page_query_tasks(self, filter: dict, page_size: int, page_num: int) -> dict:
         with self.Session() as session:
             query = session.query(AworldTaskModel)
+            
+            # Handle special filters for time ranges
+            start_time = filter.pop('start_time', None)
+            end_time = filter.pop('end_time', None)
+            
+            # Apply regular filters
             for k, v in filter.items():
-                query = query.filter(getattr(AworldTaskModel, k) == v)
+                if hasattr(AworldTaskModel, k):
+                    query = query.filter(getattr(AworldTaskModel, k) == v)
+            
+            # Apply time range filters
+            if start_time:
+                query = query.filter(AworldTaskModel.created_at >= start_time)
+            if end_time:
+                query = query.filter(AworldTaskModel.created_at <= end_time)
+            
             total = query.count()
             orm_tasks = query.offset((page_num - 1) * page_size).limit(page_size).all()
             items = [orm_to_pydantic_task(t) for t in orm_tasks]
@@ -168,8 +182,22 @@ class PostgresTaskDB(AworldTaskDB):
     async def page_query_tasks(self, filter: dict, page_size: int, page_num: int) -> dict:
         with self.Session() as session:
             query = session.query(AworldTaskModel)
+            
+            # Handle special filters for time ranges
+            start_time = filter.pop('start_time', None)
+            end_time = filter.pop('end_time', None)
+            
+            # Apply regular filters
             for k, v in filter.items():
-                query = query.filter(getattr(AworldTaskModel, k) == v)
+                if hasattr(AworldTaskModel, k):
+                    query = query.filter(getattr(AworldTaskModel, k) == v)
+            
+            # Apply time range filters
+            if start_time:
+                query = query.filter(AworldTaskModel.created_at >= start_time)
+            if end_time:
+                query = query.filter(AworldTaskModel.created_at <= end_time)
+            
             total = query.count()
             orm_tasks = query.offset((page_num - 1) * page_size).limit(page_size).all()
             items = [orm_to_pydantic_task(t) for t in orm_tasks]

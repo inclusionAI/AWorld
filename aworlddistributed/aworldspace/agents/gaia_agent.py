@@ -9,7 +9,7 @@ from aworld.config.conf import AgentConfig, TaskConfig, ClientType
 from aworld.core.task import Task
 from aworld.output import Outputs, Output, StreamingOutputs
 from aworld.utils.common import get_local_ip
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 from pydantic import BaseModel, Field
 
 from aworldspace.base_agent import AworldBaseAgent
@@ -59,8 +59,9 @@ class Pipeline(AworldBaseAgent):
         self.full_dataset = load_dataset(
             os.path.join(self.gaia_files, "GAIA.py"),
             name="2023_all",
-            split="validation",
+            trust_remote_code=True
         )
+        self.full_dataset = concatenate_datasets([self.full_dataset['validation'], self.full_dataset['test']])
         
         # Create task_id to index mapping for improved lookup performance
         self.task_id_to_index = {}
@@ -237,8 +238,10 @@ class Pipeline(AworldBaseAgent):
 
     def add_file_path(self, task: Dict[str, Any]
                       ):
+        split = "validation" if task["Annotator Metadata"]["Steps"] != "" else "test"
+
         if task["file_name"]:
-            file_path = Path(f"{self.gaia_files}/2023/validation/" + task["file_name"])
+            file_path = Path(f"{self.gaia_files}/2023/{split}/" + task["file_name"])
             if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
                 task["Question"] += f" Here are the necessary document files: {file_path}"
 
