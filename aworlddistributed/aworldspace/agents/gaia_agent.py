@@ -60,7 +60,7 @@ class Pipeline(AworldBaseAgent):
             os.path.join(self.gaia_files, "GAIA.py"),
             name="2023_all",
         )
-        self.full_dataset = concatenate_datasets(self.full_dataset['validation'], self.full_dataset['test'])
+        self.full_dataset = concatenate_datasets([self.full_dataset['validation'], self.full_dataset['test']])
         
         # Create task_id to index mapping for improved lookup performance
         self.task_id_to_index = {}
@@ -239,7 +239,7 @@ class Pipeline(AworldBaseAgent):
     def add_file_path(self, task: Dict[str, Any]
                       ):
         split = "validation" if task["Annotator Metadata"]["Steps"] != "" else "test"
-        
+
         if task["file_name"]:
             file_path = Path(f"{self.gaia_files}/2023/{split}/" + task["file_name"])
             if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
