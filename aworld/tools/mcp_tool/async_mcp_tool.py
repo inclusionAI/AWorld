@@ -8,7 +8,7 @@ from aworld.core.event.base import Message
 
 from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.agent.base import AgentFactory
-from aworld.core.common import ActionModel, Observation
+from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
 from aworld.tools.mcp_tool.executor import MCPToolExecutor
@@ -99,8 +99,6 @@ class McpTool(AsyncTool):
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
                 action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions,task_id=task_id,session_id=session_id)
-                message = Message()
-                message.payload= action_results
             else:
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1
@@ -120,6 +118,15 @@ class McpTool(AsyncTool):
 
             observation.action_result = action_results
             observation.content = action_results[-1].content
+        else:
+            if self.conf.get('exit_on_failure'):
+                raise Exception(fail_error)
+            else:
+                logger.warning(f"{actions} no action results, fail info: {fail_error}, will use fail action results")
+                # every action need has the result
+                action_results = [ActionResult(success=False, content=fail_error, error=fail_error) for _ in actions]
+                observation.action_result = action_results
+                observation.content = fail_error
 
         info = {"exception": fail_error, **kwargs}
         return (observation,
