@@ -59,6 +59,7 @@ class Pipeline(AworldBaseAgent):
         self.full_dataset = load_dataset(
             os.path.join(self.gaia_files, "GAIA.py"),
             name="2023_all",
+            trust_remote_code=True
         )
         self.full_dataset = concatenate_datasets([self.full_dataset['validation'], self.full_dataset['test']])
         
