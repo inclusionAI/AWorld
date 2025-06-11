@@ -86,7 +86,7 @@ class TaskEventRunner(TaskRunner):
                 elif isinstance(hand, ToolHandler):
                     has_tool_handler = True
                 elif isinstance(hand, AgentHandler):
-                    has_agent_handler = ToolHandler
+                    has_agent_handler = True
 
             if not has_agent_handler:
                 self.handlers.append(DefaultAgentHandler(runner=self))

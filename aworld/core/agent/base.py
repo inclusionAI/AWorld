@@ -105,7 +105,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.context = Context.instance()
         self.state = AgentStatus.START
         self._finished = True
-        # todo sandbox
+        self.hooks: Dict[str, List[str]] = {}
         self.sandbox = sandbox or Sandbox(
             mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
 
