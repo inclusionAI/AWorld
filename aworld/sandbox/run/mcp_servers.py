@@ -3,7 +3,6 @@ import logging
 from typing_extensions import Optional, List, Dict, Any
 
 from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server
-from aworld.sandbox.models import SandboxEnvType
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
@@ -106,12 +105,16 @@ class McpServers:
                         if isinstance(call_result_raw.content[0], TextContent):
                             action_result = ActionResult(
                                 content=call_result_raw.content[0].text,
-                                keep=True
+                                keep=True,
+                                metadata=call_result_raw.content[0].model_extra.get(
+                                    "metadata", {}
+                                ),
                             )
                         elif isinstance(call_result_raw.content[0], ImageContent):
                             action_result = ActionResult(
                                 content=f"data:image/jpeg;base64,{call_result_raw.content[0].data}",
-                                keep=True
+                                keep=True,
+                                metadata=call_result_raw.content[0].model_extra.get("metadata", {}),
                             )
 
                     results.append(action_result)
