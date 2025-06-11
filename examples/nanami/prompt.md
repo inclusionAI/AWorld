@@ -26,7 +26,7 @@ Please utilize appropriate tools for the task, analyze the results obtained from
 - **image**: Perform image processing and manipulation tasks.
 - **pdf**: Extract, convert, and process PDF files.
 - **pptx**: Handle PowerPoint (PPTX) file processing and conversion.
-- **reasoning**: Perform complex reasoning and problem-solving using advanced models.
+- **reasoning**: Perform complex reasoning and problem-solving for textual tasks.
 - **search**: Search and retrieve information from Google APIs.
 - **terminal**: Execute terminal commands and automate shell interactions.
 - **video**: Process and manipulate video files for Visual QA tasks.

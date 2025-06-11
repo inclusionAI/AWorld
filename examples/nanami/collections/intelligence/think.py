@@ -113,6 +113,10 @@ class IntelligenceCollection(ActionCollection):
         - Competition-level STEM problems
         - Multi-step analytical reasoning tasks
 
+        Weakness:
+        - Inability to process media types: image, audio, or video
+        - Require precise description of problem context and settings
+
         Args:
             question: The input question requiring complex reasoning
             original_task: Optional original task description for additional context
