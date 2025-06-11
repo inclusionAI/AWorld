@@ -1,7 +1,5 @@
-import asyncio
 import types
 import inspect
-import contextvars
 from typing import Union, Optional, Any, Type, Sequence, Callable, Iterable
 from aworld.trace.base import (
     AttributeValueType,
@@ -221,9 +219,8 @@ class ContextSpan(Span):
         self._handle_exit(exc_type, exc_val, traceback)
 
     async def __aenter__(self) -> "Span":
-        self._coro_context = contextvars.copy_context()
-        await asyncio.get_event_loop().run_in_executor(None, lambda: self._coro_context.run(self._start)
-                                                       )
+        self._start()
+
         return self
 
     async def __aexit__(
@@ -232,8 +229,7 @@ class ContextSpan(Span):
             exc_val: Optional[BaseException],
             traceback: Optional[Any],
     ) -> None:
-        await asyncio.get_event_loop().run_in_executor(None,
-                                                       lambda: self._coro_context.run(lambda: self._handle_exit(exc_type, exc_val, traceback)))
+        self._handle_exit(exc_type, exc_val, traceback)
 
     def _handle_exit(
             self,
