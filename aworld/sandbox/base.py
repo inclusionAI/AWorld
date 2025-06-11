@@ -39,7 +39,7 @@ class Sandbox(SandboxSetup):
         return self._timeout
 
     @property
-    def metadata(self) -> Dict[str, str]:
+    def metadata(self) -> Dict[str, Any]:
         """
         Returns the sandbox metadata.
         """
