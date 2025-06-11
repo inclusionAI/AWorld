@@ -89,13 +89,6 @@ class DefaultTaskHandler(TaskHandler):
             await self.runner.stop()
 
             logger.info(f"{self.runner.task.id} finished.")
-            yield Message(
-                category=Constants.TASK,
-                payload='',
-                sender=self.name(),
-                session_id=self.runner.context.session_id,
-                topic=TaskType.FINISHED
-            )
         elif topic == TaskType.START:
             async for event in self.run_hooks(message, HookPoint.START):
                 yield event
