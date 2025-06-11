@@ -1,15 +1,5 @@
 {
     "mcpServers": {
-        "e2b-server": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@e2b/mcp-server"
-            ],
-            "env": {
-                "E2B_API_KEY": "${E2B_API_KEY}"
-            }
-        },
         "arxiv": {
             "command": "python",
             "args": [
@@ -29,6 +19,13 @@
             "args": [
                 "-m",
                 "examples.nanami.collections.tools.browser"
+            ]
+        },
+        "code": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.nanami.collections.intelligence.code"
             ]
         },
         "csv": {
@@ -78,6 +75,13 @@
             "args": [
                 "-m",
                 "examples.nanami.collections.documents.mspptx"
+            ]
+        },
+        "pubchem": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.nanami.collections.tools.pubchem"
             ]
         },
         "reasoning": {

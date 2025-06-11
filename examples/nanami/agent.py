@@ -1,6 +1,5 @@
 import copy
 import logging
-import re
 import traceback
 from typing import Any, Callable
 
@@ -115,7 +114,7 @@ class GaiaAgent(Agent):
             self._finished = True
         # output.mark_finished()
 
-        actions: list[ActionModel] = self._format_policy_info(agent_result.actions)
+        actions: list[ActionModel] = agent_result.actions
 
         # LOG CKPT: Agent's Policy
         _log_acts = []
@@ -129,48 +128,6 @@ class GaiaAgent(Agent):
         self._color_log(f"💡 Policy: {_log_policy}", Color.cyan)
 
         return actions
-
-    def _format_policy_info(self, actions: list[ActionModel]) -> list[ActionModel]:
-        clean_actions: list[ActionModel] = []
-        for action in actions:
-            clean_action = copy.deepcopy(action)
-            if (
-                clean_action.policy_info is not None
-                and len(clean_action.policy_info) > 0
-                and clean_action.action_name is None
-                and clean_action.params is not None
-            ):
-                full_match: re.Match | None = re.search(
-                    r"<think>(.*?)<\/think>([\w\s]+)<answer>(.*?)<\/answer>", clean_action.policy_info, re.DOTALL
-                )
-                think_match: re.Match | None = re.search(r"<think>(.*?)</think>", clean_action.policy_info, re.DOTALL)
-                answer_match: re.Match | None = re.search(
-                    r"<answer>(.*?)</answer>", clean_action.policy_info, re.DOTALL
-                )
-                after_think_match: re.Match | None = re.search(
-                    r"<think>.*?</think>\s*(.*)", clean_action.policy_info, re.DOTALL
-                )
-                boxed_match: re.Match | None = re.search(r"\\boxed\{([^}]*)\}", clean_action.policy_info, re.DOTALL)
-                if full_match:
-                    pass
-                elif answer_match:
-                    policy = answer_match.group(1).strip()
-                    clean_action.policy_info = f"<answer>{policy}</answer>"
-                elif boxed_match:
-                    policy = boxed_match.group(1).strip()
-                    clean_action.policy_info = f"<answer>{policy}</answer>"
-                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
-                elif after_think_match:
-                    policy = after_think_match.group(1).strip().replace("<answer>", "").replace("</answer>", "")
-                    clean_action.policy_info = f"<answer>{after_think_match.group(1)}</answer>"
-                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
-                elif think_match:
-                    self._color_log("⚠ Policy only contains <think> tag!", Color.yellow)
-                else:
-                    clean_action.policy_info = f"<answer>{clean_action.policy_info}</answer>"
-                    self._color_log("⚠ Policy is not wrapped by <answer> tag!", Color.yellow)
-            clean_actions.append(clean_action)
-        return clean_actions
 
     def _setup_logger(self, logger_name: str, output_folder_path: str, file_name: str = "app.log") -> logging.Logger:
         return setup_logger(

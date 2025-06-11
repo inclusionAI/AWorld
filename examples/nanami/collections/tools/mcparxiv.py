@@ -271,7 +271,6 @@ class ArxivActionCollection(ActionCollection):
     async def mcp_search_papers(
         self,
         query: str = Field(description="Search query (keywords, title, author, etc.)"),
-        max_results: int = Field(default=10, description="Maximum number of results to return (default: 10)"),
         sort_by: str = Field(
             default="relevance", description="Sort by: 'relevance', 'lastUpdatedDate', 'submittedDate'"
         ),
@@ -290,7 +289,6 @@ class ArxivActionCollection(ActionCollection):
 
         Args:
             query: Search terms (can include keywords, titles, author names)
-            max_results: Maximum number of papers to return
             sort_by: Sorting criteria for results
             sort_order: Order of sorting (ascending/descending)
             category: Optional category filter (e.g., 'cs.AI' for AI papers)
@@ -302,8 +300,6 @@ class ArxivActionCollection(ActionCollection):
         # Handle FieldInfo objects
         if isinstance(query, FieldInfo):
             query = query.default
-        if isinstance(max_results, FieldInfo):
-            max_results = max_results.default
         if isinstance(sort_by, FieldInfo):
             sort_by = sort_by.default
         if isinstance(sort_order, FieldInfo):
@@ -336,7 +332,7 @@ class ArxivActionCollection(ActionCollection):
 
             # Perform search
             search = arxiv.Search(
-                query=search_query, max_results=max_results, sort_by=sort_criterion, sort_order=sort_order_enum
+                query=search_query, max_results=300000, sort_by=sort_criterion, sort_order=sort_order_enum
             )
 
             # Execute search and collect results
@@ -353,7 +349,6 @@ class ArxivActionCollection(ActionCollection):
             metadata = ArxivMetadata(
                 operation="search_papers",
                 query=query,
-                max_results=max_results,
                 sort_by=sort_by,
                 sort_order=sort_order,
                 total_results=len(results),
@@ -371,9 +366,7 @@ class ArxivActionCollection(ActionCollection):
             return ActionResponse(
                 success=False,
                 message=error_msg,
-                metadata=ArxivMetadata(
-                    operation="search_papers", query=query, max_results=max_results, error_type="search_error"
-                ).model_dump(),
+                metadata=ArxivMetadata(operation="search_papers", query=query, error_type="search_error").model_dump(),
             )
 
     async def mcp_get_paper_details(

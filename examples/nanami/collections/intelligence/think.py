@@ -13,7 +13,7 @@ from aworld.models.llm import call_llm_model, get_llm_model
 from examples.nanami.collections.base import ActionArguments, ActionCollection, ActionResponse
 
 
-class IntelligenceCollection(ActionCollection):
+class ThinkCollection(ActionCollection):
     """MCP service for complex problem reasoning using powerful reasoning models.
 
     Supports advanced reasoning for:
@@ -233,7 +233,7 @@ if __name__ == "__main__":
 
     # Initialize and run the intelligence reasoning service
     try:
-        service = IntelligenceCollection(args)
+        service = ThinkCollection(args)
         service.run()
     except Exception as e:
         print(f"An error occurred: {e}: {traceback.format_exc()}")
