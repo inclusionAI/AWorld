@@ -4,7 +4,7 @@ import abc
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, TypeVar, List
+from typing import Any, Dict, Generic, TypeVar, List, Optional
 
 from pydantic import BaseModel
 
@@ -33,7 +33,7 @@ class Message(Generic[DataType]):
     or by extending `Message`.
     """
     session_id: str
-    payload: DataType
+    payload: Optional[DataType]
     # Current caller
     sender: str
     # event type
