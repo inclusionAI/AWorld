@@ -10,6 +10,13 @@
                 "E2B_API_KEY": "${E2B_API_KEY}"
             }
         },
+        "arxiv": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.nanami.collections.tools.mcparxiv"
+            ]
+        },
         "audio": {
             "command": "python",
             "args": [
