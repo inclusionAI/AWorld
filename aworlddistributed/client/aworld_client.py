@@ -1,27 +1,25 @@
 import asyncio
-import json
 import logging
+import os
+from datetime import datetime
 from typing import AsyncGenerator
 
 from aworld.models.llm import acall_llm_model, get_llm_model
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from pydantic import BaseModel, Field
 
-from base import AworldTask, AworldTaskResult
+from base import AworldTask, AworldTaskResult, AworldTaskForm
 
-
-import os
-from datetime import datetime
 
 class TaskLogger:
-    """任务提交日志记录器"""
+    """Task submission logger"""
     
     def __init__(self, log_file: str = "aworld_task_submissions.log"):
         self.log_file = 'task_logs/' + log_file
         self._ensure_log_file_exists()
     
     def _ensure_log_file_exists(self):
-        """确保日志文件存在"""
+        """ensure log file exists"""
         if not os.path.exists(self.log_file):
             os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
             with open(self.log_file, 'w', encoding='utf-8') as f:
@@ -29,7 +27,7 @@ class TaskLogger:
                 f.write("# Format: [timestamp] task_id | agent_id | server | status | agent_answer | correct_answer | is_correct | details\n\n")
     
     def log_task_submission(self, task: AworldTask, server: str, status: str, details: str = "", task_result: AworldTaskResult = None):
-        """记录任务提交日志"""
+        """log task submission"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{timestamp}] {task.task_id} | {task.agent_id} | {task.node_id} | {status} | { task_result.data.get('agent_answer') if task_result and task_result.data else None } | {task_result.data.get('correct_answer') if task_result and task_result.data else None} | {task_result.data.get('gaia_correct') if task_result and task_result.data else None} |{details}\n"
         
@@ -40,17 +38,17 @@ class TaskLogger:
             logging.error(f"Failed to write task submission log: {e}")
     
     def log_task_result(self, task: AworldTask, result: ModelResponse):
-        """记录任务结果为markdown文件"""
+        """log task result to markdown file"""
         try:
-            # 创建结果目录
+            # create result directory
             date_str = datetime.now().strftime("%Y%m%d")
             result_dir = f"task_logs/result/{date_str}"
             os.makedirs(result_dir, exist_ok=True)
             
-            # 创建markdown文件
+            # create markdown file
             md_file = f"{result_dir}/{task.task_id}.md"
             
-            # 拼接content内容
+            # concat content
             content_parts = []
             if hasattr(result, 'content') and result.content:
                 if isinstance(result.content, list):
@@ -58,17 +56,17 @@ class TaskLogger:
                 else:
                     content_parts.append(str(result.content))
             
-            # 写入markdown文件
+            # write to markdown file
             file_exists = os.path.exists(md_file)
             with open(md_file, 'a', encoding='utf-8') as f:
-                # 只有文件不存在时才写入标题信息
+                # only write title info when file not exists
                 if not file_exists:
                     f.write(f"# Task Result: {task.task_id}\n\n")
                     f.write(f"**Agent ID:** {task.agent_id}\n\n")
                     f.write(f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                     f.write("## Content\n\n")
                 
-                # 每次都写入内容部分
+                # write content parts
                 if content_parts:
                     for i, content in enumerate(content_parts, 1):
                         f.write(f"{content}\n\n")
@@ -88,7 +86,7 @@ class AworldTaskClient(BaseModel):
     tasks: list[AworldTask] = Field(default_factory=list, description="submitted task list")
     task_states: dict[str, AworldTaskResult] = Field(default_factory=dict, description="task_states")
 
-    async def submit_task(self, task: AworldTask):
+    async def submit_task(self, task: AworldTask, background: bool = True):
         if not self.know_hosts:
             raise ValueError("No aworld server hosts configured.")
         # 1. select aworld server from know_hosts using round-robin
@@ -98,15 +96,18 @@ class AworldTaskClient(BaseModel):
         self._current_server_index = (self._current_server_index + 1) % len(self.know_hosts)
 
         # 2. call _submit_task
-        result = await self._submit_task(aworld_server, task)
+        result = await self._submit_task(aworld_server, task, background)
         # 3. update task_states
         self.task_states[task.task_id] = result
 
         
-    async def _submit_task(self, aworld_server, task: AworldTask):
+    async def _submit_task(self, aworld_server, task: AworldTask, background: bool = True):
         try:
             logging.info(f"submit task#{task.task_id} to cluster#[{aworld_server}]")
-            task_result = await self._submit_task_to_server(aworld_server, task)
+            if not background:
+                task_result = await self._submit_task_to_server(aworld_server, task)
+            else:
+                task_result = await self._async_submit_task_to_server(aworld_server, task)
             return task_result
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -116,6 +117,18 @@ class AworldTaskClient(BaseModel):
                     return
             logging.error(f"execute task to {task.node_id} execute_failed: [{e}], please see logs from server ")
             task_logger.log_task_submission(task, aworld_server, "execute_failed", str(e))
+
+    async def _async_submit_task_to_server(self, aworld_server, task: AworldTask):
+        import httpx
+        from base import AworldTaskForm, AworldTaskResult
+        # 构建 AworldTaskForm
+        form_data = AworldTaskForm(task=task)
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(f"http://{aworld_server}/api/v1/tasks/submit_task", json=form_data.model_dump())
+            resp.raise_for_status()
+            data = resp.json()
+            task_logger.log_task_submission(task, aworld_server, "submitted")
+            return AworldTaskResult(**data)
 
     async def _submit_task_to_server(self, aworld_server, task: AworldTask):
         # build params
@@ -174,4 +187,201 @@ class AworldTaskClient(BaseModel):
         if not isinstance(self.task_states, dict):
             self.task_states = dict(self.task_states)
         return self.task_states.get(task_id, None)
+
+    async def download_task_results(
+        self, 
+        start_time: str = None, 
+        end_time: str = None, 
+        task_id: str = None, 
+        page_size: int = 100,
+        save_path: str = None
+    ) -> str:
+        """
+        Download task results and generate a JSONL format file
+        
+        Args:
+            start_time: Start time, format: YYYY-MM-DD HH:MM:SS
+            end_time: End time, format: YYYY-MM-DD HH:MM:SS
+            task_id: Task ID
+            page_size: Page size
+            save_path: Save path, if not specified, it will be generated automatically
+            
+        Returns:
+            str: Save path
+        """
+        if not self.know_hosts:
+            raise ValueError("No aworld server hosts configured.")
+        
+        # select server
+        if not hasattr(self, '_current_server_index'):
+            self._current_server_index = 0
+        aworld_server = self.know_hosts[self._current_server_index]
+        
+        logging.info(f"🚀 downloading task results from server: {aworld_server}")
+        
+        try:
+            import httpx
+            
+            # build query params
+            params = {"page_size": page_size}
+            if start_time:
+                params["start_time"] = start_time
+            if end_time:
+                params["end_time"] = end_time
+            if task_id:
+                params["task_id"] = task_id
+            
+            # send download request
+            async with httpx.AsyncClient(timeout=300.0) as client:  # 5分钟超时
+                response = await client.get(
+                    f"http://{aworld_server}/api/v1/tasks/download_task_results",
+                    params=params
+                )
+                response.raise_for_status()
+                
+                # if not specified save path, generate automatically
+                if not save_path:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    save_path = f"task_results_{timestamp}.jsonl"
+                
+                # ensure directory exists
+                save_dir = os.path.dirname(save_path) if os.path.dirname(save_path) else "."
+                os.makedirs(save_dir, exist_ok=True)
+                
+                with open(save_path, 'wb') as f:
+                    for chunk in response.iter_bytes():
+                        f.write(chunk)
+                
+                # calculate file size
+                file_size = os.path.getsize(save_path)
+                logging.info(f"✅ task results downloaded successfully, file: {save_path}, size: {file_size} bytes")
+                
+                return save_path
+                
+        except Exception as e:
+            logging.error(f"❌ download task results failed: {e}")
+            raise ValueError(f"❌ download task results failed: {str(e)}")
+
+    async def download_task_results_to_memory(
+        self, 
+        start_time: str = None, 
+        end_time: str = None, 
+        task_id: str = None, 
+        page_size: int = 100
+    ) -> list:
+        """
+        Download task results to memory, return parsed data list
+        
+        Args:
+            start_time: Start time, format: YYYY-MM-DD HH:MM:SS
+            end_time: End time, format: YYYY-MM-DD HH:MM:SS
+            task_id: Task ID
+            page_size: Page size
+            
+        Returns:
+            list: Task results data list
+        """
+        if not self.know_hosts:
+            raise ValueError("No aworld server hosts configured.")
+        
+        # select server
+        if not hasattr(self, '_current_server_index'):
+            self._current_server_index = 0
+        aworld_server = self.know_hosts[self._current_server_index]
+        
+        logging.info(f"🚀 downloading task results to memory from server: {aworld_server}")
+        
+        try:
+            import httpx
+            import json
+            
+            # build query params
+            params = {"page_size": page_size}
+            if start_time:
+                params["start_time"] = start_time
+            if end_time:
+                params["end_time"] = end_time
+            if task_id:
+                params["task_id"] = task_id
+            
+            # send download request
+            async with httpx.AsyncClient(timeout=300.0) as client:  # 5分钟超时
+                response = await client.get(
+                    f"http://{aworld_server}/api/v1/tasks/download_task_results",
+                    params=params
+                )
+                response.raise_for_status()
+                
+                # parse jsonl content
+                results = []
+                content = response.text
+                if content.strip():  # check content is not empty
+                    for line in content.strip().split('\n'):
+                        if line.strip():  # skip empty line
+                            try:
+                                result_data = json.loads(line)
+                                results.append(result_data)
+                            except json.JSONDecodeError as e:
+                                logging.warning(f"Failed to parse line: {line}, error: {e}")
+                
+                logging.info(f"✅ task results downloaded to memory successfully, total: {len(results)} records")
+                
+                return results
+                
+        except Exception as e:
+            logging.error(f"❌ download task results to memory failed: {e}")
+            raise ValueError(f"❌ download task results to memory failed: {str(e)}")
+
+    def parse_task_results_file(self, file_path: str) -> list:
+        """
+        Parse local task results jsonl file
+
+        Args:
+            file_path: jsonl file path
+
+        Returns:
+            list: Parsed task results list
+        """
+        import json
+
+        results = []
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if line:  # 跳过空行
+                        try:
+                            result_data = json.loads(line)
+                            results.append(result_data)
+                        except json.JSONDecodeError as e:
+                            logging.warning(f"Failed to parse line {line_num} in {file_path}: {e}")
+
+            logging.info(f"✅ parsed {len(results)} task results from {file_path}")
+            return results
+
+        except Exception as e:
+            logging.error(f"❌ failed to parse task results file {file_path}: {e}")
+            raise ValueError(f"❌ failed to parse task results file: {str(e)}")
+
+
+async def run():
+    # create client
+    client = AworldTaskClient(know_hosts=["localhost:9999"])
+
+    # 1. download task results to file
+    file_path = await client.download_task_results(
+        start_time="2025-06-10 00:00:00",
+        end_time="2025-06-10 23:59:59",
+        save_path="results/january_tasks.jsonl"
+    )
+
+    # 2. parse local jsonl file
+    local_results = client.parse_task_results_file("results/january_tasks.jsonl")
+
+    # 3. analyze results data
+    for result in local_results:
+        print(f"Task ID: {result['task_id']}, Status: {result['status']}")
+
+if __name__ == '__main__':
+    asyncio.run(run())
 

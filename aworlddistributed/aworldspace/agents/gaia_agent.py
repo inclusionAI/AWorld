@@ -9,7 +9,7 @@ from aworld.config.conf import AgentConfig, TaskConfig, ClientType
 from aworld.core.task import Task
 from aworld.output import Outputs, Output, StreamingOutputs
 from aworld.utils.common import get_local_ip
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 from pydantic import BaseModel, Field
 
 from aworldspace.base_agent import AworldBaseAgent
@@ -59,8 +59,9 @@ class Pipeline(AworldBaseAgent):
         self.full_dataset = load_dataset(
             os.path.join(self.gaia_files, "GAIA.py"),
             name="2023_all",
-            split="validation",
+            trust_remote_code=True
         )
+        self.full_dataset = concatenate_datasets([self.full_dataset['validation'], self.full_dataset['test']])
         
         # Create task_id to index mapping for improved lookup performance
         self.task_id_to_index = {}
@@ -89,7 +90,8 @@ class Pipeline(AworldBaseAgent):
         system_prompt = self.valves.system_prompt if self.valves.system_prompt else GAIA_SYSTEM_PROMPT
 
         task = await self.get_task_from_body(body)
-        logging.info(f"task llm config is: {task.llm_provider}, {task.llm_model_name}, {task.llm_api_key}, {task.llm_base_url}")
+        if task:
+            logging.info(f"task llm config is: {task.llm_provider}, {task.llm_model_name}, {task.llm_api_key}, {task.llm_base_url}")
 
         llm_config = ModelConfig(
             llm_provider=task.llm_provider if task and task.llm_provider else default_llm_provider,
@@ -110,7 +112,7 @@ class Pipeline(AworldBaseAgent):
 
     async def get_mcp_servers(self, body) -> list[str]:
         task = await self.get_task_from_body(body)
-        if task.mcp_servers:
+        if task and task.mcp_servers:
             logging.info(f"mcp_servers from task: {task.mcp_servers}")
             return task.mcp_servers
 
@@ -207,21 +209,20 @@ class Pipeline(AworldBaseAgent):
         if isinstance(outputs, StreamingOutputs):
             agent_result = await outputs._visited_outputs[-2].get_finished_response() # read llm result
         match = re.search(r"<answer>(.*?)</answer>", agent_result)
-        is_correct = False
-        result = ""
-        answer = ""
+        answer = agent_result
         if match:
             answer = match.group(1)
-            logging.info(f"🤖 Agent answer: {answer}")
-            logging.info(f"👨‍🏫 Correct answer: {gaia_task['Final answer']}")
-            is_correct = question_scorer(answer, gaia_task["Final answer"])
 
-            if is_correct:
-                logging.info(f"📝Question {gaia_task_id} Correct! 🎉")
-                result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:[{answer}] is `Correct`**"
-            else:
-                logging.info(f"📝Question {gaia_task_id} Incorrect! ❌")
-                result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:`{answer}` != Correct answer: `{gaia_task['Final answer']}` is `Incorrect` ❌**"
+        logging.info(f"🤖 Agent answer: {answer}")
+        logging.info(f"👨‍🏫 Correct answer: {gaia_task['Final answer']}")
+        is_correct = question_scorer(answer, gaia_task["Final answer"])
+
+        if is_correct:
+            logging.info(f"📝Question {gaia_task_id} Correct! 🎉")
+            result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:[{answer}] is `Correct`**"
+        else:
+            logging.info(f"📝Question {gaia_task_id} Incorrect! ❌")
+            result = f"\n\n📝 **Question: {gaia_task_id} -> Agent Answer:`{answer}` != Correct answer: `{gaia_task['Final answer']}` is `Incorrect` ❌**"
 
         metadata = await outputs.get_metadata()
         if not metadata:
@@ -237,8 +238,10 @@ class Pipeline(AworldBaseAgent):
 
     def add_file_path(self, task: Dict[str, Any]
                       ):
+        split = "validation" if task["Annotator Metadata"]["Steps"] != "" else "test"
+
         if task["file_name"]:
-            file_path = Path(f"{self.gaia_files}/2023/validation/" + task["file_name"])
+            file_path = Path(f"{self.gaia_files}/2023/{split}/" + task["file_name"])
             if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
                 task["Question"] += f" Here are the necessary document files: {file_path}"
 
