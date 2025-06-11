@@ -1,6 +1,9 @@
 import argparse
+import json
 import os
+import traceback
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -63,8 +66,18 @@ if __name__ == "__main__":
     dataset_path = os.getenv("GAIA_DATASET_PATH")
     log_path = os.getenv("AWORLD_WORKSPACE", "~") + "/logs"
 
+    # prompt
     with open(Path(__file__).parent / "prompt.md", "r", encoding="utf-8") as f:
         system_prompt = f.read()
+    # mcp tools
+    try:
+        with open(Path(__file__).parent / "mcp.json", "r", encoding="utf-8") as f:
+            mcp_config: dict[dict[str, Any]] = json.loads(f.read())
+            available_servers: list[str] = list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
+            print(f"Available Servers: {available_servers}")
+    except Exception as e:
+        print(f"Failed to load mcp.json: {str(e)}: {traceback.format_exc()}")
+        available_servers = []
 
     runner = GaiaRunner(
         agent=GaiaAgent(
@@ -77,26 +90,7 @@ if __name__ == "__main__":
                 llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
                 llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
             ),
-            mcp_servers=[
-                "e2b-server",
-                "audio",
-                "browser",
-                "csv",
-                "docx",
-                "download",
-                "xlsx",
-                "image",
-                "pdf",
-                "pptx",
-                "reasoning",
-                "search",
-                "terminal",
-                "video",
-                "wayback",
-                "wikipedia",
-                "youtube",
-                "txt",
-            ],
+            mcp_servers=available_servers,
         ),
         runner_args=RunnerArguments(
             split=args.split,
@@ -120,26 +114,7 @@ if __name__ == "__main__":
                 llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
                 llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
             ),
-            mcp_servers=[
-                "e2b-server",
-                "audio",
-                "browser",
-                "csv",
-                "docx",
-                "download",
-                "xlsx",
-                "image",
-                "pdf",
-                "pptx",
-                "reasoning",
-                "search",
-                "terminal",
-                "video",
-                "wayback",
-                "wikipedia",
-                "youtube",
-                "txt",
-            ],
+            mcp_servers=available_servers,
         ),
     )
 
