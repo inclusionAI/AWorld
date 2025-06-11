@@ -46,6 +46,12 @@ if __name__ == "__main__":
         help="A continuous range of question indices, e.g., 0:300",
     )
     parser.add_argument(
+        "--file_path",
+        type=str,
+        nargs="?",
+        help="File path of the questions, e.g., xxx.txt",
+    )
+    parser.add_argument(
         "--blacklist_file_path",
         type=str,
         nargs="?",

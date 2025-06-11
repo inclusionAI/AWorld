@@ -36,6 +36,7 @@ class RunnerArguments:
     level: list = None
     q: str = None
     slice: str = None
+    file_path: str = None
     blacklist_file_path: str = None
     skip: bool = False
     retry: bool = False
@@ -241,6 +242,10 @@ class GaiaRunner:
             blacklist: set[str] = set()
 
         try:
+            if self.runner_args.file_path is not None:
+                assert os.path.exists(self.runner_args.file_path), f"File path {self.runner_args.file_path} not exists"
+                with open(self.runner_args.file_path, "r", encoding="utf-8") as f:
+                    return list(line.strip().split(",")[0] for line in f.readlines())
             # Default setting where user want to run full dataset
             if self.runner_args.q is None and self.runner_args.slice is None and self.runner_args.level is None:
                 return list(task for task in self.complete_dataset if task["task_id"] not in blacklist)
