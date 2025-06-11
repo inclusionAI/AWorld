@@ -13,6 +13,16 @@ from aworld.utils.common import snake_to_camel
 def hook(hook_point: str, name: str = None):
     """Hook decorator.
 
+    NOTE: Hooks can be annotated, but they need to comply with the protocol agreement.
+    The input parameter of the hook function is `Message` type, and the @hook needs to specify `hook_point`.
+
+    Examples:
+        >>> @hook(hook_point=HookPoint.ERROR)
+        >>> def error_process(message: Message) -> Message | None:
+        >>>     print("process error")
+    The function `error_process` will be executed when an error message appears in the task,
+    you can choose return nothing or return a message.
+
     Args:
         hook_point: Hook point that wants to process the message.
         name: Hook name.
