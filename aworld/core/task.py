@@ -41,7 +41,7 @@ class Task:
     # task special runner class, for example: package.XXRunner
     runner_cls: Optional[str] = None
     # such as: {"start": ["init_tool", "init_context", ...]}
-    hooks: Dict[str, List[str]] = field(default_factory=Dict[str, List[str]])
+    hooks: Dict[str, List[str]] = field(default_factory=dict)
 
 
 class TaskResponse(BaseModel):
