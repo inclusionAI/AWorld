@@ -89,10 +89,7 @@ class IntelligenceCollection(ActionCollection):
         question: str = Field(
             description="The input question for complex problem reasoning, such as math and code contest problems"
         ),
-        original_task: str = Field(
-            default="",
-            description="The original task description. This argument could be fetched from the <task>TASK</task> tag",
-        ),
+        original_task: str = Field(default="", description="The original task description."),
         temperature: float = Field(
             default=0.3,
             description="Model temperature for response variability (0.0-1.0)",
