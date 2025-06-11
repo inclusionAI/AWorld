@@ -15,6 +15,7 @@ RUN apt-get update && \
 RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm
 
 ARG PIP_OPTIONS='-i https://mirrors.aliyun.com/pypi/simple/'
+ARG ENABLE_OSS_MOUNT=""
 
 RUN pip install -U pip pysocks ${PIP_OPTIONS}
 
@@ -28,6 +29,16 @@ RUN cd /app/ && \
 ENV CHROME_DRIVER_PATH=/app/chromedriver-linux64/chromedriver
 
 
+RUN if [ "$ENABLE_OSS_MOUNT" = "true" ]; then \
+        apt-get update && \
+        apt-get install -y gdebi-core mime-support && \
+        cd /tmp && \
+        wget https://gosspublic.alicdn.com/ossfs/ossfs_1.91.6_ubuntu22.04_amd64.deb && \
+        gdebi ossfs_1.91.6_ubuntu22.04_amd64.deb -n && \
+        rm ossfs_1.91.6_ubuntu22.04_amd64.deb && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
 
 FROM base as runner
 
