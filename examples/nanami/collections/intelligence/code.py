@@ -1,16 +1,34 @@
 import os
 import time
 import traceback
+from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
 from aworld.config.conf import AgentConfig
 from aworld.logs.util import Color
 from aworld.models.llm import call_llm_model, get_llm_model
 from examples.nanami.collections.base import ActionArguments, ActionCollection, ActionResponse
+
+
+class CodeGenerationMetadata(BaseModel):
+    """Metadata for code generation results."""
+
+    model_name: str | None = None
+    code_style: str | None = None
+    code_length: int | None = None
+    line_count: int | None = None
+    processing_time_seconds: float | None = None
+    temperature: float | None = None
+    has_requirements: bool | None = None
+    has_context: bool | None = None
+    saved_file_path: str | None = None
+    file_save_error: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 class CodeCollection(ActionCollection):
@@ -138,6 +156,10 @@ class CodeCollection(ActionCollection):
             default="documented",
             description="Style of generated code: minimal (concise), documented (with comments), verbose (detailed)",
         ),
+        save_to_file_path: str | None = Field(
+            default=None,
+            description="Optional. Path to save the generated Python snippet. e.g., 'output/generated_script.py'",
+        ),
     ) -> ActionResponse:
         """Generate executable Python code snippets based on task description.
 
@@ -166,6 +188,7 @@ class CodeCollection(ActionCollection):
             context: Additional context or background information
             temperature: Model temperature controlling randomness
             code_style: Style preference for the generated code
+            save_to_file_path: Optional. If provided, saves the generated code to this path within the workspace.
 
         Returns:
             ActionResponse with generated Python code and metadata
@@ -182,6 +205,8 @@ class CodeCollection(ActionCollection):
                 temperature = temperature.default
             if isinstance(code_style, FieldInfo):
                 code_style = code_style.default
+            if isinstance(save_to_file_path, FieldInfo):
+                save_to_file_path = save_to_file_path.default
 
             # Validate input
             if not task_description or not task_description.strip():
@@ -210,38 +235,62 @@ class CodeCollection(ActionCollection):
 
             processing_time = time.time() - start_time
 
-            # Prepare metadata
-            metadata = {
-                "model_name": self._llm_config.llm_model_name,
-                "code_style": code_style,
-                "code_length": len(generated_code),
-                "line_count": len(generated_code.split("\n")),
-                "processing_time_seconds": round(processing_time, 2),
-                "temperature": temperature,
-                "has_requirements": bool(requirements.strip()),
-                "has_context": bool(context.strip()),
-            }
+            # Populate metadata fields
+            metadata = CodeGenerationMetadata(
+                model_name=self._llm_config.llm_model_name,
+                code_style=code_style,
+                code_length=len(generated_code),
+                line_count=len(generated_code.split("\n")),
+                processing_time_seconds=round(processing_time, 2),
+                temperature=temperature,
+                has_requirements=bool(requirements.strip()),
+                has_context=bool(context.strip()),
+            )
+
+            # Save the generated code to a file if path is provided
+            if save_to_file_path:
+                try:
+                    # Use _validate_file_path to ensure path is within workspace and get absolute path
+                    # The check_existence=False allows creating a new file.
+                    output_file_path_obj = Path(self._validate_file_path(save_to_file_path))
+
+                    # Ensure parent directories exist
+                    output_file_path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+                    with open(output_file_path_obj, "w", encoding="utf-8") as f:
+                        f.write(generated_code)
+
+                    metadata.saved_file_path = str(output_file_path_obj)
+                    self._color_log(f"Generated code also saved to: {output_file_path_obj}", Color.blue)
+                except Exception as e:
+                    self.logger.error(f"Failed to save code to file '{save_to_file_path}': {str(e)}")
+                    metadata.file_save_error = str(e)
 
             self._color_log(
-                f"Successfully generated code ({len(generated_code)} characters, {processing_time:.2f}s)",
+                f"Successfully generated code ({metadata.code_length} characters, "
+                f"{metadata.processing_time_seconds:.2f}s)",
                 Color.green,
             )
 
-            return ActionResponse(success=True, message=generated_code, metadata=metadata)
+            return ActionResponse(success=True, message=generated_code, metadata=metadata.model_dump(exclude_none=True))
 
         except ValueError as e:
             self.logger.error(f"Invalid input: {str(e)}")
+            metadata.error_type = "invalid_input"
+            metadata.error_message = str(e)
             return ActionResponse(
                 success=False,
                 message=f"Invalid input: {str(e)}",
-                metadata={"error_type": "invalid_input", "error_message": str(e)},
+                metadata=metadata.model_dump(exclude_none=True),
             )
         except Exception as e:
             self.logger.error(f"Code generation failed: {str(e)}: {traceback.format_exc()}")
+            metadata.error_type = "generation_error"
+            metadata.error_message = str(e)
             return ActionResponse(
                 success=False,
                 message=f"Code generation failed: {str(e)}",
-                metadata={"error_type": "generation_error", "error_message": str(e)},
+                metadata=metadata.model_dump(exclude_none=True),
             )
 
     def mcp_get_code_capabilities(self) -> ActionResponse:
