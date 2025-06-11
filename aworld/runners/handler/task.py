@@ -22,6 +22,14 @@ class TaskHandler(DefaultHandler):
 
     def __init__(self, runner: 'TaskEventRunner'):
         self.runner = runner
+        self.hooks = {}
+        if runner.task.hooks:
+            for k, vals in runner.task.hooks.items():
+                self.hooks[k] = []
+                for v in vals:
+                    cls = HookFactory.get_class(v)
+                    if cls:
+                        self.hooks[k].append(cls)
 
     @classmethod
     def name(cls):
@@ -101,7 +109,7 @@ class DefaultTaskHandler(TaskHandler):
             yield message
 
     async def run_hooks(self, message: Message, hook_point: str) -> AsyncGenerator[Message, None]:
-        hooks = HookFactory.hooks(hook_point).get(hook_point)
+        hooks = self.hooks.get(hook_point, [])
         for hook in hooks:
             try:
                 msg = hook(message)
