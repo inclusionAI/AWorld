@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import streamlit as st
 from dotenv import load_dotenv
@@ -8,7 +9,7 @@ import importlib.util
 import utils
 import aworld.trace as trace
 from trace_net import generate_trace_graph_full
-
+from aworld.trace.base import get_tracer_provider
 
 load_dotenv(os.path.join(os.getcwd(), ".env"))
 
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.getcwd())
 
+
 def agent_page():
     st.set_page_config(
         page_title="AWorld Agent",
@@ -24,14 +26,16 @@ def agent_page():
         layout="wide",
     )
 
-    st.markdown("<style> .stAppHeader { display: none; }</style>", unsafe_allow_html=True)
+    st.markdown(
+        "<style> .stAppHeader { display: none; }</style>", unsafe_allow_html=True)
 
     query_params = st.query_params
     selected_agent_from_url = query_params.get("agent", None)
 
     if "selected_agent" not in st.session_state:
         st.session_state.selected_agent = selected_agent_from_url
-        logger.info(f"Initialized selected_agent from URL: {selected_agent_from_url}")
+        logger.info(
+            f"Initialized selected_agent from URL: {selected_agent_from_url}")
 
     if selected_agent_from_url != st.session_state.selected_agent:
         st.session_state.selected_agent = selected_agent_from_url
@@ -42,7 +46,8 @@ def agent_page():
             if st.button(agent):
                 st.query_params["agent"] = agent
                 st.session_state.selected_agent = agent
-                logger.info(f"selected_agent={st.session_state.selected_agent}")
+                logger.info(
+                    f"selected_agent={st.session_state.selected_agent}")
 
     if st.session_state.selected_agent:
         agent_name = st.session_state.selected_agent
@@ -83,22 +88,23 @@ def agent_page():
                 agent = agent_module.AWorldAgent()
 
                 async def markdown_generator():
+                    trace_id = None
                     async with trace.span("start") as span:
                         trace_id = span.get_trace_id()
-                        logger.info(f"trace_id={trace_id}")
                         async for line in agent.run(prompt):
-                            yield f"\n{line}\n"
+                            st.write(line)
+                            await asyncio.sleep(0.1)
 
-                        trace_id = span.get_trace_id()
-                        file_name = f"graph.{trace_id}.html"
-                        folder_name = "trace_data"
-                        generate_trace_graph_full(
-                            trace_id, folder_name=folder_name, file_name=file_name
-                        )
-                        view_page_url = f"/trace?trace_id={trace_id}"
-                        yield f"\n---\n[View Trace]({view_page_url})\n"
+                    get_tracer_provider().force_flush(5000)
+                    file_name = f"graph.{trace_id}.html"
+                    folder_name = "trace_data"
+                    generate_trace_graph_full(
+                        trace_id, folder_name=folder_name, file_name=file_name
+                    )
+                    view_page_url = f"/trace?trace_id={trace_id}"
+                    st.write(f"\n---\n[View Trace]({view_page_url})\n")
 
-                st.write_stream(markdown_generator())
+                asyncio.run(markdown_generator())
     else:
         st.title("AWorld Agent Chat Assistant")
         st.info("Please select an Agent from the left sidebar to start")
