@@ -91,6 +91,7 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
         self._mcpservers = McpServers(
             mcp_servers,
             self._mcp_config,
+            sandbox=self
         )
 
     async def remove(self) -> None:
