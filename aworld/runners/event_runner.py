@@ -123,7 +123,7 @@ class TaskEventRunner(TaskRunner):
                     continue
 
                 for handler in handler_list:
-                    t = asyncio.create_task(self._raw_task(results))
+                    t = asyncio.create_task(self._handle_task(message, handler))
                     self.background_tasks.add(t)
                     t.add_done_callback(self.background_tasks.discard)
         else:
