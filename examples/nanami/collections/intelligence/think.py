@@ -101,9 +101,7 @@ class ThinkCollection(ActionCollection):
             description="Style of reasoning output: detailed analysis, concise summary, or step-by-step breakdown",
         ),
     ) -> ActionResponse:
-        """Perform complex problem reasoning using powerful reasoning models.
-
-        This tool provides comprehensive reasoning capabilities for:
+        """This tool provides comprehensive reasoning capabilities for:
         - Mathematical problems and proofs
         - Programming and algorithm challenges
         - Logic puzzles, brain teasers, and fun riddles
