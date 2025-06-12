@@ -293,6 +293,20 @@ async for chunk in model.astream_completion(messages):
     print(chunk.content, end="", flush=True)
 ```
 
+### Speech to Text
+```python
+llm_response = speech_to_text(
+    model,
+    audio_file=audio_file_path,
+    language="zh",  # Optional, specify language
+    response_format="text"
+    # prompt=""  # Optional, provide prompt to help transcription
+)
+
+transcription_text = llm_response.content if llm_response
+```
+
+
 ## ModelResponse Object
 
 All responses are encapsulated in a unified `ModelResponse` object with these key attributes:
