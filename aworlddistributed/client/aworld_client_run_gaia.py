@@ -41,7 +41,7 @@ async def _batch_run_gaia_task(gaia_tasks: list[AworldTask]) -> None:
 
     """
     tasks = [
-        _run_gaia_task(gaia_task, index * 3, background=False)
+        _run_gaia_task(gaia_task, index * 3, background=True)
         for index, gaia_task in enumerate(gaia_tasks)
     ]
     await asyncio.gather(*tasks)
@@ -82,7 +82,8 @@ if __name__ == '__main__':
                 user_id=os.getenv("USER", "SYSTEM"),
                 client_id=get_local_ip(),
                 mcp_servers=custom_mcp_servers,
-                max_retries=5
+                max_retries=5,
+                llm_custom_input="你好"
                 # llm_model_name="gpt-4o",
                 # task_system_prompt=CUSTOM_SYSTEM_PROMPT
             )
