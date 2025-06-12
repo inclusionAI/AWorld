@@ -443,6 +443,152 @@ class OpenAIProvider(LLMProviderBase):
 
         return openai_params
 
+    def speech_to_text(self,
+                       audio_file: str,
+                       language: str = None,
+                       prompt: str = None,
+                       **kwargs) -> ModelResponse:
+        """Convert speech to text.
+
+        Uses OpenAI's speech-to-text API to convert audio files to text.
+
+        Args:
+            audio_file: Path to audio file or file object.
+            language: Audio language, optional.
+            prompt: Transcription prompt, optional.
+            **kwargs: Other parameters, may include:
+                - model: Transcription model name, defaults to "whisper-1".
+                - response_format: Response format, defaults to "text".
+                - temperature: Sampling temperature, defaults to 0.
+
+        Returns:
+            ModelResponse: Unified model response object, with content field containing the transcription result.
+
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+        """
+        if not self.provider:
+            raise RuntimeError(
+                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+
+        try:
+            # Prepare parameters
+            transcription_params = {
+                "model": kwargs.get("model", "whisper-1"),
+                "response_format": kwargs.get("response_format", "text"),
+                "temperature": kwargs.get("temperature", 0)
+            }
+
+            # Add optional parameters
+            if language:
+                transcription_params["language"] = language
+            if prompt:
+                transcription_params["prompt"] = prompt
+
+            # Open file (if path is provided)
+            if isinstance(audio_file, str):
+                with open(audio_file, "rb") as file:
+                    transcription_response = self.provider.audio.transcriptions.create(
+                        file=file,
+                        **transcription_params
+                    )
+            else:
+                # If already a file object
+                transcription_response = self.provider.audio.transcriptions.create(
+                    file=audio_file,
+                    **transcription_params
+                )
+
+            # Create ModelResponse
+            return ModelResponse(
+                id=f"stt-{hash(str(transcription_response)) & 0xffffffff:08x}",
+                model=transcription_params["model"],
+                content=transcription_response.text if hasattr(transcription_response, 'text') else str(
+                    transcription_response),
+                raw_response=transcription_response,
+                message={
+                    "role": "assistant",
+                    "content": transcription_response.text if hasattr(transcription_response, 'text') else str(
+                        transcription_response)
+                }
+            )
+        except Exception as e:
+            logger.warn(f"Speech-to-text error: {e}")
+            raise LLMResponseError(str(e), kwargs.get("model", "whisper-1"))
+
+    async def aspeech_to_text(self,
+                              audio_file: str,
+                              language: str = None,
+                              prompt: str = None,
+                              **kwargs) -> ModelResponse:
+        """Asynchronously convert speech to text.
+
+        Uses OpenAI's speech-to-text API to convert audio files to text.
+
+        Args:
+            audio_file: Path to audio file or file object.
+            language: Audio language, optional.
+            prompt: Transcription prompt, optional.
+            **kwargs: Other parameters, may include:
+                - model: Transcription model name, defaults to "whisper-1".
+                - response_format: Response format, defaults to "text".
+                - temperature: Sampling temperature, defaults to 0.
+
+        Returns:
+            ModelResponse: Unified model response object, with content field containing the transcription result.
+
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+        """
+        if not self.async_provider:
+            raise RuntimeError(
+                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+
+        try:
+            # Prepare parameters
+            transcription_params = {
+                "model": kwargs.get("model", "whisper-1"),
+                "response_format": kwargs.get("response_format", "text"),
+                "temperature": kwargs.get("temperature", 0)
+            }
+
+            # Add optional parameters
+            if language:
+                transcription_params["language"] = language
+            if prompt:
+                transcription_params["prompt"] = prompt
+
+            # Open file (if path is provided)
+            if isinstance(audio_file, str):
+                with open(audio_file, "rb") as file:
+                    transcription_response = await self.async_provider.audio.transcriptions.create(
+                        file=file,
+                        **transcription_params
+                    )
+            else:
+                # If already a file object
+                transcription_response = await self.async_provider.audio.transcriptions.create(
+                    file=audio_file,
+                    **transcription_params
+                )
+
+            # Create ModelResponse
+            return ModelResponse(
+                id=f"stt-{hash(str(transcription_response)) & 0xffffffff:08x}",
+                model=transcription_params["model"],
+                content=transcription_response.text if hasattr(transcription_response, 'text') else str(
+                    transcription_response),
+                raw_response=transcription_response,
+                message={
+                    "role": "assistant",
+                    "content": transcription_response.text if hasattr(transcription_response, 'text') else str(
+                        transcription_response)
+                }
+            )
+        except Exception as e:
+            logger.warn(f"Async speech-to-text error: {e}")
+            raise LLMResponseError(str(e), kwargs.get("model", "whisper-1"))
+
 
 class AzureOpenAIProvider(OpenAIProvider):
     """Azure OpenAI provider implementation.

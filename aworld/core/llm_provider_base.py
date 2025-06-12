@@ -209,3 +209,10 @@ class LLMProviderBase(abc.ABC):
             return
 
         usage.update(dict(Counter(usage) + Counter(chunk_usage)))
+
+    def speech_to_text(self, audio_file, language, prompt, **kwargs) -> ModelResponse:
+        pass
+
+    async def aspeech_to_text(self, audio_file, language, prompt, **kwargs) -> ModelResponse:
+        pass
+

@@ -99,6 +99,11 @@ class InMemoryEventbus(Eventbus):
     async def consume_nowait(self):
         return await self._message_queue.get_nowait()
 
+    async def done(self):
+        while not self._message_queue.empty():
+            self._message_queue.get_nowait()
+        self._message_queue.task_done()
+
     async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):
             if event_type in self._transformer:

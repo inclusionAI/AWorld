@@ -84,10 +84,11 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 }
                 self._mcp_config = getattr(response, 'mcp_config', None)
             
-        # Initialize McpServers
+        # Initialize McpServers with a reference to this sandbox instance
         self._mcpservers = McpServers(
             mcp_servers,
             self._mcp_config,
+            sandbox=self
         )
 
     async def remove(self) -> None:

@@ -27,15 +27,27 @@ def agent_page():
     )
 
     st.markdown(
-        "<style> .stAppHeader { display: none; }</style>", unsafe_allow_html=True)
+        """\
+        <style> 
+        .stAppHeader { display: none; }
+        
+        div[data-testid="stMarkdownContainer"] pre {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        div[data-testid="stMarkdownContainer"] img {
+            max-height: 500px;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
 
     query_params = st.query_params
     selected_agent_from_url = query_params.get("agent", None)
 
     if "selected_agent" not in st.session_state:
         st.session_state.selected_agent = selected_agent_from_url
-        logger.info(
-            f"Initialized selected_agent from URL: {selected_agent_from_url}")
+        logger.info(f"Initialized selected_agent from URL: {selected_agent_from_url}")
 
     if selected_agent_from_url != st.session_state.selected_agent:
         st.session_state.selected_agent = selected_agent_from_url
@@ -46,8 +58,7 @@ def agent_page():
             if st.button(agent):
                 st.query_params["agent"] = agent
                 st.session_state.selected_agent = agent
-                logger.info(
-                    f"selected_agent={st.session_state.selected_agent}")
+                logger.info(f"selected_agent={st.session_state.selected_agent}")
 
     if st.session_state.selected_agent:
         agent_name = st.session_state.selected_agent
@@ -62,8 +73,7 @@ def agent_page():
                 agent_name = st.session_state.selected_agent
                 agent_package_path = utils.get_agent_package_path(agent_name)
 
-                agent_module_file = os.path.join(
-                    agent_package_path, "agent.py")
+                agent_module_file = os.path.join(agent_package_path, "agent.py")
 
                 try:
                     spec = importlib.util.spec_from_file_location(
@@ -81,7 +91,8 @@ def agent_page():
                     spec.loader.exec_module(agent_module)
                 except Exception as e:
                     logger.error(
-                        f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}")
+                        f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}"
+                    )
                     st.error(f"Error: Could not load agent! {agent_name}")
                     return
 
