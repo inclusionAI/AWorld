@@ -10,6 +10,7 @@ from aworld.output.artifact import ArtifactType, Artifact
 from aworld.output.code_artifact import CodeArtifact
 from aworld.output.storage.artifact_repository import ArtifactRepository, LocalArtifactRepository
 from aworld.output.observer import WorkspaceObserver, get_observer
+from aworld.output.storage.oss_artifact_repository import OSSArtifactRepository
 
 
 class WorkSpace(BaseModel):
@@ -38,7 +39,8 @@ class WorkSpace(BaseModel):
             storage_path: Optional[str] = None,
             observers: Optional[List[WorkspaceObserver]] = None,
             use_default_observer: bool = True,
-            clear_existing: bool = False
+            clear_existing: bool = False,
+            repository: Optional[ArtifactRepository] = None
     ):
         super().__init__()
         self.workspace_id = workspace_id or str(uuid.uuid4())
@@ -48,7 +50,10 @@ class WorkSpace(BaseModel):
 
         # Initialize repository first
         storage_dir = storage_path or os.path.join("data", "workspaces", self.workspace_id)
-        self.repository = LocalArtifactRepository(storage_dir)
+        if repository is None:
+            self.repository = LocalArtifactRepository(storage_dir)
+        else:
+            self.repository = repository
 
         # Initialize artifacts and metadata
         if clear_existing:
@@ -158,7 +163,7 @@ class WorkSpace(BaseModel):
             clear_existing=False  # Always try to load existing data
         )
         return workspace
-
+    
     async def create_artifact(
             self,
             artifact_type: Union[ArtifactType, str],
@@ -168,13 +173,13 @@ class WorkSpace(BaseModel):
     ) -> List[Artifact]:
         """
         Create a new artifact
-        
+
         Args:
             artifact_type: Artifact type (enum or string)
             artifact_id: Optional artifact ID (will be generated if not provided)
             content: Artifact content
             metadata: Metadata dictionary
-            
+
         Returns:
             List of created artifact objects
         """
@@ -188,7 +193,7 @@ class WorkSpace(BaseModel):
         # Ensure metadata is a dictionary
         if metadata is None:
             metadata = {}
-            
+
         # Ensure artifact_id is a valid string
         if artifact_id is None:
             artifact_id = str(uuid.uuid4())
@@ -248,6 +253,38 @@ class WorkSpace(BaseModel):
         self.save()
 
         await self._notify_observers("create", artifact)
+
+    @classmethod
+    def from_oss_storages(cls,
+                          workspace_id: Optional[str] = None,
+                          name: Optional[str] = None,
+                          storage_path: Optional[str] = None,
+                          observers: Optional[List[WorkspaceObserver]] = None,
+                          use_default_observer: bool = True,
+                          oss_config: Optional[Dict[str, Any]] = None,
+                          ) -> "WorkSpace":
+        if oss_config is None:
+            oss_config = {
+                "access_key_id": os.getenv("OSS_ACCESS_KEY_ID"),
+                "access_key_secret": os.getenv("OSS_ACCESS_KEY_SECRET"),
+                "endpoint": os.getenv("OSS_ENDPOINT"),
+                "bucket_name": os.getenv("OSS_BUCKET_NAME"),
+            }
+        repository = OSSArtifactRepository(
+            access_key_id=oss_config["access_key_id"],
+            access_key_secret=oss_config["access_key_secret"],
+            endpoint=oss_config["endpoint"],
+            bucket_name=oss_config["bucket_name"],
+        )
+        workspace = cls(
+            workspace_id=workspace_id,
+            name=name,
+            storage_path=storage_path,
+            observers=observers,
+            use_default_observer=use_default_observer,
+            repository=repository
+        )
+        return workspace
 
 
     def get_artifact(self, artifact_id: str) -> Optional[Artifact]:

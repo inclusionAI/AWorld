@@ -4,9 +4,9 @@ import os
 from aworld.output import WorkSpace, ArtifactType
 from fastapi import APIRouter, HTTPException, status
 
+from config import WORKSPACE_PATH, WORKSPACE_TYPE
+
 router = APIRouter()
-workspace_type = os.environ.get("WORKSPACE_TYPE", "local")
-workspace_path = os.environ.get("WORKSPACE_PATH", "./data")
 
 @router.get("/{workspace_id}/tree")
 async def get_workspace_tree(workspace_id: str):
@@ -48,10 +48,10 @@ def load_workspace(workspace_id: str):
     if workspace_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Workspace ID is required")
     
-    if workspace_type == "local":
-        workspace = WorkSpace.from_local_storages(workspace_id, storage_path=os.path.join(workspace_path, "workspaces", workspace_id))
-    elif workspace_type == "oss":
-        workspace = WorkSpace.from_oss_storages(workspace_id, storage_path=os.path.join(workspace_path, "workspaces", workspace_id))
+    if WORKSPACE_TYPE == "local":
+        workspace = WorkSpace.from_local_storages(workspace_id, storage_path=os.path.join(WORKSPACE_PATH, workspace_id))
+    elif WORKSPACE_TYPE == "oss":
+        workspace = WorkSpace.from_oss_storages(workspace_id, storage_path=os.path.join(WORKSPACE_PATH, workspace_id))
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid workspace type")
     return workspace
