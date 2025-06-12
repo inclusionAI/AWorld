@@ -307,6 +307,60 @@ class LLMModel:
         ):
             yield chunk
 
+    def speech_to_text(self,
+                       audio_file: str,
+                       language: str = None,
+                       prompt: str = None,
+                       **kwargs) -> ModelResponse:
+        """Convert speech to text.
+
+        Args:
+            audio_file: Path to audio file or file object.
+            language: Audio language, optional.
+            prompt: Transcription prompt, optional.
+            **kwargs: Other parameters.
+
+        Returns:
+            ModelResponse: Unified model response object, with content field containing the transcription result.
+
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+            NotImplementedError: When provider does not support speech to text conversion.
+        """
+        return self.provider.speech_to_text(
+            audio_file=audio_file,
+            language=language,
+            prompt=prompt,
+            **kwargs
+        )
+
+    async def aspeech_to_text(self,
+                              audio_file: str,
+                              language: str = None,
+                              prompt: str = None,
+                              **kwargs) -> ModelResponse:
+        """Asynchronously convert speech to text.
+
+        Args:
+            audio_file: Path to audio file or file object.
+            language: Audio language, optional.
+            prompt: Transcription prompt, optional.
+            **kwargs: Other parameters.
+
+        Returns:
+            ModelResponse: Unified model response object, with content field containing the transcription result.
+
+        Raises:
+            LLMResponseError: When LLM response error occurs.
+            NotImplementedError: When provider does not support speech to text conversion.
+        """
+        return await self.provider.aspeech_to_text(
+            audio_file=audio_file,
+            language=language,
+            prompt=prompt,
+            **kwargs
+        )
+
 
 def register_llm_provider(provider: str, provider_class: type):
     """Register a custom LLM provider.
@@ -461,3 +515,65 @@ async def acall_llm_model(
                 stop=stop,
                 **kwargs
             )
+
+
+def speech_to_text(
+        llm_model: LLMModel,
+        audio_file: str,
+        language: str = None,
+        prompt: str = None,
+        **kwargs
+) -> ModelResponse:
+    """Convenience function to convert speech to text.
+
+    Args:
+        llm_model: LLM model instance.
+        audio_file: Path to audio file or file object.
+        language: Audio language, optional.
+        prompt: Transcription prompt, optional.
+        **kwargs: Other parameters.
+
+    Returns:
+        ModelResponse: Unified model response object, with content field containing the transcription result.
+    """
+    if llm_model.provider_name != "openai":
+        raise NotImplementedError(
+            f"Speech-to-text functionality is currently only supported for OpenAI compatible provider, current provider: {llm_model.provider_name}")
+
+    return llm_model.speech_to_text(
+        audio_file=audio_file,
+        language=language,
+        prompt=prompt,
+        **kwargs
+    )
+
+
+async def aspeech_to_text(
+        llm_model: LLMModel,
+        audio_file: str,
+        language: str = None,
+        prompt: str = None,
+        **kwargs
+) -> ModelResponse:
+    """Convenience function to asynchronously convert speech to text.
+
+    Args:
+        llm_model: LLM model instance.
+        audio_file: Path to audio file or file object.
+        language: Audio language, optional.
+        prompt: Transcription prompt, optional.
+        **kwargs: Other parameters.
+
+    Returns:
+        ModelResponse: Unified model response object, with content field containing the transcription result.
+    """
+    if llm_model.provider_name != "openai":
+        raise NotImplementedError(
+            f"Speech-to-text functionality is currently only supported for OpenAI compatible provider, current provider: {llm_model.provider_name}")
+
+    return await llm_model.aspeech_to_text(
+        audio_file=audio_file,
+        language=language,
+        prompt=prompt,
+        **kwargs
+    )
