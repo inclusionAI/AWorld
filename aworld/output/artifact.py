@@ -14,6 +14,7 @@ class ArtifactType(Enum):
     MARKDOWN = "MARKDOWN"
     HTML = "HTML"
     SVG = "SVG"
+    IMAGE = "IMAGE"
     JSON = "JSON"
     CSV = "CSV"
     TABLE = "TABLE"
