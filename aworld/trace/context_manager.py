@@ -114,7 +114,7 @@ class TraceManager:
         install_auto_tracing(self, modules, min_duration)
 
     def span(self,
-             msg_template: str,
+             msg_template: str = "",
              attributes: dict[str, AttributeValueType] = None,
              *,
              span_name: str = None,
