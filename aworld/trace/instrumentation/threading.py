@@ -125,7 +125,7 @@ class ThreadingInstrumentor(Instrumentor):
         original_func = args[0]
         trace_context = None
         span: Span = trace.get_current_span()
-        if span:
+        if span and span.get_trace_id() != "":
             trace_context = TraceContext(
                 trace_id=span.get_trace_id(), span_id=span.get_span_id())
 

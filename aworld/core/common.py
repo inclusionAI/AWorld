@@ -21,6 +21,7 @@ class ActionResult(BaseModel):
     tool_name: str = None
     # llm tool id
     tool_id: str = None
+    metadata: Optional[Dict[str, Any]] = {}
 
 
 class Observation(BaseModel):

@@ -9,6 +9,7 @@ import json
 import tempfile
 from typing import Optional, Dict, List, Any, Tuple, Union, BinaryIO, TextIO, IO, AnyStr
 
+from aworld import import_package
 from aworld.logs.util import logger
 
 
@@ -63,6 +64,7 @@ class OSSClient:
             return False
 
         try:
+            import_package("oss2")
             import oss2
             auth = oss2.Auth(self.access_key_id, self.access_key_secret)
             self.bucket = oss2.Bucket(auth, self.endpoint, self.bucket_name)

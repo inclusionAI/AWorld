@@ -3,6 +3,7 @@ import json
 import os
 from pyvis.network import Network
 from aworld.logs.util import logger
+from aworld.trace.base import get_tracer_provider_silent
 
 run_type_colors = {
     "LLM": "#E6E6FA",
@@ -40,6 +41,9 @@ def flatten_spans(node, result=None):
 
 
 def generate_trace_graph(trace_id=None):
+    tracer_provider = get_tracer_provider_silent()
+    if tracer_provider:
+        tracer_provider.force_flush(5000)
     trace_data = fetch_trace_data(trace_id)
     net = Network(height="200px", width="100%",
                   notebook=False, cdn_resources='in_line')
@@ -171,7 +175,6 @@ def generate_trace_graph_full(trace_id=None, folder_name="", file_name="trace_gr
     all_spans = []
     for span in root_spans:
         all_spans.extend(flatten_spans(span))
-
     spans = {span['span_id']: span for span in all_spans}
     for span_id, span in spans.items():
         title = f"{span['name']}\n({span['run_type']})"

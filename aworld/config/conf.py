@@ -174,3 +174,8 @@ class RunConfig(BaseConfig):
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
     replay_buffer: Optional[Dict[str, Any]] = None
+
+
+class EvaluationConfig(BaseConfig):
+    work_dir: Optional[str] = None
+    run_times: int = 1
