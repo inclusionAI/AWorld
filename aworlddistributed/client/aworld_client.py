@@ -13,11 +13,11 @@ from base import AworldTask, AworldTaskResult, AworldTaskForm
 
 class TaskLogger:
     """Task submission logger"""
-    
+
     def __init__(self, log_file: str = "aworld_task_submissions.log"):
         self.log_file = 'task_logs/' + log_file
         self._ensure_log_file_exists()
-    
+
     def _ensure_log_file_exists(self):
         """ensure log file exists"""
         if not os.path.exists(self.log_file):
@@ -25,18 +25,18 @@ class TaskLogger:
             with open(self.log_file, 'w', encoding='utf-8') as f:
                 f.write("# Aworld Task Submission Log\n")
                 f.write("# Format: [timestamp] task_id | agent_id | server | status | agent_answer | correct_answer | is_correct | details\n\n")
-    
+
     def log_task_submission(self, task: AworldTask, server: str, status: str, details: str = "", task_result: AworldTaskResult = None):
         """log task submission"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{timestamp}] {task.task_id} | {task.agent_id} | {task.node_id} | {status} | { task_result.data.get('agent_answer') if task_result and task_result.data else None } | {task_result.data.get('correct_answer') if task_result and task_result.data else None} | {task_result.data.get('gaia_correct') if task_result and task_result.data else None} |{details}\n"
-        
+
         try:
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(log_entry)
         except Exception as e:
             logging.error(f"Failed to write task submission log: {e}")
-    
+
     def log_task_result(self, task: AworldTask, result: ModelResponse):
         """log task result to markdown file"""
         try:
@@ -44,10 +44,10 @@ class TaskLogger:
             date_str = datetime.now().strftime("%Y%m%d")
             result_dir = f"task_logs/result/{date_str}"
             os.makedirs(result_dir, exist_ok=True)
-            
+
             # create markdown file
             md_file = f"{result_dir}/{task.task_id}.md"
-            
+
             # concat content
             content_parts = []
             if hasattr(result, 'content') and result.content:
@@ -55,7 +55,7 @@ class TaskLogger:
                     content_parts.extend(result.content)
                 else:
                     content_parts.append(str(result.content))
-            
+
             # write to markdown file
             file_exists = os.path.exists(md_file)
             with open(md_file, 'a', encoding='utf-8') as f:
@@ -65,14 +65,14 @@ class TaskLogger:
                     f.write(f"**Agent ID:** {task.agent_id}\n\n")
                     f.write(f"**Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                     f.write("## Content\n\n")
-                
+
                 # write content parts
                 if content_parts:
                     for i, content in enumerate(content_parts, 1):
                         f.write(f"{content}\n\n")
                 else:
                     f.write("No content available.\n\n")
-                    
+
         except Exception as e:
             logging.error(f"Failed to write task result log: {e}")
 
@@ -93,6 +93,8 @@ class AworldTaskClient(BaseModel):
         if not hasattr(self, '_current_server_index'):
             self._current_server_index = 0
         aworld_server = self.know_hosts[self._current_server_index]
+        if not aworld_server.startswith("http"):
+            aworld_server = "http://" + aworld_server
         self._current_server_index = (self._current_server_index + 1) % len(self.know_hosts)
 
         # 2. call _submit_task
@@ -124,7 +126,7 @@ class AworldTaskClient(BaseModel):
         # 构建 AworldTaskForm
         form_data = AworldTaskForm(task=task)
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"http://{aworld_server}/api/v1/tasks/submit_task", json=form_data.model_dump())
+            resp = await client.post(f"{aworld_server}/api/v1/tasks/submit_task", json=form_data.model_dump())
             resp.raise_for_status()
             data = resp.json()
             task_logger.log_task_submission(task, aworld_server, "submitted")
@@ -135,7 +137,7 @@ class AworldTaskClient(BaseModel):
         llm_model = get_llm_model(
             llm_provider="openai",
             model_name=task.agent_id,
-            base_url=f"http://{aworld_server}/v1",
+            base_url=f"{aworld_server}/v1",
             api_key="0p3n-w3bu!"
         )
         messages = [
@@ -234,7 +236,7 @@ class AworldTaskClient(BaseModel):
             # send download request
             async with httpx.AsyncClient(timeout=300.0) as client:  # 5分钟超时
                 response = await client.get(
-                    f"http://{aworld_server}/api/v1/tasks/download_task_results",
+                    f"{aworld_server}/api/v1/tasks/download_task_results",
                     params=params
                 )
                 response.raise_for_status()
@@ -307,7 +309,7 @@ class AworldTaskClient(BaseModel):
             # send download request
             async with httpx.AsyncClient(timeout=300.0) as client:  # 5分钟超时
                 response = await client.get(
-                    f"http://{aworld_server}/api/v1/tasks/download_task_results",
+                    f"{aworld_server}/api/v1/tasks/download_task_results",
                     params=params
                 )
                 response.raise_for_status()
@@ -362,26 +364,4 @@ class AworldTaskClient(BaseModel):
         except Exception as e:
             logging.error(f"❌ failed to parse task results file {file_path}: {e}")
             raise ValueError(f"❌ failed to parse task results file: {str(e)}")
-
-
-async def run():
-    # create client
-    client = AworldTaskClient(know_hosts=["localhost:9999"])
-
-    # 1. download task results to file
-    file_path = await client.download_task_results(
-        start_time="2025-06-10 00:00:00",
-        end_time="2025-06-10 23:59:59",
-        save_path="results/january_tasks.jsonl"
-    )
-
-    # 2. parse local jsonl file
-    local_results = client.parse_task_results_file("results/january_tasks.jsonl")
-
-    # 3. analyze results data
-    for result in local_results:
-        print(f"Task ID: {result['task_id']}, Status: {result['status']}")
-
-if __name__ == '__main__':
-    asyncio.run(run())
 
