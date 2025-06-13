@@ -66,10 +66,9 @@ class SequenceRunner(TaskRunner):
         response = None
 
         # Use trace.span to record the entire task execution process
-        with trace.span(f"task_execution_{self.task.id}", attributes={
+        with trace.span("task_runner", attributes={
             "task_id": self.task.id,
-            "task_name": self.task.name,
-            "start_time": start
+            "task_name": self.task.name
         }) as task_span:
             try:
                 response = await self._common_process(task_span)
@@ -105,6 +104,7 @@ class SequenceRunner(TaskRunner):
         step = 1
         pre_agent_name = None
         observation = self.observation
+        step_order = 0
 
         for idx, agent in enumerate(self.swarm.ordered_agents):
             observation.from_agent_name = agent.name()
@@ -124,23 +124,18 @@ class SequenceRunner(TaskRunner):
                     cur_agent = self.swarm.agents.get(observation.to_agent_name)
 
                 exp_id = self._get_step_span_id(step, cur_agent.name())
-                with trace.span(f"step_execution_{exp_id}") as step_span:
-                    try:
-                        step_span.set_attributes({
-                            "exp_id": exp_id,
-                            "task_id": self.task.id,
-                            "task_name": self.task.name,
-                            "trace_id": trace.get_current_span().get_trace_id(),
-                            "step": step,
-                            "agent_id": cur_agent.name(),
-                            "pre_agent": pre_agent_name,
-                            "observation": json.dumps(observation.model_dump(exclude_none=True),
-                                                      ensure_ascii=False,
-                                                      cls=NumpyEncoder)
-                        })
-                    except:
-                        pass
+                with trace.span(f"step_{step}") as step_span:
+                    step_span.set_attributes({
+                        "task_id": self.task.id,
+                        "task_name": self.task.name,
+                        "trace_id": trace.get_current_span().get_trace_id(),
+                        "step": step,
+                        "agent_id": cur_agent.name(),
+                        "pre_agent": pre_agent_name,
+                        "step_order": step_order
+                    })
                     pre_agent_name = cur_agent.name()
+                    step_order += 1
 
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
                         message = cur_agent.run(observation,
@@ -318,32 +313,45 @@ class SequenceRunner(TaskRunner):
             tool_mapping[act.tool_name].append(act)
 
         for tool_name, action in tool_mapping.items():
-            # Execute action using browser tool and unpack all return values
-            if isinstance(self.tools[tool_name], Tool):
-                message = self.tools[tool_name].step(action)
-            elif isinstance(self.tools[tool_name], AsyncTool):
-                # todo sandbox
-                message = await self.tools[tool_name].step(action, agent=agent)
-            else:
-                logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
-                continue
+            span_name, run_type = trace.get_tool_name(tool_name, action)
+            logger.info(f"create span={span_name}")
+            with trace.span(span_name, run_type=run_type) as tool_span:
+                # Execute action using browser tool and unpack all return values
+                if isinstance(self.tools[tool_name], Tool):
+                    message = self.tools[tool_name].step(action)
+                elif isinstance(self.tools[tool_name], AsyncTool):
+                    # todo sandbox
+                    message = await self.tools[tool_name].step(action, agent=agent)
+                else:
+                    logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
+                    continue
 
-            observation, reward, terminated, _, info = message.payload
-            # observation, reward, terminated, _, info = action_result_transform(message, sandbox=None)
-            observations.append(observation)
-            for i, item in enumerate(action):
-                tool_output = ToolResultOutput(
-                    tool_type=tool_name,
-                    tool_name=item.tool_name,
-                    data=observation.content,
-                    origin_tool_call=ToolCall.from_dict({
-                        "function": {
-                            "name": item.action_name,
-                            "arguments": item.params,
-                        }
-                    })
-                )
-                await self.outputs.add_output(tool_output)
+                observation, reward, terminated, _, info = message.payload
+                # observation, reward, terminated, _, info = action_result_transform(message, sandbox=None)
+                observations.append(observation)
+                for i, item in enumerate(action):
+                    tool_output = ToolResultOutput(
+                        tool_type=tool_name,
+                        tool_name=item.tool_name,
+                        data=observation.content,
+                        origin_tool_call=ToolCall.from_dict({
+                            "function": {
+                                "name": item.action_name,
+                                "arguments": item.params,
+                            }
+                        })
+                    )
+                    await self.outputs.add_output(tool_output)
+
+                tool_span.set_attributes({
+                    "task_id": self.task.id,
+                    "task_name": self.task.name,
+                    "trace_id": tool_span.get_trace_id(),
+                    "step": step,
+                    "tool_name": tool_name,
+                    "reward": reward,
+                    "terminated": terminated
+                })
 
             # Check if there's an exception in info
             if info.get("exception"):
@@ -378,7 +386,7 @@ class LoopSequenceRunner(SequenceRunner):
         msg = None
 
         # Use trace.span to record the entire task execution process
-        with trace.span(f"task_execution_{self.task.id}", attributes={
+        with trace.span("task_runner", attributes={
             "task_id": self.task.id,
             "task_name": self.task.name,
             "start_time": start
@@ -439,7 +447,7 @@ class SocialRunner(TaskRunner):
         swarm_resp = None
         self.loop_detect = []
         # Use trace.span to record the entire task execution process
-        with trace.span(f"task_execution_{self.task.id}", attributes={
+        with trace.span("task_runner", attributes={
             "task_id": self.task.id,
             "task_name": self.task.name,
             "start_time": start
@@ -525,70 +533,89 @@ class SocialRunner(TaskRunner):
         max_steps = self.conf.get("max_steps", 100)
         self.swarm.cur_agent = self.swarm.communicate_agent
         pre_agent_name = None
-        # use communicate agent every time
-        if override_in_subclass('async_policy', self.swarm.cur_agent.__class__, Agent):
-            message = self.swarm.cur_agent.run(observation,
-                                               step=step,
-                                               outputs=self.outputs,
-                                               stream=self.conf.get("stream", False))
-        else:
-            message = await self.swarm.cur_agent.async_run(observation,
-                                                           step=step,
-                                                           outputs=self.outputs,
-                                                           stream=self.conf.get("stream", False))
-        self.loop_detect.append(self.swarm.cur_agent.name())
-        policy = message.payload
-        if not policy:
-            logger.warning(f"current agent {self.swarm.cur_agent.name()} no policy to use.")
-            exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
-            with trace.span(f"step_execution_{exp_id}") as step_span:
-                step_span.set_attributes({
-                    "exp_id": exp_id,
-                    "task_id": self.task.id,
-                    "task_name": self.task.name,
-                    "trace_id": trace.get_current_span().get_trace_id(),
-                    "step": step,
-                    "agent_id": self.swarm.cur_agent.name(),
-                    "pre_agent": pre_agent_name,
-                    "observation": json.dumps(observation.model_dump(exclude_none=True),
-                                              ensure_ascii=False,
-                                              cls=NumpyEncoder),
-                    "actions": json.dumps([action.model_dump() for action in policy], ensure_ascii=False)
-                })
-            return {"msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
-                    "steps": step,
-                    "success": False,
-                    "time_cost": (time.time() - start)}
-        color_log(f"{self.swarm.cur_agent.name()} policy: {policy}")
+        return_entry = False
+        finished = False
+        break_flag = False
+        cur_observation = observation
+
+        with trace.span(f"step_{step}") as step_span:
+            step_span.set_attributes({
+                "task_id": self.task.id,
+                "task_name": self.task.name,
+                "trace_id": trace.get_current_span().get_trace_id(),
+                "step": step,
+                "agent_id": self.swarm.cur_agent.name(),
+                "pre_agent": pre_agent_name,
+            })
+            # use communicate agent every time
+            if override_in_subclass('async_policy', self.swarm.cur_agent.__class__, Agent):
+                policy: List[ActionModel] = self.swarm.cur_agent.run(observation,
+                                                                     step=step,
+                                                                     outputs=self.outputs,
+                                                                     stream=self.conf.get("stream", False))
+            else:
+                policy: List[ActionModel] = await self.swarm.cur_agent.async_run(observation,
+                                                                                 step=step,
+                                                                                 outputs=self.outputs,
+                                                                                 stream=self.conf.get("stream", False))
+            if not policy:
+                logger.warning(
+                    f"current agent {self.swarm.cur_agent.name()} no policy to use.")
+                return {"msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
+                        "steps": step,
+                        "success": False,
+                        "time_cost": (time.time() - start)}
+            color_log(f"{self.swarm.cur_agent.name()} policy: {policy}")
+
+            terminated = False
+            if is_agent(policy[0]):
+                status, info, ob = await self._social_agent(policy, step)
+                if status == 'normal':
+                    self.swarm.cur_agent = self.swarm.agents.get(policy[0].agent_name)
+                    policy = info
+
+                cur_observation = ob
+                # clear observation
+                observation = None
+            elif is_tool_by_name(policy[0].tool_name):
+                status, terminated, info = await self._social_tool_call(policy, step)
+                if status == 'normal':
+                    observation = info
+                    cur_observation = observation
+            else:
+                logger.warning(f"Unrecognized policy: {policy[0]}")
+                return {"msg": f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
+                        "response": "",
+                        "steps": step,
+                        "success": False}
+
+            if status == 'break':
+                return_entry = info
+                break_flag = True
+            elif status == 'return':
+                return info
+
+            if terminated and self.swarm.cur_agent.finished:
+                logger.info(f"{self.swarm.cur_agent.name()} finished")
+                break_flag = True
 
         msg = None
         response = None
-        return_entry = False
         cur_agent = None
-        cur_observation = observation
         finished = False
         try:
             while step < max_steps:
                 terminated = False
                 exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
-                with trace.span(f"step_execution_{exp_id}") as step_span:
-                    try:
-                        step_span.set_attributes({
-                            "exp_id": exp_id,
-                            "task_id": self.task.id,
-                            "task_name": self.task.name,
-                            "trace_id": trace.get_current_span().get_trace_id(),
-                            "step": step,
-                            "agent_id": self.swarm.cur_agent.name(),
-                            "pre_agent": pre_agent_name,
-                            "observation": json.dumps(cur_observation.model_dump(exclude_none=True),
-                                                      ensure_ascii=False,
-                                                      cls=NumpyEncoder),
-                            "actions": json.dumps([action.model_dump() for action in policy], ensure_ascii=False)
-                        })
-                    except:
-                        pass
-
+                with trace.span(f"step_{step}") as step_span:
+                    step_span.set_attributes({
+                        "task_id": self.task.id,
+                        "task_name": self.task.name,
+                        "trace_id": trace.get_current_span().get_trace_id(),
+                        "step": step,
+                        "agent_id": self.swarm.cur_agent.name(),
+                        "pre_agent": pre_agent_name,
+                    })
                     if is_agent(policy[0]):
                         status, info, ob = await self._social_agent(policy, step)
                         if status == 'normal':
@@ -616,27 +643,27 @@ class SocialRunner(TaskRunner):
                     elif status == 'return':
                         return info
 
-                step += 1
-                pre_agent_name = self.swarm.cur_agent.name()
-                if terminated and self.swarm.cur_agent.finished:
-                    logger.info(f"{self.swarm.cur_agent.name()} finished")
-                    break
+                    step += 1
+                    pre_agent_name = self.swarm.cur_agent.name()
+                    if terminated and self.swarm.cur_agent.finished:
+                        logger.info(f"{self.swarm.cur_agent.name()} finished")
+                        break
 
-                if observation:
-                    if cur_agent is None:
-                        cur_agent = self.swarm.cur_agent
-                    if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                        message = cur_agent.run(observation,
-                                                step=step,
-                                                outputs=self.outputs,
-                                                stream=self.conf.get("stream", False))
-                    else:
-                        message = await cur_agent.async_run(observation,
-                                                            step=step,
-                                                            outputs=self.outputs,
-                                                            stream=self.conf.get("stream", False))
-                    policy = message.payload
-                    color_log(f"{cur_agent.name()} policy: {policy}")
+                    if observation:
+                        if cur_agent is None:
+                            cur_agent = self.swarm.cur_agent
+                        if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
+                            message = cur_agent.run(observation,
+                                                    step=step,
+                                                    outputs=self.outputs,
+                                                    stream=self.conf.get("stream", False))
+                        else:
+                            message = await cur_agent.async_run(observation,
+                                                                step=step,
+                                                                outputs=self.outputs,
+                                                                stream=self.conf.get("stream", False))
+                        policy = message.payload
+                        color_log(f"{cur_agent.name()} policy: {policy}")
 
             if policy:
                 response = policy[0].policy_info if policy[0].policy_info else policy[0].action_name
@@ -746,24 +773,36 @@ class SocialRunner(TaskRunner):
             tool_mapping[act.tool_name].append(act)
 
         for tool_name, action in tool_mapping.items():
-            # Execute action using browser tool and unpack all return values
-            if isinstance(self.tools[tool_name], Tool):
-                message = self.tools[tool_name].step(action)
-            elif isinstance(self.tools[tool_name], AsyncTool):
-                message = await self.tools[tool_name].step(action)
-            else:
-                logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
-                continue
+            span_name, run_type = trace.get_tool_name(tool_name, action)
+            with trace.span(span_name, run_type=run_type) as tool_span:
+                # Execute action using browser tool and unpack all return values
+                if isinstance(self.tools[tool_name], Tool):
+                    message = self.tools[tool_name].step(action)
+                elif isinstance(self.tools[tool_name], AsyncTool):
+                    message = await self.tools[tool_name].step(action)
+                else:
+                    logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
+                    continue
 
-            observation, reward, terminated, _, info = message.payload
-            for i, item in enumerate(action):
-                tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
-                    "function": {
-                        "name": item.action_name,
-                        "arguments": item.params,
-                    }
-                }))
-                await self.outputs.add_output(tool_output)
+                observation, reward, terminated, _, info = message.payload
+                for i, item in enumerate(action):
+                    tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
+                        "function": {
+                            "name": item.action_name,
+                            "arguments": item.params,
+                        }
+                    }))
+                    await self.outputs.add_output(tool_output)
+
+                tool_span.set_attributes({
+                    "task_id": self.task.id,
+                    "task_name": self.task.name,
+                    "trace_id": tool_span.get_trace_id(),
+                    "step": step,
+                    "tool_name": tool_name,
+                    "reward": reward,
+                    "terminated": terminated
+                })
 
             # Check if there's an exception in info
             if info.get("exception"):

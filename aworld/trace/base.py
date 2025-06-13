@@ -1,10 +1,13 @@
 import sys
+import time
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Iterator, Union, Sequence, Protocol, Iterable
+from typing import Optional, Any, Iterator, Union, Sequence, Protocol, Iterable, Dict
 from enum import Enum
 from weakref import WeakSet
 from dataclasses import dataclass, field
 from aworld.logs.util import trace_logger
+from pydantic import BaseModel
+from aworld.trace.constants import ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType
 
 
 class TraceProvider(ABC):
@@ -422,3 +425,8 @@ def log_trace_error():
         'This is logging the trace internal error.',
         exc_info=sys.exc_info(),
     )
+
+
+class SpanStatus(BaseModel):
+    code: str = "UNSET"
+    description: Optional[str] = None

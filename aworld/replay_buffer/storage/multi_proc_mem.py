@@ -146,7 +146,7 @@ class MultiProcMemoryStorage(Storage):
             if task_id in self._data.keys():
                 return self._load_from_shared_memory(task_id)
 
-    def get_bacth_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
+    def get_batch_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
         with self._lock:
             result = {}
             for task_id in task_ids:

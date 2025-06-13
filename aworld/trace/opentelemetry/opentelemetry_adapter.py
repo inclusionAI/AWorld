@@ -84,7 +84,7 @@ class OTLPTraceProvider(TraceProvider):
             if isinstance(self._provider, SDKTracerProvider):
                 self._provider.shutdown()
 
-    def force_flush(self, timeout: Optional[float] = None) -> bool:
+    def force_flush(self, timeout: Optional[float] = 2000) -> bool:
         with self._lock:
             if isinstance(self._provider, SDKTracerProvider):
                 return self._provider.force_flush(timeout)

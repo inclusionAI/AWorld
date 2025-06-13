@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import traceback
 import typing
 from os import linesep
 from aworld.trace.base import Span
@@ -119,7 +120,7 @@ class SpanConsumerExporter(SpanExporter):
                 span_consumer.consume(span_batches)
             except Exception as e:
                 logger.error(
-                    f"Error consume spans: {e}, span_consumer: {span_consumer.__class__.__name__}")
+                    f"Error consume spans: {e}, span_consumer: {span_consumer.__class__.__name__}, traceback: {traceback.format_exc()}")
         return SpanExportResult.SUCCESS
 
 

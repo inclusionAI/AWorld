@@ -5,6 +5,7 @@ from typing import (
     Generator,
     AsyncGenerator,
 )
+import json
 from aworld.config import ConfigDict
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.logs.util import logger
@@ -428,6 +429,19 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
 
     return LLMModel(conf=conf, custom_provider=custom_provider, **kwargs)
 
+def _to_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_to_serializable(i) for i in obj]
+    elif hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    elif hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    elif hasattr(obj, "dict"):
+        return obj.dict()
+    else:
+        return obj
 
 def call_llm_model(
         llm_model: LLMModel,
@@ -453,6 +467,8 @@ def call_llm_model(
         Model response or response generator.
     """
     with trace.span(llm_model.provider.model_name, run_type=trace.RunType.LLM) as llm_span:
+        llm_span.set_attribute("messages", json.dumps(
+                _to_serializable(messages), ensure_ascii=False))
         if stream:
             return llm_model.stream_completion(
                 messages=messages,
@@ -479,7 +495,7 @@ async def acall_llm_model(
         stop: List[str] = None,
         stream: bool = False,
         **kwargs
-) -> Union[ModelResponse, AsyncGenerator[ModelResponse, None]]:
+) -> ModelResponse:
     """Convenience function to asynchronously call LLM model.
 
     Args:
@@ -495,26 +511,33 @@ async def acall_llm_model(
         Model response or response generator.
     """
     async with trace.span(llm_model.provider.model_name, run_type=trace.RunType.LLM) as llm_span:
-        if stream:
-            async def _stream_wrapper():
-                async for chunk in llm_model.astream_completion(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        stop=stop,
-                        **kwargs
-                ):
-                    yield chunk
+        llm_span.set_attribute("messages", json.dumps(
+            _to_serializable(messages), ensure_ascii=False))
+        return await llm_model.acompletion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            **kwargs
+        )
 
-            return _stream_wrapper()
-        else:
-            return await llm_model.acompletion(
+async def acall_llm_model_stream(
+        llm_model: LLMModel,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs
+) -> AsyncGenerator[ModelResponse, None]:
+    async with trace.span(llm_model.provider.model_name, run_type=trace.RunType.LLM) as llm_span:
+        async for chunk in llm_model.astream_completion(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
                 **kwargs
-            )
+        ):
+            yield chunk
 
 
 def speech_to_text(
