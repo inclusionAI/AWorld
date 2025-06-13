@@ -187,13 +187,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             messages.append({'role': 'system', 'content': sys_prompt if self.use_tools_in_prompt else sys_prompt.format(
                 tool_list=self.tools)})
 
-        if agent_prompt and '{task}' in agent_prompt:
-            content = agent_prompt.format(task=content)
+        histories = self.memory.get_last_n(self.history_messages)
+        user_content = content
+        if not histories and agent_prompt and '{task}' in agent_prompt:
+            user_content = agent_prompt.format(task=content)
 
-        cur_msg = {'role': 'user', 'content': content}
+        cur_msg = {'role': 'user', 'content': user_content}
         # query from memory,
         # histories = self.memory.get_last_n(self.history_messages, filter={"session_id": self.context.session_id})
-        histories = self.memory.get_last_n(self.history_messages)
+
         if histories:
             # default use the first tool call
             for history in histories:
