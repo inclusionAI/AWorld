@@ -1,7 +1,7 @@
 import copy
 import json
 from aworld.models.llm import LLMModel
-from aworld.models.model_response import ModelResponse
+from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.trace.base import Span
 from aworld.trace.instrumentation.openai.inout_parse import should_trace_prompts
 from aworld.logs.util import logger
@@ -40,21 +40,43 @@ async def handle_request(span: Span, kwargs, instance):
                     attributes.update({
                         f"{prefix}.tool_call_id": msg.get("tool_call_id")})
                 tool_calls = msg.get("tool_calls")
+                logger.info(f"input tool_calls={tool_calls}")
                 if tool_calls:
                     for i, tool_call in enumerate(tool_calls):
-                        function = tool_call.get("function")
+                        if isinstance(tool_call, dict):
+                            function = tool_call.get('function')
+                            attributes.update({
+                                f"{prefix}.tool_calls.{i}.id": tool_call.get("id")})
+                            attributes.update({
+                                f"{prefix}.tool_calls.{i}.name": function.get("name")})
+                            attributes.update({
+                                f"{prefix}.tool_calls.{i}.arguments": function.get("arguments")})
+                        elif isinstance(tool_call, ToolCall):
+                            function = tool_call.function
+                            attributes.update({
+                                f"{prefix}.tool_calls.{i}.id": tool_call.id})
+                            attributes.update({
+                                f"{prefix}.tool_calls.{i}.name": function.name})
+                            attributes.update({
+                                f"{prefix}.tool_calls.{i}.arguments": function.arguments})
+
+        tools = kwargs.get("tools")
+        if tools:
+            for i, tool in enumerate(tools):
+                prefix = f"llm.prompts.tools.{i}"
+                if isinstance(tool, dict):
+                    tool_type = tool.get("type")
+                    attributes.update({
+                        f"{prefix}.type": tool_type})
+                    if tool.get(tool_type):
                         attributes.update({
-                            f"{prefix}.tool_calls.{i}.id": tool_call.get("id")})
-                        attributes.update({
-                            f"{prefix}.tool_calls.{i}.name": function.get("name")})
-                        attributes.update({
-                            f"{prefix}.tool_calls.{i}.arguments": function.get("arguments")})
+                            f"{prefix}.name": tool.get(tool_type).get("name")})
 
         filterd_attri = {k: v for k, v in attributes.items()
                          if (v and v is not "")}
 
         span.set_attributes(filterd_attri)
-    except ValueError as e:
+    except Exception as e:
         logger.warning(f"trace handle openai request error: {e}")
 
 
