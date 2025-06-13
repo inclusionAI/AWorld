@@ -3,13 +3,17 @@ from aworld.core.agent.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.common import Observation, ActionModel
 from typing import Dict, Any, List, Union, Callable
-from aworld.core.tool.base import ToolFactory, Tool, AsyncTool
-from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
+from aworld.core.tool.base import ToolFactory
+from aworld.models.llm import call_llm_model, acall_llm_model
 from aworld.utils.common import sync_exec
 from aworld.logs.util import logger
 from examples.tools.common import Tools
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
+from aworld.trace.server import get_trace_server
+from aworld.trace.instrumentation.uni_llmmodel import LLMModelInstrumentor
+
+LLMModelInstrumentor().instrument()
 
 
 class TraceAgent(Agent):
@@ -18,7 +22,7 @@ class TraceAgent(Agent):
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
                  resp_parse_func: Callable[..., Any] = None,
                  **kwargs):
-        super().__init__(conf, kwargs)
+        super().__init__(conf, **kwargs)
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
         """use trace tool to get trace data, and call llm to summary
@@ -32,6 +36,7 @@ class TraceAgent(Agent):
         """
 
         self._finished = False
+        self.desc_transform()
 
         tool_name = "trace"
         tool = ToolFactory(tool_name, asyn=False)
@@ -54,8 +59,7 @@ class TraceAgent(Agent):
                 self.llm,
                 messages=messages,
                 model=self.model_name,
-                temperature=self.conf.llm_config.llm_temperature,
-                tools=self.tools if self.use_tools_in_prompt and self.tools else None
+                temperature=self.conf.llm_config.llm_temperature
             )
 
             logger.info(f"Execute response: {llm_response.message}")
@@ -80,6 +84,7 @@ class TraceAgent(Agent):
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
 
         self._finished = False
+        self.desc_transform()
 
         tool_name = "trace"
         tool = ToolFactory(tool_name, asyn=False)
@@ -88,7 +93,7 @@ class TraceAgent(Agent):
         action = ActionModel(tool_name=tool_name,
                              agent_name=self.name(),
                              params=tool_params)
-        message = tool.step(action)
+        message = tool.step([action])
 
         observation, _, _, _, _ = message.payload
 
@@ -102,8 +107,7 @@ class TraceAgent(Agent):
                 self.llm,
                 messages=messages,
                 model=self.model_name,
-                temperature=self.conf.llm_config.llm_temperature,
-                tools=self.tools if self.use_tools_in_prompt and self.tools else None
+                temperature=self.conf.llm_config.llm_temperature
             )
 
             logger.info(f"Execute response: {llm_response.message}")
@@ -155,16 +159,15 @@ trace_prompt = """
     The LLM call of a certain agent is represented as LLM span, which is a child span of that agent span
 
     Here are the content: {task}
-
-    pleas only use one action complete this task.
     """
 
 if __name__ == "__main__":
 
     agent_config = AgentConfig(
-        llm_model_name="shangshu.gpt-4o",
-        llm_base_url="https://agi.alipay.com/api",
-        llm_api_key="sk-7436ff4f04434b01afe8e4208d04868a",
+        llm_provider="ant",
+        llm_model_name="claude-3.7-sonnet",
+        llm_base_url="",
+        llm_api_key=''
     )
 
     search = Agent(
@@ -190,13 +193,17 @@ if __name__ == "__main__":
     )
 
     # default is sequence swarm mode
-    swarm = Swarm((search, summary, trace), max_steps=1)
+    swarm = Swarm(search, summary, trace, max_steps=1)
 
     prefix = "search baidu:"
     # can special search google, wiki, duck go, or baidu. such as:
     # prefix = "search wiki: "
-    res = Runners.sync_run(
-        input=prefix + """What is an agent.""",
-        swarm=swarm
-    )
-    print(res.answer)
+    try:
+        res = Runners.sync_run(
+            input=prefix + """What is an agent.""",
+            swarm=swarm
+        )
+        print(res.answer)
+    except Exception as e:
+        logger.error(traceback.format_exc())
+    get_trace_server().join()

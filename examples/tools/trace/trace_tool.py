@@ -27,7 +27,7 @@ class TraceTool(Tool):
         """
         super(TraceTool, self).__init__(conf, **kwargs)
         self.type = "function"
-        self.trace_server_port = self.conf.get('trace_server_port')
+        self.get_trace_url = self.conf.get('get_trace_url')
 
     def reset(self,
               *,
@@ -79,6 +79,7 @@ class TraceTool(Tool):
                     continue
                 try:
                     trace_data = self.fetch_trace_data(trace_id)
+                    logger.info(f"trace_data={trace_data}")
                     error = ""
                 except Exception as e:
                     error = str(e)
@@ -113,10 +114,32 @@ class TraceTool(Tool):
         '''
         try:
             if trace_id:
-                response = requests.get(
-                    f'http://localhost:7079/api/traces/{trace_id}')
+                url = self.get_trace_url or "http://localhost:7079/api/traces"
+                response = requests.get(f'{url.rstrip("/")}/{trace_id}')
                 response.raise_for_status()
-                return response.json() or {"trace_id": trace_id, "root_span": []}
-        except requests.exceptions.RequestException as e:
+                logger.info(f"response={response.json()}")
+                if response:
+                    return self.proccess_trace(response.json())
+                return {"trace_id": trace_id, "root_span": []}
+        except Exception as e:
             logger.error(f"Error fetching trace data: {e}")
             return {"trace_id": trace_id, "root_span": []}
+
+    def proccess_trace(self, trace_data):
+        root_spans = trace_data.get("root_span")
+        for span in root_spans:
+            self.choose_attribute(span)
+        return trace_data
+
+    def choose_attribute(self, span):
+        include_attr = ["llm.completion_tokens",
+                        "llm.prompt_tokens", "llm.total_tokens"]
+        result_attributes = {}
+        origin_attributes = span.get("attributes") or {}
+        for key, value in origin_attributes.items():
+            if key in include_attr:
+                result_attributes[key] = value
+        span["attributes"] = result_attributes
+        if span.get("children"):
+            for child in span.get("children"):
+                self.choose_attribute(child)
