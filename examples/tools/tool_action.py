@@ -302,3 +302,13 @@ class WriteAction(ToolAction):
                                                                        )
                                               },
                                 desc="write the html file about `goal` based on `information`.")
+
+class GetTraceAction(ToolAction):
+    """Definition of get trace supported action."""
+    GET_TRACE = ToolActionInfo(
+        name="get_trace",
+        input_params={"trace_id": ParamInfo(name="trace_id",
+                                            type="str",
+                                            required=True,
+                                            desc="The trace id to get.")},
+        desc="Get the trace of the current execution.")
