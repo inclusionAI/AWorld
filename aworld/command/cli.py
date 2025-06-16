@@ -2,7 +2,7 @@ import click
 
 
 from .web import web_server
-from .api_server import api_server
+from .api import api_server
 
 
 @click.group()
@@ -25,7 +25,7 @@ def main_web(port, args=None, **kwargs):
     web_server.run_web_server(port, args, **kwargs)
 
 
-@main.command("api_server")
+@main.command("api")
 @click.option(
     "--port", type=int, default=8000, help="Port to run the AWorld api server"
 )
