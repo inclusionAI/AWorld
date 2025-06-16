@@ -3,7 +3,7 @@
 import abc
 import inspect
 import os
-
+import asyncio
 from concurrent.futures import Future
 from concurrent.futures.process import ProcessPoolExecutor
 from types import MethodType
@@ -189,8 +189,11 @@ class RayRuntime(RuntimeEngine):
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
         @self.runtime.remote
         def fn_wrapper(fn, *args):
-            real_args = [arg for arg in args if not isinstance(arg, MethodType)]
-            return fn(*real_args, **kwargs)
+            if asyncio.iscoroutinefunction(fn):
+                return sync_exec(fn, *args, **kwargs)
+            else:
+                real_args = [arg for arg in args if not isinstance(arg, MethodType)]
+                return fn(*real_args, **kwargs)
 
         params = []
         for arg in args:
