@@ -1,7 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-from typing import List, Dict, Union
+import os
+import datetime
+import json
+from typing import List, Dict, Any, Union
 
 from aworld.config.conf import TaskConfig
 from aworld.core.agent.llm_agent import Agent
@@ -9,9 +12,10 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.output import StreamingOutputs
-from aworld import trace
+from aworld.replay_buffer.processor import ReplayBufferSpanExporter
 from aworld.runners.utils import choose_runners, execute_runner
 from aworld.utils.common import sync_exec
+from aworld.trace.base import get_tracer_provider_silent
 
 
 class Runners:
@@ -47,7 +51,9 @@ class Runners:
             task = [task]
 
             runners: List[Runner] = await choose_runners(task)
-            return await execute_runner(runners, run_conf)
+            res = await execute_runner(runners, run_conf)
+            Runners._output_replay_buffer()
+            return res
 
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:
@@ -96,3 +102,13 @@ class Runners:
         task = Task(input=input, swarm=swarm, tool_names=tool_names, event_driven=swarm.event_driven)
         res = await Runners.run_task(task)
         return res.get(task.id)
+
+    @staticmethod
+    def _output_replay_buffer():
+        trace_provider = get_tracer_provider_silent()
+        if trace_provider:
+            trace_provider.force_flush()
+        replay_dir = os.path.join("./", "trace_data", "replay_buffer")
+        replay_dataset_path = os.getenv("REPLAY_TRACE_DATASET_PATH", replay_dir)
+        output_dir = os.path.abspath(replay_dataset_path)
+        ReplayBufferSpanExporter.write_replay_buffer(output_dir)

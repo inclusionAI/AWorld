@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, TypeVar
 from abc import ABC, abstractmethod
 from math import ceil
+import json
 
 from aworld.core.common import ActionModel, Observation
 from aworld.replay_buffer.query_filter import QueryCondition, QueryFilter
@@ -64,12 +65,14 @@ class DataRow:
     '''
     exp_meta: ExpMeta
     exp_data: Experience
+    ext_info: Dict = None
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def to_dict(self):
         return {
             "exp_meta": self.exp_meta.to_dict(),
             "exp_data": self.exp_data.to_dict(),
+            "ext_info": self.ext_info,
             "id": self.id
         }
 
@@ -133,7 +136,7 @@ class Storage(ABC):
         '''
 
     @abstractmethod
-    def get_bacth_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
+    def get_batch_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
         '''
         Get batch of data by task_ids from the storage.
         Args:
@@ -187,7 +190,11 @@ class TaskSampler(Sampler):
                batch_size: int,
                query_condition: QueryCondition = None) -> List[DataRow]:
         task_ids = self.sample_task_ids(storage, batch_size, query_condition)
-        return storage.get_bacth_by_task_ids(task_ids)
+        task_data = storage.get_batch_by_task_ids(task_ids)
+        result = []
+        for _, rows in task_data.items():
+            result.extend(rows)
+        return result
 
     def sample_tasks(self,
                      storage: Storage,
@@ -202,11 +209,17 @@ class TaskSampler(Sampler):
         Returns:
             Dict[str, List[DataRow]]: Dictionary of sampled data.
             The key is the task_id and the value is the list of data.
-            The list of data is sorted by step.
+            The list of data is sorted by step and deduplicated by data_row.id.
         '''
         task_ids = self.sample_task_ids(storage, batch_size, query_condition)
-        raws = storage.get_bacth_by_task_ids(task_ids)
-        return {task_id: self.sorted_by_step(raws) for task_id, raws in raws.items()}
+        raws = storage.get_batch_by_task_ids(task_ids)
+        # group by task_id
+        return {
+            task_id: self.sorted_by_step(
+                list({row.id: row for row in rows}.values())
+            ) 
+            for task_id, rows in raws.items()
+        }
 
     @abstractmethod
     def sample_task_ids(self,
@@ -302,7 +315,7 @@ class InMemoryStorage(Storage):
     def get_by_task_id(self, task_id: str) -> List[DataRow]:
         return self._data.get(task_id, [])
 
-    def get_bacth_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
+    def get_batch_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
         return {task_id: self._data.get(task_id, []) for task_id in task_ids}
 
     def clear(self):
@@ -319,11 +332,12 @@ class RandomTaskSample(TaskSampler):
                         storage: Storage,
                         batch_size: int,
                         query_condition: QueryCondition = None) -> List[str]:
+        sampled_task_ids = set()
         total_size = storage.size(query_condition)
         if total_size <= batch_size:
-            return storage.get_all(query_condition)
+            sampled_task_ids.update(data.exp_meta.task_id for data in storage.get_all(query_condition))
+            return list(sampled_task_ids)
 
-        sampled_task_ids = set()
         page_size = min(100, batch_size * 2)
         total_pages = ceil(total_size/page_size)
         visited_pages = set()

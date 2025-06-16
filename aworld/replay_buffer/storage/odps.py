@@ -209,10 +209,10 @@ class OdpsStorage(Storage):
         query_condition = QueryBuilder().eq("task_id", task_id).build()
         return self.get_all(query_condition)
 
-    def get_bacth_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
+    def get_batch_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
         query_condition = QueryBuilder().in_("task_id", task_ids).build()
         sql = self._build_sql(query_condition)
-        logger.info(f"get_bacth_by_task_ids sql: {sql}")
+        logger.info(f"get_batch_by_task_ids sql: {sql}")
         result = {}
         with self.odps.execute_sql(sql).open_reader(tunnel=True) as reader:
             for record in reader:

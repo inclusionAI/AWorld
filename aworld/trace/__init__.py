@@ -8,6 +8,7 @@ from aworld.trace.context_manager import TraceManager, trace_configure
 from aworld.trace.constants import RunType
 from aworld.logs.log import set_log_provider, instrument_logging
 from aworld.logs.util import logger, trace_logger
+import aworld.replay_buffer.processor
 
 if os.getenv("LOGFIRE_WRITE_TOKEN"):
     trace_configure(

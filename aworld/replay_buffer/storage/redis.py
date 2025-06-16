@@ -241,7 +241,7 @@ class RedisStorage(Storage):
         query_condition = QueryBuilder().eq("task_id", task_id).build()
         return self.get_all(query_condition)
 
-    def get_bacth_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
+    def get_batch_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
         '''
         Get data by task_ids from the storage.
         Args:

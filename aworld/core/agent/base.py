@@ -120,6 +120,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
+            agent_span.set_attributes({
+                "trace_id": trace.get_current_span().get_trace_id(),
+                "agent_id": self.name(),
+            })
             self.pre_run()
             result = self.policy(observation, info, **kwargs)
             final_result = self.post_run(result, observation)
@@ -127,6 +131,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
+            agent_span.set_attributes({
+                "trace_id": trace.get_current_span().get_trace_id(),
+                "agent_id": self.name(),
+            })
             await self.async_pre_run()
             result = await self.async_policy(observation, info, **kwargs)
             final_result = await self.async_post_run(result, observation)
