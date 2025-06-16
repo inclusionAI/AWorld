@@ -1,4 +1,4 @@
-FROM rayproject/ray:2.46.0-py312-cpu-aarch64 as base
+FROM rayproject/ray:latest-py312-cpu as base
 
 USER root
 
@@ -9,7 +9,7 @@ RUN wget --quiet https://deb.nodesource.com/setup_lts.x && \
     rm -fv setup_lts.x && \
     apt-get update
 
-RUN apt-get install -y nodejs
+RUN apt-get install -y procps iputils-ping nodejs build-essential
 
 RUN apt-get clean
 
@@ -25,37 +25,19 @@ COPY ./aworld aworld
 COPY ./mcp_servers mcp_servers
 COPY ./setup.py setup.py
 
-RUN python setup.py install
+RUN pip install -e .
 
-# Fix numpy ray compatibility issues
-RUN pip install "numpy>=1.19,<2.0" "pyarrow>=14.0.2"
+RUN pip install -r ./mcp_servers/requirements.txt 
 
 FROM ray
 
-COPY ./ray_serve/mcp.json /home/ray/aworld/ray_serve/mcp.json
-RUN pip install -r /home/ray/aworld/mcp_servers/requirements.txt
+COPY ./examples/ examples
 
-# Ray memory configuration to prevent OOM issues
+RUN pip install -r ./examples/web/agent_deploy/ray_agent/requirements.txt
+
+# Fix numpy ray compatibility issues
+RUN pip install -U "numpy>=1.19,<2.0" "pyarrow>=14.0.2" "grpcio==1.66.2"
+
 ENV RAY_memory_monitor_refresh_ms=0
-# 调整内存配置
 ENV RAY_object_store_memory=1000000000
 ENV RAY_memory_usage_threshold=0.9
-
-# 添加dashboard agent配置
-ENV RAY_DASHBOARD_AGENT_CHECK_PARENT_INTERVAL_S=10
-
-# 添加调试配置
-ENV RAY_BACKEND_LOG_LEVEL=info
-
-# 增加心跳超时配置
-ENV RAY_raylet_heartbeat_timeout_milliseconds=60000
-ENV RAY_num_heartbeats_timeout=30
-ENV RAY_raylet_death_check_interval_milliseconds=1000
-
-# 优化GCS配置
-ENV RAY_gcs_rpc_server_reconnect_timeout_s=60
-ENV RAY_gcs_server_request_timeout_seconds=60
-
-# 网络优化
-ENV RAY_enable_multi_tenancy=0
-ENV RAY_max_direct_call_object_size=0
