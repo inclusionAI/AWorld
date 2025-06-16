@@ -16,7 +16,7 @@ opentelemetry-exporter-otlp~=1.32.1
 opentelemetry-instrumentation-system-metrics~=0.53b1
 aiohttp~=3.11.16
 requests~=2.32.3
-loguru~=0.7.3
+loguru~=0.7.3 
 oss2
 
 fastapi

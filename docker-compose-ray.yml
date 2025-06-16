@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   ray-head:
     build:
@@ -13,7 +11,7 @@ services:
       - "10001:10001" # Ray Client Server
       - "6379:6379" # Redis port for Ray GCS
     command: >
-      ray start --head  --dashboard-host=0.0.0.0  --dashboard-port=8265 --port=6379 --redis-password="" --object-manager-port=8076 --node-manager-port=8077 --gcs-server-port=6379 --min-worker-port=10002 --max-worker-port=19999 --block
+      ray start --head  --dashboard-host=0.0.0.0  --dashboard-port=8265 --port=6379 --redis-password="" --object-manager-port=8076 --node-manager-port=8077 --min-worker-port=10002 --max-worker-port=19999 --block
     env_file:
       - .env
     networks:
@@ -24,7 +22,7 @@ services:
         limits:
           memory: 8G
         reservations:
-          memory: 4G
+          memory: 8G
 
   ray-worker:
     build:
@@ -45,7 +43,29 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 4G
+        reservations:
+          memory: 4G
+
+  aworld-web-server:
+    build:
+      context: .
+      dockerfile: Dockerfile_ray
+    platform: linux/amd64
+    container_name: aworld-api-server
+    hostname: aworld-api-server
+    depends_on:
+      - ray-head
+    command: aworld web --port 8000
+    env_file:
+      - .env
+    networks:
+      - ray-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
         reservations:
           memory: 4G
 
