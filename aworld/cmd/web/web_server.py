@@ -17,9 +17,10 @@ async def root():
     return RedirectResponse("/index.html")
 
 
-from .routers import chat_router
+from .routers import chats,workspaces
 
-app.include_router(chat_router.router, prefix=chat_router.prefix)
+app.include_router(chats.router, prefix=chats.prefix)
+app.include_router(workspaces.router, prefix=workspaces.prefix)
 
 def build_webui() -> str:
     webui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui")

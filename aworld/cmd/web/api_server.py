@@ -7,9 +7,10 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-from .routers import chat_router
+from .routers import chats,workspaces
 
-app.include_router(chat_router.router, prefix=chat_router.prefix)
+app.include_router(chats.router, prefix=chats.prefix)
+app.include_router(workspaces.router, prefix=workspaces.prefix)
 
 def run_server(port, args=None, **kwargs):
     logger.info(f"Running API server on port {port}")
