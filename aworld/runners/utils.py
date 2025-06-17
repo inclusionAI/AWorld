@@ -17,6 +17,7 @@ class TaskType:
     OUTPUT = "__output"
     ERROR = "__error"
     RERUN = "__rerun"
+    HUMAN_CONFIRM = "__human_confirm"
     # for dynamic subscribe
     SUBSCRIBE_TOOL = "__subscribe_tool"
     SUBSCRIBE_AGENT = "__subscribe_agent"

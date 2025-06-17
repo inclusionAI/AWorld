@@ -94,6 +94,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.task = None
         # An agent can use the tool list
         self.tool_names: List[str] = kwargs.pop("tool_names", [])
+        self.tool_names.append("human_confirm")
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = kwargs.pop("agent_names", [])
         # Supported MCP server
