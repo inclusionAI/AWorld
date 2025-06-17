@@ -116,7 +116,32 @@ class ModelConfig(BaseConfig):
     llm_sync_enabled: bool = True
     llm_async_enabled: bool = True
     max_retries: int = 3
+    max_model_len: int = 128000  # 最大模型上下文长度
+    model_type: str = 'qwen' # 模型类型决定分词器及最大长度
 
+class LlmCompressionConfig(BaseConfig):
+    enabled: bool = False
+    compression_type: str = "llm_based"  # rule_based, statistical, llm_based, tfidf_based
+    max_history_length: int = 10000  # 超过此长度时触发压缩
+    summary_model: ModelConfig = None
+
+class OptimizationConfig(BaseConfig):
+    enabled: bool = False
+    # max_processing_time: float = 2.0  # 最大处理时间（秒）、或轮数，不在上下文中限制，由业务agent协定
+    max_token_budget_ratio: float = 0.5  # 最大上下文长度
+    token_allocation_message_history: float = 0.4  # 消息历史占用预算
+    token_allocation_tool_results: float = 0.5  # 工具结果占用预算
+    token_allocation_system_prompts: float = 0.1  # 系统提示占用预算
+    # token_allocation_other: float = 0.1  # 其他占用预算
+
+class ContextRuleConfig(BaseConfig):
+    """上下文干涉规则配置"""
+
+    # ===== 性能优化配置 =====
+    optimization_config: OptimizationConfig = OptimizationConfig()
+
+    # ===== LLM对话压缩配置 =====
+    llm_compression_config: LlmCompressionConfig = LlmCompressionConfig()
 
 class AgentConfig(BaseConfig):
     name: str = None
@@ -146,6 +171,8 @@ class AgentConfig(BaseConfig):
     use_tools_in_prompt: bool = True
     ext: dict = {}
 
+    # context rule
+    context_rule: ContextRuleConfig = ContextRuleConfig()
 
 class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
