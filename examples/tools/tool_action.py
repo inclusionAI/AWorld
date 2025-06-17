@@ -312,3 +312,13 @@ class GetTraceAction(ToolAction):
                                             required=True,
                                             desc="The trace id to get.")},
         desc="Get the trace of the current execution.")
+
+class HumanExecuteAction(ToolAction):
+    """Definition of Human execute supported action."""
+    HUMAN_CONFIRM = ToolActionInfo(
+        name="human_confirm",
+        input_params={"content": ParamInfo(name="content",
+                                                 type="str",
+                                                 required=True,
+                                                 desc="Content for user confirmation")},
+        desc="The main purpose of this tool is to pass given content to the user for confirmation.")
