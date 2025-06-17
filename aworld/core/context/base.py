@@ -13,9 +13,11 @@ from aworld.utils.common import nest_dict_counter
 
 @dataclass
 class ContextUsage:
-    def __init__(self, total_context_length: int = 128000):
+    total_context_length: int = 128000
+    used_context_length: int = 0
+    def __init__(self, total_context_length: int = 128000, used_context_length: int = 0):
         self.total_context_length = total_context_length
-        self.used_context_length = 0
+        self.used_context_length = used_context_length
 
 @dataclass
 class AgentContext:
@@ -31,7 +33,7 @@ class AgentContext:
     # mutable from memory
     messages: List[Dict[str, Any]] = None
     # mutable context length usage
-    context_usage: ContextUsage = ContextUsage()
+    context_usage: ContextUsage = None
 
     def __init__(self, 
                  agent_id: str = None,
