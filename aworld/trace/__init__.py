@@ -1,32 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import os
 import traceback
 from typing import Sequence, Union
 from aworld.core.common import ActionModel
-from aworld.trace.context_manager import TraceManager, trace_configure
+from aworld.trace.context_manager import TraceManager
 from aworld.trace.constants import RunType
-from aworld.logs.log import set_log_provider, instrument_logging
-from aworld.logs.util import logger, trace_logger
-
-if os.getenv("LOGFIRE_WRITE_TOKEN"):
-    trace_configure(
-        backends=["logfire"],
-        write_token=os.getenv("LOGFIRE_WRITE_TOKEN")
-    )
-    set_log_provider(provider="otlp", backend="logfire",
-                     write_token=os.getenv("LOGFIRE_WRITE_TOKEN"))
-elif os.getenv("OTLP_TRACES_ENDPOINT"):
-    trace_configure(
-        backends=["other_otlp"]
-    )
-else:
-    logger.warning("LOGFIRE_WRITE_TOKEN is not set, using memory backend")
-    trace_configure(
-        backends=["memory"]
-    )
-
-instrument_logging(trace_logger)
+from aworld.logs.util import logger
+from aworld.trace.config import configure, ObservabilityConfig
 
 
 def get_tool_name(tool_name: str,
@@ -49,3 +29,14 @@ func_span = GLOBAL_TRACE_MANAGER.func_span
 auto_tracing = GLOBAL_TRACE_MANAGER.auto_tracing
 get_current_span = GLOBAL_TRACE_MANAGER.get_current_span
 new_manager = GLOBAL_TRACE_MANAGER.get_current_span
+
+__all__ = [
+    "span",
+    "func_span",
+    "auto_tracing",
+    "get_current_span",
+    "new_manager",
+    "RunType",
+    "configure",
+    "ObservabilityConfig"
+]

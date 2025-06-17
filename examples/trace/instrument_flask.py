@@ -5,13 +5,15 @@ from aworld.trace.instrumentation.requests import instrument_requests
 from aworld.logs.util import logger, trace_logger
 import aworld.trace as trace
 import os
-from aworld.metrics.context_manager import MetricContext
+from aworld.trace.config import ObservabilityConfig
 
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"
-MetricContext.configure(provider="otlp",
-                        backend="antmonitor"
-                        )
+
+trace.configure(ObservabilityConfig(
+    metrics_provider="otlp",
+    metrics_backend="antmonitor"
+))
 instrument_flask()
 instrument_requests()
 

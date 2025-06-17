@@ -6,6 +6,7 @@ from aworld.trace.instrumentation.threading import instrument_theading
 from aworld.logs.util import logger, trace_logger
 
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
+trace.configure()
 instrument_theading()
 
 

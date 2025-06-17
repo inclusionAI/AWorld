@@ -1,6 +1,9 @@
 from aworld.logs.util import logger
 from flask import Flask, render_template, jsonify
 from aworld.trace.opentelemetry.memory_storage import SpanModel, TraceStorage
+from aworld.utils.import_package import import_package
+
+import_package('flask')
 
 app = Flask(__name__, template_folder='../../web/templates')
 current_storage = None
@@ -25,7 +28,7 @@ def build_trace_tree(spans: list[SpanModel]):
                     'attributes': {},
                     'status': {},
                     'parent_id': None,
-                    'run_type':'OTHER'
+                    'run_type': 'OTHER'
                 }
                 spans_dict[parent_id] = parent_span
             if 'children' not in parent_span:
