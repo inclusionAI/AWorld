@@ -3,10 +3,20 @@ import importlib
 import sys
 import traceback
 import logging
+from typing import List
+from .model import AgentModel
 
 logger = logging.getLogger(__name__)
 
-def list_agents():
+agent_cache = {}
+
+def list_agents() -> List[AgentModel]:
+    if len(agent_cache) == 0:
+        [ agent_cache.add(m.agent_name, m)  for m in _list_agents()]
+    return agent_cache
+
+
+def _list_agents() -> List[AgentModel]:
     agents_dir = os.path.join(os.getcwd(), "agent_deploy")
 
     if not os.path.exists(agents_dir):
