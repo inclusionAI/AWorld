@@ -1,31 +1,36 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import abc
 import json
+import time
 import traceback
 import uuid
+from collections import OrderedDict
+from typing import AsyncGenerator, Dict, Any, List, Union, Callable
 
 import aworld.trace as trace
-
-from collections import OrderedDict
-from typing import Dict, Any, List, Union, Callable
-
-from aworld.config.conf import AgentConfig, ConfigDict
+from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
 from aworld.core.common import Observation, ActionModel
-from aworld.core.tool.tool_desc import get_tool_desc
+from aworld.core.context.base import AgentContext
+from aworld.core.context.base import Context
+from aworld.core.context.base import ContextUsage
+from aworld.core.contextprocessor.context_processor import ContextProcessor
 from aworld.core.event.base import Message, ToolMessage, Constants
+from aworld.core.memory import MemoryItem
+from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.logs.util import logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform
-from aworld.core.memory import MemoryItem
 from aworld.memory.main import Memory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
-from aworld.sandbox.base import Sandbox
-from aworld.utils.common import sync_exec
+from aworld.runners.hook.hook_factory import HookFactory
+from aworld.runners.hook.hooks import HookPoint, PreLLMCallHook
+from aworld.utils.common import convert_to_snake, sync_exec
 
 
 class Agent(BaseAgent[Observation, List[ActionModel]]):
@@ -62,6 +67,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
         self.history_messages = kwargs.get("history_messages") if kwargs.get("history_messages") else 100
         self.use_tools_in_prompt = kwargs.get('use_tools_in_prompt', conf.use_tools_in_prompt)
+        # init agent context
+        context_rule = kwargs.get("context_rule") if kwargs.get("context_rule") else conf.context_rule
+        self.update_current_agent_context(context_rule)
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
@@ -569,6 +577,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
 
             try:
+                # update messages to agent context
+                self.update_current_agent_messages(messages)
+                async for event in self.run_hooks(self.context, self.current_agent_context, HookPoint.PRE_LLM_CALL):
+                    await event
+                # restore messages
+                messages = self.restore_current_agent_context()
+
                 llm_response = await acall_llm_model(
                     self.llm,
                     messages=messages,
@@ -595,6 +610,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 raise e
             finally:
                 if llm_response:
+                    # update usage
+                    self.context.update_current_agent_context_usage(self.id, llm_response.usage['total_tokens'])
+
                     use_tools = self.use_tool_list(llm_response)
                     is_use_tool_prompt = len(use_tools) > 0
                     if llm_response.error:
@@ -631,3 +649,84 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return obj.dict()
         else:
             return obj
+    def update_current_agent_context(self, context_rule: ContextRuleConfig):
+        current_agent_context = AgentContext(
+            agent_id=self.id,
+            agent_name=self.name(),
+            agent_desc=self._desc,
+            system_prompt=self.system_prompt,
+            agent_prompt=self.agent_prompt,
+            tool_names=self.tool_names,
+            context_rule=context_rule,
+            context_usage=ContextUsage(total_context_length=self.conf.llm_config.max_model_len)
+        )
+        self.context.set_current_agent_context(self.id, current_agent_context)
+        self.current_agent_context = current_agent_context
+
+    def update_current_agent_messages(self, messages: List[Message]):
+        self.current_agent_context.set_messages(messages)
+
+    def restore_current_agent_context(self) -> List[Message]:
+        return self.current_agent_context.messages
+
+    async def run_hooks(self, context: Context, current_agent_context: AgentContext, hook_point: str) -> AsyncGenerator[Message, None]:
+        hooks = HookFactory.hooks(hook_point).get(hook_point)
+        print('hook_point|', hook_point, '|', HookFactory.hooks(hook_point), '|', context, '|', current_agent_context)
+        for hook in hooks:
+            try:
+                print('current hook_point|', hook_point, '|', hook, '|', context, '|', current_agent_context)
+                msg = hook.exec(message=None, current_agent_context=current_agent_context, context=context)
+                if msg:
+                    yield msg
+            except:
+                logger.warning(f"{hook.point()} {hook.name()} execute fail.")
+
+@HookFactory.register(name="PreLLMCallContextProcessHook",
+                      desc="PreLLMCallContextProcessHook")
+class PreLLMCallContextProcessHook(PreLLMCallHook):
+    """Process in the hook point of the pre_llm_call."""
+    __metaclass__ = abc.ABCMeta
+
+    def name(self):
+        return convert_to_snake("PreLLMCallContextProcessHook")
+
+    def process_messages(self, messages: List[Dict[str, Any]],
+                         context: Context,
+                         current_agent_context: AgentContext,
+                         ) -> List[Dict[str, Any]]:
+        context_rule = current_agent_context.context_rule
+        if context_rule is None:
+            logger.debug('debug|skip PreLLMCallContextProcessHook context_rule is None')
+            return messages
+
+        context_processor = ContextProcessor(context_rule, current_agent_context)
+        result = context_processor.process_context(messages, context)
+
+        return result.processed_messages
+
+    async def exec(self, message: Message, current_agent_context: AgentContext = None, context: Context = None) -> Message:
+        messages = origin_messages = current_agent_context.messages
+        st = time.time()
+        with trace.span(f"llm_context_pre_hook", attributes={
+            "start_time": st
+        }) as compress_span:
+            origin_len = compressed_len = len(str(messages))
+            origin_messages_count = truncated_messages_count = len(messages)
+            try:
+                messages = self.process_messages(messages, context, current_agent_context)
+                compressed_len = len(str(messages))
+                truncated_messages_count = len(messages)
+                logger.debug(f'debug|llm_context_compress|{origin_len}|{compressed_len}|{origin_messages_count}|{truncated_messages_count}|\n|{origin_messages}\n|{messages}')
+            finally:
+                compress_span.set_attributes({
+                    "end_time": time.time(),
+                    "duration": time.time() - st,
+                    # messages length
+                    "origin_messages_count": origin_messages_count,
+                    "truncated_messages_count": truncated_messages_count,
+                    "truncated_ratio": round(truncated_messages_count / origin_messages_count, 2),
+                    # token length
+                    "origin_len": origin_len,
+                    "compressed_len": compressed_len,
+                    "compress_ratio": round(compressed_len / origin_len, 2)
+                })
