@@ -14,6 +14,7 @@ from .model import (
 
 app = FastAPI()
 
+app
 
 @app.get("/")
 async def root():
@@ -52,7 +53,7 @@ async def chat_completion(request: ChatRequest) -> ChatResponse:
 def run_api_server(port, args=None, **kwargs):
     print(f"Running API server on port {port}")
     uvicorn.run(
-        "aworld.command.api_server.api_server:app",
+        "aworld.cmd.api.api_server:app",
         host="0.0.0.0",
         port=port,
         reload=True,
