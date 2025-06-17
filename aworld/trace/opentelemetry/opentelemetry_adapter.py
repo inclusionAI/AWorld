@@ -27,7 +27,7 @@ from opentelemetry.sdk.trace import (
 )
 from opentelemetry.context import Context as OTLPContext
 from opentelemetry.semconv.trace import SpanAttributes
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
 from aworld.trace.base import (
     AttributeValueType,
@@ -44,7 +44,7 @@ from aworld.trace.propagator import get_global_trace_context
 from aworld.trace.baggage.sofa_tracer import SofaSpanHelper
 from aworld.logs.util import logger
 from aworld.utils.common import get_local_ip
-from .memory_storage import InMemoryWithPersistStorage, InMemorySpanExporter, InMemoryStorage
+from .memory_storage import InMemorySpanExporter, InMemoryStorage
 from ..constants import ATTRIBUTES_MESSAGE_KEY
 from .export import FileSpanExporter, NoOpSpanExporter, SpanConsumerExporter
 from ..server import start_trace_server
@@ -358,16 +358,17 @@ def configure_otlp_provider(
                 BatchSpanProcessor(FileSpanExporter(file_path)))
         elif backend == "memory":
             logger.info("Using in-memory storage for traces.")
-            if (os.getenv("START_TRACE_SERVER") or "true").lower() == "true":
-                logger.info("Starting trace server on port 7079.")
-                storage = kwargs.get(
-                    "storage", InMemoryStorage())
-                processor.add_span_processor(
-                    BatchSpanProcessor(InMemorySpanExporter(storage=storage)))
-                start_trace_server(storage=storage, port=7079)
+            storage = kwargs.get(
+                "storage", InMemoryStorage())
+            processor.add_span_processor(
+                SimpleSpanProcessor(InMemorySpanExporter(storage=storage)))
+            server_enabled = kwargs.get("server_enabled") or os.getenv(
+                "START_TRACE_SERVER") or "true"
+            server_port = kwargs.get("server_port") or 7079
+            if (server_enabled.lower() == "true"):
+                logger.info(f"Starting trace server on port {server_port}.")
+                start_trace_server(storage=storage, port=int(server_port))
             else:
-                processor.add_span_processor(
-                    BatchSpanProcessor(NoOpSpanExporter()))
                 logger.info("Trace server is not started.")
         else:
             span_exporter = _configure_otlp_exporter(
@@ -399,7 +400,7 @@ def _configure_logfire_exporter(write_token: str, base_url: str = None) -> None:
     )
 
 
-def _configure_otlp_exporter(base_url: str = None) -> None:
+def _configure_otlp_exporter(base_url: str = None,  **kwargs) -> None:
     """Configure the OTLP exporter.
     Args:
         write_token: The write token to use.

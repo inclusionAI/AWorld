@@ -12,13 +12,9 @@ os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"  # noqa
 import aworld.trace as trace  # noqa
 from aworld.logs.util import logger, trace_logger
 from aworld.trace.server import get_trace_server
-from aworld.trace.opentelemetry.memory_storage import InMemoryStorage
 
 
-trace.trace_configure(
-    backends=["memory"],
-    storage=InMemoryStorage()
-)
+trace.configure()
 
 
 @trace.func_span(span_name="test_func", attributes={"test_attr": "test_value"}, extract_args=["param1"], add_attr="add_attr_value")

@@ -1,11 +1,11 @@
 import os
 import time
 import threading
+from aworld.trace.config import ObservabilityConfig
 from aworld.trace.instrumentation.fastapi import instrument_fastapi
 from aworld.trace.instrumentation.requests import instrument_requests
 from aworld.logs.util import logger, trace_logger
 import aworld.trace as trace
-from aworld.metrics.context_manager import MetricContext
 from aworld.utils.import_package import import_packages
 import_packages(['fastapi', 'uvicorn'])  # noqa
 import fastapi  # noqa
@@ -13,9 +13,12 @@ import uvicorn  # noqa
 
 os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 os.environ["ANT_OTEL_ENDPOINT"] = "https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"
-MetricContext.configure(provider="otlp",
-                        backend="antmonitor"
-                        )
+
+trace.configure(ObservabilityConfig(
+    metrics_provider="otlp",
+    metrics_backend="antmonitor"
+))
+
 instrument_fastapi()
 instrument_requests()
 
