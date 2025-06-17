@@ -233,7 +233,7 @@ class LLMCompressor(BaseCompressor):
         self.model_name = self.config.get("model_name", "gpt-3.5-turbo")
         self.max_tokens = self.config.get("max_tokens", 1000)
         self.compression_prompt = self.config.get("compression_prompt", self._default_compression_prompt())
-        self.llm_base_url = self.config.get("llm_base_url", "https://api.openai.com/v1/chat/completions")
+        self.llm_base_url = self.config.get("llm_base_url", "https://api.openai.com/v1")
         # Lazy import to avoid circular dependencies
         self._llm_client = None
     
