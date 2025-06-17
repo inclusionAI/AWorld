@@ -29,14 +29,14 @@ class HumanTool(AsyncTool):
 
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         Observation, dict[str, Any]]:
-        super().reset(seed=seed, options=options)
+        await super().reset(seed=seed, options=options)
 
-        self.close()
+        await self.close()
         self.step_finished = True
         return build_observation(observer=self.name(),
                                  ability=HumanExecuteAction.HUMAN_CONFIRM.value.name), {}
 
-    async def init(self) -> None:
+    def init(self) -> None:
         self.initialized = True
 
     async def close(self) -> None:
@@ -92,7 +92,7 @@ class HumanTool(AsyncTool):
                     session_id=Context.instance().session_id,
                     topic="__human_confirm"
                 ))
-               #print(f"-----------------{res}")
+               print(f"-----------------{res}")
 
             return self.content,error
         except Exception as e:

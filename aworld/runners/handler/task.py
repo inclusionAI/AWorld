@@ -106,7 +106,7 @@ class DefaultTaskHandler(TaskHandler):
         elif topic == TaskType.HUMAN_CONFIRM:
             logger.warn("=============== Get human confirm, pause execution ===============")
             if self.runner.task.outputs and message.payload:
-                self.runner.task.outputs.add_output(Output(data=message.payload))
+                await self.runner.task.outputs.add_output(Output(data=message.payload))
             self.runner._task_response = TaskResponse(answer=str(message.payload),
                                                       success=True,
                                                       id=self.runner.task.id,
