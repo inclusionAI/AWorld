@@ -2,34 +2,29 @@
 # Copyright (c) 2025 inclusionAI.
 
 """
-Chunk Pipeline - 消息拆分处理管道
+Chunk Pipeline - Message chunking processing pipeline
 
-负责将混合类型的消息按照 prompt_type 进行拆分和分组处理
+Responsible for splitting and grouping mixed-type messages according to prompt_type
 """
 
 import time
 from typing import Dict, Any, List, Union, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
-import logging
 
 from aworld.logs.util import logger
 
 
-logger = logging.getLogger(__name__)
-
-
 class MessageType(Enum):
     """Message type enum"""
-    TEXT = "text"  # system, user, assistant 消息
-    TOOL = "tool"  # tool 消息
-    SYSTEM = "system"
+    TEXT = "text"  # system, user, assistant messages
+    TOOL = "tool"  # tool messages
     UNKNOWN = "unknown"
 
 
 @dataclass
 class MessageChunk:
-    """Message chunk data structure"""
+    """Message chunk containing messages of the same type"""
     message_type: MessageType
     messages: List[Dict[str, Any]]
     metadata: Dict[str, Any]
@@ -43,7 +38,7 @@ class MessageChunk:
 
 @dataclass
 class ChunkResult:
-    """Chunk processing result"""
+    """Chunking result"""
     chunks: List[MessageChunk]
     total_messages: int
     processing_time: float
@@ -51,16 +46,16 @@ class ChunkResult:
 
 
 class ChunkPipeline:
-    """Message chunking pipeline - responsible for splitting and merging messages"""
+    """Message chunking pipeline"""
     
     def __init__(self, 
                  preserve_order: bool = True,
                  merge_consecutive: bool = True):
         """
-        Initialize chunk pipeline
+        Initialize chunking pipeline
         
         Args:
-            preserve_order: Whether to preserve message order
+            preserve_order: Whether to preserve original message order
             merge_consecutive: Whether to merge consecutive messages of the same type
         """
         self.preserve_order = preserve_order
@@ -71,16 +66,22 @@ class ChunkPipeline:
             "processing_time": 0.0
         }
     
-    def _determine_message_type(self, message: Dict[str, Any]) -> MessageType:
-        """Determine message type"""
-        role = message.get("role", "").lower()
+    def classify_message(self, message: Dict[str, Any]) -> MessageType:
+        """
+        Classify single message
         
-        if role == "system":
-            return MessageType.SYSTEM
-        elif role in ["function", "tool"]:
-            return MessageType.TOOL
-        elif role in ["user", "assistant"]:
+        Args:
+            message: OpenAI format message
+            
+        Returns:
+            Message type
+        """
+        role = message.get("role", "")
+        
+        if role in ["system", "user", "assistant"]:
             return MessageType.TEXT
+        elif role == "tool":
+            return MessageType.TOOL
         else:
             logger.warning(f"Unknown message role: {role}")
             return MessageType.UNKNOWN
@@ -89,14 +90,14 @@ class ChunkPipeline:
                       messages: List[Dict[str, Any]], 
                       metadata: Dict[str, Any] = None) -> ChunkResult:
         """
-        Split messages into chunks
+        Split message list by type into chunks, and merge messages of the same type into strings
         
         Args:
-            messages: Message list
+            messages: OpenAI format message list
             metadata: Metadata
             
         Returns:
-            Chunk result
+            Chunking result
         """
         start_time = time.time()
         
@@ -113,15 +114,13 @@ class ChunkPipeline:
         current_chunk_messages = []
         
         for i, message in enumerate(messages):
-            msg_type = self._determine_message_type(message)
+            msg_type = self.classify_message(message)
             
-            # If merge_consecutive is enabled and types match, add to current chunk
-            if (self.merge_consecutive and 
-                current_chunk_type == msg_type and 
-                current_chunk_messages):
-                current_chunk_messages.append(message)
-            else:
-                # If there's a current chunk, save it
+            # If it's a new type or not merging consecutive messages
+            if (current_chunk_type != msg_type or 
+                not self.merge_consecutive):
+                
+                # Save current chunk (if it has content)
                 if current_chunk_messages:
                     chunk_metadata = (metadata or {}).copy()
                     chunk_metadata.update({
@@ -129,14 +128,14 @@ class ChunkPipeline:
                         "start_message_index": i - len(current_chunk_messages),
                         "end_message_index": i - 1,
                         "message_count": len(current_chunk_messages),
-                        "original_messages": current_chunk_messages.copy()  # 保存原始消息
+                        "original_messages": current_chunk_messages.copy()  # Save original messages
                     })
                     
-                    # 根据消息类型将消息合并为字符串
+                    # Merge messages into string based on message type
                     if current_chunk_type == MessageType.TEXT:
-                        # 使用 _messages_to_string 合并 TEXT 类型消息
+                        # Use _messages_to_string to merge TEXT type messages
                         merged_content = self._messages_to_string(current_chunk_messages)
-                        # 创建单个合并消息
+                        # Create single merged message
                         merged_message = {
                             "role": "merged_text",
                             "content": merged_content,
@@ -144,9 +143,9 @@ class ChunkPipeline:
                         }
                         chunk_messages = [merged_message]
                     elif current_chunk_type == MessageType.TOOL:
-                        # 使用 _tool_messages_to_string 合并 TOOL 类型消息
+                        # Use _tool_messages_to_string to merge TOOL type messages
                         merged_content = self._tool_messages_to_string(current_chunk_messages)
-                        # 创建单个合并消息
+                        # Create single merged message
                         merged_message = {
                             "role": "merged_tool",
                             "content": merged_content,
@@ -154,7 +153,7 @@ class ChunkPipeline:
                         }
                         chunk_messages = [merged_message]
                     else:
-                        # 未知类型保持原样
+                        # Keep unknown types as is
                         chunk_messages = current_chunk_messages.copy()
                     
                     chunks.append(MessageChunk(
@@ -164,10 +163,13 @@ class ChunkPipeline:
                     ))
                 
                 # Start new chunk
-                current_chunk_messages = [message]
                 current_chunk_type = msg_type
+                current_chunk_messages = [message]
+            else:
+                # Add to current chunk
+                current_chunk_messages.append(message)
         
-        # Add last chunk
+        # Process last chunk
         if current_chunk_messages:
             chunk_metadata = (metadata or {}).copy()
             chunk_metadata.update({
@@ -175,14 +177,14 @@ class ChunkPipeline:
                 "start_message_index": len(messages) - len(current_chunk_messages),
                 "end_message_index": len(messages) - 1,
                 "message_count": len(current_chunk_messages),
-                "original_messages": current_chunk_messages.copy()  # 保存原始消息
+                "original_messages": current_chunk_messages.copy()  # Save original messages
             })
             
-            # 根据消息类型将消息合并为字符串
+            # Merge messages into string based on message type
             if current_chunk_type == MessageType.TEXT:
-                # 使用 _messages_to_string 合并 TEXT 类型消息
+                # Use _messages_to_string to merge TEXT type messages
                 merged_content = self._messages_to_string(current_chunk_messages)
-                # 创建单个合并消息
+                # Create single merged message
                 merged_message = {
                     "role": "merged_text",
                     "content": merged_content,
@@ -190,9 +192,9 @@ class ChunkPipeline:
                 }
                 chunk_messages = [merged_message]
             elif current_chunk_type == MessageType.TOOL:
-                # 使用 _tool_messages_to_string 合并 TOOL 类型消息
+                # Use _tool_messages_to_string to merge TOOL type messages
                 merged_content = self._tool_messages_to_string(current_chunk_messages)
-                # 创建单个合并消息
+                # Create single merged message
                 merged_message = {
                     "role": "merged_tool",
                     "content": merged_content,
@@ -200,7 +202,7 @@ class ChunkPipeline:
                 }
                 chunk_messages = [merged_message]
             else:
-                # 未知类型保持原样
+                # Keep unknown types as is
                 chunk_messages = current_chunk_messages.copy()
             
             chunks.append(MessageChunk(
@@ -211,12 +213,12 @@ class ChunkPipeline:
         
         processing_time = time.time() - start_time
         
-        # 更新统计
+        # Update statistics
         self.stats["total_processed"] += len(messages)
         self.stats["total_chunks_created"] += len(chunks)
         self.stats["processing_time"] += processing_time
         
-        # 构建结果元数据
+        # Build result metadata
         result_metadata = (metadata or {}).copy()
         result_metadata.update({
             "chunk_count": len(chunks),
@@ -226,10 +228,10 @@ class ChunkPipeline:
             "preserve_order": self.preserve_order,
             "merge_consecutive": self.merge_consecutive,
             "processing_time": processing_time,
-            "string_merge_applied": True  # 标记已应用字符串合并
+            "string_merge_applied": True  # Mark that string merging has been applied
         })
         
-        logger.debug(f"消息拆分完成: {len(messages)} 条消息 -> {len(chunks)} 个块 (已应用字符串合并)")
+        logger.debug(f"Message splitting completed: {len(messages)} messages -> {len(chunks)} chunks (string merging applied)")
         
         return ChunkResult(
             chunks=chunks,
@@ -242,23 +244,23 @@ class ChunkPipeline:
                     chunks: List[MessageChunk], 
                     preserve_type_order: bool = True) -> List[Dict[str, Any]]:
         """
-        Merge chunks back into message list
+        Merge processed chunks back into message list, and split string format messages back into multiple messages
         
         Args:
-            chunks: Chunk list
+            chunks: Message chunk list
             preserve_type_order: Whether to preserve type order
             
         Returns:
-            Message list
+            Merged message list
         """
         if not chunks:
             return []
         
         if preserve_type_order and self.preserve_order:
-            # 按原始顺序合并
+            # Merge in original order
             sorted_chunks = sorted(chunks, key=lambda x: x.metadata.get("chunk_index", 0))
         else:
-            # 按类型分组合并（先文本后工具）
+            # Merge by type grouping (text first, then tools)
             text_chunks = [chunk for chunk in chunks if chunk.message_type == MessageType.TEXT]
             tool_chunks = [chunk for chunk in chunks if chunk.message_type == MessageType.TOOL]
             unknown_chunks = [chunk for chunk in chunks if chunk.message_type == MessageType.UNKNOWN]
@@ -269,37 +271,37 @@ class ChunkPipeline:
             chunk_messages = []
             
             for message in chunk.messages:
-                # 检查是否是合并的消息，需要拆分
+                # Check if this is a merged message that needs to be split
                 if message.get("role") == "merged_text":
-                    # 这是合并的 TEXT 类型消息，需要拆分
+                    # This is a merged TEXT type message that needs to be split
                     merged_content = message.get("content", "")
                     original_messages = chunk.metadata.get("original_messages", [])
                     
                     if original_messages:
-                        # 使用 _string_to_messages 拆分
+                        # Use _string_to_messages to split
                         split_messages = self._string_to_messages(merged_content, original_messages)
                         chunk_messages.extend(split_messages)
                     else:
-                        # 如果没有原始消息信息，直接解析字符串
+                        # If no original message info, parse string directly
                         split_messages = self._string_to_messages(merged_content, [])
                         chunk_messages.extend(split_messages)
                         
                 elif message.get("role") == "merged_tool":
-                    # 这是合并的 TOOL 类型消息，需要拆分
+                    # This is a merged TOOL type message that needs to be split
                     merged_content = message.get("content", "")
                     original_messages = chunk.metadata.get("original_messages", [])
                     
                     if original_messages:
-                        # 使用 _string_to_tool_messages 拆分
+                        # Use _string_to_tool_messages to split
                         split_messages = self._string_to_tool_messages(merged_content, original_messages)
                         chunk_messages.extend(split_messages)
                     else:
-                        # 如果没有原始消息信息，直接解析字符串
+                        # If no original message info, parse string directly
                         split_messages = self._string_to_tool_messages(merged_content, "")
                         chunk_messages.extend(split_messages)
                         
                 else:
-                    # 普通消息直接添加
+                    # Regular messages are added directly
                     chunk_messages.append(message)
             
             merged_messages.extend(chunk_messages)
@@ -310,23 +312,23 @@ class ChunkPipeline:
                           chunks: List[MessageChunk], 
                           message_type: MessageType) -> List[MessageChunk]:
         """
-        获取指定类型的所有块
+        Get all chunks of specified type
         
         Args:
-            chunks: 消息块列表
-            message_type: 消息类型
+            chunks: Message chunk list
+            message_type: Message type
             
         Returns:
-            指定类型的块列表
+            List of chunks of specified type
         """
         return [chunk for chunk in chunks if chunk.message_type == message_type]
     
     def get_statistics(self) -> Dict[str, Any]:
-        """获取处理统计信息"""
+        """Get processing statistics"""
         return self.stats.copy()
     
     def reset_statistics(self):
-        """重置统计信息"""
+        """Reset statistics"""
         self.stats = {
             "total_processed": 0,
             "total_chunks_created": 0,
@@ -335,7 +337,7 @@ class ChunkPipeline:
 
     @staticmethod
     def _messages_to_string(messages: List[Dict[str, str]]) -> str:
-        """将OpenAI消息格式转换为字符串"""
+        """Convert OpenAI message format to string"""
         content_parts = []
         for msg in messages:
             role = msg.get('role', 'user')
@@ -344,17 +346,17 @@ class ChunkPipeline:
         return "\n".join(content_parts)
     
     @staticmethod
-    def _string_to_messages(content: str, # 处理后prompt，是一个字符串
-                            messages: List[Dict[str, str]] # 处理前prompt
+    def _string_to_messages(content: str, # Processed prompt, is a string
+                            messages: List[Dict[str, str]] # Pre-processed prompt
                             ) -> List[Dict[str, str]]:
-        # 还原所有assistant回复的tool_calls
+        # Restore all tool_calls from assistant replies
         tool_calls = []
         if messages:
             for msg in messages:
                 if msg.get("role") == "assistant" and msg.get("tool_calls") is not None:
                     tool_calls += msg["tool_calls"]
 
-        """将字符串转换为OpenAI消息格式"""
+        """Convert string to OpenAI message format"""
         result_messages = []
         lines = content.split('\n')
         current_role = 'user'
@@ -363,7 +365,7 @@ class ChunkPipeline:
         for line in lines:
             line = line.strip()
             if line.startswith('[') and ']:' in line:
-                # 保存之前的消息
+                # Save previous message
                 if current_content:
                     result_messages.append({
                         'role': current_role,
@@ -371,7 +373,7 @@ class ChunkPipeline:
                     })
                     current_content = []
                 
-                # 解析新的角色
+                # Parse new role
                 role_end = line.find(']:')
                 role = line[1:role_end].lower()
                 if role in ['system', 'user', 'assistant']:
@@ -384,7 +386,7 @@ class ChunkPipeline:
             else:
                 current_content.append(line)
 
-        # 保存最后的消息
+        # Save last message
         if current_content:
             result_messages.append({
                 'role': current_role,
@@ -392,7 +394,7 @@ class ChunkPipeline:
             })
         final_messages = result_messages if result_messages else [{'role': 'user', 'content': content}]
 
-        # 拼接tool_calls结果
+        # Append tool_calls results
         if tool_calls is not None and len(tool_calls) > 0:
             tool_call_chunk = {
                 'role': 'assistant',
@@ -404,7 +406,7 @@ class ChunkPipeline:
         return final_messages
 
     def _tool_messages_to_string(self, messages: List[Dict[str, str]]) -> str:
-        """将tool消息格式转换为字符串"""
+        """Convert tool message format to string"""
         content_parts = []
         for msg in messages:
             role = msg.get('role', 'tool')
@@ -421,7 +423,7 @@ class ChunkPipeline:
         return "\n".join(content_parts)
     
     def _string_to_tool_messages(self, content: str, original_prompt: Union[str, List[Dict[str, str]]]) -> List[Dict[str, str]]:
-        """将字符串转换为tool消息格式"""
+        """Convert string to tool message format"""
         messages = []
         lines = content.split('\n')
         current_role = 'tool'
@@ -432,7 +434,7 @@ class ChunkPipeline:
         for line in lines:
             line = line.strip()
             if line.startswith('[') and ']:' in line:
-                # 保存之前的消息
+                # Save previous message
                 if current_content:
                     msg = {
                         'role': current_role,
@@ -446,13 +448,13 @@ class ChunkPipeline:
                     messages.append(msg)
                     current_content = []
     
-                # 解析新的角色和工具信息
+                # Parse new role and tool information
                 role_end = line.find(']:')
                 role_part = line[1:role_end]
                 content_part = line[role_end + 2:].strip()
     
                 if role_part.startswith('TOOL:'):
-                    # 解析工具消息格式: [TOOL:name:tool_call_id]
+                    # Parse tool message format: [TOOL:name:tool_call_id]
                     current_role = 'tool'
                     tool_parts = role_part.split(':')
                     if len(tool_parts) >= 2:
@@ -469,7 +471,7 @@ class ChunkPipeline:
             else:
                 current_content.append(line)
     
-        # 保存最后的消息
+        # Save last message
         if current_content:
             msg = {
                 'role': current_role,
@@ -482,7 +484,7 @@ class ChunkPipeline:
                     msg['name'] = current_name
             messages.append(msg)
     
-        # 如果没有解析出消息，返回原始格式
+        # If no messages parsed, return original format
         if not messages and isinstance(original_prompt, list):
             return original_prompt
         elif not messages:
@@ -492,7 +494,7 @@ class ChunkPipeline:
 
 
 class AdvancedChunkPipeline(ChunkPipeline):
-    """高级消息拆分管道，支持更复杂的拆分策略"""
+    """Advanced message chunking pipeline, supports more complex chunking strategies"""
     
     def __init__(self, 
                  preserve_order: bool = True,
@@ -500,13 +502,13 @@ class AdvancedChunkPipeline(ChunkPipeline):
                  max_chunk_size: int = None,
                  split_by_tool_name: bool = False):
         """
-        初始化高级拆分管道
+        Initialize advanced chunking pipeline
         
         Args:
-            preserve_order: 是否保持消息原始顺序
-            merge_consecutive: 是否合并连续的同类型消息
-            max_chunk_size: 最大块大小（消息数量）
-            split_by_tool_name: 是否按工具名称进一步拆分tool消息
+            preserve_order: Whether to preserve original message order
+            merge_consecutive: Whether to merge consecutive messages of the same type
+            max_chunk_size: Maximum chunk size (number of messages)
+            split_by_tool_name: Whether to further split tool messages by tool name
         """
         super().__init__(preserve_order, merge_consecutive)
         self.max_chunk_size = max_chunk_size
@@ -516,30 +518,30 @@ class AdvancedChunkPipeline(ChunkPipeline):
                       messages: List[Dict[str, Any]], 
                       metadata: Dict[str, Any] = None) -> ChunkResult:
         """
-        高级消息拆分，支持按大小和工具名称拆分
+        Advanced message splitting, supports splitting by size and tool name
         """
-        # 先进行基础拆分
+        # First perform basic splitting
         basic_result = super().split_messages(messages, metadata)
         
         if not self.max_chunk_size and not self.split_by_tool_name:
             return basic_result
         
-        # 进一步处理块
+        # Further process chunks
         refined_chunks = []
         
         for chunk in basic_result.chunks:
             if chunk.message_type == MessageType.TOOL and self.split_by_tool_name:
-                # 按工具名称拆分tool消息
+                # Split tool messages by tool name
                 tool_chunks = self._split_tool_chunk_by_name(chunk)
                 refined_chunks.extend(tool_chunks)
             elif self.max_chunk_size and len(chunk) > self.max_chunk_size:
-                # 按大小拆分大块
+                # Split large chunks by size
                 size_chunks = self._split_chunk_by_size(chunk)
                 refined_chunks.extend(size_chunks)
             else:
                 refined_chunks.append(chunk)
         
-        # 更新结果
+        # Update result
         basic_result.chunks = refined_chunks
         basic_result.metadata["refined_chunk_count"] = len(refined_chunks)
         basic_result.metadata["split_by_tool_name"] = self.split_by_tool_name
@@ -548,7 +550,7 @@ class AdvancedChunkPipeline(ChunkPipeline):
         return basic_result
     
     def _split_tool_chunk_by_name(self, chunk: MessageChunk) -> List[MessageChunk]:
-        """按工具名称拆分tool块"""
+        """Split tool chunk by tool name"""
         if chunk.message_type != MessageType.TOOL:
             return [chunk]
         
@@ -577,7 +579,7 @@ class AdvancedChunkPipeline(ChunkPipeline):
         return sub_chunks
     
     def _split_chunk_by_size(self, chunk: MessageChunk) -> List[MessageChunk]:
-        """按大小拆分块"""
+        """Split chunk by size"""
         if len(chunk) <= self.max_chunk_size:
             return [chunk]
         
