@@ -1,7 +1,8 @@
+import logging
 import os
 from typing import List
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 import uvicorn
 from .model import (
     AgentModel,
@@ -11,15 +12,39 @@ from .model import (
     ChatRequest,
     ChatResponse,
 )
+from fastapi.staticfiles import StaticFiles
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-app
+
+# Mount static files
+static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "dist")
+if not os.path.exists(static_path):
+    logger.warning(
+        f"WebUI dist files not found at {static_path}, run `npm run build` in the webui directory to generate the static files."
+    )
+    import subprocess
+
+    p = subprocess.Popen(
+        ["npm", "run", "build"],
+        cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui"),
+    )
+    p.wait()
+    if p.returncode != 0:
+        logger.error(f"Failed to build WebUI dist files, error code: {p.returncode}")
+        exit(1)
+    else:
+        logger.info("WebUI dist files built successfully")
+
+logger.info(f"Mounting static files from {static_path}")
+app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
+
 
 @app.get("/")
 async def root():
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    return FileResponse(os.path.join(base_path, "static", "index.html"))
+    return RedirectResponse("/index.html")
 
 
 @app.post("/api/agent/list")
