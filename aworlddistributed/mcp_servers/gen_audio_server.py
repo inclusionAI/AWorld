@@ -77,7 +77,7 @@ def gen_audio(content: str = Field(description="The text content to convert to a
     tts_pitch = os.getenv('AUDIO_TTS_PITCH', '0')
     voice_type = os.getenv('AUDIO_VOICE_TYPE', 'VOICE_CLONE_LAM')
 
-    # 使用获取到的参数构建 task_data
+    #  task_data
     task_data = {
         "sample_rate": sample_rate,
         "audio_format": audio_format,
