@@ -29,7 +29,7 @@ async def list_agents() -> List[AgentModel]:
     ]
 
 
-@router.post("chat/completion")
+@router.post("chat/completions")
 async def chat_completion() -> StreamingResponse:
     import json
     import asyncio
