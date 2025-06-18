@@ -493,7 +493,7 @@ class PlayWrightAgent(Agent):
                     model=self.model_name,
                     # temperature=self.conf.llm_config.llm_temperature,
                     temperature=0.0,
-                    tools=self.tools if self.use_tools_in_prompt and self.tools else None,
+                    tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=kwargs.get("stream", False)
                 )
 
@@ -522,8 +522,8 @@ class PlayWrightAgent(Agent):
                             metadata={
                                 "role": "assistant",
                                 "agent_name": self.name(),
-                                "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
-                                "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
+                                "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
+                                "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
                             }
                         ))
 

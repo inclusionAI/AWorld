@@ -9,6 +9,7 @@ from collections import OrderedDict
 from typing import AsyncGenerator, Dict, Any, List, Union, Callable
 
 import aworld.trace as trace
+from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
@@ -18,19 +19,21 @@ from aworld.core.context.base import Context
 from aworld.core.context.base import ContextUsage
 from aworld.core.contextprocessor.context_processor import ContextProcessor
 from aworld.core.event.base import Message, ToolMessage, Constants
+from aworld.core.event.event_bus import InMemoryEventbus
 from aworld.core.memory import MemoryItem
+from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.tool.tool_desc import get_tool_desc
-from aworld.logs.util import logger
+from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform
 from aworld.memory.main import Memory
-from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
+from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint, PreLLMCallHook
-from aworld.utils.common import convert_to_snake, sync_exec
+from aworld.utils.common import convert_to_snake, sync_exec, nest_dict_counter
 
 
 class Agent(BaseAgent[Observation, List[ActionModel]]):
@@ -70,11 +73,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # init agent context
         context_rule = kwargs.get("context_rule") if kwargs.get("context_rule") else conf.context_rule
         self.update_current_agent_context(context_rule)
+        self.tools_instances = {}
+        self.tools_conf = {}
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
         self.memory = Memory.from_config(
             {"memory_store": options.pop("memory_store") if options.get("memory_store") else "inmemory"})
+
+    def set_tools_instances(self, tools, tools_conf):
+        self.tools_instances = tools
+        self.tools_conf = tools_conf
 
     @property
     def llm(self):
@@ -140,7 +149,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     ):
         messages = []
         if sys_prompt:
-            messages.append({'role': 'system', 'content': sys_prompt if self.use_tools_in_prompt else sys_prompt.format(
+            messages.append({'role': 'system', 'content': sys_prompt if not self.use_tools_in_prompt else sys_prompt.format(
                 tool_list=self.tools)})
 
         content = observation.content
@@ -160,7 +169,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 cur_msg['tool_call_id'] = action_result.tool_id
 
         agent_info = self.context.context_info.get(self.name())
-        if (not self.use_tools_in_prompt and "is_use_tool_prompt" in agent_info and "tool_calls"
+        if (self.use_tools_in_prompt and "is_use_tool_prompt" in agent_info and "tool_calls"
                 in agent_info and agent_prompt):
             cur_msg['content'] = agent_prompt.format(action_list=agent_info["tool_calls"],
                                                      result=content)
@@ -192,7 +201,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """
         messages = []
         if sys_prompt:
-            messages.append({'role': 'system', 'content': sys_prompt if self.use_tools_in_prompt else sys_prompt.format(
+            messages.append({'role': 'system', 'content': sys_prompt if not self.use_tools_in_prompt else sys_prompt.format(
                 tool_list=self.tools)})
 
         histories = self.memory.get_last_n(self.history_messages)
@@ -207,20 +216,20 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if histories:
             # default use the first tool call
             for history in histories:
-                if self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata['tool_calls']:
+                if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata['tool_calls']:
                     messages.append({'role': history.metadata['role'], 'content': history.content,
                                      'tool_calls': [history.metadata["tool_calls"][0]]})
                 else:
                     messages.append({'role': history.metadata['role'], 'content': history.content,
                                      "tool_call_id": history.metadata.get("tool_call_id")})
 
-            if self.use_tools_in_prompt and "tool_calls" in histories[-1].metadata and histories[-1].metadata[
+            if not self.use_tools_in_prompt and "tool_calls" in histories[-1].metadata and histories[-1].metadata[
                 'tool_calls']:
                 tool_id = histories[-1].metadata["tool_calls"][0].id
                 if tool_id:
                     cur_msg['role'] = 'tool'
                     cur_msg['tool_call_id'] = tool_id
-            if not self.use_tools_in_prompt and "is_use_tool_prompt" in histories[-1].metadata and "tool_calls" in \
+            if self.use_tools_in_prompt and "is_use_tool_prompt" in histories[-1].metadata and "tool_calls" in \
                     histories[-1].metadata and agent_prompt:
                 cur_msg['content'] = agent_prompt.format(action_list=histories[-1].metadata["tool_calls"],
                                                          result=content)
@@ -483,7 +492,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     messages=messages,
                     model=self.model_name,
                     temperature=self.conf.llm_config.llm_temperature,
-                    tools=self.tools if self.use_tools_in_prompt and self.tools else None
+                    tools=self.tools if not self.use_tools_in_prompt and self.tools else None
                 )
 
                 logger.info(f"Execute response: {llm_response.message}")
@@ -500,8 +509,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         info = {
                             "role": "assistant",
                             "agent_name": self.name(),
-                            "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
-                            "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
+                            "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
+                            "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
                         }
                         self.memory.add(MemoryItem(
                             content=llm_response.content,
@@ -537,99 +546,53 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             outputs = kwargs.get("outputs")
 
         # Get current step information for trace recording
-        step = kwargs.get("step", 0)
-        exp_id = kwargs.get("exp_id", None)
         source_span = trace.get_current_span()
 
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
         self._finished = False
-        await self.async_desc_transform()
-        images = observation.images if self.conf.use_vision else None
-        if self.conf.use_vision and not images and observation.image:
-            images = [observation.image]
-        messages = self.messages_transform(content=observation.content,
-                                           image_urls=images,
-                                           sys_prompt=self.system_prompt,
-                                           agent_prompt=self.agent_prompt)
+        messages = await self._prepare_llm_input(observation, info, **kwargs)
 
-        self._log_messages(messages)
-        self.memory.add(MemoryItem(
-            content=messages[-1]['content'],
-            metadata={
-                "role": messages[-1]['role'],
-                "agent_name": self.name(),
-                "tool_call_id": messages[-1].get("tool_call_id")
-            }
-        ))
-
-        llm_response = None
-        span_name = f"llm_call_{exp_id}"
         serializable_messages = self._to_serializable(messages)
-        with trace.span(span_name) as llm_span:
-            llm_span.set_attributes({
-                "exp_id": exp_id,
-                "step": step,
-                "messages": json.dumps(serializable_messages, ensure_ascii=False)
-            })
-            if source_span:
-                source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+        llm_response = None
+        if source_span:
+            source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+        try:
+            # update messages to agent context
+            self.update_current_agent_messages(messages)
+            async for event in self.run_hooks(self.context, self.current_agent_context, HookPoint.PRE_LLM_CALL):
+                await event
+            # restore messages
+            messages = self.restore_current_agent_context()
 
-            try:
-                # update messages to agent context
-                self.update_current_agent_messages(messages)
-                async for event in self.run_hooks(self.context, self.current_agent_context, HookPoint.PRE_LLM_CALL):
-                    await event
-                # restore messages
-                messages = self.restore_current_agent_context()
+            llm_response = await self._call_llm_model(observation, messages, info, **kwargs)
 
-                llm_response = await acall_llm_model(
-                    self.llm,
-                    messages=messages,
-                    model=self.model_name,
-                    temperature=self.conf.llm_config.llm_temperature,
-                    tools=self.tools if self.use_tools_in_prompt and self.tools else None,
-                    stream=kwargs.get("stream", False)
-                )
-                if outputs and isinstance(outputs, Outputs):
-                    await outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
+        except Exception as e:
+            logger.warn(traceback.format_exc())
+            raise e
+        finally:
+            if llm_response:
+                # update usage
+                self.context.update_current_agent_context_usage(self.id, llm_response.usage['total_tokens'])
 
-                # Record LLM response
-                llm_span.set_attributes({
-                    "llm_response": json.dumps(llm_response.to_dict(), ensure_ascii=False),
-                    "tool_calls": json.dumps([tool_call.model_dump() for tool_call in
-                                              llm_response.tool_calls] if llm_response.tool_calls else [],
-                                             ensure_ascii=False),
-                    "error": llm_response.error if llm_response.error else ""
-                })
-
-            except Exception as e:
-                logger.warn(traceback.format_exc())
-                llm_span.set_attribute("error", str(e))
-                raise e
-            finally:
-                if llm_response:
-                    # update usage
-                    self.context.update_current_agent_context_usage(self.id, llm_response.usage['total_tokens'])
-
-                    use_tools = self.use_tool_list(llm_response)
-                    is_use_tool_prompt = len(use_tools) > 0
-                    if llm_response.error:
-                        logger.info(f"llm result error: {llm_response.error}")
-                    else:
-                        self.memory.add(MemoryItem(
-                            content=llm_response.content,
-                            metadata={
-                                "role": "assistant",
-                                "agent_name": self.name(),
-                                "tool_calls": llm_response.tool_calls if self.use_tools_in_prompt else use_tools,
-                                "is_use_tool_prompt": is_use_tool_prompt if self.use_tools_in_prompt else False
-                            }
-                        ))
+                use_tools = self.use_tool_list(llm_response)
+                is_use_tool_prompt = len(use_tools) > 0
+                if llm_response.error:
+                    logger.info(f"llm result error: {llm_response.error}")
                 else:
-                    logger.error(f"{self.name()} failed to get LLM response")
-                    raise RuntimeError(f"{self.name()} failed to get LLM response")
+                    self.memory.add(MemoryItem(
+                        content=llm_response.content,
+                        metadata={
+                            "role": "assistant",
+                            "agent_name": self.name(),
+                            "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
+                            "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
+                        }
+                    ))
+            else:
+                logger.error(f"{self.name()} failed to get LLM response")
+                raise RuntimeError(f"{self.name()} failed to get LLM response")
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
@@ -680,6 +643,245 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     yield msg
             except:
                 logger.warning(f"{hook.point()} {hook.name()} execute fail.")
+
+    async def llm_and_tool_execution(self, observation: Observation, messages: List[Dict[str, str]] = [], info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
+        """Perform combined LLM call and tool execution operations.
+
+        Args:
+            observation: The state observed from the environment
+            info: Extended information to assist the agent in decision-making
+            **kwargs: Other parameters
+
+        Returns:
+            ActionModel sequence. If a tool is executed, includes the tool execution result.
+        """
+        # Get current step information for trace recording
+        llm_response = await self._call_llm_model(observation, messages, info, **kwargs)
+        if llm_response:
+            use_tools = self.use_tool_list(llm_response)
+            is_use_tool_prompt = len(use_tools) > 0
+            if llm_response.error:
+                logger.info(f"llm result error: {llm_response.error}")
+            else:
+                self.memory.add(MemoryItem(
+                    content=llm_response.content,
+                    metadata={
+                        "role": "assistant",
+                        "agent_name": self.name(),
+                        "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
+                        "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
+                    }
+                ))
+        else:
+            logger.error(f"{self.name()} failed to get LLM response")
+            raise RuntimeError(f"{self.name()} failed to get LLM response")
+
+        agent_result = sync_exec(self.resp_parse_func, llm_response)
+        if not agent_result.is_call_tool:
+            self._finished = True
+            return agent_result.actions
+        else:
+            result = await self._execute_tool(agent_result.actions)
+            return result
+
+    async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs):
+        """Prepare LLM input
+        Args:
+            observation: The state observed from the environment
+            info: Extended information to assist the agent in decision-making
+            **kwargs: Other parameters
+        """
+        await self.async_desc_transform()
+        images = observation.images if self.conf.use_vision else None
+        if self.conf.use_vision and not images and observation.image:
+            images = [observation.image]
+        messages = self.messages_transform(content=observation.content,
+                                           image_urls=images,
+                                           sys_prompt=self.system_prompt,
+                                           agent_prompt=self.agent_prompt)
+
+        self._log_messages(messages)
+        self.memory.add(MemoryItem(
+            content=messages[-1]['content'],
+            metadata={
+                "role": messages[-1]['role'],
+                "agent_name": self.name(),
+                "tool_call_id": messages[-1].get("tool_call_id")
+            }
+        ))
+        return messages
+
+
+    async def _call_llm_model(self, observation: Observation, messages: List[Dict[str, str]] = [], info: Dict[str, Any] = {}, **kwargs) -> ModelResponse:
+        """Perform LLM call
+        Args:
+            observation: The state observed from the environment
+            info: Extended information to assist the agent in decision-making
+            **kwargs: Other parameters
+        Returns:
+            LLM response
+        """
+        outputs = None
+        if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
+            outputs = kwargs.get("outputs")
+        if not messages:
+            messages = await self._prepare_llm_input(observation, info, **kwargs)
+
+        llm_response = None
+        source_span = trace.get_current_span()
+        serializable_messages = self._to_serializable(messages)
+
+        if source_span:
+            source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+
+        try:
+            stream_mode = kwargs.get("stream", False)
+            if stream_mode:
+                llm_response = ModelResponse(id="", model="", content="", tool_calls=[])
+                resp_stream = acall_llm_model_stream(
+                    self.llm,
+                    messages=messages,
+                    model=self.model_name,
+                    temperature=self.conf.llm_config.llm_temperature,
+                    tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
+                    stream=True
+                )
+
+                async def async_call_llm(resp_stream, json_parse=False):
+                    llm_resp = ModelResponse(id="", model="", content="", tool_calls=[])
+
+                    # Async streaming with acall_llm_model
+                    async def async_generator():
+                        async for chunk in resp_stream:
+                            if chunk.content:
+                                llm_resp.content += chunk.content
+                                yield chunk.content
+                            if chunk.tool_calls:
+                                llm_resp.tool_calls.extend(chunk.tool_calls)
+                            if chunk.error:
+                                llm_resp.error = chunk.error
+                            llm_resp.id = chunk.id
+                            llm_resp.model = chunk.model
+                            llm_resp.usage = nest_dict_counter(llm_resp.usage, chunk.usage)
+
+                    return MessageOutput(source=async_generator(), json_parse=json_parse), llm_resp
+
+
+                output, response = await async_call_llm(resp_stream)
+                llm_response = response
+
+                if InMemoryEventbus.instance() and resp_stream:
+                    output_message = Message(
+                        category=Constants.OUTPUT,
+                        payload=output,
+                        sender=self.name(),
+                        session_id=Context.instance().session_id
+                    )
+                    await InMemoryEventbus.instance().publish(output_message)
+                elif not self.event_driven and outputs:
+                    outputs.append(output)
+
+            else:
+                llm_response = await acall_llm_model(
+                    self.llm,
+                    messages=messages,
+                    model=self.model_name,
+                    temperature=self.conf.llm_config.llm_temperature,
+                    tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
+                    stream=kwargs.get("stream", False)
+                )
+                if InMemoryEventbus.instance() and llm_response:
+                    await InMemoryEventbus.instance().publish(Message(
+                        category=Constants.OUTPUT,
+                        payload=llm_response,
+                        sender=self.name(),
+                        session_id=Context.instance().session_id
+                    ))
+                elif not self.event_driven and outputs:
+                    outputs.append(llm_response)
+
+            logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
+
+
+        except Exception as e:
+            logger.warn(traceback.format_exc())
+            raise e
+        finally:
+            return llm_response
+
+    async def _execute_tool(self, actions: List[ActionModel]) -> Any:
+        """Execute tool calls
+
+        Args:
+            action: The action(s) to execute
+
+        Returns:
+            The result of tool execution
+        """
+        tool_actions = []
+        for act in actions:
+            if is_agent(act):
+                continue
+            else:
+                tool_actions.append(act)
+
+        msg = None
+        terminated = False
+        # group action by tool name
+        tool_mapping = dict()
+        reward = 0.0
+        # Directly use or use tools after creation.
+        for act in tool_actions:
+            if not self.tools_instances or (self.tools_instances and act.tool_name not in self.tools):
+                # Dynamically only use default config in module.
+                conf = self.tools_conf.get(act.tool_name)
+                if not conf:
+                    conf = ToolConfig(exit_on_failure=self.task.conf.get('exit_on_failure'))
+                tool = ToolFactory(act.tool_name, conf=conf, asyn=conf.use_async if conf else False)
+                if isinstance(tool, Tool):
+                    tool.reset()
+                elif isinstance(tool, AsyncTool):
+                    await tool.reset()
+                tool_mapping[act.tool_name] = []
+                self.tools_instances[act.tool_name] = tool
+            if act.tool_name not in tool_mapping:
+                tool_mapping[act.tool_name] = []
+            tool_mapping[act.tool_name].append(act)
+
+        observation = None
+
+        for tool_name, action in tool_mapping.items():
+            # Execute action using browser tool and unpack all return values
+            if isinstance(self.tools_instances[tool_name], Tool):
+                message = self.tools_instances[tool_name].step(action)
+            elif isinstance(self.tools_instances[tool_name], AsyncTool):
+                # todo sandbox
+                message = await self.tools_instances[tool_name].step(action, agent=self)
+            else:
+                logger.warning(f"Unsupported tool type: {self.tools_instances[tool_name]}")
+                continue
+
+            observation, reward, terminated, _, info = message.payload
+
+
+            # Check if there's an exception in info
+            if info.get("exception"):
+                color_log(f"Agent {self.name()} _execute_tool failed with exception: {info['exception']}", color=Color.red)
+                msg = f"Agent {self.name()} _execute_tool failed with exception: {info['exception']}"
+            logger.info(f"Agent {self.name()} _execute_tool finished by tool action: {action}.")
+            log_ob = Observation(content='' if observation.content is None else observation.content,
+                                 action_result=observation.action_result)
+            trace_logger.info(f"{tool_name} observation: {log_ob}", color=Color.green)
+            self.memory.add(MemoryItem(
+                content=observation.content,
+                metadata={
+                    "role": "tool",
+                    "agent_name": self.name(),
+                    "tool_call_id": action[0].tool_id
+                }
+            ))
+        return [ActionModel(agent_name=self.name(), policy_info=observation.content)]
+
 
 @HookFactory.register(name="PreLLMCallContextProcessHook",
                       desc="PreLLMCallContextProcessHook")
