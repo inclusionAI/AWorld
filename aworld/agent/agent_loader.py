@@ -4,7 +4,7 @@ import sys
 import traceback
 import logging
 from typing import List
-from .model import AgentModel
+from .data_model import AgentModel
 
 logger = logging.getLogger(__name__)
 
@@ -12,12 +12,29 @@ _agent_cache = {}
 
 
 def list_agents() -> List[AgentModel]:
+    """
+    List all cached agents
+
+    Returns:
+        List[AgentModel]: The list of agent models
+    """
     if len(_agent_cache) == 0:
         [_agent_cache.add(m.agent_name, m) for m in _list_agents()]
     return _agent_cache
 
-def get_agent_model(agent_name):
+
+def get_agent_model(agent_name) -> AgentModel:
+    """
+    Get the agent model by agent name
+
+    Args:
+        agent_name: The name of the agent
+
+    Returns:
+        AgentModel: The agent model
+    """
     return _agent_cache[agent_name]
+
 
 def _list_agents() -> List[AgentModel]:
     agents_dir = os.path.join(os.getcwd(), "agent_deploy")
@@ -28,19 +45,29 @@ def _list_agents() -> List[AgentModel]:
 
     try:
         agents = []
-        for item in os.listdir(agents_dir):
-            item_path = os.path.join(agents_dir, item)
-            if os.path.isdir(item_path):
-                agent_file = os.path.join(item_path, "agent.py")
+        for agent_id in os.listdir(agents_dir):
+            agent_path = os.path.join(agents_dir, agent_id)
+            if os.path.isdir(agent_path):
+                agent_file = os.path.join(agent_path, "agent.py")
                 if os.path.exists(agent_file):
                     try:
-                        AgentModel(agent_id=item, agent_in)
-                        agents.append(_get_agent_instance(item))
+                        agent_model = AgentModel(
+                            agent_id=agent_id, agent_path=agent_path
+                        )
+                        agent_model.agent_instance = _get_agent_instance(agent_id)
+                        agent_model.agent_name = agent_model.agent_instance.agent_name()
+                        agent_model.agent_description = (
+                            agent_model.agent_instance.agent_description()
+                        )
+                        agents.append(agent_model)
                     except Exception as e:
                         logger.error(
-                            f"Error loading agent {item}: {traceback.format_exc()}"
+                            f"Error loading agent {agent_id}: {traceback.format_exc()}"
                         )
                         continue
+                else:
+                    logger.warning(f"Agent {agent_id} does not have agent.py file")
+                    continue
         return agents
     except OSError as e:
         logger.error(f"Error listing agents: {traceback.format_exc()}")

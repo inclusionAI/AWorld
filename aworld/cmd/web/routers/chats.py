@@ -1,13 +1,14 @@
 import logging
+import json
 from typing import List
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from aworld.agent.model import (
+from aworld.agent.data_model import (
     AgentModel,
-    ChatCompletionChoice,
-    ChatCompletionMessage,
-    ChatCompletionResponse,
+    ChatCompletionRequest,
 )
+from aworld.agent import agent_loader, agent_executor
+
 
 logger = logging.getLogger(__name__)
 
@@ -18,40 +19,15 @@ prefix = "/api/agent"
 @router.get("list")
 @router.get("models")
 async def list_agents() -> List[AgentModel]:
-    return [
-        AgentModel(
-            agent_id="agent1",
-            agent_name="agent1",
-            agent_description="agent1",
-            agent_type="agent1",
-            agent_status="agent1",
-        )
-    ]
+    return agent_loader.list_agents()
 
 
 @router.post("chat/completions")
-async def chat_completion() -> StreamingResponse:
-    import json
-    import asyncio
-
+async def chat_completion(form_data: ChatCompletionRequest) -> StreamingResponse:
     async def generate_stream():
-        for i in range(10):
-            response = ChatCompletionResponse(
-                choices=[
-                    ChatCompletionChoice(
-                        index=i,
-                        delta=ChatCompletionMessage(
-                            role="assistant",
-                            content=f"## Hello, world! {i}\n\n",
-                        ),
-                    )
-                ]
-            )
+        async for chunk in agent_executor.stream_run(form_data):
+            yield f"data: {json.dumps(chunk.model_dump())}\n\n"
 
-            yield f"data: {json.dumps(response.model_dump())}\n\n"
-            await asyncio.sleep(1)
-
-    # 返回SSE流式响应
     return StreamingResponse(
         generate_stream(),
         media_type="text/event-stream",

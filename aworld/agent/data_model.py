@@ -1,14 +1,17 @@
 from typing import List
 import uuid
 from pydantic import BaseModel, Field
+from .base import BaseAWorldAgent
 
 
 class AgentModel(BaseModel):
     agent_id: str = Field(..., description="The agent id")
     agent_name: str = Field(..., description="The agent name")
     agent_description: str = Field(..., description="The agent description")
-    agent_type: str = Field(..., description="The agent type")
-    agent_status: str = Field(..., description="The agent status")
+    agent_path: str = Field(..., description="The agent path")
+    agent_instance: BaseAWorldAgent = Field(
+        ..., description="The agent module instance", exclude=True
+    )
 
 
 class ChatCompletionMessage(BaseModel):
