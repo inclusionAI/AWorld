@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "amap-amap-sse": {
-      "url": "https://mcp.amap.com/sse?key=08c925b190caf1cd566f2cf4c4517fdb",
+      "url": "https://mcp.amap.com/sse?key=${AMAP_API_KEY}",
       "timeout": 5.0,
       "sse_read_timeout": 300.0
     },
@@ -10,7 +10,7 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "/Users/wuhulala/PycharmProjects/AWorld/examples/stream"
+        "../examples"
       ]
     }
   }
