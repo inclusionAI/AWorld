@@ -2,7 +2,7 @@ import logging
 from typing import List
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from aworld.agents.model import (
+from aworld.agent.model import (
     AgentModel,
     ChatCompletionChoice,
     ChatCompletionMessage,
