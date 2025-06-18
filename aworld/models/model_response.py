@@ -70,7 +70,7 @@ class ToolCall(BaseModel):
         arguments = function_data.get('arguments')
         # Ensure arguments is a string
         if arguments is not None and not isinstance(arguments, str):
-            arguments = json.dumps(arguments)
+            arguments = json.dumps(arguments, ensure_ascii=False)
 
         function = Function(name=name, arguments=arguments)
 
@@ -99,7 +99,7 @@ class ToolCall(BaseModel):
         }
 
     def __repr__(self):
-        return json.dumps(self.to_dict())
+        return json.dumps(self.to_dict(), ensure_ascii=False)
 
     def __iter__(self):
         """
@@ -416,7 +416,7 @@ class ModelResponse:
                         "function": {
                             "name": delta.tool_use.name,
                             "arguments": delta.tool_use.input if isinstance(delta.tool_use.input, str) else json.dumps(
-                                delta.tool_use.input)
+                                delta.tool_use.input, ensure_ascii=False)
                         }
                     }
                     processed_tool_calls.append(ToolCall.from_dict(tool_call_dict))

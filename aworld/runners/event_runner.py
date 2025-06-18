@@ -16,6 +16,7 @@ from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners.handler.agent import DefaultAgentHandler, AgentHandler
 from aworld.runners.handler.base import DefaultHandler
+from aworld.runners.handler.output import DefaultOutputHandler
 from aworld.runners.handler.task import DefaultTaskHandler, TaskHandler
 from aworld.runners.handler.tool import DefaultToolHandler, ToolHandler
 
@@ -52,6 +53,7 @@ class TaskEventRunner(TaskRunner):
 
         # register agent handler
         for _, agent in self.swarm.agents.items():
+            agent.set_tools_instances(self.tools, self.tools_conf)
             if agent.handler:
                 await self.event_mng.register(Constants.AGENT, agent.name(), agent.handler)
             else:
@@ -99,7 +101,8 @@ class TaskEventRunner(TaskRunner):
         else:
             self.handlers = [DefaultAgentHandler(runner=self),
                              DefaultToolHandler(runner=self),
-                             DefaultTaskHandler(runner=self)]
+                             DefaultTaskHandler(runner=self),
+                             DefaultOutputHandler(runner=self)]
 
     async def _common_process(self, message: Message) -> List[Message]:
         event_bus = self.event_mng.event_bus
@@ -184,25 +187,40 @@ class TaskEventRunner(TaskRunner):
         msg = None
         answer = None
 
-        while True:
+        try:
+            while True:
+                if await self.is_stopped():
+                    await self.event_mng.done()
+                    logger.info("stop task...")
+                    if self._task_response is None:
+                        # send msg to output
+                        self._task_response = TaskResponse(msg=msg,
+                                                           answer=answer,
+                                                           success=True if not msg else False,
+                                                           id=self.task.id,
+                                                           time_cost=(time.time() - start),
+                                                           usage=self.context.token_usage)
+                    break
+
+                # consume message
+                message: Message = await self.event_mng.consume()
+
+                # use registered handler to process message
+                await self._common_process(message)
+        except Exception as e:
+            logger.error(f"consume message fail. {traceback.format_exc()}")
+        finally:
             if await self.is_stopped():
-                await self.event_mng.done()
-                logger.info("stop task...")
-                if self._task_response is None:
-                    # send msg to output
-                    self._task_response = TaskResponse(msg=msg,
-                                                       answer=answer,
-                                                       success=True if not msg else False,
-                                                       id=self.task.id,
-                                                       time_cost=(time.time() - start),
-                                                       usage=self.context.token_usage)
-                break
+                await self.task.outputs.mark_completed()
+                # todo sandbox cleanup
+                if self.swarm and hasattr(self.swarm, 'agents') and self.swarm.agents:
+                    for agent_name, agent in self.swarm.agents.items():
+                        try:
+                            if hasattr(agent, 'sandbox') and agent.sandbox:
+                                await agent.sandbox.cleanup()
+                        except Exception as e:
+                            logger.warning(f"event_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
 
-            # consume message
-            message: Message = await self.event_mng.consume()
-
-            # use registered handler to process message
-            await self._common_process(message)
 
     async def do_run(self, context: Context = None):
         if not self.swarm.initialized:
