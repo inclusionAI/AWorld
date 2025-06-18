@@ -14,46 +14,49 @@ from aworld.logs.util import logger
 
 mcp = FastMCP("gen-audio-server")
 
+
 def calculate_sha256(plain_text):
     """
     Calculate SHA-256 digest of a string.
-    
+
     Args:
         plain_text (str): The text to digest
-        
+
     Returns:
         str: Hexadecimal representation of the digest
     """
     try:
         # Create SHA-256 hash object
         sha256 = hashlib.sha256()
-        
+
         # Update with the bytes of the plain text (UTF-8 encoded)
         sha256.update(plain_text.encode('utf-8'))
-        
+
         # Get the digest in bytes
         digest_bytes = sha256.digest()
-        
+
         # Convert each byte to hexadecimal and join
         hex_digest = ''.join([f'{b:02x}' for b in digest_bytes])
-        
+
         return hex_digest
     except Exception as e:
         logger.warning(f"Error calculating SHA-256 digest: {e}")
         return ""
+
 
 def generate_headers(app_key, secret):
     """Generate headers with fresh timestamp and digest"""
     timestamp = str(int(time.time() * 1000))
     plain_text = f"{app_key}_{secret}_{timestamp}"
     digest = calculate_sha256(plain_text)
-    
+
     return {
         'Content-Type': 'application/json',
         'Alipay-Mf-Appkey': app_key,
         'Alipay-Mf-Digest': digest,
         'Alipay-Mf-Timestamp': timestamp
     }
+
 
 @mcp.tool(description="Generate audio from text content")
 def gen_audio(content: str = Field(description="The text content to convert to audio")) -> Any:
@@ -65,7 +68,7 @@ def gen_audio(content: str = Field(description="The text content to convert to a
     if not (task_url and query_url and app_key and secret):
         logger.warning(f"Query failed: task_url, query_url, app_key, secret parameters incomplete")
         return None
-    
+
     # Generate initial headers
     headers = generate_headers(app_key, secret)
 
@@ -77,7 +80,7 @@ def gen_audio(content: str = Field(description="The text content to convert to a
     tts_pitch = os.getenv('AUDIO_TTS_PITCH', '0')
     voice_type = os.getenv('AUDIO_VOICE_TYPE', 'VOICE_CLONE_LAM')
 
-    #  task_data
+    # task_data
     task_data = {
         "sample_rate": sample_rate,
         "audio_format": audio_format,
@@ -88,60 +91,60 @@ def gen_audio(content: str = Field(description="The text content to convert to a
         "tts_text": content,
         "voice_type": voice_type,
     }
-    
+
     try:
         # Step 1: Submit task to generate audio
-        
+
         response = requests.post(task_url, headers=headers, json=task_data)
-        
+
         if response.status_code != 200:
             return None
-        
+
         result = response.json()
-        
+
         # Check if task was successfully submitted
         if not result.get("success"):
             return None
-        
+
         # Extract task ID
         task_id = result.get("data")
         if not task_id:
             return None
-        
+
         logger.info(f"Task submitted successfully. Task ID: {task_id}")
-        
+
         # Step 2: Poll for results
-        max_attempts = 10
-        wait_time = 5  # seconds
+        max_attempts = int(os.getenv('AUDIO_RETRY_TIMES', 10))
+        wait_time = int(os.getenv('AUDIO_SLEEP_TIME', 5))
         query_url = query_url + f"?async_task_id={task_id}"
-        
+
         for attempt in range(max_attempts):
             # Wait before polling
             time.sleep(wait_time)
             logger.info(f"Polling attempt {attempt + 1}/{max_attempts}...")
-            
+
             # Generate fresh headers for each poll request
             query_headers = generate_headers(app_key, secret)
-            
+
             # Poll for results
             query_response = requests.post(query_url, headers=query_headers)
-            
+
             if query_response.status_code != 200:
                 logger.info(f"Poll request failed with status code {query_response.status_code}")
                 continue
-            
+
             try:
                 query_result = query_response.json()
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse response as JSON: {e}")
                 continue
-            
+
             # Check if processing is complete
             if query_result.get("success") and query_result.get("data", {}).get("status") == "ST_SUCCESS":
                 # Extract audio URL based on the correct JSON structure
                 # Navigate through the nested structure: data -> result -> result -> audioUrl
                 audio_url = query_result.get("data", {}).get("result", {}).get("result", {}).get("audioUrl")
-                
+
                 if audio_url:
                     return json.dumps({"audio_data": audio_url})
                 else:
@@ -155,11 +158,11 @@ def gen_audio(content: str = Field(description="The text content to convert to a
                 # Any other status, return None
                 logger.warning(f"Unexpected status: {query_result.get('data', {}).get('status')}")
                 return None
-        
+
         # If we get here, polling timed out
         logger.warning("Polling timed out after maximum attempts")
         return None
-            
+
     except Exception as e:
         import traceback
         logger.warning(f"Exception occurred: {e}")
@@ -183,11 +186,12 @@ def __call__():
     """
     main()
 
+
 sys.modules[__name__].__call__ = __call__
 
 if __name__ == "__main__":
     main()
     # For testing without MCP
-    #result = gen_audio("hello ,this is test")
+    # result = gen_audio("hello ,this is test")
     # print("\nFinal Result:")
     # print(result)

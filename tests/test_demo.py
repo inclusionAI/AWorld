@@ -1,4 +1,11 @@
+import unittest
 
 
-if __name__ == "__main__":
-    print("hello world")
+
+class TestShellTool(unittest.TestCase):
+
+
+    def test_init(self):
+        """Test initialization"""
+        print("Test initialization")
+
