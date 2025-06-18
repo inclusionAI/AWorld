@@ -168,7 +168,8 @@ class AgentConfig(BaseConfig):
     agent_prompt: Optional[str] = None
     working_dir: Optional[str] = None
     enable_recording: bool = False
-    use_tools_in_prompt: bool = True
+    use_tools_in_prompt: bool = False
+    exit_on_failure: bool = False
     ext: dict = {}
     human_tools: List[str] = []
 
@@ -181,6 +182,7 @@ class TaskConfig(BaseConfig):
     max_steps: int = 100
     max_actions_per_step: int = 10
     stream: bool = False
+    exit_on_failure: bool = False
     ext: dict = {}
 
 
@@ -193,6 +195,7 @@ class ToolConfig(BaseConfig):
     llm_config: ModelConfig = None
     reuse: bool = False
     use_async: bool = False
+    exit_on_failure: bool = False
     ext: dict = {}
 
 
