@@ -5,6 +5,16 @@
       "timeout": 5.0,
       "sse_read_timeout": 300.0
     },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ],
+      "env": {
+        "PLAYWRIGHT_TIMEOUT": "120000",
+        "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+      }
+    },
     "filesystem": {
       "command": "npx",
       "args": [
