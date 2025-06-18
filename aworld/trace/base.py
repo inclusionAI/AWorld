@@ -420,5 +420,4 @@ def log_trace_error():
     """
     trace_logger.exception(
         'This is logging the trace internal error.',
-        exc_info=sys.exc_info(),
     )

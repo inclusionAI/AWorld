@@ -196,7 +196,6 @@ class LLMProviderBase(abc.ABC):
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When async provider is not initialized.
         """
-        return None
 
     def _accumulate_chunk_usage(self, usage: Dict[str, int], chunk_usage: Dict[str, int]):
         """Accumulate usage statistics from chunk into the main usage dictionary.
