@@ -1,6 +1,5 @@
 import click
-from .web_legacy import web_server as legacy_web_server
-from .web import web_server, api_server
+
 
 
 @click.group()
@@ -21,6 +20,7 @@ def main(*args, **kwargs):
 )
 @click.argument("args", nargs=-1)
 def main_web(port, args=None, **kwargs):
+    from .web import web_server
     web_server.run_server(port, args, **kwargs)
 
 
@@ -30,6 +30,7 @@ def main_web(port, args=None, **kwargs):
 )
 @click.argument("args", nargs=-1)
 def main_api(port, args=None, **kwargs):
+    from .web import api_server
     api_server.run_server(port, args, **kwargs)
 
 
@@ -39,7 +40,8 @@ def main_api(port, args=None, **kwargs):
 )
 @click.argument("args", nargs=-1)
 def main_web_legacy(port, args=None, **kwargs):
-    legacy_web_server.run_web_server(port, args, **kwargs)
+    from .web_legacy import web_server
+    web_server.run_web_server(port, args, **kwargs)
 
 if __name__ == "__main__":
     main()
