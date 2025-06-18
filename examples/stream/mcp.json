@@ -1,26 +1,16 @@
 {
   "mcpServers": {
     "amap-amap-sse": {
-      "url": "https://mcp.amap.com/sse?key=${AMAP_API_KEY}",
+      "url": "https://mcp.amap.com/sse?key=08c925b190caf1cd566f2cf4c4517fdb",
       "timeout": 5.0,
       "sse_read_timeout": 300.0
-    },
-    "playwright": {
-      "command": "npx",
-      "args": [
-        "@playwright/mcp@latest"
-      ],
-      "env": {
-        "PLAYWRIGHT_TIMEOUT": "120000",
-        "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-      }
     },
     "filesystem": {
       "command": "npx",
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "../examples"
+        "/Users/wuhulala/PycharmProjects/AWorld/examples/stream"
       ]
     }
   }

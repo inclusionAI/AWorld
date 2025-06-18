@@ -207,7 +207,7 @@ class InMemoryWithPersistStorage(TraceStorage):
             self._traces[span_model.trace_id].append(span_model)
             self._pending_spans.append({
                 "trace_id": span_model.trace_id,
-                "span": span_model.json()
+                "span": span_model.model_dump_json()
             })
         self._start_persist_thread()
 

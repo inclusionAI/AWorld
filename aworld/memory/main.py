@@ -1,29 +1,72 @@
 from typing import Optional
-from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore
+from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
 
 
 class InMemoryMemoryStore(MemoryStore):
     def __init__(self):
-        self.memory_items = []  # Initialize as a list
+        self.memory_items = []
 
     def add(self, memory_item: MemoryItem):
-        self.memory_items.append(memory_item)  # Append memory item to the list
+        self.memory_items.append(memory_item)
 
     def get(self, memory_id) -> Optional[MemoryItem]:
-        return next((item for item in self.memory_items if item.id == memory_id), None)  # Find item by ID
+        return next((item for item in self.memory_items if item.id == memory_id), None)
 
-    def get_first(self) -> Optional[MemoryItem]:
-        if len(self.memory_items) == 0:
+    def get_first(self, filters: dict = None) -> Optional[MemoryItem]:
+        """
+        Get the first memory item.
+        """
+        filtered_items = self.get_all(filters)
+        if len(filtered_items) == 0:
             return None
-        return self.memory_items[0]
+        return filtered_items[0]
 
-    def total_rounds(self) -> int:
-        return len(self.memory_items)
+    def total_rounds(self, filters: dict = None) -> int:
+        """
+        Get the total number of rounds.
+        """
+        return len(self.get_all(filters))
 
-    def get_all(self) -> list[MemoryItem]:
-        return self.memory_items  # Return all items directly
+    def get_all(self, filters: dict = None) -> list[MemoryItem]:
+        """
+        Filter memory items based on filters.
+        """
+        filtered_items = [item for item in self.memory_items if self._filter_memory_item(item, filters)]
+        return filtered_items
+    
+    def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None) -> bool:
+        if memory_item.deleted:
+            return False
+        if filters is None:
+            return True
+        if filters.get('user_id') is not None:
+            if memory_item.metadata.get('user_id') is None:
+                return False
+            if memory_item.metadata.get('user_id') != filters['user_id']:
+                return False
+        if filters.get('agent_id') is not None:
+            if memory_item.metadata.get('agent_id') is None:
+                return False
+            if memory_item.metadata.get('agent_id') != filters['agent_id']:
+                return False
+        if filters.get('task_id') is not None:
+            if memory_item.metadata.get('task_id') is None:
+                return False
+            if memory_item.metadata.get('task_id') != filters['task_id']:
+                return False
+        if filters.get('session_id') is not None:
+            if memory_item.metadata.get('session_id') is None:
+                return False
+            if memory_item.metadata.get('session_id') != filters['session_id']:
+                return False
+        if filters.get('memory_type') is not None:
+            if memory_item.memory_type is None:
+                return False
+            if memory_item.memory_type != filters['memory_type']:
+                return False
+        return True
 
-    def get_last_n(self, last_rounds) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, filters: dict = None) -> list[MemoryItem]:
         return self.memory_items[-last_rounds:]  # Get the last n items
 
     def update(self, memory_item: MemoryItem):
@@ -33,14 +76,44 @@ class InMemoryMemoryStore(MemoryStore):
                 break
 
     def delete(self, memory_id):
-        self.memory_items = [item for item in self.memory_items if item.id != memory_id]  # Remove item by ID
+        exists = self.get(memory_id)
+        if exists:
+            exists.deleted = True
 
-    def retrieve(self, query, filters: dict) -> list[MemoryItem]:
-        return [memory_item for memory_item in self.memory_items if
-                memory_item.content.lower().find(query.lower()) != -1]
+    def history(self, memory_id) -> list[MemoryItem] | None:
+        exists = self.get(memory_id)
+        if exists:
+            return exists.histories
+        return None
 
-    def history(self, memory_id) -> list[MemoryItem]:
-        return [memory_item for memory_item in self.memory_items if memory_item.id == memory_id]
+
+class MemoryFactory:
+
+    @classmethod
+    def from_config(cls, config: MemoryConfig) -> "MemoryBase":
+        """
+        Initialize a Memory instance from a configuration dictionary.
+
+        Args:
+            config (dict): Configuration dictionary.
+
+        Returns:
+            Memory: Memory instance.
+        """
+        if config.provider == "inmemory":
+            return Memory(
+                memory_store=InMemoryMemoryStore(),
+                enable_summary=config.enable_summary,
+                summary_rounds=config.summary_rounds
+            )
+        elif config.provider == "mem0":
+            from aworld.memory.mem0.mem0_memory import Mem0Memory
+            return Mem0Memory(
+                memory_store=InMemoryMemoryStore(),
+                config=config
+            )
+        else:
+            raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
 
 
 class Memory(MemoryBase):
@@ -51,27 +124,7 @@ class Memory(MemoryBase):
         self.summary_rounds = kwargs.get("summary_rounds", 10)
         self.enable_summary = enable_summary
 
-    @classmethod
-    def from_config(cls, config: dict) -> "Memory":
-        """
-        Initialize a Memory instance from a configuration dictionary.
-
-        Args:
-            config (dict): Configuration dictionary.
-
-        Returns:
-            Memory: Memory instance.
-        """
-        if config.get("memory_store") == "inmemory":
-            return cls(
-                memory_store=InMemoryMemoryStore(),
-                enable_summary=config.get("enable_summary", False),
-                summary_rounds=config.get("summary_rounds", 5)
-            )
-        else:
-            raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
-
-    def add(self, memory_item: MemoryItem):
+    def add(self, memory_item: MemoryItem, filters: dict = None):
         self.memory_store.add(memory_item)
 
         # Check if we need to create or update summary
@@ -143,16 +196,19 @@ class Memory(MemoryBase):
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)
 
+    def summary_content(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+        return to_be_summary.content
+
     def delete(self, memory_id):
         self.memory_store.delete(memory_id)
 
     def get(self, memory_id) -> Optional[MemoryItem]:
         return self.memory_store.get(memory_id)
 
-    def get_all(self) -> list[MemoryItem]:
+    def get_all(self, filters: dict = None) -> list[MemoryItem]:
         return self.memory_store.get_all()
 
-    def get_last_n(self, last_rounds, add_first_message=True) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None) -> list[MemoryItem]:
         """
         Get last n memories.
 
@@ -204,18 +260,3 @@ class Memory(MemoryBase):
             memory_items.insert(0, self.memory_store.get_first())
 
         return result
-
-    def retrieve(self, query, filters: dict) -> list[MemoryItem]:
-        return self.memory_store.retrieve(query, filters)
-
-    def history(self, memory_id) -> list[MemoryItem]:
-        return self.memory_store.history(memory_id)
-
-    def get_summary(self) -> list[MemoryItem]:
-        """
-        Get all summaries.
-
-        Returns:
-            list[MemoryItem]: List of summary items.
-        """
-        return list(self.summary.values())
