@@ -17,27 +17,29 @@ async def root():
     return RedirectResponse("/index.html")
 
 
-from .routers import chats,workspaces
+from .routers import chats, workspaces
 
 app.include_router(chats.router, prefix=chats.prefix)
 app.include_router(workspaces.router, prefix=workspaces.prefix)
 
-def build_webui() -> str:
+
+def build_webui(force_rebuild: bool = False) -> str:
     webui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui")
-
-    logger.warning(f"Build WebUI at {webui_path} ...")
-
-    p = subprocess.Popen(
-        ["sh", "-c", "npm install && npm run build"],
-        cwd=webui_path,
-    )
-    p.wait()
-    if p.returncode != 0:
-        raise Exception(f"Failed to build WebUI, error code: {p.returncode}")
-    else:
-        logger.info("WebUI build successfully")
-
     static_path = os.path.join(webui_path, "dist")
+
+    if (not os.path.exists(static_path)) or force_rebuild:
+        logger.warning(f"Build WebUI at {webui_path} ...")
+
+        p = subprocess.Popen(
+            ["sh", "-c", "npm install && npm run build"],
+            cwd=webui_path,
+        )
+        p.wait()
+        if p.returncode != 0:
+            raise Exception(f"Failed to build WebUI, error code: {p.returncode}")
+        else:
+            logger.info("WebUI build successfully")
+
     return static_path
 
 
