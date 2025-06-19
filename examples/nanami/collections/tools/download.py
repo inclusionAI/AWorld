@@ -81,6 +81,15 @@ class DownloadCollection(ActionCollection):
         self.max_file_size = 1024 * 1024 * 1024  # 1GB limit
         self.supported_schemes = {"http", "https"}
 
+        self.headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/91.0.4472.124 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
         self._color_log("Download service initialized", Color.green, "debug")
         self._color_log(f"Workspace: {self.workspace}", Color.blue, "debug")
 
@@ -275,7 +284,6 @@ class DownloadCollection(ActionCollection):
         ),
         overwrite: bool = Field(default=False, description="Whether to overwrite existing files (default: False)"),
         timeout: int = Field(default=60, description="Download timeout in seconds (default: 60)"),
-        headers: dict[str, str] | None = Field(default=None, description="Optional custom headers for the request"),
         output_format: str = Field(default="markdown", description="Output format: 'markdown', 'json', or 'text'"),
     ) -> ActionResponse:
         """Download a file from a URL with comprehensive options and controls.
@@ -283,7 +291,6 @@ class DownloadCollection(ActionCollection):
         This tool provides secure file download capabilities with:
         - HTTP/HTTPS URL support
         - Configurable timeout controls
-        - Custom headers for authentication
         - Path validation and directory creation
         - File size limits and safety checks
         - LLM-optimized result formatting
@@ -293,7 +300,6 @@ class DownloadCollection(ActionCollection):
             output_file_path: Local path to save the downloaded file
             overwrite: Whether to overwrite existing files
             timeout: Maximum download time in seconds
-            headers: Optional custom headers for authentication
             output_format: Format for the response output
 
         Returns:
@@ -308,8 +314,6 @@ class DownloadCollection(ActionCollection):
             overwrite = overwrite.default
         if isinstance(timeout, FieldInfo):
             timeout = timeout.default
-        if isinstance(headers, FieldInfo):
-            headers = headers.default
         if isinstance(output_format, FieldInfo):
             output_format = output_format.default
 
@@ -350,7 +354,7 @@ class DownloadCollection(ActionCollection):
 
             # Perform download
             start_time = time.time()
-            result = await self._download_file_async(url, output_path, timeout, headers)
+            result = await self._download_file_async(url, output_path, timeout, self.headers)
             execution_time = time.time() - start_time
 
             # Format output
@@ -364,7 +368,7 @@ class DownloadCollection(ActionCollection):
                 overwrite_enabled=overwrite,
                 execution_time=execution_time,
                 file_size_bytes=result.file_size,
-                headers_used=headers is not None,
+                headers_used=self.headers is not None,
             )
 
             if not result.success:

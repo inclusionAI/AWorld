@@ -32,6 +32,8 @@ from pydantic.fields import FieldInfo
 from aworld.logs.util import Color
 from examples.nanami.collections.base import ActionArguments, ActionCollection, ActionResponse
 
+# pylint: disable=C0301
+
 
 class CommandResult(BaseModel):
     """Individual command execution result with structured data."""
@@ -271,6 +273,11 @@ class TerminalActionCollection(ActionCollection):
         - Safety checks for dangerous commands
         - LLM-optimized result formatting
         - Command history tracking
+
+        Specialized Feature:
+        - Execute Python code and output the result to stdout
+            - Example (Directly execute simple Python code): `python -c "nums = [1, 2, 3, 4]\nsum_of_nums = sum(nums)\nprint(f'{sum_of_nums=}')"`
+            - Example (Execute code from a file): `python my_script.py`
 
         Args:
             command: The terminal command to execute

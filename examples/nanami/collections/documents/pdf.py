@@ -4,7 +4,7 @@ import time
 import traceback
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional  # Added Optional
 
 import markdown
 from dotenv import load_dotenv
@@ -33,6 +33,8 @@ class DocumentExtractionCollection(ActionCollection):
         self._marker_models = None
         self._media_output_dir = self.workspace / "extracted_media"
         self._media_output_dir.mkdir(exist_ok=True)
+        self._extracted_texts_dir = self.workspace / "extracted_texts"  # New directory for text files
+        self._extracted_texts_dir.mkdir(exist_ok=True)
 
         self.supported_extensions = {".pdf"}
 
@@ -179,6 +181,9 @@ class DocumentExtractionCollection(ActionCollection):
             default="markdown", description="Output format: 'markdown', 'json', or 'html'"
         ),
         extract_images: bool = Field(default=True, description="Whether to extract and save images from the document"),
+        save_extracted_text_to_file: bool = Field(
+            default=False, description="Save extracted text to a local file"
+        ),  # New parameter
         use_llm: bool = Field(default=False, description="Use LLM for enhanced accuracy (requires additional setup)"),
         page_range: str | None = Field(default=None, description="Specific pages to process (e.g., '0,5-10,20')"),
         force_ocr: bool = Field(default=False, description="Force OCR processing on the entire document"),
@@ -208,6 +213,8 @@ class DocumentExtractionCollection(ActionCollection):
                 output_format = output_format.default
             if isinstance(extract_images, FieldInfo):
                 extract_images = extract_images.default
+            if isinstance(save_extracted_text_to_file, FieldInfo):  # Handle new parameter
+                save_extracted_text_to_file = save_extracted_text_to_file.default
             if isinstance(page_range, FieldInfo):
                 page_range = page_range.default
             if isinstance(use_llm, FieldInfo):
@@ -235,6 +242,20 @@ class DocumentExtractionCollection(ActionCollection):
             # Format content for LLM consumption
             formatted_content = self._format_content_for_llm(extraction_result["content"], output_format)
 
+            # Save extracted text to file if requested
+            saved_text_path_str: Optional[str] = None
+            if save_extracted_text_to_file:
+                text_file_name = f"{file_path.stem}_extracted_text.txt"
+                saved_text_path = self._extracted_texts_dir / text_file_name
+                try:
+                    with open(saved_text_path, "w", encoding="utf-8") as f:
+                        f.write(formatted_content)
+                    saved_text_path_str = str(saved_text_path.absolute())
+                    self._color_log(f"Saved extracted text to: {saved_text_path_str}", Color.blue)
+                except Exception as e:
+                    self.logger.error(f"Failed to save extracted text to {saved_text_path}: {str(e)}")
+                    # Optionally, you might want to reflect this failure in the response
+
             # Prepare metadata
             file_stats = file_path.stat()
             document_metadata = DocumentMetadata(
@@ -249,6 +270,7 @@ class DocumentExtractionCollection(ActionCollection):
                 output_format=output_format,
                 llm_enhanced=use_llm,
                 ocr_applied=force_ocr or format_lines,
+                extracted_text_file_path=saved_text_path_str,
             )
 
             self._color_log(

@@ -164,6 +164,7 @@ class CodeCollection(ActionCollection):
         """Generate executable Python code snippets based on task description.
 
         This tool provides comprehensive code generation capabilities for:
+        - Solve simple math tasks and validations
         - Data processing and analysis tasks
         - Algorithm implementations and optimizations
         - Utility functions and helper scripts

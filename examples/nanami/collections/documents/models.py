@@ -19,3 +19,6 @@ class DocumentMetadata(BaseModel):
     output_format: str = Field(description="Format of the extracted content")
     llm_enhanced: bool = Field(default=False, description="Whether LLM enhancement was used", exclude=True)
     ocr_applied: bool = Field(default=False, description="Whether OCR was applied", exclude=True)
+    extracted_text_file_path: str | None = Field(
+        default=None, description="Absolute path to the extracted text file (if applicable)"
+    )

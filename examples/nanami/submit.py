@@ -107,6 +107,7 @@ if __name__ == "__main__":
             skip=args.skip,
             retry=args.retry,
             submit=args.submit,
+            file_path=args.file_path,
         ),
         dataset_folder_path=dataset_path,
         output_folder_path=log_path,

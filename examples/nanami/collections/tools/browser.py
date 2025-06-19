@@ -56,9 +56,8 @@ class BrowserActionCollection(ActionCollection):
 
         # Extended system prompt for browser automation
         self.extended_browser_system_prompt = """
-10. Download:
--  Save the most relevant files (text/image/pdf/...) to local path for further processing
--  **ALWAYS** download the .pdf files for further processing. DO NOT click the link to open the pdf file in new tabs.
+10. URL ends with .pdf
+- If the go_to_url function with `https://any_url/any_file_name.pdf` as the parameter, just report the url link and hint the user to download using `download` mcp tool or `curl`, then execute `done` action.
 
 11. Robot Detection:
 - If the page is a robot detection page, abort immediately. Then navigate to the most authoritative source for similar information instead
@@ -84,6 +83,7 @@ class BrowserActionCollection(ActionCollection):
         self.browser_profile = BrowserProfile(
             cookies_file=os.getenv("COOKIES_FILE_PATH"),
             downloads_dir=str(self.workspace),
+            downloads_path=str(self.workspace),
             save_recording_path=str(self.workspace),
             save_downloads_path=str(self.workspace),
         )
@@ -93,7 +93,7 @@ class BrowserActionCollection(ActionCollection):
         os.makedirs(f"{self.trace_log_dir}/browser_log", exist_ok=True)
 
         self._color_log("Browser automation service initialized", Color.green, "debug")
-        self._color_log(f"Downloads directory: {self.browser_profile.downloads_dir}", Color.blue, "debug")
+        self._color_log(f"Downloads directory: {self.browser_profile.downloads_path}", Color.blue, "debug")
         self._color_log(f"Trace logs directory: {self.trace_log_dir}/browser_log", Color.blue, "debug")
 
     def _create_browser_agent(self, task: str) -> Agent:
@@ -288,7 +288,7 @@ class BrowserActionCollection(ActionCollection):
             "supported_formats": ["markdown", "json", "text"],
             "configuration": {
                 "llm_model": os.getenv("LLM_MODEL_NAME", "Not configured"),
-                "downloads_directory": self.browser_profile.downloads_dir,
+                "downloads_directory": self.browser_profile.downloads_path,
                 "cookies_enabled": bool(os.getenv("COOKIES_FILE_PATH")),
                 "trace_logging": True,
                 "vision_enabled": True,

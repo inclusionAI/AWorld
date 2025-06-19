@@ -1,15 +1,16 @@
 import copy
 import logging
+import re
 import traceback
 from typing import Any, Callable
 
 from aworld.config.conf import AgentConfig, ConfigDict
-from aworld.core.agent.base import Agent
+from aworld.core.agent.base import Agent, AgentResult
 from aworld.core.common import ActionModel, Observation
 from aworld.logs.util import Color
 from aworld.memory.base import MemoryItem
 from aworld.models.llm import call_llm_model
-from aworld.models.model_response import ToolCall
+from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.output.base import StepOutput
 from aworld.utils.common import sync_exec
 from examples.nanami.utils import color_log, setup_logger
@@ -57,27 +58,48 @@ class GaiaAgent(Agent):
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
-        messages = self.messages_transform(
-            content=observation.content,
-            image_urls=images,
-            sys_prompt=self.system_prompt,
-            agent_prompt=self.agent_prompt,
-            output_prompt=self.output_prompt,
-        )
 
-        self.memory.add(
-            MemoryItem(
-                content=messages[-1]["content"],
-                metadata={
-                    "role": messages[-1]["role"],
-                    "agent_name": self.name(),
-                    "tool_call_id": messages[-1].get("tool_call_id"),
-                },
-            )
-        )
+        agent_result, llm_response = self._call_llm_for_agent_result(observation.content)
 
-        llm_response = None
+        answer_match: re.Match | None = re.search(r"<answer>(.*?)</answer>", llm_response.content, re.DOTALL)
+        if not agent_result.is_call_tool and not answer_match:
+            self._color_log("⚠️ No Answer & No ToolCall, Try Again!", Color.cyan)
+            agent_result, llm_response = self._call_llm_for_agent_result(llm_response.content)
+        actions: list[ActionModel] = agent_result.actions
+
+        # LOG CKPT: Agent's Policy
+        _log_acts = []
+        for action in actions:
+            if action.action_name is not None:
+                call_args = ",".join([f"{k}: {v}" for k, v in action.params.items()])
+                _log_acts.append(f"🔨 func={action.action_name} 🧾 arguments={call_args}")
+            else:
+                _log_acts.append(f"💯 result={action.policy_info}")
+
+        _log_policy = "\n".join(_log_acts)
+        self._color_log(f"💡 Policy: {_log_policy}", Color.cyan)
+
+        return actions
+
+    def _call_llm_for_agent_result(self, content: str) -> tuple[AgentResult, ModelResponse]:
         try:
+            messages = self.messages_transform(
+                content=content,
+                image_urls=None,
+                sys_prompt=self.system_prompt,
+                agent_prompt=self.agent_prompt,
+                output_prompt=self.output_prompt,
+            )
+            self.memory.add(
+                MemoryItem(
+                    content=messages[-1]["content"],
+                    metadata={
+                        "role": messages[-1]["role"],
+                        "agent_name": self.name(),
+                        "tool_call_id": messages[-1].get("tool_call_id"),
+                    },
+                )
+            )
             llm_response = call_llm_model(
                 self.llm,
                 messages=messages,
@@ -107,27 +129,7 @@ class GaiaAgent(Agent):
             else:
                 self.logger.error(f"{self.name()} failed to get LLM response")
                 raise RuntimeError(f"{self.name()} failed to get LLM response")
-
-        # output.add_part(MessageOutput(source=llm_response, json_parse=False))
-        agent_result = sync_exec(self.resp_parse_func, llm_response)
-        if not agent_result.is_call_tool and "<answer>" in llm_response.content:
-            self._finished = True
-        # output.mark_finished()
-
-        actions: list[ActionModel] = agent_result.actions
-
-        # LOG CKPT: Agent's Policy
-        _log_acts = []
-        for action in actions:
-            if action.action_name is not None:
-                call_args = ",".join([f"{k}: {v}" for k, v in action.params.items()])
-                _log_acts.append(f"🔨 func={action.action_name} 🧾 arguments={call_args}")
-            else:
-                _log_acts.append(f"💯 result={action.policy_info}")
-        _log_policy = "\n".join(_log_acts)
-        self._color_log(f"💡 Policy: {_log_policy}", Color.cyan)
-
-        return actions
+        return sync_exec(self.resp_parse_func, llm_response), llm_response
 
     def _setup_logger(self, logger_name: str, output_folder_path: str, file_name: str = "app.log") -> logging.Logger:
         return setup_logger(

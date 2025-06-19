@@ -21,12 +21,22 @@
                 "examples.nanami.collections.tools.browser"
             ]
         },
-        "code": {
+        "chess": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.intelligence.code"
+                "examples.nanami.collections.intelligence.playchess"
             ]
+        },
+        "code": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@e2b/mcp-server"
+            ],
+            "env": {
+                "E2B_API_KEY": "${E2B_API_KEY}"
+            }
         },
         "csv": {
             "command": "python",
