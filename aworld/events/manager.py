@@ -3,7 +3,7 @@
 from typing import Dict, Any, List, Callable
 
 from aworld.core.context.base import Context
-from aworld.core.event.event_bus import InMemoryEventbus
+from aworld.core.event import eventbus
 from aworld.core.event.base import Constants, Message
 
 
@@ -12,7 +12,7 @@ class EventManager:
 
     def __init__(self, **kwargs):
         # use conf to build event bus instance
-        self.event_bus = InMemoryEventbus()
+        self.event_bus = eventbus
         self.context = Context.instance()
         # Record events in memory for re-consume.
         self.messages: Dict[str, List[Message]] = {'None': []}

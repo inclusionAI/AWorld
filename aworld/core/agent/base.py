@@ -14,8 +14,8 @@ from pydantic import BaseModel
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
+from aworld.core.event import eventbus
 from aworld.core.event.base import Message, Constants
-from aworld.core.event.event_bus import InMemoryEventbus
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
@@ -134,8 +134,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             return final_result if final_result else result
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
-        if InMemoryEventbus.instance():
-            await InMemoryEventbus.instance().publish(Message(
+        if eventbus:
+            await eventbus.publish(Message(
             category=Constants.OUTPUT,
             payload=StepOutput.build_start_output(name=f"{self.id()}",
                                                   step_num=0),

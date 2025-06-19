@@ -18,8 +18,8 @@ from aworld.core.context.base import AgentContext
 from aworld.core.context.base import Context
 from aworld.core.context.base import ContextUsage
 from aworld.core.contextprocessor.context_processor import ContextProcessor
+from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants
-from aworld.core.event.event_bus import InMemoryEventbus
 from aworld.core.memory import MemoryItem
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.tool.tool_desc import get_tool_desc
@@ -770,14 +770,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 output, response = await async_call_llm(resp_stream)
                 llm_response = response
 
-                if InMemoryEventbus.instance() and resp_stream:
+                if eventbus and resp_stream:
                     output_message = Message(
                         category=Constants.OUTPUT,
                         payload=output,
                         sender=self.id(),
                         session_id=Context.instance().session_id
                     )
-                    await InMemoryEventbus.instance().publish(output_message)
+                    await eventbus.publish(output_message)
                 elif not self.event_driven and outputs:
                     outputs.append(output)
 
@@ -790,8 +790,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=kwargs.get("stream", False)
                 )
-                if InMemoryEventbus.instance() and llm_response:
-                    await InMemoryEventbus.instance().publish(Message(
+                if eventbus and llm_response:
+                    await eventbus.publish(Message(
                         category=Constants.OUTPUT,
                         payload=llm_response,
                         sender=self.id(),
