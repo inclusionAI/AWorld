@@ -1,12 +1,13 @@
-import hashlib
 import json
 import time
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Literal
+from typing import Dict, Any, Optional, List
 
 from pydantic import BaseModel
+
+from aworld.output import Artifact
 
 
 class ArtifactRepository:
@@ -16,32 +17,16 @@ class ArtifactRepository:
         """
         pass
 
-    def _load_index(self) -> Dict[str, Any]:
+    def load_index(self) -> Dict[str, Any]:
         """Load or create index file"""
         pass
 
-    def _save_index(self, index: Dict[str, Any]) -> None:
+    def save_index(self) -> None:
         """Save index to file"""
-        pass
 
-    def _compute_content_hash(self, data: Any) -> str:
-        """
-        Calculate the hash value of the content as a storage identifier
-
-        Args:
-            data: Data to be stored
-
-        Returns:
-            SHA-256 hash value of the content
-        """
-        pass
-
-    def store(self,
-              artifact_id: str,
-              type: Literal['artifact', 'workspace'],
-              data: Dict[str, Any],
-              metadata: Optional[Dict[str, Any]] = None
-              ) -> str:
+    def store_artifact(self,
+                       artifact: Artifact
+                       ) -> str:
         """
         Store artifact and return its version identifier
 
@@ -55,22 +40,10 @@ class ArtifactRepository:
         """
         pass
 
-    def retrieve(self, version_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve artifact based on version ID
-
-        Args:
-            version_id: Version identifier
-
-        Returns:
-            Stored data, or None if it doesn't exist
-        """
-        pass
-
     def retrieve_latest_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
         pass
 
-    def get_versions(self, artifact_id: str) -> List[Dict[str, Any]]:
+    def get_artifact_versions(self, artifact_id: str) -> List[Dict[str, Any]]:
         """
         Get information about all versions of an artifact
 
@@ -81,7 +54,21 @@ class ArtifactRepository:
             List of version information
         """
         pass
+    def super_path(self) -> str:
+        pass
 
+    def artifact_path(self, artifact_id):
+        return self.super_path() + f"/artifact/{artifact_id}/index.json"
+
+    def generate_tree_data(self, workspace_name: str) -> dict:
+        """
+        Abstract method: Generate a directory tree structure for the workspace.
+        Args:
+            workspace_name: Name of the workspace (for root node)
+        Returns:
+            Directory tree as dict
+        """
+        raise NotImplementedError()
 
 
 class CommonEncoder(json.JSONEncoder):
@@ -89,7 +76,7 @@ class CommonEncoder(json.JSONEncoder):
         if isinstance(obj, Enum):
             return obj.name
         if isinstance(obj, BaseModel):
-            return obj.model_dump()
+            return obj.model_dump_json()
         return json.JSONEncoder.default(self, obj)
 
 class EnumDecoder(json.JSONDecoder):
@@ -117,9 +104,9 @@ class LocalArtifactRepository(ArtifactRepository):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.index_path = self.storage_path / "index.json"
-        self.index = self._load_index()
+        self.index = self.load_index()
 
-    def _load_index(self) -> Dict[str, Any]:
+    def load_index(self) -> Dict[str, Any]:
         """Load or create index file"""
         if self.index_path.exists():
             try:
@@ -132,97 +119,59 @@ class LocalArtifactRepository(ArtifactRepository):
             self._save_index(index)
             return index
 
+    def save_index(self) -> None:
+        self._save_index(self.index)
+
     def _save_index(self, index: Dict[str, Any]) -> None:
         """Save index to file"""
         with open(self.index_path, 'w') as f:
             json.dump(index, f, indent=2, ensure_ascii=False, cls=CommonEncoder)
 
-    def _compute_content_hash(self, data: Any) -> str:
-        """
-        Calculate the hash value of the content as a storage identifier
-        
-        Args:
-            data: Data to be stored
-            
-        Returns:
-            SHA-256 hash value of the content
-        """
-        content = json.dumps(data, sort_keys=True, cls=CommonEncoder).encode('utf-8')
-        return hashlib.sha256(content).hexdigest()
-
-    def store(self,
-              artifact_id: str,
-              type: str,
-              data: Dict[str, Any],
-              metadata: Optional[Dict[str, Any]] = None
-              ) -> str:
+    def store_artifact(self,
+                       artifact: Artifact
+                       ) -> str:
         """
         Store artifact and return its version identifier
         
         Args:
-            artifact_id: Unique identifier of the artifact
-            data: Data to be stored
-            metadata: Optional metadata
+            artifact: Artifact to be stored
             
         Returns:
             Version identifier
         """
-        # Calculate content hash
-        content_hash = self._compute_content_hash(data)
-
         # Create version record
         version = {
-            "hash": content_hash,
+            "hash": artifact.artifact_id,
             "timestamp": time.time(),
-            "metadata": metadata or {}
+            "metadata": artifact.metadata or {}
         }
 
+        # Update index
+
+        data = artifact.to_dict()
         # Store content
-        content_path = self.storage_path / f"{type}_{content_hash}.json"
+        content_path = Path(self.artifact_path(artifact.artifact_id))
+        content_path.parent.mkdir(parents=True, exist_ok=True)
         if not content_path.exists():
             with open(content_path, 'w') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False, cls=CommonEncoder)
+        if artifact.attachments:
+            for attachment in artifact.attachments:
+                attachment_path = content_path.parent / attachment.filename
+                attachment_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(attachment_path, 'w') as f:
+                    f.write(attachment.content)
 
-        # Update index
-        if type == 'artifact':
-            if artifact_id not in self.index["artifacts"]:
-                self.index["artifacts"].append({
-                    'artifact_id': artifact_id,
-                    'type': type,
-                    'version': version
-                })
-        elif type == 'workspace':
-            version['version_id'] = str(uuid.uuid4())
+        if artifact.artifact_id not in self.index["artifacts"]:
+            self.index["artifacts"].append({
+                'artifact_id': artifact.artifact_id,
+                'type': artifact.artifact_type,
+                'version': version
+            })
 
-            self.index["versions"].append(
-                version
-            )
         self._save_index(self.index)
 
         return "success"
-
-    def retrieve(self, version_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve artifact based on version ID
-        
-        Args:
-            version_id: Version identifier
-            
-        Returns:
-            Stored data, or None if it doesn't exist
-        """
-        for version in self.index["versions"]:
-            if version_id != version['version_id']:
-                continue
-            content_hash = version["hash"]
-            content_path = self.storage_path / f"workspace_{content_hash}.json"
-
-            if not content_path.exists():
-                return None
-
-            with open(content_path, 'r') as f:
-                return json.load(f)
-        return None
 
     def retrieve_latest_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -234,20 +183,15 @@ class LocalArtifactRepository(ArtifactRepository):
         Returns:
             Stored data, or None if it doesn't exist
         """
-        for artifact in self.index["artifacts"]:
-            if artifact['artifact_id'] != artifact_id:
-                continue
-            content_hash = artifact["version"]["hash"]
-            content_path = self.storage_path / f"artifact_{content_hash}.json"
+        artifact_path = self.artifact_path(artifact_id)
 
-            if not content_path.exists():
-                return None
+        if not Path(artifact_path).exists():
+            return None
 
-            with open(content_path, 'r') as f:
-                return json.load(f)
-        return None
+        with open(artifact_path, 'r') as f:
+            return json.load(f)
 
-    def get_versions(self, artifact_id: str) -> List[Dict[str, Any]]:
+    def get_artifact_versions(self, artifact_id: str) -> List[Dict[str, Any]]:
         """
         Get information about all versions of an artifact
         
@@ -267,3 +211,48 @@ class LocalArtifactRepository(ArtifactRepository):
             versions.append(version_info)
 
         return versions
+
+    def super_path(self):
+        return str(self.storage_path)
+
+    def generate_tree_data(self, workspace_name: str) -> dict:
+        """
+        Generate a directory tree structure based on the actual local workspace folder structure.
+        Args:
+            workspace_name: Name of the workspace (for root node)
+        Returns:
+            Directory tree as dict
+        """
+        import os
+        def build_tree(path: str, parent_id: str, depth: int = 1) -> dict:
+            import uuid
+            node = {
+                "name": os.path.basename(path) or workspace_name,
+                "id": str(uuid.uuid4()),
+                "type": "dir" if os.path.isdir(path) else "file",
+                "parentId": parent_id,
+                "depth": depth,
+                "expanded": False,
+                "children": []
+            }
+            if os.path.isdir(path):
+                for entry in sorted(os.listdir(path)):
+                    full_path = os.path.join(path, entry)
+                    node["children"].append(build_tree(full_path, node["id"], depth + 1))
+            return node
+        root_path = str(self.storage_path)
+        import os
+        if not os.path.exists(root_path):
+            return {
+                "name": workspace_name,
+                "id": "-1",
+                "children": []
+            }
+        tree = build_tree(root_path, "-1", 1)
+        tree["name"] = workspace_name
+        tree["id"] = "-1"
+        tree["parentId"] = None
+        tree["depth"] = 0
+        return tree
+
+
