@@ -6,12 +6,12 @@ from .. import (
 )
 from . import agent_loader
 import logging
-import aworld.trace as tracer
+import aworld.trace as trace
 
 logger = logging.getLogger(__name__)
 
 # bugfix for tracer exception
-tracer.configure()
+trace.configure()
 
 
 async def stream_run(request: ChatCompletionRequest):

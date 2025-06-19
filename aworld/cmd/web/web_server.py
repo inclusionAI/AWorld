@@ -51,8 +51,7 @@ app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
 def run_server(port, args=None, **kwargs):
     logger.info(f"Running Web server on port {port}")
     uvicorn.run(
-        "aworld.cmd.web.web_server:app",
+        app,
         host="0.0.0.0",
         port=port,
-        reload=True,
     )
