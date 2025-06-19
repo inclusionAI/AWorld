@@ -1,8 +1,11 @@
 from .data_model import ChatCompletionChoice, ChatCompletionMessage, ChatCompletionRequest, ChatCompletionResponse
 from . import agent_loader
 import logging
+import aworld.trace as tracer
 
 logger = logging.getLogger(__name__)
+
+tracer.configure()
 
 async def stream_run(request: ChatCompletionRequest):
     logger.info(f"Stream run agent: request={request.model_dump_json()}")

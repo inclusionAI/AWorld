@@ -23,7 +23,7 @@ class AWorldAgent(BaseAWorldAgent):
     def agent_description(self):
         return "Query Real-time Weather Information"
 
-    async def run(self, prompt: str=None, request: ChatCompletionRequest = None):
+    async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
         llm_provider = os.getenv("LLM_PROVIDER_WEATHER", "openai")
         llm_model_name = os.getenv("LLM_MODEL_NAME_WEATHER")
         llm_api_key = os.getenv("LLM_API_KEY_WEATHER")
@@ -61,7 +61,6 @@ class AWorldAgent(BaseAWorldAgent):
         task = Task(
             input=prompt,
             agent=super_agent,
-            event_driven=False,
             conf=TaskConfig(max_steps=20),
         )
 
