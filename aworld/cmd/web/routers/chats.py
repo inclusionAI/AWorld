@@ -3,8 +3,8 @@ import json
 from typing import Dict
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from aworld.agent import AgentModel, ChatCompletionRequest
-from aworld.agent import agent_loader, agent_executor
+from aworld.cmd import AgentModel, ChatCompletionRequest
+from aworld.cmd.utils import agent_loader, agent_executor
 
 
 logger = logging.getLogger(__name__)

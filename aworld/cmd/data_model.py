@@ -37,6 +37,16 @@ class ChatCompletionResponse(BaseModel):
     )
 
 
+class AgentModel(BaseModel):
+    agent_id: str = Field(..., description="The agent id")
+    agent_name: str = Field(None, description="The agent name")
+    agent_description: str = Field(None, description="The agent description")
+    agent_path: str = Field(..., description="The agent path")
+    agent_instance: Any = Field(
+        ..., description="The agent module instance", exclude=True
+    )
+
+
 class BaseAWorldAgent:
     @abstractmethod
     def agent_name(self) -> str:
@@ -47,15 +57,7 @@ class BaseAWorldAgent:
         pass
 
     @abstractmethod
-    async def run(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
+    async def run(
+        self, prompt: str = None, request: ChatCompletionRequest = None
+    ) -> AsyncGenerator[str, None]:
         pass
-
-
-class AgentModel(BaseModel):
-    agent_id: str = Field(..., description="The agent id")
-    agent_name: str = Field(None, description="The agent name")
-    agent_description: str = Field(None, description="The agent description")
-    agent_path: str = Field(..., description="The agent path")
-    agent_instance: Any = Field(
-        ..., description="The agent module instance", exclude=True
-    )

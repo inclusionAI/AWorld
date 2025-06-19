@@ -4,7 +4,7 @@ import sys
 import traceback
 import logging
 from typing import List, Dict
-from .data_model import AgentModel
+from .. import AgentModel
 
 logger = logging.getLogger(__name__)
 
