@@ -49,4 +49,4 @@ if __name__ == '__main__':
             print(f"{speech.name}: {speech.content}")
 
 
-    asyncio.run(start_debate(debate_arena, topic="Who's GOAT? Jordan or Lebron", rounds=3))
+    asyncio.run(start_debate(debate_arena, topic="张居正", rounds=3))

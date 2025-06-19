@@ -142,10 +142,14 @@ class WorkSpace(BaseModel):
         Returns:
             WorkSpace instance
         """
+        if storage_path is None:
+            storage_path = os.path.join("data", "workspaces", workspace_id)
+        else:
+            storage_path = os.path.join(storage_path, workspace_id)
         workspace = cls(
             workspace_id=workspace_id,
             name=name,
-            storage_path=storage_path + "/" + workspace_id,
+            storage_path=storage_path,
             observers=observers,
             use_default_observer=use_default_observer,
             clear_existing=False  # Always try to load existing data

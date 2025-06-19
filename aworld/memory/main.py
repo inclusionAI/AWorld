@@ -129,10 +129,10 @@ class Memory(MemoryBase):
         self.memory_store = memory_store
         self.config = config
         self.default_llm_instance = get_llm_model(conf=ConfigDict({
-            "model": os.getenv("MEM_LLM_MODEL_NAME") if os.getenv("MEM_LLM_MODEL_NAME") else os.getenv(
+            "llm_model_name": os.getenv("MEM_LLM_MODEL_NAME") if os.getenv("MEM_LLM_MODEL_NAME") else os.getenv(
                 'LLM_MODEL_NAME'),
-            "api_key": os.getenv("MEM_LLM_API_KEY") if os.getenv("MEM_LLM_API_KEY") else os.getenv('LLM_API_KEY'),
-            "base_url": os.getenv("MEM_LLM_BASE_URL") if os.getenv("MEM_LLM_BASE_URL") else os.getenv('LLM_BASE_URL'),
+            "llm_api_key": os.getenv("MEM_LLM_API_KEY") if os.getenv("MEM_LLM_API_KEY") else os.getenv('LLM_API_KEY'),
+            "llm_base_url": os.getenv("MEM_LLM_BASE_URL") if os.getenv("MEM_LLM_BASE_URL") else os.getenv('LLM_BASE_URL'),
             "temperature": os.getenv("MEM_LLM_TEMPERATURE") if os.getenv("MEM_LLM_TEMPERATURE") else 1.0,
             "streaming": 'False'
         }))
@@ -239,6 +239,9 @@ class Memory(MemoryBase):
         ]
 
         return await self._call_llm_summary(summary_messages)
+
+    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+        pass
 
 
 class InMemoryStorageMemory(Memory):

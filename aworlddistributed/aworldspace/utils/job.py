@@ -7,7 +7,6 @@ import time
 import uuid
 from typing import Generator, Iterator, AsyncGenerator, Optional
 
-import aworld.trace as trace  # noqa
 from aworld.core.task import Task
 from aworld.utils.common import get_local_ip
 from fastapi import status, HTTPException
