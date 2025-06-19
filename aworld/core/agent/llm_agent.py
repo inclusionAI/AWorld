@@ -22,7 +22,7 @@ from aworld.core.memory import MemoryItem, MemoryConfig
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.logs.util import logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform
-from aworld.memory.main import Memory, MemoryFactory
+from aworld.memory.main import InMemoryStorageMemory, MemoryFactory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
@@ -72,8 +72,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
-        self.memory = Memory.from_config(
-            {"memory_store": options.pop("memory_store") if options.get("memory_store") else "inmemory"})
+        self.memory = MemoryFactory.from_config(MemoryConfig(provider=options.pop("memory_store") if options.get("memory_store") else "inmemory"))
 
     @property
     def llm(self):

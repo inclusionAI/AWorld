@@ -1,5 +1,11 @@
+import json
+import os
 from typing import Optional
+
+from aworld.config import ConfigDict
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
+from aworld.logs.util import logger
+from aworld.models.llm import get_llm_model, acall_llm_model
 
 
 class InMemoryMemoryStore(MemoryStore):
@@ -98,11 +104,12 @@ class MemoryFactory:
             config (dict): Configuration dictionary.
 
         Returns:
-            Memory: Memory instance.
+            InMemoryStorageMemory: Memory instance.
         """
         if config.provider == "inmemory":
-            return Memory(
+            return InMemoryStorageMemory(
                 memory_store=InMemoryMemoryStore(),
+                config=config,
                 enable_summary=config.enable_summary,
                 summary_rounds=config.summary_rounds
             )
@@ -115,14 +122,112 @@ class MemoryFactory:
         else:
             raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
 
-
 class Memory(MemoryBase):
 
-    def __init__(self, memory_store: MemoryStore, enable_summary: bool = True, **kwargs):
+    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
         self.memory_store = memory_store
+        self.config = config
+        self.default_llm_instance = get_llm_model(conf=ConfigDict({
+            "model": os.getenv("MEM_LLM_MODEL_NAME") if os.getenv("MEM_LLM_MODEL_NAME") else os.getenv(
+                'LLM_MODEL_NAME'),
+            "api_key": os.getenv("MEM_LLM_API_KEY") if os.getenv("MEM_LLM_API_KEY") else os.getenv('LLM_API_KEY'),
+            "base_url": os.getenv("MEM_LLM_BASE_URL") if os.getenv("MEM_LLM_BASE_URL") else os.getenv('LLM_BASE_URL'),
+            "temperature": os.getenv("MEM_LLM_TEMPERATURE") if os.getenv("MEM_LLM_TEMPERATURE") else 1.0,
+            "streaming": 'False'
+        }))
+
+    def _build_history_context(self, messages) -> str:
+        """
+        Build the history context string from a list of messages.
+        Args:
+            messages: List of message objects with 'role', 'content', and optional 'tool_calls'.
+        Returns:
+            Concatenated context string.
+        """
+        history_context = ""
+        for item in messages:
+            history_context += f"\n\n{item['role']}: {item['content']}, {'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else '' }"
+        return history_context
+
+    async def _call_llm_summary(self, summary_messages: list) -> str:
+        """
+        Call LLM to generate summary and log the process.
+        Args:
+            summary_messages: List of messages to send to LLM.
+        Returns:
+            Summary content string.
+        """
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages: {summary_messages}")
+        llm_response = await acall_llm_model(
+            self.default_llm_instance,
+            messages=summary_messages,
+            stream=False
+        )
+        logger.info(f'🤔 [Summary] summary_content: result is {llm_response.content[:400]+"...truncated"} ')
+        return llm_response.content
+
+    def _get_parsed_history_messages(self, filters: dict, last_rounds: int) -> list:
+        """
+        Get and format history messages for summary.
+        Args:
+            filters: Filter dict for memory_store
+            last_rounds: Number of rounds to fetch
+        Returns:
+            List of parsed message dicts
+        """
+        all_messages = self.memory_store.get_last_n(last_rounds, filters=filters)
+        parsed_messages = [
+            {
+                'role': message.metadata['role'],
+                'content': message.content,
+                'tool_calls': message.metadata.get('tool_calls') if message.metadata.get('tool_calls') else None
+            }
+            for message in all_messages]
+        return parsed_messages
+
+    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
+        """
+        A tool for summarizing the conversation history.
+        """
+
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]")
+        parsed_messages = self._get_parsed_history_messages(filters, last_rounds)
+        history_context = self._build_history_context(parsed_messages)
+
+        summary_messages = [
+            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+        ]
+
+        return await self._call_llm_summary(summary_messages)
+
+    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+        if self.config.enable_summary and len(to_be_summary.content) < self.config.summary_single_context_length:
+            return to_be_summary.content
+
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]: to be summary content is {to_be_summary.content}")
+        parsed_messages = self._get_parsed_history_messages(filters, last_rounds)
+        # Append the to_be_summary
+        parsed_messages.append({
+            "role": to_be_summary.metadata['role'],
+            "content": f"{to_be_summary.content}",
+            'tool_call_id': to_be_summary.metadata['tool_call_id'],
+        })
+        history_context = self._build_history_context(parsed_messages)
+
+        summary_messages = [
+            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+        ]
+
+        return await self._call_llm_summary(summary_messages)
+
+
+class InMemoryStorageMemory(Memory):
+
+    def __init__(self, memory_store: MemoryStore,  config: MemoryConfig, enable_summary: bool = True, **kwargs):
+        super().__init__(memory_store=memory_store, config=config)
         self.summary = {}
         self.summary_rounds = kwargs.get("summary_rounds", 10)
-        self.enable_summary = enable_summary
+        self.enable_summary = self.config.enable_summary
 
     def add(self, memory_item: MemoryItem, filters: dict = None):
         self.memory_store.add(memory_item)
