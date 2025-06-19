@@ -33,6 +33,7 @@ import { Avatar, Button, Flex, type GetProp, Space, Spin, message } from 'antd';
 import { createStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 type BubbleDataType = {
   role: string;
@@ -450,6 +451,11 @@ const Independent: React.FC = () => {
         <Bubble.List
           items={messages?.map((i) => ({
             ...i.message,
+            content: (
+              <ReactMarkdown>
+                {i.message.content || ''}
+              </ReactMarkdown>
+            ),
             classNames: {
               content: i.status === 'loading' ? styles.loadingMessage : '',
             },
@@ -546,10 +552,10 @@ const Independent: React.FC = () => {
           type === 'drop'
             ? { title: 'Drop file here' }
             : {
-                icon: <CloudUploadOutlined />,
-                title: 'Upload files',
-                description: 'Click or drag files to this area to upload',
-              }
+              icon: <CloudUploadOutlined />,
+              title: 'Upload files',
+              description: 'Click or drag files to this area to upload',
+            }
         }
       />
     </Sender.Header>

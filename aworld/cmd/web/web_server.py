@@ -43,7 +43,7 @@ def build_webui(force_rebuild: bool = False) -> str:
     return static_path
 
 
-static_path = build_webui()
+static_path = build_webui(force_rebuild=True)
 logger.info(f"Mounting static files from {static_path}")
 app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
 

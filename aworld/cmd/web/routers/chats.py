@@ -22,19 +22,19 @@ async def list_agents() -> Dict[str, AgentModel]:
 
 @router.post("/chat/completions")
 async def chat_completion(form_data: ChatCompletionRequest) -> StreamingResponse:
-    async with trace.span(
-        "/chat/chat_completion", attributes={"model": form_data.model}
-    ):
 
-        async def generate_stream():
+    async def generate_stream():
+        async with trace.span(
+            "/chat/chat_completion", attributes={"model": form_data.model}
+        ):
             async for chunk in agent_executor.stream_run(form_data):
                 yield f"data: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n"
 
-        return StreamingResponse(
-            generate_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
