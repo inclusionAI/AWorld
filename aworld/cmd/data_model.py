@@ -1,14 +1,7 @@
-from typing import List
 import uuid
+from abc import abstractmethod
+from typing import Any, AsyncGenerator, List, Optional
 from pydantic import BaseModel, Field
-
-
-class AgentModel(BaseModel):
-    agent_id: str = Field(..., description="The agent id")
-    agent_name: str = Field(..., description="The agent name")
-    agent_description: str = Field(..., description="The agent description")
-    agent_type: str = Field(..., description="The agent type")
-    agent_status: str = Field(..., description="The agent status")
 
 
 class ChatCompletionMessage(BaseModel):
@@ -17,17 +10,16 @@ class ChatCompletionMessage(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    user_id: str = Field(..., description="The user id")
+    user_id: str = Field(None, description="The user id")
     session_id: str = Field(
-        ...,
+        None,
         description="The session id, if not provided, a new session will be created",
     )
-    query_id: str = Field(..., description="The query id")
+    query_id: str = Field(None, description="The query id")
     model: str = Field(..., description="The model to use")
     messages: List[ChatCompletionMessage] = Field(
         ..., description="The messages to send to the agent"
     )
-    prompt: str = Field(..., description="The prompt to send to the agent")
 
 
 class ChatCompletionChoice(BaseModel):
@@ -43,3 +35,27 @@ class ChatCompletionResponse(BaseModel):
     choices: List[ChatCompletionChoice] = Field(
         ..., description="The choices from the agent"
     )
+
+
+class AgentModel(BaseModel):
+    id: str = Field(..., description="The agent id")
+    name: Optional[str] = Field(None, description="The agent name")
+    description: Optional[str] = Field(None, description="The agent description")
+    path: str = Field(..., description="The agent path")
+    instance: Any = Field(..., description="The agent module instance", exclude=True)
+
+
+class BaseAWorldAgent:
+    @abstractmethod
+    def name(self) -> str:
+        pass
+
+    @abstractmethod
+    def description(self) -> str:
+        pass
+
+    @abstractmethod
+    async def run(
+        self, prompt: str = None, request: ChatCompletionRequest = None
+    ) -> AsyncGenerator[str, None]:
+        pass
