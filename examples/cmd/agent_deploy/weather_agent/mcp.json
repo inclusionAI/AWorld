@@ -3,10 +3,12 @@
         "weather-mcp-server": {
             "command": "uvx",
             "args": [
-                "weather-mcp-server"
+                "--from",
+                "git+https://github.com/adhikasp/mcp-weather.git",
+                "mcp-weather"
             ],
             "env": {
-                "OPENWEATHER_API_KEY": "${OPENWEATHER_API_KEY}"
+                "ACCUWEATHER_API_KEY": "${ACCUWEATHER_API_KEY}"
             }
         }
     }
