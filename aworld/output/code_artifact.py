@@ -3,7 +3,7 @@ from typing import Any, Optional, Dict, List
 
 from pydantic import Field
 
-from aworld.output.artifact import Artifact, ArtifactType
+from aworld.output.artifact import Artifact, ArtifactType, ArtifactAttachment
 
 CODE_FILE_EXTENSION_MAP = {
                 "python": "py",
@@ -33,10 +33,11 @@ CODE_FILE_EXTENSION_MAP = {
                 "bat": "bat"
             }
 
+
 class CodeArtifact(Artifact):
     code_interceptor: Any = Field(default=None, description="code executor type")
 
-    def __init__(self, artifact_type: ArtifactType, content: Any, code_type: str, code_version: str,
+    def __init__(self, artifact_type: ArtifactType, content: Any, code_type: Optional[str], code_version: Optional[str],
                  code_interceptor_provider: Optional[str] = None,
                  artifact_id: Optional[str] = None, render_type: Optional[str] = None, **kwargs):
         # Extract filename from the first line of the content
@@ -55,7 +56,15 @@ class CodeArtifact(Artifact):
             metadata.update(kwargs['metadata'])
             del kwargs['metadata']  # Remove metadata from kwargs to avoid multiple values
 
-        super().__init__(artifact_type, content, metadata, artifact_id, render_type, **kwargs)
+        super().__init__(
+            artifact_type=artifact_type,
+            content=content,
+            metadata=metadata,
+            artifact_id=artifact_id,
+            render_type=render_type,
+            **kwargs
+        )
+        self.archive()
         self.code_interceptor = self.init_code_interceptor(code_interceptor_provider)
 
     @staticmethod
@@ -83,18 +92,19 @@ class CodeArtifact(Artifact):
         return None  # Return None if filename is unknown
 
     @classmethod
-    def create_artifact(cls, artifact_type: ArtifactType,
+    def build_artifact(cls,
                        content: Any,
-                       code_type: str,
-                       code_version: str,
+                       code_type: Optional[str] = None,
+                       code_version: Optional[str] = None,
                        code_interceptor_provider: Optional[str] = None,
                        artifact_id: Optional[str] = None,
                        render_type: Optional[str] = None,
                        **kwargs) -> "CodeArtifact":
-        """Factory method to create appropriate artifact based on language"""
+
+        # Create CodeArtifact instance
         if code_type in ['shell', 'sh', 'bash', 'zsh']:
             return ShellArtifact(
-                artifact_type=artifact_type,
+                artifact_type=ArtifactType.CODE,
                 content=content,
                 code_version=code_version,
                 code_interceptor_provider=code_interceptor_provider,
@@ -102,8 +112,15 @@ class CodeArtifact(Artifact):
                 render_type=render_type,
                 **kwargs
             )
+        elif code_type in ['html']:
+            return HtmlArtifact(
+                content=content,
+                artifact_id=artifact_id,
+                **kwargs
+            )
+
         return cls(
-            artifact_type=artifact_type,
+            artifact_type=ArtifactType.CODE,
             content=content,
             code_type=code_type,
             code_version=code_version,
@@ -133,7 +150,7 @@ class CodeArtifact(Artifact):
                 code_interceptor_provider = "generic_interceptor"
 
             artifact = cls.create_artifact(
-                artifact_type=artifact_type,
+                artifact_type=ArtifactType.CODE,
                 content=block['content'],
                 code_type=code_type,
                 code_version=code_version,
@@ -238,3 +255,23 @@ class ShellArtifact(CodeArtifact):
     def execute(self):
         # todo add
         pass
+
+class HtmlArtifact(CodeArtifact):
+
+    def __init__(self, content: Any, artifact_id: Optional[str] = None, **kwargs):
+        # Remove artifact_type from kwargs if it exists to avoid conflicts
+        kwargs.pop('artifact_type', None)
+
+        super().__init__(
+            artifact_type=ArtifactType.HTML,
+            content=content,
+            code_type='html',
+            code_version='1.0',
+            artifact_id=artifact_id,
+            **kwargs
+        )
+        content = content.replace("```html", "").replace("```", "")
+        self.content = None
+        self.attachments.append(
+            ArtifactAttachment(filename=f"{artifact_id}.html", content=content, mime_type="text/html")
+        )
