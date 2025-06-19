@@ -18,7 +18,7 @@ class RayAgentDecorator:
             agent_dict = {k: v for k, v in agent.__dict__.items() 
                          if not k.startswith('_')}
             self.remote_agent = ray.remote(Agent).remote(**agent_dict)
-            logger.info(f"Successfully created remote agent: {agent.name()}")
+            logger.info(f"Successfully created remote agent: {agent.id()}")
         except Exception as e:
             logger.error(f"Failed to create remote agent: {str(e)}")
             raise

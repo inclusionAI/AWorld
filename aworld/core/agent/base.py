@@ -92,7 +92,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._desc = kwargs.pop("desc") if kwargs.get(
             "desc") else self.conf.get('desc', '')
         # Unique flag based agent name
-        self.id = f"{self.name()}_{uuid.uuid1().hex[0:6]}"
+        self._id = f"{self._name}_{uuid.uuid1().hex[0:6]}"
         self.task = None
         # An agent can use the tool list
         self.tool_names: List[str] = kwargs.pop("tool_names", [])
@@ -117,7 +117,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def name(self) -> str:
+    def id(self) -> str:
+        return self._id
+
+    def name(self):
         return self._name
 
     def desc(self) -> str:
@@ -134,9 +137,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if InMemoryEventbus.instance():
             await InMemoryEventbus.instance().publish(Message(
             category=Constants.OUTPUT,
-            payload=StepOutput.build_start_output(name=f"{self.name()}",
-                                                   step_num=0),
-            sender=self.name(),
+            payload=StepOutput.build_start_output(name=f"{self.id()}",
+                                                  step_num=0),
+            sender=self.id(),
             session_id=Context.instance().session_id
         ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:

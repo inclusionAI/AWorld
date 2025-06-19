@@ -72,6 +72,10 @@ class Message(Generic[DataType]):
     def context(self) -> Context:
         return self.headers.get('context')
 
+    @context.setter
+    def context(self, context: Context):
+        self.headers['context'] = context
+
 
 @dataclass
 class TaskEvent(Message[TaskItem]):
