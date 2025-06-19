@@ -8,6 +8,7 @@ import uuid
 from collections import OrderedDict
 from typing import AsyncGenerator, Dict, Any, List, Union, Callable
 
+from aworld.memory.models import AIMessage, MessageMetadata
 import aworld.trace as trace
 from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig
@@ -222,16 +223,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     messages.append({'role': history.metadata['role'], 'content': history.content,
                                      "tool_call_id": history.metadata.get("tool_call_id")})
 
-            if not self.use_tools_in_prompt and "tool_calls" in histories[-1].metadata and histories[-1].metadata[
-                'tool_calls']:
-                tool_id = histories[-1].metadata["tool_calls"][0].id
-                if tool_id:
-                    cur_msg['role'] = 'tool'
-                    cur_msg['tool_call_id'] = tool_id
-            if self.use_tools_in_prompt and "is_use_tool_prompt" in histories[-1].metadata and "tool_calls" in \
-                    histories[-1].metadata and agent_prompt:
-                cur_msg['content'] = agent_prompt.format(action_list=histories[-1].metadata["tool_calls"],
-                                                         result=content)
+            # if not self.use_tools_in_prompt and "tool_calls" in histories[-1].metadata and histories[-1].metadata[
+            #     'tool_calls']:
+            #     tool_id = histories[-1].metadata["tool_calls"][0].id
+            #     if tool_id:
+            #         cur_msg['role'] = 'tool'
+            #         cur_msg['tool_call_id'] = tool_id
+            # if self.use_tools_in_prompt and "is_use_tool_prompt" in histories[-1].metadata and "tool_calls" in \
+            #         histories[-1].metadata and agent_prompt:
+            #     cur_msg['content'] = agent_prompt.format(action_list=histories[-1].metadata["tool_calls"],
+            #                                              result=content)
 
         if image_urls:
             urls = [{'type': 'text', 'text': content}]
@@ -511,10 +512,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                             "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
                             "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
                         }
-                        self.memory.add(MemoryItem(
-                            content=llm_response.content,
-                            metadata=info
-                        ))
+                        # add llm response to memory
+                        self._add_llm_response_to_memory(llm_response)
                         # rewrite
                         self.context.context_info[self.name()] = info
                 else:
@@ -529,6 +528,19 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             output.add_part(MessageOutput(source=llm_response, json_parse=False))
             output.mark_finished()
         return agent_result.actions
+    
+    def _add_llm_response_to_memory(self, llm_response: ModelResponse):
+        self.memory.add(AIMessage(
+                            content=llm_response.content, 
+                            tool_calls=llm_response.tool_calls, 
+                            metadata=MessageMetadata(
+                                agent_name=self.name(),
+                                user_id=self.context.user,
+                                session_id=self.context.session_id, 
+                                task_id=self.context.task_id, 
+                                agent_id=self.id
+                            )
+        ))
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
@@ -580,15 +592,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
                 else:
-                    self.memory.add(MemoryItem(
-                        content=llm_response.content,
-                        metadata={
-                            "role": "assistant",
-                            "agent_name": self.name(),
-                            "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
-                            "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
-                        }
-                    ))
+                    # add llm response to memory
+                    self._add_llm_response_to_memory(llm_response)
             else:
                 logger.error(f"{self.name()} failed to get LLM response")
                 raise RuntimeError(f"{self.name()} failed to get LLM response")

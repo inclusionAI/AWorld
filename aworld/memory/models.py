@@ -17,6 +17,7 @@ class MessageMetadata(BaseModel):
     session_id: str = Field(description="The ID of the session")
     task_id: str = Field(description="The ID of the task")
     agent_id: str = Field(description="The ID of the agent")
+    agent_name: str = Field(description="The name of the agent")
 
     model_config = ConfigDict(extra="allow")
 
@@ -97,7 +98,7 @@ class MemoryMessage(MemoryItem):
         content (Optional[Any]): Content of the message.
     """
     def __init__(self, role: str, metadata: MessageMetadata, content: Optional[Any] = None) -> None:
-        meta = metadata.to_dict()
+        meta = metadata.to_dict
         meta['role'] = role
         super().__init__(content=content, metadata=meta, memory_type="message")
 
@@ -157,7 +158,7 @@ class AIMessage(MemoryMessage):
         content (str): The content of the message.
     """
     def __init__(self, content: str, tool_calls: List[ToolCall], metadata: MessageMetadata) -> None:
-        meta = metadata.to_dict()
+        meta = metadata.to_dict
         meta['tool_calls'] = [tool_call.to_dict() for tool_call in tool_calls]
         super().__init__(role="assistant", metadata=MessageMetadata(**meta), content=content)
 
