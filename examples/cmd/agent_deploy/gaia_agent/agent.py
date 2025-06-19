@@ -39,6 +39,9 @@ class AWorldAgent:
             mcp_config=self.mcp_config,
         )
 
+        if prompt is None and request is not None:
+            prompt = request.messages[-1].content
+
         logger.info(f">>> Gaia Agent: prompt={prompt}, runner={runner}")
 
         async for line in runner.run(prompt):

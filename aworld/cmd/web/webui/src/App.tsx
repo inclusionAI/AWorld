@@ -1,23 +1,14 @@
 import {
-  AppstoreAddOutlined,
   CloudUploadOutlined,
-  CommentOutlined,
   CopyOutlined,
   DeleteOutlined,
   DislikeOutlined,
   EditOutlined,
-  EllipsisOutlined,
-  FileSearchOutlined,
-  HeartOutlined,
   LikeOutlined,
   PaperClipOutlined,
   PlusOutlined,
-  ProductOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined,
-  ScheduleOutlined,
-  ShareAltOutlined,
-  SmileOutlined,
+  ReloadOutlined
 } from '@ant-design/icons';
 import {
   Attachments,
@@ -25,11 +16,10 @@ import {
   Conversations,
   Prompts,
   Sender,
-  Welcome,
   useXAgent,
-  useXChat,
+  useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, Space, Spin, message } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Select, Space, Spin } from 'antd';
 import { createStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
@@ -64,85 +54,23 @@ const HOT_TOPICS = {
   children: [
     {
       key: '1-1',
-      description: 'What has Ant Design X upgraded?',
+      description: '杭州天气怎么样?',
       icon: <span style={{ color: '#f93a4a', fontWeight: 700 }}>1</span>,
     },
     {
       key: '1-2',
-      description: 'New AGI Hybrid Interface',
+      description: '打开 www.baidu.com，搜索 iphone16，打开第3个链接，总结页面的内容',
       icon: <span style={{ color: '#ff6565', fontWeight: 700 }}>2</span>,
     },
     {
       key: '1-3',
-      description: 'What components are in Ant Design X?',
+      description: '{"task_id": "c61d22de-5f6c-4958-a7f6-5e9707bd3466"}',
       icon: <span style={{ color: '#ff8f1f', fontWeight: 700 }}>3</span>,
     },
-    {
-      key: '1-4',
-      description: 'Come and discover the new design paradigm of the AI era.',
-      icon: <span style={{ color: '#00000040', fontWeight: 700 }}>4</span>,
-    },
-    {
-      key: '1-5',
-      description: 'How to quickly install and import components?',
-      icon: <span style={{ color: '#00000040', fontWeight: 700 }}>5</span>,
-    },
   ],
 };
 
-const DESIGN_GUIDE = {
-  key: '2',
-  label: 'Design Guide',
-  children: [
-    {
-      key: '2-1',
-      icon: <HeartOutlined />,
-      label: 'Intention',
-      description: 'AI understands user needs and provides solutions.',
-    },
-    {
-      key: '2-2',
-      icon: <SmileOutlined />,
-      label: 'Role',
-      description: "AI's public persona and image",
-    },
-    {
-      key: '2-3',
-      icon: <CommentOutlined />,
-      label: 'Chat',
-      description: 'How AI Can Express Itself in a Way Users Understand',
-    },
-    {
-      key: '2-4',
-      icon: <PaperClipOutlined />,
-      label: 'Interface',
-      description: 'AI balances "chat" & "do" behaviors.',
-    },
-  ],
-};
-
-const SENDER_PROMPTS: GetProp<typeof Prompts, 'items'> = [
-  {
-    key: '1',
-    description: 'Upgrades',
-    icon: <ScheduleOutlined />,
-  },
-  {
-    key: '2',
-    description: 'Components',
-    icon: <ProductOutlined />,
-  },
-  {
-    key: '3',
-    description: 'RICH Guide',
-    icon: <FileSearchOutlined />,
-  },
-  {
-    key: '4',
-    description: 'Installation Introduction',
-    icon: <AppstoreAddOutlined />,
-  },
-];
+const SENDER_PROMPTS: GetProp<typeof Prompts, 'items'> = [];
 
 const useStyle = createStyles(({ token, css }) => {
   return {
@@ -270,6 +198,37 @@ const Independent: React.FC = () => {
 
   const [inputValue, setInputValue] = useState('');
 
+  const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('weather_agent');
+  const [modelsLoading, setModelsLoading] = useState(false);
+
+  // ==================== API Calls ====================
+  const fetchModels = async () => {
+    setModelsLoading(true);
+    try {
+      const response = await fetch('/api/agent/models');
+      if (response.ok) {
+        const data = await response.json();
+        const modelOptions = Object.values(data).map((model: any) => ({
+          label: model.name || model.id,
+          value: model.id
+        }));
+        setModels(modelOptions);
+      } else {
+        message.error('Failed to fetch models');
+      }
+    } catch (error) {
+      console.error('Error fetching models:', error);
+      message.error('Error fetching models');
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchModels();
+  }, []);
+
   /**
    * 🔔 Please replace the BASE_URL, PATH, MODEL, API_KEY with your own values.
    */
@@ -277,7 +236,7 @@ const Independent: React.FC = () => {
   // ==================== Runtime ====================
   const [agent] = useXAgent<BubbleDataType>({
     baseURL: '/api/agent/chat/completions',
-    model: 'weather_agent',
+    model: selectedModel, // 使用选中的模型
     dangerouslyApiKey: 'Bearer sk-xxxxxxxxxxxxxxxxxxxx',
   });
   const loading = agent.isRequesting();
@@ -353,14 +312,7 @@ const Independent: React.FC = () => {
     <div className={styles.sider}>
       {/* 🌟 Logo */}
       <div className={styles.logo}>
-        <img
-          src="https://mdn.alipayobjects.com/huamei_iwk9zp/afts/img/A*eco6RrQhxbMAAAAAAAAAAAAADgCCAQ/original"
-          draggable={false}
-          alt="logo"
-          width={24}
-          height={24}
-        />
-        <span>Ant Design X</span>
+        <span>AWorld</span>
       </div>
 
       {/* 🌟 添加会话 */}
@@ -485,18 +437,6 @@ const Independent: React.FC = () => {
           style={{ paddingInline: 'calc(calc(100% - 700px) /2)' }}
           className={styles.placeholder}
         >
-          <Welcome
-            variant="borderless"
-            icon="https://mdn.alipayobjects.com/huamei_iwk9zp/afts/img/A*s5sNRo5LjfQAAAAAAAAAAAAADgCCAQ/fmt.webp"
-            title="Hello, I'm Ant Design X"
-            description="Base on Ant Design, AGI product interface solution, create a better intelligent vision~"
-            extra={
-              <Space>
-                <Button icon={<ShareAltOutlined />} />
-                <Button icon={<EllipsisOutlined />} />
-              </Space>
-            }
-          />
           <Flex gap={16}>
             <Prompts
               items={[HOT_TOPICS]}
@@ -509,23 +449,6 @@ const Independent: React.FC = () => {
                   border: 'none',
                 },
                 subItem: { padding: 0, background: 'transparent' },
-              }}
-              onItemClick={(info) => {
-                onSubmit(info.data.description as string);
-              }}
-              className={styles.chatPrompt}
-            />
-
-            <Prompts
-              items={[DESIGN_GUIDE]}
-              styles={{
-                item: {
-                  flex: 1,
-                  backgroundImage: 'linear-gradient(123deg, #e5f4ff 0%, #efe7ff 100%)',
-                  borderRadius: 12,
-                  border: 'none',
-                },
-                subItem: { background: '#ffffffa6' },
               }}
               onItemClick={(info) => {
                 onSubmit(info.data.description as string);
@@ -605,6 +528,19 @@ const Independent: React.FC = () => {
           );
         }}
         placeholder="Ask or input / use skills"
+      />
+      {/* 🌟 模型选择下拉列表 */}
+      <Select
+        value={selectedModel}
+        onChange={setSelectedModel}
+        options={models}
+        loading={modelsLoading}
+        placeholder="Select a model"
+        style={{ width: 200 }}
+        showSearch
+        filterOption={(input, option) =>
+          (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+        }
       />
     </>
   );

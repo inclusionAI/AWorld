@@ -54,6 +54,7 @@ class AWorldAgent(BaseAWorldAgent):
             mcp_config=mcp_config,
             mcp_servers=mcp_config.get("mcpServers", {}).keys(),
         )
+ 
         if prompt is None and request is not None:
             prompt = request.messages[-1].content
 

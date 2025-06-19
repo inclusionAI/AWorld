@@ -2,6 +2,7 @@ import logging
 import os
 import json
 
+from aworld.cmd import ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
@@ -19,7 +20,7 @@ class AWorldAgent:
     def get_agent_info(self):
         return {"name": "Powerful Agent", "description": "Powerful Agent"}
 
-    async def run(self, prompt: str):
+    async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
         llm_provider = os.getenv("LLM_PROVIDER_WEATHER", "openai")
         llm_model_name = os.getenv("LLM_MODEL_NAME_WEATHER")
         llm_api_key = os.getenv("LLM_API_KEY_WEATHER")
@@ -52,7 +53,15 @@ class AWorldAgent:
             mcp_servers=mcp_config.get("mcpServers", {}).keys(),
         )
 
-        task = Task(input=prompt, agent=super_agent, event_driven=False, conf=TaskConfig(max_steps=20))
+        if prompt is None and request is not None:
+            prompt = request.messages[-1].content
+
+        task = Task(
+            input=prompt,
+            agent=super_agent,
+            event_driven=False,
+            conf=TaskConfig(max_steps=20),
+        )
 
         rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():
