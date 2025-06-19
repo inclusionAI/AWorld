@@ -14,6 +14,7 @@ A multi-process capable replay buffer system for storing and sampling experience
 ## Basic Usage
 
 ### Writing Data
+
 ```python
 from aworld.replay_buffer import ReplayBuffer, DataRow, ExpMeta, Experience
 from aworld.core.common import ActionModel, Observation
@@ -28,7 +29,7 @@ data = DataRow(
         execute_time=time.time()
     ),
     exp_data=Experience(
-        state=Observation(), 
+        state=Observation(),
         action=ActionModel()
     )
 )

@@ -22,10 +22,11 @@ from aworld.core.event.base import Message, ToolMessage, Constants
 from aworld.core.event.event_bus import InMemoryEventbus
 from aworld.core.memory import MemoryItem
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
+from aworld.core.memory import MemoryItem, MemoryConfig
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform
-from aworld.memory.main import Memory
+from aworld.memory.main import InMemoryStorageMemory, MemoryFactory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
@@ -53,8 +54,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
         self._llm = None
-        self.memory = Memory.from_config(
-            {"memory_store": kwargs.pop("memory_store") if kwargs.get("memory_store") else "inmemory"})
+        self.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory"))
         self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
 
@@ -78,8 +78,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def reset(self, options: Dict[str, Any]):
         super().reset(options)
-        self.memory = Memory.from_config(
-            {"memory_store": options.pop("memory_store") if options.get("memory_store") else "inmemory"})
+        self.memory = MemoryFactory.from_config(MemoryConfig(provider=options.pop("memory_store") if options.get("memory_store") else "inmemory"))
 
     def set_tools_instances(self, tools, tools_conf):
         self.tools_instances = tools
