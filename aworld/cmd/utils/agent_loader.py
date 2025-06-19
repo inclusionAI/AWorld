@@ -20,16 +20,16 @@ def list_agents() -> List[AgentModel]:
     """
     if len(_agent_cache) == 0:
         for m in _list_agents():
-            _agent_cache[m.agent_id] = m
+            _agent_cache[m.id] = m
     return _agent_cache
 
 
-def get_agent_model(agent_id) -> AgentModel:
+def get_agent(agent_id) -> AgentModel:
     """
     Get the agent model by agent name
 
     Args:
-        agent_name: The name of the agent
+        agent_id: The name of the agent
 
     Returns:
         AgentModel: The agent model
@@ -56,21 +56,21 @@ def _list_agents() -> List[AgentModel]:
                 agent_file = os.path.join(agent_path, "agent.py")
                 if os.path.exists(agent_file):
                     try:
-                        agent_instance = _get_agent_instance(agent_id)
-                        if hasattr(agent_instance, "agent_name"):
-                            agent_name = agent_instance.agent_name()
+                        instance = _get_agent_instance(agent_id)
+                        if hasattr(instance, "name"):
+                            name = instance.name()
                         else:
-                            agent_name = agent_id
-                        if hasattr(agent_instance, "agent_description"):
-                            agent_description = agent_instance.agent_description()
+                            name = agent_id
+                        if hasattr(instance, "description"):
+                            description = instance.description()
                         else:
-                            agent_description = ""
+                            description = ""
                         agent_model = AgentModel(
-                            agent_id=agent_id,
-                            agent_name=agent_name,
-                            agent_description=agent_description,
-                            agent_path=agent_path,
-                            agent_instance=agent_instance,
+                            id=agent_id,
+                            name=name,
+                            description=description,
+                            path=agent_path,
+                            instance=instance,
                         )
 
                         agents.append(agent_model)

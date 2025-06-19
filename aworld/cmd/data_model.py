@@ -1,6 +1,6 @@
 import uuid
 from abc import abstractmethod
-from typing import Any, AsyncGenerator, List
+from typing import Any, AsyncGenerator, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -38,22 +38,20 @@ class ChatCompletionResponse(BaseModel):
 
 
 class AgentModel(BaseModel):
-    agent_id: str = Field(..., description="The agent id")
-    agent_name: str = Field(None, description="The agent name")
-    agent_description: str = Field(None, description="The agent description")
-    agent_path: str = Field(..., description="The agent path")
-    agent_instance: Any = Field(
-        ..., description="The agent module instance", exclude=True
-    )
+    id: str = Field(..., description="The agent id")
+    name: Optional[str] = Field(None, description="The agent name")
+    description: Optional[str] = Field(None, description="The agent description")
+    path: str = Field(..., description="The agent path")
+    instance: Any = Field(..., description="The agent module instance", exclude=True)
 
 
 class BaseAWorldAgent:
     @abstractmethod
-    def agent_name(self) -> str:
+    def name(self) -> str:
         pass
 
     @abstractmethod
-    def agent_description(self) -> str:
+    def description(self) -> str:
         pass
 
     @abstractmethod
