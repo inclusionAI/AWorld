@@ -125,6 +125,7 @@ examples/gaia/gaia_dataset/
 # Node Modules
 node_modules/
 
+aworld.db
 .data/
 examples/gaia/GAIA
 traces*.json

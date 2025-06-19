@@ -1,9 +1,9 @@
 from aworld.logs.util import logger
-from flask import Flask, render_template, jsonify
 from aworld.trace.opentelemetry.memory_storage import SpanModel, TraceStorage
 from aworld.utils.import_package import import_package
 
-import_package('flask')
+import_package('flask')  # noqa
+from flask import Flask, render_template, jsonify  # noqa
 
 app = Flask(__name__, template_folder='../../web/templates')
 current_storage = None

@@ -5,4 +5,4 @@ pip install -e . && \
 
 pip install -r mcp_servers/requirements.txt && \
 
-cd examples/cmd && aworld web
+cd examples/cmd && aworld web_legacy
