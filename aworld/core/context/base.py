@@ -67,15 +67,29 @@ class AgentContext:
         self.messages = messages
 
 class Context(InheritanceSingleton):
-    def __init__(self, user: str = None, **kwargs):
-        self._user = user
-        self._init(**kwargs)
+    """Single instance, can use construction or `instance` static method to create or get `Context` instance.
 
-    def _init(self, **kwargs):
-        self._task_id = kwargs.get('task_id')
-        self._engine = kwargs.get('engine')
-        self._trace_id = kwargs.get('trace_id')
-        self._session: Session = kwargs.get('session')
+    Examples:
+        >>> context = Context()
+    or
+        >>> context = Context.instance()
+    """
+
+    def __init__(self,
+                 user: str = None,
+                 *,
+                 task_id: str = None,
+                 trace_id: str = None,
+                 session: Session = None,
+                 engine: str = None):
+        self._user = user
+        self._init(task_id=task_id, trace_id=trace_id, session=session, engine=engine)
+
+    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None):
+        self._task_id = task_id
+        self._engine = engine
+        self._trace_id = trace_id
+        self._session: Session = session
         self.context_info = ConfigDict()
         self.agent_info = ConfigDict()
         self.trajectories = OrderedDict()
@@ -88,6 +102,8 @@ class Context(InheritanceSingleton):
         # TODO swarm topology
         # TODO EventManager
         # TODO workspace
+
+        self._event_manager = None
 
     def add_token(self, usage: Dict[str, int]):
         self._token_usage = nest_dict_counter(self._token_usage, usage)
@@ -136,6 +152,10 @@ class Context(InheritanceSingleton):
     def engine(self):
         return self._engine
 
+    @engine.setter
+    def engine(self, engine: str):
+        self._engine = engine
+
     @property
     def user(self):
         return self._user
@@ -168,6 +188,14 @@ class Context(InheritanceSingleton):
     @session.setter
     def session(self, session: Session):
         self._session = session
+
+    @property
+    def event_manager(self):
+        return self._event_manager
+
+    @event_manager.setter
+    def event_manager(self, event_manager: 'EventManager'):
+        self._event_manager = event_manager
 
     @property
     def record_path(self):

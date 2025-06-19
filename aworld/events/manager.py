@@ -60,12 +60,13 @@ class EventManager:
         return True
 
     async def consume(self, nowait: bool = False):
+        msg = Message(session_id=self.context.session_id, sender="", category="", payload="")
         if nowait:
-            return await self.event_bus.consume_nowait()
-        return await self.event_bus.consume()
+            return await self.event_bus.consume_nowait(msg)
+        return await self.event_bus.consume(msg)
 
     async def done(self):
-        await self.event_bus.done()
+        await self.event_bus.done(self.context.session_id)
 
     async def register(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         await self.event_bus.subscribe(event_type, topic, handler, **kwargs)

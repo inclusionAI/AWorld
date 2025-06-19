@@ -3,7 +3,6 @@ import json
 import time
 import uuid
 from typing import Dict, Any, Optional, List, Literal
-import oss2
 from .artifact_repository import ArtifactRepository, CommonEncoder
 
 
@@ -26,6 +25,8 @@ class OSSArtifactRepository(ArtifactRepository):
             bucket_name: OSS bucket name
             prefix: Storage prefix, defaults to "artifacts/"
         """
+        import oss2
+
         super().__init__()
         self.auth = oss2.Auth(access_key_id, access_key_secret)
         self.bucket = oss2.Bucket(self.auth, endpoint, bucket_name)
@@ -35,6 +36,8 @@ class OSSArtifactRepository(ArtifactRepository):
 
     def _load_index(self) -> Dict[str, Any]:
         """Load or create index file from OSS"""
+        import oss2
+
         try:
             # Try to get index file from OSS
             result = self.bucket.get_object(self.index_key)
@@ -89,6 +92,8 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Version identifier
         """
+        import oss2
+
         try:
             # Calculate content hash
             content_hash = self._compute_content_hash(data)
@@ -154,6 +159,8 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Stored data, or None if it doesn't exist
         """
+        import oss2
+
         try:
             # Find corresponding version in version list
             for version in self.index["versions"]:
@@ -185,6 +192,8 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Stored data, or None if it doesn't exist
         """
+        import oss2
+
         try:
             # Find corresponding artifact in artifact list
             for artifact in self.index["artifacts"]:
@@ -241,6 +250,8 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Whether deletion was successful
         """
+        import oss2
+
         try:
             # Find and delete artifact
             for i, artifact in enumerate(self.index["artifacts"]):

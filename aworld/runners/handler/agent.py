@@ -59,6 +59,18 @@ class DefaultAgentHandler(AgentHandler):
             message.payload = data
         # data is Observation
         if isinstance(data, Observation):
+            if not self.swarm:
+                msg = Message(
+                    category=Constants.TASK,
+                    payload=data.content,
+                    sender=data.observer,
+                    session_id=Context.instance().session_id,
+                    topic=TaskType.FINISHED
+                )
+                logger.info(f"agent handler send finished message: {msg}")
+                yield msg
+                return
+
             agent = self.swarm.agents.get(message.receiver)
             # agent + tool completion protocol.
             if agent and agent.finished and data.info.get('done'):

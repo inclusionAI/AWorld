@@ -19,7 +19,7 @@ from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
 from aworld.output.base import StepOutput
-from aworld.utils.common import convert_to_snake
+from aworld.utils.common import convert_to_snake, sync_exec
 
 AgentInput = TypeVar("AgentInput")
 ToolInput = TypeVar("ToolInput")
@@ -222,7 +222,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                     sender=self.name(),
                     session_id=Context.instance().session_id
                 )
-                event_bus.publish(tool_output_message)
+                sync_exec(event_bus.publish, tool_output_message)
         return AgentMessage(payload=step_res,
                             caller=action[0].agent_name,
                             sender=self.name(),
