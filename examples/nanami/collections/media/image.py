@@ -185,11 +185,14 @@ class ImageCollection(ActionCollection):
         """
         buffer = BytesIO()
 
-        # Convert RGBA to RGB for JPEG
-        if output_format.upper() == "JPEG" and image.mode in ("RGBA", "LA"):
-            background = Image.new("RGB", image.size, (255, 255, 255))
-            background.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
-            image = background
+        # Convert RGBA or P to RGB for JPEG
+        if output_format.upper() == "JPEG":
+            if image.mode in ("RGBA", "LA"):
+                background = Image.new("RGB", image.size, (255, 255, 255))
+                background.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
+                image = background
+            elif image.mode == "P":
+                image = image.convert("RGB")
 
         image.save(buffer, format=output_format, quality=85 if output_format.upper() == "JPEG" else None)
 
