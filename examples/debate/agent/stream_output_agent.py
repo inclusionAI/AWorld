@@ -1,5 +1,5 @@
 from aworld.config import AgentConfig
-from aworld.core.agent.base import Agent
+from aworld.core.agent.llm_agent import Agent
 from aworld.models.llm import acall_llm_model
 from aworld.output import MessageOutput
 

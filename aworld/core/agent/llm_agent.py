@@ -18,11 +18,11 @@ from aworld.core.context.base import Context
 from aworld.core.context.base import ContextUsage
 from aworld.core.contextprocessor.context_processor import ContextProcessor
 from aworld.core.event.base import Message, ToolMessage, Constants
-from aworld.core.memory import MemoryItem
+from aworld.core.memory import MemoryItem, MemoryConfig
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.logs.util import logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform
-from aworld.memory.main import Memory
+from aworld.memory.main import Memory, MemoryFactory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
@@ -50,8 +50,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
         self._llm = None
-        self.memory = Memory.from_config(
-            {"memory_store": kwargs.pop("memory_store") if kwargs.get("memory_store") else "inmemory"})
+        self.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory"))
         self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
 

@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import Optional, AsyncGenerator
 
 from examples.debate.agent.base import DebateSpeech
@@ -6,7 +7,7 @@ from examples.debate.agent.debate_agent import DebateAgent
 from examples.debate.agent.moderator_agent import ModeratorAgent
 from aworld.core.common import Observation
 from aworld.core.memory import MemoryItem
-from aworld.output import Output, WorkSpace
+from aworld.output import Output, WorkSpace, Artifact, ArtifactType, CodeArtifact
 
 
 class DebateArena:
@@ -131,6 +132,17 @@ class DebateArena:
             return
         yield moderator_speech
         await moderator_speech.wait_until_finished()
+        await self.workspace.add_artifact(
+            CodeArtifact.build_artifact(
+                artifact_type=ArtifactType.CODE,
+                artifact_id="result",
+                code_type='html',
+                content=moderator_speech.content,
+                metadata={
+                    "topic": topic
+                }
+            )
+        )
         logging.info(
             f"🛬====================================  total is end =============================================")
 

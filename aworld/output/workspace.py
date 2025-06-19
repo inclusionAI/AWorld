@@ -27,6 +27,7 @@ class WorkSpace(BaseModel):
     metadata: Dict[str, Any] = Field(default={}, description="metadata")
     artifacts: List[Artifact] = Field(default=[], description="list of artifacts")
 
+    artifact_id_index: Dict[str, int] = Field(default={}, description="artifact id index", exclude=True)
     observers: Optional[List[WorkspaceObserver]] = Field(default=[], description="list of observers", exclude=True)
     repository: Optional[ArtifactRepository] = Field(default=None, description="local artifact repository", exclude=True)
 
@@ -71,6 +72,9 @@ class WorkSpace(BaseModel):
                 self.artifacts = []
                 self.metadata = {}
 
+        # Build artifact_id_index after loading artifacts
+        self._rebuild_artifact_id_index()
+
         # Initialize observers
         self.observers: List[WorkspaceObserver] = []
         if use_default_observer:
@@ -90,24 +94,8 @@ class WorkSpace(BaseModel):
         """
         try:
             # Get workspace versions
-            workspace_versions = self.repository.index['versions']
-            if not workspace_versions:
-                return None
 
-            # Find latest version by timestamp that belongs to this workspace
-            latest_version = None
-            latest_timestamp = 0
-            for version_info in workspace_versions:
-                # Check if this version belongs to current workspace
-                if version_info.get("metadata", {}).get("workspace_id") == self.workspace_id:
-                    if version_info.get("timestamp", 0) > latest_timestamp:
-                        latest_timestamp = version_info.get("timestamp", 0)
-                        latest_version = version_info['version_id']
-
-            if not latest_version:
-                return None
-
-            workspace_data = self.repository.retrieve(latest_version)
+            workspace_data = self.repository.load_index()
 
             if not workspace_data:
                 return None
@@ -119,9 +107,9 @@ class WorkSpace(BaseModel):
             for artifact_data in workspace_artifacts:
                 artifact_id = artifact_data.get("artifact_id")
                 if artifact_id:
-                    artifact_content = self.repository.retrieve_latest_artifact(artifact_id)
-                    if artifact_content:
-                        artifacts.append(Artifact.from_dict(artifact_content))
+                    artifact_data = self.repository.retrieve_latest_artifact(artifact_id)
+                    if artifact_data:
+                        artifacts.append(Artifact.from_dict(artifact_data))
 
             return {
                 "artifacts": artifacts,
@@ -157,13 +145,46 @@ class WorkSpace(BaseModel):
         workspace = cls(
             workspace_id=workspace_id,
             name=name,
-            storage_path=storage_path,
+            storage_path=storage_path + "/" + workspace_id,
             observers=observers,
             use_default_observer=use_default_observer,
             clear_existing=False  # Always try to load existing data
         )
         return workspace
-    
+
+    @classmethod
+    def from_oss_storages(cls,
+                          workspace_id: Optional[str] = None,
+                          name: Optional[str] = None,
+                          storage_path: Optional[str] = "aworld/workspaces/",
+                          observers: Optional[List[WorkspaceObserver]] = None,
+                          use_default_observer: bool = True,
+                          oss_config: Optional[Dict[str, Any]] = None,
+                          ) -> "WorkSpace":
+        if oss_config is None:
+            oss_config = {
+                "access_key_id": os.getenv("OSS_ACCESS_KEY_ID"),
+                "access_key_secret": os.getenv("OSS_ACCESS_KEY_SECRET"),
+                "endpoint": os.getenv("OSS_ENDPOINT"),
+                "bucket_name": os.getenv("OSS_BUCKET_NAME"),
+            }
+        repository = OSSArtifactRepository(
+            access_key_id=oss_config["access_key_id"],
+            access_key_secret=oss_config["access_key_secret"],
+            endpoint=oss_config["endpoint"],
+            bucket_name=oss_config["bucket_name"],
+            storage_path=storage_path + "/" + workspace_id
+        )
+        workspace = cls(
+            workspace_id=workspace_id,
+            name=name,
+            storage_path=storage_path,
+            observers=observers,
+            use_default_observer=use_default_observer,
+            repository=repository
+        )
+        return workspace
+
     async def create_artifact(
             self,
             artifact_type: Union[ArtifactType, str],
@@ -241,8 +262,6 @@ class WorkSpace(BaseModel):
             List of created artifact objects
         """
 
-        # Add to workspace
-        self.artifacts.append(artifact)
         # Store in repository
         self._store_artifact(artifact)
 
@@ -253,38 +272,6 @@ class WorkSpace(BaseModel):
         self.save()
 
         await self._notify_observers("create", artifact)
-
-    @classmethod
-    def from_oss_storages(cls,
-                          workspace_id: Optional[str] = None,
-                          name: Optional[str] = None,
-                          storage_path: Optional[str] = None,
-                          observers: Optional[List[WorkspaceObserver]] = None,
-                          use_default_observer: bool = True,
-                          oss_config: Optional[Dict[str, Any]] = None,
-                          ) -> "WorkSpace":
-        if oss_config is None:
-            oss_config = {
-                "access_key_id": os.getenv("OSS_ACCESS_KEY_ID"),
-                "access_key_secret": os.getenv("OSS_ACCESS_KEY_SECRET"),
-                "endpoint": os.getenv("OSS_ENDPOINT"),
-                "bucket_name": os.getenv("OSS_BUCKET_NAME"),
-            }
-        repository = OSSArtifactRepository(
-            access_key_id=oss_config["access_key_id"],
-            access_key_secret=oss_config["access_key_secret"],
-            endpoint=oss_config["endpoint"],
-            bucket_name=oss_config["bucket_name"],
-        )
-        workspace = cls(
-            workspace_id=workspace_id,
-            name=name,
-            storage_path=storage_path,
-            observers=observers,
-            use_default_observer=use_default_observer,
-            repository=repository
-        )
-        return workspace
 
 
     def get_artifact(self, artifact_id: str) -> Optional[Artifact]:
@@ -347,10 +334,6 @@ class WorkSpace(BaseModel):
         """
         for i, artifact in enumerate(self.artifacts):
             if artifact.artifact_id == artifact_id:
-                # Mark as archived
-                artifact.archive()
-                # Store the archived state
-                self._store_artifact(artifact)
                 # Remove from list
                 self.artifacts.pop(i)
 
@@ -424,29 +407,37 @@ class WorkSpace(BaseModel):
             except Exception as e:
                 print(f"Observer notification failed: {e}")
         return results
-
+    
+    def _check_artifact_exists(self, artifact_id: str) -> bool:
+        return self.artifact_id_index.get(artifact_id, -1) >= 0
+    
+    def _update_artifact(self, artifact: Artifact) -> None:
+        for i, a in enumerate(self.artifacts):
+            if a.artifact_id == artifact.artifact_id:
+                self.artifacts[i] = artifact
+                break
+    
     def _store_artifact(self, artifact: Artifact) -> None:
+        if self._check_artifact_exists(artifact.artifact_id):
+            self._update_artifact(artifact)
+        else:
+            self.artifacts.append(artifact)
+
         """Store artifact in repository"""
         artifact_data = artifact.to_dict()
 
         # Include complete version history
         artifact_data["version_history"] = artifact.version_history
 
-        version_id = self.repository.store(
-            artifact_id=artifact.artifact_id,
-            type='artifact',
-            data=artifact_data,
-            metadata={
-                "workspace_id": self.workspace_id
-            }
-        )
+        version_id = self.repository.store_artifact(artifact)
+
         # Store in repository
         artifact.current_version = version_id
 
-    def save(self) -> str:
+    def save(self) -> None:
         """
         Save workspace state
-        
+
         Returns:
             Workspace storage ID
         """
@@ -468,81 +459,8 @@ class WorkSpace(BaseModel):
         }
 
         # Store workspace information with workspace_id in metadata
-        return self.repository.store(
-            artifact_id=f"workspace_{self.workspace_id}",
-            type='workspace',
-            data=workspace_data,
-            metadata={"workspace_id": self.workspace_id, "type": "workspace"}  # Important for version filtering
-        )
-
-    @classmethod
-    def load(cls, workspace_id: str, storage_path: Optional[str] = None) -> Optional["WorkSpace"]:
-        """
-        Load workspace
-        
-        Args:
-            workspace_id: Workspace ID
-            storage_path: Optional storage path
-            
-        Returns:
-            Loaded workspace, or None if it doesn't exist
-        """
-        # Initialize storage path
-        storage_dir = storage_path or os.path.join("data", "workspaces", workspace_id)
-        repository = LocalArtifactRepository(storage_dir)
-
-        # Get workspace versions
-        workspace_versions = repository.index.get("versions", {})
-        if not workspace_versions:
-            return None
-
-        # Find latest version that belongs to this workspace
-        latest_version = None
-        latest_timestamp = 0
-        for version_id, version_info in workspace_versions.items():
-            if version_info.get("metadata", {}).get("workspace_id") == workspace_id:
-                if version_info.get("timestamp", 0) > latest_timestamp:
-                    latest_timestamp = version_info.get("timestamp", 0)
-                    latest_version = version_id
-
-        if not latest_version:
-            return None
-
-        workspace_data = repository.retrieve(latest_version)
-        if not workspace_data:
-            return None
-
-        # Create workspace instance
-        workspace = cls(
-            workspace_id=workspace_data["workspace_id"],
-            name=workspace_data["name"],
-            storage_path=storage_dir
-        )
-        workspace.created_at = workspace_data["created_at"]
-        workspace.updated_at = workspace_data["updated_at"]
-        workspace.metadata = workspace_data["metadata"]
-
-        # Load artifacts
-        workspace_artifacts = workspace_data.get("artifacts", [])
-        for artifact_data in workspace_artifacts:
-            artifact_id = artifact_data.get("artifact_id")
-            if artifact_id:
-                artifact_versions = repository.get_versions(artifact_id)
-                if artifact_versions:
-                    # Find latest version
-                    latest_artifact_version = None
-                    latest_artifact_timestamp = 0
-                    for version_info in artifact_versions:
-                        if version_info.get("timestamp", 0) > latest_artifact_timestamp:
-                            latest_artifact_timestamp = version_info.get("timestamp", 0)
-                            latest_artifact_version = version_info.get("id")
-
-                    if latest_artifact_version:
-                        artifact_content = repository.retrieve(latest_artifact_version)
-                        if artifact_content:
-                            workspace.artifacts.append(Artifact.from_dict(artifact_content))
-
-        return workspace
+        self.repository.save_index()
+        self._rebuild_artifact_id_index()
 
     def get_file_content_by_artifact_id(self, artifact_id: str) -> str:
         """
@@ -572,66 +490,14 @@ class WorkSpace(BaseModel):
 
     def generate_tree_data(self) -> Dict[str, Any]:
         """
-        Generate a directory tree structure based on artifact filenames.
-        
+        Generate a directory tree structure using the repository's implementation.
         Returns:
             A dictionary representing the directory tree.
         """
-        root = {
-            "name": self.name,
-            "id": "-1",
-            "children": []
-        }
+        return self.repository.generate_tree_data(self.name)
 
-        # Store filename to artifacts mapping
-        filename_artifacts = {}
-
-        # First, group artifacts by filename
-        for artifact in self.artifacts:
-            filename = artifact.metadata.get('filename')
-            if filename:
-                if filename not in filename_artifacts:
-                    filename_artifacts[filename] = []
-                filename_artifacts[filename].append(artifact)
-
-        for filename, artifacts in filename_artifacts.items():
-            parts = filename.split('/')
-            current_node = root
-
-            for depth, part in enumerate(parts):
-                if part == "":
-                    continue
-                # gen node_id
-                node_id = str(uuid.uuid4())
-
-                # check node exists
-                existing_node = next((child for child in current_node['children'] if child['name'] == part), None)
-
-                # update node if exists
-                if existing_node:
-                    current_node = existing_node
-                else:
-                    # create new node
-                    new_node = {
-                        "id": node_id,
-                        "type": "dir" if depth < len(parts) - 1 else "file",
-                        "name": part,
-                        "filename": filename,
-                        "parentId": current_node['id'],
-                        "depth": depth + 1,
-                        "expanded": False,
-                        "artifactId": artifacts[0].artifact_id,
-                        "children": []
-                    }
-
-                    # add artifact relation if leaf node
-                    if depth == len(parts) - 1:
-                        new_node.update({
-                            # "content": self.get_file_content_by_artifact_id(filename),
-                            "language": artifacts[0].metadata.get('code_type', 'unknown'),
-                        })
-
-                    current_node['children'].append(new_node)
-                    current_node = new_node
-
-        return root
+    def _rebuild_artifact_id_index(self) -> None:
+        """
+        Rebuild the artifact_id_index mapping artifact_id to its index in self.artifacts.
+        """
+        self.artifact_id_index = {artifact.artifact_id: idx for idx, artifact in enumerate(self.artifacts)}

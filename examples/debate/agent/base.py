@@ -24,9 +24,10 @@ class DebateSpeech(Output, BaseModel):
 
     async def convert_to_parts(self, message_output, after_call):
         async def __convert_to_parts__():
-            async for content in message_output.response_generator:
-                if content:
-                    yield OutputPart(content=content)
+            async for item in message_output.response_generator:
+                if item:
+                    self.content += item
+                    yield OutputPart(content=item)
             if message_output.finished:
                 await after_call(message_output.response)
 

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from enum import Enum, auto
 from typing import Dict, Any, Optional, ClassVar
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator, BaseModel
 
 from aworld.output.base import Output
 
@@ -36,6 +36,12 @@ class ArtifactStatus(Enum):
     EDITED = auto()     # Edited status
     ARCHIVED = auto()   # Archived status
 
+class ArtifactAttachment(BaseModel):
+    filename: str = Field(..., description="Filename")
+    content: str = Field(..., description="Content", exclude=True)
+    mime_type: str = Field(..., description="MIME type")
+
+
 class Artifact(Output):
     """
     Represents a specific content generation result (artifact)
@@ -54,6 +60,7 @@ class Artifact(Output):
     current_version: str = Field(default="", description="Current version of the artifact")
     version_history: list = Field(default_factory=list, description="History of versions for the artifact")
     create_file: bool = Field(default=False, description="Flag to indicate if a file should be created")
+    attachments: Optional[list[ArtifactAttachment]] = Field(default_factory=list, description="Attachments associated with the artifact")
 
     # Use model_validator for initialization logic
     @model_validator(mode='after')
@@ -62,7 +69,7 @@ class Artifact(Output):
         # Ensure artifact_id is always a valid string
         if not self.artifact_id:
             self.artifact_id = str(uuid.uuid4())
-            
+
         # Reset status to DRAFT for new artifacts
         if not self.version_history:
             self.status = ArtifactStatus.DRAFT
@@ -76,7 +83,6 @@ class Artifact(Output):
         version = {
             "timestamp": datetime.now().isoformat(),
             "description": description,
-            "content": self.content,
             "status": self.status
         }
         self.version_history.append(version)
