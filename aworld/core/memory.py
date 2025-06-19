@@ -19,7 +19,7 @@ class MemoryItem(BaseModel):
     tags: list[str] = Field(description="tags")
     histories: list["MemoryItem"] = Field(default_factory=list)
     deleted: bool = Field(default=False)
-    memory_type: Literal["init", "message", "summary"] = Field(default="message")
+    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile"] = Field(default="message")
     version: int = Field(description="version")
 
     def __init__(self, **data):
