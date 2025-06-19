@@ -7,12 +7,23 @@ from abc import ABC, abstractmethod
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.tool.tool_desc import is_tool_by_name
 from aworld.core.singleton import InheritanceSingleton
+from aworld.core.event.base import Constants
 
 
 class RunNodeBusiType(Enum):
     AGENT = 'AGENT'
     TOOL = 'TOOL'
     TASK = 'TASK'
+
+    @staticmethod
+    def from_message_category(category: str) -> 'RunNodeBusiType':
+        if category == Constants.AGENT:
+            return RunNodeBusiType.AGENT
+        if category == Constants.TOOL:
+            return RunNodeBusiType.TOOL
+        if category == Constants.TASK:
+            return RunNodeBusiType.TASK
+        return None
 
 
 class RunNodeStatus(Enum):
@@ -57,7 +68,7 @@ class StateStorage(ABC):
         pass
 
 
-class InMemoryStateStorage(StateStorage):
+class InMemoryStateStorage(StateStorage, InheritanceSingleton):
     '''
     In memory state storage
     '''
@@ -100,7 +111,7 @@ class RuntimeStateManager(InheritanceSingleton):
     Runtime state manager
     '''
 
-    def __init__(self, storage: StateStorage = InMemoryStateStorage()):
+    def __init__(self, storage: StateStorage = InMemoryStateStorage.instance()):
         self.storage = storage
 
     def create_node(self,
@@ -232,3 +243,36 @@ class RuntimeStateManager(InheritanceSingleton):
         if is_tool_by_name(msg_from):
             return RunNodeBusiType.TOOL
         return RunNodeBusiType.TASK
+
+
+class EventRuntimeStateManager(RuntimeStateManager):
+
+    def __init__(self, storage: StateStorage = InMemoryStateStorage.instance()):
+        super().__init__(storage)
+
+    def start_message_node(self, message: Message):
+        '''
+        create and start node while message handle started.
+        '''
+        run_node_busi_type = RunNodeBusiType.from_message_category(
+            message.category)
+        if run_node_busi_type:
+            self.create_node(busi_type=run_node_busi_type,
+                             busi_id=message.receiver,
+                             session_id=message.session_id,
+                             msg_id=message.id,
+                             msg_from=message.sender)
+            self.run_node(run_node_busi_type, message.receiver)
+
+    def end_message_node(self, message: Message, result_msg: Message = None):
+        '''
+        end node while message handle finished.
+        '''
+        run_node_busi_type = RunNodeBusiType.from_message_category(
+            message.category)
+        if run_node_busi_type:
+            if result_msg and result_msg.is_error():
+                self.run_failed(run_node_busi_type,
+                                message.receiver, result_msg)
+            else:
+                self.run_succeed(run_node_busi_type, message.receiver)

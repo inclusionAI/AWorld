@@ -58,14 +58,16 @@ class Runners:
             input: str,
             agent: Agent = None,
             swarm: Swarm = None,
-            tool_names: List[str] = []
+            tool_names: List[str] = [],
+            session_id: str = None
     ) -> TaskResponse:
         return sync_exec(
             Runners.run,
             input=input,
             agent=agent,
             swarm=swarm,
-            tool_names=tool_names
+            tool_names=tool_names,
+            session_id=session_id
         )
 
     @staticmethod
@@ -73,7 +75,8 @@ class Runners:
             input: str,
             agent: Agent = None,
             swarm: Swarm = None,
-            tool_names: List[str] = []
+            tool_names: List[str] = [],
+            session_id: str = None
     ) -> TaskResponse:
         """Run agent directly with input and tool names.
 
@@ -82,6 +85,10 @@ class Runners:
             agent: An agent with AI model configured, prompts, tools, mcp servers and other agents.
             swarm: Multi-agent topo.
             tool_names: Tool name list.
+            session_id: Session id.
+
+        Returns:
+            TaskResponse: Task response.
         """
         if agent and swarm:
             raise ValueError("`agent` and `swarm` only choose one.")
@@ -93,6 +100,7 @@ class Runners:
             agent.task = input
             swarm = Swarm(agent)
 
-        task = Task(input=input, swarm=swarm, tool_names=tool_names, event_driven=swarm.event_driven)
+        task = Task(input=input, swarm=swarm, tool_names=tool_names,
+                    event_driven=swarm.event_driven, session_id=session_id)
         res = await Runners.run_task(task)
         return res.get(task.id)
