@@ -10,6 +10,7 @@ import aworld.trace as tracer
 
 logger = logging.getLogger(__name__)
 
+# bugfix for tracer exception
 tracer.configure()
 
 
