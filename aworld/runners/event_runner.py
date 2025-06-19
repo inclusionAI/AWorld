@@ -10,7 +10,7 @@ from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
 
 from aworld.core.agent.llm_agent import Agent
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
@@ -21,7 +21,6 @@ from aworld.runners.handler.task import DefaultTaskHandler, TaskHandler
 from aworld.runners.handler.tool import DefaultToolHandler, ToolHandler
 
 from aworld.runners.task_runner import TaskRunner
-from aworld.runners.utils import TaskType
 from aworld.utils.common import override_in_subclass, new_instance
 
 
@@ -163,7 +162,7 @@ class TaskEventRunner(TaskRunner):
                 payload=TaskItem(msg=str(e), data=message),
                 sender=self.name,
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR
+                topic=TopicType.ERROR
             ))
 
     async def _raw_task(self, messages: List[Message]):

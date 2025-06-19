@@ -11,18 +11,6 @@ from aworld.logs.util import logger
 from aworld.utils.common import new_instance, snake_to_camel
 
 
-class TaskType:
-    START = "__start"
-    FINISHED = "__finished"
-    OUTPUT = "__output"
-    ERROR = "__error"
-    RERUN = "__rerun"
-    HUMAN_CONFIRM = "__human_confirm"
-    # for dynamic subscribe
-    SUBSCRIBE_TOOL = "__subscribe_tool"
-    SUBSCRIBE_AGENT = "__subscribe_agent"
-
-
 async def choose_runners(tasks: List[Task]) -> List[Runner]:
     """Choose the correct runner to run the task.
 
