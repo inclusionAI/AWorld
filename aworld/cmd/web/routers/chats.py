@@ -1,6 +1,6 @@
 import logging
 import json
-from typing import List
+from typing import Dict
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from aworld.agent import AgentModel, ChatCompletionRequest
@@ -16,7 +16,7 @@ prefix = "/api/agent"
 
 @router.get("/list")
 @router.get("/models")
-async def list_agents() -> List[AgentModel]:
+async def list_agents() -> Dict[str, AgentModel]:
     return agent_loader.list_agents()
 
 

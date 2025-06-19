@@ -276,7 +276,7 @@ const Independent: React.FC = () => {
   // ==================== Runtime ====================
   const [agent] = useXAgent<BubbleDataType>({
     baseURL: '/api/agent/chat/completions',
-    model: 'DeepSeek-R1-Distill-Qwen-7B',
+    model: 'weather_agent',
     dangerouslyApiKey: 'Bearer sk-xxxxxxxxxxxxxxxxxxxx',
   });
   const loading = agent.isRequesting();

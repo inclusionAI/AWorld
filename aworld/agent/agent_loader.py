@@ -3,12 +3,12 @@ import importlib
 import sys
 import traceback
 import logging
-from typing import List
+from typing import List, Dict
 from .data_model import AgentModel
 
 logger = logging.getLogger(__name__)
 
-_agent_cache = {}
+_agent_cache: Dict[str, AgentModel] = {}
 
 
 def list_agents() -> List[AgentModel]:
@@ -19,11 +19,12 @@ def list_agents() -> List[AgentModel]:
         List[AgentModel]: The list of agent models
     """
     if len(_agent_cache) == 0:
-        [_agent_cache.add(m.agent_name, m) for m in _list_agents()]
+        for m in _list_agents():
+            _agent_cache[m.agent_id] = m
     return _agent_cache
 
 
-def get_agent_model(agent_name) -> AgentModel:
+def get_agent_model(agent_id) -> AgentModel:
     """
     Get the agent model by agent name
 
@@ -33,7 +34,11 @@ def get_agent_model(agent_name) -> AgentModel:
     Returns:
         AgentModel: The agent model
     """
-    return _agent_cache[agent_name]
+    if len(_agent_cache) == 0:
+        list_agents()
+    if agent_id not in _agent_cache:
+        raise Exception(f"Agent {agent_id} not found")
+    return _agent_cache[agent_id]
 
 
 def _list_agents() -> List[AgentModel]:
@@ -43,23 +48,35 @@ def _list_agents() -> List[AgentModel]:
         logger.warning(f"Agents directory {agents_dir} does not exist")
         return []
 
-    try:
-        agents = []
-        for agent_id in os.listdir(agents_dir):
+    agents = []
+    for agent_id in os.listdir(agents_dir):
+        try:
             agent_path = os.path.join(agents_dir, agent_id)
             if os.path.isdir(agent_path):
                 agent_file = os.path.join(agent_path, "agent.py")
                 if os.path.exists(agent_file):
                     try:
+                        agent_instance = _get_agent_instance(agent_id)
+                        if hasattr(agent_instance, "agent_name"):
+                            agent_name = agent_instance.agent_name()
+                        else:
+                            agent_name = agent_id
+                        if hasattr(agent_instance, "agent_description"):
+                            agent_description = agent_instance.agent_description()
+                        else:
+                            agent_description = ""
                         agent_model = AgentModel(
-                            agent_id=agent_id, agent_path=agent_path
+                            agent_id=agent_id,
+                            agent_name=agent_name,
+                            agent_description=agent_description,
+                            agent_path=agent_path,
+                            agent_instance=agent_instance,
                         )
-                        agent_model.agent_instance = _get_agent_instance(agent_id)
-                        agent_model.agent_name = agent_model.agent_instance.agent_name()
-                        agent_model.agent_description = (
-                            agent_model.agent_instance.agent_description()
-                        )
+
                         agents.append(agent_model)
+                        logger.info(
+                            f"Loaded agent {agent_id} successfully, path {agent_path}"
+                        )
                     except Exception as e:
                         logger.error(
                             f"Error loading agent {agent_id}: {traceback.format_exc()}"
@@ -67,11 +84,13 @@ def _list_agents() -> List[AgentModel]:
                         continue
                 else:
                     logger.warning(f"Agent {agent_id} does not have agent.py file")
-                    continue
-        return agents
-    except OSError as e:
-        logger.error(f"Error listing agents: {traceback.format_exc()}")
-        return []
+        except Exception as e:
+            logger.error(
+                f"Error loading agent {agent_id}, path {agent_path} : {traceback.format_exc()}"
+            )
+            continue
+
+    return agents
 
 
 def _get_agent_instance(agent_name):
