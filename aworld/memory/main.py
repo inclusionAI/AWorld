@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from typing import Optional
@@ -166,24 +167,36 @@ class Memory(MemoryBase):
         logger.info(f'🤔 [Summary] summary_content: result is {llm_response.content[:400]+"...truncated"} ')
         return llm_response.content
 
-    def _get_parsed_history_messages(self, filters: dict, last_rounds: int) -> list:
+    def _get_parsed_history_messages(self, history_items: list[MemoryItem]) -> list[dict]:
         """
         Get and format history messages for summary.
         Args:
-            filters: Filter dict for memory_store
-            last_rounds: Number of rounds to fetch
+            history_items: list[MemoryItem]
         Returns:
             List of parsed message dicts
         """
-        all_messages = self.memory_store.get_last_n(last_rounds, filters=filters)
         parsed_messages = [
             {
                 'role': message.metadata['role'],
                 'content': message.content,
                 'tool_calls': message.metadata.get('tool_calls') if message.metadata.get('tool_calls') else None
             }
-            for message in all_messages]
+            for message in history_items]
         return parsed_messages
+
+    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
+        logger.info(
+            f"🤔 [Summary] Creating summary memory, history messages")
+        if len(to_be_summary) == 0:
+            return ""
+        parsed_messages = self._get_parsed_history_messages(to_be_summary)
+        history_context = self._build_history_context(parsed_messages)
+
+        summary_messages = [
+            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+        ]
+
+        return await self._call_llm_summary(summary_messages)
 
     async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
         """
@@ -191,7 +204,10 @@ class Memory(MemoryBase):
         """
 
         logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]")
-        parsed_messages = self._get_parsed_history_messages(filters, last_rounds)
+        history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
+        if len(history_items) == 0:
+            return ""
+        parsed_messages = self._get_parsed_history_messages(history_items)
         history_context = self._build_history_context(parsed_messages)
 
         summary_messages = [
@@ -205,7 +221,11 @@ class Memory(MemoryBase):
             return to_be_summary.content
 
         logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]: to be summary content is {to_be_summary.content}")
-        parsed_messages = self._get_parsed_history_messages(filters, last_rounds)
+        history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
+        if len(history_items) == 0:
+            return ""
+        parsed_messages = self._get_parsed_history_messages(history_items)
+
         # Append the to_be_summary
         parsed_messages.append({
             "role": to_be_summary.metadata['role'],
@@ -226,7 +246,7 @@ class InMemoryStorageMemory(Memory):
     def __init__(self, memory_store: MemoryStore,  config: MemoryConfig, enable_summary: bool = True, **kwargs):
         super().__init__(memory_store=memory_store, config=config)
         self.summary = {}
-        self.summary_rounds = kwargs.get("summary_rounds", 10)
+        self.summary_rounds = self.config.summary_rounds
         self.enable_summary = self.config.enable_summary
 
     def add(self, memory_item: MemoryItem, filters: dict = None):
@@ -295,14 +315,10 @@ class InMemoryStorageMemory(Memory):
         """
         # This is a placeholder. In a real implementation, you might use an LLM or other method
         # to create a meaningful summary of the content
-        contents = [item.content for item in items]
-        return f"Summary {summary_index}: Summarized content from rounds {items[0].metadata.get('round', 'unknown')} to {items[-1].metadata.get('round', 'unknown')}"
+        return asyncio.run(self.async_gen_multi_rounds_summary(items))
 
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)
-
-    def summary_content(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
-        return to_be_summary.content
 
     def delete(self, memory_id):
         self.memory_store.delete(memory_id)

@@ -6,17 +6,15 @@ from typing import Optional
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from aworld.core.memory import MemoryStore, MemoryConfig, MemoryBase, MemoryItem
+from aworld.core.memory import MemoryStore, MemoryConfig, MemoryItem
 from aworld.logs.util import logger
+from aworld.memory.main import Memory
 
 
-class Mem0Memory(MemoryBase):
+class Mem0Memory(Memory):
 
-    def __init__(
-            self,
-            memory_store: MemoryStore,
-            config: MemoryConfig | None = None,
-    ):
+    def __init__(self, memory_store: MemoryStore, config: MemoryConfig | None = None, **kwargs):
+        super().__init__(memory_store, config, **kwargs)
         self.config = config
 
         self.config.llm_instance = ChatOpenAI(

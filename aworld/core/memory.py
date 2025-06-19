@@ -203,6 +203,17 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
+    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
+
+        """
+        A tool for summarizing the list of memory item.
+
+        Args:
+            to_be_summary (list[MemoryItem]): the list of memory item.
+        """
+    pass
+
+    @abstractmethod
     async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
         """
         A tool for summarizing the conversation history.
