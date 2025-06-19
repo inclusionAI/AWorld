@@ -1,4 +1,3 @@
-import sys
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Iterator, Union, Sequence, Protocol, Iterable
 from enum import Enum
@@ -403,7 +402,7 @@ def get_tracer_provider() -> TraceProvider:
     """
     global _GLOBAL_TRACER_PROVIDER
     if _GLOBAL_TRACER_PROVIDER is None:
-        raise ValueError("No tracer provider has been set.")
+        raise Exception("No tracer provider has been set.")
     return _GLOBAL_TRACER_PROVIDER
 
 

@@ -3,6 +3,7 @@ import inspect
 from typing import Union, Optional, Any, Type, Sequence, Callable, Iterable
 from aworld.trace.base import (
     AttributeValueType,
+    NoOpSpan,
     Span, Tracer,
     NoOpTracer,
     get_tracer_provider,
@@ -77,6 +78,11 @@ class TraceManager:
         """
         Create a auto trace span with the given name and attributes.
         """
+        return self._create_context_span(name, attributes)
+
+    def _create_context_span(self,
+                             name: str,
+                             attributes: dict[str, AttributeValueType] = None) -> Span:
         try:
             tracer = get_tracer_provider().get_tracer(
                 name=self._tracer_name, version=self._version)
@@ -91,7 +97,7 @@ class TraceManager:
         try:
             return get_tracer_provider().get_current_span()
         except Exception:
-            return None
+            return NoOpSpan()
 
     def new_manager(self, tracer_name_suffix: str = None) -> "TraceManager":
         """
@@ -140,11 +146,9 @@ class TraceManager:
             merged_attributes[ATTRIBUTES_MESSAGE_TEMPLATE_KEY] = msg_template
             merged_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = run_type.value
             span_name = span_name or msg_template
-            tracer = get_tracer_provider().get_tracer(
-                name=self._tracer_name, version=self._version)
-            return ContextSpan(span_name=span_name,
-                               tracer=tracer,
-                               attributes=merged_attributes)
+
+            return self._create_context_span(span_name, merged_attributes)
+
         except Exception:
             log_trace_error()
             return ContextSpan(span_name=span_name, tracer=NoOpTracer(), attributes=attributes)
