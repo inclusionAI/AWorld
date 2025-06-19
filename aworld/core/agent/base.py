@@ -20,6 +20,7 @@ from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
+from aworld.runners.state_manager import RuntimeStateManager, RunNodeBusiType
 
 from aworld.utils.common import convert_to_snake, replace_env_variables
 
@@ -117,6 +118,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+        self.state_manager = RuntimeStateManager.instance()
+        self.state_manager.create_node(RunNodeBusiType.AGENT, self.id)
+
     def name(self) -> str:
         return self._name
 
@@ -125,20 +129,26 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
-            self.pre_run()
-            result = self.policy(observation, info, **kwargs)
-            final_result = self.post_run(result, observation)
+            self.state_manager.run_node(RunNodeBusiType.AGENT, self.id)
+            try:
+                self.pre_run()
+                result = self.policy(observation, info, **kwargs)
+                final_result = self.post_run(result, observation)
+            except Exception as e:
+                
+                self.state_manager.run_failed(RunNodeBusiType.AGENT, self.id, str(e))
+            
             return final_result if final_result else result
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
         if InMemoryEventbus.instance():
             await InMemoryEventbus.instance().publish(Message(
-            category=Constants.OUTPUT,
-            payload=StepOutput.build_start_output(name=f"{self.name()}",
-                                                   step_num=0),
-            sender=self.name(),
-            session_id=Context.instance().session_id
-        ))
+                category=Constants.OUTPUT,
+                payload=StepOutput.build_start_output(name=f"{self.name()}",
+                                                      step_num=0),
+                sender=self.name(),
+                session_id=Context.instance().session_id
+            ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             await self.async_pre_run()
             result = await self.async_policy(observation, info, **kwargs)

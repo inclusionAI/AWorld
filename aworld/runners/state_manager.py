@@ -6,6 +6,7 @@ from enum import Enum
 from abc import ABC, abstractmethod
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.tool.tool_desc import is_tool_by_name
+from aworld.core.singleton import InheritanceSingleton
 
 
 class RunNodeBusiType(Enum):
@@ -94,7 +95,7 @@ class InMemoryStateStorage(StateStorage):
         return session_nodes
 
 
-class RuntimeStateManager:
+class RuntimeStateManager(InheritanceSingleton):
     '''
     Runtime state manager
     '''
@@ -157,30 +158,44 @@ class RuntimeStateManager:
         node.status = RunNodeStatus.BREAKED
         self.storage.update(node)
 
-    def run_succeed(self, busi_type,  busi_id,  result: Message = None):
+    def run_succeed(self,
+                    busi_type,
+                    busi_id,
+                    result_msg=None,
+                    result: Message = None):
         '''
             set node status to SUCCESS and update to storage
         '''
         node = self._node_exist(busi_type, busi_id)
         node.status = RunNodeStatus.SUCCESS
+        node.result_msg = result_msg
         node.result = result
         self.storage.update(node)
 
-    def run_failed(self, busi_type, busi_id, result: Message = None):
+    def run_failed(self,
+                   busi_type,
+                   busi_id,
+                   result_msg=None,
+                   result: Message = None):
         '''
             set node status to FAILED and update to storage
         '''
         node = self._node_exist(busi_type, busi_id)
         node.status = RunNodeStatus.FAILED
+        node.result_msg = result_msg
         node.result = result
         self.storage.update(node)
 
-    def run_timeout(self, busi_type, busi_id):
+    def run_timeout(self,
+                    busi_type,
+                    busi_id,
+                    result_msg=None):
         '''
             set node status to TIMEOUNT and update to storage
         '''
         node = self._node_exist(busi_type, busi_id)
         node.status = RunNodeStatus.TIMEOUNT
+        node.result_msg = result_msg
         self.storage.update(node)
 
     def get_node(self, busi_type: RunNodeBusiType, busi_id: str) -> RunNode:
