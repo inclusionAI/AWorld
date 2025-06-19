@@ -22,7 +22,7 @@ class Hook:
         """Hook point."""
 
     @abc.abstractmethod
-    async def exec(self, message: Message, agent_context: AgentContext = None, context: Context = None) -> Message:
+    async def exec(self, message: Message, context: Context = None) -> Message:
         """Execute hook function."""
 
 

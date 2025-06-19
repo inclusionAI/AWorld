@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from aworld.config import ConfigDict
 from aworld.config.conf import ContextRuleConfig, ModelConfig
 from aworld.core.context.session import Session
-from aworld.core.singleton import InheritanceSingleton, InheritanceSingletonDict
+from aworld.core.singleton import InheritanceSingleton
 from aworld.utils.common import nest_dict_counter
 
 @dataclass
@@ -151,7 +151,7 @@ class AgentContext(dict):
             return 0.0
         return self.context_usage.used_context_length / self.context_usage.total_context_length
 
-class Context(InheritanceSingletonDict):
+class Context(InheritanceSingleton):
     def __init__(self, user: str = None, **kwargs):
         self._user = user
         self._init(**kwargs)

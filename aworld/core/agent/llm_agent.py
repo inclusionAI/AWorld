@@ -469,7 +469,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self.task_histories = observation.context
 
         try:
-            self._run_hooks_sync(self.context, self.agent_context, HookPoint.PRE_LLM_CALL)
+            self._run_hooks_sync(self.context, HookPoint.PRE_LLM_CALL)
         except Exception as e:
             logger.warn(traceback.format_exc())
 
@@ -541,7 +541,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     raise RuntimeError(f"{self.name()} failed to get LLM response")
 
         try:
-            self._run_hooks_sync(self.context, self.agent_context, HookPoint.POST_LLM_CALL)
+            self._run_hooks_sync(self.context, HookPoint.POST_LLM_CALL)
         except Exception as e:
             logger.warn(traceback.format_exc())
 
@@ -575,7 +575,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self.task_histories = observation.context
 
         try:
-            async for event in self.run_hooks(self.context, self.agent_context, HookPoint.PRE_LLM_CALL):
+            async for event in self.run_hooks(self.context, HookPoint.PRE_LLM_CALL):
                 await event
         except Exception as e:
             logger.warn(traceback.format_exc())
@@ -618,7 +618,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 raise RuntimeError(f"{self.name()} failed to get LLM response")
 
         try:
-            async for event in self.run_hooks(self.context, self.agent_context, HookPoint.POST_LLM_CALL):
+            async for event in self.run_hooks(self.context, HookPoint.POST_LLM_CALL):
                 await event
         except Exception as e:
             logger.warn(traceback.format_exc())
@@ -970,7 +970,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.agent_context.update_context_usage(used_context_length, total_context_length)
         logger.debug(f"Agent {self.name()} context usage updated: {self.agent_context.context_usage}")
 
-    async def run_hooks(self, context: Context, agent_context: AgentContext, hook_point: str):
+    async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""
         from aworld.runners.hook.hook_factory import HookFactory
         from aworld.core.event.base import Message
@@ -997,28 +997,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             except Exception as e:
                 logger.warning(f"Hook {hook.point()} execution failed: {e}")
 
-    def _run_hooks_sync(self, context: Context, agent_context: AgentContext, hook_point: str):
+    def _run_hooks_sync(self, context: Context, hook_point: str):
         """Execute hooks synchronously"""
         # Use sync_exec to execute asynchronous hook logic
         try:
-            sync_exec(self.run_hooks, context, agent_context, hook_point)
+            sync_exec(self.run_hooks, context, hook_point)
         except Exception as e:
             logger.warn(f"Failed to execute hooks for {hook_point}: {e}")
-
-@HookFactory.register(name="PreLLMCallContextProcessHook",
-                      desc="PreLLMCallContextProcessHook")
-class PreLLMCallContextProcessHook(PreLLMCallHook):
-    """Process in the hook point of the pre_llm_call."""
-    __metaclass__ = abc.ABCMeta
-
-    def name(self):
-        return convert_to_snake("PreLLMCallContextProcessHook")
-
-@HookFactory.register(name="PostLLMCallContextProcessHook",
-                      desc="PostLLMCallContextProcessHook")
-class PostLLMCallContextProcessHook(PostLLMCallHook):
-    """Process in the hook point of the post_llm_call."""
-    __metaclass__ = abc.ABCMeta
-
-    def name(self):
-        return convert_to_snake("PostLLMCallContextProcessHook")

@@ -373,6 +373,6 @@ production_context_rule = ContextRuleConfig(
 2. **Performance Trade-offs**: Enabling compression can save token usage but increases processing time. Adjust configuration based on actual needs.
 3. **Model Compatibility**: Different models have different context length limitations. The system automatically adapts to model capabilities.
 4. **Default Configuration**: The system provides reasonable default configuration. Manual configuration is unnecessary for most scenarios.
-5. **State Consistency**: AgentContext ensures state consistency. Avoid directly modifying internal state.
+5. **State Management**: AgentContext supports state sharing between multiple Agents and ensures state consistency. State persistence functionality is currently under development.
 
 Through proper configuration of AgentContext and context processors, you can significantly improve Agent performance in long conversations and complex tasks while optimizing token usage efficiency.
