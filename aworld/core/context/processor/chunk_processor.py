@@ -81,56 +81,56 @@ class ChunkResult:
 
 class ChunkProcessor(BaseProcessor):
     """
-    简单压缩处理器（集成分块功能）
+    Simple compression processor (integrated with chunking functionality)
     
-    继承自BaseProcessor，专门用于对消息进行压缩处理和分块处理
-    集成了原来chunk_pipeline.py的分块功能
+    Inherits from BaseProcessor, specifically used for message compression and chunking processing
+    Integrates the chunking functionality from the original chunk_pipeline.py
     """
     
     def __init__(self, 
                  name: str = "SimpleCompressProcessor",
-                 # 压缩相关参数
+                 # Compression related parameters
                  enable_compression: bool = True,
                  compression_types: List[str] = None,
                  compression_configs: Dict[str, Dict[str, Any]] = None,
                  default_compression_type: str = "rule_based",
-                 # 分块相关参数
+                 # Chunking related parameters
                  enable_chunking: bool = False,
                  preserve_order: bool = True,
                  merge_consecutive: bool = True,
                  max_chunk_size: int = None,
                  split_by_tool_name: bool = False):
         """
-        初始化简单压缩处理器
+        Initialize simple compression processor
         
         Args:
-            name: 处理器名称
-            # 压缩参数
-            enable_compression: 是否启用压缩
-            compression_types: 支持的压缩类型列表
-            compression_configs: 压缩器配置
-            default_compression_type: 默认压缩类型
-            # 分块参数
-            enable_chunking: 是否启用分块
-            preserve_order: 是否保持原始消息顺序
-            merge_consecutive: 是否合并连续的同类型消息
-            max_chunk_size: 最大分块大小（消息数量）
-            split_by_tool_name: 是否按工具名称进一步分割工具消息
+            name: Processor name
+            # Compression parameters
+            enable_compression: Whether to enable compression
+            compression_types: List of supported compression types
+            compression_configs: Compressor configurations
+            default_compression_type: Default compression type
+            # Chunking parameters
+            enable_chunking: Whether to enable chunking
+            preserve_order: Whether to preserve original message order
+            merge_consecutive: Whether to merge consecutive messages of the same type
+            max_chunk_size: Maximum chunk size (number of messages)
+            split_by_tool_name: Whether to further split tool messages by tool name
         """
         super().__init__(name)
         
-        # 压缩器配置
+        # Compressor configuration
         self.enable_compression = enable_compression
         self.default_compression_type = CompressionType(default_compression_type)
         
-        # 分块器配置
+        # Chunker configuration
         self.enable_chunking = enable_chunking
         self.preserve_order = preserve_order
         self.merge_consecutive = merge_consecutive
         self.max_chunk_size = max_chunk_size
         self.split_by_tool_name = split_by_tool_name
         
-        # 初始化压缩器
+        # Initialize compressor
         if self.enable_compression:
             if compression_types is None:
                 compression_types = ["rule_based", "statistical", "llm_based", "tfidf_based"]
@@ -140,14 +140,14 @@ class ChunkProcessor(BaseProcessor):
                 compression_types=comp_types,
                 configs={CompressionType(k): v for k, v in (compression_configs or {}).items()}
             )
-            self.logger.info(f"压缩器已启用，支持的压缩类型: {compression_types}")
+            self.logger.info(f"Compressor enabled, supported compression types: {compression_types}")
         else:
             self.compressor = None
-            self.logger.info("压缩器已禁用")
+            self.logger.info("Compressor disabled")
         
-        # 统计信息
+        # Statistics
         self.stats = {
-            # 压缩统计
+            # Compression statistics
             "compression": {
                 "total_messages_processed": 0,
                 "total_messages_compressed": 0,
@@ -155,7 +155,7 @@ class ChunkProcessor(BaseProcessor):
                 "total_compressed_length": 0,
                 "compression_results": []
             },
-            # 分块统计
+            # Chunking statistics
             "chunking": {
                 "total_processed": 0,
                 "total_chunks_created": 0,
@@ -164,11 +164,11 @@ class ChunkProcessor(BaseProcessor):
         }
 
     def _process_chunking(self, messages: List[Dict[str, Any]], **kwargs) -> List[Dict[str, Any]]:
-        """处理分块逻辑"""
-        # 先分块
+        """Process chunking logic"""
+        # First chunk
         chunk_result = self.split_messages(messages, kwargs.get('metadata', {}))
         
-        # 再合并回消息列表
+        # Then merge back to message list
         merged_messages = self.merge_chunks(chunk_result.chunks, 
                                           kwargs.get('preserve_type_order', True))
         
@@ -176,13 +176,13 @@ class ChunkProcessor(BaseProcessor):
 
     def classify_message(self, message: Dict[str, Any]) -> MessageType:
         """
-        分类单个消息
+        Classify a single message
         
         Args:
-            message: OpenAI格式消息
+            message: OpenAI format message
             
         Returns:
-            消息类型
+            Message type
         """
         role = message.get("role", "")
         
@@ -191,21 +191,21 @@ class ChunkProcessor(BaseProcessor):
         elif role == "tool":
             return MessageType.TOOL
         else:
-            self.logger.warning(f"未知消息角色: {role}")
+            self.logger.warning(f"Unknown message role: {role}")
             return MessageType.UNKNOWN
 
     def split_messages(self, 
                       messages: List[Dict[str, Any]], 
                       metadata: Dict[str, Any] = None) -> ChunkResult:
         """
-        按类型将消息列表分割成块，并将同类型消息合并为字符串
+        Split message list into chunks by type, and merge messages of the same type into strings
         
         Args:
-            messages: OpenAI格式消息列表
-            metadata: 元数据
+            messages: OpenAI format message list
+            metadata: Metadata
             
         Returns:
-            分块结果
+            Chunking result
         """
         start_time = time.time()
         
@@ -224,11 +224,11 @@ class ChunkProcessor(BaseProcessor):
         for i, message in enumerate(messages):
             msg_type = self.classify_message(message)
             
-            # 如果是新类型或不合并连续消息
+            # If it's a new type or not merging consecutive messages
             if (current_chunk_type != msg_type or 
                 not self.merge_consecutive):
                 
-                # 保存当前块（如果有内容）
+                # Save current chunk (if has content)
                 if current_chunk_messages:
                     chunk_metadata = (metadata or {}).copy()
                     chunk_metadata.update({
@@ -239,7 +239,7 @@ class ChunkProcessor(BaseProcessor):
                         "original_messages": current_chunk_messages.copy()
                     })
                     
-                    # 根据消息类型合并消息为字符串
+                    # Merge messages into strings based on message type
                     if current_chunk_type == MessageType.TEXT:
                         merged_content = self._messages_to_string(current_chunk_messages)
                         merged_message = {
@@ -257,7 +257,7 @@ class ChunkProcessor(BaseProcessor):
                         }
                         chunk_messages = [merged_message]
                     else:
-                        # 未知类型保持原样
+                        # Unknown type keeps as is
                         chunk_messages = current_chunk_messages.copy()
                     
                     chunks.append(MessageChunk(
@@ -266,14 +266,14 @@ class ChunkProcessor(BaseProcessor):
                         metadata=chunk_metadata
                     ))
                 
-                # 开始新块
+                # Start new chunk
                 current_chunk_type = msg_type
                 current_chunk_messages = [message]
             else:
-                # 添加到当前块
+                # Add to current chunk
                 current_chunk_messages.append(message)
         
-        # 处理最后一个块
+        # Process the last chunk
         if current_chunk_messages:
             chunk_metadata = (metadata or {}).copy()
             chunk_metadata.update({
@@ -284,7 +284,7 @@ class ChunkProcessor(BaseProcessor):
                 "original_messages": current_chunk_messages.copy()
             })
             
-            # 根据消息类型合并消息为字符串
+            # Merge messages into strings based on message type
             if current_chunk_type == MessageType.TEXT:
                 merged_content = self._messages_to_string(current_chunk_messages)
                 merged_message = {
@@ -312,12 +312,12 @@ class ChunkProcessor(BaseProcessor):
         
         processing_time = time.time() - start_time
         
-        # 更新统计
+        # Update statistics
         self.stats["chunking"]["total_processed"] += len(messages)
         self.stats["chunking"]["total_chunks_created"] += len(chunks)
         self.stats["chunking"]["processing_time"] += processing_time
         
-        # 构建结果元数据
+        # Build result metadata
         result_metadata = (metadata or {}).copy()
         result_metadata.update({
             "chunk_count": len(chunks),
@@ -330,7 +330,7 @@ class ChunkProcessor(BaseProcessor):
             "string_merge_applied": True
         })
         
-        self.logger.debug(f"消息分割完成: {len(messages)} 条消息 -> {len(chunks)} 个块（已应用字符串合并）")
+        self.logger.debug(f"Message splitting completed: {len(messages)} messages -> {len(chunks)} chunks (string merge applied)")
         
         return ChunkResult(
             chunks=chunks,
@@ -343,23 +343,23 @@ class ChunkProcessor(BaseProcessor):
                     chunks: List[MessageChunk], 
                     preserve_type_order: bool = True) -> List[Dict[str, Any]]:
         """
-        将处理后的块合并回消息列表，并将字符串格式消息分割回多个消息
+        Merge processed chunks back to message list, and split string format messages back to multiple messages
         
         Args:
-            chunks: 消息块列表
-            preserve_type_order: 是否保持类型顺序
+            chunks: Message chunk list
+            preserve_type_order: Whether to preserve type order
             
         Returns:
-            合并后的消息列表
+            Merged message list
         """
         if not chunks:
             return []
         
         if preserve_type_order and self.preserve_order:
-            # 按原始顺序合并
+            # Merge in original order
             sorted_chunks = sorted(chunks, key=lambda x: x.metadata.get("chunk_index", 0))
         else:
-            # 按类型分组合并（文本优先，然后工具）
+            # Merge by type groups (text first, then tools)
             text_chunks = [chunk for chunk in chunks if chunk.message_type == MessageType.TEXT]
             tool_chunks = [chunk for chunk in chunks if chunk.message_type == MessageType.TOOL]
             unknown_chunks = [chunk for chunk in chunks if chunk.message_type == MessageType.UNKNOWN]
@@ -370,9 +370,9 @@ class ChunkProcessor(BaseProcessor):
             chunk_messages = []
             
             for message in chunk.messages:
-                # 检查是否是需要分割的合并消息
+                # Check if it's a merged message that needs splitting
                 if message.get("role") == "merged_text":
-                    # 这是需要分割的合并TEXT类型消息
+                    # This is a merged TEXT type message that needs splitting
                     merged_content = message.get("content", "")
                     original_messages = chunk.metadata.get("original_messages", [])
                     
@@ -384,7 +384,7 @@ class ChunkProcessor(BaseProcessor):
                         chunk_messages.extend(split_messages)
                         
                 elif message.get("role") == "merged_tool":
-                    # 这是需要分割的合并TOOL类型消息
+                    # This is a merged TOOL type message that needs splitting
                     merged_content = message.get("content", "")
                     original_messages = chunk.metadata.get("original_messages", [])
                     
@@ -396,17 +396,17 @@ class ChunkProcessor(BaseProcessor):
                         chunk_messages.extend(split_messages)
                         
                 else:
-                    # 常规消息直接添加
+                    # Regular message added directly
                     chunk_messages.append(message)
             
             merged_messages.extend(chunk_messages)
         
         return merged_messages
 
-    # 消息转换方法
+    # Message conversion methods
     @staticmethod
     def _messages_to_string(messages: List[Dict[str, str]]) -> str:
-        """将OpenAI消息格式转换为字符串"""
+        """Convert OpenAI message format to string"""
         content_parts = []
         for msg in messages:
             role = msg.get('role', 'user')
@@ -416,8 +416,8 @@ class ChunkProcessor(BaseProcessor):
     
     @staticmethod
     def _string_to_messages(content: str, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """将字符串转换为OpenAI消息格式"""
-        # 恢复所有tool_calls
+        """Convert string to OpenAI message format"""
+        # Restore all tool_calls
         tool_calls = []
         if messages:
             for msg in messages:
@@ -432,7 +432,7 @@ class ChunkProcessor(BaseProcessor):
         for line in lines:
             line = line.strip()
             if line.startswith('[') and ']:' in line:
-                # 保存前一个消息
+                # Save previous message
                 if current_content:
                     result_messages.append({
                         'role': current_role,
@@ -440,7 +440,7 @@ class ChunkProcessor(BaseProcessor):
                     })
                     current_content = []
                 
-                # 解析新角色
+                # Parse new role
                 role_end = line.find(']:')
                 role = line[1:role_end].lower()
                 if role in ['system', 'user', 'assistant']:
@@ -453,7 +453,7 @@ class ChunkProcessor(BaseProcessor):
             else:
                 current_content.append(line)
 
-        # 保存最后一个消息
+        # Save last message
         if current_content:
             result_messages.append({
                 'role': current_role,
@@ -462,7 +462,7 @@ class ChunkProcessor(BaseProcessor):
         
         final_messages = result_messages if result_messages else [{'role': 'user', 'content': content}]
 
-        # 添加tool_calls结果
+        # Add tool_calls results
         if tool_calls and len(tool_calls) > 0:
             tool_call_chunk = {
                 'role': 'assistant',
@@ -474,7 +474,7 @@ class ChunkProcessor(BaseProcessor):
         return final_messages
 
     def _tool_messages_to_string(self, messages: List[Dict[str, str]]) -> str:
-        """将工具消息格式转换为字符串"""
+        """Convert tool message format to string"""
         content_parts = []
         for msg in messages:
             role = msg.get('role', 'tool')
@@ -491,7 +491,7 @@ class ChunkProcessor(BaseProcessor):
         return "\n".join(content_parts)
     
     def _string_to_tool_messages(self, content: str, original_prompt: Union[str, List[Dict[str, str]]]) -> List[Dict[str, str]]:
-        """将字符串转换为工具消息格式"""
+        """Convert string to tool message format"""
         messages = []
         lines = content.split('\n')
         current_role = 'tool'
@@ -502,7 +502,7 @@ class ChunkProcessor(BaseProcessor):
         for line in lines:
             line = line.strip()
             if line.startswith('[') and ']:' in line:
-                # 保存前一个消息
+                # Save previous message
                 if current_content:
                     msg = {
                         'role': current_role,
@@ -516,13 +516,13 @@ class ChunkProcessor(BaseProcessor):
                     messages.append(msg)
                     current_content = []
     
-                # 解析新角色和工具信息
+                # Parse new role and tool information
                 role_end = line.find(']:')
                 role_part = line[1:role_end]
                 content_part = line[role_end + 2:].strip()
     
                 if role_part.startswith('TOOL:'):
-                    # 解析工具消息格式: [TOOL:name:tool_call_id]
+                    # Parse tool message format: [TOOL:name:tool_call_id]
                     current_role = 'tool'
                     tool_parts = role_part.split(':')
                     if len(tool_parts) >= 2:
@@ -539,7 +539,7 @@ class ChunkProcessor(BaseProcessor):
             else:
                 current_content.append(line)
     
-        # 保存最后一个消息
+        # Save last message
         if current_content:
             msg = {
                 'role': current_role,
@@ -552,7 +552,7 @@ class ChunkProcessor(BaseProcessor):
                     msg['name'] = current_name
             messages.append(msg)
     
-        # 如果没有解析到消息，返回原始格式
+        # If no messages parsed, return original format
         if not messages and isinstance(original_prompt, list):
             return original_prompt
         elif not messages:

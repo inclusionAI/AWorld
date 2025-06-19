@@ -10,16 +10,16 @@ class BaseProcessor(ABC):
     @abstractmethod
     def process_messages(self, messages: List[Dict[str, Any]], **kwargs) -> List[Dict[str, Any]]:
         """
-        处理消息列表的抽象方法
+        Abstract method for processing message lists
         
         Args:
-            messages: 输入的消息列表，每个消息是包含role和content的字典
-            **kwargs: 额外的处理参数
+            messages: Input message list, each message is a dictionary containing role and content
+            **kwargs: Additional processing parameters
             
         Returns:
-            处理后的消息列表
+            Processed message list
             
         Raises:
-            NotImplementedError: 子类必须实现此方法
+            NotImplementedError: Subclasses must implement this method
         """
-        raise NotImplementedError("子类必须实现 process_messages 方法")
+        raise NotImplementedError("Subclasses must implement the process_messages method")
