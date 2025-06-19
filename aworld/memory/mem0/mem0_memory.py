@@ -12,7 +12,6 @@ from aworld.memory.main import Memory
 
 
 class Mem0Memory(Memory):
-
     def __init__(self, memory_store: MemoryStore, config: MemoryConfig | None = None, **kwargs):
         super().__init__(memory_store, config, **kwargs)
         self.config = config
@@ -30,8 +29,8 @@ class Mem0Memory(Memory):
         try:
             # also disable mem0's telemetry when ANONYMIZED_TELEMETRY=False
             if os.getenv('ANONYMIZED_TELEMETRY', 'true').lower()[0] in 'fn0':
-                os.environ['MEM0_TELEMETRY'] = 'False'
-            from mem0 import Memory as Mem0Memory
+                os.environ['MEM_TELEMETRY'] = 'False'
+            from mem0 import Memory as Mem0
         except ImportError:
             raise ImportError('mem0 is required when enable_memory=True. Please install it with `pip install mem0`.')
 
@@ -46,7 +45,7 @@ class Mem0Memory(Memory):
 
         # Initialize Mem0 with the configuration
         config_dict = self.config.full_config_dict
-        self.mem0 = Mem0Memory.from_config(config_dict=self.config.full_config_dict)
+        self.mem0 = Mem0.from_config(config_dict=self.config.full_config_dict)
         self.memory_store = memory_store
 
     def add(self, memory_item: MemoryItem, filters: dict = None):
@@ -62,7 +61,6 @@ class Mem0Memory(Memory):
                 "user_id": memory_item.metadata.get("user_id"),
                 "session_id": memory_item.metadata.get("session_id"),
             }
-
         if self._need_summary(memory_item, message_filters):
             self.create_summary_memory(
                 agent_id=memory_item.metadata.get("agent_id"),
@@ -71,8 +69,8 @@ class Mem0Memory(Memory):
                 session_id=memory_item.metadata.get("session_id"),
                 filters=message_filters
             )
-        else:
-            self.memory_store.add(memory_item)
+        self.memory_store.add(memory_item)
+
 
     def _need_summary(self, memory_item, message_filters):
         """
@@ -162,8 +160,6 @@ class Mem0Memory(Memory):
 
     def delete(self, memory_id):
         self.memory_store.delete(memory_id)
-
-
 
     def get(self, memory_id) -> Optional[MemoryItem]:
         # self.memory_store.get(memory_id)
