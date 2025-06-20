@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+from typing import TypedDict
 from aworld.logs.util import logger
 
 import threading
@@ -18,7 +19,7 @@ class SingletonMeta(type):
         return cls._instances[cls]
 
 
-class InheritanceSingleton(object, metaclass=SingletonMeta):
+class InheritanceSingleton(dict, metaclass=SingletonMeta):
     _local_instances = {}
 
     @staticmethod
@@ -61,3 +62,4 @@ class InheritanceSingleton(object, metaclass=SingletonMeta):
     def clear_singleton(cls):
         base = InheritanceSingleton.__get_base_class(cls)
         cls._instances.pop(base, None)
+

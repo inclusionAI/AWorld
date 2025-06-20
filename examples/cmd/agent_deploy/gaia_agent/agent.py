@@ -1,7 +1,7 @@
 import logging
 import os
 import json
-from ....gaia.gaia_agent_runner import GaiaAgentRunner
+from examples.gaia.gaia_agent_runner import GaiaAgentRunner
 
 logger = logging.getLogger(__name__)
 

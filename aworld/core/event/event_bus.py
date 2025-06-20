@@ -33,12 +33,12 @@ class Eventbus(Messageable, InheritanceSingleton):
         return await self.publish(message, **kwargs)
 
     async def receive(self, message: Message, **kwargs):
-        return await self.consume()
+        return await self.consume(message, **kwargs)
 
     async def publish(self, messages: Message, **kwargs):
         """Publish a message, equals `send`."""
 
-    async def consume(self):
+    async def consume(self, messages: Message, **kwargs):
         """Consume the message queue."""
 
     async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
@@ -85,24 +85,30 @@ class InMemoryEventbus(Eventbus):
         super().__init__(conf, **kwargs)
 
         # use asyncio Queue as default
-        self._message_queue: Queue = Queue()
+        # use asyncio Queue as default, isolation based on session_id
+        # self._message_queue: Queue = Queue()
+        self._message_queue: Dict[str, Queue] = {}
 
-    def wait_consume_size(self) -> int:
-        return self._message_queue.qsize()
+    def wait_consume_size(self, id: str) -> int:
+        return self._message_queue.get(id, Queue()).qsize()
 
     async def publish(self, message: Message, **kwargs):
-        await self._message_queue.put(message)
+        queue = self._message_queue.get(message.session_id)
+        if not queue:
+            queue = Queue()
+            self._message_queue[message.session_id] = queue
+        await queue.put(message)
 
-    async def consume(self):
-        return await self._message_queue.get()
+    async def consume(self, message: Message, **kwargs):
+        return await self._message_queue.get(message.session_id, Queue()).get()
 
-    async def consume_nowait(self):
-        return await self._message_queue.get_nowait()
+    async def consume_nowait(self, message: Message):
+        return await self._message_queue.get(message.session_id, Queue()).get_nowait()
 
-    async def done(self):
-        while not self._message_queue.empty():
-            self._message_queue.get_nowait()
-        self._message_queue.task_done()
+    async def done(self, id: str):
+        while not self._message_queue.get(id, Queue()).empty():
+            self._message_queue.get(id, Queue()).get_nowait()
+        self._message_queue.get(id, Queue()).task_done()
 
     async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):

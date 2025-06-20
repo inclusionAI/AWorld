@@ -8,12 +8,8 @@ from dotenv import load_dotenv
 
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
-from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
-
 from aworld.runner import Runners
-from aworld.sandbox.main import Sandbox
-from aworld.sandbox.models import SandboxEnvType
 
 
 async def run():
@@ -38,11 +34,6 @@ async def run():
     with open(mcp_path, "r") as f:
         mcp_config = json.load(f)
 
-    #sand_box = Sandbox(mcp_servers=mcp_servers,mcp_config=mcp_config)
-    # You can specify sandbox
-    #sand_box = Sandbox(mcp_servers=mcp_servers, mcp_config=mcp_config,env_type=SandboxEnvType.K8S)
-    #sand_box = Sandbox(mcp_servers=mcp_servers, mcp_config=mcp_config,env_type=SandboxEnvType.SUPERCOMPUTER)
-
     search_sys_prompt = "You are a versatile assistant"
     search = Agent(
         conf=agent_config,
@@ -50,11 +41,9 @@ async def run():
         system_prompt=search_sys_prompt,
         mcp_config=mcp_config,
         mcp_servers=mcp_servers,
-        #sandbox=sand_box,
     )
 
     # Run agent
-    # Runners.sync_run(input="Use tavily-mcp to check what tourist attractions are in Hangzhou", agent=search)
     task = Task(
         input="Use tavily-mcp to check what tourist attractions are in Hangzhou",
         agent=search,
@@ -62,9 +51,7 @@ async def run():
     )
 
     result = Runners.sync_run_task(task)
-    print(
-        "----------------------------------------------------------------------------------------------"
-    )
+    print( "----------------------------------------------------------------------------------------------")
     print(result)
 
 

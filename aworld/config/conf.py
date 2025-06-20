@@ -116,23 +116,31 @@ class ModelConfig(BaseConfig):
     llm_sync_enabled: bool = True
     llm_async_enabled: bool = True
     max_retries: int = 3
-    max_model_len: int = 128000  # Maximum model context length
-    model_type: str = 'qwen' # Model type determines tokenizer and maximum length
+    max_model_len: Optional[int] = None  # Maximum model context length
+    model_type: Optional[str] = 'qwen' # Model type determines tokenizer and maximum length
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+        
+        # init max_model_len
+        if not hasattr(self, 'max_model_len') or self.max_model_len is None:
+            # qwen or other default model_type
+            self.max_model_len = 128000
+            if hasattr(self, 'model_type') and self.model_type == 'claude':
+                self.max_model_len = 200000
 
 class LlmCompressionConfig(BaseConfig):
     enabled: bool = False
-    compression_type: str = "llm_based"  # rule_based, statistical, llm_based, tfidf_based
-    max_history_length: int = 10000  # Trigger compression when exceeding this length
-    summary_model: ModelConfig = None
+    trigger_compress_token_length: int = 10000  # Trigger compression when exceeding this length
+    trigger_mapreduce_compress_token_length: int = 100000  # Maximum tokens for map reduce
+    compress_model: ModelConfig = None
 
 class OptimizationConfig(BaseConfig):
     enabled: bool = False
-    # max_processing_time: float = 2.0  # Maximum processing time (seconds) or rounds, not limited in context, agreed by business agent
     max_token_budget_ratio: float = 0.5  # Maximum context length ratio
-    token_allocation_message_history: float = 0.4  # Message history budget allocation
-    token_allocation_tool_results: float = 0.5  # Tool results budget allocation
-    token_allocation_system_prompts: float = 0.1  # System prompts budget allocation
-    # token_allocation_other: float = 0.1  # Other budget allocation
 
 class ContextRuleConfig(BaseConfig):
     """Context interference rule configuration"""

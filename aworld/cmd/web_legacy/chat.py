@@ -72,9 +72,7 @@ def agent_page():
             with st.chat_message("assistant"):
                 agent_name = st.session_state.selected_agent
                 agent_package_path = utils.get_agent_package_path(agent_name)
-
                 agent_module_file = os.path.join(agent_package_path, "agent.py")
-
                 try:
                     spec = importlib.util.spec_from_file_location(
                         agent_name, agent_module_file
