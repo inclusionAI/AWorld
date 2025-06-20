@@ -3,11 +3,12 @@ from pydantic import BaseModel
 from typing import Optional, List
 from aworld.core.event.base import Message
 from enum import Enum
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, ABCMeta
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.tool.tool_desc import is_tool_by_name
-from aworld.core.singleton import InheritanceSingleton
+from aworld.core.singleton import InheritanceSingleton, SingletonMeta
 from aworld.core.event.base import Constants
+from aworld.logs.util import logger
 
 
 class RunNodeBusiType(Enum):
@@ -68,7 +69,11 @@ class StateStorage(ABC):
         pass
 
 
-class InMemoryStateStorage(StateStorage, InheritanceSingleton):
+class StateStorageMeta(SingletonMeta, ABCMeta):
+    pass
+
+
+class InMemoryStateStorage(StateStorage, InheritanceSingleton, metaclass=StateStorageMeta):
     '''
     In memory state storage
     '''
@@ -95,6 +100,7 @@ class InMemoryStateStorage(StateStorage, InheritanceSingleton):
             session_nodes = self._session_nodes.pop(oldest_session_id)
             for node in session_nodes:
                 self._nodes.pop(node.node_id)
+        # logger.info(f"storage nodes: {self._nodes}")
 
     def update(self, node: RunNode):
         self._nodes[node.node_id] = node
@@ -129,8 +135,13 @@ class RuntimeStateManager(InheritanceSingleton):
                 f"node already exist, busi_type: {busi_type}, busi_id: {busi_id}")
         parent_node_id = None
         if msg_from:
-            busi_type = self._judge_msg_from_busi_type(msg_from)
-            parent_node_id = self._build_node_id(busi_type, msg_from)
+            parent_busi_type = self._judge_msg_from_busi_type(msg_from)
+            parent_node_id = self._build_node_id(parent_busi_type, msg_from)
+            parent_node = self._find_node_by_id(parent_node_id)
+            if not parent_node:
+                logger.warning(
+                    f"parent node not exist, busi_type: {parent_busi_type}, busi_id: {msg_from}")
+                parent_node_id = None
         node = RunNode(node_id=self._build_node_id(busi_type, busi_id),
                        busi_type=busi_type,
                        busi_id=busi_id,
@@ -231,6 +242,9 @@ class RuntimeStateManager(InheritanceSingleton):
     def _find_node(self, busi_type: RunNodeBusiType, busi_id: str):
         return self.storage.get(self._build_node_id(busi_type, busi_id))
 
+    def _find_node_by_id(self, node_id: str):
+        return self.storage.get(node_id)
+
     def _build_node_id(self, busi_type: RunNodeBusiType, busi_id: str) -> str:
         return f"{busi_id}_{busi_type.value}"
 
@@ -256,6 +270,8 @@ class EventRuntimeStateManager(RuntimeStateManager):
         '''
         run_node_busi_type = RunNodeBusiType.from_message_category(
             message.category)
+        logger.info(
+            f"start message node: {message.receiver}, busi_type={run_node_busi_type}")
         if run_node_busi_type:
             self.create_node(busi_type=run_node_busi_type,
                              busi_id=message.receiver,
@@ -263,6 +279,8 @@ class EventRuntimeStateManager(RuntimeStateManager):
                              msg_id=message.id,
                              msg_from=message.sender)
             self.run_node(run_node_busi_type, message.receiver)
+            logger.info(
+                f"start message node: {self.get_node(run_node_busi_type, message.receiver)}")
 
     def end_message_node(self, message: Message, result_msg: Message = None):
         '''

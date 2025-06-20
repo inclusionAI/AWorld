@@ -13,8 +13,10 @@ from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.trace.server import get_trace_server
 from aworld.trace.instrumentation.uni_llmmodel import LLMModelInstrumentor
-from aworld.runners.state_manager import RuntimeStateManager
+from aworld.runners.state_manager import RuntimeStateManager, RunNode
+import aworld.trace as trace
 
+trace.configure()
 LLMModelInstrumentor().instrument()
 
 
@@ -222,7 +224,7 @@ if __name__ == "__main__":
     )
 
     # default is sequence swarm mode
-    swarm = Swarm(search, summary, trace, max_steps=1)
+    swarm = Swarm(search, summary, trace, max_steps=1, event_driven=True)
 
     prefix = "search baidu:"
     # can special search google, wiki, duck go, or baidu. such as:
@@ -239,5 +241,6 @@ if __name__ == "__main__":
 
     state_manager = RuntimeStateManager.instance()
     nodes = state_manager.get_nodes("123")
+    logger.info(f"session 123 nodes: {nodes}")
     build_run_flow(nodes)
     get_trace_server().join()
