@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel
-from aworld.core.context.base import Context
+from aworld.core.context.base import AgentContext, Context
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, Constants
 from aworld.core.factory import Factory
@@ -106,6 +106,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # all tools that the agent can use. note: string name/id only
         self.tools = []
         self.context = Context.instance()
+        self.agent_context = AgentContext(agent_id=self.id(), agent_name=self.name(), agent_desc=self.desc(), tool_names=self.tool_names)
+        self.context.set_agent_context(self.id(), self.agent_context)
         self.state = AgentStatus.START
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}

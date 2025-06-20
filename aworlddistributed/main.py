@@ -1,20 +1,17 @@
-
 import logging
 import os
 import time
 from contextlib import asynccontextmanager
 from logging.handlers import TimedRotatingFileHandler
-from pathlib import Path
+import uvicorn
 
-import aworld.trace as trace  # noqa
-from aworld.utils.common import get_local_ip
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from aworldspace.routes import tasks, workspaces
-from aworldspace.utils.loader import load_modules_from_directory, PIPELINE_MODULES, PIPELINES, \
-    get_all_pipelines
+from aworldspace.utils.loader import load_modules_from_directory, PIPELINE_MODULES, PIPELINES
 from aworldspace.utils.job import generate_openai_chat_completion
+from aworldspace.utils.loader import load_modules_from_directory, PIPELINE_MODULES, PIPELINES
 from base import OpenAIChatCompletionForm
 from config import AGENTS_DIR, LOG_LEVELS, ROOT_LOG
 
@@ -121,3 +118,12 @@ async def healthcheck():
     return {
         "status": True
     }
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "aworlddistributed.main:app",
+        host="0.0.0.0",
+        port=8088,
+        reload=True,
+    )

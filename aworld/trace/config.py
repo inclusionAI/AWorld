@@ -1,7 +1,7 @@
 import os
 from pydantic import BaseModel
 from typing import Sequence, Optional
-from .span_cosumer import SpanConsumer
+from aworld.trace.span_cosumer import SpanConsumer
 from logging import Logger
 from aworld.logs.util import trace_logger
 from aworld.trace.context_manager import trace_configure
@@ -49,7 +49,7 @@ def _trace_configure(config: ObservabilityConfig):
     if not config.trace_base_url and config.trace_provider == "otlp":
         if "logfire" in config.trace_backends:
             config.trace_base_url = os.getenv("LOGFIRE_WRITE_TOKEN")
-        else:
+        elif os.getenv("OTLP_TRACES_ENDPOINT"):
             config.trace_base_url = os.getenv("OTLP_TRACES_ENDPOINT")
             config.trace_backends.append("other_otlp")
 
