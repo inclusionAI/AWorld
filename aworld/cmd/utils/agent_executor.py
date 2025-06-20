@@ -1,4 +1,5 @@
 from .. import (
+    BaseAWorldAgent,
     ChatCompletionChoice,
     ChatCompletionMessage,
     ChatCompletionRequest,
@@ -7,6 +8,8 @@ from .. import (
 from . import agent_loader
 import logging
 import aworld.trace as trace
+import os
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +20,13 @@ trace.configure()
 async def stream_run(request: ChatCompletionRequest):
     logger.info(f"Stream run agent: request={request.model_dump_json()}")
     agent = agent_loader.get_agent(request.model)
-    async for chunk in agent.instance.run(request=request):
+    instance: BaseAWorldAgent = agent.instance
+    env_file = os.path.join(agent.path, ".env")
+    if os.path.exists(env_file):
+        logger.info(f"Loading environment variables from {env_file}")
+        load_dotenv(env_file, override=True, verbose=True)
+
+    async for chunk in instance.run(request=request):
         response = ChatCompletionResponse(
             choices=[
                 ChatCompletionChoice(
