@@ -9,7 +9,7 @@ import json
 import tempfile
 from typing import Optional, Dict, List, Any, Tuple, Union, BinaryIO, TextIO, IO, AnyStr
 
-from aworld import import_package
+from aworld.utils import import_package
 from aworld.logs.util import logger
 
 

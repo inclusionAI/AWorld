@@ -1,7 +1,7 @@
 import os
 from typing import Any, Dict, List, Generator, AsyncGenerator
 
-from aworld import import_package
+from aworld.utils import import_package
 from aworld.logs.util import logger
 from aworld.core.llm_provider_base import LLMProviderBase
 from aworld.models.model_response import ModelResponse, LLMResponseError
