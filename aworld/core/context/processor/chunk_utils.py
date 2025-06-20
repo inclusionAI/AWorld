@@ -9,7 +9,7 @@ from aworld.core.context.processor import MessageChunk, ChunkResult, MessageType
 logger = logging.getLogger(__name__)
 
 
-class ChunkProcessor:
+class ChunkUtils:
     
     def __init__(self, 
                  enable_chunking: bool = False,

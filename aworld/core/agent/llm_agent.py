@@ -52,6 +52,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         super(Agent, self).__init__(conf, **kwargs)
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
+        self.model_url = conf.llm_config.llm_base_url if conf.llm_config.llm_base_url else conf.llm_base_url
+        self.model_api_key = conf.llm_config.llm_api_key if conf.llm_config.llm_api_key else conf.llm_api_key
+        self.llm_provider = conf.llm_config.llm_provider if conf.llm_config.llm_provider else conf.llm_provider
         self._llm = None
         self.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory"))
         self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
@@ -72,7 +75,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # init agent context
         context_rule = kwargs.get("context_rule") if kwargs.get("context_rule") else conf.context_rule
         # update agent context by llm_agent
-        self.init_agent_context(conf.llm_config, context_rule)
+        self.init_agent_context(conf.llm_config if (conf.llm_config is not None and conf.llm_config.llm_model_name is not None)
+                                    else ModelConfig(llm_model_name=self.model_name, llm_base_url=self.model_url, llm_api_key=self.model_api_key),
+                                context_rule)
         self.tools_instances = {}
         self.tools_conf = {}
 
@@ -515,6 +520,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 raise e
             finally:
                 if llm_response:
+                    # update usage
+                    self.update_context_usage(used_context_length=llm_response.usage['total_tokens'])
+                    # update current step output
+                    self.update_llm_output(llm_response)
+
                     use_tools = self.use_tool_list(llm_response)
                     is_use_tool_prompt = len(use_tools) > 0
                     if llm_response.error:
@@ -570,11 +580,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
-        # try:
-        #     async for event in self.run_hooks(self.context, HookPoint.PRE_LLM_CALL):
-        #         await event
-        # except Exception as e:
-        #     logger.warn(traceback.format_exc())
+        try:
+            events = []
+            async for event in self.run_hooks(self.context, HookPoint.PRE_LLM_CALL):
+                events.append(event)
+        except Exception as e:
+            logger.warn(traceback.format_exc())
 
         self._finished = False
         messages = await self._prepare_llm_input(observation, info, **kwargs)
@@ -592,6 +603,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             if llm_response:
                 # update usage
                 self.update_context_usage(used_context_length=llm_response.usage['total_tokens'])
+                # update current step output
+                self.update_llm_output(llm_response)
 
                 use_tools = self.use_tool_list(llm_response)
                 is_use_tool_prompt = len(use_tools) > 0
@@ -611,11 +624,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(f"{self.id()} failed to get LLM response")
 
-        # try:
-        #     async for event in self.run_hooks(self.context, HookPoint.POST_LLM_CALL):
-        #         await event
-        # except Exception as e:
-        #     logger.warn(traceback.format_exc())
+        try:
+            events = []
+            async for event in self.run_hooks(self.context, HookPoint.POST_LLM_CALL):
+                events.append(event)
+        except Exception as e:
+            logger.warn(traceback.format_exc())
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
@@ -658,10 +672,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def run_hooks(self, context: Context, current_agent_context: AgentContext, hook_point: str) -> AsyncGenerator[Message, None]:
         hooks = HookFactory.hooks(hook_point).get(hook_point)
-        print('hook_point|', hook_point, '|', HookFactory.hooks(hook_point), '|', context, '|', current_agent_context)
         for hook in hooks:
             try:
-                print('current hook_point|', hook_point, '|', hook, '|', context, '|', current_agent_context)
                 msg = hook.exec(message=None, current_agent_context=current_agent_context, context=context)
                 if msg:
                     yield msg
@@ -996,6 +1008,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.agent_context.update_context_usage(used_context_length, total_context_length)
         logger.debug(f"Agent {self.name()} context usage updated: {self.agent_context.context_usage}")
 
+    def update_llm_output(self, llm_response: ModelResponse):
+        self.agent_context.set_llm_output(llm_response)
+        logger.debug(f"Agent {self.name()} llm output updated: {self.agent_context.llm_output}")
+
     async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""
         from aworld.runners.hook.hook_factory import HookFactory
@@ -1011,7 +1027,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 message = Message(
                     category="agent_hook",
                     payload=None,
-                    sender=self.name(),
+                    sender=self.id(),
                     session_id=context.session_id if hasattr(context, 'session_id') else None
                 )
                 

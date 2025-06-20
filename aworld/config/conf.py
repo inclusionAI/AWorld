@@ -135,7 +135,6 @@ class ModelConfig(BaseConfig):
 class LlmCompressionConfig(BaseConfig):
     enabled: bool = False
     trigger_compress_token_length: int = 10000  # Trigger compression when exceeding this length
-    trigger_mapreduce_compress_token_length: int = 100000  # Maximum tokens for map reduce
     compress_model: ModelConfig = None
 
 class OptimizationConfig(BaseConfig):
