@@ -1,7 +1,7 @@
 import os
 from pydantic import BaseModel
 from typing import Sequence, Optional
-from .span_cosumer import SpanConsumer
+from aworld.trace.span_cosumer import SpanConsumer
 from logging import Logger
 from aworld.logs.util import trace_logger
 from aworld.trace.context_manager import trace_configure
