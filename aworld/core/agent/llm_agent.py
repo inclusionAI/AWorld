@@ -835,7 +835,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     )
                     await eventbus.publish(output_message)
                 elif not self.event_driven and outputs:
-                    outputs.append(output)
+                    outputs.add_output(output)
 
             else:
                 llm_response = await acall_llm_model(
@@ -854,7 +854,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         session_id=Context.instance().session_id
                     ))
                 elif not self.event_driven and outputs:
-                    outputs.append(llm_response)
+                    outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
 
             logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
 
