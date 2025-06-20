@@ -36,6 +36,13 @@ class RunNodeStatus(Enum):
     TIMEOUNT = 'TIMEOUNT'
 
 
+class HandleResult(BaseModel):
+    name: str = None
+    status: RunNodeStatus = None
+    result_msg: Optional[str] = None
+    result: Optional[Message] = None
+
+
 class RunNode(BaseModel):
     # {busi_id}_{busi_type}
     node_id: Optional[str] = None
@@ -48,7 +55,7 @@ class RunNode(BaseModel):
     parent_node_id: Optional[str] = None
     status: RunNodeStatus = None
     result_msg: Optional[str] = None
-    result: Optional[Message] = None
+    results: Optional[List[HandleResult]] = None
 
 
 class StateStorage(ABC):
@@ -124,25 +131,24 @@ class RuntimeStateManager(InheritanceSingleton):
                     busi_type: RunNodeBusiType,
                     busi_id: str,
                     session_id: str,
+                    node_id: str = None,
+                    parent_node_id: str = None,
                     msg_id: str = None,
                     msg_from: str = None) -> RunNode:
         '''
             create node and insert to storage
         '''
-        node = self._find_node(busi_type, busi_id)
+        node_id = node_id or msg_id
+        node = self._find_node(node_id)
         if node:
-            raise Exception(
-                f"node already exist, busi_type: {busi_type}, busi_id: {busi_id}")
-        parent_node_id = None
-        if msg_from:
-            parent_busi_type = self._judge_msg_from_busi_type(msg_from)
-            parent_node_id = self._build_node_id(parent_busi_type, msg_from)
-            parent_node = self._find_node_by_id(parent_node_id)
+            # raise Exception(f"node already exist, node_id: {node_id}")
+            return
+        if parent_node_id:
+            parent_node = self._find_node(parent_node_id)
             if not parent_node:
                 logger.warning(
-                    f"parent node not exist, busi_type: {parent_busi_type}, busi_id: {msg_from}")
-                parent_node_id = None
-        node = RunNode(node_id=self._build_node_id(busi_type, busi_id),
+                    f"parent node not exist, parent_node_id: {parent_node_id}")
+        node = RunNode(node_id=node_id,
                        busi_type=busi_type,
                        busi_id=busi_id,
                        session_id=session_id,
@@ -153,78 +159,82 @@ class RuntimeStateManager(InheritanceSingleton):
         self.storage.insert(node)
         return node
 
-    def run_node(self, busi_type: RunNodeBusiType, busi_id: str):
+    def run_node(self, node_id: str):
         '''
             set node status to RUNNING and update to storage
         '''
-        node = self._node_exist(busi_type, busi_id)
+        node = self._node_exist(node_id)
         node.status = RunNodeStatus.RUNNING
         self.storage.update(node)
 
     def save_result(self,
-                    busi_type: str,
-                    busi_id: str,
-                    message: Message):
+                    node_id: str,
+                    result: HandleResult):
         '''
             save node execute result and update to storage
         '''
-        node = self._node_exist(busi_type, busi_id)
-        node.result = message
+        node = self._node_exist(node_id)
+        if not node.results:
+            node.results = []
+        node.results.append(result)
         self.storage.update(node)
 
-    def break_node(self, busi_type, busi_id):
+    def break_node(self, node_id):
         '''
             set node status to BREAKED and update to storage
         '''
-        node = self._node_exist(busi_type, busi_id)
+        node = self._node_exist(node_id)
         node.status = RunNodeStatus.BREAKED
         self.storage.update(node)
 
     def run_succeed(self,
-                    busi_type,
-                    busi_id,
+                    node_id,
                     result_msg=None,
-                    result: Message = None):
+                    results: List[HandleResult] = None):
         '''
             set node status to SUCCESS and update to storage
         '''
-        node = self._node_exist(busi_type, busi_id)
+        node = self._node_exist(node_id)
         node.status = RunNodeStatus.SUCCESS
         node.result_msg = result_msg
-        node.result = result
+        if results:
+            if not node.results:
+                node.results = []
+            node.results.extend(results)
         self.storage.update(node)
 
     def run_failed(self,
-                   busi_type,
-                   busi_id,
+                   node_id,
                    result_msg=None,
-                   result: Message = None):
+                   results: List[HandleResult] = None):
         '''
             set node status to FAILED and update to storage
         '''
-        node = self._node_exist(busi_type, busi_id)
+        node = self._node_exist(node_id)
         node.status = RunNodeStatus.FAILED
         node.result_msg = result_msg
-        node.result = result
+        if results:
+            if not node.results:
+                node.results = []
+            node.results.extend(results)
         self.storage.update(node)
 
     def run_timeout(self,
-                    busi_type,
-                    busi_id,
+                    node_id,
                     result_msg=None):
         '''
             set node status to TIMEOUNT and update to storage
         '''
-        node = self._node_exist(busi_type, busi_id)
+        node = self._node_exist(node_id)
         node.status = RunNodeStatus.TIMEOUNT
         node.result_msg = result_msg
         self.storage.update(node)
 
-    def get_node(self, busi_type: RunNodeBusiType, busi_id: str) -> RunNode:
+    def get_node(self, node_id: str) -> RunNode:
         '''
             get node from storage
         '''
-        return self._find_node(busi_type, busi_id)
+        return self._find_node(node_id)
 
     def get_nodes(self, session_id: str) -> List[RunNode]:
         '''
@@ -232,21 +242,14 @@ class RuntimeStateManager(InheritanceSingleton):
         '''
         return self.storage.query(session_id)
 
-    def _node_exist(self, busi_type: RunNodeBusiType, busi_id: str):
-        node = self._find_node(busi_type, busi_id)
+    def _node_exist(self, node_id: str):
+        node = self._find_node(node_id)
         if not node:
-            raise Exception(
-                f"node not found, busi_type: {busi_type}, busi_id: {busi_id}")
+            raise Exception(f"node not found, node_id: {node_id}")
         return node
 
-    def _find_node(self, busi_type: RunNodeBusiType, busi_id: str):
-        return self.storage.get(self._build_node_id(busi_type, busi_id))
-
-    def _find_node_by_id(self, node_id: str):
+    def _find_node(self, node_id: str):
         return self.storage.get(node_id)
-
-    def _build_node_id(self, busi_type: RunNodeBusiType, busi_id: str) -> str:
-        return f"{busi_id}_{busi_type.value}"
 
     def _judge_msg_from_busi_type(self, msg_from: str) -> RunNodeBusiType:
         '''
@@ -271,26 +274,51 @@ class EventRuntimeStateManager(RuntimeStateManager):
         run_node_busi_type = RunNodeBusiType.from_message_category(
             message.category)
         logger.info(
-            f"start message node: {message.receiver}, busi_type={run_node_busi_type}")
+            f"start message node: {message.receiver}, busi_type={run_node_busi_type}, node_id={message.id}, message={message}")
         if run_node_busi_type:
-            self.create_node(busi_type=run_node_busi_type,
-                             busi_id=message.receiver,
-                             session_id=message.session_id,
-                             msg_id=message.id,
-                             msg_from=message.sender)
-            self.run_node(run_node_busi_type, message.receiver)
-            logger.info(
-                f"start message node: {self.get_node(run_node_busi_type, message.receiver)}")
+            self.create_node(
+                node_id=message.id,
+                busi_type=run_node_busi_type,
+                busi_id=message.receiver,
+                session_id=message.session_id,
+                msg_id=message.id,
+                msg_from=message.sender)
+            self.run_node(message.id)
 
-    def end_message_node(self, message: Message, result_msg: Message = None):
+    def save_message_handle_result(self, name: str, message: Message, result: Message = None):
+        '''
+        save message handle result
+        '''
+        run_node_busi_type = RunNodeBusiType.from_message_category(
+            message.category)
+        if run_node_busi_type:
+            if result and result.is_error():
+                handle_result = HandleResult(
+                    name=name,
+                    status=RunNodeStatus.FAILED,
+                    result=result)
+            else:
+                handle_result = HandleResult(
+                    name=name,
+                    status=RunNodeStatus.SUCCESS,
+                    result=result)
+            self.save_result(node_id=message.id, result=handle_result)
+
+    def end_message_node(self, message: Message):
         '''
         end node while message handle finished.
         '''
         run_node_busi_type = RunNodeBusiType.from_message_category(
             message.category)
         if run_node_busi_type:
-            if result_msg and result_msg.is_error():
-                self.run_failed(run_node_busi_type,
-                                message.receiver, result_msg)
+            node = self._node_exist(node_id=message.id)
+            status = RunNodeStatus.SUCCESS
+            if node.results:
+                for result in node.results:
+                    if result.status == RunNodeStatus.FAILED:
+                        status = RunNodeStatus.FAILED
+                        break
+            if status == RunNodeStatus.FAILED:
+                self.run_failed(node_id=message.id)
             else:
-                self.run_succeed(run_node_busi_type, message.receiver)
+                self.run_succeed(node_id=message.id)

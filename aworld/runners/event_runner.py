@@ -128,6 +128,7 @@ class TaskEventRunner(TaskRunner):
 
         results = []
         handlers = event_bus.get_handlers(key)
+        self.state_manager.start_message_node(message)
         if handlers:
             if message.topic:
                 handlers = {message.topic: handlers.get(message.topic, [])}
@@ -154,12 +155,12 @@ class TaskEventRunner(TaskRunner):
             t.add_done_callback(self.background_tasks.discard)
             # wait until it is complete
             await t
+        self.state_manager.end_message_node(message)
         return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message.payload
         try:
-            self.state_manager.start_message_node(message)
             if asyncio.iscoroutinefunction(handler):
                 con = await handler(con)
             else:
@@ -167,14 +168,17 @@ class TaskEventRunner(TaskRunner):
 
             if isinstance(con, Message):
                 # process in framework
-                self.state_manager.end_message_node(message, con)
+                self.state_manager.save_message_handle_result(name=handler.__name__,
+                                                              message=message,
+                                                              result=con)
                 async for event in self._inner_handler_process(
                         results=[con],
                         handlers=self.handlers
                 ):
                     await self.event_mng.emit_message(event)
             else:
-                self.state_manager.end_message_node(message)
+                self.state_manager.save_message_handle_result(name=handler.__name__,
+                                                              message=message)
         except Exception as e:
             logger.warning(f"{handler} process fail. {traceback.format_exc()}")
             error_msg = Message(
@@ -184,7 +188,9 @@ class TaskEventRunner(TaskRunner):
                 session_id=Context.instance().session_id,
                 topic=TopicType.ERROR
             )
-            self.state_manager.end_message_node(message, error_msg)
+            self.state_manager.save_message_handle_result(name=handler.__name__,
+                                                          message=message,
+                                                          result=error_msg)
             await self.event_mng.event_bus.publish(error_msg)
 
     async def _raw_task(self, messages: List[Message]):
@@ -241,7 +247,8 @@ class TaskEventRunner(TaskRunner):
                             if hasattr(agent, 'sandbox') and agent.sandbox:
                                 await agent.sandbox.cleanup()
                         except Exception as e:
-                            logger.warning(f"event_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
+                            logger.warning(
+                                f"event_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
 
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
