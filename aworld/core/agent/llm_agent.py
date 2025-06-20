@@ -114,7 +114,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         try:
             return sync_exec(mcp_tool_desc_transform, self.mcp_servers, self.mcp_config)
         except Exception as e:
-            logger.error(f"mcp_is_tool error: {e}")
+            logger.error(f"mcp_is_tool error: {traceback.format_exc()}")
             return []
 
     def desc_transform(self):
@@ -278,7 +278,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
             return tool_list
         except Exception as e:
-            logger.debug(f"tool_parse error, content: {resp.content}, \nerror msg: {e}")
+            logger.debug(f"tool_parse error, content: {resp.content}, \nerror msg: {traceback.format_exc()}")
             return tool_list
 
     def response_parse(self, resp: ModelResponse) -> AgentResult:
@@ -995,7 +995,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     logger.debug(f"Hook {hook.point()} executed successfully")
                     yield msg
             except Exception as e:
-                logger.warning(f"Hook {hook.point()} execution failed: {e}")
+                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
 
     def _run_hooks_sync(self, context: Context, hook_point: str):
         """Execute hooks synchronously"""
@@ -1003,4 +1003,4 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         try:
             sync_exec(self.run_hooks, context, hook_point)
         except Exception as e:
-            logger.warn(f"Failed to execute hooks for {hook_point}: {e}")
+            logger.warn(f"Failed to execute hooks for {hook_point}: {traceback.format_exc()}")

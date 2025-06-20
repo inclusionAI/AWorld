@@ -3,43 +3,17 @@
 
 import time
 from dataclasses import dataclass
+import traceback
 from typing import Dict, Any, List
 
 from aworld.config.conf import ContextRuleConfig
 from aworld.core.context.base import Context, AgentContext
+from aworld.core.context.processor import CompressionDecision, ContextProcessingResult, MessagesProcessingResult
 from aworld.core.context.processor.prompt_compressor import PromptCompressor, CompressionType
 from aworld.core.context.processor.chunk_processor import ChunkProcessor, MessageChunk, MessageType
 from aworld.logs.util import Color, color_log, logger
 from aworld.models.utils import num_tokens_from_messages, truncate_tokens_from_messages
-
-
-@dataclass
-class MessagesProcessingResult:
-    """Processing result"""
-    original_token_len: int
-    processing_token_len: int
-    original_messages_len: int
-    processing_messaged_len: int
-    processing_time: float
-    method_used: str
-    processed_messages: List[Dict[str, Any]]
-
-@dataclass
-class ContextProcessingResult:
-    """Context processing result"""
-    processed_messages: List[Dict[str, Any]]
-    processed_tool_results: List[str]
-    statistics: Dict[str, Any]
-    chunk_info: Dict[str, Any] = None
-
-@dataclass
-class CompressionDecision:
-    """Compression decision result"""
-    should_compress: bool
-    compression_type: CompressionType
-    reason: str
-    token_count: int
-
+from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, ModelConfig, OptimizationConfig, LlmCompressionConfig
 
 class PromptProcessor:
     """Agent context processor, processes context according to context_rule configuration"""
@@ -56,33 +30,15 @@ class PromptProcessor:
         if self.context_rule and self.context_rule.llm_compression_config and self.context_rule.llm_compression_config.enabled:
             # Initialize message splitting and compression pipeline
             self.chunk_pipeline = ChunkProcessor(
-                name="ContextChunkProcessor",
-                enable_compression=True,
                 enable_chunking=True,
                 preserve_order=True,
                 merge_consecutive=True,
-                compression_types=["llm_based", "map_reduce"],
-                default_compression_type="llm_based"
             )
             
             # Initialize compression pipeline with both LLM and MapReduce compressors
             self.compress_pipeline = PromptCompressor(
                 compression_types=[CompressionType.LLM_BASED, CompressionType.MAP_REDUCE],
-                configs={
-                    CompressionType.LLM_BASED: {
-                        "name": "ContextLLMProcessor",
-                        "llm_service": None,  # Will be set when needed
-                        "max_tokens": 1000,
-                        "temperature": 0.3
-                    },
-                    CompressionType.MAP_REDUCE: {
-                        "name": "ContextMapReduceProcessor",
-                        "llm_service": None,  # Will be set when needed
-                        "chunk_size": 2000,
-                        "overlap": 200,
-                        "task_type": "summarize"
-                    }
-                }
+                llm_config=self.agent_context.context_rule.llm_compression_config.compress_model,
             )
     
     def get_max_tokens(self):
@@ -90,9 +46,11 @@ class PromptProcessor:
 
     def is_out_of_context(self, messages: List[Dict[str, Any]],
                           is_last_message_in_memory: bool) -> bool:
+        return self._count_tokens_from_messages(messages) > self.get_max_tokens()
         # Calculate based on historical message length to determine if threshold is reached, this is a rough statistic
         current_usage = self.agent_context.context_usage
         real_used = current_usage.used_context_length
+        print("real_used:", real_used, " current_usage:", current_usage, " last:", self._count_tokens_from_message(messages[-1]))
         if not is_last_message_in_memory:
             real_used += self._count_tokens_from_message(messages[-1])
         return real_used > self.get_max_tokens()
@@ -270,7 +228,7 @@ class PromptProcessor:
                 processed_chunks.append(processed_chunk)
                 
             except Exception as e:
-                logger.error(f"Processing message chunk failed: {e}")
+                logger.error(f"Processing message chunk failed: {traceback.format_exc()}")
                 # Keep original chunk on failure
                 processed_chunks.append(chunk)
         
@@ -341,7 +299,7 @@ class PromptProcessor:
             return chunk
             
         except Exception as e:
-            logger.warning(f"Text chunk compression failed: {e}")
+            logger.warning(f"Text chunk compression failed: {traceback.format_exc()}")
             return chunk
     
     def _process_tool_chunk(self, 
@@ -399,7 +357,7 @@ class PromptProcessor:
             )
             
         except Exception as e:
-            logger.warning(f"Tool chunk compression failed: {e}")
+            logger.warning(f"Tool chunk compression failed: {traceback.format_exc()}")
             return chunk
 
     def truncate_messages(self, messages: List[Dict[str, Any]], context: Context) -> MessagesProcessingResult:
@@ -407,7 +365,6 @@ class PromptProcessor:
         start_time = time.time()
         original_messages_len = len(messages)
         original_token_len = self._count_tokens_from_messages(messages)
-        
         if not self.context_rule.optimization_config.enabled:
             processing_time = time.time() - start_time
             return MessagesProcessingResult(
@@ -500,12 +457,14 @@ class PromptProcessor:
                 if (messages[i].get("role") == "user") and (i != len(messages) - 1):
                     # Truncate user message (not the last one)
                     _msg = _truncate_message(messages[i], max_tokens=available_token)
+                    logger.info(f"truncate user message: {messages[i]}, {_msg}")
                     if _msg:
                         new_messages = [_msg] + new_messages
                     break
                 elif messages[i].get("role") == "function":
                     # Truncate function message, keep both ends
                     _msg = _truncate_message(messages[i], max_tokens=available_token, keep_both_sides=True)
+                    logger.info(f"truncate user message: {messages[i]}, {_msg}")
                     if _msg:
                         new_messages = [_msg] + new_messages
                     else:

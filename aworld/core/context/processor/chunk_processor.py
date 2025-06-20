@@ -2,126 +2,21 @@ import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Dict, Any, Optional, Union, Tuple
+from typing import List, Dict, Any, Union
 
-# Import base processor
-try:
-    from .base_processor import BaseProcessor
-except ImportError:
-    from aworld.core.context.processor.base_processor import BaseProcessor
-
-# Import compressor modules - use conditional import to handle relative import issues
-try:
-    from .prompt_compressor import PromptCompressor, CompressionType, CompressionResult
-except ImportError:
-    # If relative import fails, try absolute import
-    try:
-        from aworld.core.context.processor.prompt_compressor import PromptCompressor, CompressionType, CompressionResult
-    except ImportError:
-        # If both fail, define placeholder classes
-        logger = logging.getLogger(__name__)
-        logger.warning("Unable to import compressor module, compression functionality will be unavailable")
-        
-        class CompressionType:
-            RULE_BASED = "rule_based"
-            STATISTICAL = "statistical"
-            LLM_BASED = "llm_based"
-            TFIDF_BASED = "tfidf_based"
-
-        class CompressionResult:
-            def __init__(self, original_content, compressed_content, compression_ratio, metadata, compression_type):
-                self.original_content = original_content
-                self.compressed_content = compressed_content
-                self.compression_ratio = compression_ratio
-                self.metadata = metadata
-                self.compression_type = compression_type
-        
-        class PromptCompressor:
-            def __init__(self, *args, **kwargs):
-                pass
-            def compress(self, *args, **kwargs):
-                return None
-            def compress_batch(self, *args, **kwargs):
-                return []
-            def get_compression_stats(self, *args, **kwargs):
-                return {}
+from aworld.core.context.processor import MessageChunk, ChunkResult, MessageType
 
 logger = logging.getLogger(__name__)
 
 
-class MessageType(Enum):
-    """Message type enum"""
-    TEXT = "text"  # system, user, assistant messages
-    TOOL = "tool"  # tool messages
-    UNKNOWN = "unknown"
-
-
-@dataclass
-class MessageChunk:
-    """Message chunk containing messages of the same type"""
-    message_type: MessageType
-    messages: List[Dict[str, Any]]
-    metadata: Dict[str, Any]
-    
-    def __len__(self):
-        return len(self.messages)
-    
-    def is_empty(self):
-        return len(self.messages) == 0
-
-
-@dataclass
-class ChunkResult:
-    """Chunking result"""
-    chunks: List[MessageChunk]
-    total_messages: int
-    processing_time: float
-    metadata: Dict[str, Any]
-
-
-class ChunkProcessor(BaseProcessor):
-    """
-    Simple compression processor (integrated with chunking functionality)
-    
-    Inherits from BaseProcessor, specifically used for message compression and chunking processing
-    Integrates the chunking functionality from the original chunk_pipeline.py
-    """
+class ChunkProcessor:
     
     def __init__(self, 
-                 name: str = "SimpleCompressProcessor",
-                 # Compression related parameters
-                 enable_compression: bool = True,
-                 compression_types: List[str] = None,
-                 compression_configs: Dict[str, Dict[str, Any]] = None,
-                 default_compression_type: str = "rule_based",
-                 # Chunking related parameters
                  enable_chunking: bool = False,
                  preserve_order: bool = True,
                  merge_consecutive: bool = True,
                  max_chunk_size: int = None,
                  split_by_tool_name: bool = False):
-        """
-        Initialize simple compression processor
-        
-        Args:
-            name: Processor name
-            # Compression parameters
-            enable_compression: Whether to enable compression
-            compression_types: List of supported compression types
-            compression_configs: Compressor configurations
-            default_compression_type: Default compression type
-            # Chunking parameters
-            enable_chunking: Whether to enable chunking
-            preserve_order: Whether to preserve original message order
-            merge_consecutive: Whether to merge consecutive messages of the same type
-            max_chunk_size: Maximum chunk size (number of messages)
-            split_by_tool_name: Whether to further split tool messages by tool name
-        """
-        super().__init__(name)
-        
-        # Compressor configuration
-        self.enable_compression = enable_compression
-        self.default_compression_type = CompressionType(default_compression_type)
         
         # Chunker configuration
         self.enable_chunking = enable_chunking
@@ -130,31 +25,8 @@ class ChunkProcessor(BaseProcessor):
         self.max_chunk_size = max_chunk_size
         self.split_by_tool_name = split_by_tool_name
         
-        # Initialize compressor
-        if self.enable_compression:
-            if compression_types is None:
-                compression_types = ["rule_based", "statistical", "llm_based", "tfidf_based"]
-            
-            comp_types = [CompressionType(ct) for ct in compression_types]
-            self.compressor = PromptCompressor(
-                compression_types=comp_types,
-                configs={CompressionType(k): v for k, v in (compression_configs or {}).items()}
-            )
-            self.logger.info(f"Compressor enabled, supported compression types: {compression_types}")
-        else:
-            self.compressor = None
-            self.logger.info("Compressor disabled")
-        
         # Statistics
         self.stats = {
-            # Compression statistics
-            "compression": {
-                "total_messages_processed": 0,
-                "total_messages_compressed": 0,
-                "total_original_length": 0,
-                "total_compressed_length": 0,
-                "compression_results": []
-            },
             # Chunking statistics
             "chunking": {
                 "total_processed": 0,
@@ -191,7 +63,7 @@ class ChunkProcessor(BaseProcessor):
         elif role == "tool":
             return MessageType.TOOL
         else:
-            self.logger.warning(f"Unknown message role: {role}")
+            logger.warning(f"Unknown message role: {role}")
             return MessageType.UNKNOWN
 
     def split_messages(self, 
@@ -330,7 +202,7 @@ class ChunkProcessor(BaseProcessor):
             "string_merge_applied": True
         })
         
-        self.logger.debug(f"Message splitting completed: {len(messages)} messages -> {len(chunks)} chunks (string merge applied)")
+        logger.debug(f"Message splitting completed: {len(messages)} messages -> {len(chunks)} chunks (string merge applied)")
         
         return ChunkResult(
             chunks=chunks,

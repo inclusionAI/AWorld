@@ -57,10 +57,13 @@ def num_tokens_from_messages(messages, model="gpt-4o"):
     num_tokens = 0
     for message in messages:
         num_tokens += tokens_per_message
-        for key, value in message.items():
-            num_tokens += len(encoding.encode(str(value)))
-            if key == "name":
-                num_tokens += tokens_per_name
+        if isinstance(message, str):
+            num_tokens += len(encoding.encode(message))
+        else:
+            for key, value in message.items():
+                num_tokens += len(encoding.encode(str(value)))
+                if key == "name":
+                    num_tokens += tokens_per_name
     num_tokens += 3
     return num_tokens
 

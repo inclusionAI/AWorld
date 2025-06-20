@@ -2,60 +2,26 @@ import asyncio
 import logging
 import re
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from enum import Enum
-from typing import List, Dict, Any, Optional
+import traceback
+from typing import Any, Dict, List
 
+from aworld.config.conf import ModelConfig
+from aworld.core.context.processor import CompressionResult, CompressionType
+from aworld.models.llm import get_llm_model
+from aworld.config import ConfigDict
+                
 logger = logging.getLogger(__name__)
 
-# Add new dependencies
-try:
-    import nltk
-    from nltk.tokenize import sent_tokenize
-    from nltk.corpus import stopwords
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    import numpy as np
+def _create_llm_client(llm_config: ModelConfig):
+    config = ConfigDict(llm_config)
+    return get_llm_model(config)
     
-    # Download necessary NLTK resources with improved error handling
-    try:
-        # Check if necessary data has been downloaded
-        try:
-            nltk.data.find('tokenizers/punkt')
-            nltk.data.find('corpora/stopwords')
-        except LookupError:
-            # If not found, try to download
-            try:
-                nltk.download('punkt', quiet=True)
-                nltk.download('stopwords', quiet=True)
-            except Exception as download_error:
-                logger.warning(f"NLTK data download failed: {download_error}")
-    except Exception as nltk_error:
-        logger.warning(f"NLTK initialization failed: {nltk_error}")
-    
-    TFIDF_AVAILABLE = True
-except ImportError:
-    TFIDF_AVAILABLE = False
-
-class CompressionType(Enum):
-    LLM_BASED = "llm_based"
-    MAP_REDUCE = "map_reduce"  # New MapReduce compression type
-
-@dataclass
-class CompressionResult:
-    """Compression result data structure"""
-    original_content: str
-    compressed_content: str
-    compression_ratio: float
-    metadata: Dict[str, Any]
-    compression_type: CompressionType
-
 class BaseCompressor(ABC):
     """Base compressor class"""
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Dict[str, Any] = None, llm_config: ModelConfig = None):
         self.config = config or {}
-        
+        self.llm_config = llm_config
     @abstractmethod
     def compress(self, content: str, metadata: Dict[str, Any] = None) -> CompressionResult:
         """Compress content"""
@@ -70,14 +36,12 @@ class BaseCompressor(ABC):
 class LLMCompressor(BaseCompressor):
     """LLM-based compressor"""
     
-    def __init__(self, config: Dict[str, Any] = None):
-        super().__init__(config)
-        self.model_name = self.config.get("model_name", "gpt-3.5-turbo")
+    def __init__(self, config: Dict[str, Any] = None, llm_config: ModelConfig = None):
+        super().__init__(config, llm_config)
         self.max_tokens = self.config.get("max_tokens", 1000)
         self.compression_prompt = self.config.get("compression_prompt", self._default_compression_prompt())
-        self.llm_base_url = self.config.get("llm_base_url", "https://api.openai.com/v1")
         # Lazy import to avoid circular dependencies
-        self._llm_client = None
+        self._llm_client = _create_llm_client(llm_config)
     
     def _default_compression_prompt(self) -> str:
         """Default compression prompt"""
@@ -94,27 +58,12 @@ You are a text compression expert. Please intelligently compress the following t
 
 Please output the compressed text:"""
     
-    def _get_llm_client(self):
-        """Get LLM client"""
-        if self._llm_client is None:
-            try:
-                # Try to import and create LLM client
-                from aworld.models.llm import get_llm_model
-                from aworld.config import ConfigDict
-                
-                config = ConfigDict(self.config)
-                self._llm_client = get_llm_model(config)
-            except ImportError:
-                logger.warning("Unable to import LLM module, LLM compression functionality unavailable")
-                self._llm_client = None
-        return self._llm_client
-    
     def compress(self, content: str, metadata: Dict[str, Any] = None) -> CompressionResult:
         """Compress content using LLM"""
         original_content = content
         
         # Get LLM client
-        llm_client = self._get_llm_client()
+        llm_client = self._llm_client
         if llm_client is None:
             logger.warning("LLM client unavailable, returning original content")
             return CompressionResult(
@@ -145,7 +94,6 @@ Please output the compressed text:"""
                 compressed_content=compressed_content,
                 compression_ratio=compression_ratio,
                 metadata={
-                    "model_name": self.model_name,
                     "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
                     "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
                     "original_metadata": metadata or {}
@@ -154,7 +102,7 @@ Please output the compressed text:"""
             )
             
         except Exception as e:
-            logger.error(f"LLM compression failed: {e}")
+            logger.error(f"LLM compression failed: {traceback.format_exc()}")
             return CompressionResult(
                 original_content=original_content,
                 compressed_content=content,
@@ -164,29 +112,12 @@ Please output the compressed text:"""
             )
 
 class MapReduceCompressor(BaseCompressor):
-    """
-    MapReduce compressor
-    
-    Inherits from BaseCompressor, used for MapReduce analysis of long text messages
-    Specifically handles single long messages, processing them in chunks and then aggregating results
-    """
-    
-    def __init__(self, config: Dict[str, Any] = None):
-        """
-        Initialize MapReduce compressor
-        
-        Args:
-            config: Configuration dict containing:
-                - chunk_size: Chunk size (default: 2000)
-                - overlap: Overlap size (default: 200)
-                - task_type: Task type (default: "summarize")
-                - llm_service: LLM service instance
-        """
+    def __init__(self, config: Dict[str, Any] = None, llm_config: ModelConfig = None):
         super().__init__(config)
         self.chunk_size = self.config.get("chunk_size", 2000)
         self.overlap = self.config.get("overlap", 200)
         self.task_type = self.config.get("task_type", "summarize")
-        self.llm_service = self.config.get("llm_service")
+        self.llm_client = _create_llm_client(llm_config)
         
         # Processing statistics
         self.processing_stats = {
@@ -196,7 +127,7 @@ class MapReduceCompressor(BaseCompressor):
             "average_chunk_size": 0
         }
         
-        if not self.llm_service:
+        if not self.llm_client:
             logger.warning("No LLM service provided, MapReduce functionality will be limited")
 
     def compress(self, content: str, metadata: Dict[str, Any] = None) -> CompressionResult:
@@ -232,7 +163,7 @@ class MapReduceCompressor(BaseCompressor):
             )
             
         except Exception as e:
-            logger.error(f"MapReduce compression failed: {e}")
+            logger.error(f"MapReduce compression failed: {traceback.format_exc()}")
             return CompressionResult(
                 original_content=original_content,
                 compressed_content=content,
@@ -260,12 +191,8 @@ class MapReduceCompressor(BaseCompressor):
             self.processing_stats["last_chunk_count"] = len(chunks)
             
             # 2. Map phase - process each chunk
-            if asyncio.iscoroutinefunction(getattr(self.llm_service, 'generate', None)):
-                # Async processing
-                map_results = asyncio.run(self.parallel_map(chunks, task_type, **kwargs))
-            else:
-                # Sync processing
-                map_results = self.sequential_map(chunks, task_type, **kwargs)
+            # TODO async
+            map_results = self.sequential_map(chunks, task_type, **kwargs)
             
             # 3. Reduce phase - aggregate results
             final_result = self.reduce_results(map_results, task_type)
@@ -273,7 +200,7 @@ class MapReduceCompressor(BaseCompressor):
             return final_result
             
         except Exception as e:
-            logger.error(f"Long text processing failed: {e}")
+            logger.error(f"Long text processing failed: {traceback.format_exc()}")
             return content  # Return original content on failure
 
     def smart_split_document(self, document: str) -> List[str]:
@@ -354,7 +281,7 @@ class MapReduceCompressor(BaseCompressor):
 
     async def parallel_map(self, chunks: List[str], task_type: str, **kwargs) -> List[str]:
         """Process document chunks in parallel"""
-        if not self.llm_service:
+        if not self.llm_client:
             return chunks  # Return original chunks when no LLM service
         
         tasks = []
@@ -379,17 +306,17 @@ class MapReduceCompressor(BaseCompressor):
 
     def sequential_map(self, chunks: List[str], task_type: str, **kwargs) -> List[str]:
         """Process document chunks sequentially"""
-        if not self.llm_service:
+        if not self.llm_client:
             return chunks
         
         results = []
         for i, chunk in enumerate(chunks):
             try:
                 prompt = self.build_map_prompt(chunk, task_type, i, len(chunks), **kwargs)
-                result = self.llm_service.generate(prompt)
+                result = self.llm_client.completion(prompt)
                 results.append(result)
             except Exception as e:
-                logger.warning(f"Chunk {i} processing failed: {e}, using original content")
+                logger.warning(f"Chunk {i} processing failed: {traceback.format_exc()}, using original content")
                 results.append(chunk)
         
         return results
@@ -397,14 +324,14 @@ class MapReduceCompressor(BaseCompressor):
     async def process_chunk_async(self, prompt: str) -> str:
         """Process single chunk asynchronously"""
         try:
-            if hasattr(self.llm_service, 'agenerate'):
-                return await self.llm_service.agenerate(prompt)
+            if hasattr(self.llm_client, 'agenerate'):
+                return await self.llm_client.agenerate(prompt)
             else:
                 # If no async method, use thread pool
                 loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(None, self.llm_service.generate, prompt)
+                return await loop.run_in_executor(None, self.llm_client.completion, prompt)
         except Exception as e:
-            logger.error(f"Async chunk processing failed: {e}")
+            logger.error(f"Async chunk processing failed: {traceback.format_exc()}")
             raise
 
     def build_map_prompt(self, chunk: str, task_type: str, chunk_id: int, total_chunks: int, **kwargs) -> str:
@@ -483,15 +410,15 @@ Analysis requirements:
 
     def direct_reduce(self, results: List[str], task_type: str) -> str:
         """Direct aggregation"""
-        if not self.llm_service:
+        if not self.llm_client:
             # Simple concatenation when no LLM service
             return '\n\n'.join(results)
         
         prompt = self.build_reduce_prompt(results, task_type)
         try:
-            return self.llm_service.generate(prompt)
+            return self.llm_client.generate(prompt)
         except Exception as e:
-            logger.error(f"Aggregation failed: {e}")
+            logger.error(f"Aggregation failed: {traceback.format_exc()}")
             return '\n\n'.join(results)
 
     def reduce_group(self, group: List[str], task_type: str) -> str:
@@ -543,14 +470,10 @@ Please synthesize these analyses to give complete analytical conclusions:
 class PromptCompressor:
     """Unified Prompt compressor"""
     
-    def __init__(self, compression_types: List[CompressionType] = None, configs: Dict[CompressionType, Dict[str, Any]] = None):
-        """
-        Initialize compressor
-        
-        Args:
-            compression_types: List of compression types to use
-            configs: Configuration for each compressor
-        """
+    def __init__(self,
+                 compression_types: List[CompressionType] = None,
+                 configs: Dict[CompressionType, Dict[str, Any]] = None,
+                 llm_config: ModelConfig = None):
         self.compression_types = compression_types or [CompressionType.LLM_BASED]
         self.configs = configs or {}
         
@@ -559,22 +482,11 @@ class PromptCompressor:
         for comp_type in self.compression_types:
             config = self.configs.get(comp_type, {})
             if comp_type == CompressionType.LLM_BASED:
-                self.compressors[comp_type] = LLMCompressor(config)
+                self.compressors[comp_type] = LLMCompressor(config=config, llm_config=llm_config)
             elif comp_type == CompressionType.MAP_REDUCE:
-                self.compressors[comp_type] = MapReduceCompressor(config)
+                self.compressors[comp_type] = MapReduceCompressor(config=config, llm_config=llm_config)
     
     def compress(self, content: str, metadata: Dict[str, Any] = None, compression_type: CompressionType = None) -> CompressionResult:
-        """
-        Compress content
-        
-        Args:
-            content: Content to compress
-            metadata: Metadata
-            compression_type: Specified compression type, if None use first available compressor
-            
-        Returns:
-            Compression result
-        """
         if compression_type is None:
             compression_type = self.compression_types[0]
         
@@ -586,17 +498,6 @@ class PromptCompressor:
         return compressor.compress(content, metadata)
     
     def compress_batch(self, contents: List[str], metadata_list: List[Dict[str, Any]] = None, compression_type: CompressionType = None) -> List[CompressionResult]:
-        """
-        Batch compress content
-        
-        Args:
-            contents: List of content to compress
-            metadata_list: List of metadata
-            compression_type: Compression type
-            
-        Returns:
-            List of compression results
-        """
         if metadata_list is None:
             metadata_list = [{}] * len(contents)
         
