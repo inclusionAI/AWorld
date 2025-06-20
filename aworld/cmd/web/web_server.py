@@ -28,7 +28,7 @@ def build_webui(force_rebuild: bool = False) -> str:
     static_path = os.path.join(webui_path, "dist")
 
     if (not os.path.exists(static_path)) or force_rebuild:
-        logger.warning(f"Build WebUI at {webui_path} ...")
+        logger.warning(f"Build WebUI at {webui_path}")
 
         p = subprocess.Popen(
             ["sh", "-c", "npm install && npm run build"],
