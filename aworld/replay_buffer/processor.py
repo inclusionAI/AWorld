@@ -9,7 +9,7 @@ import datetime
 from typing import Any
 import threading
 
-from aworld import import_package
+from aworld.utils import import_package
 from aworld.replay_buffer.base import DataRow, Experience, ExpMeta
 from aworld.logs.util import logger
 from aworld.utils.common import get_local_ip
