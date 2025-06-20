@@ -529,19 +529,6 @@ const Independent: React.FC = () => {
         }}
         placeholder="Ask or input / use skills"
       />
-      {/* 🌟 模型选择下拉列表 */}
-      <Select
-        value={selectedModel}
-        onChange={setSelectedModel}
-        options={models}
-        loading={modelsLoading}
-        placeholder="Select a model"
-        style={{ width: 200 }}
-        showSearch
-        filterOption={(input, option) =>
-          (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-        }
-      />
     </>
   );
 

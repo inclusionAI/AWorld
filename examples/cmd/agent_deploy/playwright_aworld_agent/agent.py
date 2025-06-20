@@ -3,6 +3,7 @@ import os
 import json
 
 from aworld.cmd import ChatCompletionRequest
+from aworld.cmd.utils.aworld_ui import OpenAworldUI
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
@@ -59,13 +60,12 @@ class AWorldAgent:
         task = Task(
             input=prompt,
             agent=super_agent,
-            event_driven=False,
             conf=TaskConfig(max_steps=20),
         )
 
-        rich_ui = MarkdownAworldUI()
+        rich_ui = OpenAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():
-            logger.info(f"Agent Ouput: {output}")
+            logger.info(f"Agent Output: {output}")
             res = await AworldUI.parse_output(output, rich_ui)
             for item in res if isinstance(res, list) else [res]:
                 yield item

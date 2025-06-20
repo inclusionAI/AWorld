@@ -2,11 +2,11 @@ import logging
 import os
 import json
 from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
+from aworld.cmd.utils.aworld_ui import OpenAworldUI
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
-from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
 from aworld.runner import Runners
 
 logger = logging.getLogger(__name__)
@@ -16,10 +16,10 @@ class AWorldAgent(BaseAWorldAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def agent_name(self):
+    def name(self):
         return "Weather Agent"
 
-    def agent_description(self):
+    def description(self):
         return "Query Real-time Weather Information"
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
@@ -54,7 +54,7 @@ class AWorldAgent(BaseAWorldAgent):
             mcp_config=mcp_config,
             mcp_servers=mcp_config.get("mcpServers", {}).keys(),
         )
- 
+
         if prompt is None and request is not None:
             prompt = request.messages[-1].content
 
@@ -64,7 +64,7 @@ class AWorldAgent(BaseAWorldAgent):
             conf=TaskConfig(max_steps=20),
         )
 
-        rich_ui = MarkdownAworldUI()
+        rich_ui = OpenAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():
             logger.info(f"Agent Ouput: {output}")
             res = await AworldUI.parse_output(output, rich_ui)

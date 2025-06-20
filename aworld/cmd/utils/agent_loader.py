@@ -1,5 +1,6 @@
 import os
 import importlib
+import subprocess
 import sys
 import traceback
 import logging
@@ -35,7 +36,7 @@ def get_agent(agent_id) -> AgentModel:
         AgentModel: The agent model
     """
     if len(_agent_cache) == 0:
-        list_agents()
+        _list_agents()
     if agent_id not in _agent_cache:
         raise Exception(f"Agent {agent_id} not found")
     return _agent_cache[agent_id]
@@ -53,6 +54,19 @@ def _list_agents() -> List[AgentModel]:
         try:
             agent_path = os.path.join(agents_dir, agent_id)
             if os.path.isdir(agent_path):
+                requirements_file = os.path.join(agent_path, "requirements.txt")
+                if os.path.exists(requirements_file):
+                    p = subprocess.Popen(
+                        ["pip", "install", "-r", requirements_file],
+                        cwd=agent_path,
+                    )
+                    p.wait()
+                    if p.returncode != 0:
+                        logger.error(
+                            f"Error installing requirements for agent {agent_id}, path {agent_path}"
+                        )
+                        continue
+
                 agent_file = os.path.join(agent_path, "agent.py")
                 if os.path.exists(agent_file):
                     try:
