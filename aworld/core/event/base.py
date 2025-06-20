@@ -4,18 +4,20 @@ import abc
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, TypeVar, List
+from typing import Any, Dict, Generic, TypeVar, List, Optional
 
 from pydantic import BaseModel
 
 from aworld.config.conf import ConfigDict
 from aworld.core.common import Config, Observation, ActionModel, TaskItem
+from aworld.core.context.base import Context
 
 
 class Constants:
     AGENT = "agent"
     TOOL = "tool"
     TASK = "task"
+    OUTPUT = "output"
 
 
 DataType = TypeVar('DataType')
@@ -33,7 +35,7 @@ class Message(Generic[DataType]):
     or by extending `Message`.
     """
     session_id: str
-    payload: DataType
+    payload: Optional[DataType]
     # Current caller
     sender: str
     # event type
@@ -49,12 +51,30 @@ class Message(Generic[DataType]):
     headers: Dict[str, Any] = field(default_factory=dict)
     timestamp: int = time.time()
 
-    def key(self):
+    def __post_init__(self):
+        context = self.headers.get("context")
+        if not context:
+            self.headers['context'] = Context.instance()
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, Message):
+            raise RuntimeError
+        return self.priority < other.priority
+
+    def key(self) -> str:
         category = self.category if self.category else ''
         if self.topic:
             return f'{category}_{self.topic}'
         else:
             return f'{category}_{self.sender if self.sender else ""}'
+
+    @property
+    def context(self) -> Context:
+        return self.headers.get('context')
+
+    @context.setter
+    def context(self, context: Context):
+        self.headers['context'] = context
 
 
 @dataclass

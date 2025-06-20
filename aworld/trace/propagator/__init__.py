@@ -48,6 +48,8 @@ class TraceContextHolder:
         self._var = ContextVar("current_trace_context", default=None)
 
     def set(self, trace_context: TraceContext) -> Token:
+        if not trace_context or not trace_context.trace_id or not trace_context.span_id:
+            return None
         token = self._var.set(trace_context)
         return token
 

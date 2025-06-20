@@ -116,7 +116,40 @@ class ModelConfig(BaseConfig):
     llm_sync_enabled: bool = True
     llm_async_enabled: bool = True
     max_retries: int = 3
+    max_model_len: Optional[int] = None  # Maximum model context length
+    model_type: Optional[str] = 'qwen' # Model type determines tokenizer and maximum length
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+        
+        # init max_model_len
+        if not hasattr(self, 'max_model_len') or self.max_model_len is None:
+            # qwen or other default model_type
+            self.max_model_len = 128000
+            if hasattr(self, 'model_type') and self.model_type == 'claude':
+                self.max_model_len = 200000
+
+class LlmCompressionConfig(BaseConfig):
+    enabled: bool = False
+    trigger_compress_token_length: int = 10000  # Trigger compression when exceeding this length
+    trigger_mapreduce_compress_token_length: int = 100000  # Maximum tokens for map reduce
+    compress_model: ModelConfig = None
+
+class OptimizationConfig(BaseConfig):
+    enabled: bool = False
+    max_token_budget_ratio: float = 0.5  # Maximum context length ratio
+
+class ContextRuleConfig(BaseConfig):
+    """Context interference rule configuration"""
+
+    # ===== Performance optimization configuration =====
+    optimization_config: OptimizationConfig = OptimizationConfig()
+
+    # ===== LLM conversation compression configuration =====
+    llm_compression_config: LlmCompressionConfig = LlmCompressionConfig()
 
 class AgentConfig(BaseConfig):
     name: str = None
@@ -143,9 +176,13 @@ class AgentConfig(BaseConfig):
     agent_prompt: Optional[str] = None
     working_dir: Optional[str] = None
     enable_recording: bool = False
-    use_tools_in_prompt: bool = True
+    use_tools_in_prompt: bool = False
+    exit_on_failure: bool = False
     ext: dict = {}
+    human_tools: List[str] = []
 
+    # context rule
+    context_rule: ContextRuleConfig = ContextRuleConfig()
 
 class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
@@ -153,6 +190,7 @@ class TaskConfig(BaseConfig):
     max_steps: int = 100
     max_actions_per_step: int = 10
     stream: bool = False
+    exit_on_failure: bool = False
     ext: dict = {}
 
 
@@ -165,6 +203,7 @@ class ToolConfig(BaseConfig):
     llm_config: ModelConfig = None
     reuse: bool = False
     use_async: bool = False
+    exit_on_failure: bool = False
     ext: dict = {}
 
 
@@ -174,3 +213,8 @@ class RunConfig(BaseConfig):
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
     replay_buffer: Optional[Dict[str, Any]] = None
+
+
+class EvaluationConfig(BaseConfig):
+    work_dir: Optional[str] = None
+    run_times: int = 1

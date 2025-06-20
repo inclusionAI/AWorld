@@ -314,7 +314,9 @@ def configure_otlp_provider(backend: Sequence[str] = None,
         )
         set_metric_provider(OpentelemetryMetricProvider(exporter))
 
-    if os.getenv("METRICS_SYSTEM_ENABLED") == "true":
+    metrics_system_enabled = kwargs.get("metrics_system_enabled") or os.getenv(
+        "METRICS_SYSTEM_ENABLED") or "false"
+    if metrics_system_enabled.lower() == "true":
         instrument_system_metrics()
 
 

@@ -196,7 +196,6 @@ class LLMProviderBase(abc.ABC):
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When async provider is not initialized.
         """
-        return None
 
     def _accumulate_chunk_usage(self, usage: Dict[str, int], chunk_usage: Dict[str, int]):
         """Accumulate usage statistics from chunk into the main usage dictionary.
@@ -209,3 +208,10 @@ class LLMProviderBase(abc.ABC):
             return
 
         usage.update(dict(Counter(usage) + Counter(chunk_usage)))
+
+    def speech_to_text(self, audio_file, language, prompt, **kwargs) -> ModelResponse:
+        pass
+
+    async def aspeech_to_text(self, audio_file, language, prompt, **kwargs) -> ModelResponse:
+        pass
+

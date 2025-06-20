@@ -120,14 +120,12 @@ examples/gaia/gaia_dataset/
 *.pptx
 *.ppt
 *.pdf
-*.html
 *.wav
 
 # Node Modules
 node_modules/
-package.json
-package-lock.json
 
+aworld.db
 .data/
 examples/gaia/GAIA
 traces*.json

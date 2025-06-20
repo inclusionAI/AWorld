@@ -11,12 +11,12 @@ from aworld.runner import Runners
 from aworld.output.ui.base import AworldUI
 from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
 from aworld.output.base import Output
-from examples.gaia.utils import (
+from .utils import (
     add_file_path,
     load_dataset_meta_dict,
     question_scorer,
 )
-from examples.gaia.prompt import system_prompt
+from .prompt import system_prompt
 
 logger = logging.getLogger(__name__)
 

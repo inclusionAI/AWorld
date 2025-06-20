@@ -302,3 +302,23 @@ class WriteAction(ToolAction):
                                                                        )
                                               },
                                 desc="write the html file about `goal` based on `information`.")
+
+class GetTraceAction(ToolAction):
+    """Definition of get trace supported action."""
+    GET_TRACE = ToolActionInfo(
+        name="get_trace",
+        input_params={"trace_id": ParamInfo(name="trace_id",
+                                            type="str",
+                                            required=True,
+                                            desc="The trace id to get.")},
+        desc="Get the trace of the current execution.")
+
+class HumanExecuteAction(ToolAction):
+    """Definition of Human execute supported action."""
+    HUMAN_CONFIRM = ToolActionInfo(
+        name="human_confirm",
+        input_params={"content": ParamInfo(name="content",
+                                                 type="str",
+                                                 required=True,
+                                                 desc="Content for user confirmation")},
+        desc="The main purpose of this tool is to pass given content to the user for confirmation.")
