@@ -1,8 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-
-from aworld.core.context.base import AgentContext, Context
+from typing import AsyncGenerator
+from aworld.core.context.base import Context, AgentContext
 from aworld.core.event.base import Message
 
 
@@ -13,7 +13,6 @@ class HookPoint:
     PRE_LLM_CALL = "pre_llm_call"
     POST_LLM_CALL = "post_llm_call"
 
-
 class Hook:
     """Runner hook."""
     __metaclass__ = abc.ABCMeta
@@ -23,7 +22,7 @@ class Hook:
         """Hook point."""
 
     @abc.abstractmethod
-    async def exec(self, message: Message, current_agent_context: AgentContext = None, context: Context = None) -> Message:
+    async def exec(self, message: Message, context: Context = None) -> Message:
         """Execute hook function."""
 
 

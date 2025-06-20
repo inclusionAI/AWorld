@@ -18,10 +18,10 @@ import base64
 import unicodedata
 from pathlib import Path
 from typing import Collection, Dict, List, Set, Union
-
-import tiktoken
 from aworld.logs.util import logger
-
+from aworld.utils import import_package
+import_package("tiktoken")
+import tiktoken
 
 VOCAB_FILES_NAMES = {'vocab_file': 'qwen.tiktoken'}
 
@@ -169,6 +169,8 @@ class QWenTokenizer:
             `List[bytes|str]`: The list of tokens.
         """
         tokens = []
+        if text is None:
+            return tokens
         text = unicodedata.normalize('NFC', text)
 
         # this implementation takes a detour: text -> token id -> token surface forms
@@ -239,8 +241,4 @@ class QWenTokenizer:
         return self.convert_tokens_to_string(token_list)
 
 
-tokenizer = QWenTokenizer(Path(__file__).resolve().parent / 'qwen.tiktoken')
-
-
-def count_tokens(text: str) -> int:
-    return tokenizer.count_tokens(text)
+qwen_tokenizer = QWenTokenizer(Path(__file__).resolve().parent.parent / 'config' / 'qwen.tiktoken')

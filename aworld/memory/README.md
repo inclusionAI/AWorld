@@ -1,65 +1,62 @@
-
-
-
 ## multi-agents memory
 ![](../../readme_assets/framework_memory_example.png)
 
 ### Short-Term Memory
-TODO
 
-### Long-Term Memory
-TODO
+Short-term memory (InMemory) is suitable for lightweight, temporary multi-agent memory scenarios. Data is only stored in memory, making it ideal for testing and small-scale experiments.
 
-### WorkSpace
-WorkSpace is a container for managing related artifacts, providing version control, collaborative editing, and persistent storage capabilities.
-
-Each workspace can contain multiple types of artifacts (text, code, JSON, etc.), with each artifact having its own version history. Workspaces provide persistence through a content-addressable storage system, supporting workspace saving and loading.
-
-
-Key features of workspaces:
-- Support for creating and managing multiple types of artifacts
-- Complete version history for each artifact
-- Content-addressable persistent storage
-- Observer pattern for change notifications
-- Artifacts are archived rather than physically deleted, allowing for recovery
-
-Below is a basic example of workspace usage:
+**Usage Example:**
 
 ```python
-from aworld.output.artifact import ArtifactType
-from aworld.output.workspace import WorkSpace
+from aworld.core.memory import MemoryConfig, MemoryItem
+from aworld.memory.main import MemoryFactory
 
-# Create workspace
-workspace = WorkSpace(name="Example Workspace")
+# Create InMemory config
+memory_config = MemoryConfig(provider="inmemory", enable_summary=False)
+# Initialize Memory
+memory = MemoryFactory.from_config(memory_config)
 
-# Create different types of artifacts
-text_artifact = workspace.create_artifact(
-    artifact_type=ArtifactType.TEXT,
-    content="This is a simple text artifact.",
-    metadata={"description": "Demo text artifact"}
-)
+# Add a memory item
+memory.add(MemoryItem(content="Hello, world!", metadata={"user_id": "u1"}, tags=["greeting"]))
 
-code_artifact = workspace.create_artifact(
-    artifact_type=ArtifactType.CODE,
-    content="def hello_world():\n    print('Hello, World!')",
-    metadata={"language": "python"}
-)
-
-# Update artifact content
-workspace.update_artifact(
-    artifact_id=code_artifact.artifact_id,
-    content="def hello_world():\n    print('Hello, World!')\n\ndef goodbye():\n    print('Goodbye!')",
-    description="Added goodbye function"
-)
-
-# Save workspace
-workspace_version_id = workspace.save()
-
-# Load workspace
-loaded_workspace = WorkSpace.load(workspace.workspace_id)
+# Get all memory items
+all_memories = memory.get_all()
+for item in all_memories:
+    print(item.content)
 ```
 
-For a more comprehensive example, refer to `examples/workspace_demo.py`.
+### Long-Term Memory
+
+Long-term memory (Mem0) is suitable for persistent, vectorized retrieval and summarization in multi-agent scenarios. It supports LLM-based summarization and vector storage.
+
+**Usage Example:**
+
+```python
+from aworld.core.memory import MemoryConfig, MemoryItem
+from aworld.memory.main import MemoryFactory
+
+# Create Mem0 config (requires mem0 and related dependencies)
+memory_config = MemoryConfig(
+    provider="mem0",
+    enable_summary=True,           # Enable summarization
+    summary_rounds=5,              # Generate a summary every 5 rounds
+    embedder_provider="huggingface", # Embedding model provider
+    embedder_model="all-MiniLM-L6-v2", # Embedding model name
+    embedder_dims=384
+)
+# Initialize Memory
+memory = MemoryFactory.from_config(memory_config)
+
+# Add a memory item
+memory.add(MemoryItem(content="The agent visited Hangzhou.", metadata={"user_id": "u1"}, tags=["travel"]))
+
+# Get all memory items
+all_memories = memory.get_all()
+for item in all_memories:
+    print(item.content)
+```
+
+> Note: To use mem0, you must install `mem0` and `sentence-transformers` in advance, and configure the required LLM environment variables.
 
 ### CheckPoint
 TODO
