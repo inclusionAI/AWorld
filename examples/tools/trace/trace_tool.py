@@ -76,6 +76,12 @@ class TraceTool(Tool):
                         trace_id = current_span.get_trace_id()
                 if not trace_id:
                     logger.warning(f"{action} no trace_id to fetch.")
+                    observation.action_result.append(
+                        ActionResult(is_done=True,
+                                     success=False,
+                                     content="",
+                                     error="no trace_id to fetch",
+                                     keep=False))
                     continue
                 try:
                     trace_data = self.fetch_trace_data(trace_id)

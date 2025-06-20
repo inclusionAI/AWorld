@@ -6,11 +6,10 @@ from typing import AsyncGenerator, Any
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.tool.base import AsyncTool, Tool, ToolFactory
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
-from aworld.runners.utils import TaskType
 
 
 class ToolHandler(DefaultHandler):
@@ -39,7 +38,7 @@ class DefaultToolHandler(ToolHandler):
                 payload=TaskItem(msg="no data to process.", data=data, stop=True),
                 sender='agent_handler',
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR
+                topic=TopicType.ERROR
             )
             return
 
@@ -51,7 +50,7 @@ class DefaultToolHandler(ToolHandler):
                     payload=TaskItem(msg="action not a ActionModel.", data=data, stop=True),
                     sender=self.name(),
                     session_id=Context.instance().session_id,
-                    topic=TaskType.ERROR
+                    topic=TopicType.ERROR
                 )
                 return
 
@@ -85,7 +84,7 @@ class DefaultToolHandler(ToolHandler):
                 payload=TaskItem(data=new_tools),
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.SUBSCRIBE_TOOL
+                topic=TopicType.SUBSCRIBE_TOOL
             )
 
         for tool_name, actions in tool_mapping.items():

@@ -20,6 +20,18 @@ class Constants:
     OUTPUT = "output"
 
 
+class TopicType:
+    START = "__start"
+    FINISHED = "__finished"
+    OUTPUT = "__output"
+    ERROR = "__error"
+    RERUN = "__rerun"
+    HUMAN_CONFIRM = "__human_confirm"
+    # for dynamic subscribe
+    SUBSCRIBE_TOOL = "__subscribe_tool"
+    SUBSCRIBE_AGENT = "__subscribe_agent"
+
+
 DataType = TypeVar('DataType')
 
 
@@ -67,6 +79,9 @@ class Message(Generic[DataType]):
             return f'{category}_{self.topic}'
         else:
             return f'{category}_{self.sender if self.sender else ""}'
+        
+    def is_error(self):
+        return self.topic == TopicType.ERROR
 
     @property
     def context(self) -> Context:
