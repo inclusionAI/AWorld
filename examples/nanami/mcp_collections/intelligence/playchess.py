@@ -28,14 +28,12 @@ from datetime import datetime
 from typing import Any
 
 import chess
-import chess.engine
-import chess.pgn
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
 from aworld.logs.util import Color
-from examples.nanami.collections.base import ActionArguments, ActionCollection, ActionResponse
+from examples.nanami.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
 
 
 class ChessBoardState(BaseModel):

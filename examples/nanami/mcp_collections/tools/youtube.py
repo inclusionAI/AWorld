@@ -23,7 +23,7 @@ from selenium.webdriver.common.by import By
 from youtube_transcript_api import FetchedTranscript, YouTubeTranscriptApi
 
 from aworld.logs.util import Color
-from examples.nanami.collections.base import ActionArguments, ActionCollection, ActionResponse
+from examples.nanami.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
 
 # Default driver path for Chrome WebDriver
 _DEFAULT_DRIVER_PATH = os.environ.get(

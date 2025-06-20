@@ -4,28 +4,28 @@
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.mcparxiv"
+                "examples.nanami.mcp_collections.tools.mcparxiv"
             ]
         },
         "audio": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.media.audio"
+                "examples.nanami.mcp_collections.media.audio"
             ]
         },
         "browser": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.browser"
+                "examples.nanami.mcp_collections.tools.browser"
             ]
         },
         "chess": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.intelligence.playchess"
+                "examples.nanami.mcp_collections.intelligence.playchess"
             ]
         },
         "code": {
@@ -42,112 +42,112 @@
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.documents.mscsv"
+                "examples.nanami.mcp_collections.documents.mscsv"
             ]
         },
         "docx": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.documents.msdocx"
+                "examples.nanami.mcp_collections.documents.msdocx"
             ]
         },
         "download": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.download"
+                "examples.nanami.mcp_collections.tools.download"
             ]
         },
         "xlsx": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.documents.msxlsx"
+                "examples.nanami.mcp_collections.documents.msxlsx"
             ]
         },
         "image": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.media.image"
+                "examples.nanami.mcp_collections.media.image"
             ]
         },
         "pdf": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.documents.pdf"
+                "examples.nanami.mcp_collections.documents.pdf"
             ]
         },
         "pptx": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.documents.mspptx"
+                "examples.nanami.mcp_collections.documents.mspptx"
             ]
         },
         "pubchem": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.pubchem"
+                "examples.nanami.mcp_collections.tools.pubchem"
             ]
         },
         "reasoning": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.intelligence.think"
+                "examples.nanami.mcp_collections.intelligence.think"
             ]
         },
         "search": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.search"
+                "examples.nanami.mcp_collections.tools.search"
             ]
         },
         "terminal": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.terminal"
+                "examples.nanami.mcp_collections.tools.terminal"
             ]
         },
         "video": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.media.video"
+                "examples.nanami.mcp_collections.media.video"
             ]
         },
         "wayback": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.wayback"
+                "examples.nanami.mcp_collections.tools.wayback"
             ]
         },
         "wikipedia": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.wiki"
+                "examples.nanami.mcp_collections.tools.wiki"
             ]
         },
         "youtube": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.tools.youtube"
+                "examples.nanami.mcp_collections.tools.youtube"
             ]
         },
         "txt": {
             "command": "python",
             "args": [
                 "-m",
-                "examples.nanami.collections.documents.txt"
+                "examples.nanami.mcp_collections.documents.txt"
             ]
         }
     }

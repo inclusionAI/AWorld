@@ -13,8 +13,8 @@ from pydantic import Field
 from pydantic.fields import FieldInfo
 
 from aworld.logs.util import Color
-from examples.nanami.collections.base import ActionArguments, ActionCollection, ActionResponse
-from examples.nanami.collections.documents.models import DocumentMetadata
+from examples.nanami.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
+from examples.nanami.mcp_collections.documents.models import DocumentMetadata
 
 
 class DOCXExtractionCollection(ActionCollection):

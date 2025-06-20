@@ -11,7 +11,7 @@ from pydantic.fields import FieldInfo
 from aworld.config.conf import AgentConfig
 from aworld.logs.util import Color
 from aworld.models.llm import call_llm_model, get_llm_model
-from examples.nanami.collections.base import ActionArguments, ActionCollection, ActionResponse
+from examples.nanami.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
 
 
 class CodeGenerationMetadata(BaseModel):
