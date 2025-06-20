@@ -100,7 +100,7 @@ def filter_valid_docs(result: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
 @mcp.tool(description="Search based on the user's input query list")
 async def search(
         query_list: List[str] = Field(
-            description="List format, queries to search for, minimum 1, maximum 5"
+            description="List format, queries to search for"
         ),
         num: int = Field(
             5,
@@ -124,15 +124,22 @@ async def search(
                 **{"metadata": {}}  # Pass as additional fields
             )
 
-        # Limit the number of queries to 5
-        query_list = query_list[:5]
+        # When query count is >= 3 or slice_num is set, use corresponding value
+        slice_num = os.getenv('AWORLD_SEARCH_SLICE_NUM')
+        if slice_num and slice_num.isdigit():
+            actual_num = int(slice_num)
+        else:
+            actual_num = 2 if len(query_list) >= 3 else num
 
-        # Process each query and collect results
+        # Execute all queries in parallel
+        tasks = [search_single(q, actual_num) for q in query_list]
+        raw_results = await asyncio.gather(*tasks)
+
+        # Filter and merge results
         all_valid_docs = []
-        for query in query_list:
-            result = await search_single(query, num)
-            if result and 'searchDocs' in result and result['searchDocs']:
-                all_valid_docs.extend(result['searchDocs'])
+        for result in raw_results:
+            valid_docs = filter_valid_docs(result)
+            all_valid_docs.extend(valid_docs)
 
         # If no valid results found, return empty list
         if not all_valid_docs:
@@ -161,6 +168,9 @@ async def search(
             "query": combined_query,
             "results": search_items
         }
+
+        # Log results
+        logger.info(f"Completed {len(query_list)} queries, found {len(all_valid_docs)} valid documents")
 
         # Initialize TextContent with additional parameters
         return TextContent(
