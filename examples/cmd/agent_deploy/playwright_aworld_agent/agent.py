@@ -8,7 +8,6 @@ from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
-from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
 from aworld.runner import Runners
 
 logger = logging.getLogger(__name__)
@@ -18,14 +17,17 @@ class AWorldAgent:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def get_agent_info(self):
-        return {"name": "Powerful Agent", "description": "Powerful Agent"}
+    def name(self):
+        return "Powerful playwright agent"
+
+    def description(self):
+        return "Powerful playwright agent docs"
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
-        llm_provider = os.getenv("LLM_PROVIDER_WEATHER", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME_WEATHER")
-        llm_api_key = os.getenv("LLM_API_KEY_WEATHER")
-        llm_base_url = os.getenv("LLM_BASE_URL_WEATHER")
+        llm_provider = os.getenv("LLM_PROVIDER_PLAYWRIGHT", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_PLAYWRIGHT")
+        llm_api_key = os.getenv("LLM_API_KEY_PLAYWRIGHT")
+        llm_base_url = os.getenv("LLM_BASE_URL_PLAYWRIGHT")
         llm_temperature = os.getenv("LLM_TEMPERATURE_WEATHER", 0.0)
 
         if not llm_model_name or not llm_api_key or not llm_base_url:

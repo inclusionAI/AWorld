@@ -1,12 +1,13 @@
 import logging
 import os
 import json
+from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
 from examples.gaia.gaia_agent_runner import GaiaAgentRunner
 
 logger = logging.getLogger(__name__)
 
 
-class AWorldAgent:
+class AWorldAgent(BaseAWorldAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         path_cwd = os.path.dirname(os.path.abspath(__file__))
@@ -15,10 +16,7 @@ class AWorldAgent:
             self.mcp_config = json.load(f)
         os.makedirs(os.path.join(os.getcwd(), "static"), exist_ok=True)
 
-    def get_agent_info(self):
-        return {"name": "GAIA Agent", "description": "GAIA Agent is a world agent"}
-
-    async def run(self, prompt: str):
+    async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
         llm_provider = os.getenv("LLM_PROVIDER_GAIA", "openai")
         llm_model_name = os.getenv("LLM_MODEL_NAME_GAIA")
         llm_api_key = os.getenv("LLM_API_KEY_GAIA")
