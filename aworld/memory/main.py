@@ -1,29 +1,79 @@
+import asyncio
+import json
+import os
 from typing import Optional
-from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore
+
+from aworld.config import ConfigDict
+from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
+from aworld.logs.util import logger
+from aworld.models.llm import get_llm_model, acall_llm_model
 
 
 class InMemoryMemoryStore(MemoryStore):
     def __init__(self):
-        self.memory_items = []  # Initialize as a list
+        self.memory_items = []
 
     def add(self, memory_item: MemoryItem):
-        self.memory_items.append(memory_item)  # Append memory item to the list
+        self.memory_items.append(memory_item)
 
     def get(self, memory_id) -> Optional[MemoryItem]:
-        return next((item for item in self.memory_items if item.id == memory_id), None)  # Find item by ID
+        return next((item for item in self.memory_items if item.id == memory_id), None)
 
-    def get_first(self) -> Optional[MemoryItem]:
-        if len(self.memory_items) == 0:
+    def get_first(self, filters: dict = None) -> Optional[MemoryItem]:
+        """
+        Get the first memory item.
+        """
+        filtered_items = self.get_all(filters)
+        if len(filtered_items) == 0:
             return None
-        return self.memory_items[0]
+        return filtered_items[0]
 
-    def total_rounds(self) -> int:
-        return len(self.memory_items)
+    def total_rounds(self, filters: dict = None) -> int:
+        """
+        Get the total number of rounds.
+        """
+        return len(self.get_all(filters))
 
-    def get_all(self) -> list[MemoryItem]:
-        return self.memory_items  # Return all items directly
+    def get_all(self, filters: dict = None) -> list[MemoryItem]:
+        """
+        Filter memory items based on filters.
+        """
+        filtered_items = [item for item in self.memory_items if self._filter_memory_item(item, filters)]
+        return filtered_items
+    
+    def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None) -> bool:
+        if memory_item.deleted:
+            return False
+        if filters is None:
+            return True
+        if filters.get('user_id') is not None:
+            if memory_item.metadata.get('user_id') is None:
+                return False
+            if memory_item.metadata.get('user_id') != filters['user_id']:
+                return False
+        if filters.get('agent_id') is not None:
+            if memory_item.metadata.get('agent_id') is None:
+                return False
+            if memory_item.metadata.get('agent_id') != filters['agent_id']:
+                return False
+        if filters.get('task_id') is not None:
+            if memory_item.metadata.get('task_id') is None:
+                return False
+            if memory_item.metadata.get('task_id') != filters['task_id']:
+                return False
+        if filters.get('session_id') is not None:
+            if memory_item.metadata.get('session_id') is None:
+                return False
+            if memory_item.metadata.get('session_id') != filters['session_id']:
+                return False
+        if filters.get('memory_type') is not None:
+            if memory_item.memory_type is None:
+                return False
+            if memory_item.memory_type != filters['memory_type']:
+                return False
+        return True
 
-    def get_last_n(self, last_rounds) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, filters: dict = None) -> list[MemoryItem]:
         return self.memory_items[-last_rounds:]  # Get the last n items
 
     def update(self, memory_item: MemoryItem):
@@ -33,26 +83,21 @@ class InMemoryMemoryStore(MemoryStore):
                 break
 
     def delete(self, memory_id):
-        self.memory_items = [item for item in self.memory_items if item.id != memory_id]  # Remove item by ID
+        exists = self.get(memory_id)
+        if exists:
+            exists.deleted = True
 
-    def retrieve(self, query, filters: dict) -> list[MemoryItem]:
-        return [memory_item for memory_item in self.memory_items if
-                memory_item.content.lower().find(query.lower()) != -1]
+    def history(self, memory_id) -> list[MemoryItem] | None:
+        exists = self.get(memory_id)
+        if exists:
+            return exists.histories
+        return None
 
-    def history(self, memory_id) -> list[MemoryItem]:
-        return [memory_item for memory_item in self.memory_items if memory_item.id == memory_id]
 
-
-class Memory(MemoryBase):
-
-    def __init__(self, memory_store: MemoryStore, enable_summary: bool = True, **kwargs):
-        self.memory_store = memory_store
-        self.summary = {}
-        self.summary_rounds = kwargs.get("summary_rounds", 10)
-        self.enable_summary = enable_summary
+class MemoryFactory:
 
     @classmethod
-    def from_config(cls, config: dict) -> "Memory":
+    def from_config(cls, config: MemoryConfig) -> "MemoryBase":
         """
         Initialize a Memory instance from a configuration dictionary.
 
@@ -60,18 +105,154 @@ class Memory(MemoryBase):
             config (dict): Configuration dictionary.
 
         Returns:
-            Memory: Memory instance.
+            InMemoryStorageMemory: Memory instance.
         """
-        if config.get("memory_store") == "inmemory":
-            return cls(
+        if config.provider == "inmemory":
+            return InMemoryStorageMemory(
                 memory_store=InMemoryMemoryStore(),
-                enable_summary=config.get("enable_summary", False),
-                summary_rounds=config.get("summary_rounds", 5)
+                config=config,
+                enable_summary=config.enable_summary,
+                summary_rounds=config.summary_rounds
+            )
+        elif config.provider == "mem0":
+            from aworld.memory.mem0.mem0_memory import Mem0Memory
+            return Mem0Memory(
+                memory_store=InMemoryMemoryStore(),
+                config=config
             )
         else:
             raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
 
-    def add(self, memory_item: MemoryItem):
+class Memory(MemoryBase):
+
+    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
+        self.memory_store = memory_store
+        self.config = config
+        self.default_llm_instance = get_llm_model(conf=ConfigDict({
+            "llm_model_name": os.getenv("MEM_LLM_MODEL_NAME") if os.getenv("MEM_LLM_MODEL_NAME") else os.getenv(
+                'LLM_MODEL_NAME'),
+            "llm_api_key": os.getenv("MEM_LLM_API_KEY") if os.getenv("MEM_LLM_API_KEY") else os.getenv('LLM_API_KEY'),
+            "llm_base_url": os.getenv("MEM_LLM_BASE_URL") if os.getenv("MEM_LLM_BASE_URL") else os.getenv('LLM_BASE_URL'),
+            "temperature": os.getenv("MEM_LLM_TEMPERATURE") if os.getenv("MEM_LLM_TEMPERATURE") else 1.0,
+            "streaming": 'False'
+        }))
+
+    def _build_history_context(self, messages) -> str:
+        """
+        Build the history context string from a list of messages.
+        Args:
+            messages: List of message objects with 'role', 'content', and optional 'tool_calls'.
+        Returns:
+            Concatenated context string.
+        """
+        history_context = ""
+        for item in messages:
+            history_context += f"\n\n{item['role']}: {item['content']}, {'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else '' }"
+        return history_context
+
+    async def _call_llm_summary(self, summary_messages: list) -> str:
+        """
+        Call LLM to generate summary and log the process.
+        Args:
+            summary_messages: List of messages to send to LLM.
+        Returns:
+            Summary content string.
+        """
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages: {summary_messages}")
+        llm_response = await acall_llm_model(
+            self.default_llm_instance,
+            messages=summary_messages,
+            stream=False
+        )
+        logger.info(f'🤔 [Summary] summary_content: result is {llm_response.content[:400]+"...truncated"} ')
+        return llm_response.content
+
+    def _get_parsed_history_messages(self, history_items: list[MemoryItem]) -> list[dict]:
+        """
+        Get and format history messages for summary.
+        Args:
+            history_items: list[MemoryItem]
+        Returns:
+            List of parsed message dicts
+        """
+        parsed_messages = [
+            {
+                'role': message.metadata['role'],
+                'content': message.content,
+                'tool_calls': message.metadata.get('tool_calls') if message.metadata.get('tool_calls') else None
+            }
+            for message in history_items]
+        return parsed_messages
+
+    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
+        logger.info(
+            f"🤔 [Summary] Creating summary memory, history messages")
+        if len(to_be_summary) == 0:
+            return ""
+        parsed_messages = self._get_parsed_history_messages(to_be_summary)
+        history_context = self._build_history_context(parsed_messages)
+
+        summary_messages = [
+            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+        ]
+
+        return await self._call_llm_summary(summary_messages)
+
+    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
+        """
+        A tool for summarizing the conversation history.
+        """
+
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]")
+        history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
+        if len(history_items) == 0:
+            return ""
+        parsed_messages = self._get_parsed_history_messages(history_items)
+        history_context = self._build_history_context(parsed_messages)
+
+        summary_messages = [
+            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+        ]
+
+        return await self._call_llm_summary(summary_messages)
+
+    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+        if self.config.enable_summary and len(to_be_summary.content) < self.config.summary_single_context_length:
+            return to_be_summary.content
+
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]: to be summary content is {to_be_summary.content}")
+        history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
+        if len(history_items) == 0:
+            return ""
+        parsed_messages = self._get_parsed_history_messages(history_items)
+
+        # Append the to_be_summary
+        parsed_messages.append({
+            "role": to_be_summary.metadata['role'],
+            "content": f"{to_be_summary.content}",
+            'tool_call_id': to_be_summary.metadata['tool_call_id'],
+        })
+        history_context = self._build_history_context(parsed_messages)
+
+        summary_messages = [
+            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+        ]
+
+        return await self._call_llm_summary(summary_messages)
+
+    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+        pass
+
+
+class InMemoryStorageMemory(Memory):
+
+    def __init__(self, memory_store: MemoryStore,  config: MemoryConfig, enable_summary: bool = True, **kwargs):
+        super().__init__(memory_store=memory_store, config=config)
+        self.summary = {}
+        self.summary_rounds = self.config.summary_rounds
+        self.enable_summary = self.config.enable_summary
+
+    def add(self, memory_item: MemoryItem, filters: dict = None):
         self.memory_store.add(memory_item)
 
         # Check if we need to create or update summary
@@ -137,8 +318,7 @@ class Memory(MemoryBase):
         """
         # This is a placeholder. In a real implementation, you might use an LLM or other method
         # to create a meaningful summary of the content
-        contents = [item.content for item in items]
-        return f"Summary {summary_index}: Summarized content from rounds {items[0].metadata.get('round', 'unknown')} to {items[-1].metadata.get('round', 'unknown')}"
+        return asyncio.run(self.async_gen_multi_rounds_summary(items))
 
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)
@@ -149,10 +329,10 @@ class Memory(MemoryBase):
     def get(self, memory_id) -> Optional[MemoryItem]:
         return self.memory_store.get(memory_id)
 
-    def get_all(self) -> list[MemoryItem]:
+    def get_all(self, filters: dict = None) -> list[MemoryItem]:
         return self.memory_store.get_all()
 
-    def get_last_n(self, last_rounds, add_first_message=True) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None) -> list[MemoryItem]:
         """
         Get last n memories.
 
@@ -204,18 +384,3 @@ class Memory(MemoryBase):
             memory_items.insert(0, self.memory_store.get_first())
 
         return result
-
-    def retrieve(self, query, filters: dict) -> list[MemoryItem]:
-        return self.memory_store.retrieve(query, filters)
-
-    def history(self, memory_id) -> list[MemoryItem]:
-        return self.memory_store.history(memory_id)
-
-    def get_summary(self) -> list[MemoryItem]:
-        """
-        Get all summaries.
-
-        Returns:
-            list[MemoryItem]: List of summary items.
-        """
-        return list(self.summary.values())

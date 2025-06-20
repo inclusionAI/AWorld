@@ -1,4 +1,6 @@
 import time
+import sys
+import os
 from logging import StreamHandler
 from abc import ABC
 from logging import Logger, NOTSET, LogRecord, Filter, Formatter, Handler
@@ -113,13 +115,35 @@ class TraceLogginHandler(Handler):
             self._tracer = trace.get_tracer(name=self._tracer_name)
 
         try:
+            f = sys._getframe()
+            while f:
+                if 'logging/__init__.py' in f.f_code.co_filename or \
+                        f.f_code.co_filename.startswith(os.path.dirname(__file__)):
+                    f = f.f_back
+                else:
+                    break
+
             origin_msg = record.msg
+            raw_msg = None
+            if f:
+                try:
+                    import linecache
+                    line = linecache.getline(f.f_code.co_filename, f.f_lineno)
+                    if 'logger.' in line:
+                        raw_msg = line.split('logger.', 1)[1].split(
+                            '(', 1)[1].split(')', 1)[0].strip()
+                except:
+                    pass
             record.msg = self.strip_color(record.msg)
-            msg_template = record.msg
+            msg_template = raw_msg if raw_msg else record.msg
+
+            if len(msg_template) > 255:
+                msg_template = msg_template[:255] + '...'
+
             attributes = {
-                'code.filepath': record.pathname,
-                'code.lineno': record.lineno,
-                'code.function': record.funcName,
+                'code.filepath': f.f_code.co_filename if f else record.pathname,
+                'code.lineno': f.f_lineno if f else record.lineno,
+                'code.function': f.f_code.co_name if f else record.funcName,
                 'log.level': record.levelname,
                 'log.logger': record.name,
                 'log.message': self.format(record),

@@ -213,6 +213,7 @@ setup(
             'requirements.txt',
             'config/*.yaml',
             'config/*.json',
+            'config/*.tiktoken',
             'web/templates/*.html'
         ]
     },

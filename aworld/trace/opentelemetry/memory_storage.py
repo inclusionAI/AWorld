@@ -10,7 +10,6 @@ from typing import Optional, Dict, Any, Union
 from opentelemetry.sdk.trace import Span, SpanContext
 from opentelemetry.sdk.trace.export import SpanExporter
 from aworld.logs.util import logger
-from aworld.replay_buffer.processor import ReplayBufferExporter
 from aworld.trace.constants import ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType
 
 
@@ -226,20 +225,12 @@ class InMemorySpanExporter(SpanExporter):
     Span exporter that stores spans in memory.
     """
 
-    def __init__(self, storage: TraceStorage, export_dir: str = None):
+    def __init__(self, storage: TraceStorage):
         self._storage = storage
 
     def export(self, spans):
-        span_model_list = []
         for span in spans:
             self._storage.add_span(span)
-            span_model_list.append(SpanModel.from_span(span).model_dump())
-
-        if (os.getenv("EXPORT_REPLAY_TRACE_TO_FILES") or "true").lower() == "true":
-            storage_dir = self._export_dir or self._storage.storage_dir if hasattr(
-                self._storage, "storage_dir") else "./trace_data"
-            self._export_processor.replay_buffer_exporter(
-                spans=span_model_list, output_dir=storage_dir)
 
     def shutdown(self):
         pass

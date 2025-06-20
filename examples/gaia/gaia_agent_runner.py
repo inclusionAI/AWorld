@@ -27,16 +27,15 @@ from aworld.models.model_response import ToolCall
 from aworld.output.base import Output, StepOutput
 from aworld.output.ui.base import AworldUI
 from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
-from aworld.runner import Runners
-from aworld.utils.common import sync_exec
-from examples.gaia.prompt import system_prompt
-from examples.gaia.utils import (
+from aworld.output.base import Output
+from .utils import (
     add_file_path,
     color_log,
     load_dataset_meta_dict,
     question_scorer,
     setup_logger,
 )
+from .prompt import system_prompt
 
 # pylint: disable=C0301,C0325
 logger = logging.getLogger(__name__)

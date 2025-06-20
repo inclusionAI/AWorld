@@ -19,6 +19,7 @@ from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
 class Task:
     id: str = uuid.uuid1().hex
     name: str = uuid.uuid1().hex
+    user_id: str = None
     session_id: str = None
     input: Any = None
     # task config
@@ -40,6 +41,8 @@ class Task:
     outputs: Outputs = field(default_factory=DefaultOutputs)
     # task special runner class, for example: package.XXRunner
     runner_cls: Optional[str] = None
+    # such as: {"start": ["init_tool", "init_context", ...]}
+    hooks: Dict[str, List[str]] = field(default_factory=dict)
 
 
 class TaskResponse(BaseModel):

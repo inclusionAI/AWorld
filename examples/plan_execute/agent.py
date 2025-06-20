@@ -16,10 +16,12 @@ from examples.plan_execute.prompts import *
 from examples.plan_execute.utils import extract_pattern
 
 
-@AgentFactory.register(name=Agents.EXECUTE.value, desc="execute agent")
 class ExecuteAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(ExecuteAgent, self).__init__(conf, **kwargs)
+
+    def id(self) -> str:
+        return Agents.EXECUTE.value
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""
@@ -164,10 +166,12 @@ class ExecuteAgent(Agent):
         return result.actions
 
 
-@AgentFactory.register(name=Agents.PLAN.value, desc="plan agent")
 class PlanAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(PlanAgent, self).__init__(conf, **kwargs)
+
+    def id(self) -> str:
+        return Agents.PLAN.value
 
     def reset(self, options: Dict[str, Any]):
         """Execute agent reset need query task as input."""

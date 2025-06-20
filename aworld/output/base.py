@@ -55,11 +55,11 @@ class ToolCallOutput(Output):
 
 class ToolResultOutput(Output):
 
-    origin_tool_call: ToolCall
+    origin_tool_call: Optional[ToolCall] = Field(default=None, description="origin tool call", exclude=True)
 
     image: str = Field(default=None)
 
-    images: list = Field(default=list)
+    images: list[str] = Field(default_factory=list)
 
     tool_type: str = Field(default=None)
 

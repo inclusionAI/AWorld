@@ -27,7 +27,6 @@ from aworld.logs.util import logger
 from examples.tools.tool_action import AndroidAction
 
 
-@AgentFactory.register(name='android_agent', desc="android agent")
 class AndroidAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super(AndroidAgent, self).__init__(conf, **kwargs)

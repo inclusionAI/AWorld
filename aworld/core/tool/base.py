@@ -8,14 +8,18 @@ from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 from pydantic import BaseModel
 
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
+from aworld.core.event import eventbus
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, AgentMessage
+from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
-from aworld.utils.common import convert_to_snake
+from aworld.models.model_response import ToolCall
+from aworld.output import ToolResultOutput
+from aworld.output.base import StepOutput
+from aworld.utils.common import convert_to_snake, sync_exec
 
 AgentInput = TypeVar("AgentInput")
 ToolInput = TypeVar("ToolInput")
@@ -64,9 +68,15 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         pass
 
     def step(self, action: ToolInput, **kwargs) -> Message:
+        tool_id_mapping = {}
+        if isinstance(action, list):
+            for act in action:
+                tool_id = act.tool_id
+                tool_name = act.tool_name
+                tool_id_mapping[tool_id] = tool_name
         self.pre_step(action, **kwargs)
         res = self.do_step(action, **kwargs)
-        final_res = self.post_step(res, action, **kwargs)
+        final_res = self.post_step(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -141,9 +151,15 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         pass
 
     async def step(self, action: ToolInput, **kwargs) -> Message:
+        tool_id_mapping = {}
+        if isinstance(action, list):
+            for act in action:
+                tool_id = act.tool_id
+                tool_name = act.tool_name
+                tool_id_mapping[tool_id] = tool_name
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
-        final_res = await self.post_step(res, action, **kwargs)
+        final_res = await self.post_step(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -186,6 +202,26 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
+            if eventbus:
+                tool_output = ToolResultOutput(
+                    tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
+                    tool_name=act.tool_name,
+                    data=step_res[0].content,
+                    origin_tool_call=ToolCall.from_dict({
+                        "function": {
+                            "name": act.action_name,
+                            "arguments": act.params,
+                        }
+                    }),
+                    metadata=step_res[0].action_result[idx].metadata
+                )
+                tool_output_message = Message(
+                    category=Constants.OUTPUT,
+                    payload=tool_output,
+                    sender=self.name(),
+                    session_id=Context.instance().session_id
+                )
+                sync_exec(eventbus.publish, tool_output_message)
         return AgentMessage(payload=step_res,
                             caller=action[0].agent_name,
                             sender=self.name(),
@@ -204,6 +240,38 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
+            # send tool results output
+            if eventbus:
+                tool_output = ToolResultOutput(
+                    tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
+                    tool_name=act.tool_name,
+                    data=step_res[0].content,
+                    origin_tool_call=ToolCall.from_dict({
+                        "function": {
+                            "name": act.action_name,
+                            "arguments": act.params,
+                        }
+                    }),
+                    metadata=step_res[0].action_result[idx].metadata
+                )
+                tool_output_message = Message(
+                    category=Constants.OUTPUT,
+                    payload=tool_output,
+                    sender=self.name(),
+                    session_id=Context.instance().session_id
+                )
+                await eventbus.publish(tool_output_message)
+
+        if eventbus:
+            await eventbus.publish(Message(
+                category=Constants.OUTPUT,
+                payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
+                                                         step_num=0),
+                sender=self.name(),
+                receiver=action[0].agent_name,
+                session_id=Context.instance().session_id
+            ))
+
         return AgentMessage(payload=step_res,
                             caller=action[0].agent_name,
                             sender=self.name(),

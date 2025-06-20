@@ -1,10 +1,9 @@
-import asyncio
 import types
 import inspect
-import contextvars
 from typing import Union, Optional, Any, Type, Sequence, Callable, Iterable
 from aworld.trace.base import (
     AttributeValueType,
+    NoOpSpan,
     Span, Tracer,
     NoOpTracer,
     get_tracer_provider,
@@ -79,6 +78,11 @@ class TraceManager:
         """
         Create a auto trace span with the given name and attributes.
         """
+        return self._create_context_span(name, attributes)
+
+    def _create_context_span(self,
+                             name: str,
+                             attributes: dict[str, AttributeValueType] = None) -> Span:
         try:
             tracer = get_tracer_provider().get_tracer(
                 name=self._tracer_name, version=self._version)
@@ -93,7 +97,7 @@ class TraceManager:
         try:
             return get_tracer_provider().get_current_span()
         except Exception:
-            return None
+            return NoOpSpan()
 
     def new_manager(self, tracer_name_suffix: str = None) -> "TraceManager":
         """
@@ -116,7 +120,7 @@ class TraceManager:
         install_auto_tracing(self, modules, min_duration)
 
     def span(self,
-             msg_template: str,
+             msg_template: str = "",
              attributes: dict[str, AttributeValueType] = None,
              *,
              span_name: str = None,
@@ -142,11 +146,9 @@ class TraceManager:
             merged_attributes[ATTRIBUTES_MESSAGE_TEMPLATE_KEY] = msg_template
             merged_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = run_type.value
             span_name = span_name or msg_template
-            tracer = get_tracer_provider().get_tracer(
-                name=self._tracer_name, version=self._version)
-            return ContextSpan(span_name=span_name,
-                               tracer=tracer,
-                               attributes=merged_attributes)
+
+            return self._create_context_span(span_name, merged_attributes)
+
         except Exception:
             log_trace_error()
             return ContextSpan(span_name=span_name, tracer=NoOpTracer(), attributes=attributes)
@@ -221,9 +223,8 @@ class ContextSpan(Span):
         self._handle_exit(exc_type, exc_val, traceback)
 
     async def __aenter__(self) -> "Span":
-        self._coro_context = contextvars.copy_context()
-        await asyncio.get_event_loop().run_in_executor(None, lambda: self._coro_context.run(self._start)
-                                                       )
+        self._start()
+
         return self
 
     async def __aexit__(
@@ -232,8 +233,7 @@ class ContextSpan(Span):
             exc_val: Optional[BaseException],
             traceback: Optional[Any],
     ) -> None:
-        await asyncio.get_event_loop().run_in_executor(None,
-                                                       lambda: self._coro_context.run(lambda: self._handle_exit(exc_type, exc_val, traceback)))
+        self._handle_exit(exc_type, exc_val, traceback)
 
     def _handle_exit(
             self,
