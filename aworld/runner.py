@@ -3,6 +3,7 @@
 import asyncio
 from typing import List, Dict, Union
 
+import aworld.tools
 from aworld.config.conf import TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm

@@ -1,19 +1,17 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
+import logging
 import os
 import sys
 import re
 import subprocess
-
-from aworld.version_gen import generate_version_info, __version__
 
 from setuptools import setup, find_packages
 from setuptools.command.sdist import sdist
 from setuptools.command.install import install
 from setuptools.dist import Distribution
 
-from aworld.logs.util import logger
+logger = logging.getLogger("setup")
 
 version_template = """
 # auto generated
@@ -47,6 +45,7 @@ def get_build_date():
 
 def build_version_template():
     import getpass
+    from aworld.version_gen import __version__
     return version_template.format(BUILD_USER=getpass.getuser(),
                                    BUILD_VERSION=__version__,
                                    BUILD_DATE=get_build_date())
@@ -73,7 +72,8 @@ def call_process(cmd, raise_on_error=True, logging=True):
 
 class AWorldPackage(sdist):
     def run(self):
-        import os
+        from aworld.version_gen import generate_version_info
+
         home = os.path.join(os.path.dirname(__file__), "aworld")
         with open(os.path.join(home, "version.py"), "w") as f:
             version_info = build_version_template()
