@@ -165,6 +165,24 @@ class Swarm(object):
             agent.tool_names.extend(self.tools)
         self.initialized = True
 
+    def find_agents_by_prefix(self, name, find_all=False):
+        """Fild the agent list by the prefix name.
+
+        Args:
+            name: The agent prefix name.
+            find_all: Find the total agents or the first match agent.
+        """
+        import re
+
+        res = []
+        for k, agent in self.agents.items():
+            val = re.split("__uuid\w{6}uuid", k)[0]
+            if name == val:
+                res.append(agent)
+                if not find_all:
+                    return res
+        return res
+
     def _check(self):
         if not self.initialized:
             self.reset('')

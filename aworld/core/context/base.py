@@ -188,6 +188,7 @@ class Context(InheritanceSingleton):
         # TODO EventManager
         # TODO workspace
 
+        self._swarm = None
         self._event_manager = None
 
     def add_token(self, usage: Dict[str, int]):
@@ -265,6 +266,14 @@ class Context(InheritanceSingleton):
     @session.setter
     def session(self, session: Session):
         self._session = session
+
+    @property
+    def swarm(self):
+        return self._swarm
+
+    @swarm.setter
+    def swarm(self, swarm: 'Swarm'):
+        self._swarm = swarm
 
     @property
     def event_manager(self):
