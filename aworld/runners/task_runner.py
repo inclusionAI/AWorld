@@ -7,6 +7,7 @@ from typing import Callable, Any
 
 from pydantic import BaseModel
 
+import aworld.tools
 from aworld.config import ConfigDict
 from aworld.config.conf import ToolConfig
 from aworld.core.agent.swarm import Swarm
