@@ -4,7 +4,6 @@
 import abc
 import uuid
 
-
 import aworld.trace as trace
 
 from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union
@@ -14,8 +13,8 @@ from pydantic import BaseModel
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import AgentContext, Context
+from aworld.core.event import eventbus
 from aworld.core.event.base import Message, Constants
-from aworld.core.event.event_bus import InMemoryEventbus
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
@@ -69,8 +68,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self,
-                 conf: Union[Dict[str, Any],
-                             ConfigDict, AgentConfig],
+                 conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
                  sandbox: Sandbox = None,
                  mcp_servers: List[str] = [],
                  mcp_config: Dict[str, Any] = {},
@@ -92,7 +90,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._desc = kwargs.pop("desc") if kwargs.get(
             "desc") else self.conf.get('desc', '')
         # Unique flag based agent name
-        self.id = f"{self.name()}_{uuid.uuid1().hex[0:6]}"
+        self._id = f"{self._name}__uuid{uuid.uuid1().hex[0:6]}uuid"
         self.task = None
         # An agent can use the tool list
         self.tool_names: List[str] = kwargs.pop("tool_names", [])
@@ -108,8 +106,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # all tools that the agent can use. note: string name/id only
         self.tools = []
         self.context = Context.instance()
-        self.agent_context = AgentContext(agent_id=self.id, agent_name=self.name(), agent_desc=self.desc(), tool_names=self.tool_names)
-        self.context.set_agent_context(self.id, self.agent_context)
+        self.agent_context = AgentContext(agent_id=self.id(), agent_name=self.name(), agent_desc=self.desc(), tool_names=self.tool_names)
+        self.context.set_agent_context(self.id(), self.agent_context)
         self.state = AgentStatus.START
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
@@ -119,7 +117,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def name(self) -> str:
+    def id(self) -> str:
+        return self._id
+
+    def name(self):
         return self._name
 
     def desc(self) -> str:
@@ -133,12 +134,12 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             return final_result if final_result else result
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
-        if InMemoryEventbus.instance():
-            await InMemoryEventbus.instance().publish(Message(
+        if eventbus:
+            await eventbus.publish(Message(
                 category=Constants.OUTPUT,
-                payload=StepOutput.build_start_output(name=f"{self.name()}",
+                payload=StepOutput.build_start_output(name=f"{self.id()}",
                                                       step_num=0),
-                sender=self.name(),
+                sender=self.id(),
                 session_id=Context.instance().session_id
             ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:

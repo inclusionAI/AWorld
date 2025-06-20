@@ -232,7 +232,7 @@ class BrowserAgent(Agent):
                 logger.warning("[agent] LLM returned empty response")
                 return output_message, AgentResult(
                     current_state=AgentBrain(evaluation_previous_goal="", memory="", thought="", next_goal=""),
-                    actions=[ActionModel(agent_name=self.name(), tool_name='browser', action_name="stop")])
+                    actions=[ActionModel(agent_name=self.id(), tool_name='browser', action_name="stop")])
         except:
             logger.error(f"[agent] Response content: {output_message}")
             raise RuntimeError('call llm fail, please check llm conf and network.')
@@ -298,7 +298,7 @@ class BrowserAgent(Agent):
                 self._finished = True
                 return output_message, AgentResult(current_state=agent_brain,
                                                    actions=[ActionModel(tool_name='browser',
-                                                                        agent_name=self.name(),
+                                                                        agent_name=self.id(),
                                                                         action_name="done")])
 
             for action in actions:
@@ -309,7 +309,7 @@ class BrowserAgent(Agent):
                         logger.warning(f"Unsupported action: {action_name}")
                     if action_name == "done":
                         self._finished = True
-                    action_model = ActionModel(agent_name=self.name(),
+                    action_model = ActionModel(agent_name=self.id(),
                                                tool_name='browser',
                                                action_name=action_name,
                                                params=action.get('params', {}))
@@ -320,7 +320,7 @@ class BrowserAgent(Agent):
                         if not browser_action:
                             logger.warning(f"Unsupported action: {k}")
 
-                        action_model = ActionModel(agent_name=self.name(), tool_name='browser', action_name=k, params=v)
+                        action_model = ActionModel(agent_name=self.id(), tool_name='browser', action_name=k, params=v)
                         result.append(action_model)
                         if k == "done":
                             self._finished = True

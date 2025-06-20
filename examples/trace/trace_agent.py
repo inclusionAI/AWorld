@@ -47,7 +47,7 @@ class TraceAgent(Agent):
         tool.reset()
         tool_params = {}
         action = ActionModel(tool_name=tool_name,
-                             agent_name=self.name(),
+                             agent_name=self.id(),
                              params=tool_params)
         message = tool.step(action)
 
@@ -74,11 +74,11 @@ class TraceAgent(Agent):
             if llm_response:
                 if llm_response.error:
                     logger.info(
-                        f"{self.name()} llm result error: {llm_response.error}")
+                        f"{self.id()} llm result error: {llm_response.error}")
             else:
-                logger.error(f"{self.name()} failed to get LLM response")
+                logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(
-                    f"{self.name()} failed to get LLM response")
+                    f"{self.id()} failed to get LLM response")
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:
@@ -95,7 +95,7 @@ class TraceAgent(Agent):
         tool.reset()
         tool_params = {}
         action = ActionModel(tool_name=tool_name,
-                             agent_name=self.name(),
+                             agent_name=self.id(),
                              params=tool_params)
         message = tool.step([action])
 
@@ -122,11 +122,11 @@ class TraceAgent(Agent):
             if llm_response:
                 if llm_response.error:
                     logger.info(
-                        f"{self.name()} llm result error: {llm_response.error}")
+                        f"{self.id()} llm result error: {llm_response.error}")
             else:
-                logger.error(f"{self.name()} failed to get LLM response")
+                logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(
-                    f"{self.name()} failed to get LLM response")
+                    f"{self.id()} failed to get LLM response")
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
         if not agent_result.is_call_tool:

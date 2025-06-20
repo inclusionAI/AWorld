@@ -2,8 +2,7 @@ import hashlib
 import json
 import time
 import uuid
-from typing import Dict, Any, Optional, List
-import oss2
+from typing import Dict, Any, Optional, List, Literal
 from .artifact_repository import ArtifactRepository, CommonEncoder
 from aworld.output.artifact import Artifact, ArtifactAttachment
 
@@ -27,6 +26,8 @@ class OSSArtifactRepository(ArtifactRepository):
             bucket_name: OSS bucket name
             storage_path: Storage prefix, defaults to "aworld/workspaces/"
         """
+        import oss2
+
         super().__init__()
         self.auth = oss2.Auth(access_key_id, access_key_secret)
         self.bucket = oss2.Bucket(self.auth, endpoint, bucket_name)
@@ -40,6 +41,8 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Index dictionary
         """
+        import oss2
+
         try:
             result = self.bucket.get_object(self.index_key)
             content = result.read().decode('utf-8')
@@ -100,6 +103,8 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Version identifier (always 'success' for now)
         """
+        import oss2
+
         try:
             # Prepare version record
             version = {
@@ -145,6 +150,8 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Stored data as dict, or None if it doesn't exist
         """
+        import oss2
+
         try:
             content_key = self.artifact_path(artifact_id)
             try:
@@ -185,6 +192,8 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Whether deletion was successful
         """
+        import oss2
+
         try:
             # Delete artifact content
             content_key = self.artifact_path(artifact_id)
@@ -235,11 +244,12 @@ class OSSArtifactRepository(ArtifactRepository):
         Returns:
             Directory tree as dict
         """
-        # 获取所有对象key
+        import oss2
+
         all_keys = [obj.key for obj in oss2.ObjectIterator(self.bucket, prefix=self.prefix)]
-        # 去除根前缀
+        # remove root prefix
         rel_keys = [key[len(self.prefix):] for key in all_keys if key != self.index_key]
-        # 构建树
+        # build tree
         root = {
             "name": workspace_name,
             "id": "-1",
