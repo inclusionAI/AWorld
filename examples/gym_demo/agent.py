@@ -26,7 +26,7 @@ class GymDemoAgent(Agent):
             raise ValueError("Unsupported env")
 
         res = np.random.randint(2)
-        action = [ActionModel(agent_name=self.name(), tool_name=Tools.GYM.value, action_name="play", params={"result": res})]
+        action = [ActionModel(agent_name=self.id(), tool_name=Tools.GYM.value, action_name="play", params={"result": res})]
         if observation.info.get("done"):
             self._finished = True
         return action

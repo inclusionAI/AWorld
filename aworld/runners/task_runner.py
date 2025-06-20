@@ -3,6 +3,7 @@
 import abc
 import time
 import uuid
+from typing import Callable, Any
 
 from pydantic import BaseModel
 
@@ -22,19 +23,31 @@ class TaskRunner(Runner):
     """Task based runner api class."""
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, task: Task, *args, **kwargs):
+    def __init__(self,
+                 task: Task,
+                 context: Context = None,
+                 *,
+                 agent_oriented: bool = True,
+                 daemon_target: Callable[..., Any] = None):
+        """Task runner initialize.
+
+        Args:
+            task: Task entity to be executed.
+            agent_oriented: Is it an agent oriented task, default is True.
+        """
         if task.tools is None:
             task.tools = []
         if task.tool_names is None:
             task.tool_names = []
 
-        if not task.agent and not task.swarm:
-            raise ValueError("agent and swarm all is None.")
-        if task.agent and task.swarm:
-            raise ValueError("agent and swarm choose one only.")
-        if task.agent:
-            # uniform agent
-            task.swarm = Swarm(task.agent)
+        if agent_oriented:
+            if not task.agent and not task.swarm:
+                raise ValueError("agent and swarm all is None.")
+            if task.agent and task.swarm:
+                raise ValueError("agent and swarm choose one only.")
+            if task.agent:
+                # uniform agent
+                task.swarm = Swarm(task.agent)
 
         if task.conf is None:
             task.conf = dict()
@@ -44,15 +57,14 @@ class TaskRunner(Runner):
         if check_input and not task.input:
             raise ValueError("task no input")
 
-        self.context = Context()
+        self.context = context if context else Context()
         self.task = task
-        self.daemon_target = kwargs.pop('daemon_target', None)
+        self.agent_oriented = agent_oriented
+        self.daemon_target = daemon_target
         self._use_demon = False if not task.conf else task.conf.get('use_demon', False)
         self._exception = None
         self.start_time = time.time()
         self.step_agent_counter = {}
-        for k, v in kwargs.items():
-            setattr(self, k, v)
 
     async def pre_run(self):
         task = self.task
@@ -102,8 +114,9 @@ class TaskRunner(Runner):
             observation = Observation(content=self.input)
 
         self.observation = observation
-        self.swarm.event_driven = task.event_driven
-        self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
+        if self.swarm:
+            self.swarm.event_driven = task.event_driven
+            self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
 
     async def post_run(self):
         self.context.reset()

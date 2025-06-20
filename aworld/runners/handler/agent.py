@@ -59,15 +59,27 @@ class DefaultAgentHandler(AgentHandler):
             message.payload = data
         # data is Observation
         if isinstance(data, Observation):
+            if not self.swarm:
+                msg = Message(
+                    category=Constants.TASK,
+                    payload=data.content,
+                    sender=data.observer,
+                    session_id=Context.instance().session_id,
+                    topic=TaskType.FINISHED
+                )
+                logger.info(f"agent handler send finished message: {msg}")
+                yield msg
+                return
+
             agent = self.swarm.agents.get(message.receiver)
             # agent + tool completion protocol.
             if agent and agent.finished and data.info.get('done'):
                 self.swarm.cur_step += 1
-                if agent.name() == self.swarm.communicate_agent.name():
+                if agent.id() == self.swarm.communicate_agent.id():
                     msg = Message(
                         category=Constants.TASK,
                         payload=data.content,
-                        sender=agent.name(),
+                        sender=agent.id(),
                         session_id=Context.instance().session_id,
                         topic=TaskType.FINISHED
                     )
@@ -77,9 +89,9 @@ class DefaultAgentHandler(AgentHandler):
                     msg = Message(
                         category=Constants.AGENT,
                         payload=Observation(content=data.content),
-                        sender=agent.name(),
+                        sender=agent.id(),
                         session_id=Context.instance().session_id,
-                        receiver=self.swarm.communicate_agent.name()
+                        receiver=self.swarm.communicate_agent.id()
                     )
                     logger.info(f"agent handler send agent message: {msg}")
                     yield msg
@@ -171,7 +183,7 @@ class DefaultAgentHandler(AgentHandler):
         con = action.policy_info
         if action.params and 'content' in action.params:
             con = action.params['content']
-        observation = Observation(content=con, observer=agent.name(), from_agent_name=agent.name())
+        observation = Observation(content=con, observer=agent.id(), from_agent_name=agent.id())
 
         if agent.handoffs and agent_name not in agent.handoffs:
             if message.caller:
@@ -223,7 +235,7 @@ class DefaultAgentHandler(AgentHandler):
             yield Message(
                 category=Constants.TASK,
                 payload=action.policy_info,
-                sender=agent.name(),
+                sender=agent.id(),
                 session_id=Context.instance().session_id,
                 topic=TaskType.FINISHED
             )
@@ -232,9 +244,9 @@ class DefaultAgentHandler(AgentHandler):
             yield Message(
                 category=Constants.AGENT,
                 payload=Observation(content=action.policy_info),
-                sender=agent.name(),
+                sender=agent.id(),
                 session_id=Context.instance().session_id,
-                receiver=self.swarm.ordered_agents[idx + 1].name()
+                receiver=self.swarm.ordered_agents[idx + 1].id()
             )
 
     async def _loop_sequence_stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
@@ -255,7 +267,7 @@ class DefaultAgentHandler(AgentHandler):
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
-                    sender=agent.name(),
+                    sender=agent.id(),
                     session_id=Context.instance().session_id,
                     topic=TaskType.FINISHED
                 )
@@ -265,7 +277,7 @@ class DefaultAgentHandler(AgentHandler):
                 yield Message(
                     category=Constants.TASK,
                     payload='',
-                    sender=agent.name(),
+                    sender=agent.id(),
                     session_id=Context.instance().session_id,
                     topic=TaskType.START
                 )
@@ -274,9 +286,9 @@ class DefaultAgentHandler(AgentHandler):
             yield Message(
                 category=Constants.AGENT,
                 payload=Observation(content=action.policy_info),
-                sender=agent.name(),
+                sender=agent.id(),
                 session_id=Context.instance().session_id,
-                receiver=self.swarm.ordered_agents[idx + 1].name()
+                receiver=self.swarm.ordered_agents[idx + 1].id()
             )
 
     async def _social_stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
@@ -284,22 +296,22 @@ class DefaultAgentHandler(AgentHandler):
 
         if endless_detect(self.agent_calls,
                           endless_threshold=self.endless_threshold,
-                          root_agent_name=self.swarm.communicate_agent.name()):
+                          root_agent_name=self.swarm.communicate_agent.id()):
             yield Message(
                 category=Constants.TASK,
                 payload=action.policy_info,
-                sender=agent.name(),
+                sender=agent.id(),
                 session_id=Context.instance().session_id,
                 topic=TaskType.FINISHED
             )
             return
 
-        if not caller or caller == self.swarm.communicate_agent.name():
+        if not caller or caller == self.swarm.communicate_agent.id():
             if self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished:
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
-                    sender=agent.name(),
+                    sender=agent.id(),
                     session_id=Context.instance().session_id,
                     topic=TaskType.FINISHED
                 )
@@ -309,14 +321,14 @@ class DefaultAgentHandler(AgentHandler):
                 yield Message(
                     category=Constants.AGENT,
                     payload=Observation(content=action.policy_info),
-                    sender=agent.name(),
+                    sender=agent.id(),
                     session_id=Context.instance().session_id,
-                    receiver=self.swarm.communicate_agent.name()
+                    receiver=self.swarm.communicate_agent.id()
                 )
         else:
             idx = 0
             for idx, name in enumerate(self.agent_calls[::-1]):
-                if name == agent.name():
+                if name == agent.id():
                     break
             idx = len(self.agent_calls) - idx - 1
             if idx:
@@ -325,7 +337,7 @@ class DefaultAgentHandler(AgentHandler):
             yield Message(
                 category=Constants.AGENT,
                 payload=Observation(content=action.policy_info),
-                sender=agent.name(),
+                sender=agent.id(),
                 session_id=Context.instance().session_id,
                 receiver=caller
             )

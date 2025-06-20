@@ -38,29 +38,25 @@ class TaskEventRunner(TaskRunner):
     async def pre_run(self):
         await super().pre_run()
 
-        if not self.swarm.max_steps:
+        if self.swarm and not self.swarm.max_steps:
             self.swarm.max_steps = self.task.conf.get('max_steps', 10)
         observation = self.observation
         if not observation:
             raise RuntimeError("no observation, check run process")
 
-        # build the first message
-        self.init_message = Message(payload=observation,
-                                    sender='runner',
-                                    receiver=self.swarm.communicate_agent.name(),
-                                    session_id=self.context.session_id,
-                                    category=Constants.AGENT)
+        self._build_first_message()
 
-        # register agent handler
-        for _, agent in self.swarm.agents.items():
-            agent.set_tools_instances(self.tools, self.tools_conf)
-            if agent.handler:
-                await self.event_mng.register(Constants.AGENT, agent.name(), agent.handler)
-            else:
-                if override_in_subclass('async_policy', agent.__class__, Agent):
-                    await self.event_mng.register(Constants.AGENT, agent.name(), agent.async_run)
+        if self.swarm:
+            # register agent handler
+            for _, agent in self.swarm.agents.items():
+                agent.set_tools_instances(self.tools, self.tools_conf)
+                if agent.handler:
+                    await self.event_mng.register(Constants.AGENT, agent.id(), agent.handler)
                 else:
-                    await self.event_mng.register(Constants.AGENT, agent.name(), agent.run)
+                    if override_in_subclass('async_policy', agent.__class__, Agent):
+                        await self.event_mng.register(Constants.AGENT, agent.id(), agent.async_run)
+                    else:
+                        await self.event_mng.register(Constants.AGENT, agent.id(), agent.run)
         # register tool handler
         for key, tool in self.tools.items():
             if tool.handler:
@@ -103,6 +99,23 @@ class TaskEventRunner(TaskRunner):
                              DefaultToolHandler(runner=self),
                              DefaultTaskHandler(runner=self),
                              DefaultOutputHandler(runner=self)]
+
+    def _build_first_message(self):
+        # build the first message
+        if self.agent_oriented:
+            self.init_message = Message(payload=self.observation,
+                                        sender='runner',
+                                        receiver=self.swarm.communicate_agent.id(),
+                                        session_id=self.context.session_id,
+                                        category=Constants.AGENT)
+        else:
+            actions = self.observation.content
+            receiver = actions[0].tool_name
+            self.init_message = Message(payload=self.observation.content,
+                                        sender='runner',
+                                        receiver=receiver,
+                                        session_id=self.context.session_id,
+                                        category=Constants.TOOL)
 
     async def _common_process(self, message: Message) -> List[Message]:
         event_bus = self.event_mng.event_bus
@@ -221,9 +234,8 @@ class TaskEventRunner(TaskRunner):
                         except Exception as e:
                             logger.warning(f"event_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
 
-
     async def do_run(self, context: Context = None):
-        if not self.swarm.initialized:
+        if self.swarm and not self.swarm.initialized:
             raise RuntimeError("swarm needs to use `reset` to init first.")
 
         await self.event_mng.emit_message(self.init_message)
