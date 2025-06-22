@@ -22,6 +22,13 @@ const Welcome: React.FC<WelcomeProps> = ({
 }) => {
   const [inputValue, setInputValue] = useState('');
   
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      onSubmit(inputValue);
+    }
+  };
+
   return (
     <div className="welcome-container">
       <div className="content">
@@ -34,6 +41,7 @@ const Welcome: React.FC<WelcomeProps> = ({
           <Input.TextArea
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder="Ask or input / use skills"
             autoSize={{ minRows: 3, maxRows: 5 }}
             className="text-input"

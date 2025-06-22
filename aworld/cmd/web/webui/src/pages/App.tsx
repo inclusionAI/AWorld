@@ -18,7 +18,7 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, message, Select, Space, Spin } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Spin } from 'antd';
 import { createStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
@@ -49,28 +49,6 @@ const DEFAULT_CONVERSATIONS_ITEMS = [
     group: 'Yesterday',
   },
 ];
-
-const HOT_TOPICS = {
-  key: '1',
-  label: 'Hot Topics',
-  children: [
-    {
-      key: '1-1',
-      description: '杭州天气怎么样?',
-      icon: <span style={{ color: '#f93a4a', fontWeight: 700 }}>1</span>,
-    },
-    {
-      key: '1-2',
-      description: '打开 www.baidu.com，搜索 iphone16，打开第3个链接，总结页面的内容',
-      icon: <span style={{ color: '#ff6565', fontWeight: 700 }}>2</span>,
-    },
-    {
-      key: '1-3',
-      description: '{"task_id": "c61d22de-5f6c-4958-a7f6-5e9707bd3466"}',
-      icon: <span style={{ color: '#ff8f1f', fontWeight: 700 }}>3</span>,
-    },
-  ],
-};
 
 const SENDER_PROMPTS: GetProp<typeof Prompts, 'items'> = [];
 
