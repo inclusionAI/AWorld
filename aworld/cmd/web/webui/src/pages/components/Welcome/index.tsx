@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Input, Button, Typography, Row, Col, Select } from 'antd';
-import { ArrowRightOutlined } from '@ant-design/icons';
+import { ArrowUpOutlined } from '@ant-design/icons';
 import './index.less';
 
 const { Title } = Typography;
@@ -25,7 +25,7 @@ const Welcome: React.FC<WelcomeProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      onSubmit(inputValue);
+      if (inputValue.trim()) onSubmit(inputValue);
     }
   };
 
@@ -63,9 +63,12 @@ const Welcome: React.FC<WelcomeProps> = ({
           <Button
             type="primary"
             shape="circle"
-            onClick={() => onSubmit(inputValue)}
-            icon={<ArrowRightOutlined />}
+            onClick={() => {
+              if (inputValue.trim()) onSubmit(inputValue);
+            }}
+            icon={<ArrowUpOutlined />}
             className="submit-button"
+            disabled={inputValue.trim() === ""}
           />
         </div>
       </div>

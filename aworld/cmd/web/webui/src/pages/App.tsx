@@ -25,6 +25,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
+import { useSessionId } from '../hooks/useSessionId';
 import './index.less';
 
 type BubbleDataType = {
@@ -166,12 +167,34 @@ const useStyle = createStyles(({ token, css }) => {
       margin: 0 auto;
       color: ${token.colorText};
     `,
+    sendButton: css`
+      background-color: #000000 !important;
+      border: none !important;
+      transition: opacity 0.2s;
+      
+      &:hover {
+        background-color: rgba(0, 0, 0, 0.7) !important;
+      }
+      
+      &:disabled {
+        opacity: 0.5 !important;
+        cursor: not-allowed;
+        background-color: rgba(0, 0, 0, 0.1) !important;
+      }
+      
+      &:disabled:hover,
+      &:disabled:focus {
+        opacity: 0.5 !important;
+        background-color: rgba(0, 0, 0, 0.1) !important;
+      }
+    `,
   };
 });
 
 const App: React.FC = () => {
   const { styles } = useStyle();
   const abortController = useRef<AbortController>(null);
+  const { sessionId, generateNewSessionId } = useSessionId();
 
   // ==================== State ====================
   const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
@@ -280,7 +303,7 @@ const App: React.FC = () => {
 
   // ==================== Event ====================
   const onSubmit = (val: string) => {
-    if (!val) return;
+    if (!val || !val.trim()) return;
 
     if (loading) {
       message.error('Request is in progress, please wait for the request to complete.');
@@ -290,6 +313,9 @@ const App: React.FC = () => {
     onRequest({
       stream: true,
       message: { role: 'user', content: val },
+      headers: {
+        'X-Session-ID': sessionId,
+      },
     });
   };
 
@@ -311,6 +337,9 @@ const App: React.FC = () => {
             return;
           }
 
+          // 生成新的session ID
+          generateNewSessionId();
+          
           const now = dayjs().valueOf().toString();
           setConversations([
             {
@@ -422,8 +451,10 @@ const App: React.FC = () => {
         >
           <Welcome
             onSubmit={(v: string) => {
-              onSubmit(v);
-              setInputValue('');
+              if (v && v.trim()) {
+                onSubmit(v);
+                setInputValue('');
+              }
             }}
             models={models}
             selectedModel={selectedModel}
@@ -463,7 +494,10 @@ const App: React.FC = () => {
       <Prompts
         items={SENDER_PROMPTS}
         onItemClick={(info) => {
-          onSubmit(info.data.description as string);
+          const description = info.data.description as string;
+          if (description && description.trim()) {
+            onSubmit(description);
+          }
         }}
         className={styles.senderPrompt}
       />
@@ -472,8 +506,10 @@ const App: React.FC = () => {
         value={inputValue}
         header={senderHeader}
         onSubmit={() => {
-          onSubmit(inputValue);
-          setInputValue('');
+          if (inputValue.trim()) {
+            onSubmit(inputValue);
+            setInputValue('');
+          }
         }}
         onChange={setInputValue}
         onCancel={() => {
@@ -494,7 +530,15 @@ const App: React.FC = () => {
           return (
             <Flex gap={4}>
               <SpeechButton className={styles.speechButton} />
-              {loading ? <LoadingButton type="default" /> : <SendButton type="primary" />}
+              {loading ? (
+                <LoadingButton type="default" />
+              ) : (
+                <SendButton 
+                  type="primary" 
+                  disabled={!inputValue.trim()}
+                  className={styles.sendButton}
+                />
+              )}
             </Flex>
           );
         }}

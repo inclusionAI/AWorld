@@ -35,13 +35,26 @@
     height: 40px !important;
     background-color: #000000;
     border: none;
+    transition: opacity 0.2s;
   }
   
   .submit-button:hover,
   .submit-button:focus {
-      background-color: #333333;
+    background-color: rgba(0, 0, 0, 0.7) !important;
   }
   
+  .submit-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background-color: rgba(0, 0, 0, 0.1)!important;
+  }
+
+  .submit-button:disabled:hover,
+  .submit-button:disabled:focus {
+    opacity: 0.5;
+    background-color: rgba(0, 0, 0, 0.1)!important;
+  }
+
 .controls-area {
   position: absolute;
   bottom: 12px;
