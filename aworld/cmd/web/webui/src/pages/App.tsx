@@ -14,7 +14,6 @@ import {
   Attachments,
   Bubble,
   Conversations,
-  Prompts,
   Sender,
   useXAgent,
   useXChat
@@ -24,6 +23,9 @@ import { createStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import Prompts from '../pages/components/Prompts';
+import Welcome from '../pages/components/Welcome';
+import './index.less';
 
 type BubbleDataType = {
   role: string;
@@ -162,8 +164,14 @@ const useStyle = createStyles(({ token, css }) => {
       background-position: bottom;
     `,
     placeholder: css`
-      padding-top: 32px;
-    `,
+      width: 100%;
+      max-width: 700px;
+      margin: 0 auto;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    `,  
     // sender 样式
     sender: css`
       width: 100%;
@@ -183,7 +191,7 @@ const useStyle = createStyles(({ token, css }) => {
   };
 });
 
-const Independent: React.FC = () => {
+const App: React.FC = () => {
   const { styles } = useStyle();
   const abortController = useRef<AbortController>(null);
 
@@ -431,32 +439,20 @@ const Independent: React.FC = () => {
           }}
         />
       ) : (
-        <Space
-          direction="vertical"
-          size={16}
-          style={{ paddingInline: 'calc(calc(100% - 700px) /2)' }}
+        <div
           className={styles.placeholder}
         >
-          <Flex gap={16}>
-            <Prompts
-              items={[HOT_TOPICS]}
-              styles={{
-                list: { height: '100%' },
-                item: {
-                  flex: 1,
-                  backgroundImage: 'linear-gradient(123deg, #e5f4ff 0%, #efe7ff 100%)',
-                  borderRadius: 12,
-                  border: 'none',
-                },
-                subItem: { padding: 0, background: 'transparent' },
-              }}
-              onItemClick={(info) => {
-                onSubmit(info.data.description as string);
-              }}
-              className={styles.chatPrompt}
-            />
-          </Flex>
-        </Space>
+          <Welcome
+            onSubmit={(v: string) => {
+              onSubmit(v);
+              setInputValue('');
+            }}
+            models={models}
+            selectedModel={selectedModel}
+            onModelChange={setSelectedModel}
+            modelsLoading={modelsLoading}
+          />
+        </div>
       )}
     </div>
   );
@@ -491,23 +487,7 @@ const Independent: React.FC = () => {
         onItemClick={(info) => {
           onSubmit(info.data.description as string);
         }}
-        styles={{
-          item: { padding: '6px 12px' },
-        }}
         className={styles.senderPrompt}
-      />
-      {/* 🌟 模型选择下拉列表 */}
-      <Select
-        value={selectedModel}
-        onChange={setSelectedModel}
-        options={models}
-        loading={modelsLoading}
-        placeholder="Select a model"
-        style={{ width: 200 }}
-        showSearch
-        filterOption={(input, option) =>
-          (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-        }
       />
       {/* 🌟 输入框 */}
       <Sender
@@ -559,13 +539,12 @@ const Independent: React.FC = () => {
   return (
     <div className={styles.layout}>
       {chatSider}
-
       <div className={styles.chat}>
         {chatList}
-        {chatSender}
+        {messages?.length > 0 && chatSender}
       </div>
     </div>
   );
 };
 
-export default Independent;
+export default App;
