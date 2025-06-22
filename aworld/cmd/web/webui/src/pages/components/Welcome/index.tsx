@@ -34,7 +34,7 @@ const Welcome: React.FC<WelcomeProps> = ({
       <div className="content">
         <Row justify="center">
           <Col>
-            <Title level={1}>Hello, Aworld</Title>
+            <Title level={1}>Hello Aworld</Title>
           </Col>
         </Row>
         <div className="input-area">
