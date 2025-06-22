@@ -2,13 +2,11 @@ import {
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
-  DislikeOutlined,
-  EditOutlined,
-  LikeOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined
+  ReloadOutlined,
+  MenuUnfoldOutlined
 } from '@ant-design/icons';
 import {
   Attachments,
@@ -18,7 +16,7 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, message, Spin } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Spin, Drawer } from 'antd';
 import { createStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
@@ -26,6 +24,7 @@ import ReactMarkdown from 'react-markdown';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
 import { useSessionId } from '../hooks/useSessionId';
+import logo from '../assets/aworld_logo.png';
 import './index.less';
 
 type BubbleDataType = {
@@ -77,7 +76,6 @@ const useStyle = createStyles(({ token, css }) => {
       display: flex;
       align-items: center;
       justify-content: start;
-      padding: 0 24px;
       box-sizing: border-box;
       gap: 8px;
       margin: 24px 0;
@@ -207,9 +205,20 @@ const App: React.FC = () => {
 
   const [inputValue, setInputValue] = useState('');
 
-  const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
+  const [models, setModels] = useState<Array<{ label: string; value: string }>>([
+    {
+      label: 'weather_agent',
+      value: 'weather_agent',
+    },
+    {
+      label: 'weather_agent2',
+      value: 'weather_agent2',
+    }
+  ]);
   const [selectedModel, setSelectedModel] = useState<string>('weather_agent');
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
 
   // ==================== API Calls ====================
   const fetchModels = async () => {
@@ -319,11 +328,47 @@ const App: React.FC = () => {
     });
   };
 
+  // 复制消息内容到剪贴板
+  const copyMessageContent = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      message.success('Message copied to clipboard');
+    } catch (error) {
+      console.error('Failed to copy message:', error);
+      message.error('Failed to copy message');
+    }
+  };
+
+  // 重新发送消息
+  const resendMessage = (assistantMessageIndex: number) => {
+    // 找到对应的用户消息
+    const userMessageIndex = assistantMessageIndex - 1;
+    if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
+      const userMessage = messages[userMessageIndex].message.content;
+      
+      // 删除当前assistant消息和对应的用户消息
+      const newMessages = messages.filter((_, index) => index !== assistantMessageIndex && index !== userMessageIndex);
+      setMessages(newMessages);
+      
+      // 重新发送用户消息
+      setTimeout(() => {
+        onSubmit(userMessage);
+      }, 100);
+    } else {
+      message.error('Cannot find corresponding user message');
+    }
+  };
+
+  const onTriggerDraw = (status: boolean) => {
+    setOpen(status);
+  }
+
   // ==================== Nodes ====================
   const chatSider = (
     <div className={styles.sider}>
       {/* 🌟 Logo */}
       <div className={styles.logo}>
+        <img src={logo} alt="AWorld Logo" width="24" height="24" />
         <span>AWorld</span>
       </div>
 
@@ -378,11 +423,6 @@ const App: React.FC = () => {
         menu={(conversation) => ({
           items: [
             {
-              label: 'Rename',
-              key: 'rename',
-              icon: <EditOutlined />,
-            },
-            {
               label: 'Delete',
               key: 'delete',
               icon: <DeleteOutlined />,
@@ -416,7 +456,7 @@ const App: React.FC = () => {
       {messages?.length ? (
         /* 🌟 消息列表 */
         <Bubble.List
-          items={messages?.map((i) => ({
+          items={messages?.map((i, index) => ({
             ...i.message,
             content: (
               <ReactMarkdown>
@@ -427,17 +467,46 @@ const App: React.FC = () => {
               content: i.status === 'loading' ? styles.loadingMessage : '',
             },
             typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
+            messageIndex: index,
           }))}
           style={{ height: '100%', paddingInline: 'calc(calc(100% - 700px) /2)' }}
           roles={{
             assistant: {
               placement: 'start',
-              footer: (
+              footer: (messageItem) => (
                 <div style={{ display: 'flex' }}>
-                  <Button type="text" size="small" icon={<ReloadOutlined />} />
-                  <Button type="text" size="small" icon={<CopyOutlined />} />
-                  <Button type="text" size="small" icon={<LikeOutlined />} />
-                  <Button type="text" size="small" icon={<DislikeOutlined />} />
+                  <Button 
+                    type="text" 
+                    size="small" 
+                    icon={<ReloadOutlined />} 
+                    onClick={() => resendMessage(messageItem.messageIndex)}
+                  />
+                  <Button 
+                    type="text" 
+                    size="small" 
+                    icon={<CopyOutlined />} 
+                    onClick={() => copyMessageContent(messageItem.content || '')}
+                  />
+                                    <Button 
+                    type="text" 
+                    size="small" 
+                    icon={<MenuUnfoldOutlined />} 
+                    onClick={() => onTriggerDraw(true)}
+                  />
+                  <Drawer
+                            title="Basic Drawer"
+                            closable={{ 'aria-label': 'Close Button' }}
+                            onClick={() => onTriggerDraw(true)}
+                            onClose={() => onTriggerDraw(false)}
+                            open={open}
+                          >
+                            <p>Some contents...</p>
+                            <p>Some contents...</p>
+                            <p>Some contents...</p>
+                  </Drawer>
+                  {/* TODO 功能未实现先隐藏 */}
+                  {/* <Button type="text" size="small" icon={<LikeOutlined />} />
+                  <Button type="text" size="small" icon={<DislikeOutlined />} /> */}
                 </div>
               ),
               loadingRender: () => <Spin size="small" />,
