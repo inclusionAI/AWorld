@@ -24,6 +24,7 @@ import ReactMarkdown from 'react-markdown';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
 import { useSessionId } from '../hooks/useSessionId';
+import { useAgentId } from '../hooks/useAgentId';
 import logo from '../assets/aworld_logo.png';
 import './index.less';
 
@@ -193,6 +194,7 @@ const App: React.FC = () => {
   const { styles } = useStyle();
   const abortController = useRef<AbortController>(null);
   const { sessionId, generateNewSessionId } = useSessionId();
+  const { agentId, setAgentIdAndUpdateURL } = useAgentId();
 
   // ==================== State ====================
   const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
@@ -204,7 +206,7 @@ const App: React.FC = () => {
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
 
   const [inputValue, setInputValue] = useState('');
-
+  // TODO mock data , remove in the future
   const [models, setModels] = useState<Array<{ label: string; value: string }>>([
     {
       label: 'weather_agent',
@@ -246,6 +248,26 @@ const App: React.FC = () => {
   useEffect(() => {
     fetchModels();
   }, []);
+
+  // 处理URL中的agentid参数与模型选择的同步
+  useEffect(() => {
+    if (agentId && models.length > 0) {
+      // 检查URL中的agentid是否在models中存在
+      const modelExists = models.find(model => model.value === agentId);
+      if (modelExists) {
+        setSelectedModel(agentId);
+      } else {
+        // 如果URL中的agentid不存在于models中，清除URL参数
+        setAgentIdAndUpdateURL('');
+      }
+    }
+  }, [agentId, models, setAgentIdAndUpdateURL]);
+
+  // 处理模型选择变化时更新URL
+  const handleModelChange = (modelId: string) => {
+    setSelectedModel(modelId);
+    setAgentIdAndUpdateURL(modelId);
+  };
 
   /**
    * 🔔 Please replace the BASE_URL, PATH, MODEL, API_KEY with your own values.
@@ -527,7 +549,7 @@ const App: React.FC = () => {
             }}
             models={models}
             selectedModel={selectedModel}
-            onModelChange={setSelectedModel}
+            onModelChange={handleModelChange}
             modelsLoading={modelsLoading}
           />
         </div>
