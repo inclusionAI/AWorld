@@ -8,6 +8,7 @@ from .data_model import (
     ChatCompletionChoice,
     ChatCompletionMessage,
     AgentModel,
+    SessionModel,
 )
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "ChatCompletionChoice",
     "ChatCompletionMessage",
     "AgentModel",
+    "SessionModel",
 ]

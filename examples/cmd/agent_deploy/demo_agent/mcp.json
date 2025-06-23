@@ -10,10 +10,9 @@
             ]
         },
         "time": {
-            "command": "npx",
+            "command": "uvx",
             "args": [
-                "-y",
-                "mcp_server_time"
+                "mcp-server-time"
             ]
         }
     }
