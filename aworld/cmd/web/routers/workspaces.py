@@ -19,6 +19,7 @@ async def get_workspace_tree(workspace_id: str):
 
 
 class ArtifactRequest(BaseModel):
+    artifact_ids: Optional[List[str]] = None
     artifact_types: Optional[List[str]] = None
 
 
@@ -46,10 +47,12 @@ async def get_workspace_artifacts(workspace_id: str, request: ArtifactRequest):
 
     workspace = await get_workspace(workspace_id)
     all_artifacts = workspace.list_artifacts()
+    filtered_artifacts = all_artifacts
+    if request.artifact_ids:
+        filtered_artifacts = [a for a in filtered_artifacts if a.artifact_id in request.artifact_ids]
     if artifact_types:
-        filtered_artifacts = [a for a in all_artifacts if a.artifact_type.name in artifact_types]
-    else:
-        filtered_artifacts = all_artifacts
+        filtered_artifacts = [a for a in filtered_artifacts if a.artifact_type.name in artifact_types]
+    
     return {
         "data": filtered_artifacts
     }

@@ -73,10 +73,7 @@ class MarkdownAworldUI(AworldUI):
         """
             tool_result
         """
-        custom_output = f"{output.tool_name}#{output.origin_tool_call.function.name}"
-
-        if output.tool_name == "aworld-playwright"  and output.origin_tool_call.function.name == "browser_navigate":
-            custom_output = f"search `{json.loads(output.origin_tool_call.function.arguments)['url']}`"
+        custom_output = await self.gen_custom_output(output)
 
         artifacts = await self.parse_tool_artifacts(output.metadata)
 
@@ -90,6 +87,17 @@ class MarkdownAworldUI(AworldUI):
         )
 
         return tool_data
+
+    async def gen_custom_output(self, output):
+        """
+        hook for custom output
+        """
+        custom_output = f"{output.tool_name}#{output.origin_tool_call.function.name}"
+        if output.tool_name == "aworld-playwright" and output.origin_tool_call.function.name == "browser_navigate":
+            custom_output = f"🔍 search `{json.loads(output.origin_tool_call.function.arguments)['url']}`"
+        if output.tool_name == "aworldsearch-server" and output.origin_tool_call.function.name == "search":
+            custom_output = f"🔍 search keywords: {' '.join(json.loads(output.origin_tool_call.function.arguments)['query_list'])}"
+        return custom_output
 
     async def json_parse(self, json_str):
         try:
@@ -105,6 +113,7 @@ class MarkdownAworldUI(AworldUI):
         if output.status == "START":
             if self.cur_agent_name == output.name:
                 return f"{emptyLine}"
+            self.cur_agent_name = output.name
             return f"\n\n🤖 {output.show_name}: \n\n"
         elif output.status == "FINISHED":
             return f"{emptyLine}"

@@ -158,6 +158,7 @@ async def search(
             search_items.append({
                 "title": doc.get("title", ""),
                 "url": doc.get("url", ""),
+                "snippet": doc.get("doc", "")[:100] + "..." if len(doc.get("doc", "")) > 100 else doc.get("doc", ""),
                 "content": doc.get("doc", "")  # Map doc field to content
             })
 
