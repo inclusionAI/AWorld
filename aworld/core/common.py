@@ -90,3 +90,9 @@ class TaskItem(BaseModel):
     action_name: Optional[str] = None
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None
+
+class ToolActionItem(BaseModel):
+    data: Any
+    node_id: str = None
+    action_model_list: List[ActionModel] = []
+
