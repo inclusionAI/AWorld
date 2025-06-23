@@ -5,10 +5,9 @@ from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event import eventbus
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
-from aworld.runners.utils import TaskType
 
 from aworld.tools.utils import build_observation
 from aworld.tools.human.actions import HumanExecuteAction
@@ -88,7 +87,7 @@ class HumanTool(AsyncTool):
                 payload=confirm_content,
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.HUMAN_CONFIRM
+                topic=TopicType.HUMAN_CONFIRM
             ))
             return self.content, error
         except Exception as e:
