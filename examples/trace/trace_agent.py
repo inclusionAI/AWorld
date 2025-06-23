@@ -5,6 +5,7 @@ from aworld.core.common import Observation, ActionModel
 from typing import Dict, Any, List, Union, Callable
 from aworld.core.tool.base import ToolFactory
 from aworld.models.llm import call_llm_model, acall_llm_model
+from aworld.runners import state_manager
 from aworld.utils.common import sync_exec
 from aworld.logs.util import logger
 from examples.tools.common import Tools
@@ -12,7 +13,10 @@ from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.trace.server import get_trace_server
 from aworld.trace.instrumentation.uni_llmmodel import LLMModelInstrumentor
+from aworld.runners.state_manager import RuntimeStateManager, RunNode
+import aworld.trace as trace
 
+trace.configure()
 LLMModelInstrumentor().instrument()
 
 
@@ -161,8 +165,35 @@ trace_prompt = """
     Here are the content: {task}
     """
 
-if __name__ == "__main__":
 
+def build_run_flow(nodes: List[RunNode]):
+    graph = {}
+    start_nodes = []
+
+    for node in nodes:
+        if hasattr(node, 'parent_node_id') and node.parent_node_id:
+            if node.parent_node_id not in graph:
+                graph[node.parent_node_id] = []
+            graph[node.parent_node_id].append(node.node_id)
+        else:
+            start_nodes.append(node.node_id)
+
+    for start in start_nodes:
+        print("-----------------------------------")
+        _print_tree(graph, start, "", True)
+        print("-----------------------------------")
+
+
+def _print_tree(graph, node_id, prefix, is_last):
+    print(prefix + ("└── " if is_last else "├── ") + node_id)
+    if node_id in graph:
+        children = graph[node_id]
+        for i, child in enumerate(children):
+            _print_tree(graph, child, prefix +
+                        ("    " if is_last else "│   "), i == len(children)-1)
+
+
+if __name__ == "__main__":
     agent_config = AgentConfig(
         llm_provider="ant",
         llm_model_name="claude-3.7-sonnet",
@@ -193,7 +224,7 @@ if __name__ == "__main__":
     )
 
     # default is sequence swarm mode
-    swarm = Swarm(search, summary, trace, max_steps=1)
+    swarm = Swarm(search, summary, trace, max_steps=1, event_driven=True)
 
     prefix = "search baidu:"
     # can special search google, wiki, duck go, or baidu. such as:
@@ -201,9 +232,15 @@ if __name__ == "__main__":
     try:
         res = Runners.sync_run(
             input=prefix + """What is an agent.""",
-            swarm=swarm
+            swarm=swarm,
+            session_id="123"
         )
         print(res.answer)
     except Exception as e:
         logger.error(traceback.format_exc())
+
+    state_manager = RuntimeStateManager.instance()
+    nodes = state_manager.get_nodes("123")
+    logger.info(f"session 123 nodes: {nodes}")
+    build_run_flow(nodes)
     get_trace_server().join()
