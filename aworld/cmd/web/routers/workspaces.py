@@ -10,6 +10,7 @@ from aworld.output.utils import load_workspace
 
 router = APIRouter()
 
+prefix = "/api/workspaces"
 
 @router.get("/{workspace_id}/tree")
 async def get_workspace_tree(workspace_id: str):

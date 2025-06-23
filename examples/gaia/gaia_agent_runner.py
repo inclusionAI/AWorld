@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import traceback
+from typing import AsyncGenerator
 import uuid
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
@@ -105,7 +106,11 @@ class GaiaAgentRunner:
                 logger.info(f"Gaia Agent Ouput: {output}")
                 res = await AworldUI.parse_output(output, rich_ui)
                 for item in res if isinstance(res, list) else [res]:
-                    yield item
+                    if isinstance(item, AsyncGenerator):
+                        async for sub_item in item:
+                            yield sub_item
+                    else:
+                        yield item
                     last_output = item
 
             logger.info(f"Gaia Agent Last Output: {last_output}")
