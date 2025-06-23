@@ -18,7 +18,7 @@ from aworld.core.context.base import AgentContext
 from aworld.core.context.base import Context
 from aworld.core.context.base import ContextUsage
 from aworld.core.context.processor.prompt_processor import PromptProcessor
-from aworld.core.event import eventbus
+from aworld.core.event import eventbus, InMemoryEventbus
 from aworld.core.event.base import Message, ToolMessage, Constants
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.memory import MemoryItem, MemoryConfig
@@ -826,7 +826,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 output, response = await async_call_llm(resp_stream)
                 llm_response = response
 
-                if eventbus and resp_stream:
+                if eventbus is not None and resp_stream:
                     output_message = Message(
                         category=Constants.OUTPUT,
                         payload=output,
@@ -846,7 +846,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=kwargs.get("stream", False)
                 )
-                if eventbus and llm_response:
+                if eventbus is None:
+                    logger.warn("=============== eventbus is none ============")
+                if eventbus is not None and llm_response:
                     await eventbus.publish(Message(
                         category=Constants.OUTPUT,
                         payload=llm_response,

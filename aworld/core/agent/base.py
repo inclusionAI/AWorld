@@ -134,7 +134,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             return final_result if final_result else result
 
     async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
-        if eventbus:
+        if eventbus is not None:
             await eventbus.publish(Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_start_output(name=f"{self.id()}",
