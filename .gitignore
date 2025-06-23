@@ -131,4 +131,3 @@ traces*.json
 trace_data
 
 examples/gaia/output
-examples/**/output.txt
