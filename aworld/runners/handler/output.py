@@ -7,9 +7,9 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.output.base import StepOutput, MessageOutput, ToolResultOutput, Output
 from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.logs.util import logger
-from aworld.runners.utils import TaskType
+
 
 class DefaultOutputHandler(DefaultHandler):
     def __init__(self, runner):
@@ -26,7 +26,7 @@ class DefaultOutputHandler(DefaultHandler):
                 payload=TaskItem(msg="Cannot get outputs.", data=message, stop=True),
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR
+                topic=TopicType.ERROR
             )
             return
         # 2. build Output
@@ -38,7 +38,7 @@ class DefaultOutputHandler(DefaultHandler):
                 output = payload
             elif isinstance(payload, TaskResponse):
                 logger.info(f"output get task_response with usage: {json.dumps(payload.usage)}")
-                if message.topic == TaskType.FINISHED or message.topic == TaskType.ERROR:
+                if message.topic == TopicType.FINISHED or message.topic == TopicType.ERROR:
                     mark_complete = True
             elif isinstance(payload, ModelResponse) or isinstance(payload, AsyncGenerator):
                 output = MessageOutput(source=payload)
@@ -49,7 +49,7 @@ class DefaultOutputHandler(DefaultHandler):
                 payload=TaskItem(msg="Failed to parse output.", data=payload, stop=True),
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR
+                topic=TopicType.ERROR
             )
         finally:
             if output:

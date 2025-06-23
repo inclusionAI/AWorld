@@ -10,7 +10,7 @@ from aworld.config.conf import ContextRuleConfig
 from aworld.core.context.base import Context, AgentContext
 from aworld.core.context.processor import CompressionDecision, ContextProcessingResult, MessagesProcessingResult
 from aworld.core.context.processor.prompt_compressor import PromptCompressor, CompressionType
-from aworld.core.context.processor.chunk_processor import ChunkProcessor, MessageChunk, MessageType
+from aworld.core.context.processor.chunk_utils import ChunkUtils, MessageChunk, MessageType
 from aworld.logs.util import Color, color_log, logger
 from aworld.models.utils import num_tokens_from_messages, truncate_tokens_from_messages
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, ModelConfig, OptimizationConfig, LlmCompressionConfig
@@ -29,15 +29,15 @@ class PromptProcessor:
         """Initialize processing pipelines"""
         if self.context_rule and self.context_rule.llm_compression_config and self.context_rule.llm_compression_config.enabled:
             # Initialize message splitting and compression pipeline
-            self.chunk_pipeline = ChunkProcessor(
+            self.chunk_pipeline = ChunkUtils(
                 enable_chunking=True,
                 preserve_order=True,
                 merge_consecutive=True,
             )
             
-            # Initialize compression pipeline with both LLM and MapReduce compressors
+            # Initialize compression pipeline with LLM compressor only
             self.compress_pipeline = PromptCompressor(
-                compression_types=[CompressionType.LLM_BASED, CompressionType.MAP_REDUCE],
+                compression_types=[CompressionType.LLM_BASED],
                 llm_config=self.agent_context.context_rule.llm_compression_config.compress_model,
             )
     
@@ -48,12 +48,11 @@ class PromptProcessor:
                           is_last_message_in_memory: bool) -> bool:
         return self._count_tokens_from_messages(messages) > self.get_max_tokens()
         # Calculate based on historical message length to determine if threshold is reached, this is a rough statistic
-        current_usage = self.agent_context.context_usage
-        real_used = current_usage.used_context_length
-        print("real_used:", real_used, " current_usage:", current_usage, " last:", self._count_tokens_from_message(messages[-1]))
-        if not is_last_message_in_memory:
-            real_used += self._count_tokens_from_message(messages[-1])
-        return real_used > self.get_max_tokens()
+        # current_usage = self.agent_context.context_usage
+        # real_used = current_usage.used_context_length
+        # if not is_last_message_in_memory:
+        #     real_used += self._count_tokens_from_message(messages[-1])
+        # return real_used > self.get_max_tokens()
 
     def _count_tokens_from_messages(self, messages: List[Dict[str, Any]]) -> int:
         """Calculate token count for messages using utils.py method"""
@@ -96,7 +95,6 @@ class PromptProcessor:
         
         token_count = self._count_chunk_tokens(chunk)
         trigger_compress_length = self.context_rule.llm_compression_config.trigger_compress_token_length
-        trigger_mapreduce_length = self.context_rule.llm_compression_config.trigger_mapreduce_compress_token_length
         
         # No compression needed
         if token_count < trigger_compress_length:
@@ -107,34 +105,16 @@ class PromptProcessor:
                 token_count=token_count
             )
         
-        # Use MapReduce for very long content
-        elif token_count >= trigger_mapreduce_length:
-            return CompressionDecision(
-                should_compress=True,
-                compression_type=CompressionType.MAP_REDUCE,
-                reason=f"Token count {token_count} exceeds MapReduce threshold {trigger_mapreduce_length}",
-                token_count=token_count
-            )
-        
-        # Use LLM compression for medium length content
+        # Use LLM compression for content above threshold
         else:
             return CompressionDecision(
                 should_compress=True,
                 compression_type=CompressionType.LLM_BASED,
-                reason=f"Token count {token_count} between thresholds {trigger_compress_length}-{trigger_mapreduce_length}",
+                reason=f"Token count {token_count} exceeds threshold {trigger_compress_length}",
                 token_count=token_count
             )
 
     def decide_content_compression_strategy(self, content: str) -> CompressionDecision:
-        """
-        Decide compression strategy based on content token length
-        
-        Args:
-            content: Content string to analyze
-            
-        Returns:
-            CompressionDecision with compression strategy
-        """
         if not self.context_rule.llm_compression_config.enabled:
             return CompressionDecision(
                 should_compress=False,
@@ -145,7 +125,6 @@ class PromptProcessor:
         
         token_count = self._count_content_tokens(content)
         trigger_compress_length = self.context_rule.llm_compression_config.trigger_compress_token_length
-        trigger_mapreduce_length = self.context_rule.llm_compression_config.trigger_mapreduce_compress_token_length
         
         # No compression needed
         if token_count < trigger_compress_length:
@@ -156,21 +135,12 @@ class PromptProcessor:
                 token_count=token_count
             )
         
-        # Use MapReduce for very long content
-        elif token_count >= trigger_mapreduce_length:
-            return CompressionDecision(
-                should_compress=True,
-                compression_type=CompressionType.MAP_REDUCE,
-                reason=f"Token count {token_count} exceeds MapReduce threshold {trigger_mapreduce_length}",
-                token_count=token_count
-            )
-        
-        # Use LLM compression for medium length content
+        # Use LLM compression for content above threshold
         else:
             return CompressionDecision(
                 should_compress=True,
                 compression_type=CompressionType.LLM_BASED,
-                reason=f"Token count {token_count} between thresholds {trigger_compress_length}-{trigger_mapreduce_length}",
+                reason=f"Token count {token_count} exceeds threshold {trigger_compress_length}",
                 token_count=token_count
             )
 
@@ -200,16 +170,6 @@ class PromptProcessor:
     def process_message_chunks(self, 
                               chunks: List[MessageChunk], 
                               base_metadata: Dict[str, Any] = None) -> List[MessageChunk]:
-        """
-        Process message chunk list, apply different processing strategies for different types of chunks
-        
-        Args:
-            chunks: Message chunk list
-            base_metadata: Base metadata
-            
-        Returns:
-            Processed message chunk list
-        """
         processed_chunks = []
         
         for chunk in chunks:
@@ -237,8 +197,6 @@ class PromptProcessor:
     def _process_text_chunk(self, 
                            chunk: MessageChunk, 
                            base_metadata: Dict[str, Any] = None) -> MessageChunk:
-        """Process text message chunks with intelligent compression strategy selection"""
-        # Decide compression strategy based on chunk length
         decision = self.decide_compression_strategy(chunk)
         
         if not decision.should_compress:
@@ -246,7 +204,7 @@ class PromptProcessor:
             return chunk
         
         try:
-            # Use appropriate compression pipeline based on decision
+            # Use LLM compression pipeline
             if self.compress_pipeline:
                 processed_messages = []
                 
@@ -256,10 +214,10 @@ class PromptProcessor:
                         processed_messages.append(message)
                         continue
                     
-                    logger.info(f'Processing text chunk with {decision.compression_type.value} compression '
+                    logger.info(f'Processing text chunk with LLM compression '
                               f'(tokens: {decision.token_count}, reason: {decision.reason})')
                     
-                    # Use selected compression type
+                    # Use LLM compression
                     compression_result = self.compress_pipeline.compress(
                         content, 
                         metadata={
@@ -267,7 +225,7 @@ class PromptProcessor:
                             "chunk_token_count": decision.token_count,
                             "compression_reason": decision.reason
                         },
-                        compression_type=decision.compression_type
+                        compression_type=CompressionType.LLM_BASED
                     )
                     
                     # Create processed message
@@ -280,10 +238,10 @@ class PromptProcessor:
                 updated_metadata.update({
                     "processed": True,
                     "compression_applied": True,
-                    "compression_type": decision.compression_type.value,
+                    "compression_type": "llm_based",
                     "compression_reason": decision.reason,
                     "original_token_count": decision.token_count,
-                    "processing_method": f"{decision.compression_type.value}_compression",
+                    "processing_method": "llm_compression",
                     "original_message_count": len(chunk.messages),
                     "processed_message_count": len(processed_messages)
                 })
@@ -305,7 +263,7 @@ class PromptProcessor:
     def _process_tool_chunk(self, 
                            chunk: MessageChunk, 
                            base_metadata: Dict[str, Any] = None) -> MessageChunk:
-        """Process tool message chunks with intelligent compression strategy selection"""
+        """Process tool message chunks with LLM compression"""
         try:
             processed_messages = []
             
@@ -316,10 +274,10 @@ class PromptProcessor:
                 decision = self.decide_content_compression_strategy(content)
                 
                 if decision.should_compress:
-                    logger.info(f'Processing tool chunk with {decision.compression_type.value} compression '
+                    logger.info(f'Processing tool chunk with LLM compression '
                               f'(tokens: {decision.token_count}, reason: {decision.reason})')
                     
-                    # Use selected compression type
+                    # Use LLM compression
                     compression_result = self.compress_pipeline.compress(
                         content,
                         metadata={
@@ -328,7 +286,7 @@ class PromptProcessor:
                             "content_token_count": decision.token_count,
                             "compression_reason": decision.reason
                         },
-                        compression_type=decision.compression_type
+                        compression_type=CompressionType.LLM_BASED
                     )
                     
                     # Create processed message
@@ -345,7 +303,7 @@ class PromptProcessor:
             updated_metadata.update({
                 "processed": True,
                 "tool_compression_applied": True,
-                "processing_method": "intelligent_compression",
+                "processing_method": "llm_compression",
                 "original_message_count": len(chunk.messages),
                 "processed_message_count": len(processed_messages)
             })
@@ -390,9 +348,6 @@ class PromptProcessor:
             )
         
         max_tokens = self.get_max_tokens()
-        
-        # Check system message count (at most one, and must be the first)
-        system_messages = [m for m in messages if m.get("role") == "system"]
 
         # Group messages by conversation turns
         turns = []
@@ -444,29 +399,37 @@ class PromptProcessor:
         # Process messages from back to front, keep the latest conversations
         token_cnt = 0
         new_messages = []
+        user_message_count = 0
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "system":
                 continue
             
             cur_token_cnt = self._count_tokens_from_message(messages[i])
             if cur_token_cnt <= available_token:
+                if messages[i].get("role") == "user":
+                    user_message_count += 1
                 new_messages = [messages[i]] + new_messages
                 available_token -= cur_token_cnt
             else:
                 # Try to truncate message
-                if (messages[i].get("role") == "user") and (i != len(messages) - 1):
+                if (messages[i].get("role") == "user"):
                     # Truncate user message (not the last one)
+                    color_log(f"to truncate message {messages[i]}", color=Color.pink)
                     _msg = _truncate_message(messages[i], max_tokens=available_token)
-                    logger.info(f"truncate user message: {messages[i]}, {_msg}")
+                    color_log(f"truncated message {messages[i]}, {_msg}", color=Color.pink)
                     if _msg:
                         new_messages = [_msg] + new_messages
                     break
-                elif messages[i].get("role") == "function":
+                elif messages[i].get("role") == "function" or messages[i].get("role") == "assistant" or messages[i].get("role") == "system":
                     # Truncate function message, keep both ends
+                    logger.debug(f"to truncate message {messages[i]}")
                     _msg = _truncate_message(messages[i], max_tokens=available_token, keep_both_sides=True)
-                    logger.info(f"truncate user message: {messages[i]}, {_msg}")
+                    logger.debug(f"truncated message {messages[i]}, {_msg}")
                     if _msg:
                         new_messages = [_msg] + new_messages
+                    # Edge case: if the last message is a very long tool message, it might end up with only system+tool without user message, which will cause LLM call to fail
+                    elif user_message_count == 0:
+                        continue
                     else:
                         break
                 else:
@@ -512,7 +475,7 @@ class PromptProcessor:
         # 1. Content compression
         compressed_messages = self.compress_messages(messages)
         
-        # 1. Content length limit
+        # 2. Content length limit
         truncated_result = self.truncate_messages(compressed_messages, context)
         truncated_messages = truncated_result.processed_messages
         
@@ -527,6 +490,7 @@ class PromptProcessor:
                    f"\nTruncation processing time={truncated_result.processing_time:.3f}s"
                    f"\nTotal processing time={total_time:.3f}s"
                    f"\nMethod used={truncated_result.method_used}"
+                   f"\norigin_messages={messages}"
                    f"\ntruncated_messages={truncated_messages}",
                    color=Color.pink,)
 

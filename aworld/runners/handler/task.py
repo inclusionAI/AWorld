@@ -8,14 +8,13 @@ from typing import AsyncGenerator
 from aworld.core.common import TaskItem
 from aworld.core.tool.base import Tool, AsyncTool
 
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.task import TaskResponse
 from aworld.logs.util import logger
 from aworld.output import Output
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint
-from aworld.runners.utils import TaskType
 
 
 class TaskHandler(DefaultHandler):
@@ -46,7 +45,7 @@ class DefaultTaskHandler(TaskHandler):
 
         topic = message.topic
         task_item: TaskItem = message.payload
-        if topic == TaskType.SUBSCRIBE_TOOL:
+        if topic == TopicType.SUBSCRIBE_TOOL:
             new_tools = message.payload.data
             for name, tool in new_tools.items():
                 if isinstance(tool, Tool) or isinstance(tool, AsyncTool):
@@ -55,9 +54,9 @@ class DefaultTaskHandler(TaskHandler):
                 else:
                     logger.warning(f"Unknown tool instance: {tool}")
             return
-        elif topic == TaskType.SUBSCRIBE_AGENT:
+        elif topic == TopicType.SUBSCRIBE_AGENT:
             return
-        elif topic == TaskType.ERROR:
+        elif topic == TopicType.ERROR:
             async for event in self.run_hooks(message, HookPoint.ERROR):
                 yield event
 
@@ -78,9 +77,9 @@ class DefaultTaskHandler(TaskHandler):
                 payload='',
                 sender=self.name(),
                 session_id=self.runner.context.session_id,
-                topic=TaskType.START
+                topic=TopicType.START
             )
-        elif topic == TaskType.FINISHED:
+        elif topic == TopicType.FINISHED:
             async for event in self.run_hooks(message, HookPoint.FINISHED):
                 yield event
 
@@ -92,7 +91,7 @@ class DefaultTaskHandler(TaskHandler):
             await self.runner.stop()
 
             logger.info(f"{self.runner.task.id} finished.")
-        elif topic == TaskType.START:
+        elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):
                 yield event
 
@@ -101,9 +100,9 @@ class DefaultTaskHandler(TaskHandler):
                 yield message
             else:
                 yield self.runner.init_message
-        elif topic == TaskType.OUTPUT:
+        elif topic == TopicType.OUTPUT:
             yield message
-        elif topic == TaskType.HUMAN_CONFIRM:
+        elif topic == TopicType.HUMAN_CONFIRM:
             logger.warn("=============== Get human confirm, pause execution ===============")
             if self.runner.task.outputs and message.payload:
                 await self.runner.task.outputs.add_output(Output(data=message.payload))
