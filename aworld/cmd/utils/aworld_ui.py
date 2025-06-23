@@ -1,7 +1,6 @@
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from aworld.output import (
     MessageOutput,
@@ -13,6 +12,29 @@ from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.output.utils import consume_content
 
 logger = logging.getLogger(__name__)
+
+
+tool_call_template = """
+
+
+**call {tool_name}#{function_name}**[{tool_type}]
+
+```tool_call_arguments
+{function_arguments}
+```
+        
+```tool_call_result
+{function_result}
+```
+
+
+"""
+
+step_loading_template = """
+```loading
+{data}
+```
+"""
 
 
 @dataclass
@@ -32,46 +54,22 @@ class OpenAworldUI(AworldUI):
         self.workspace = workspace
 
     async def message_output(self, __output__: MessageOutput):
-        """
-        Returns an async generator that yields each message item.
-        """
-        # Sentinel object for queue completion
-        _SENTINEL = object()
+        items = []
 
-        async def async_generator():
-            async def __log_item(item):
-                await queue.put(item)
+        async def __log_item(item):
+            items.append(item)
 
-            from asyncio import Queue
+        # Consume all relevant generators
+        if __output__.reason_generator or __output__.response_generator:
+            if __output__.reason_generator:
+                await consume_content(__output__.reason_generator, __log_item)
+            if __output__.response_generator:
+                await consume_content(__output__.response_generator, __log_item)
+        else:
+            await consume_content(__output__.reasoning, __log_item)
+            await consume_content(__output__.response, __log_item)
 
-            queue = Queue()
-
-            async def consume_all():
-                # Consume all relevant generators
-                if __output__.reason_generator or __output__.response_generator:
-                    if __output__.reason_generator:
-                        await consume_content(__output__.reason_generator, __log_item)
-                    if __output__.response_generator:
-                        await consume_content(__output__.response_generator, __log_item)
-                else:
-                    await consume_content(__output__.reasoning, __log_item)
-                    await consume_content(__output__.response, __log_item)
-                # Only after all are done, put the sentinel
-                await queue.put(_SENTINEL)
-
-            # Start the consumer in the background
-            import asyncio
-
-            consumer_task = asyncio.create_task(consume_all())
-
-            while True:
-                item = await queue.get()
-                if item is _SENTINEL:
-                    break
-                yield item
-            await consumer_task  # Ensure background task is finished
-
-        return async_generator()
+        return items
 
     async def tool_result(self, output: ToolResultOutput):
         """
