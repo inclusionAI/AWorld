@@ -1,6 +1,5 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import TypedDict
 from aworld.logs.util import logger
 
 import threading
@@ -62,4 +61,3 @@ class InheritanceSingleton(dict, metaclass=SingletonMeta):
     def clear_singleton(cls):
         base = InheritanceSingleton.__get_base_class(cls)
         cls._instances.pop(base, None)
-
