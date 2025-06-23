@@ -53,7 +53,7 @@ class RuntimeEngine(object):
         """Broadcast the data to all workers."""
 
     @abc.abstractmethod
-    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         """Submission focuses on the execution of stateless tasks on the special engine cluster."""
         raise NotImplementedError("Base task execute not implemented!")
 
@@ -84,7 +84,7 @@ class LocalRuntime(RuntimeEngine):
             res = func(*args, **kwargs)
         return res
 
-    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         # opt of the one task process
         if len(funcs) == 1:
             func = funcs[0]
@@ -156,7 +156,7 @@ class SparkRuntime(RuntimeEngine):
             re_args.append(arg)
         return re_args
 
-    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         re_args = self.args_process(*args)
         res_rdd = self.runtime.sparkContext.parallelize(funcs, len(funcs)).map(
             lambda func: func(*re_args, **kwargs))
@@ -186,7 +186,7 @@ class RayRuntime(RuntimeEngine):
         self.num_executors = self.conf.get('num_executors', 1)
         logger.info("ray init finished, executor number {}".format(str(self.num_executors)))
 
-    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, TaskResponse]:
+    async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         @self.runtime.remote
         def fn_wrapper(fn, *args):
             if asyncio.iscoroutinefunction(fn):
@@ -204,7 +204,7 @@ class RayRuntime(RuntimeEngine):
         return {res.id: res for res in res_list}
 
 
-RUNTIME = {}
+RUNTIME: Dict[str, RuntimeEngine] = {}
 
 
 def register(key, runtime_backend):
