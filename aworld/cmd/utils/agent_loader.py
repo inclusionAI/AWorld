@@ -36,7 +36,7 @@ def get_agent(agent_id) -> AgentModel:
         AgentModel: The agent model
     """
     if len(_agent_cache) == 0:
-        _list_agents()
+        list_agents()
     if agent_id not in _agent_cache:
         raise Exception(f"Agent {agent_id} not found")
     return _agent_cache[agent_id]

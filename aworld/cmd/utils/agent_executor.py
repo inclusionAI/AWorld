@@ -27,6 +27,9 @@ async def stream_run(request: ChatCompletionRequest):
         load_dotenv(env_file, override=True, verbose=True)
 
     async for chunk in instance.run(request=request):
+        with open("output.txt", "a") as f:
+            f.write(chunk)
+            f.write("\n")
         response = ChatCompletionResponse(
             choices=[
                 ChatCompletionChoice(
