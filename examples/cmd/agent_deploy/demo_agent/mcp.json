@@ -1,0 +1,20 @@
+{
+    "mcpServers": {
+        "fetch": {
+            "command": "uvx",
+            "args": [
+                "-i",
+                "https://mirrors.aliyun.com/pypi/simple/",
+                "mcp-server-fetch",
+                "--ignore-robots-txt"
+            ]
+        },
+        "time": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp_server_time"
+            ]
+        }
+    }
+}

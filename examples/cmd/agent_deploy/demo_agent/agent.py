@@ -17,17 +17,17 @@ class AWorldAgent(BaseAWorldAgent):
         super().__init__(*args, **kwargs)
 
     def name(self):
-        return "Weather Agent"
+        return "Demo Agent"
 
     def description(self):
-        return "Query Real-time Weather Information"
+        return "Demo Agent with fetch and time mcp server"
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
-        llm_provider = os.getenv("LLM_PROVIDER_WEATHER", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME_WEATHER")
-        llm_api_key = os.getenv("LLM_API_KEY_WEATHER")
-        llm_base_url = os.getenv("LLM_BASE_URL_WEATHER")
-        llm_temperature = os.getenv("LLM_TEMPERATURE_WEATHER", 0.0)
+        llm_provider = os.getenv("LLM_PROVIDER_DEMO", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_DEMO")
+        llm_api_key = os.getenv("LLM_API_KEY_DEMO")
+        llm_base_url = os.getenv("LLM_BASE_URL_DEMO")
+        llm_temperature = os.getenv("LLM_TEMPERATURE_DEMO", 0.0)
 
         if not llm_model_name or not llm_api_key or not llm_base_url:
             raise ValueError(
@@ -49,8 +49,8 @@ class AWorldAgent(BaseAWorldAgent):
 
         super_agent = Agent(
             conf=agent_config,
-            name="weather_agent",
-            system_prompt="You are a weather agent, you can query real-time weather information",
+            name="demo_agent",
+            system_prompt="You are a demo agent, you can query current time and fetch data from the internet",
             mcp_config=mcp_config,
             mcp_servers=mcp_config.get("mcpServers", {}).keys(),
         )

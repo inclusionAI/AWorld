@@ -69,6 +69,7 @@ class OpenAworldUI(AworldUI):
             await consume_content(__output__.reasoning, __log_item)
             await consume_content(__output__.response, __log_item)
 
+        logger.info(f"items: {items}")
         return items
 
     async def tool_result(self, output: ToolResultOutput):
@@ -113,7 +114,7 @@ class OpenAworldUI(AworldUI):
         emptyLine = "\n\n----\n\n"
         if output.status == "START":
             # await self.emit_message(step_loading_template.format(data = output.name))
-            return f"{output.name} 🛫START \n\n"
+            return f"### {output.name} 🛫START \n\n"
         elif output.status == "FINISHED":
             return f"{output.name} 🛬FINISHED {emptyLine}"
         elif output.status == "FAILED":
