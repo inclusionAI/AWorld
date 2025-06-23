@@ -202,7 +202,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
-            if eventbus:
+            if eventbus is not None:
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
                     tool_name=act.tool_name,
@@ -241,7 +241,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
             # send tool results output
-            if eventbus:
+            if eventbus is not None:
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
                     tool_name=act.tool_name,
@@ -262,7 +262,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 )
                 await eventbus.publish(tool_output_message)
 
-        if eventbus:
+        if eventbus is not None:
             await eventbus.publish(Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
