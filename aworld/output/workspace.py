@@ -144,8 +144,6 @@ class WorkSpace(BaseModel):
         """
         if storage_path is None:
             storage_path = os.path.join("data", "workspaces", workspace_id)
-        else:
-            storage_path = os.path.join(storage_path, workspace_id)
         workspace = cls(
             workspace_id=workspace_id,
             name=name,
@@ -236,7 +234,6 @@ class WorkSpace(BaseModel):
 
         # Add to workspace
         for artifact in artifacts:
-            self.artifacts.append(artifact)
             # Store in repository
             self._store_artifact(artifact)
 

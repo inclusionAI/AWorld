@@ -3,15 +3,12 @@ import json
 import logging
 import os
 import sys
+from typing import List, Dict, Any, Optional, Union
 
 import aiohttp
-from typing import List, Dict, Any, Optional, Union
-from dotenv import load_dotenv
 from mcp.server import FastMCP
-from pydantic import Field
 from mcp.types import TextContent
-
-from aworld.logs.util import logger
+from pydantic import Field
 
 mcp = FastMCP("aworldsearch-server")
 
@@ -25,7 +22,7 @@ async def search_single(query: str, num: int = 5) -> Optional[Dict[str, Any]]:
         domain = os.getenv('AWORLD_SEARCH_DOMAIN')
         uid = os.getenv('AWORLD_SEARCH_UID')
         if not url or not searchMode or not source or not domain:
-            logger.warning(f"Query failed: url, searchMode, source, domain parameters incomplete")
+            logging.warning(f"Query failed: url, searchMode, source, domain parameters incomplete")
             return None
 
         headers = {
@@ -46,16 +43,16 @@ async def search_single(query: str, num: int = 5) -> Optional[Dict[str, Any]]:
             try:
                 async with session.post(url, headers=headers, json=data) as response:
                     if response.status != 200:
-                        logger.warning(f"Query failed: {query}, status code: {response.status}")
+                        logging.warning(f"Query failed: {query}, status code: {response.status}")
                         return None
 
                     result = await response.json()
                     return result
             except aiohttp.ClientError:
-                logger.warning(f"Request error: {query}")
+                logging.warning(f"Request error: {query}")
                 return None
     except Exception:
-        logger.warning(f"Query exception: {query}")
+        logging.warning(f"Query exception: {query}")
         return None
 
 
@@ -165,12 +162,15 @@ async def search(
             })
 
         search_output_dict = {
-            "query": combined_query,
-            "results": search_items
+            "artifact_type": "WEB_PAGES",
+            "artifact_data": {
+                "query": combined_query,
+                "results": search_items
+            }
         }
 
         # Log results
-        logger.info(f"Completed {len(query_list)} queries, found {len(all_valid_docs)} valid documents")
+        logging.info(f"Completed {len(query_list)} queries, found {len(all_valid_docs)} valid documents")
 
         # Initialize TextContent with additional parameters
         return TextContent(
@@ -180,7 +180,7 @@ async def search(
         )
     except Exception as e:
         # Handle errors
-        logger.error(f"Search error: {e}")
+        logging.error(f"Search error: {e}")
         # Initialize TextContent with additional parameters
         return TextContent(
             type="text",
