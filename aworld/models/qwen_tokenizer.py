@@ -221,6 +221,7 @@ class QWenTokenizer:
         return len(self.tokenize(text))
 
     def truncate(self, text: str, max_token: int, start_token: int = 0, keep_both_sides: bool = False) -> str:
+        max_token = int(max_token)
         token_list = self.tokenize(text)[start_token:]
         if len(token_list) <= max_token:
             return self.convert_tokens_to_string(token_list)
