@@ -62,7 +62,7 @@ class TestContextManagement(BaseTest):
 
     def __init__(self):
         """Set up test fixtures"""
-        self.mock_model_name = "llama-2-7b-chat-hf-function-calling-v2"
+        self.mock_model_name = "qwen/qwen3-1.7b"
         self.mock_base_url = "http://localhost:1234/v1"
         self.mock_api_key = "lm-studio"
         os.environ["LLM_API_KEY"] = self.mock_api_key
@@ -70,9 +70,15 @@ class TestContextManagement(BaseTest):
         os.environ["LLM_MODEL_NAME"] = self.mock_model_name
         self.mock_agent = Agent(
             conf=AgentConfig(
-                llm_model_name=self.mock_model_name,
-                llm_base_url=self.mock_base_url,
-                llm_api_key=self.mock_api_key
+                llm_config=ModelConfig(
+                    llm_model_name=self.mock_model_name,
+                    llm_base_url=self.mock_base_url,
+                    llm_api_key=self.mock_api_key
+                )
+                # two ways setting model_config
+                # llm_model_name=self.mock_model_name,
+                # llm_base_url=self.mock_base_url,
+                # llm_api_key=self.mock_api_key
             ),
             name="my_agent",
             system_prompt="You are a helpful assistant.",

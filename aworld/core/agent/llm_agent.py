@@ -186,7 +186,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         messages.append(cur_msg)
 
         # truncate and other process
-        messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+        try:
+            messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+        except Exception as e:
+            logger.warning(f"Failed to process messages in _messages_transform: {e}")
+            logger.debug(f"Process messages error details: {traceback.format_exc()}")
         self.agent_context.update_messages(messages)
         return messages
 
@@ -250,7 +254,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         messages.append(cur_msg)
 
         # truncate and other process
-        messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+        try:
+            messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+        except Exception as e:
+            logger.warning(f"Failed to process messages in messages_transform: {e}")
+            logger.debug(f"Process messages error details: {traceback.format_exc()}")
         self.agent_context.set_messages(messages)
         return messages
 
@@ -971,7 +979,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 llm_config = ModelConfig(llm_provider=llm_provider, llm_model_name=model_name, llm_api_key=model_api_key) \
                         if model_url is None\
                         else ModelConfig(llm_base_url=model_url, llm_model_name=model_name, llm_api_key=model_api_key)
-                self.agent_context.set_model_config(llm_config)
+            self.agent_context.set_model_config(llm_config)
         except Exception as e:
             logger.warn(f"Failed to initialize agent context model config: {e}")
         self.agent_context.context_rule = context_rule

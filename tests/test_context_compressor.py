@@ -22,7 +22,7 @@ class TestPromptCompressor(BaseTest):
 
     def __init__(self):
         """Set up test fixtures"""
-        self.mock_model_name = "qwen/qwen3-8b"
+        self.mock_model_name = "qwen/qwen3-1.7b"
         self.mock_base_url = "http://localhost:1234/v1"
         self.mock_api_key = "lm-studio"
         self.mock_llm_config = ModelConfig(

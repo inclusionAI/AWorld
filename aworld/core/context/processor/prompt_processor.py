@@ -471,6 +471,15 @@ class PromptProcessor:
     def process_messages(self, messages: List[Dict[str, Any]], context: Context) -> ContextProcessingResult:
         """Process complete context, return processing results and statistics"""
         start_time = time.time()
+        if not self.context_rule.optimization_config.enabled:
+            return ContextProcessingResult(
+                processed_messages=messages,
+                processed_tool_results=None,
+                statistics={
+                    "total_processing_time": 0,
+                    "original_message_count": len(messages),
+                },
+            )
 
         # 1. Content compression
         compressed_messages = self.compress_messages(messages)
