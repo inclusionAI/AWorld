@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel,Field
 from enum import Enum
 
 from aworld.logs.util import logger

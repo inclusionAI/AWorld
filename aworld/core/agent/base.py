@@ -137,8 +137,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if eventbus is not None:
             await eventbus.publish(Message(
                 category=Constants.OUTPUT,
-                payload=StepOutput.build_start_output(name=f"{self.id()}",
-                                                      step_num=0),
+                payload=StepOutput.build_start_output(name=f"{self.id()}",alias_name=self.name(),step_num=0),
                 sender=self.id(),
                 session_id=Context.instance().session_id
             ))

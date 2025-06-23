@@ -1,59 +1,70 @@
 import logging
 import os
+from typing import List, Optional
+from pydantic import BaseModel
+
+from fastapi import APIRouter, HTTPException, status, Query, Body
 
 from aworld.output import WorkSpace, ArtifactType
-from fastapi import APIRouter, HTTPException, status
+from aworld.output.utils import load_workspace
 
-WORKSPACE_TYPE = os.environ.get("WORKSPACE_TYPE", "local")
-WORKSPACE_PATH = os.environ.get("WORKSPACE_PATH", "./data/workspaces")
 router = APIRouter()
 
-prefix="/api/workspaces"
 
 @router.get("/{workspace_id}/tree")
 async def get_workspace_tree(workspace_id: str):
     logging.info(f"get_workspace_tree: {workspace_id}")
-    workspace = await load_workspace(workspace_id)
+    workspace = await get_workspace(workspace_id)
     return workspace.generate_tree_data()
 
 
-@router.get("/{workspace_id}/artifacts")
-async def get_workspace_artifacts(workspace_id: str, artifact_type: str):
-    if artifact_type not in ArtifactType.__members__:
-        logging.error(f"Invalid artifact_type: {artifact_type}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid artifact type")
+class ArtifactRequest(BaseModel):
+    artifact_types: Optional[List[str]] = None
 
-    logging.info(f"Fetching artifacts of type: {artifact_type}")
-    workspace = await load_workspace(workspace_id)
 
+@router.post("/{workspace_id}/artifacts")
+async def get_workspace_artifacts(workspace_id: str, request: ArtifactRequest):
+    """
+    Get artifacts by workspace id and filter by a list of artifact types.
+    Args:
+        workspace_id: Workspace ID
+        request: Request body containing optional artifact_types list
+    Returns:
+        Dict with filtered artifacts
+    """
+    artifact_types = request.artifact_types
+    if artifact_types:
+        # Validate all types
+        invalid_types = [t for t in artifact_types if t not in ArtifactType.__members__]
+        if invalid_types:
+            logging.error(f"Invalid artifact_types: {invalid_types}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"Invalid artifact types: {invalid_types}")
+        logging.info(f"Fetching artifacts of types: {artifact_types}")
+    else:
+        logging.info(f"Fetching all artifacts (no type filter)")
+
+    workspace = await get_workspace(workspace_id)
+    all_artifacts = workspace.list_artifacts()
+    if artifact_types:
+        filtered_artifacts = [a for a in all_artifacts if a.artifact_type.name in artifact_types]
+    else:
+        filtered_artifacts = all_artifacts
     return {
-        "data": workspace.list_artifacts(ArtifactType[artifact_type])
+        "data": filtered_artifacts
     }
 
 
 @router.get("/{workspace_id}/file/{artifact_id}/content")
 async def get_workspace_file_content(workspace_id: str, artifact_id: str):
     logging.info(f"get_workspace_file_content: {workspace_id}, {artifact_id}")
-    workspace = await load_workspace(workspace_id)
+    workspace = await get_workspace(workspace_id)
     return {
         "data": workspace.get_file_content_by_artifact_id(artifact_id)
     }
 
-    
-def load_workspace(workspace_id: str):
-    
-    """
-    This function is used to get the workspace by its id.
-    It first checks the workspace type and then creates the workspace accordingly.
-    If the workspace type is not valid, it raises an HTTPException.
-    """
-    if workspace_id is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Workspace ID is required")
-    
-    if WORKSPACE_TYPE == "local":
-        workspace = WorkSpace.from_local_storages(workspace_id, storage_path=os.path.join(WORKSPACE_PATH, workspace_id))
-    elif WORKSPACE_TYPE == "oss":
-        workspace = WorkSpace.from_oss_storages(workspace_id, storage_path=os.path.join(WORKSPACE_PATH, workspace_id))
-    else:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid workspace type")
-    return workspace
+
+async def get_workspace(workspace_id: str) -> WorkSpace:
+    workspace_type = os.environ.get("WORKSPACE_TYPE", "local")
+    workspace_path = os.environ.get("WORKSPACE_PATH", "./data/workspaces")
+    return await load_workspace(workspace_id, workspace_type, workspace_path)
