@@ -64,7 +64,7 @@ class DefaultAgentHandler(AgentHandler):
                     payload=data.content,
                     sender=data.observer,
                     session_id=Context.instance().session_id,
-                    topic=TaskType.FINISHED
+                    topic=TopicType.FINISHED
                 )
                 logger.info(f"agent handler send finished message: {msg}")
                 yield msg
