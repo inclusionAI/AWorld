@@ -212,6 +212,7 @@ class OpenAITokenizer:
         return len(self.encode(text))
 
     def truncate(self, text: str, max_token: int, start_token: int = 0, keep_both_sides: bool = False) -> str:
+        max_token = int(max_token)
         token_ids = self.encode(text)[start_token:]
         if len(token_ids) <= max_token:
             return self.decode(token_ids)

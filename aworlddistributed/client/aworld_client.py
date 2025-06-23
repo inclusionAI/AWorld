@@ -1,10 +1,11 @@
 import asyncio
 import logging
 import os
+import traceback
 from datetime import datetime
 from typing import AsyncGenerator
 
-from aworld.models.llm import acall_llm_model, get_llm_model
+from aworld.models.llm import acall_llm_model, get_llm_model, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from pydantic import BaseModel, Field
 
@@ -117,6 +118,7 @@ class AworldTaskClient(BaseModel):
                     task_logger.log_task_submission(task, aworld_server, "server_close_connection", str(e))
                     logging.error(f"execute task to {task.node_id} server_close_connection: [{e}], please see replays wait a moment")
                     return
+            traceback.print_exc()
             logging.error(f"execute task to {task.node_id} execute_failed: [{e}], please see logs from server ")
             task_logger.log_task_submission(task, aworld_server, "execute_failed", str(e))
 
@@ -144,7 +146,7 @@ class AworldTaskClient(BaseModel):
             {"role": "user", "content": task.agent_input}
         ]
         #call_llm_model
-        data = await acall_llm_model(llm_model, messages, stream=True, user={
+        data = acall_llm_model_stream(llm_model, messages, stream=True, user={
             "user_id": task.user_id,
             "session_id": task.session_id,
             "task_id": task.task_id,

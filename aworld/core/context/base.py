@@ -2,13 +2,13 @@
 # Copyright (c) 2025 inclusionAI.
 from collections import Counter, OrderedDict
 from typing import Dict, List, Any, Optional, Callable, TypedDict
-from threading import local
 from dataclasses import dataclass
 
 from aworld.config import ConfigDict
 from aworld.config.conf import ContextRuleConfig, ModelConfig
 from aworld.core.context.session import Session
 from aworld.core.singleton import InheritanceSingleton
+from aworld.models.model_response import ModelResponse
 from aworld.utils.common import nest_dict_counter
 
 @dataclass
@@ -48,7 +48,7 @@ class AgentContext(dict):
     ## Field Classification
     - **Immutable Configuration Fields**: agent_id, agent_name, agent_desc, system_prompt, 
       agent_prompt, tool_names, context_rule
-    - **Mutable Runtime Fields**: tools, step, messages, context_usage
+    - **Mutable Runtime Fields**: tools, step, messages, context_usage, llm_output
     
     ## LLM Call Intervention Mechanism
     AgentContext implements complete control over LLM calls through the following mechanisms:
@@ -86,6 +86,7 @@ class AgentContext(dict):
     step: int = 0
     messages: List[Dict[str, Any]] = None
     context_usage: ContextUsage = None
+    llm_output: ModelResponse = None
 
     def __init__(self, 
                  agent_id: str = None,
@@ -100,6 +101,7 @@ class AgentContext(dict):
                  step: int = 0,
                  messages: List[Dict[str, Any]] = None,
                  context_usage: ContextUsage = None,
+                 llm_output: ModelResponse = None,
                  **kwargs):
         # Configuration fields
         self.agent_id = agent_id
@@ -116,7 +118,8 @@ class AgentContext(dict):
         self.step = step
         self.messages = messages if messages is not None else []
         self.context_usage = context_usage if context_usage is not None else ContextUsage()
-        
+        self.llm_output = llm_output
+
         # Additional fields for backward compatibility
         self._init(**kwargs)
 
@@ -132,12 +135,18 @@ class AgentContext(dict):
     def set_tools(self, tools: List[str]):
         self.tools = tools
     
+    def set_llm_output(self, llm_output: ModelResponse):
+        self.llm_output = llm_output
+
     def increment_step(self) -> int:
         self.step += 1
         return self.step
     
     def set_step(self, step: int):
         self.step = step
+    
+    def get_step(self) -> int:
+        return self.step
     
     def update_context_usage(self, used_context_length: int = None, total_context_length: int = None):
         if used_context_length is not None:
@@ -162,13 +171,15 @@ class Context(InheritanceSingleton):
 
     def __init__(self,
                  user: str = None,
-                 *,
                  task_id: str = None,
                  trace_id: str = None,
                  session: Session = None,
-                 engine: str = None):
+                 engine: str = None,
+                 **kwargs):
+
+        super().__init__()
         self._user = user
-        self._init(task_id=task_id, trace_id=trace_id, session=session, engine=engine)
+        self._init(task_id=task_id, trace_id=trace_id, session=session, engine=engine, **kwargs)
 
     def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None):
         self._task_id = task_id

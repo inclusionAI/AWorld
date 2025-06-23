@@ -2,6 +2,8 @@
 # Copyright (c) 2025 inclusionAI.
 import os
 
+from aworld.utils.import_package import import_package
+import_package("dotenv", install_name="python-dotenv")
 from dotenv import load_dotenv
 
 sucess = load_dotenv()

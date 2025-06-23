@@ -1,6 +1,5 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import abc
 import asyncio
 import time
 import traceback
@@ -10,7 +9,7 @@ from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
 
 from aworld.core.agent.llm_agent import Agent
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
@@ -21,8 +20,8 @@ from aworld.runners.handler.task import DefaultTaskHandler, TaskHandler
 from aworld.runners.handler.tool import DefaultToolHandler, ToolHandler
 
 from aworld.runners.task_runner import TaskRunner
-from aworld.runners.utils import TaskType
 from aworld.utils.common import override_in_subclass, new_instance
+from aworld.runners.state_manager import EventRuntimeStateManager
 
 
 class TaskEventRunner(TaskRunner):
@@ -34,6 +33,7 @@ class TaskEventRunner(TaskRunner):
         self.event_mng = EventManager()
         self.hooks = {}
         self.background_tasks = set()
+        self.state_manager = EventRuntimeStateManager.instance()
 
     async def pre_run(self):
         await super().pre_run()
@@ -63,7 +63,8 @@ class TaskEventRunner(TaskRunner):
                 await self.event_mng.register(Constants.TOOL, tool.name(), tool.handler)
             else:
                 await self.event_mng.register(Constants.TOOL, tool.name(), tool.step)
-            handlers = self.event_mng.event_bus.get_topic_handlers(Constants.TOOL, tool.name())
+            handlers = self.event_mng.event_bus.get_topic_handlers(
+                Constants.TOOL, tool.name())
             if not handlers:
                 await self.event_mng.register(Constants.TOOL, Constants.TOOL, tool.step)
 
@@ -127,11 +128,13 @@ class TaskEventRunner(TaskRunner):
 
         results = []
         handlers = event_bus.get_handlers(key)
+        self.state_manager.start_message_node(message)
         if handlers:
             if message.topic:
                 handlers = {message.topic: handlers.get(message.topic, [])}
             elif message.receiver:
-                handlers = {message.receiver: handlers.get(message.receiver, [])}
+                handlers = {message.receiver: handlers.get(
+                    message.receiver, [])}
 
             for topic, handler_list in handlers.items():
                 if not handler_list:
@@ -139,7 +142,8 @@ class TaskEventRunner(TaskRunner):
                     continue
 
                 for handler in handler_list:
-                    t = asyncio.create_task(self._handle_task(message, handler))
+                    t = asyncio.create_task(
+                        self._handle_task(message, handler))
                     self.background_tasks.add(t)
                     t.add_done_callback(self.background_tasks.discard)
         else:
@@ -151,6 +155,7 @@ class TaskEventRunner(TaskRunner):
             t.add_done_callback(self.background_tasks.discard)
             # wait until it is complete
             await t
+        self.state_manager.end_message_node(message)
         return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
@@ -163,21 +168,30 @@ class TaskEventRunner(TaskRunner):
 
             if isinstance(con, Message):
                 # process in framework
+                self.state_manager.save_message_handle_result(name=handler.__name__,
+                                                              message=message,
+                                                              result=con)
                 async for event in self._inner_handler_process(
                         results=[con],
                         handlers=self.handlers
                 ):
                     await self.event_mng.emit_message(event)
+            else:
+                self.state_manager.save_message_handle_result(name=handler.__name__,
+                                                              message=message)
         except Exception as e:
             logger.warning(f"{handler} process fail. {traceback.format_exc()}")
-
-            await self.event_mng.event_bus.publish(Message(
+            error_msg = Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg=str(e), data=message),
                 sender=self.name,
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR
-            ))
+                topic=TopicType.ERROR
+            )
+            self.state_manager.save_message_handle_result(name=handler.__name__,
+                                                          message=message,
+                                                          result=error_msg)
+            await self.event_mng.event_bus.publish(error_msg)
 
     async def _raw_task(self, messages: List[Message]):
         # process in framework
@@ -211,7 +225,8 @@ class TaskEventRunner(TaskRunner):
                                                            answer=answer,
                                                            success=True if not msg else False,
                                                            id=self.task.id,
-                                                           time_cost=(time.time() - start),
+                                                           time_cost=(
+                                                               time.time() - start),
                                                            usage=self.context.token_usage)
                     break
 
@@ -232,7 +247,8 @@ class TaskEventRunner(TaskRunner):
                             if hasattr(agent, 'sandbox') and agent.sandbox:
                                 await agent.sandbox.cleanup()
                         except Exception as e:
-                            logger.warning(f"event_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
+                            logger.warning(
+                                f"event_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
 
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:

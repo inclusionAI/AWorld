@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel,Field
 from enum import Enum
 
 from aworld.logs.util import logger
@@ -135,7 +135,6 @@ class ModelConfig(BaseConfig):
 class LlmCompressionConfig(BaseConfig):
     enabled: bool = False
     trigger_compress_token_length: int = 10000  # Trigger compression when exceeding this length
-    trigger_mapreduce_compress_token_length: int = 100000  # Maximum tokens for map reduce
     compress_model: ModelConfig = None
 
 class OptimizationConfig(BaseConfig):
@@ -164,6 +163,8 @@ class AgentConfig(BaseConfig):
     llm_client_type: ClientType = ClientType.SDK
     llm_sync_enabled: bool = True
     llm_async_enabled: bool = True
+    max_model_len: Optional[int] = None  # Maximum model context length
+    model_type: Optional[str] = 'qwen' # Model type determines tokenizer and maximum length
 
     # default reset init in first
     need_reset: bool = True

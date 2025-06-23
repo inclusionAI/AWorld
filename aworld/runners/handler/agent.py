@@ -4,14 +4,13 @@ import abc
 from typing import AsyncGenerator, Tuple
 
 from aworld.core.agent.base import is_agent
-from aworld.core.agent.swarm import Swarm
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
-from aworld.runners.utils import endless_detect, TaskType
+from aworld.runners.utils import endless_detect
 from aworld.output.base import StepOutput, Output, ToolResultOutput
 
 
@@ -50,7 +49,7 @@ class DefaultAgentHandler(AgentHandler):
                 payload=TaskItem(msg="no data to process.", data=data, stop=True),
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR
+                topic=TopicType.ERROR
             )
             return
 
@@ -65,7 +64,7 @@ class DefaultAgentHandler(AgentHandler):
                     payload=data.content,
                     sender=data.observer,
                     session_id=Context.instance().session_id,
-                    topic=TaskType.FINISHED
+                    topic=TopicType.FINISHED
                 )
                 logger.info(f"agent handler send finished message: {msg}")
                 yield msg
@@ -81,7 +80,7 @@ class DefaultAgentHandler(AgentHandler):
                         payload=data.content,
                         sender=agent.id(),
                         session_id=Context.instance().session_id,
-                        topic=TaskType.FINISHED
+                        topic=TopicType.FINISHED
                     )
                     logger.info(f"agent handler send finished message: {msg}")
                     yield msg
@@ -117,7 +116,7 @@ class DefaultAgentHandler(AgentHandler):
                     payload=TaskItem(msg="action not a ActionModel.", data=data, stop=True),
                     sender=self.name(),
                     session_id=Context.instance().session_id,
-                    topic=TaskType.ERROR
+                    topic=TopicType.ERROR
                 )
                 logger.info(f"agent handler send task message: {msg}")
                 yield msg
@@ -175,7 +174,7 @@ class DefaultAgentHandler(AgentHandler):
                                  stop=True),
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR
+                topic=TopicType.ERROR
             )
             return
 
@@ -195,7 +194,7 @@ class DefaultAgentHandler(AgentHandler):
                               payload=TaskItem(msg=f"Can not handoffs {agent_name} agent ", data=observation),
                               sender=self.name(),
                               session_id=Context.instance().session_id,
-                              topic=TaskType.RERUN)
+                              topic=TopicType.RERUN)
             return
 
         yield Message(
@@ -228,7 +227,7 @@ class DefaultAgentHandler(AgentHandler):
                 payload=action,
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR,
+                topic=TopicType.ERROR,
             )
         elif idx == len(self.swarm.ordered_agents) - 1:
             logger.info(f"execute loop {self.swarm.cur_step}.")
@@ -237,7 +236,7 @@ class DefaultAgentHandler(AgentHandler):
                 payload=action.policy_info,
                 sender=agent.id(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.FINISHED
+                topic=TopicType.FINISHED
             )
         else:
             # means the loop finished
@@ -258,7 +257,7 @@ class DefaultAgentHandler(AgentHandler):
                 payload=action,
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.ERROR,
+                topic=TopicType.ERROR,
             )
         elif idx == len(self.swarm.ordered_agents) - 1:
             # supported sequence loop
@@ -269,7 +268,7 @@ class DefaultAgentHandler(AgentHandler):
                     payload=action.policy_info,
                     sender=agent.id(),
                     session_id=Context.instance().session_id,
-                    topic=TaskType.FINISHED
+                    topic=TopicType.FINISHED
                 )
             else:
                 self.swarm.cur_step += 1
@@ -279,7 +278,7 @@ class DefaultAgentHandler(AgentHandler):
                     payload='',
                     sender=agent.id(),
                     session_id=Context.instance().session_id,
-                    topic=TaskType.START
+                    topic=TopicType.START
                 )
         else:
             # means the loop finished
@@ -302,7 +301,7 @@ class DefaultAgentHandler(AgentHandler):
                 payload=action.policy_info,
                 sender=agent.id(),
                 session_id=Context.instance().session_id,
-                topic=TaskType.FINISHED
+                topic=TopicType.FINISHED
             )
             return
 
@@ -313,7 +312,7 @@ class DefaultAgentHandler(AgentHandler):
                     payload=action.policy_info,
                     sender=agent.id(),
                     session_id=Context.instance().session_id,
-                    topic=TaskType.FINISHED
+                    topic=TopicType.FINISHED
                 )
             else:
                 self.swarm.cur_step += 1

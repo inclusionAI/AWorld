@@ -3,12 +3,13 @@ import os
 import traceback
 from typing import Optional
 
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
+from aworld.config import ConfigDict
 from aworld.core.memory import MemoryStore, MemoryConfig, MemoryItem
 from aworld.logs.util import logger
 from aworld.memory.main import Memory
+from aworld.models.llm import get_llm_model
 
 
 class Mem0Memory(Memory):
@@ -16,14 +17,15 @@ class Mem0Memory(Memory):
         super().__init__(memory_store, config, **kwargs)
         self.config = config
 
-        self.config.llm_instance = ChatOpenAI(
-            model=os.getenv("MEM_LLM_MODEL_NAME") if os.getenv("MEM_LLM_MODEL_NAME") else os.getenv(
+        conf = ConfigDict(
+            llm_provider=config.llm_provider,
+            llm_model_name=os.getenv("MEM_LLM_MODEL_NAME") if os.getenv("MEM_LLM_MODEL_NAME") else os.getenv(
                 'LLM_MODEL_NAME'),
-            api_key=os.getenv("MEM_LLM_API_KEY") if os.getenv("MEM_LLM_API_KEY") else os.getenv('LLM_API_KEY'),
-            base_url=os.getenv("MEM_LLM_BASE_URL") if os.getenv("MEM_LLM_BASE_URL") else os.getenv('LLM_BASE_URL'),
-            temperature=os.getenv("MEM_LLM_TEMPERATURE") if os.getenv("MEM_LLM_TEMPERATURE") else 1.0,
-            streaming=False
+            llm_temperature=os.getenv("MEM_LLM_TEMPERATURE") if os.getenv("MEM_LLM_TEMPERATURE") else 1.0,
+            llm_base_url=os.getenv("MEM_LLM_BASE_URL") if os.getenv("MEM_LLM_BASE_URL") else os.getenv('LLM_BASE_URL'),
+            llm_api_key=os.getenv("MEM_LLM_API_KEY") if os.getenv("MEM_LLM_API_KEY") else os.getenv('LLM_API_KEY')
         )
+        self.config.llm_instance = get_llm_model(conf=conf, streaming=False)
 
         # Check for required packages
         try:
@@ -70,7 +72,6 @@ class Mem0Memory(Memory):
                 filters=message_filters
             )
         self.memory_store.add(memory_item)
-
 
     def _need_summary(self, memory_item, message_filters):
         """
@@ -119,7 +120,7 @@ class Mem0Memory(Memory):
             return
 
         # Add the summary message
-        summary_message = MemoryItem(content=memory_content, memory_type='summary', metadata= {
+        summary_message = MemoryItem(content=memory_content, memory_type='summary', metadata={
             "role": "user",
             "agent_id": agent_id,
             "session_id": session_id,
@@ -132,12 +133,14 @@ class Mem0Memory(Memory):
         [self.memory_store.delete(m.id) for m in messages_to_process]
         self.memory_store.add(summary_message)
 
-
         logger.info(f'Messages consolidated: {len(messages_to_process)} messages converted to procedural memory')
 
     def _create_summary_memory(self, messages: list[MemoryItem]) -> str | None:
 
-        parsed_messages = [{'role': message.metadata['role'], 'content': message.content if not message.metadata.get('tool_calls') else message.content + "\n\n" + self.__format_tool_call(message.metadata.get('tool_calls')) } for message in messages] #TODO add tool_call from metadata['tool_calls']  such as [{"id": "fc-7b66b01a-f125-44d5-9f32-5e3723384d8e", "type": "function", "function": {"name": "mcp__amap-amap-sse__maps_geo", "arguments": "{\"address\": \"\u676d\u5dde\", \"city\": \"\u676d\u5dde\"}"}}] append to content
+        parsed_messages = [{'role': message.metadata['role'], 'content': message.content if not message.metadata.get(
+            'tool_calls') else message.content + "\n\n" + self.__format_tool_call(message.metadata.get('tool_calls'))}
+                           for message in
+                           messages]  # TODO add tool_call from metadata['tool_calls']  such as [{"id": "fc-7b66b01a-f125-44d5-9f32-5e3723384d8e", "type": "function", "function": {"name": "mcp__amap-amap-sse__maps_geo", "arguments": "{\"address\": \"\u676d\u5dde\", \"city\": \"\u676d\u5dde\"}"}}] append to content
         try:
             results = self.mem0.add(
                 messages=parsed_messages,
@@ -152,6 +155,7 @@ class Mem0Memory(Memory):
             logger.error(f'Error creating summary memory: {e}')
             traceback.print_exc()
             return None
+
     def __format_tool_call(self, tool_calls):
         return json.dumps(tool_calls, default=lambda o: o.model_dump_json() if isinstance(o, BaseModel) else str(o))
 
@@ -166,7 +170,6 @@ class Mem0Memory(Memory):
         return self.memory_store.get(
             memory_id,
         )
-
 
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
         return self.memory_store.get_all(

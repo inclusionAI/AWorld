@@ -18,7 +18,7 @@ class PreLLMCallContextProcessHook(PreLLMCallHook):
         return convert_to_snake("PreLLMCallContextProcessHook")
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        # context.get_agent_context(message.sender) # get agent context
+        ''' context.get_agent_context(message.sender) ''' # get agent context
         # and do something
 
 @HookFactory.register(name="PostLLMCallContextProcessHook",
@@ -29,3 +29,7 @@ class PostLLMCallContextProcessHook(PostLLMCallHook):
 
     def name(self):
         return convert_to_snake("PostLLMCallContextProcessHook")
+
+    async def exec(self, message: Message, context: Context = None) -> Message:
+        '''context.get_agent_context(message.sender)''' # get agent context
+        
