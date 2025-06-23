@@ -10,6 +10,7 @@ import logging
 import aworld.trace as trace
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ async def stream_run(request: ChatCompletionRequest):
         load_dotenv(env_file, override=True, verbose=True)
 
     async for chunk in instance.run(request=request):
-        with open("output.txt", "a") as f:
+        with open(f"trace_data/output_{datetime.now()}.txt", "a") as f:
             f.write(chunk)
             f.write("\n")
         response = ChatCompletionResponse(

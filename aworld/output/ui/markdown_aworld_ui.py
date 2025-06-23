@@ -7,7 +7,11 @@ from pydantic import Field
 from aworld.output import (
     MessageOutput,
     AworldUI,
-    Output, Artifact, ArtifactType, WorkSpace, SearchOutput,
+    Output,
+    Artifact,
+    ArtifactType,
+    WorkSpace,
+    SearchOutput,
 )
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.output.ui.template import tool_card_template
@@ -41,6 +45,7 @@ class MarkdownAworldUI(AworldUI):
                 await queue.put(item)
 
             from asyncio import Queue
+
             queue = Queue()
 
             async def consume_all():
@@ -58,6 +63,7 @@ class MarkdownAworldUI(AworldUI):
 
             # Start the consumer in the background
             import asyncio
+
             consumer_task = asyncio.create_task(consume_all())
 
             while True:
@@ -71,22 +77,20 @@ class MarkdownAworldUI(AworldUI):
 
     async def tool_result(self, output: ToolResultOutput):
         """
-            tool_result
+        tool_result
         """
-        custom_output = f"{output.tool_name}#{output.origin_tool_call.function.name}"
-
-        if output.tool_name == "aworld-playwright"  and output.origin_tool_call.function.name == "browser_navigate":
-            custom_output = f"search `{json.loads(output.origin_tool_call.function.arguments)['url']}`"
-
         artifacts = await self.parse_tool_artifacts(output.metadata)
 
         tool_card_content = {
             "type": "mcp",
-            "custom_output": custom_output,
-            "artifacts": artifacts
+            "tool_name": output.tool_name,
+            "function_name": output.origin_tool_call.function.name,
+            "function_arguments": output.origin_tool_call.function.arguments,
+            "function_result": output.data,
+            "artifacts": artifacts,
         }
         tool_data = tool_card_template.format(
-            tool_card_content = json.dumps(tool_card_content, indent=2)
+            tool_card_content=json.dumps(tool_card_content, indent=2)
         )
 
         return tool_data
@@ -119,19 +123,27 @@ class MarkdownAworldUI(AworldUI):
     async def parse_tool_artifacts(self, metadata):
         result = []
         if not metadata:
-           return result
+            return result
 
         # screenshots
-        if metadata.get('screenshots') and isinstance(metadata.get('screenshots'), list) and len(
-                metadata.get('screenshots')) > 0:
-            for index, screenshot in enumerate(metadata.get('screenshots')):
-                image_artifact = Artifact(artifact_id=str(uuid.uuid4()), artifact_type=ArtifactType.IMAGE,
-                                          content=screenshot.get('ossPath'))
+        if (
+            metadata.get("screenshots")
+            and isinstance(metadata.get("screenshots"), list)
+            and len(metadata.get("screenshots")) > 0
+        ):
+            for index, screenshot in enumerate(metadata.get("screenshots")):
+                image_artifact = Artifact(
+                    artifact_id=str(uuid.uuid4()),
+                    artifact_type=ArtifactType.IMAGE,
+                    content=screenshot.get("ossPath"),
+                )
                 await self.workspace.add_artifact(image_artifact)
-                result.append({
-                    "artifact_type": "IMAGE",
-                    "artifact_id": image_artifact.artifact_id
-                })
+                result.append(
+                    {
+                        "artifact_type": "IMAGE",
+                        "artifact_id": image_artifact.artifact_id,
+                    }
+                )
 
         # web_pages
         if metadata.get("artifact_type") == "WEB_PAGES":
@@ -143,10 +155,7 @@ class MarkdownAworldUI(AworldUI):
                 content=search_output,
                 metadata={
                     "query": search_output.query,
-                }
+                },
             )
-            result.append({
-                "artifact_type": "WEB_PAGES",
-                "artifact_id": artifact_id
-            })
+            result.append({"artifact_type": "WEB_PAGES", "artifact_id": artifact_id})
         return result
