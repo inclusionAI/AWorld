@@ -19,7 +19,6 @@ import {
 } from '@ant-design/x';
 import { Avatar, Button, Flex, type GetProp, message, Spin } from 'antd';
 import { createStyles } from 'antd-style';
-import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import logo from '../assets/aworld_logo.png';
@@ -42,7 +41,7 @@ type SessionMessage = {
 
 type SessionData = {
   user_id: string;
-  id: string;
+  session_id: string;
   name: string;
   description: string;
   created_at: string;
@@ -215,13 +214,9 @@ const App: React.FC = () => {
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
 
   const [inputValue, setInputValue] = useState('');
-  // TODO mock data , remove in the future
   const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [modelsLoading, setModelsLoading] = useState(false);
-  // const [open, setOpen] = useState(false);
-
-
 
 
   // ==================== API Calls ====================
@@ -253,16 +248,13 @@ const App: React.FC = () => {
       if (response.ok) {
         const sessions: SessionData[] = await response.json();
 
-        // 将会话数据存储到 sessionData 状态中
         const sessionDataMap: Record<string, SessionData> = {};
         sessions.forEach(session => {
-          sessionDataMap[session.id] = session;
+          sessionDataMap[session.session_id] = session;
         });
         setSessionData(sessionDataMap);
 
-        // 转换为会话列表格式
         const conversationItems: ConversationItem[] = sessions.map(session => {
-          // 生成会话标题：使用 name 字段，如果为空则使用第一条用户消息的前50个字符
           let label = session.name || session.description;
           if (!label && session.messages.length > 0) {
             const firstUserMessage = session.messages.find(msg => msg.role === 'user');
@@ -279,44 +271,13 @@ const App: React.FC = () => {
           }
 
           return {
-            key: session.id,
+            key: session.session_id,
             label,
-            group: '' // 移除分组
+            group: ''
           };
         });
 
-        // 按创建时间倒序排列（最新的在前面）
-        conversationItems.sort((a, b) => {
-          const sessionA = sessionDataMap[a.key];
-          const sessionB = sessionDataMap[b.key];
-          return dayjs(sessionB.created_at).valueOf() - dayjs(sessionA.created_at).valueOf();
-        });
-
         setConversations(conversationItems);
-
-        // 如果当前没有选中的会话，选择最新的一个
-        if (!curConversation && conversationItems.length > 0) {
-          const latestSession = conversationItems[0];
-          setCurConversation(latestSession.key);
-
-          // 更新sessionId以匹配选中的会话
-          setSessionId(latestSession.key);
-          updateURLSessionId(latestSession.key);
-
-          // 加载该会话的消息历史
-          const session = sessionDataMap[latestSession.key];
-          if (session && session.messages.length > 0) {
-            const chatMessages = session.messages.map((msg, index) => ({
-              id: `${latestSession.key}-${index}`,
-              message: {
-                role: msg.role,
-                content: msg.content
-              },
-              status: 'success' as const
-            }));
-            setMessages(chatMessages);
-          }
-        }
       } else {
         console.error('Failed to fetch sessions');
       }
@@ -325,27 +286,22 @@ const App: React.FC = () => {
     }
   };
 
-  // 初始化
   useEffect(() => {
     fetchModels();
-    fetchSessions(); // 初始加载
+    fetchSessions();
   }, []);
 
-  // 处理URL中的agentid参数与模型选择的同步
   useEffect(() => {
     if (agentId && models.length > 0) {
-      // 检查URL中的agentid是否在models中存在
       const modelExists = models.find(model => model.value === agentId);
       if (modelExists) {
         setSelectedModel(agentId);
       } else {
-        // 如果URL中的agentid不存在于models中，清除URL参数
         setAgentIdAndUpdateURL('');
       }
     }
   }, [agentId, models, setAgentIdAndUpdateURL]);
 
-  // 处理模型选择变化时更新URL
   const handleModelChange = (modelId: string) => {
     setSelectedModel(modelId);
     setAgentIdAndUpdateURL(modelId);
@@ -358,7 +314,7 @@ const App: React.FC = () => {
   // ==================== Runtime ====================
   const [agent] = useXAgent<BubbleDataType>({
     baseURL: '/api/agent/chat/completions',
-    model: selectedModel, // 使用选中的模型
+    model: selectedModel,
     dangerouslyApiKey: 'Bearer sk-xxxxxxxxxxxxxxxxxxxx',
   });
   const loading = agent.isRequesting();
@@ -463,10 +419,6 @@ const App: React.FC = () => {
     }
   };
 
-  // const  = (status: boolean) => {
-  //   setOpen(status);
-  // }
-
   // ==================== Nodes ====================
   const chatSider = (
     <div className={styles.sider}>
@@ -507,38 +459,31 @@ const App: React.FC = () => {
         New Conversation
       </Button>
 
-      {/* 🌟 会话管理 */}
       <Conversations
         items={conversations}
         className={styles.conversations}
         activeKey={curConversation}
         onActiveChange={async (val) => {
-          abortController.current?.abort();
-          // The abort execution will trigger an asynchronous requestFallback, which may lead to timing issues.
-          // In future versions, the sessionId capability will be added to resolve this problem.
-          setTimeout(() => {
-            setCurConversation(val);
+          console.log('active change: session_id', val);
+          setCurConversation(val);
 
-            // 更新sessionId以匹配选中的会话
-            setSessionId(val);
-            updateURLSessionId(val);
+          setSessionId(val);
+          updateURLSessionId(val);
 
-            // 优先从 sessionData 加载消息，如果没有则从 messageHistory 加载
-            const session = sessionData[val];
-            if (session && session.messages.length > 0) {
-              const chatMessages = session.messages.map((msg, index) => ({
-                id: `${val}-${index}`,
-                message: {
-                  role: msg.role,
-                  content: msg.content
-                },
-                status: 'success' as const
-              }));
-              setMessages(chatMessages);
-            } else {
-              setMessages(messageHistory?.[val] || []);
-            }
-          }, 100);
+          const session = sessionData[val];
+          if (session && session.messages.length > 0) {
+            const chatMessages = session.messages.map((msg, index) => ({
+              id: `${val}-${index}`,
+              message: {
+                role: msg.role,
+                content: msg.content
+              },
+              status: 'success' as const
+            }));
+            setMessages(chatMessages);
+          } else {
+            setMessages(messageHistory?.[val] || []);
+          }
         }}
         groupable={false}
         styles={{ item: { padding: '0 8px' } }}
@@ -550,50 +495,13 @@ const App: React.FC = () => {
               icon: <DeleteOutlined />,
               danger: true,
               onClick: () => {
-                const newList = conversations.filter((item) => item.key !== conversation.key);
-                const newKey = newList?.[0]?.key || '';
-                setConversations(newList);
-
-                // 从 sessionData 中删除对应的会话数据
-                const newSessionData = { ...sessionData };
-                delete newSessionData[conversation.key];
-                setSessionData(newSessionData);
-
-                // 从 messageHistory 中删除对应的消息历史
-                const newMessageHistory = { ...messageHistory };
-                delete newMessageHistory[conversation.key];
-                setMessageHistory(newMessageHistory);
-
-                // The delete operation modifies curConversation and triggers onActiveChange, so it needs to be executed with a delay to ensure it overrides correctly at the end.
-                // This feature will be fixed in a future version.
-                setTimeout(() => {
-                  if (conversation.key === curConversation) {
-                    setCurConversation(newKey);
-                    if (newKey) {
-                      // 更新sessionId
-                      setSessionId(newKey);
-                      updateURLSessionId(newKey);
-
-                      // 优先从 sessionData 加载消息
-                      const session = newSessionData[newKey];
-                      if (session && session.messages.length > 0) {
-                        const chatMessages = session.messages.map((msg, index) => ({
-                          id: `${newKey}-${index}`,
-                          message: {
-                            role: msg.role,
-                            content: msg.content
-                          },
-                          status: 'success' as const
-                        }));
-                        setMessages(chatMessages);
-                      } else {
-                        setMessages(newMessageHistory?.[newKey] || []);
-                      }
-                    } else {
-                      setMessages([]);
-                    }
-                  }
-                }, 200);
+                console.log('delete session: session_id', conversation.key);
+                fetch('/api/session/delete', {
+                  method: 'POST',
+                  body: JSON.stringify({ session_id: conversation.key }),
+                }).then(() => {
+                  fetchSessions();
+                });
               },
             },
           ],
@@ -764,7 +672,6 @@ const App: React.FC = () => {
   );
 
   useEffect(() => {
-    // history mock
     if (messages?.length && curConversation) {
       setMessageHistory((prev) => ({
         ...prev,
