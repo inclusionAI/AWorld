@@ -9,15 +9,15 @@ from aworld.runners import state_manager
 from aworld.utils.common import sync_exec
 from aworld.logs.util import logger
 from examples.tools.common import Tools
+from examples.tools.tool_action import GetTraceAction
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.trace.server import get_trace_server
-from aworld.trace.instrumentation.uni_llmmodel import LLMModelInstrumentor
 from aworld.runners.state_manager import RuntimeStateManager, RunNode
 import aworld.trace as trace
 
+
 trace.configure()
-LLMModelInstrumentor().instrument()
 
 
 class TraceAgent(Agent):
@@ -47,6 +47,7 @@ class TraceAgent(Agent):
         tool.reset()
         tool_params = {}
         action = ActionModel(tool_name=tool_name,
+                             action_name=GetTraceAction.GET_TRACE.name,
                              agent_name=self.id(),
                              params=tool_params)
         message = tool.step(action)
@@ -95,6 +96,7 @@ class TraceAgent(Agent):
         tool.reset()
         tool_params = {}
         action = ActionModel(tool_name=tool_name,
+                             action_name=GetTraceAction.GET_TRACE.name,
                              agent_name=self.id(),
                              params=tool_params)
         message = tool.step([action])

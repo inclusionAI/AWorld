@@ -1,13 +1,12 @@
 import copy
 import json
-from aworld.models.llm import LLMModel
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.trace.base import Span
 from aworld.trace.instrumentation.openai.inout_parse import should_trace_prompts
 from aworld.logs.util import logger
 
 
-def parser_request_params(kwargs, instance: LLMModel):
+def parser_request_params(kwargs, instance: 'aworld.models.llm.LLMModel'):
     attributes = {
         "llm.system": instance.provider_name,
         "llm.model": instance.provider.model_name,
@@ -40,7 +39,7 @@ async def handle_request(span: Span, kwargs, instance):
                     attributes.update({
                         f"{prefix}.tool_call_id": msg.get("tool_call_id")})
                 tool_calls = msg.get("tool_calls")
-                logger.info(f"input tool_calls={tool_calls}")
+                # logger.info(f"input tool_calls={tool_calls}")
                 if tool_calls:
                     for i, tool_call in enumerate(tool_calls):
                         if isinstance(tool_call, dict):
@@ -80,7 +79,7 @@ async def handle_request(span: Span, kwargs, instance):
         logger.warning(f"trace handle openai request error: {e}")
 
 
-def get_common_attributes_from_response(instance: LLMModel, is_async, is_streaming):
+def get_common_attributes_from_response(instance: 'LLMModel', is_async, is_streaming):
     operation = "acompletion" if is_async else "completion"
     if is_streaming:
         operation = "astream_completion" if is_async else "stream_completion"
