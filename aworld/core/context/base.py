@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from aworld.config import ConfigDict
 from aworld.config.conf import ContextRuleConfig, ModelConfig
 from aworld.core.context.session import Session
+from aworld.core.context.context_state import ContextState
 from aworld.core.singleton import InheritanceSingleton
 from aworld.models.model_response import ModelResponse
 from aworld.utils.common import nest_dict_counter
@@ -20,7 +21,7 @@ class ContextUsage:
         self.used_context_length = used_context_length
 
 @dataclass
-class AgentContext(dict):
+class AgentContext:
     """Agent context containing both configuration and runtime state.
     
     AgentContext is the core context management class in the AWorld architecture, used to store and manage
@@ -80,6 +81,7 @@ class AgentContext(dict):
     tool_names: List[str] = None
     model_config: ModelConfig = None
     context_rule: ContextRuleConfig = None
+    state: ContextState = None
 
     # ===== Mutable Configuration Fields =====
     tools: List[str] = None
@@ -102,6 +104,7 @@ class AgentContext(dict):
                  messages: List[Dict[str, Any]] = None,
                  context_usage: ContextUsage = None,
                  llm_output: ModelResponse = None,
+                 parent_state: ContextState = None,
                  **kwargs):
         # Configuration fields
         self.agent_id = agent_id
@@ -119,6 +122,10 @@ class AgentContext(dict):
         self.messages = messages if messages is not None else []
         self.context_usage = context_usage if context_usage is not None else ContextUsage()
         self.llm_output = llm_output
+
+        # Initialize ContextState with parent state (Context's state)
+        # If context_state is provided, use it as parent; otherwise will be set later
+        self.state = ContextState(parent_state=parent_state)
 
         # Additional fields for backward compatibility
         self._init(**kwargs)
@@ -160,6 +167,15 @@ class AgentContext(dict):
             return 0.0
         return self.context_usage.used_context_length / self.context_usage.total_context_length
 
+    def set_parent_state(self, parent_state: ContextState):
+        self.state._parent_state = parent_state
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        return self.state.get(key, default)
+    
+    def set_state(self, key: str, value: Any):
+        self.state[key] = value
+
 class Context(InheritanceSingleton):
     """Single instance, can use construction or `instance` static method to create or get `Context` instance.
 
@@ -195,6 +211,7 @@ class Context(InheritanceSingleton):
             "total_tokens": 0,
         }
         self._agent_context_map = {}
+        self.state = ContextState()
         # TODO swarm topology
         # TODO EventManager
         # TODO workspace
@@ -215,6 +232,8 @@ class Context(InheritanceSingleton):
 
     def set_agent_context(self, agent_id: str, agent_context: AgentContext):
         self.check_agent_id(agent_id)
+        # Ensure AgentContext's state references this Context's state as parent
+        agent_context.set_parent_state(self.state)
         self._agent_context_map[agent_id] = agent_context
 
     def get_agent_context(self, agent_id: str) -> Optional[AgentContext]:
@@ -313,3 +332,9 @@ class Context(InheritanceSingleton):
     @property
     def enable_cluster(self):
         return False
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        return self.state.get(key, default)
+    
+    def set_state(self, key: str, value: Any):
+        self.state[key] = value

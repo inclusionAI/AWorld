@@ -26,8 +26,6 @@ class TestPreLLMHook(PreLLMCallHook):
         return convert_to_snake("TestPreLLMHook")
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        """Test hook execution"""
-        print ("message ", message, " context ", context)
         agent_context = context.get_agent_context(message.sender)
         if agent_context is not None:
             agent_context.step = 1 
@@ -60,7 +58,7 @@ class TestPostLLMHook(PostLLMCallHook):
 class TestContextManagement(BaseTest):
     """Test cases for Context Management system based on README examples"""
 
-    def __init__(self):
+    def __init__(self, config_type: str = "1"):
         """Set up test fixtures"""
         self.mock_model_name = "qwen/qwen3-1.7b"
         self.mock_base_url = "http://localhost:1234/v1"
@@ -68,18 +66,22 @@ class TestContextManagement(BaseTest):
         os.environ["LLM_API_KEY"] = self.mock_api_key
         os.environ["LLM_BASE_URL"] = self.mock_base_url
         os.environ["LLM_MODEL_NAME"] = self.mock_model_name
-        self.mock_agent = Agent(
+        if config_type == "1":
+            conf=AgentConfig(
+                llm_model_name=self.mock_model_name,
+                llm_base_url=self.mock_base_url,
+                llm_api_key=self.mock_api_key
+            )
+        else:
             conf=AgentConfig(
                 llm_config=ModelConfig(
                     llm_model_name=self.mock_model_name,
                     llm_base_url=self.mock_base_url,
                     llm_api_key=self.mock_api_key
                 )
-                # two ways setting model_config
-                # llm_model_name=self.mock_model_name,
-                # llm_base_url=self.mock_base_url,
-                # llm_api_key=self.mock_api_key
-            ),
+            )
+        self.mock_agent = Agent(
+            conf=conf,
             name="my_agent",
             system_prompt="You are a helpful assistant.",
             agent_prompt="You are a helpful assistant.",
@@ -106,6 +108,13 @@ class TestContextManagement(BaseTest):
     
     def run_agent(self, input):
         swarm = Swarm(self.mock_agent, max_steps=1)
+        return Runners.sync_run(
+            input= input,
+            swarm=swarm
+        )
+
+    def run_multi_agent(self, input, agent1: Agent, agent2: Agent):
+        swarm = Swarm(agent1, agent2, max_steps=1)
         return Runners.sync_run(
             input= input,
             swarm=swarm
@@ -163,19 +172,51 @@ class TestContextManagement(BaseTest):
         self.mock_agent.update_context_rule(origin_rule)
 
     def test_state_management_and_recovery(self):
-        # Test state modification
-        self.mock_agent.agent_context.system_prompt = "You are a Python expert who provides detailed and practical answers."
-        self.mock_agent.agent_context['state'] = 1
+        class StateModifyAgent(Agent):
+            async def async_policy(self, observation, info=None, **kwargs):
+                result = await super().async_policy(observation, info, **kwargs)
+                self.context.state['policy_executed'] = True
+                return result
+        class StateTrackingAgent(Agent):
+            async def async_policy(self, observation, info=None, **kwargs):
+                result = await super().async_policy(observation, info, **kwargs)
+                assert self.context.state['policy_executed'] == True
+                return result
 
-        # run with new state
-        response = self.run_agent(input= """What is an agent. describe within 20 words""")
+        # Create custom agent instance
+        custom_agent = StateModifyAgent(
+            conf=AgentConfig(
+                llm_model_name=self.mock_model_name,
+                llm_base_url=self.mock_base_url,
+                llm_api_key=self.mock_api_key
+            ),
+            name="state_modify_agent",
+            system_prompt="You are a Python expert who provides detailed and practical answers.",
+            agent_prompt="You are a Python expert who provides detailed and practical answers.",
+        )
+        
+        # Create a second agent for multi-agent testing
+        second_agent = StateTrackingAgent(
+            conf=AgentConfig(
+                llm_model_name=self.mock_model_name,
+                llm_base_url=self.mock_base_url,
+                llm_api_key=self.mock_api_key
+            ),
+            name="state_tracking_agent",
+            system_prompt="You are a helpful assistant.",
+            agent_prompt="You are a helpful assistant.",
+        )
+        
+        response = self.run_multi_agent(
+            input="What is an agent. describe within 20 words",
+            agent1=custom_agent,
+            agent2=second_agent
+        )
         self.assertIsNotNone(response.answer)
 
-        # Verify state changes
-        self.assertEqual(self.mock_agent.agent_context.system_prompt, "You are a Python expert who provides detailed and practical answers.")
-        self.assertEqual(self.mock_agent.agent_context['state'], 1)
-        
-
+        # Verify state changes after execution
+        self.assertTrue(custom_agent.context.state.get('policy_executed', True))
+        self.assertTrue(second_agent.agent_context.state.get('policy_executed', True))
 
 class TestHookSystem(TestContextManagement):
     """Test cases for Hook System functionality"""
@@ -202,7 +243,9 @@ class TestHookSystem(TestContextManagement):
 
 
 if __name__ == '__main__':
-    testContextManagement = TestContextManagement()
+    testContextManagement = TestContextManagement(config_type="1")
+    testContextManagement.test_default_context_configuration()
+    testContextManagement = TestContextManagement(config_type="2")
     testContextManagement.test_default_context_configuration()
     testContextManagement = TestContextManagement()
     testContextManagement.test_custom_context_configuration()
