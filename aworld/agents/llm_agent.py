@@ -72,7 +72,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # init agent context
         context_rule = kwargs.get("context_rule") if kwargs.get("context_rule") else conf.context_rule
         # update agent context by llm_agent
-        self.init_agent_context(conf, context_rule)
+        self.init_agent_context(conf.llm_config, context_rule)
         self.tools_instances = {}
         self.tools_conf = {}
 
@@ -186,7 +186,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         messages.append(cur_msg)
 
         # truncate and other process
-        messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+        try:
+            messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+        except Exception as e:
+            logger.warning(f"Failed to process messages in _messages_transform: {e}")
+            logger.debug(f"Process messages error details: {traceback.format_exc()}")
         self.agent_context.update_messages(messages)
         return messages
 
@@ -250,7 +254,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         messages.append(cur_msg)
 
         # truncate and other process
-        messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+        try:
+            messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+        except Exception as e:
+            logger.warning(f"Failed to process messages in messages_transform: {e}")
+            logger.debug(f"Process messages error details: {traceback.format_exc()}")
         self.agent_context.set_messages(messages)
         return messages
 
@@ -947,7 +955,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             ))
         return [ActionModel(agent_name=self.id(), policy_info=observation.content)]
 
-    def init_agent_context(self, conf: AgentConfig, context_rule: ContextRuleConfig):
+    def init_agent_context(self, llm_config: ModelConfig, context_rule: ContextRuleConfig):
         # Generate default configuration when context_rule is empty
         if context_rule is None:
             context_rule = ContextRuleConfig(
@@ -960,62 +968,26 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 )
             )
         
-        try:
-            llm_config = conf.llm_config
-            model_name = llm_config.llm_model_name if llm_config.llm_model_name else conf.llm_model_name
-            model_url = llm_config.llm_base_url if llm_config.llm_base_url else conf.llm_base_url
-            model_api_key = llm_config.llm_api_key if llm_config.llm_api_key else conf.llm_api_key
-            llm_provider = llm_config.llm_provider if llm_config.llm_provider else conf.llm_provider
-            # model_config
-            if llm_config is None or llm_config.llm_model_name is None:
-                llm_config = ModelConfig(llm_provider=llm_provider, llm_model_name=model_name, llm_api_key=model_api_key) \
-                        if model_url is None\
-                        else ModelConfig(llm_base_url=model_url, llm_model_name=model_name, llm_api_key=model_api_key)
-                self.agent_context.set_model_config(llm_config)
-        except Exception as e:
-            logger.warn(f"Failed to initialize agent context model config: {e}")
+        self.agent_context.set_model_config(llm_config)
         self.agent_context.context_rule = context_rule
         self.agent_context.system_prompt = self.system_prompt
         self.agent_context.agent_prompt = self.agent_prompt
 
-    # ===== Context modification entry methods =====
-    
     def update_system_prompt(self, system_prompt: str):
-        """Update system prompt
-        
-        Args:
-            system_prompt: New system prompt
-        """
         self.system_prompt = system_prompt
         self.agent_context.system_prompt = system_prompt
         logger.info(f"Agent {self.name()} system_prompt updated")
     
     def update_agent_prompt(self, agent_prompt: str):
-        """Update agent prompt
-        
-        Args:
-            agent_prompt: New agent prompt
-        """
         self.agent_prompt = agent_prompt
         self.agent_context.agent_prompt = agent_prompt
         logger.info(f"Agent {self.name()} agent_prompt updated")
     
     def update_context_rule(self, context_rule: ContextRuleConfig):
-        """Update context rule configuration
-        
-        Args:
-            context_rule: New context rule configuration
-        """
         self.agent_context.context_rule = context_rule
         logger.info(f"Agent {self.name()} context_rule updated")
     
     def update_context_usage(self, used_context_length: int = None, total_context_length: int = None):
-        """Update context usage statistics
-        
-        Args:
-            used_context_length: Used context length
-            total_context_length: Total context length
-        """
         self.agent_context.update_context_usage(used_context_length, total_context_length)
         logger.debug(f"Agent {self.name()} context usage updated: {self.agent_context.context_usage}")
 

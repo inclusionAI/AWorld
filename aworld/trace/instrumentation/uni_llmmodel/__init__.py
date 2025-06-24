@@ -2,7 +2,7 @@ import wrapt
 import time
 import inspect
 import traceback
-from typing import Collection, Any, Union
+from typing import Collection, Any
 from aworld.trace.instrumentation import Instrumentor
 from aworld.trace.base import (
     Tracer,
@@ -26,10 +26,6 @@ from aworld.trace.instrumentation.uni_llmmodel.model_response_parse import (
 )
 from aworld.trace.instrumentation.openai.inout_parse import run_async
 
-from aworld.metrics.template import MetricTemplate
-from aworld.metrics.context_manager import MetricContext
-from aworld.metrics.metric import MetricType
-from aworld.models.llm import LLMModel
 from aworld.models.model_response import ModelResponse
 from aworld.logs.util import logger
 
@@ -326,7 +322,7 @@ class LLMModelInstrumentor(Instrumentor):
         pass
 
 
-def wrap_llmmodel(client: LLMModel):
+def wrap_llmmodel(client: 'aworld.models.llm.LLMModel'):
     try:
         tracer_provider = get_tracer_provider_silent()
         if not tracer_provider:

@@ -1,3 +1,4 @@
+import datetime
 import uuid
 from abc import abstractmethod
 from typing import Any, AsyncGenerator, List, Optional
@@ -59,3 +60,13 @@ class BaseAWorldAgent:
         self, prompt: str = None, request: ChatCompletionRequest = None
     ) -> AsyncGenerator[str, None]:
         pass
+
+
+class SessionModel(BaseModel):
+    user_id: str = Field(..., description="The user id")
+    id: str = Field(..., description="The session id")
+    name: str = Field(None, description="The session name")
+    description: str = Field(None, description="The session description")
+    created_at: datetime.datetime = Field(None, description="The session created at")
+    updated_at: datetime.datetime = Field(None, description="The session updated at")
+    messages: List[ChatCompletionMessage] = Field(        None, description="The messages in the session")

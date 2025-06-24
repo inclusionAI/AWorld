@@ -2,28 +2,31 @@ import {
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
-  DislikeOutlined,
-  EditOutlined,
-  LikeOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined
+  ReloadOutlined,
+  MenuUnfoldOutlined
 } from '@ant-design/icons';
 import {
   Attachments,
   Bubble,
   Conversations,
-  Prompts,
   Sender,
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, message, Select, Space, Spin } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Spin, Drawer } from 'antd';
 import { createStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import Prompts from '../pages/components/Prompts';
+import Welcome from '../pages/components/Welcome';
+import { useSessionId } from '../hooks/useSessionId';
+import { useAgentId } from '../hooks/useAgentId';
+import logo from '../assets/aworld_logo.png';
+import './index.less';
 
 type BubbleDataType = {
   role: string;
@@ -47,28 +50,6 @@ const DEFAULT_CONVERSATIONS_ITEMS = [
     group: 'Yesterday',
   },
 ];
-
-const HOT_TOPICS = {
-  key: '1',
-  label: 'Hot Topics',
-  children: [
-    {
-      key: '1-1',
-      description: '杭州天气怎么样?',
-      icon: <span style={{ color: '#f93a4a', fontWeight: 700 }}>1</span>,
-    },
-    {
-      key: '1-2',
-      description: '打开 www.baidu.com，搜索 iphone16，打开第3个链接，总结页面的内容',
-      icon: <span style={{ color: '#ff6565', fontWeight: 700 }}>2</span>,
-    },
-    {
-      key: '1-3',
-      description: '{"task_id": "c61d22de-5f6c-4958-a7f6-5e9707bd3466"}',
-      icon: <span style={{ color: '#ff8f1f', fontWeight: 700 }}>3</span>,
-    },
-  ],
-};
 
 const SENDER_PROMPTS: GetProp<typeof Prompts, 'items'> = [];
 
@@ -96,7 +77,6 @@ const useStyle = createStyles(({ token, css }) => {
       display: flex;
       align-items: center;
       justify-content: start;
-      padding: 0 24px;
       box-sizing: border-box;
       gap: 8px;
       margin: 24px 0;
@@ -162,8 +142,14 @@ const useStyle = createStyles(({ token, css }) => {
       background-position: bottom;
     `,
     placeholder: css`
-      padding-top: 32px;
-    `,
+      width: 100%;
+      max-width: 700px;
+      margin: 0 auto;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    `,  
     // sender 样式
     sender: css`
       width: 100%;
@@ -180,12 +166,35 @@ const useStyle = createStyles(({ token, css }) => {
       margin: 0 auto;
       color: ${token.colorText};
     `,
+    sendButton: css`
+      background-color: #000000 !important;
+      border: none !important;
+      transition: opacity 0.2s;
+      
+      &:hover {
+        background-color: rgba(0, 0, 0, 0.7) !important;
+      }
+      
+      &:disabled {
+        opacity: 0.5 !important;
+        cursor: not-allowed;
+        background-color: rgba(0, 0, 0, 0.1) !important;
+      }
+      
+      &:disabled:hover,
+      &:disabled:focus {
+        opacity: 0.5 !important;
+        background-color: rgba(0, 0, 0, 0.1) !important;
+      }
+    `,
   };
 });
 
-const Independent: React.FC = () => {
+const App: React.FC = () => {
   const { styles } = useStyle();
   const abortController = useRef<AbortController>(null);
+  const { sessionId, generateNewSessionId } = useSessionId();
+  const { agentId, setAgentIdAndUpdateURL } = useAgentId();
 
   // ==================== State ====================
   const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
@@ -197,10 +206,21 @@ const Independent: React.FC = () => {
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
 
   const [inputValue, setInputValue] = useState('');
-
-  const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
+  // TODO mock data , remove in the future
+  const [models, setModels] = useState<Array<{ label: string; value: string }>>([
+    {
+      label: 'weather_agent',
+      value: 'weather_agent',
+    },
+    {
+      label: 'weather_agent2',
+      value: 'weather_agent2',
+    }
+  ]);
   const [selectedModel, setSelectedModel] = useState<string>('weather_agent');
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
 
   // ==================== API Calls ====================
   const fetchModels = async () => {
@@ -228,6 +248,26 @@ const Independent: React.FC = () => {
   useEffect(() => {
     fetchModels();
   }, []);
+
+  // 处理URL中的agentid参数与模型选择的同步
+  useEffect(() => {
+    if (agentId && models.length > 0) {
+      // 检查URL中的agentid是否在models中存在
+      const modelExists = models.find(model => model.value === agentId);
+      if (modelExists) {
+        setSelectedModel(agentId);
+      } else {
+        // 如果URL中的agentid不存在于models中，清除URL参数
+        setAgentIdAndUpdateURL('');
+      }
+    }
+  }, [agentId, models, setAgentIdAndUpdateURL]);
+
+  // 处理模型选择变化时更新URL
+  const handleModelChange = (modelId: string) => {
+    setSelectedModel(modelId);
+    setAgentIdAndUpdateURL(modelId);
+  };
 
   /**
    * 🔔 Please replace the BASE_URL, PATH, MODEL, API_KEY with your own values.
@@ -294,7 +334,7 @@ const Independent: React.FC = () => {
 
   // ==================== Event ====================
   const onSubmit = (val: string) => {
-    if (!val) return;
+    if (!val || !val.trim()) return;
 
     if (loading) {
       message.error('Request is in progress, please wait for the request to complete.');
@@ -304,14 +344,53 @@ const Independent: React.FC = () => {
     onRequest({
       stream: true,
       message: { role: 'user', content: val },
+      headers: {
+        'X-Session-ID': sessionId,
+      },
     });
   };
+
+  // 复制消息内容到剪贴板
+  const copyMessageContent = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      message.success('Message copied to clipboard');
+    } catch (error) {
+      console.error('Failed to copy message:', error);
+      message.error('Failed to copy message');
+    }
+  };
+
+  // 重新发送消息
+  const resendMessage = (assistantMessageIndex: number) => {
+    // 找到对应的用户消息
+    const userMessageIndex = assistantMessageIndex - 1;
+    if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
+      const userMessage = messages[userMessageIndex].message.content;
+      
+      // 删除当前assistant消息和对应的用户消息
+      const newMessages = messages.filter((_, index) => index !== assistantMessageIndex && index !== userMessageIndex);
+      setMessages(newMessages);
+      
+      // 重新发送用户消息
+      setTimeout(() => {
+        onSubmit(userMessage);
+      }, 100);
+    } else {
+      message.error('Cannot find corresponding user message');
+    }
+  };
+
+  const onTriggerDraw = (status: boolean) => {
+    setOpen(status);
+  }
 
   // ==================== Nodes ====================
   const chatSider = (
     <div className={styles.sider}>
       {/* 🌟 Logo */}
       <div className={styles.logo}>
+        <img src={logo} alt="AWorld Logo" width="24" height="24" />
         <span>AWorld</span>
       </div>
 
@@ -325,6 +404,9 @@ const Independent: React.FC = () => {
             return;
           }
 
+          // 生成新的session ID
+          generateNewSessionId();
+          
           const now = dayjs().valueOf().toString();
           setConversations([
             {
@@ -363,11 +445,6 @@ const Independent: React.FC = () => {
         menu={(conversation) => ({
           items: [
             {
-              label: 'Rename',
-              key: 'rename',
-              icon: <EditOutlined />,
-            },
-            {
               label: 'Delete',
               key: 'delete',
               icon: <DeleteOutlined />,
@@ -401,7 +478,7 @@ const Independent: React.FC = () => {
       {messages?.length ? (
         /* 🌟 消息列表 */
         <Bubble.List
-          items={messages?.map((i) => ({
+          items={messages?.map((i, index) => ({
             ...i.message,
             content: (
               <ReactMarkdown>
@@ -412,17 +489,46 @@ const Independent: React.FC = () => {
               content: i.status === 'loading' ? styles.loadingMessage : '',
             },
             typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
+            messageIndex: index,
           }))}
           style={{ height: '100%', paddingInline: 'calc(calc(100% - 700px) /2)' }}
           roles={{
             assistant: {
               placement: 'start',
-              footer: (
+              footer: (messageItem) => (
                 <div style={{ display: 'flex' }}>
-                  <Button type="text" size="small" icon={<ReloadOutlined />} />
-                  <Button type="text" size="small" icon={<CopyOutlined />} />
-                  <Button type="text" size="small" icon={<LikeOutlined />} />
-                  <Button type="text" size="small" icon={<DislikeOutlined />} />
+                  <Button 
+                    type="text" 
+                    size="small" 
+                    icon={<ReloadOutlined />} 
+                    onClick={() => resendMessage(messageItem.messageIndex)}
+                  />
+                  <Button 
+                    type="text" 
+                    size="small" 
+                    icon={<CopyOutlined />} 
+                    onClick={() => copyMessageContent(messageItem.content || '')}
+                  />
+                                    <Button 
+                    type="text" 
+                    size="small" 
+                    icon={<MenuUnfoldOutlined />} 
+                    onClick={() => onTriggerDraw(true)}
+                  />
+                  <Drawer
+                            title="Basic Drawer"
+                            closable={{ 'aria-label': 'Close Button' }}
+                            onClick={() => onTriggerDraw(true)}
+                            onClose={() => onTriggerDraw(false)}
+                            open={open}
+                          >
+                            <p>Some contents...</p>
+                            <p>Some contents...</p>
+                            <p>Some contents...</p>
+                  </Drawer>
+                  {/* TODO 功能未实现先隐藏 */}
+                  {/* <Button type="text" size="small" icon={<LikeOutlined />} />
+                  <Button type="text" size="small" icon={<DislikeOutlined />} /> */}
                 </div>
               ),
               loadingRender: () => <Spin size="small" />,
@@ -431,32 +537,22 @@ const Independent: React.FC = () => {
           }}
         />
       ) : (
-        <Space
-          direction="vertical"
-          size={16}
-          style={{ paddingInline: 'calc(calc(100% - 700px) /2)' }}
+        <div
           className={styles.placeholder}
         >
-          <Flex gap={16}>
-            <Prompts
-              items={[HOT_TOPICS]}
-              styles={{
-                list: { height: '100%' },
-                item: {
-                  flex: 1,
-                  backgroundImage: 'linear-gradient(123deg, #e5f4ff 0%, #efe7ff 100%)',
-                  borderRadius: 12,
-                  border: 'none',
-                },
-                subItem: { padding: 0, background: 'transparent' },
-              }}
-              onItemClick={(info) => {
-                onSubmit(info.data.description as string);
-              }}
-              className={styles.chatPrompt}
-            />
-          </Flex>
-        </Space>
+          <Welcome
+            onSubmit={(v: string) => {
+              if (v && v.trim()) {
+                onSubmit(v);
+                setInputValue('');
+              }
+            }}
+            models={models}
+            selectedModel={selectedModel}
+            onModelChange={handleModelChange}
+            modelsLoading={modelsLoading}
+          />
+        </div>
       )}
     </div>
   );
@@ -489,33 +585,22 @@ const Independent: React.FC = () => {
       <Prompts
         items={SENDER_PROMPTS}
         onItemClick={(info) => {
-          onSubmit(info.data.description as string);
-        }}
-        styles={{
-          item: { padding: '6px 12px' },
+          const description = info.data.description as string;
+          if (description && description.trim()) {
+            onSubmit(description);
+          }
         }}
         className={styles.senderPrompt}
-      />
-      {/* 🌟 模型选择下拉列表 */}
-      <Select
-        value={selectedModel}
-        onChange={setSelectedModel}
-        options={models}
-        loading={modelsLoading}
-        placeholder="Select a model"
-        style={{ width: 200 }}
-        showSearch
-        filterOption={(input, option) =>
-          (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-        }
       />
       {/* 🌟 输入框 */}
       <Sender
         value={inputValue}
         header={senderHeader}
         onSubmit={() => {
-          onSubmit(inputValue);
-          setInputValue('');
+          if (inputValue.trim()) {
+            onSubmit(inputValue);
+            setInputValue('');
+          }
         }}
         onChange={setInputValue}
         onCancel={() => {
@@ -536,7 +621,15 @@ const Independent: React.FC = () => {
           return (
             <Flex gap={4}>
               <SpeechButton className={styles.speechButton} />
-              {loading ? <LoadingButton type="default" /> : <SendButton type="primary" />}
+              {loading ? (
+                <LoadingButton type="default" />
+              ) : (
+                <SendButton 
+                  type="primary" 
+                  disabled={!inputValue.trim()}
+                  className={styles.sendButton}
+                />
+              )}
             </Flex>
           );
         }}
@@ -559,13 +652,12 @@ const Independent: React.FC = () => {
   return (
     <div className={styles.layout}>
       {chatSider}
-
       <div className={styles.chat}>
         {chatList}
-        {chatSender}
+        {messages?.length > 0 && chatSender}
       </div>
     </div>
   );
 };
 
-export default Independent;
+export default App;

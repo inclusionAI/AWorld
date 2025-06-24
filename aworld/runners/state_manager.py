@@ -1,4 +1,5 @@
 
+import time
 from pydantic import BaseModel
 from typing import Optional, List
 from aworld.core.event.base import Message
@@ -56,6 +57,9 @@ class RunNode(BaseModel):
     status: RunNodeStatus = None
     result_msg: Optional[str] = None
     results: Optional[List[HandleResult]] = None
+    create_time: Optional[float] = None
+    execute_time: Optional[float] = None
+    end_time: Optional[float] = None
 
 
 class StateStorage(ABC):
@@ -155,7 +159,8 @@ class RuntimeStateManager(InheritanceSingleton):
                        msg_id=msg_id,
                        msg_from=msg_from,
                        parent_node_id=parent_node_id,
-                       status=RunNodeStatus.INIT)
+                       status=RunNodeStatus.INIT,
+                       create_time=time.time())
         self.storage.insert(node)
         return node
 
@@ -165,6 +170,7 @@ class RuntimeStateManager(InheritanceSingleton):
         '''
         node = self._node_exist(node_id)
         node.status = RunNodeStatus.RUNNING
+        node.execute_time = time.time()
         self.storage.update(node)
 
     def save_result(self,
@@ -197,6 +203,7 @@ class RuntimeStateManager(InheritanceSingleton):
         node = self._node_exist(node_id)
         node.status = RunNodeStatus.SUCCESS
         node.result_msg = result_msg
+        node.end_time = time.time()
         if results:
             if not node.results:
                 node.results = []
@@ -213,6 +220,7 @@ class RuntimeStateManager(InheritanceSingleton):
         node = self._node_exist(node_id)
         node.status = RunNodeStatus.FAILED
         node.result_msg = result_msg
+        node.end_time = time.time()
         if results:
             if not node.results:
                 node.results = []
@@ -274,7 +282,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
         run_node_busi_type = RunNodeBusiType.from_message_category(
             message.category)
         logger.info(
-            f"start message node: {message.receiver}, busi_type={run_node_busi_type}, node_id={message.id}, message={message}")
+            f"start message node: {message.receiver}, busi_type={run_node_busi_type}, node_id={message.id}")
         if run_node_busi_type:
             self.create_node(
                 node_id=message.id,

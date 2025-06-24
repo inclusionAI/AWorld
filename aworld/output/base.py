@@ -337,30 +337,36 @@ class MessageOutput(Output):
 class StepOutput(Output):
     name: str
     step_num: int
+    alias_name: Optional[str] = Field(default=None, description="alias_name of the step")
     status: Optional[str] = Field(default="START", description="step_status")
     started_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="started at")
     finished_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="finished at")
 
     @classmethod
-    def build_start_output(cls, name, step_num, data = None):
-        return cls(name=name,step_num=step_num, data=data)
+    def build_start_output(cls, name, step_num, alias_name=None, data=None):
+        return cls(name=name, step_num=step_num, alias_name=alias_name, data=data)
 
     @classmethod
-    def build_finished_output(cls, name, step_num, data = None):
-        return cls(name=name, step_num=step_num, status='FINISHED', data=data)
+    def build_finished_output(cls, name, step_num, alias_name=None, data=None):
+        return cls(name=name, step_num=step_num, alias_name=alias_name, status='FINISHED', data=data)
 
     @classmethod
-    def build_failed_output(cls, name, step_num, data = None):
-        return cls(name=name,step_num=step_num, status='FAILED', data=data)
+    def build_failed_output(cls, name, step_num, alias_name=None, data=None):
+        return cls(name=name, step_num=step_num, alias_name=alias_name, status='FAILED', data=data)
 
     def output_type(self):
         return "step_output"
+
+    @property
+    def show_name(self):
+        return self.alias_name if self.alias_name else self.name
 
 
 
 class SearchItem(BaseModel):
     title: str = Field(default="", description="search result title")
     url: str = Field(default="", description="search result url")
+    snippet: str = Field(default="", description="search result snippet")
     content: str = Field(default="", description="search content", exclude=True)
     raw_content: Optional[str] = Field(default="", description="search raw content", exclude=True)
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="metadata")

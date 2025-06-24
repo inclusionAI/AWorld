@@ -3,6 +3,7 @@
 import asyncio
 import time
 import traceback
+import aworld.trace as trace
 from typing import List, Callable, Any
 
 from aworld.core.common import TaskItem
@@ -128,70 +129,76 @@ class TaskEventRunner(TaskRunner):
 
         results = []
         handlers = event_bus.get_handlers(key)
-        self.state_manager.start_message_node(message)
-        if handlers:
-            if message.topic:
-                handlers = {message.topic: handlers.get(message.topic, [])}
-            elif message.receiver:
-                handlers = {message.receiver: handlers.get(
-                    message.receiver, [])}
+        async with trace.message_span(message=message):
+            self.state_manager.start_message_node(message)
+            if handlers:
+                if message.topic:
+                    handlers = {message.topic: handlers.get(message.topic, [])}
+                elif message.receiver:
+                    handlers = {message.receiver: handlers.get(
+                        message.receiver, [])}
 
-            for topic, handler_list in handlers.items():
-                if not handler_list:
-                    logger.warning(f"{topic} no handler, ignore.")
-                    continue
+                for topic, handler_list in handlers.items():
+                    if not handler_list:
+                        logger.warning(f"{topic} no handler, ignore.")
+                        continue
 
-                for handler in handler_list:
-                    t = asyncio.create_task(
-                        self._handle_task(message, handler))
-                    self.background_tasks.add(t)
-                    t.add_done_callback(self.background_tasks.discard)
-        else:
-            # not handler, return raw message
-            results.append(message)
+                    for handler in handler_list:
+                        t = asyncio.create_task(
+                            self._handle_task(message, handler))
+                        self.background_tasks.add(t)
+                        t.add_done_callback(self.background_tasks.discard)
+            else:
+                # not handler, return raw message
+                results.append(message)
 
-            t = asyncio.create_task(self._raw_task(results))
-            self.background_tasks.add(t)
-            t.add_done_callback(self.background_tasks.discard)
-            # wait until it is complete
-            await t
-        self.state_manager.end_message_node(message)
-        return results
+                t = asyncio.create_task(self._raw_task(results))
+                self.background_tasks.add(t)
+                t.add_done_callback(self.background_tasks.discard)
+                # wait until it is complete
+                await t
+            self.state_manager.end_message_node(message)
+            return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message.payload
-        try:
-            if asyncio.iscoroutinefunction(handler):
-                con = await handler(con)
-            else:
-                con = handler(con)
+        async with trace.span(handler.__name__):
+            try:
+                logger.info(
+                    f"event_runner _handle_task start, message: {message.id}")
+                if asyncio.iscoroutinefunction(handler):
+                    con = await handler(con)
+                else:
+                    con = handler(con)
 
-            if isinstance(con, Message):
-                # process in framework
+                logger.info(f"event_runner _handle_task message= {message.id}")
+                if isinstance(con, Message):
+                    # process in framework
+                    self.state_manager.save_message_handle_result(name=handler.__name__,
+                                                                  message=message,
+                                                                  result=con)
+                    async for event in self._inner_handler_process(
+                            results=[con],
+                            handlers=self.handlers
+                    ):
+                        await self.event_mng.emit_message(event)
+                else:
+                    self.state_manager.save_message_handle_result(name=handler.__name__,
+                                                                  message=message)
+            except Exception as e:
+                logger.warning(
+                    f"{handler} process fail. {traceback.format_exc()}")
+                error_msg = Message(
+                    category=Constants.TASK,
+                    payload=TaskItem(msg=str(e), data=message),
+                    sender=self.name,
+                    session_id=Context.instance().session_id,
+                    topic=TopicType.ERROR
+                )
                 self.state_manager.save_message_handle_result(name=handler.__name__,
                                                               message=message,
-                                                              result=con)
-                async for event in self._inner_handler_process(
-                        results=[con],
-                        handlers=self.handlers
-                ):
-                    await self.event_mng.emit_message(event)
-            else:
-                self.state_manager.save_message_handle_result(name=handler.__name__,
-                                                              message=message)
-        except Exception as e:
-            logger.warning(f"{handler} process fail. {traceback.format_exc()}")
-            error_msg = Message(
-                category=Constants.TASK,
-                payload=TaskItem(msg=str(e), data=message),
-                sender=self.name,
-                session_id=Context.instance().session_id,
-                topic=TopicType.ERROR
-            )
-            self.state_manager.save_message_handle_result(name=handler.__name__,
-                                                          message=message,
-                                                          result=error_msg)
-            await self.event_mng.event_bus.publish(error_msg)
+                                                              result=error_msg)
+                await self.event_mng.event_bus.publish(error_msg)
 
     async def _raw_task(self, messages: List[Message]):
         # process in framework
@@ -253,10 +260,10 @@ class TaskEventRunner(TaskRunner):
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
             raise RuntimeError("swarm needs to use `reset` to init first.")
-
-        await self.event_mng.emit_message(self.init_message)
-        await self._do_run()
-        return self._task_response
+        async with trace.span("Task_" + self.init_message.session_id):
+            await self.event_mng.emit_message(self.init_message)
+            await self._do_run()
+            return self._task_response
 
     async def stop(self):
         self._stopped.set()

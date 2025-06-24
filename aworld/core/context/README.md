@@ -1,6 +1,6 @@
-# AWorld Agent Context
+# AWorld Context Management
 
-Core context management system in the AWorld architecture for storing and managing complete Agent state information, including configuration data and runtime state.
+Core context management system in the AWorld architecture, providing hierarchical state management through Context and AgentContext components for complete Agent state information storage and coordination.
 
 ## Architecture Overview
 
@@ -10,6 +10,7 @@ The Context Management system implements intelligent context processing with mul
 
 ## Features
 
+- Hierarchical context management with global and agent-specific scopes
 - Complete Agent state management with support for state restoration and recovery
 - Immutable configuration management and mutable runtime state tracking
 - Intelligent LLM Prompt management and context optimization
@@ -19,19 +20,41 @@ The Context Management system implements intelligent context processing with mul
 
 ## Core Components
 
-- `AgentContext`: Unified management container for Agent state and configuration
+- `Context`: Global singleton context manager spanning the entire AWorld Runner lifecycle
+- `AgentContext`: Agent-specific context container for individual Agent execution periods
 - `PromptProcessor`: Intelligent context processor supporting content compression and truncate
 - `Hook System`: Extensible hook system supporting full-process LLM call intervention
 
-## Context Object
 
-Context is a singleton object that enables state sharing and coordination between multiple Agents in the AWorld framework.
+## Context Lifecycle
 
-### Key Features
+![Context Lifecycle](../../../readme_assets/context_lifecycle.png)
 
-- **Singleton Pattern**: Ensures a single shared context instance across the entire application
-- **Dictionary Interface**: Supports simple key-value state storage using `context['key'] = value` syntax  
-- **Multi-Agent Coordination**: Enables seamless data exchange between different Agents
+The AWorld framework implements a hierarchical context management system with distinct lifecycles:
+
+### Context Lifecycle (Global)
+Context is a singleton object that spans the entire AWorld Runner execution lifecycle, enabling global state sharing and coordination between multiple Agents in the AWorld framework.
+
+- **Scope**: Spans the entire AWorld Runner execution period
+- **Responsibility**: Global state management, task coordination, and resource allocation
+    - **Dictionary Interface**: Supports simple key-value state storage using `context['key'] = value` syntax
+- **Function**: Manages multiple AgentContext instances and enables cross-agent data exchange
+    - **Multi-Agent Coordination**: Manages multiple AgentContext instances and enables seamless data exchange between different Agents
+    - **Session Management**: Provides (Session)Context API for cross-agent state management
+    - **Task Coordination**: Handles task management, agent coordination, and resource allocation
+
+### AgentContext Lifecycle (Agent-Specific)
+- **Scope**: Spans individual Agent execution period
+- **Responsibility**: Agent-specific state management and runtime tracking
+- **Function**: 
+  - **Configuration Management**: Maintains immutable Agent configuration (agent_id, agent_name, agent_desc, system_prompt, agent_prompt, tool_names, context_rule)
+  - **Runtime State Tracking**: Manages mutable runtime state (tools, step, messages, context_usage)
+  - **Dynamic Prompt Management**: Supports runtime modification of system_prompt and agent_prompt based on execution context
+  - **Tool Lifecycle Management**: Handles tool object initialization, execution, and state management
+  - **Conversation History**: Maintains complete message history throughout Agent execution
+  - **Step-by-Step Execution**: Tracks current execution step and manages step transitions
+  - **Context Optimization**: Monitors context usage statistics and applies context processing rules
+  - **State Persistence**: Preserves Agent state across multiple LLM calls and tool invocations within a single execution period
 
 ### Example: State Management and Recovery
 
@@ -116,40 +139,6 @@ assert isinstance(post_hook, TestPostLLMHook)
 # Test hook execution
 response = agent.run("What is an agent. describe within 20 words")
 assert response.answer is not None
-```
-
-## AgentContext Object
-
-AgentContext is the core object for state management, containing the following key attributes:
-
-### Immutable Configuration Fields
-- `agent_id`: Agent unique identifier
-- `agent_name`: Agent name
-- `agent_desc`: Agent description
-- `system_prompt`: System prompt
-- `agent_prompt`: Agent-specific prompt
-- `tool_names`: Tool name list
-- `context_rule`: Context processing rules
-
-### Mutable Runtime Fields
-- `tools`: Tool object list
-- `step`: Current execution step
-- `messages`: Conversation message history
-- `context_usage`: Context usage statistics
-
-Example:
-```python
-agent = Agent(conf=config, name="example_agent")
-
-# Access immutable configuration
-print(f"Agent ID: {agent.agent_context.agent_id}")
-print(f"System Prompt: {agent.agent_context.system_prompt}")
-print(f"Tool Names: {agent.agent_context.tool_names}")
-
-# Access runtime state
-print(f"Current Step: {agent.agent_context.step}")
-print(f"Message History: {len(agent.agent_context.messages)}")
-print(f"Available Tools: {len(agent.agent_context.tools)}")
 ```
 
 ## Context Rule Configuration
@@ -247,10 +236,11 @@ agent.update_context_rule(origin_rule)
 
 ## Notes
 
-1. **Beta Features**: The `llm_compression_config` is currently in beta. Use with caution in production environments.
-2. **Performance Trade-offs**: Enabling compression can save token usage but increases processing time. Adjust configuration based on actual needs.
-3. **Model Compatibility**: Different models have different context length limitations. The system automatically adapts to model capabilities.
-4. **Default Configuration**: The system provides reasonable default configuration. Manual configuration is unnecessary for most scenarios.
-5. **State Management**: AgentContext supports state sharing between multiple Agents and ensures state consistency. State persistence functionality is currently under development.
+1. **Hierarchical Lifecycle**: Context spans the entire AWorld Runner execution while AgentContext spans individual Agent executions, as illustrated in the context lifecycle diagram.
+2. **Beta Features**: The `llm_compression_config` is currently in beta. Use with caution in production environments.
+3. **Performance Trade-offs**: Enabling compression can save token usage but increases processing time. Adjust configuration based on actual needs.
+4. **Model Compatibility**: Different models have different context length limitations. The system automatically adapts to model capabilities.
+5. **Default Configuration**: The system provides reasonable default configuration. Manual configuration is unnecessary for most scenarios.
+6. **State Management**: Context and AgentContext support state sharing between multiple Agents and ensures state consistency. State persistence functionality is currently under development.
 
-Through proper configuration of AgentContext and context processors, you can significantly improve Agent performance in long conversations and complex tasks while optimizing token usage efficiency.
+Through proper configuration of Context and AgentContext with context processors, you can significantly improve Agent performance in long conversations and complex tasks while optimizing token usage efficiency.

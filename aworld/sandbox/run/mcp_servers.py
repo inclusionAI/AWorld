@@ -117,6 +117,8 @@ class McpServers:
 
                     # Process the return result, consistent with the original logic
                     action_result = ActionResult(
+                        tool_name=server_name,
+                        action_name=tool_name,
                         content="",
                         keep=True
                     )
@@ -124,6 +126,8 @@ class McpServers:
                     if call_result_raw and call_result_raw.content:
                         if isinstance(call_result_raw.content[0], TextContent):
                             action_result = ActionResult(
+                                tool_name=server_name,
+                                action_name=tool_name,
                                 content=call_result_raw.content[0].text,
                                 keep=True,
                                 metadata=call_result_raw.content[0].model_extra.get(
@@ -132,6 +136,8 @@ class McpServers:
                             )
                         elif isinstance(call_result_raw.content[0], ImageContent):
                             action_result = ActionResult(
+                                tool_name=server_name,
+                                action_name=tool_name,
                                 content=f"data:image/jpeg;base64,{call_result_raw.content[0].data}",
                                 keep=True,
                                 metadata=call_result_raw.content[0].model_extra.get("metadata", {}),

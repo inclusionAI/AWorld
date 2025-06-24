@@ -319,3 +319,34 @@ def replace_env_variables(config) -> Any:
             if isinstance(item, dict) or isinstance(item, list):
                 replace_env_variables(item)
     return config
+
+
+def get_local_hostname():
+    """
+    Get the local hostname.
+    First try `socket.gethostname()`, if it fails or returns an invalid value,
+    then try reverse DNS lookup using local IP.
+    """
+    try:
+        hostname = socket.gethostname()
+        # Simple validation - if hostname contains '.', consider it a valid FQDN (Fully Qualified Domain Name)
+        if hostname and '.' in hostname:
+            return hostname
+
+        # If hostname is not qualified, try reverse lookup via IP
+        local_ip = get_local_ip()
+        if local_ip:
+            try:
+                # Get hostname from IP
+                hostname, _, _ = socket.gethostbyaddr(local_ip)
+                return hostname
+            except (socket.herror, socket.gaierror):
+                # Reverse lookup failed, return original hostname or IP
+                pass
+
+        # If all methods fail, return original gethostname() result or IP
+        return hostname if hostname else local_ip
+
+    except Exception:
+        # Final fallback strategy
+        return "localhost"

@@ -6,13 +6,13 @@ import uuid
 from abc import abstractmethod
 from typing import List, AsyncGenerator, Any
 
-from aworld.config import AgentConfig, TaskConfig
+from aworld.config import AgentConfig, TaskConfig, ContextRuleConfig, OptimizationConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output import WorkSpace, AworldUI, Outputs
+from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
+from aworld.output.utils import load_workspace
 from aworld.runner import Runners
-
-from aworldspace.ui.open_aworld_ui import OpenAworldUI
 
 from client.aworld_client import AworldTask
 
@@ -47,22 +47,37 @@ class AworldBaseAgent:
             else:
                 task_id = str(uuid.uuid4())
 
+            session_id = task_id
+            if body.get('metadata'):
+                # user_id = body.get('metadata').get('user_id')
+                session_id = body.get('metadata').get('chat_id', task_id)
+                task_id = body.get('metadata').get('message_id', task_id)
+
             user_input = await self.get_custom_input(user_message, model_id, messages, body)
             if task and task.llm_custom_input:
                 user_input = task.llm_custom_input
             logging.info(f"🤖{self.agent_name()} call llm input is [{user_input}]")
 
             # build agent task read from config
-            agent = await self.build_agent(body = body)
-            logging.info(f"🤖{self.agent_name()} build agent finished")
+            swarm = await self.build_swarm(body=body)
+            agent = None
+            if not swarm:
+                # build single agent task read from config
+                agent = await self.build_agent(body=body)
+                logging.info(f"🤖{self.agent_name()} build agent finished")
+
 
 
             # return task
             task = await self.build_task(agent=agent, task_id=task_id, user_input=user_input, user_message=user_message, body=body)
             logging.info(f"🤖{self.agent_name()} build task finished, task_id is {task_id}")
 
+
+            workspace_type = os.environ.get("WORKSPACE_TYPE", "local")
+            workspace_path = os.environ.get("WORKSPACE_PATH", "./data/workspaces")
+            workspace = await load_workspace(session_id, workspace_type, workspace_path)
             # render output
-            async_generator = await self.parse_task_output(task_id, task)
+            async_generator = await self.parse_task_output(session_id, task, workspace)
 
             return async_generator()
 
@@ -123,7 +138,12 @@ class AworldBaseAgent:
             system_prompt=agent_config.system_prompt,
             mcp_servers=mcp_servers,
             mcp_config=await self.load_mcp_config(),
-            history_messages=await self.get_history_messages(body)
+            history_messages=await self.get_history_messages(body),
+            context_rule=ContextRuleConfig(
+                optimization_config=OptimizationConfig(
+                    enabled=False,
+                )
+            )
         )
         return agent
 
@@ -147,7 +167,7 @@ class AworldBaseAgent:
 
 
 
-    async def parse_task_output(self, chat_id, task: Task):
+    async def parse_task_output(self, chat_id, task: Task, workspace: WorkSpace):
         _SENTINEL = object()
 
         async def async_generator():
@@ -156,12 +176,9 @@ class AworldBaseAgent:
             queue = Queue()
 
             async def consume_all():
-                openwebui_ui = OpenAworldUI(
-                    chat_id=chat_id,
-                    workspace=WorkSpace.from_local_storages(
-                        workspace_id=chat_id,
-                        storage_path=os.path.join(os.curdir, "workspaces", chat_id)
-                    )
+                openwebui_ui = MarkdownAworldUI(
+                    session_id=chat_id,
+                    workspace=workspace
                 )
 
                 # get outputs
@@ -220,3 +237,6 @@ class AworldBaseAgent:
     @abstractmethod
     async def load_mcp_config(self) -> dict:
         pass
+
+    async def build_swarm(self, body):
+        return None
