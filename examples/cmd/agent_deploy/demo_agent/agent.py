@@ -1,13 +1,10 @@
 import logging
 import os
 import json
-from typing import AsyncGenerator
 from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
-from aworld.output.ui.base import AworldUI
-from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
 from aworld.runner import Runners
 
 logger = logging.getLogger(__name__)
@@ -65,13 +62,6 @@ class AWorldAgent(BaseAWorldAgent):
             conf=TaskConfig(max_steps=20),
         )
 
-        rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():
             logger.info(f"Agent Ouput: {output}")
-            res = await AworldUI.parse_output(output, rich_ui)
-            for item in res if isinstance(res, list) else [res]:
-                if isinstance(item, AsyncGenerator):
-                    async for sub_item in item:
-                        yield sub_item
-                else:
-                    yield item
+            yield output

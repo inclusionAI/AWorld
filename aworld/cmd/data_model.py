@@ -4,6 +4,8 @@ from abc import abstractmethod
 from typing import Any, AsyncGenerator, List, Optional
 from pydantic import BaseModel, Field
 
+from aworld.output.base import Output
+
 
 class ChatCompletionMessage(BaseModel):
     role: str = Field(..., description="The role of the message")
@@ -58,7 +60,7 @@ class BaseAWorldAgent:
     @abstractmethod
     async def run(
         self, prompt: str = None, request: ChatCompletionRequest = None
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[Output, None]:
         pass
 
 
@@ -69,4 +71,6 @@ class SessionModel(BaseModel):
     description: str = Field(None, description="The session description")
     created_at: datetime.datetime = Field(None, description="The session created at")
     updated_at: datetime.datetime = Field(None, description="The session updated at")
-    messages: List[ChatCompletionMessage] = Field(        None, description="The messages in the session")
+    messages: List[ChatCompletionMessage] = Field(
+        None, description="The messages in the session"
+    )

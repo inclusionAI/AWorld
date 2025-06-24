@@ -1,3 +1,6 @@
+from typing import AsyncGenerator
+from aworld.output.ui.base import AworldUI
+from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
 from .. import (
     BaseAWorldAgent,
     ChatCompletionChoice,
@@ -10,7 +13,6 @@ import logging
 import aworld.trace as trace
 import os
 from dotenv import load_dotenv
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -27,19 +29,31 @@ async def stream_run(request: ChatCompletionRequest):
         logger.info(f"Loading environment variables from {env_file}")
         load_dotenv(env_file, override=True, verbose=True)
 
-    async for chunk in instance.run(request=request):
-        with open(f"trace_data/output_{datetime.now()}.txt", "a") as f:
-            f.write(chunk)
-            f.write("\n")
-        response = ChatCompletionResponse(
+    def build_response(delta_content: str):
+        return ChatCompletionResponse(
             choices=[
                 ChatCompletionChoice(
                     index=0,
                     delta=ChatCompletionMessage(
                         role="assistant",
-                        content=chunk,
+                        content=delta_content,
                     ),
                 )
             ]
         )
-        yield response
+
+    rich_ui = MarkdownAworldUI()
+
+    async for output in instance.run(request=request):
+        logger.info(f"Agent {agent.name} output: {output}")
+
+        if isinstance(output, str):
+            yield build_response(output)
+        else:
+            res = await AworldUI.parse_output(output, rich_ui)
+            for item in res if isinstance(res, list) else [res]:
+                if isinstance(item, AsyncGenerator):
+                    async for sub_item in item:
+                        yield build_response(sub_item)
+                else:
+                    yield build_response(item)
