@@ -1,12 +1,13 @@
 import logging
 import os
 import json
+from typing import AsyncGenerator
 from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
-from aworld.cmd.utils.aworld_ui import OpenAworldUI
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
+from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
 from aworld.runner import Runners
 
 logger = logging.getLogger(__name__)
@@ -17,17 +18,17 @@ class AWorldAgent(BaseAWorldAgent):
         super().__init__(*args, **kwargs)
 
     def name(self):
-        return "Weather Agent"
+        return "Demo Agent"
 
     def description(self):
-        return "Query Real-time Weather Information"
+        return "Demo Agent with fetch and time mcp server"
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
-        llm_provider = os.getenv("LLM_PROVIDER_WEATHER", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME_WEATHER")
-        llm_api_key = os.getenv("LLM_API_KEY_WEATHER")
-        llm_base_url = os.getenv("LLM_BASE_URL_WEATHER")
-        llm_temperature = os.getenv("LLM_TEMPERATURE_WEATHER", 0.0)
+        llm_provider = os.getenv("LLM_PROVIDER_DEMO", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_DEMO")
+        llm_api_key = os.getenv("LLM_API_KEY_DEMO")
+        llm_base_url = os.getenv("LLM_BASE_URL_DEMO")
+        llm_temperature = os.getenv("LLM_TEMPERATURE_DEMO", 0.0)
 
         if not llm_model_name or not llm_api_key or not llm_base_url:
             raise ValueError(
@@ -49,8 +50,8 @@ class AWorldAgent(BaseAWorldAgent):
 
         super_agent = Agent(
             conf=agent_config,
-            name="weather_agent",
-            system_prompt="You are a weather agent, you can query real-time weather information",
+            name="demo_agent",
+            system_prompt="You are a demo agent, you can query current time and fetch data from the internet",
             mcp_config=mcp_config,
             mcp_servers=mcp_config.get("mcpServers", {}).keys(),
         )
@@ -64,9 +65,13 @@ class AWorldAgent(BaseAWorldAgent):
             conf=TaskConfig(max_steps=20),
         )
 
-        rich_ui = OpenAworldUI()
+        rich_ui = MarkdownAworldUI()
         async for output in Runners.streamed_run_task(task).stream_events():
             logger.info(f"Agent Ouput: {output}")
             res = await AworldUI.parse_output(output, rich_ui)
             for item in res if isinstance(res, list) else [res]:
-                yield item
+                if isinstance(item, AsyncGenerator):
+                    async for sub_item in item:
+                        yield sub_item
+                else:
+                    yield item

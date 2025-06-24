@@ -5,14 +5,18 @@ from .data_model import (
     BaseAWorldAgent,
     ChatCompletionRequest,
     ChatCompletionResponse,
+    ChatCompletionChoice,
     ChatCompletionMessage,
     AgentModel,
+    SessionModel,
 )
 
 __all__ = [
     "BaseAWorldAgent",
     "ChatCompletionRequest",
     "ChatCompletionResponse",
+    "ChatCompletionChoice",
     "ChatCompletionMessage",
     "AgentModel",
+    "SessionModel",
 ]

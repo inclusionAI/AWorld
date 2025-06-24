@@ -7,7 +7,11 @@ from pydantic import Field
 from aworld.output import (
     MessageOutput,
     AworldUI,
-    Output, Artifact, ArtifactType, WorkSpace, SearchOutput,
+    Output,
+    Artifact,
+    ArtifactType,
+    WorkSpace,
+    SearchOutput,
 )
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.output.ui.template import tool_card_template
@@ -58,6 +62,7 @@ class MarkdownAworldUI(AworldUI):
 
             # Start the consumer in the background
             import asyncio
+
             consumer_task = asyncio.create_task(consume_all())
 
             while True:
@@ -71,7 +76,7 @@ class MarkdownAworldUI(AworldUI):
 
     async def tool_result(self, output: ToolResultOutput):
         """
-            tool_result
+        tool_result
         """
         custom_output = await self.gen_custom_output(output)
 
@@ -80,10 +85,14 @@ class MarkdownAworldUI(AworldUI):
         tool_card_content = {
             "type": "mcp",
             "custom_output": custom_output,
-            "artifacts": artifacts
+            "tool_name": output.tool_name,
+            "function_name": output.origin_tool_call.function.name,
+            "function_arguments": output.origin_tool_call.function.arguments,
+            "function_result": output.data,
+            "artifacts": artifacts,
         }
         tool_data = tool_card_template.format(
-            tool_card_content = json.dumps(tool_card_content, indent=2)
+            tool_card_content=json.dumps(tool_card_content, indent=2)
         )
 
         return tool_data

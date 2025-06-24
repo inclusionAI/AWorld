@@ -7,6 +7,8 @@ from aworld.logs.util import trace_logger
 from aworld.trace.context_manager import trace_configure
 from aworld.metrics.context_manager import MetricContext
 from aworld.logs.log import set_log_provider, instrument_logging
+from aworld.trace.instrumentation.uni_llmmodel import LLMModelInstrumentor
+from aworld.trace.instrumentation.eventbus import EventBusInstrumentor
 
 
 class ObservabilityConfig(BaseModel):
@@ -43,6 +45,8 @@ def configure(config: ObservabilityConfig = None):
     _trace_configure(config)
     _metrics_configure(config)
     _log_configure(config)
+    LLMModelInstrumentor().instrument()
+    EventBusInstrumentor().instrument()
 
 
 def _trace_configure(config: ObservabilityConfig):

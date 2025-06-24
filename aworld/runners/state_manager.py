@@ -274,7 +274,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
         run_node_busi_type = RunNodeBusiType.from_message_category(
             message.category)
         logger.info(
-            f"start message node: {message.receiver}, busi_type={run_node_busi_type}, node_id={message.id}, message={message}")
+            f"start message node: {message.receiver}, busi_type={run_node_busi_type}, node_id={message.id}")
         if run_node_busi_type:
             self.create_node(
                 node_id=message.id,
