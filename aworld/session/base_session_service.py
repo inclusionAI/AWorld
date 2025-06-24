@@ -17,12 +17,6 @@ class BaseSessionService(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def create_session(
-        self, user_id: str, session_id: str, name: str, description: str
-    ) -> SessionModel:
-        pass
-
-    @abc.abstractmethod
     async def delete_session(self, user_id: str, session_id: str) -> None:
         pass
 

@@ -131,3 +131,5 @@ traces*.json
 trace_data
 
 examples/gaia/output
+examples/**/workspaces
+examples/**/data

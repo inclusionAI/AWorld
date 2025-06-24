@@ -3,7 +3,7 @@ import os
 import json
 from typing import AsyncGenerator
 
-from aworld.cmd import ChatCompletionRequest
+from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
@@ -14,7 +14,7 @@ from aworld.runner import Runners
 logger = logging.getLogger(__name__)
 
 
-class AWorldAgent:
+class AWorldAgent(BaseAWorldAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 

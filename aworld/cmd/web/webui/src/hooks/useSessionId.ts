@@ -7,13 +7,13 @@ export const useSessionId = () => {
   // 从URL参数中获取session ID
   const getSessionIdFromURL = (): string => {
     const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get('id') || '';
+    return urlParams.get('session_id') || '';
   };
 
   // 更新URL参数中的session ID
   const updateURLSessionId = (id: string) => {
     const url = new URL(window.location.href);
-    url.searchParams.set('id', id);
+    url.searchParams.set('session_id', id);
     window.history.replaceState({}, '', url.toString());
   };
 
@@ -28,7 +28,7 @@ export const useSessionId = () => {
   useEffect(() => {
     // 初始化时检查URL中是否有session ID
     const urlSessionId = getSessionIdFromURL();
-    
+
     if (urlSessionId) {
       // 如果URL中有session ID，使用它
       setSessionId(urlSessionId);
@@ -40,6 +40,7 @@ export const useSessionId = () => {
 
   return {
     sessionId,
+    setSessionId,
     generateNewSessionId,
     updateURLSessionId,
   };
