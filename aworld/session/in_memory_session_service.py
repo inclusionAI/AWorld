@@ -1,10 +1,8 @@
 from typing import List, Optional, override
 from datetime import datetime
 from aworld.cmd import SessionModel, ChatCompletionMessage
+from aworld.logs.util import logger
 from .base_session_service import BaseSessionService
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 class InMemorySessionService(BaseSessionService):
