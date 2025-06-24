@@ -18,6 +18,7 @@ class Constants:
     TOOL = "tool"
     TASK = "task"
     OUTPUT = "output"
+    TOOL_CALLBACK = "tool_callback"
 
 
 class TopicType:
@@ -79,7 +80,7 @@ class Message(Generic[DataType]):
             return f'{category}_{self.topic}'
         else:
             return f'{category}_{self.sender if self.sender else ""}'
-        
+
     def is_error(self):
         return self.topic == TopicType.ERROR
 
