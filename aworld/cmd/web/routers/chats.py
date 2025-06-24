@@ -32,7 +32,7 @@ async def chat_completion(
         async with trace.span(
             "/chat/chat_completion", attributes={"model": form_data.model}
         ) as span:
-            form_data.trace_id = span.get_span_id()
+            form_data.trace_id = span.get_trace_id()
             async for chunk in agent_executor.stream_run(form_data):
                 yield f"data: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n"
 
