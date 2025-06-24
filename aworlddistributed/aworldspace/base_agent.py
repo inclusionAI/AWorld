@@ -59,8 +59,13 @@ class AworldBaseAgent:
             logging.info(f"🤖{self.agent_name()} call llm input is [{user_input}]")
 
             # build agent task read from config
-            agent = await self.build_agent(body = body)
-            logging.info(f"🤖{self.agent_name()} build agent finished")
+            swarm = await self.build_swarm(body=body)
+            agent = None
+            if not swarm:
+                # build single agent task read from config
+                agent = await self.build_agent(body=body)
+                logging.info(f"🤖{self.agent_name()} build agent finished")
+
 
 
             # return task
@@ -232,3 +237,6 @@ class AworldBaseAgent:
     @abstractmethod
     async def load_mcp_config(self) -> dict:
         pass
+
+    async def build_swarm(self, body):
+        return None

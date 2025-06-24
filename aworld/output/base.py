@@ -366,6 +366,7 @@ class StepOutput(Output):
 class SearchItem(BaseModel):
     title: str = Field(default="", description="search result title")
     url: str = Field(default="", description="search result url")
+    snippet: str = Field(default="", description="search result snippet")
     content: str = Field(default="", description="search content", exclude=True)
     raw_content: Optional[str] = Field(default="", description="search raw content", exclude=True)
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="metadata")

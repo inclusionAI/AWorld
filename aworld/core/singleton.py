@@ -18,7 +18,7 @@ class SingletonMeta(type):
         return cls._instances[cls]
 
 
-class InheritanceSingleton(dict, metaclass=SingletonMeta):
+class InheritanceSingleton(object, metaclass=SingletonMeta):
     _local_instances = {}
 
     @staticmethod
