@@ -2,7 +2,8 @@ import {
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
-  MenuUnfoldOutlined,
+  DislikeOutlined,
+  LikeOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
@@ -16,7 +17,7 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Drawer, Flex, type GetProp, message, Spin } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Spin } from 'antd';
 import { createStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
@@ -218,7 +219,7 @@ const App: React.FC = () => {
   const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [open, setOpen] = useState(false);
+  // const [open, setOpen] = useState(false);
 
 
 
@@ -462,9 +463,9 @@ const App: React.FC = () => {
     }
   };
 
-  const onTriggerDraw = (status: boolean) => {
-    setOpen(status);
-  }
+  // const  = (status: boolean) => {
+  //   setOpen(status);
+  // }
 
   // ==================== Nodes ====================
   const chatSider = (
@@ -641,26 +642,15 @@ const App: React.FC = () => {
                     icon={<CopyOutlined />}
                     onClick={() => copyMessageContent(messageItem.content || '')}
                   />
-                  <Button
+                  {/* <Button
                     type="text"
                     size="small"
                     icon={<MenuUnfoldOutlined />}
                     onClick={() => onTriggerDraw(true)}
-                  />
-                  <Drawer
-                    title="Basic Drawer"
-                    closable={{ 'aria-label': 'Close Button' }}
-                    onClick={() => onTriggerDraw(true)}
-                    onClose={() => onTriggerDraw(false)}
-                    open={open}
-                  >
-                    <p>Some contents...</p>
-                    <p>Some contents...</p>
-                    <p>Some contents...</p>
-                  </Drawer>
-                  {/* TODO 功能未实现先隐藏 */}
-                  {/* <Button type="text" size="small" icon={<LikeOutlined />} />
-                  <Button type="text" size="small" icon={<DislikeOutlined />} /> */}
+                  /> */}
+
+                  <Button type="text" size="small" icon={<LikeOutlined />} />
+                  <Button type="text" size="small" icon={<DislikeOutlined />} />
                 </div>
               ),
               loadingRender: () => <Spin size="small" />,
