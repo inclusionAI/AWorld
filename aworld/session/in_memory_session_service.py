@@ -1,4 +1,5 @@
 from typing import List, Optional
+from typing_extensions import override
 from datetime import datetime
 from aworld.cmd import SessionModel, ChatCompletionMessage
 from .base_session_service import BaseSessionService
@@ -11,6 +12,7 @@ class InMemorySessionService(BaseSessionService):
     def __init__(self):
         self.sessions = {}
 
+    @override
     async def get_session(
         self, user_id: str, session_id: str
     ) -> Optional[SessionModel]:
@@ -19,6 +21,7 @@ class InMemorySessionService(BaseSessionService):
             return None
         return self.sessions[session_key]
 
+    @override
     async def list_sessions(self, user_id: str) -> List[SessionModel]:
         return [
             session
@@ -26,6 +29,7 @@ class InMemorySessionService(BaseSessionService):
             if session_key.startswith(user_id)
         ]
 
+    @override
     async def create_session(
         self, user_id: str, session_id: str, name: str, description: str
     ) -> SessionModel:
@@ -43,12 +47,14 @@ class InMemorySessionService(BaseSessionService):
         )
         return self.sessions[session_key]
 
+    @override
     async def delete_session(self, user_id: str, session_id: str) -> None:
         session_key = f"{user_id}:{session_id}"
         if session_key not in self.sessions:
             logger.warning(f"Session {session_key} not found")
         del self.sessions[session_key]
 
+    @override
     async def append_messages(
         self, user_id: str, session_id: str, messages: List[ChatCompletionMessage]
     ) -> None:
