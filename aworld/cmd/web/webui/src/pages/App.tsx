@@ -215,22 +215,12 @@ const App: React.FC = () => {
 
   const [inputValue, setInputValue] = useState('');
   // TODO mock data , remove in the future
-  const [models, setModels] = useState<Array<{ label: string; value: string }>>([
-    {
-      label: 'weather_agent',
-      value: 'weather_agent',
-    },
-    {
-      label: 'weather_agent2',
-      value: 'weather_agent2',
-    }
-  ]);
-  const [selectedModel, setSelectedModel] = useState<string>('weather_agent');
+  const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const [modelsLoading, setModelsLoading] = useState(false);
   const [open, setOpen] = useState(false);
 
-  // 定时器引用
-  const sessionRefreshInterval = useRef<number | null>(null);
+
 
 
   // ==================== API Calls ====================
@@ -330,33 +320,10 @@ const App: React.FC = () => {
     }
   };
 
-  // 初始化和定时刷新
+  // 初始化
   useEffect(() => {
     fetchModels();
     fetchSessions(); // 初始加载
-
-    // 设置定时器，每3秒刷新一次会话列表
-    sessionRefreshInterval.current = window.setInterval(() => {
-      fetchSessions();
-    }, 3000);
-
-    // 清理定时器
-    return () => {
-      if (sessionRefreshInterval.current) {
-        clearInterval(sessionRefreshInterval.current);
-        sessionRefreshInterval.current = null;
-      }
-    };
-  }, []);
-
-  // 当组件卸载时清理定时器
-  useEffect(() => {
-    return () => {
-      if (sessionRefreshInterval.current) {
-        clearInterval(sessionRefreshInterval.current);
-        sessionRefreshInterval.current = null;
-      }
-    };
   }, []);
 
   // 处理URL中的agentid参数与模型选择的同步

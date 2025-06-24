@@ -34,7 +34,11 @@ class AgentServer:
             request.session_id,
             [
                 *request.messages,
-                ChatCompletionMessage(role="assistant", content=final_response),
+                ChatCompletionMessage(
+                    role="assistant",
+                    content=final_response,
+                    trace_id=request.trace_id,
+                ),
             ],
         )
 
