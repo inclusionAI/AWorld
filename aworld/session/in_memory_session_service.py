@@ -37,7 +37,7 @@ class InMemorySessionService(BaseSessionService):
             raise ValueError(f"Session {session_id} already exists")
         self.sessions[session_key] = SessionModel(
             user_id=user_id,
-            id=session_id,
+            session_id=session_id,
             name=name,
             description=description,
             created_at=datetime.now(),
@@ -59,7 +59,9 @@ class InMemorySessionService(BaseSessionService):
     ) -> None:
         session_key = f"{user_id}:{session_id}"
         if session_key not in self.sessions:
-            logger.warning(f"Session {session_key} not found")
-            self.create_session(user_id, session_id, "", "")
+            logger.info(f"Session {session_key} not found, create a new session")
+            await self.create_session(
+                user_id, session_id, messages[0].content, messages[0].content
+            )
         self.sessions[session_key].messages.extend(messages)
         self.sessions[session_key].updated_at = datetime.now()

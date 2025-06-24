@@ -66,7 +66,7 @@ class BaseAWorldAgent:
 
 class SessionModel(BaseModel):
     user_id: str = Field(..., description="The user id")
-    id: str = Field(..., description="The session id")
+    session_id: str = Field(..., description="The session id")
     name: str = Field(None, description="The session name")
     description: str = Field(None, description="The session description")
     created_at: datetime.datetime = Field(None, description="The session created at")

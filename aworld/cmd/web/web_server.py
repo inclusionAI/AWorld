@@ -1,5 +1,5 @@
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 import uvicorn
 import os
@@ -17,6 +17,9 @@ async def root():
     return RedirectResponse("/index.html")
 
 
+def get_user_id_from_jwt(request: Request) -> str:
+    return "test_user_1"
+    
 from .routers import chats, workspaces, sessions
 
 app.include_router(chats.router, prefix=chats.prefix)

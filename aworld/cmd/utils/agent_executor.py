@@ -12,7 +12,9 @@ from . import agent_loader
 import logging
 import aworld.trace as trace
 import os
+import uuid
 from dotenv import load_dotenv
+from .agent_server import CURRENT_SERVER
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,11 @@ trace.configure()
 
 
 async def stream_run(request: ChatCompletionRequest):
+    if not request.session_id:
+        request.session_id = str(uuid.uuid4())
+    if not request.query_id:
+        request.query_id = str(uuid.uuid4())
+
     logger.info(f"Stream run agent: request={request.model_dump_json()}")
     agent = agent_loader.get_agent(request.model)
     instance: BaseAWorldAgent = agent.instance
@@ -29,7 +36,11 @@ async def stream_run(request: ChatCompletionRequest):
         logger.info(f"Loading environment variables from {env_file}")
         load_dotenv(env_file, override=True, verbose=True)
 
+    final_response: str = ""
+
     def build_response(delta_content: str):
+        nonlocal final_response
+        final_response += delta_content
         return ChatCompletionResponse(
             choices=[
                 ChatCompletionChoice(
@@ -57,3 +68,5 @@ async def stream_run(request: ChatCompletionRequest):
                         yield build_response(sub_item)
                 else:
                     yield build_response(item)
+
+    await CURRENT_SERVER.on_chat_completion_end(request, final_response)

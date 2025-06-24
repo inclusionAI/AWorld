@@ -2,11 +2,11 @@ import {
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
+  MenuUnfoldOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined,
-  MenuUnfoldOutlined
+  ReloadOutlined
 } from '@ant-design/icons';
 import {
   Attachments,
@@ -16,16 +16,16 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, message, Spin, Drawer } from 'antd';
+import { Avatar, Button, Drawer, Flex, type GetProp, message, Spin } from 'antd';
 import { createStyles } from 'antd-style';
 import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import logo from '../assets/aworld_logo.png';
+import { useAgentId } from '../hooks/useAgentId';
+import { useSessionId } from '../hooks/useSessionId';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
-import { useSessionId } from '../hooks/useSessionId';
-import { useAgentId } from '../hooks/useAgentId';
-import logo from '../assets/aworld_logo.png';
 import './index.less';
 
 type BubbleDataType = {
@@ -33,23 +33,30 @@ type BubbleDataType = {
   content: string;
 };
 
-const DEFAULT_CONVERSATIONS_ITEMS = [
-  {
-    key: 'default-0',
-    label: 'What is Ant Design X?',
-    group: 'Today',
-  },
-  {
-    key: 'default-1',
-    label: 'How to quickly install and import components?',
-    group: 'Today',
-  },
-  {
-    key: 'default-2',
-    label: 'New AGI Hybrid Interface',
-    group: 'Yesterday',
-  },
-];
+// 添加会话数据类型定义
+type SessionMessage = {
+  role: string;
+  content: string;
+};
+
+type SessionData = {
+  user_id: string;
+  id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  messages: SessionMessage[];
+};
+
+// 会话列表项类型
+type ConversationItem = {
+  key: string;
+  label: string;
+  group: string;
+};
+
+const DEFAULT_CONVERSATIONS_ITEMS: ConversationItem[] = [];
 
 const SENDER_PROMPTS: GetProp<typeof Prompts, 'items'> = [];
 
@@ -149,7 +156,7 @@ const useStyle = createStyles(({ token, css }) => {
       display: flex;
       flex-direction: column;
       justify-content: center;
-    `,  
+    `,
     // sender 样式
     sender: css`
       width: 100%;
@@ -198,9 +205,10 @@ const App: React.FC = () => {
 
   // ==================== State ====================
   const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
+  const [sessionData, setSessionData] = useState<Record<string, SessionData>>({});
 
-  const [conversations, setConversations] = useState(DEFAULT_CONVERSATIONS_ITEMS);
-  const [curConversation, setCurConversation] = useState(DEFAULT_CONVERSATIONS_ITEMS[0].key);
+  const [conversations, setConversations] = useState<ConversationItem[]>(DEFAULT_CONVERSATIONS_ITEMS);
+  const [curConversation, setCurConversation] = useState<string>('');
 
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
@@ -220,6 +228,9 @@ const App: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState<string>('weather_agent');
   const [modelsLoading, setModelsLoading] = useState(false);
   const [open, setOpen] = useState(false);
+
+  // 定时器引用
+  const sessionRefreshInterval = useRef<number | null>(null);
 
 
   // ==================== API Calls ====================
@@ -245,8 +256,107 @@ const App: React.FC = () => {
     }
   };
 
+  const fetchSessions = async () => {
+    try {
+      const response = await fetch('/api/session/list');
+      if (response.ok) {
+        const sessions: SessionData[] = await response.json();
+
+        // 将会话数据存储到 sessionData 状态中
+        const sessionDataMap: Record<string, SessionData> = {};
+        sessions.forEach(session => {
+          sessionDataMap[session.id] = session;
+        });
+        setSessionData(sessionDataMap);
+
+        // 转换为会话列表格式
+        const conversationItems: ConversationItem[] = sessions.map(session => {
+          // 生成会话标题：使用 name 字段，如果为空则使用第一条用户消息的前50个字符
+          let label = session.name || session.description;
+          if (!label && session.messages.length > 0) {
+            const firstUserMessage = session.messages.find(msg => msg.role === 'user');
+            if (firstUserMessage) {
+              label = firstUserMessage.content.length > 50
+                ? firstUserMessage.content.substring(0, 50) + '...'
+                : firstUserMessage.content;
+            } else {
+              label = 'New Conversation';
+            }
+          }
+          if (!label) {
+            label = 'New Conversation';
+          }
+
+          return {
+            key: session.id,
+            label,
+            group: '' // 移除分组
+          };
+        });
+
+        // 按创建时间倒序排列（最新的在前面）
+        conversationItems.sort((a, b) => {
+          const sessionA = sessionDataMap[a.key];
+          const sessionB = sessionDataMap[b.key];
+          return dayjs(sessionB.created_at).valueOf() - dayjs(sessionA.created_at).valueOf();
+        });
+
+        setConversations(conversationItems);
+
+        // 如果当前没有选中的会话，选择最新的一个
+        if (!curConversation && conversationItems.length > 0) {
+          const latestSession = conversationItems[0];
+          setCurConversation(latestSession.key);
+
+          // 加载该会话的消息历史
+          const session = sessionDataMap[latestSession.key];
+          if (session && session.messages.length > 0) {
+            const chatMessages = session.messages.map((msg, index) => ({
+              id: `${latestSession.key}-${index}`,
+              message: {
+                role: msg.role,
+                content: msg.content
+              },
+              status: 'success' as const
+            }));
+            setMessages(chatMessages);
+          }
+        }
+      } else {
+        console.error('Failed to fetch sessions');
+      }
+    } catch (error) {
+      console.error('Error fetching sessions:', error);
+    }
+  };
+
+  // 初始化和定时刷新
   useEffect(() => {
     fetchModels();
+    fetchSessions(); // 初始加载
+
+    // 设置定时器，每3秒刷新一次会话列表
+    sessionRefreshInterval.current = window.setInterval(() => {
+      fetchSessions();
+    }, 3000);
+
+    // 清理定时器
+    return () => {
+      if (sessionRefreshInterval.current) {
+        clearInterval(sessionRefreshInterval.current);
+        sessionRefreshInterval.current = null;
+      }
+    };
+  }, []);
+
+  // 当组件卸载时清理定时器
+  useEffect(() => {
+    return () => {
+      if (sessionRefreshInterval.current) {
+        clearInterval(sessionRefreshInterval.current);
+        sessionRefreshInterval.current = null;
+      }
+    };
   }, []);
 
   // 处理URL中的agentid参数与模型选择的同步
@@ -367,11 +477,11 @@ const App: React.FC = () => {
     const userMessageIndex = assistantMessageIndex - 1;
     if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
       const userMessage = messages[userMessageIndex].message.content;
-      
+
       // 删除当前assistant消息和对应的用户消息
       const newMessages = messages.filter((_, index) => index !== assistantMessageIndex && index !== userMessageIndex);
       setMessages(newMessages);
-      
+
       // 重新发送用户消息
       setTimeout(() => {
         onSubmit(userMessage);
@@ -405,18 +515,17 @@ const App: React.FC = () => {
           }
 
           // 生成新的session ID
-          generateNewSessionId();
-          
-          const now = dayjs().valueOf().toString();
-          setConversations([
-            {
-              key: now,
-              label: `New Conversation ${conversations.length + 1}`,
-              group: 'Today',
-            },
-            ...conversations,
-          ]);
-          setCurConversation(now);
+          const newSessionId = generateNewSessionId();
+
+          // 创建新的会话项
+          const newConversation: ConversationItem = {
+            key: newSessionId,
+            label: `New Conversation`,
+            group: '', // 移除分组
+          };
+
+          setConversations([newConversation, ...conversations]);
+          setCurConversation(newSessionId);
           setMessages([]);
         }}
         type="link"
@@ -437,10 +546,25 @@ const App: React.FC = () => {
           // In future versions, the sessionId capability will be added to resolve this problem.
           setTimeout(() => {
             setCurConversation(val);
-            setMessages(messageHistory?.[val] || []);
+
+            // 优先从 sessionData 加载消息，如果没有则从 messageHistory 加载
+            const session = sessionData[val];
+            if (session && session.messages.length > 0) {
+              const chatMessages = session.messages.map((msg, index) => ({
+                id: `${val}-${index}`,
+                message: {
+                  role: msg.role,
+                  content: msg.content
+                },
+                status: 'success' as const
+              }));
+              setMessages(chatMessages);
+            } else {
+              setMessages(messageHistory?.[val] || []);
+            }
           }, 100);
         }}
-        groupable
+        groupable={false}
         styles={{ item: { padding: '0 8px' } }}
         menu={(conversation) => ({
           items: [
@@ -451,14 +575,43 @@ const App: React.FC = () => {
               danger: true,
               onClick: () => {
                 const newList = conversations.filter((item) => item.key !== conversation.key);
-                const newKey = newList?.[0]?.key;
+                const newKey = newList?.[0]?.key || '';
                 setConversations(newList);
+
+                // 从 sessionData 中删除对应的会话数据
+                const newSessionData = { ...sessionData };
+                delete newSessionData[conversation.key];
+                setSessionData(newSessionData);
+
+                // 从 messageHistory 中删除对应的消息历史
+                const newMessageHistory = { ...messageHistory };
+                delete newMessageHistory[conversation.key];
+                setMessageHistory(newMessageHistory);
+
                 // The delete operation modifies curConversation and triggers onActiveChange, so it needs to be executed with a delay to ensure it overrides correctly at the end.
                 // This feature will be fixed in a future version.
                 setTimeout(() => {
                   if (conversation.key === curConversation) {
                     setCurConversation(newKey);
-                    setMessages(messageHistory?.[newKey] || []);
+                    if (newKey) {
+                      // 优先从 sessionData 加载消息
+                      const session = newSessionData[newKey];
+                      if (session && session.messages.length > 0) {
+                        const chatMessages = session.messages.map((msg, index) => ({
+                          id: `${newKey}-${index}`,
+                          message: {
+                            role: msg.role,
+                            content: msg.content
+                          },
+                          status: 'success' as const
+                        }));
+                        setMessages(chatMessages);
+                      } else {
+                        setMessages(newMessageHistory?.[newKey] || []);
+                      }
+                    } else {
+                      setMessages([]);
+                    }
                   }
                 }, 200);
               },
@@ -497,34 +650,34 @@ const App: React.FC = () => {
               placement: 'start',
               footer: (messageItem) => (
                 <div style={{ display: 'flex' }}>
-                  <Button 
-                    type="text" 
-                    size="small" 
-                    icon={<ReloadOutlined />} 
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ReloadOutlined />}
                     onClick={() => resendMessage(messageItem.messageIndex)}
                   />
-                  <Button 
-                    type="text" 
-                    size="small" 
-                    icon={<CopyOutlined />} 
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CopyOutlined />}
                     onClick={() => copyMessageContent(messageItem.content || '')}
                   />
-                                    <Button 
-                    type="text" 
-                    size="small" 
-                    icon={<MenuUnfoldOutlined />} 
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<MenuUnfoldOutlined />}
                     onClick={() => onTriggerDraw(true)}
                   />
                   <Drawer
-                            title="Basic Drawer"
-                            closable={{ 'aria-label': 'Close Button' }}
-                            onClick={() => onTriggerDraw(true)}
-                            onClose={() => onTriggerDraw(false)}
-                            open={open}
-                          >
-                            <p>Some contents...</p>
-                            <p>Some contents...</p>
-                            <p>Some contents...</p>
+                    title="Basic Drawer"
+                    closable={{ 'aria-label': 'Close Button' }}
+                    onClick={() => onTriggerDraw(true)}
+                    onClose={() => onTriggerDraw(false)}
+                    open={open}
+                  >
+                    <p>Some contents...</p>
+                    <p>Some contents...</p>
+                    <p>Some contents...</p>
                   </Drawer>
                   {/* TODO 功能未实现先隐藏 */}
                   {/* <Button type="text" size="small" icon={<LikeOutlined />} />
@@ -624,8 +777,8 @@ const App: React.FC = () => {
               {loading ? (
                 <LoadingButton type="default" />
               ) : (
-                <SendButton 
-                  type="primary" 
+                <SendButton
+                  type="primary"
                   disabled={!inputValue.trim()}
                   className={styles.sendButton}
                 />
@@ -640,13 +793,13 @@ const App: React.FC = () => {
 
   useEffect(() => {
     // history mock
-    if (messages?.length) {
+    if (messages?.length && curConversation) {
       setMessageHistory((prev) => ({
         ...prev,
         [curConversation]: messages,
       }));
     }
-  }, [messages]);
+  }, [messages, curConversation]);
 
   // ==================== Render =================
   return (
@@ -654,7 +807,7 @@ const App: React.FC = () => {
       {chatSider}
       <div className={styles.chat}>
         {chatList}
-        {messages?.length > 0 && chatSender}
+        {(messages?.length > 0 || curConversation) && chatSender}
       </div>
     </div>
   );
