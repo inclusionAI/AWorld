@@ -30,6 +30,7 @@ class SpanModel(BaseModel):
     parent_id: Optional[str]
     children: list['SpanModel'] = []
     run_type: Optional[str] = RunType.OTHER.value
+    is_event: bool = False
 
     @staticmethod
     def from_span(span):
@@ -56,7 +57,8 @@ class SpanModel(BaseModel):
             parent_id=SpanModel.get_span_id(
                 span.parent) if span.parent else None,
             run_type=span.attributes.get(
-                ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType.OTHER.value)
+                ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType.OTHER.value),
+            is_event=(span.attributes.get("event.id") is not None)
         )
 
     @staticmethod

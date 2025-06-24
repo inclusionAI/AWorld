@@ -22,6 +22,9 @@ class TraceServer:
         if self._thread:
             self._thread.join()
 
+    def get_storage(self):
+        return self._storage
+
     def _start_app(self):
         app = setup_routes(self._storage)
         self.app = app

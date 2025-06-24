@@ -20,14 +20,17 @@ async def root():
 def get_user_id_from_jwt(request: Request) -> str:
     return "test_user_1"
     
-from .routers import chats, workspaces, sessions
+from .routers import chats, workspaces, sessions, traces  # noqa
 
 app.include_router(chats.router, prefix=chats.prefix)
 app.include_router(workspaces.router, prefix=workspaces.prefix)
 app.include_router(sessions.router, prefix=sessions.prefix)
+app.include_router(traces.router, prefix=traces.prefix)
+
 
 def build_webui(force_rebuild: bool = False) -> str:
-    webui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui")
+    webui_path = os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "webui")
     static_path = os.path.join(webui_path, "dist")
 
     if (not os.path.exists(static_path)) or force_rebuild:
@@ -39,7 +42,8 @@ def build_webui(force_rebuild: bool = False) -> str:
         )
         p.wait()
         if p.returncode != 0:
-            raise Exception(f"Failed to build WebUI, error code: {p.returncode}")
+            raise Exception(
+                f"Failed to build WebUI, error code: {p.returncode}")
         else:
             logger.info("WebUI build successfully")
 
