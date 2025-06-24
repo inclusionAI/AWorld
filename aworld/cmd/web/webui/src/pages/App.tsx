@@ -200,7 +200,7 @@ const useStyle = createStyles(({ token, css }) => {
 const App: React.FC = () => {
   const { styles } = useStyle();
   const abortController = useRef<AbortController>(null);
-  const { sessionId, generateNewSessionId } = useSessionId();
+  const { sessionId, generateNewSessionId, updateURLSessionId, setSessionId } = useSessionId();
   const { agentId, setAgentIdAndUpdateURL } = useAgentId();
 
   // ==================== State ====================
@@ -297,6 +297,10 @@ const App: React.FC = () => {
         if (!curConversation && conversationItems.length > 0) {
           const latestSession = conversationItems[0];
           setCurConversation(latestSession.key);
+
+          // 更新sessionId以匹配选中的会话
+          setSessionId(latestSession.key);
+          updateURLSessionId(latestSession.key);
 
           // 加载该会话的消息历史
           const session = sessionDataMap[latestSession.key];
@@ -514,6 +518,10 @@ const App: React.FC = () => {
           setTimeout(() => {
             setCurConversation(val);
 
+            // 更新sessionId以匹配选中的会话
+            setSessionId(val);
+            updateURLSessionId(val);
+
             // 优先从 sessionData 加载消息，如果没有则从 messageHistory 加载
             const session = sessionData[val];
             if (session && session.messages.length > 0) {
@@ -561,6 +569,10 @@ const App: React.FC = () => {
                   if (conversation.key === curConversation) {
                     setCurConversation(newKey);
                     if (newKey) {
+                      // 更新sessionId
+                      setSessionId(newKey);
+                      updateURLSessionId(newKey);
+
                       // 优先从 sessionData 加载消息
                       const session = newSessionData[newKey];
                       if (session && session.messages.length > 0) {

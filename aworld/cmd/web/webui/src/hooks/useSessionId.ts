@@ -28,7 +28,7 @@ export const useSessionId = () => {
   useEffect(() => {
     // 初始化时检查URL中是否有session ID
     const urlSessionId = getSessionIdFromURL();
-    
+
     if (urlSessionId) {
       // 如果URL中有session ID，使用它
       setSessionId(urlSessionId);
@@ -40,6 +40,7 @@ export const useSessionId = () => {
 
   return {
     sessionId,
+    setSessionId,
     generateNewSessionId,
     updateURLSessionId,
   };
