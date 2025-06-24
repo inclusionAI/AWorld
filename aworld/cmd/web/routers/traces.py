@@ -2,12 +2,30 @@ import logging
 from fastapi import APIRouter
 from aworld.trace.server import get_trace_server
 from aworld.trace.constants import RunType
+from aworld.trace.server.util import build_trace_tree
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 prefix = "/api/trace"
+
+
+@router.get("/list")
+async def list_traces():
+    storage = get_trace_server().get_storage()
+    trace_data = []
+    for trace_id in storage.get_all_traces():
+        spans = storage.get_all_spans(trace_id)
+        spans_sorted = sorted(spans, key=lambda x: x.start_time)
+        trace_tree = build_trace_tree(spans_sorted)
+        trace_data.append({
+            'trace_id': trace_id,
+            'root_span': trace_tree,
+        })
+    return {
+        "data": trace_data
+    }
 
 
 @router.get("/agent")

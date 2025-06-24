@@ -17,9 +17,15 @@ async def root():
     return RedirectResponse("/index.html")
 
 
+@app.get("/trace")
+async def trace():
+    return RedirectResponse("/trace_ui.html")
+
+
 def get_user_id_from_jwt(request: Request) -> str:
     return "test_user_1"
-    
+
+
 from .routers import chats, workspaces, sessions, traces  # noqa
 
 app.include_router(chats.router, prefix=chats.prefix)
