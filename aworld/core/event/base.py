@@ -18,7 +18,7 @@ class Constants:
     TOOL = "tool"
     TASK = "task"
     OUTPUT = "output"
-    TOOL_CALLBACK = "too_callback"
+    TOOL_CALLBACK = "tool_callback"
 
 
 class TopicType:
