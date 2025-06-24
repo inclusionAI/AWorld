@@ -646,7 +646,7 @@ const App: React.FC = () => {
                     type="text"
                     size="small"
                     icon={<MenuUnfoldOutlined />}
-                    onClick={() => alert('TODO: 展示workspace @孝行 workspace_id: ' + sessionId)}
+                    onClick={() => alert('TODO: 展示workspace @孝行 \n\nworkspace_id: ' + sessionId)}
                   />
                   <Button
                     type="text"
