@@ -1,6 +1,7 @@
 from typing import AsyncGenerator
 from aworld.output.ui.base import AworldUI
 from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
+from aworld.output.workspace import WorkSpace
 from .. import (
     BaseAWorldAgent,
     ChatCompletionChoice,
@@ -48,12 +49,19 @@ async def stream_run(request: ChatCompletionRequest):
                     delta=ChatCompletionMessage(
                         role="assistant",
                         content=delta_content,
+                        trace_id=request.trace_id,
                     ),
                 )
             ]
         )
 
-    rich_ui = MarkdownAworldUI()
+    rich_ui = MarkdownAworldUI(
+        chat_id=request.session_id,
+        workspace=WorkSpace.from_local_storages(
+            workspace_id=request.session_id,
+            storage_path=os.path.join(os.curdir, "workspaces", request.session_id),
+        )
+    )
 
     async for output in instance.run(request=request):
         logger.info(f"Agent {agent.name} output: {output}")
