@@ -37,6 +37,7 @@ async def get_agent_trace(trace_id: str):
     filtered_spans = {}
     for span_id, span in spans_dict.items():
         if span.get('is_event', False) and span.get('run_type') == RunType.AGNET.value:
+            span['show_name'] = _get_agent_show_name(span)
             filtered_spans[span_id] = span
 
     for span in list(filtered_spans.values()):
@@ -60,3 +61,11 @@ async def get_agent_trace(trace_id: str):
     return {
         "data": root_spans
     }
+
+
+def _get_agent_show_name(span: dict):
+    agent_name_prefix = "agent_event_"
+    name = span.get("name")
+    if name and name.startswith(agent_name_prefix):
+        name = name[len(agent_name_prefix):]
+    return name

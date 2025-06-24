@@ -136,8 +136,6 @@
 </head>
 
 <body>
-
-    {% raw %}
     <div id="app" class="trace-container">
         <!-- Top timeline -->
         <div class="timeline">
@@ -214,7 +212,6 @@
             <pre>{{ formatStacktrace(selectedSpan.attributes?.['exception.stacktrace'] || "No stacktrace available") }}</pre>
         </el-dialog>
     </div>
-    {% endraw %}
 
     <script>
         const { createApp, ref, onMounted, nextTick } = Vue;
@@ -428,9 +425,9 @@
 
                 async function fetchTraces() {
                     try {
-                        const response = await fetch('/api/traces');
+                        const response = await fetch('/api/trace/list');
                         const data = await response.json();
-                        traces.value = data;
+                        traces.value = data.data;
                         buildTraceTree();
                         initTimeline();
                     } catch (error) {
