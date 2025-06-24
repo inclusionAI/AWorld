@@ -1,9 +1,9 @@
 import {
+  AlertFilled,
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
-  DislikeOutlined,
-  LikeOutlined,
+  MenuUnfoldOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
@@ -642,15 +642,18 @@ const App: React.FC = () => {
                     icon={<CopyOutlined />}
                     onClick={() => copyMessageContent(messageItem.content || '')}
                   />
-                  {/* <Button
+                  <Button
                     type="text"
                     size="small"
                     icon={<MenuUnfoldOutlined />}
-                    onClick={() => onTriggerDraw(true)}
-                  /> */}
-
-                  <Button type="text" size="small" icon={<LikeOutlined />} />
-                  <Button type="text" size="small" icon={<DislikeOutlined />} />
+                    onClick={() => alert('TODO: 展示workspace @孝行 workspace_id: ' + sessionId)}
+                  />
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<AlertFilled />}
+                    onClick={() => window.open('/trace_ui.html', '_blank')}
+                  />
                 </div>
               ),
               loadingRender: () => <Spin size="small" />,
