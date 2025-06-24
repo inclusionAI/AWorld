@@ -56,12 +56,14 @@ async def stream_run(request: ChatCompletionRequest):
         )
 
     rich_ui = MarkdownAworldUI(
-        chat_id=request.session_id,
+        session_id=request.session_id,
         workspace=WorkSpace.from_local_storages(
             workspace_id=request.session_id,
             storage_path=os.path.join(os.curdir, "workspaces", request.session_id),
-        )
+        ),
     )
+
+    await CURRENT_SERVER.on_chat_completion_request(request)
 
     async for output in instance.run(request=request):
         logger.info(f"Agent {agent.name} output: {output}")
