@@ -310,30 +310,30 @@ def replace_env_variables(config) -> Any:
 
 def get_local_hostname():
     """
-    获取本地主机名。
-    首先尝试 `socket.gethostname()`，如果失败或返回不合法的值，
-    则尝试通过本地IP进行反向DNS查找。
+    Get the local hostname.
+    First try `socket.gethostname()`, if it fails or returns an invalid value,
+    then try reverse DNS lookup using local IP.
     """
     try:
         hostname = socket.gethostname()
-        # 简单校验，如果主机名包含'.'，认为它是一个合格的FQDN (Fully Qualified Domain Name)
+        # Simple validation - if hostname contains '.', consider it a valid FQDN (Fully Qualified Domain Name)
         if hostname and '.' in hostname:
             return hostname
 
-        # 如果主机名不合格，尝试通过IP反向解析
+        # If hostname is not qualified, try reverse lookup via IP
         local_ip = get_local_ip()
         if local_ip:
             try:
-                # 通过IP获取主机名
+                # Get hostname from IP
                 hostname, _, _ = socket.gethostbyaddr(local_ip)
                 return hostname
             except (socket.herror, socket.gaierror):
-                # 反向解析失败，返回最初的hostname或IP地址
+                # Reverse lookup failed, return original hostname or IP
                 pass
 
-        # 如果所有方法都失败了，返回最初的 gethostname() 结果或IP地址
+        # If all methods fail, return original gethostname() result or IP
         return hostname if hostname else local_ip
 
     except Exception:
-        # 最终的兜底策略
+        # Final fallback strategy
         return "localhost"
