@@ -6,7 +6,7 @@ from typing import Any, Dict, Union, List
 from examples.tools.common import Agents, Tools
 from aworld.core.agent.base import AgentFactory
 from aworld.config.conf import AgentConfig, ConfigDict
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 
 

@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from dotenv import load_dotenv
 
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.gaia.prompt import system_prompt

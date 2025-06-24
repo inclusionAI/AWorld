@@ -4,6 +4,7 @@ import abc
 from typing import AsyncGenerator, Tuple
 
 from aworld.core.agent.base import is_agent
+from aworld.core.agent.swarm import WORKFLOW, HANDOFF
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType
@@ -207,11 +208,11 @@ class DefaultAgentHandler(AgentHandler):
         )
 
     async def _stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
-        if 'social' in self.swarm.topology_type:
+        if HANDOFF == self.swarm.execute_type:
             async for event in self._social_stop_check(action, caller):
                 yield event
         else:
-            if 'loop' in self.swarm.topology_type:
+            if self.swarm.has_cycle:
                 async for event in self._loop_sequence_stop_check(action, caller):
                     yield event
             else:
@@ -220,7 +221,8 @@ class DefaultAgentHandler(AgentHandler):
 
     async def _sequence_stop_check(self, action: ActionModel, caller: str) -> AsyncGenerator[Message, None]:
         agent = self.swarm.agents.get(action.agent_name)
-        idx = next((i for i, x in enumerate(self.swarm.ordered_agents) if x == agent), -1)
+        ordered_agents = self.swarm.ordered_agents
+        idx = next((i for i, x in enumerate(ordered_agents) if x == agent), -1)
         if idx == -1:
             yield Message(
                 category=Constants.TASK,

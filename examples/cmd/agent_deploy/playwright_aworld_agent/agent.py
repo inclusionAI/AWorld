@@ -5,7 +5,7 @@ import json
 from aworld.cmd import ChatCompletionRequest
 from aworld.cmd.utils.aworld_ui import OpenAworldUI
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
 from aworld.runner import Runners

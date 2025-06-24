@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 from aworld.config.conf import AgentConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from examples.mcp_demo.servers_config import mcp_config
 

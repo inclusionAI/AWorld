@@ -3,6 +3,7 @@
 from typing import List, Dict
 
 from aworld.config import ConfigDict
+from aworld.core.agent.swarm import WORKFLOW
 from aworld.core.common import Config
 from aworld.core.runtime_engine import LOCAL
 
@@ -31,15 +32,15 @@ async def choose_runners(tasks: List[Task]) -> List[Runner]:
             if task.swarm:
                 task.swarm.event_driven = task.event_driven
                 task.swarm.reset(task.input)
-                topology = task.swarm.topology_type
+                execute_type = task.swarm.execute_type
             else:
-                topology = "sequence"
+                execute_type = WORKFLOW
 
             if task.event_driven:
                 runner = new_instance("aworld.runners.event_runner.TaskEventRunner", task)
             else:
                 runner = new_instance(
-                    f"aworld.runners.call_driven_runner.{snake_to_camel(topology)}Runner",
+                    f"aworld.runners.call_driven_runner.{snake_to_camel(execute_type)}Runner",
                     task
                 )
         runners.append(runner)

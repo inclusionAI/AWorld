@@ -3,14 +3,12 @@
 import asyncio
 from typing import List, Dict, Union
 
-import aworld.tools
 from aworld.config.conf import TaskConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.output import StreamingOutputs
-from aworld import trace
 from aworld.runners.utils import choose_runners, execute_runner
 from aworld.utils.common import sync_exec
 

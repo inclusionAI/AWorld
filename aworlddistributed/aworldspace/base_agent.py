@@ -7,7 +7,7 @@ from abc import abstractmethod
 from typing import List, AsyncGenerator, Any
 
 from aworld.config import AgentConfig, TaskConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output import WorkSpace, AworldUI, Outputs
 from aworld.runner import Runners
