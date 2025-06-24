@@ -154,12 +154,22 @@ async def search(
         combined_query = ",".join(query_list)
 
         search_items = []
+        # Use a dictionary to deduplicate by URL
+        url_dict = {}
         for doc in all_valid_docs:
-            search_items.append({
-                "title": doc.get("title", ""),
-                "url": doc.get("url", ""),
-                "content": doc.get("doc", "")  # Map doc field to content
-            })
+            url = doc.get("url", "")
+            if url not in url_dict:
+                url_dict[url] = {
+                    "title": doc.get("title", ""),
+                    "url": url,
+                    "snippet": doc.get("doc", "")[:100] + "..." if len(doc.get("doc", "")) > 100 else doc.get("doc", ""),
+                    "content": doc.get("doc", "")  # Map doc field to content
+                }
+        
+        # Convert dictionary values to list
+        search_items = list(url_dict.values())
+        
+        
 
         search_output_dict = {
             "artifact_type": "WEB_PAGES",

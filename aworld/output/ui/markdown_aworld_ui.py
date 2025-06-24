@@ -45,7 +45,6 @@ class MarkdownAworldUI(AworldUI):
                 await queue.put(item)
 
             from asyncio import Queue
-
             queue = Queue()
 
             async def consume_all():
@@ -79,10 +78,13 @@ class MarkdownAworldUI(AworldUI):
         """
         tool_result
         """
+        custom_output = await self.gen_custom_output(output)
+
         artifacts = await self.parse_tool_artifacts(output.metadata)
 
         tool_card_content = {
             "type": "mcp",
+            "custom_output": custom_output,
             "tool_name": output.tool_name,
             "function_name": output.origin_tool_call.function.name,
             "function_arguments": output.origin_tool_call.function.arguments,
@@ -94,6 +96,17 @@ class MarkdownAworldUI(AworldUI):
         )
 
         return tool_data
+
+    async def gen_custom_output(self, output):
+        """
+        hook for custom output
+        """
+        custom_output = f"{output.tool_name}#{output.origin_tool_call.function.name}"
+        if output.tool_name == "aworld-playwright" and output.origin_tool_call.function.name == "browser_navigate":
+            custom_output = f"🔍 search `{json.loads(output.origin_tool_call.function.arguments)['url']}`"
+        if output.tool_name == "aworldsearch-server" and output.origin_tool_call.function.name == "search":
+            custom_output = f"🔍 search keywords: {' '.join(json.loads(output.origin_tool_call.function.arguments)['query_list'])}"
+        return custom_output
 
     async def json_parse(self, json_str):
         try:
@@ -109,6 +122,7 @@ class MarkdownAworldUI(AworldUI):
         if output.status == "START":
             if self.cur_agent_name == output.name:
                 return f"{emptyLine}"
+            self.cur_agent_name = output.name
             return f"\n\n🤖 {output.show_name}: \n\n"
         elif output.status == "FINISHED":
             return f"{emptyLine}"
@@ -123,27 +137,19 @@ class MarkdownAworldUI(AworldUI):
     async def parse_tool_artifacts(self, metadata):
         result = []
         if not metadata:
-            return result
+           return result
 
         # screenshots
-        if (
-            metadata.get("screenshots")
-            and isinstance(metadata.get("screenshots"), list)
-            and len(metadata.get("screenshots")) > 0
-        ):
-            for index, screenshot in enumerate(metadata.get("screenshots")):
-                image_artifact = Artifact(
-                    artifact_id=str(uuid.uuid4()),
-                    artifact_type=ArtifactType.IMAGE,
-                    content=screenshot.get("ossPath"),
-                )
+        if metadata.get('screenshots') and isinstance(metadata.get('screenshots'), list) and len(
+                metadata.get('screenshots')) > 0:
+            for index, screenshot in enumerate(metadata.get('screenshots')):
+                image_artifact = Artifact(artifact_id=str(uuid.uuid4()), artifact_type=ArtifactType.IMAGE,
+                                          content=screenshot.get('ossPath'))
                 await self.workspace.add_artifact(image_artifact)
-                result.append(
-                    {
-                        "artifact_type": "IMAGE",
-                        "artifact_id": image_artifact.artifact_id,
-                    }
-                )
+                result.append({
+                    "artifact_type": "IMAGE",
+                    "artifact_id": image_artifact.artifact_id
+                })
 
         # web_pages
         if metadata.get("artifact_type") == "WEB_PAGES":
@@ -155,7 +161,10 @@ class MarkdownAworldUI(AworldUI):
                 content=search_output,
                 metadata={
                     "query": search_output.query,
-                },
+                }
             )
-            result.append({"artifact_type": "WEB_PAGES", "artifact_id": artifact_id})
+            result.append({
+                "artifact_type": "WEB_PAGES",
+                "artifact_id": artifact_id
+            })
         return result

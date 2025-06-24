@@ -115,14 +115,15 @@ async def chat_completion(form_data: OpenAIChatCompletionForm, request: Request
                           ):
     # Extract headers into a dict
     headers = request.headers
-    metadata = {
-        "user_id": headers.get("x-aworld-user-id"),
-        "chat_id": headers.get("x-aworld-session-id"),
-        "message_id": headers.get("x-aworld-message-id")
-    }
+    if headers.get("x-aworld-session-id"):
+        metadata = {
+            "user_id": headers.get("x-aworld-user-id"),
+            "chat_id": headers.get("x-aworld-session-id"),
+            "message_id": headers.get("x-aworld-message-id")
+        }
 
-    # Add metadata to form_data
-    form_data.metadata = metadata
+        # Add metadata to form_data
+        form_data.metadata = metadata
 
     return await generate_openai_chat_completion(form_data)
 
