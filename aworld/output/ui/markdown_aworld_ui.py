@@ -88,7 +88,6 @@ class MarkdownAworldUI(AworldUI):
             "tool_name": output.tool_name,
             "function_name": output.origin_tool_call.function.name,
             "function_arguments": output.origin_tool_call.function.arguments,
-            "function_result": output.data,
             "artifacts": artifacts,
         }
         tool_data = tool_card_template.format(
