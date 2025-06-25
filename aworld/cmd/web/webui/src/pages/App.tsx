@@ -4,6 +4,8 @@ import {
   CopyOutlined,
   DeleteOutlined,
   MenuUnfoldOutlined,
+  ShrinkOutlined,
+  BoxPlotOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
@@ -17,7 +19,7 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, message, Spin } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Spin, Drawer } from 'antd';
 import { createStyles } from 'antd-style';
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -26,6 +28,8 @@ import { useAgentId } from '../hooks/useAgentId';
 import { useSessionId } from '../hooks/useSessionId';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
+import Workspace from './components/Drawer/Workspace';
+import Trace from '../pages/components/Drawer/Trace';
 import './index.less';
 
 type BubbleDataType = {
@@ -218,6 +222,17 @@ const App: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [modelsLoading, setModelsLoading] = useState(false);
 
+  // 右侧抽屉
+  type DrawerContentType = 'Team workspace' | 'trace';
+  const [drawerVisible, setDrawerVisible] = useState(false);
+  const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Team workspace');
+  const openDrawer = (content: DrawerContentType) => {
+    setDrawerVisible(true);
+    setDrawerContent(content);
+  }
+  const closeDrawer = () =>{
+    setDrawerVisible(false);
+  }
 
   // ==================== API Calls ====================
   const fetchModels = async () => {
@@ -399,9 +414,9 @@ const App: React.FC = () => {
     }
   };
 
-  // 重新发送消息
-  const resendMessage = (assistantMessageIndex: number) => {
-    // 找到对应的用户消息
+  const resendMessage = (assistantMessage: any) => {
+    console.log('resendMessage: assistantMessage', assistantMessage, assistantMessage.messageIndex, assistantMessage.content, assistantMessage.message);
+    const assistantMessageIndex = assistantMessage.messageIndex;
     const userMessageIndex = assistantMessageIndex - 1;
     if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
       const userMessage = messages[userMessageIndex].message.content;
@@ -498,9 +513,17 @@ const App: React.FC = () => {
                 console.log('delete session: session_id', conversation.key);
                 fetch('/api/session/delete', {
                   method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
                   body: JSON.stringify({ session_id: conversation.key }),
-                }).then(() => {
-                  fetchSessions();
+                }).then((res) => res.json()).then((data) => {
+                  if (data.code === 0) {
+                    message.success('Session deleted');
+                    fetchSessions();
+                  } else {
+                    message.error('Failed to delete session');
+                  }
                 });
               },
             },
@@ -554,7 +577,13 @@ const App: React.FC = () => {
                     type="text"
                     size="small"
                     icon={<MenuUnfoldOutlined />}
-                    onClick={() => alert('TODO: 展示workspace @孝行 \n\nworkspace_id: ' + sessionId)}
+                    onClick={() => openDrawer('Team workspace')}
+                  />
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<BoxPlotOutlined />}
+                    onClick={() => openDrawer('trace')}
                   />
                   <Button
                     type="text"
@@ -688,6 +717,27 @@ const App: React.FC = () => {
         {chatList}
         {(messages?.length > 0 || curConversation) && chatSender}
       </div>
+      <Drawer
+        placement="right"
+        width={700}
+        title={drawerContent}
+        extra={
+          <ShrinkOutlined
+            onClick={closeDrawer}
+            style={{
+              fontSize: '18px',
+              color: '#444',
+              cursor: 'pointer'
+            }}
+          />
+        }
+        onClose={closeDrawer}
+        closable={false}
+        maskClosable={true}
+        open={drawerVisible}
+      >
+        {drawerContent === 'Team workspace' ? <Workspace sessionId={sessionId} /> : <Trace sessionId={sessionId} />}
+      </Drawer>
     </div>
   );
 };
