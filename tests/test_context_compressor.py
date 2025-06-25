@@ -12,7 +12,7 @@ from tests.base_test import BaseTest
 
 from aworld.config.conf import AgentConfig, ModelConfig, ContextRuleConfig, OptimizationConfig, LlmCompressionConfig
 from aworld.core.context.processor import CompressionResult, CompressionType
-from aworld.core.context.processor.prompt_compressor import PromptCompressor, LLMCompressor
+from aworld.core.context.processor.llm_compressor import LLMCompressor
 from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.context.base import AgentContext, ContextUsage
 
@@ -36,8 +36,7 @@ class TestPromptCompressor(BaseTest):
 
     def test_compress_batch_basic(self):
         
-        compressor = PromptCompressor(
-            compression_types=[CompressionType.LLM_BASED],
+        compressor = LLMCompressor(
             llm_config=self.mock_llm_config
         )
         

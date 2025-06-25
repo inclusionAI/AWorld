@@ -6,7 +6,7 @@ from aworld.config import ConfigDict
 from aworld.core.common import Config
 from aworld.core.runtime_engine import LOCAL
 
-from aworld.core.task import Task, Runner, TaskResponse
+from aworld.core.task import Task, TaskResponse, Runner
 from aworld.logs.util import logger
 from aworld.utils.common import new_instance, snake_to_camel
 

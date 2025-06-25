@@ -38,7 +38,7 @@ class Swarm(object):
         self.initialized = False
         self._finished = False
         self._cur_step = 0
-        self._event_driven = kwargs.get('event_driven', False)
+        self._event_driven = kwargs.get('event_driven', True)
         for agent in self._topology:
             if isinstance(agent, Agent):
                 agent = [agent]
