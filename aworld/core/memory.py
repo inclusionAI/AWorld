@@ -3,7 +3,6 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Literal, Union
 
-from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field, ConfigDict
 
 from aworld.models.llm import LLMModel
@@ -266,7 +265,7 @@ class MemoryConfig(BaseModel):
 
     # LLM settings - the LLM instance can be passed separately
     llm_provider: Literal['openai', 'langchain'] = 'langchain'
-    llm_instance: Optional[Union[BaseChatModel,LLMModel]] = None
+    llm_instance: Optional[Union[LLMModel]] = None
 
     # Vector store settings
     vector_store_provider: Literal['faiss'] = 'faiss'

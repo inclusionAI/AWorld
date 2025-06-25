@@ -6,11 +6,11 @@ import traceback
 
 from aworld.core.context.base import Context
 
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.runners.hook.hooks import *
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.logs.util import logger
-from aworld.runners.utils import TaskType
+
 from aworld.utils.common import convert_to_snake
 
 
@@ -37,5 +37,5 @@ class {name}({point}Hook):
                            session_id=Context.instance().session_id,
                            sender="{name}",
                            category=Constants.TASK,
-                           topic=TaskType.ERROR)
+                           topic=TopicType.ERROR)
 """

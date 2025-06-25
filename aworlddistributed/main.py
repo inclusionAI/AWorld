@@ -1,14 +1,15 @@
-
 import logging
 import os
 import time
 from contextlib import asynccontextmanager
 from logging.handlers import TimedRotatingFileHandler
+import uvicorn
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from aworldspace.routes import tasks, workspaces
+from aworld.cmd.web.routers import workspaces
+from aworldspace.routes import tasks
 from aworldspace.utils.job import generate_openai_chat_completion
 from aworldspace.utils.loader import load_modules_from_directory, PIPELINE_MODULES, PIPELINES
 from base import OpenAIChatCompletionForm
@@ -107,9 +108,23 @@ async def check_url(request: Request, call_next):
 async def get_status():
     return {"status": True}
 
+
 @app.post("/v1/chat/completions")
 @app.post("/chat/completions")
-async def chat_completion(form_data: OpenAIChatCompletionForm):
+async def chat_completion(form_data: OpenAIChatCompletionForm, request: Request
+                          ):
+    # Extract headers into a dict
+    headers = request.headers
+    if headers.get("x-aworld-session-id"):
+        metadata = {
+            "user_id": headers.get("x-aworld-user-id"),
+            "chat_id": headers.get("x-aworld-session-id"),
+            "message_id": headers.get("x-aworld-message-id")
+        }
+
+        # Add metadata to form_data
+        form_data.metadata = metadata
+
     return await generate_openai_chat_completion(form_data)
 
 @app.get("/health")
@@ -117,3 +132,12 @@ async def healthcheck():
     return {
         "status": True
     }
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "aworlddistributed.main:app",
+        host="0.0.0.0",
+        port=8088,
+        reload=True,
+    )

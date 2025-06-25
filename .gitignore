@@ -6,7 +6,6 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -132,3 +131,5 @@ traces*.json
 trace_data
 
 examples/gaia/output
+examples/**/workspaces
+examples/**/data

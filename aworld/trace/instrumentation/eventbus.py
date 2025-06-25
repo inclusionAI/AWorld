@@ -1,23 +1,30 @@
 import wrapt
 from typing import Any, Collection
 from aworld.trace.instrumentation import Instrumentor
-from aworld.trace.base import Tracer, get_tracer_provider_silent
+from aworld.trace.base import Tracer, get_tracer_provider_silent, TraceContext
 from aworld.trace.propagator import get_global_trace_propagator, get_global_trace_context
 from aworld.trace.propagator.carrier import DictCarrier
-from aworld.events.manager import EventManager
-from aworld.core.event.base import Message
 from aworld.logs.util import logger
 
 
 def _emit_message_class_wrapper(tracer: Tracer):
     async def awrapper(wrapped, instance, args, kwargs):
+        from aworld.core.event.base import Message
         try:
-            event = kwargs.get("event")
+            event = args[0] if len(args) > 0 else kwargs.get("event")
             propagator = get_global_trace_propagator()
-            if propagator and event and isinstance(event, Message):
+            trace_provider = get_tracer_provider_silent()
+            if trace_provider and propagator and event and isinstance(event, Message):
                 if not event.headers:
                     event.headers = {}
-                propagator.inject(DictCarrier(event.headers))
+                current_span = trace_provider.get_current_span()
+                if current_span:
+                    trace_context = TraceContext(
+                        trace_id=current_span.get_trace_id(), span_id=current_span.get_span_id())
+                    propagator.inject(trace_context=trace_context,
+                                      carrier=DictCarrier(event.headers))
+                logger.info(
+                    f"EventManager emit_message trace propagate, event.headers={event.headers}")
         except Exception as e:
             logger.error(
                 f"EventManager emit_message trace propagate exception: {e}")
@@ -37,6 +44,7 @@ def _emit_message_instance_wrapper(tracer: Tracer):
 
 def _consume_class_wrapper(tracer: Tracer):
     async def awrapper(wrapped, instance, args, kwargs):
+        from aworld.core.event.base import Message
         event = await wrapped(*args, **kwargs)
         try:
             propagator = get_global_trace_propagator()
@@ -91,7 +99,7 @@ class EventBusInstrumentor(Instrumentor):
         )
 
 
-def wrap_event_manager(manager: EventManager):
+def wrap_event_manager(manager: 'aworld.events.manager.EventManager'):
     tracer_provider = get_tracer_provider_silent()
     if not tracer_provider:
         return manager

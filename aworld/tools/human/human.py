@@ -1,12 +1,11 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import asyncio
 from typing import Any, Dict, Tuple
 from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, Constants
-from aworld.core.event.event_bus import InMemoryEventbus
+from aworld.core.event import eventbus
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
 
@@ -45,7 +44,8 @@ class HumanTool(AsyncTool):
     async def finished(self) -> bool:
         return self.step_finished
 
-    async def do_step(self, actions: list[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+    async def do_step(self, actions: list[ActionModel], **kwargs) -> Tuple[
+        Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
         fail_error = ""
@@ -59,7 +59,6 @@ class HumanTool(AsyncTool):
             confirm_content = action.params.get("confirm_content", "")
             if not confirm_content:
                 raise ValueError("content invalid")
-            #output, error = asyncio.run(self.human_confirm(confirm_content))
             output, error = await self.human_confirm(confirm_content)
             observation.content = output
             observation.action_result.append(
@@ -82,23 +81,19 @@ class HumanTool(AsyncTool):
         error = None
         self.content = None
         try:
-
             self.content = confirm_content
-            if InMemoryEventbus.instance():
-               res =  await InMemoryEventbus.instance().publish(Message(
-                    category=Constants.TASK,
-                    payload=confirm_content,
-                    sender=self.name,
-                    session_id=Context.instance().session_id,
-                    topic="__human_confirm"
-                ))
-               print(f"-----------------{res}")
-
-            return self.content,error
+            await eventbus.publish(Message(
+                category=Constants.TASK,
+                payload=confirm_content,
+                sender=self.name(),
+                session_id=Context.instance().session_id,
+                topic=TopicType.HUMAN_CONFIRM
+            ))
+            return self.content, error
         except Exception as e:
             error = str(e)
             logger.warning(f"human_confirm error: {str(e)}")
         finally:
             pass
 
-        return self.content,error
+        return self.content, error

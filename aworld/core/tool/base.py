@@ -8,7 +8,7 @@ from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 from pydantic import BaseModel
 
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
-from aworld.core.event.event_bus import InMemoryEventbus
+from aworld.core.event import eventbus
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
@@ -19,7 +19,7 @@ from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
 from aworld.output.base import StepOutput
-from aworld.utils.common import convert_to_snake
+from aworld.utils.common import convert_to_snake, sync_exec
 
 AgentInput = TypeVar("AgentInput")
 ToolInput = TypeVar("ToolInput")
@@ -211,11 +211,10 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
 
-        event_bus = InMemoryEventbus.instance()
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
-            if event_bus:
+            if eventbus is not None:
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
                     tool_name=act.tool_name,
@@ -234,7 +233,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                     sender=self.name(),
                     session_id=Context.instance().session_id
                 )
-                event_bus.publish(tool_output_message)
+                sync_exec(eventbus.publish, tool_output_message)
         return AgentMessage(payload=step_res,
                             caller=action[0].agent_name,
                             sender=self.name(),
@@ -267,7 +266,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         event_bus = InMemoryEventbus.instance()
         for idx, act in enumerate(action):
             # send tool results output
-            if event_bus:
+            if eventbus is not None:
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
                     tool_name=act.tool_name,
@@ -286,10 +285,10 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     sender=self.name(),
                     session_id=Context.instance().session_id
                 )
-                await event_bus.publish(tool_output_message)
+                await eventbus.publish(tool_output_message)
 
-        if event_bus:
-            await event_bus.publish(Message(
+        if eventbus is not None:
+            await eventbus.publish(Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
                                                          step_num=0),

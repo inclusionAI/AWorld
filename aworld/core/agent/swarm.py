@@ -96,31 +96,31 @@ class Swarm(object):
                     self.ordered_agents.append(pair[1])
 
             if pair[0] not in self.agents:
-                self.agents[pair[0].name()] = pair[0]
-            if pair[0].name() not in AgentFactory:
-                AgentFactory._cls[pair[0].name()] = pair[0].__class__
-                AgentFactory._desc[pair[0].name()] = pair[0].desc()
-                AgentFactory._agent_conf[pair[0].name()] = pair[0].conf
-                AgentFactory._agent_instance[pair[0].name()] = pair[0]
+                self.agents[pair[0].id()] = pair[0]
+            if pair[0].id() not in AgentFactory:
+                AgentFactory._cls[pair[0].id()] = pair[0].__class__
+                AgentFactory._desc[pair[0].id()] = pair[0].desc()
+                AgentFactory._agent_conf[pair[0].id()] = pair[0].conf
+                AgentFactory._agent_instance[pair[0].id()] = pair[0]
             elif pair[0].desc():
-                AgentFactory._desc[pair[0].name()] = pair[0].desc()
+                AgentFactory._desc[pair[0].id()] = pair[0].desc()
 
             if len(pair) == 1:
                 continue
 
             if pair[1] not in self.agents:
-                self.agents[pair[1].name()] = pair[1]
-                if pair[1].name() not in AgentFactory:
-                    AgentFactory._cls[pair[1].name()] = pair[1].__class__
-                    AgentFactory._desc[pair[1].name()] = pair[1].desc()
-                    AgentFactory._agent_conf[pair[1].name()] = pair[1].conf
-                    AgentFactory._agent_instance[pair[1].name()] = pair[1]
+                self.agents[pair[1].id()] = pair[1]
+                if pair[1].id() not in AgentFactory:
+                    AgentFactory._cls[pair[1].id()] = pair[1].__class__
+                    AgentFactory._desc[pair[1].id()] = pair[1].desc()
+                    AgentFactory._agent_conf[pair[1].id()] = pair[1].conf
+                    AgentFactory._agent_instance[pair[1].id()] = pair[1]
                 elif pair[1].desc():
-                    AgentFactory._desc[pair[1].name()] = pair[1].desc()
+                    AgentFactory._desc[pair[1].id()] = pair[1].desc()
 
             if self.topology_type == SOCIAL:
                 # need to explicitly set handoffs in the agent
-                pair[0].handoffs.append(pair[1].name())
+                pair[0].handoffs.append(pair[1].id())
 
         if self.sequence:
             self.topology_type = SEQUENCE
@@ -164,6 +164,24 @@ class Swarm(object):
             # global tools
             agent.tool_names.extend(self.tools)
         self.initialized = True
+
+    def find_agents_by_prefix(self, name, find_all=False):
+        """Fild the agent list by the prefix name.
+
+        Args:
+            name: The agent prefix name.
+            find_all: Find the total agents or the first match agent.
+        """
+        import re
+
+        res = []
+        for k, agent in self.agents.items():
+            val = re.split("__uuid\w{6}uuid", k)[0]
+            if name == val:
+                res.append(agent)
+                if not find_all:
+                    return res
+        return res
 
     def _check(self):
         if not self.initialized:

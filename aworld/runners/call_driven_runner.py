@@ -107,7 +107,7 @@ class SequenceRunner(TaskRunner):
         observation = self.observation
 
         for idx, agent in enumerate(self.swarm.ordered_agents):
-            observation.from_agent_name = agent.name()
+            observation.from_agent_name = agent.id()
             observations = [observation]
             policy = None
             cur_agent = agent
@@ -118,12 +118,12 @@ class SequenceRunner(TaskRunner):
                 terminated = False
 
                 observation = self.swarm.action_to_observation(policy, observations)
-                observation.from_agent_name = observation.from_agent_name or cur_agent.name()
+                observation.from_agent_name = observation.from_agent_name or cur_agent.id()
 
-                if observation.to_agent_name and observation.to_agent_name != cur_agent.name():
+                if observation.to_agent_name and observation.to_agent_name != cur_agent.id():
                     cur_agent = self.swarm.agents.get(observation.to_agent_name)
 
-                exp_id = self._get_step_span_id(step, cur_agent.name())
+                exp_id = self._get_step_span_id(step, cur_agent.id())
                 with trace.span(f"step_execution_{exp_id}") as step_span:
                     try:
                         step_span.set_attributes({
@@ -132,7 +132,7 @@ class SequenceRunner(TaskRunner):
                             "task_name": self.task.name,
                             "trace_id": trace.get_current_span().get_trace_id(),
                             "step": step,
-                            "agent_id": cur_agent.name(),
+                            "agent_id": cur_agent.id(),
                             "pre_agent": pre_agent_name,
                             "observation": json.dumps(observation.model_dump(exclude_none=True),
                                                       ensure_ascii=False,
@@ -140,7 +140,7 @@ class SequenceRunner(TaskRunner):
                         })
                     except:
                         pass
-                    pre_agent_name = cur_agent.name()
+                    pre_agent_name = cur_agent.id()
 
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
                         message = cur_agent.run(observation,
@@ -160,22 +160,22 @@ class SequenceRunner(TaskRunner):
                                             json.dumps([action.model_dump() for action in policy],
                                                        ensure_ascii=False))
                     observation.content = None
-                    color_log(f"{cur_agent.name()} policy: {policy}")
+                    color_log(f"{cur_agent.id()} policy: {policy}")
                     if not policy:
-                        logger.warning(f"current agent {cur_agent.name()} no policy to use.")
+                        logger.warning(f"current agent {cur_agent.id()} no policy to use.")
                         await self.outputs.add_output(
                             StepOutput.build_failed_output(name=f"Step{step}",
                                                            step_num=step,
-                                                           data=f"current agent {cur_agent.name()} no policy to use.")
+                                                           data=f"current agent {cur_agent.id()} no policy to use.")
                         )
                         await self.outputs.mark_completed()
                         task_span.set_attributes({
                             "end_time": time.time(),
                             "duration": time.time() - start,
                             "status": "failed",
-                            "error": f"current agent {cur_agent.name()} no policy to use."
+                            "error": f"current agent {cur_agent.id()} no policy to use."
                         })
-                        return TaskResponse(msg=f"current agent {cur_agent.name()} no policy to use.",
+                        return TaskResponse(msg=f"current agent {cur_agent.id()} no policy to use.",
                                             answer="",
                                             success=False,
                                             id=self.task.id,
@@ -243,7 +243,7 @@ class SequenceRunner(TaskRunner):
                     )
                     step += 1
                     if terminated and agent.finished:
-                        logger.info(f"{agent.name()} finished")
+                        logger.info(f"{agent.id()} finished")
                         if idx == len(self.swarm.ordered_agents) - 1:
                             return TaskResponse(
                                 answer=observations[-1].content,
@@ -265,9 +265,9 @@ class SequenceRunner(TaskRunner):
             raise RuntimeError(f"Can not find {agent_name} agent in swarm.")
 
         status = "normal"
-        if cur_agent.name() == agent.name():
+        if cur_agent.id() == agent.id():
             # Current agent is entrance agent, means need to exit to the outer loop
-            logger.info(f"{cur_agent.name()} exit the loop")
+            logger.info(f"{cur_agent.id()} exit the loop")
             status = "break"
             return status, None
 
@@ -282,7 +282,7 @@ class SequenceRunner(TaskRunner):
         # Check if current agent done
         if cur_agent.finished:
             cur_agent._finished = False
-            logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
+            logger.info(f"{cur_agent.id()} agent be be handed off, so finished state reset to False.")
 
         con = policy_for_agent.policy_info
         if policy_for_agent.params and 'content' in policy_for_agent.params:
@@ -456,7 +456,7 @@ class SocialRunner(TaskRunner):
                     step += 1
                     if self.swarm.finished or endless_detect(self.loop_detect,
                                                              self.endless_threshold,
-                                                             self.swarm.communicate_agent.name()):
+                                                             self.swarm.communicate_agent.id()):
                         logger.info("task done!")
                         break
 
@@ -536,11 +536,11 @@ class SocialRunner(TaskRunner):
                                                            step=step,
                                                            outputs=self.outputs,
                                                            stream=self.conf.get("stream", False))
-        self.loop_detect.append(self.swarm.cur_agent.name())
+        self.loop_detect.append(self.swarm.cur_agent.id())
         policy = message.payload
         if not policy:
-            logger.warning(f"current agent {self.swarm.cur_agent.name()} no policy to use.")
-            exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
+            logger.warning(f"current agent {self.swarm.cur_agent.id()} no policy to use.")
+            exp_id = self._get_step_span_id(step, self.swarm.cur_agent.id())
             with trace.span(f"step_execution_{exp_id}") as step_span:
                 step_span.set_attributes({
                     "exp_id": exp_id,
@@ -548,18 +548,18 @@ class SocialRunner(TaskRunner):
                     "task_name": self.task.name,
                     "trace_id": trace.get_current_span().get_trace_id(),
                     "step": step,
-                    "agent_id": self.swarm.cur_agent.name(),
+                    "agent_id": self.swarm.cur_agent.id(),
                     "pre_agent": pre_agent_name,
                     "observation": json.dumps(observation.model_dump(exclude_none=True),
                                               ensure_ascii=False,
                                               cls=NumpyEncoder),
                     "actions": json.dumps([action.model_dump() for action in policy], ensure_ascii=False)
                 })
-            return {"msg": f"current agent {self.swarm.cur_agent.name()} no policy to use.",
+            return {"msg": f"current agent {self.swarm.cur_agent.id()} no policy to use.",
                     "steps": step,
                     "success": False,
                     "time_cost": (time.time() - start)}
-        color_log(f"{self.swarm.cur_agent.name()} policy: {policy}")
+        color_log(f"{self.swarm.cur_agent.id()} policy: {policy}")
 
         msg = None
         response = None
@@ -570,7 +570,7 @@ class SocialRunner(TaskRunner):
         try:
             while step < max_steps:
                 terminated = False
-                exp_id = self._get_step_span_id(step, self.swarm.cur_agent.name())
+                exp_id = self._get_step_span_id(step, self.swarm.cur_agent.id())
                 with trace.span(f"step_execution_{exp_id}") as step_span:
                     try:
                         step_span.set_attributes({
@@ -579,7 +579,7 @@ class SocialRunner(TaskRunner):
                             "task_name": self.task.name,
                             "trace_id": trace.get_current_span().get_trace_id(),
                             "step": step,
-                            "agent_id": self.swarm.cur_agent.name(),
+                            "agent_id": self.swarm.cur_agent.id(),
                             "pre_agent": pre_agent_name,
                             "observation": json.dumps(cur_observation.model_dump(exclude_none=True),
                                                       ensure_ascii=False,
@@ -617,9 +617,9 @@ class SocialRunner(TaskRunner):
                         return info
 
                 step += 1
-                pre_agent_name = self.swarm.cur_agent.name()
+                pre_agent_name = self.swarm.cur_agent.id()
                 if terminated and self.swarm.cur_agent.finished:
-                    logger.info(f"{self.swarm.cur_agent.name()} finished")
+                    logger.info(f"{self.swarm.cur_agent.id()} finished")
                     break
 
                 if observation:
@@ -676,25 +676,25 @@ class SocialRunner(TaskRunner):
         if not cur_agent:
             raise RuntimeError(f"Can not find {agent_name} agent in swarm.")
 
-        if cur_agent.name() == self.swarm.communicate_agent.name() or cur_agent.name() == self.swarm.cur_agent.name():
+        if cur_agent.id() == self.swarm.communicate_agent.id() or cur_agent.id() == self.swarm.cur_agent.id():
             # Current agent is entrance agent, means need to exit to the outer loop
-            logger.info(f"{cur_agent.name()} exit to the outer loop")
+            logger.info(f"{cur_agent.id()} exit to the outer loop")
             return 'break', True, None
 
         if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
             # Unable to hand off, exit to the outer loop
             return "return", {"msg": f"Can not handoffs {agent_name} agent "
-                                     f"by {cur_agent.name()} agent.",
+                                     f"by {cur_agent.id()} agent.",
                               "response": policy[0].policy_info if policy else "",
                               "steps": step,
                               "success": False}, None
         # Check if current agent done
         if cur_agent.finished:
             cur_agent._finished = False
-            logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
+            logger.info(f"{cur_agent.id()} agent be be handed off, so finished state reset to False.")
 
         observation = Observation(content=policy_for_agent.policy_info)
-        self.loop_detect.append(cur_agent.name())
+        self.loop_detect.append(cur_agent.id())
         if cur_agent.step_reset:
             cur_agent.reset({"task": observation.content,
                              "tool_names": cur_agent.tool_names,
@@ -720,7 +720,7 @@ class SocialRunner(TaskRunner):
                               "response": "",
                               "steps": step,
                               "success": False}, None
-        color_log(f"{cur_agent.name()} policy: {agent_policy}")
+        color_log(f"{cur_agent.id()} policy: {agent_policy}")
         return 'normal', agent_policy, observation
 
     async def _social_tool_call(self, policy: List[ActionModel], step: int):
@@ -775,8 +775,8 @@ class SocialRunner(TaskRunner):
 
         # The tool results give itself, exit; give to other agents, continue
         tmp_name = policy[0].agent_name
-        if self.swarm.cur_agent.name() == self.swarm.communicate_agent.name() and (
-                len(self.swarm.agents) == 1 or tmp_name is None or self.swarm.cur_agent.name() == tmp_name):
+        if self.swarm.cur_agent.id() == self.swarm.communicate_agent.id() and (
+                len(self.swarm.agents) == 1 or tmp_name is None or self.swarm.cur_agent.id() == tmp_name):
             return "break", terminated, True
         elif policy[0].agent_name:
             policy_for_agent = policy[0]
@@ -789,14 +789,14 @@ class SocialRunner(TaskRunner):
             if self.swarm.cur_agent.handoffs and agent_name not in self.swarm.cur_agent.handoffs:
                 # Unable to hand off, exit to the outer loop
                 return "return", {"msg": f"Can not handoffs {agent_name} agent "
-                                         f"by {cur_agent.name()} agent.",
+                                         f"by {cur_agent.id()} agent.",
                                   "response": policy[0].policy_info if policy else "",
                                   "steps": step,
                                   "success": False}
             # Check if current agent done
             if cur_agent.finished:
                 cur_agent._finished = False
-                logger.info(f"{cur_agent.name()} agent be be handed off, so finished state reset to False.")
+                logger.info(f"{cur_agent.id()} agent be be handed off, so finished state reset to False.")
         return "normal", terminated, observation
 
     def _get_step_span_id(self, step, cur_agent_name):

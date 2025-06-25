@@ -1,6 +1,8 @@
 import tiktoken
 from aworld.logs.util import logger
 
+# TODO: merge to `models` package
+
 MODEL_TO_ENCODING = {
     "gpt-3.5-turbo": "cl100k_base",
     "gpt-4": "cl100k_base",
@@ -26,6 +28,6 @@ def count_tokens(model_name: str, content: str):
 
     tokens = encoding.encode(content)
 
-    token_count = len(tokens) # TODO: use tiktoken.encoding_for_model(model_name).encode(content)
+    token_count = len(tokens)
 
     return token_count

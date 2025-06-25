@@ -1,5 +1,7 @@
+import os
 from typing import AsyncGenerator, Generator, Callable, Any
 
+from aworld.output.workspace import WorkSpace
 from aworld.output.base import OutputPart, MessageOutput, Output
 
 
@@ -58,3 +60,21 @@ async def consume_content(__content__, callback: Callable[..., Any]):
         await callback(__content__)
     else:
         await callback(__content__)
+
+
+async def load_workspace(workspace_id: str, workspace_type: str, workspace_parent_path: str):
+    """
+    This function is used to get the workspace by its id.
+    It first checks the workspace type and then creates the workspace accordingly.
+    If the workspace type is not valid, it raises an HTTPException.
+    """
+    if workspace_id is None:
+        raise RuntimeError("workspace_id is None")
+
+    if workspace_type == "local":
+        workspace = WorkSpace.from_local_storages(workspace_id, storage_path=os.path.join(workspace_parent_path, workspace_id))
+    elif workspace_type == "oss":
+        workspace = WorkSpace.from_oss_storages(workspace_id, storage_path=os.path.join(workspace_parent_path, workspace_id))
+    else:
+        raise RuntimeError("Invalid workspace type")
+    return workspace

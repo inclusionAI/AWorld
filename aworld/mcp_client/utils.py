@@ -361,6 +361,8 @@ async def call_api(
         ActionResult: Call result
     """
     action_result = ActionResult(
+        tool_name=server_name,
+        action_name=tool_name,
         content="",
         keep=True
     )
@@ -387,12 +389,16 @@ async def call_api(
             json=parameter
         )
         action_result = ActionResult(
+            tool_name=server_name,
+            action_name=tool_name,
             content=response.text,
             keep=True
         )
     except Exception as e:
         logging.warning(f"call_api ({server_name})({tool_name}) failed: {e}")
         action_result = ActionResult(
+            tool_name=server_name,
+            action_name=tool_name,
             content=f"Error calling API: {str(e)}",
             keep=True
         )
