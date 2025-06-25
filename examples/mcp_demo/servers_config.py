@@ -22,7 +22,7 @@ mcp_config = {
         },
         "simple-calculator": {
             "type": "sse",
-            "url": "https://127.0.0.1:8500/calculator/sse",
+            "url": "http://127.0.0.1:8500/calculator/sse",
             "timeout": 5,
             "sse_read_timeout": 300
         }

@@ -1,12 +1,13 @@
 import {
+  AlertFilled,
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
+  MenuUnfoldOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined,
-  MenuUnfoldOutlined
+  ReloadOutlined
 } from '@ant-design/icons';
 import {
   Attachments,
@@ -16,16 +17,15 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, message, Spin, Drawer } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Spin } from 'antd';
 import { createStyles } from 'antd-style';
-import dayjs from 'dayjs';
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import logo from '../assets/aworld_logo.png';
+import { useAgentId } from '../hooks/useAgentId';
+import { useSessionId } from '../hooks/useSessionId';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
-import { useSessionId } from '../hooks/useSessionId';
-import { useAgentId } from '../hooks/useAgentId';
-import logo from '../assets/aworld_logo.png';
 import './index.less';
 
 type BubbleDataType = {
@@ -33,23 +33,30 @@ type BubbleDataType = {
   content: string;
 };
 
-const DEFAULT_CONVERSATIONS_ITEMS = [
-  {
-    key: 'default-0',
-    label: 'What is Ant Design X?',
-    group: 'Today',
-  },
-  {
-    key: 'default-1',
-    label: 'How to quickly install and import components?',
-    group: 'Today',
-  },
-  {
-    key: 'default-2',
-    label: 'New AGI Hybrid Interface',
-    group: 'Yesterday',
-  },
-];
+// 添加会话数据类型定义
+type SessionMessage = {
+  role: string;
+  content: string;
+};
+
+type SessionData = {
+  user_id: string;
+  session_id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  messages: SessionMessage[];
+};
+
+// 会话列表项类型
+type ConversationItem = {
+  key: string;
+  label: string;
+  group: string;
+};
+
+const DEFAULT_CONVERSATIONS_ITEMS: ConversationItem[] = [];
 
 const SENDER_PROMPTS: GetProp<typeof Prompts, 'items'> = [];
 
@@ -149,7 +156,7 @@ const useStyle = createStyles(({ token, css }) => {
       display: flex;
       flex-direction: column;
       justify-content: center;
-    `,  
+    `,
     // sender 样式
     sender: css`
       width: 100%;
@@ -193,33 +200,23 @@ const useStyle = createStyles(({ token, css }) => {
 const App: React.FC = () => {
   const { styles } = useStyle();
   const abortController = useRef<AbortController>(null);
-  const { sessionId, generateNewSessionId } = useSessionId();
+  const { sessionId, generateNewSessionId, updateURLSessionId, setSessionId } = useSessionId();
   const { agentId, setAgentIdAndUpdateURL } = useAgentId();
 
   // ==================== State ====================
   const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
+  const [sessionData, setSessionData] = useState<Record<string, SessionData>>({});
 
-  const [conversations, setConversations] = useState(DEFAULT_CONVERSATIONS_ITEMS);
-  const [curConversation, setCurConversation] = useState(DEFAULT_CONVERSATIONS_ITEMS[0].key);
+  const [conversations, setConversations] = useState<ConversationItem[]>(DEFAULT_CONVERSATIONS_ITEMS);
+  const [curConversation, setCurConversation] = useState<string>('');
 
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
 
   const [inputValue, setInputValue] = useState('');
-  // TODO mock data , remove in the future
-  const [models, setModels] = useState<Array<{ label: string; value: string }>>([
-    {
-      label: 'weather_agent',
-      value: 'weather_agent',
-    },
-    {
-      label: 'weather_agent2',
-      value: 'weather_agent2',
-    }
-  ]);
-  const [selectedModel, setSelectedModel] = useState<string>('weather_agent');
+  const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [open, setOpen] = useState(false);
 
 
   // ==================== API Calls ====================
@@ -245,25 +242,66 @@ const App: React.FC = () => {
     }
   };
 
+  const fetchSessions = async () => {
+    try {
+      const response = await fetch('/api/session/list');
+      if (response.ok) {
+        const sessions: SessionData[] = await response.json();
+
+        const sessionDataMap: Record<string, SessionData> = {};
+        sessions.forEach(session => {
+          sessionDataMap[session.session_id] = session;
+        });
+        setSessionData(sessionDataMap);
+
+        const conversationItems: ConversationItem[] = sessions.map(session => {
+          let label = session.name || session.description;
+          if (!label && session.messages.length > 0) {
+            const firstUserMessage = session.messages.find(msg => msg.role === 'user');
+            if (firstUserMessage) {
+              label = firstUserMessage.content.length > 50
+                ? firstUserMessage.content.substring(0, 50) + '...'
+                : firstUserMessage.content;
+            } else {
+              label = 'New Conversation';
+            }
+          }
+          if (!label) {
+            label = 'New Conversation';
+          }
+
+          return {
+            key: session.session_id,
+            label,
+            group: ''
+          };
+        });
+
+        setConversations(conversationItems);
+      } else {
+        console.error('Failed to fetch sessions');
+      }
+    } catch (error) {
+      console.error('Error fetching sessions:', error);
+    }
+  };
+
   useEffect(() => {
     fetchModels();
+    fetchSessions();
   }, []);
 
-  // 处理URL中的agentid参数与模型选择的同步
   useEffect(() => {
     if (agentId && models.length > 0) {
-      // 检查URL中的agentid是否在models中存在
       const modelExists = models.find(model => model.value === agentId);
       if (modelExists) {
         setSelectedModel(agentId);
       } else {
-        // 如果URL中的agentid不存在于models中，清除URL参数
         setAgentIdAndUpdateURL('');
       }
     }
   }, [agentId, models, setAgentIdAndUpdateURL]);
 
-  // 处理模型选择变化时更新URL
   const handleModelChange = (modelId: string) => {
     setSelectedModel(modelId);
     setAgentIdAndUpdateURL(modelId);
@@ -276,7 +314,7 @@ const App: React.FC = () => {
   // ==================== Runtime ====================
   const [agent] = useXAgent<BubbleDataType>({
     baseURL: '/api/agent/chat/completions',
-    model: selectedModel, // 使用选中的模型
+    model: selectedModel,
     dangerouslyApiKey: 'Bearer sk-xxxxxxxxxxxxxxxxxxxx',
   });
   const loading = agent.isRequesting();
@@ -367,11 +405,11 @@ const App: React.FC = () => {
     const userMessageIndex = assistantMessageIndex - 1;
     if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
       const userMessage = messages[userMessageIndex].message.content;
-      
+
       // 删除当前assistant消息和对应的用户消息
       const newMessages = messages.filter((_, index) => index !== assistantMessageIndex && index !== userMessageIndex);
       setMessages(newMessages);
-      
+
       // 重新发送用户消息
       setTimeout(() => {
         onSubmit(userMessage);
@@ -380,10 +418,6 @@ const App: React.FC = () => {
       message.error('Cannot find corresponding user message');
     }
   };
-
-  const onTriggerDraw = (status: boolean) => {
-    setOpen(status);
-  }
 
   // ==================== Nodes ====================
   const chatSider = (
@@ -405,18 +439,17 @@ const App: React.FC = () => {
           }
 
           // 生成新的session ID
-          generateNewSessionId();
-          
-          const now = dayjs().valueOf().toString();
-          setConversations([
-            {
-              key: now,
-              label: `New Conversation ${conversations.length + 1}`,
-              group: 'Today',
-            },
-            ...conversations,
-          ]);
-          setCurConversation(now);
+          const newSessionId = generateNewSessionId();
+
+          // 创建新的会话项
+          const newConversation: ConversationItem = {
+            key: newSessionId,
+            label: `New Conversation`,
+            group: '', // 移除分组
+          };
+
+          setConversations([newConversation, ...conversations]);
+          setCurConversation(newSessionId);
           setMessages([]);
         }}
         type="link"
@@ -426,21 +459,33 @@ const App: React.FC = () => {
         New Conversation
       </Button>
 
-      {/* 🌟 会话管理 */}
       <Conversations
         items={conversations}
         className={styles.conversations}
         activeKey={curConversation}
         onActiveChange={async (val) => {
-          abortController.current?.abort();
-          // The abort execution will trigger an asynchronous requestFallback, which may lead to timing issues.
-          // In future versions, the sessionId capability will be added to resolve this problem.
-          setTimeout(() => {
-            setCurConversation(val);
+          console.log('active change: session_id', val);
+          setCurConversation(val);
+
+          setSessionId(val);
+          updateURLSessionId(val);
+
+          const session = sessionData[val];
+          if (session && session.messages.length > 0) {
+            const chatMessages = session.messages.map((msg, index) => ({
+              id: `${val}-${index}`,
+              message: {
+                role: msg.role,
+                content: msg.content
+              },
+              status: 'success' as const
+            }));
+            setMessages(chatMessages);
+          } else {
             setMessages(messageHistory?.[val] || []);
-          }, 100);
+          }
         }}
-        groupable
+        groupable={false}
         styles={{ item: { padding: '0 8px' } }}
         menu={(conversation) => ({
           items: [
@@ -450,17 +495,13 @@ const App: React.FC = () => {
               icon: <DeleteOutlined />,
               danger: true,
               onClick: () => {
-                const newList = conversations.filter((item) => item.key !== conversation.key);
-                const newKey = newList?.[0]?.key;
-                setConversations(newList);
-                // The delete operation modifies curConversation and triggers onActiveChange, so it needs to be executed with a delay to ensure it overrides correctly at the end.
-                // This feature will be fixed in a future version.
-                setTimeout(() => {
-                  if (conversation.key === curConversation) {
-                    setCurConversation(newKey);
-                    setMessages(messageHistory?.[newKey] || []);
-                  }
-                }, 200);
+                console.log('delete session: session_id', conversation.key);
+                fetch('/api/session/delete', {
+                  method: 'POST',
+                  body: JSON.stringify({ session_id: conversation.key }),
+                }).then(() => {
+                  fetchSessions();
+                });
               },
             },
           ],
@@ -497,38 +538,30 @@ const App: React.FC = () => {
               placement: 'start',
               footer: (messageItem) => (
                 <div style={{ display: 'flex' }}>
-                  <Button 
-                    type="text" 
-                    size="small" 
-                    icon={<ReloadOutlined />} 
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ReloadOutlined />}
                     onClick={() => resendMessage(messageItem.messageIndex)}
                   />
-                  <Button 
-                    type="text" 
-                    size="small" 
-                    icon={<CopyOutlined />} 
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CopyOutlined />}
                     onClick={() => copyMessageContent(messageItem.content || '')}
                   />
-                                    <Button 
-                    type="text" 
-                    size="small" 
-                    icon={<MenuUnfoldOutlined />} 
-                    onClick={() => onTriggerDraw(true)}
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<MenuUnfoldOutlined />}
+                    onClick={() => alert('TODO: 展示workspace @孝行 \n\nworkspace_id: ' + sessionId)}
                   />
-                  <Drawer
-                            title="Basic Drawer"
-                            closable={{ 'aria-label': 'Close Button' }}
-                            onClick={() => onTriggerDraw(true)}
-                            onClose={() => onTriggerDraw(false)}
-                            open={open}
-                          >
-                            <p>Some contents...</p>
-                            <p>Some contents...</p>
-                            <p>Some contents...</p>
-                  </Drawer>
-                  {/* TODO 功能未实现先隐藏 */}
-                  {/* <Button type="text" size="small" icon={<LikeOutlined />} />
-                  <Button type="text" size="small" icon={<DislikeOutlined />} /> */}
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<AlertFilled />}
+                    onClick={() => window.open('/trace_ui.html', '_blank')}
+                  />
                 </div>
               ),
               loadingRender: () => <Spin size="small" />,
@@ -624,8 +657,8 @@ const App: React.FC = () => {
               {loading ? (
                 <LoadingButton type="default" />
               ) : (
-                <SendButton 
-                  type="primary" 
+                <SendButton
+                  type="primary"
                   disabled={!inputValue.trim()}
                   className={styles.sendButton}
                 />
@@ -639,14 +672,13 @@ const App: React.FC = () => {
   );
 
   useEffect(() => {
-    // history mock
-    if (messages?.length) {
+    if (messages?.length && curConversation) {
       setMessageHistory((prev) => ({
         ...prev,
         [curConversation]: messages,
       }));
     }
-  }, [messages]);
+  }, [messages, curConversation]);
 
   // ==================== Render =================
   return (
@@ -654,7 +686,7 @@ const App: React.FC = () => {
       {chatSider}
       <div className={styles.chat}>
         {chatList}
-        {messages?.length > 0 && chatSender}
+        {(messages?.length > 0 || curConversation) && chatSender}
       </div>
     </div>
   );

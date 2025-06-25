@@ -14,7 +14,7 @@ if __name__ == '__main__':
         llm_base_url="http://localhost:5080"
     )
 
-    search_sys_prompt = "You can use tools to calculate numbers and answer questions"
+    search_sys_prompt = "You can use simple-calculator tools to calculate numbers and answer questions"
     search = Agent(
         conf=agent_config,
         name="search_agent",
