@@ -134,6 +134,7 @@ class ModelConfig(BaseConfig):
 
 class LlmCompressionConfig(BaseConfig):
     enabled: bool = False
+    compress_type: str = 'llm' # llm, llmlingua
     trigger_compress_token_length: int = 10000  # Trigger compression when exceeding this length
     compress_model: ModelConfig = None
 
@@ -258,8 +259,9 @@ class ToolConfig(BaseConfig):
 
 
 class RunConfig(BaseConfig):
-    engine: str = 'local'
+    name: str = 'local'
     worker_num: int = 1
+    cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
     replay_buffer: Optional[Dict[str, Any]] = None

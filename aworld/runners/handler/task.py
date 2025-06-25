@@ -22,6 +22,7 @@ class TaskHandler(DefaultHandler):
 
     def __init__(self, runner: 'TaskEventRunner'):
         self.runner = runner
+        self.retry_count = 0
         self.hooks = {}
         if runner.task.hooks:
             for k, vals in runner.task.hooks.items():
@@ -72,6 +73,10 @@ class DefaultTaskHandler(TaskHandler):
                 return
             # restart
             logger.warning(f"The task {self.runner.task.id} will be restarted due to error: {task_item.msg}.")
+            if self.retry_count >= 3:
+                raise Exception(f"The task {self.runner.task.id} failed, due to error: {task_item.msg}.")
+
+            self.retry_count += 1
             yield Message(
                 category=Constants.TASK,
                 payload='',

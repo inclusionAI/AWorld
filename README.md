@@ -170,7 +170,7 @@ agent2 = ExecuteAgent(conf=exec_config, tool_names=[Tools.DOCUMENT_ANALYSIS.valu
 # Create swarm for multi-agents
 # define (head_node, tail_node) edge in the topology graph
 # NOTE: the correct order is necessary
-swarm = Swarm((agent1, agent2), sequence=False)
+swarm = Swarm((agent1, agent2), workflow=False)
 
 # Define a task
 task = Task(input=test_sample, swarm=swarm, conf=TaskConfig())

@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 from aworld.config.conf import AgentConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from examples.mcp_demo.servers_config import mcp_config
 
@@ -14,7 +14,7 @@ if __name__ == '__main__':
         llm_base_url="http://localhost:5080"
     )
 
-    search_sys_prompt = "You can use tools to calculate numbers and answer questions"
+    search_sys_prompt = "You can use simple-calculator tools to calculate numbers and answer questions"
     search = Agent(
         conf=agent_config,
         name="search_agent",

@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+from aworld.config import RunConfig
 
 from aworld.config.conf import AgentConfig
 from aworld.core.task import Task
@@ -17,7 +18,7 @@ def main():
     # It can also be used `ToolFactory` for simplification.
     # gym_tool = ToolFactory(Tools.GYM.value)
     task = Task(agent=agent, tools=[gym_tool])
-    res = Runners.sync_run_task(task=task)
+    res = Runners.sync_run_task(task=task, run_conf=RunConfig())
     return res
 
 

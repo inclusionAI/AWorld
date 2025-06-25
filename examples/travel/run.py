@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from aworld.config.conf import AgentConfig, ToolConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.config import ModelConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
@@ -67,7 +67,7 @@ def main():
         I need a 7-day Japan itinerary from April 2 to April 8 2025, departing from Hangzhou, We want to see beautiful cherry blossoms and experience traditional Japanese culture (kendo, tea ceremonies, Zen meditation). We would like to taste matcha in Uji and enjoy the hot springs in Kobe. I am planning to propose during this trip, so I need a special location recommendation. Please provide a detailed itinerary and create a simple HTML travel handbook that includes a 7-day Japan itinerary, an updated cherry blossom table, attraction descriptions, essential Japanese phrases, and travel tips for us to reference throughout our journey.
         you need search and extract different info 1 times, and then write, at last use browser agent goto the html url and then, complete the task.
         """
-    swarm = Swarm((plan, search), (plan, browser_agent), (plan, write), sequence=False, event_driven=True)
+    swarm = Swarm((plan, search), (plan, browser_agent), (plan, write), workflow=False)
     task = Task(
         swarm=swarm,
         input=goal,

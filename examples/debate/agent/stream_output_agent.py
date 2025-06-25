@@ -1,6 +1,6 @@
 from aworld.config import AgentConfig
-from aworld.core.agent.llm_agent import Agent
-from aworld.models.llm import acall_llm_model, acall_llm_model_stream
+from aworld.agents.llm_agent import Agent
+from aworld.models.llm import acall_llm_model_stream
 from aworld.output import MessageOutput
 
 

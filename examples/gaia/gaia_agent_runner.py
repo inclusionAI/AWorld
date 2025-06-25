@@ -6,7 +6,7 @@ import traceback
 from typing import AsyncGenerator
 import uuid
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.runner import Runners
 from aworld.output.ui.base import AworldUI
