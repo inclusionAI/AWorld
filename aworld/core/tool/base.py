@@ -15,6 +15,7 @@ from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants
 from aworld.core.factory import Factory
+from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
@@ -199,6 +200,11 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
 
+        context = Context.instance()
+        agent = context.swarm.agents.get(action[0].agent_name)
+        feedback_tool_result = False
+        if agent:
+            feedback_tool_result = agent.feedback_tool_result
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
@@ -221,12 +227,18 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                     sender=self.name(),
                     session_id=Context.instance().session_id
                 )
-                sync_exec(eventbus.publish, tool_output_message)
-        return AgentMessage(payload=step_res,
-                            caller=action[0].agent_name,
-                            sender=self.name(),
-                            receiver=action[0].agent_name,
-                            session_id=Context.instance().session_id)
+                sync_exec(send_message, tool_output_message)
+
+        if feedback_tool_result:
+            return AgentMessage(payload=step_res,
+                                caller=action[0].agent_name,
+                                sender=self.name(),
+                                receiver=action[0].agent_name,
+                                session_id=Context.instance().session_id)
+        else :
+            return AgentMessage(payload=step_res,
+                                sender=action[0].agent_name,
+                                session_id=Context.instance().session_id)
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
@@ -260,23 +272,33 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     sender=self.name(),
                     session_id=Context.instance().session_id
                 )
-                await eventbus.publish(tool_output_message)
+                await send_message(tool_output_message)
 
-        if eventbus is not None:
-            await eventbus.publish(Message(
-                category=Constants.OUTPUT,
-                payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
-                                                         step_num=0),
-                sender=self.name(),
-                receiver=action[0].agent_name,
-                session_id=Context.instance().session_id
-            ))
+        await send_message(Message(
+            category=Constants.OUTPUT,
+            payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
+                                                     step_num=0),
+            sender=self.name(),
+            receiver=action[0].agent_name,
+            session_id=Context.instance().session_id
+        ))
 
-        return AgentMessage(payload=step_res,
-                            caller=action[0].agent_name,
-                            sender=self.name(),
-                            receiver=action[0].agent_name,
-                            session_id=Context.instance().session_id)
+        context = Context.instance()
+        agent = context.swarm.agents.get(action[0].agent_name)
+        feedback_tool_result = False
+        if agent:
+            feedback_tool_result = agent.feedback_tool_result
+        if feedback_tool_result:
+            return AgentMessage(payload=step_res,
+                                caller=action[0].agent_name,
+                                sender=self.name(),
+                                receiver=action[0].agent_name,
+                                session_id=Context.instance().session_id)
+        else :
+            return AgentMessage(payload=step_res,
+                                sender=action[0].agent_name,
+                                session_id=Context.instance().session_id)
+
 
 
 class ToolsManager(Factory):

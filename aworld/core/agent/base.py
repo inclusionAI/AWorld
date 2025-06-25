@@ -69,11 +69,31 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def __init__(self,
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
-                 sandbox: Sandbox = None,
+                 name: str,
+                 desc: str = None,
+                 *,
+                 tool_names: List[str] = [],
+                 agent_names: List[str] = [],
                  mcp_servers: List[str] = [],
                  mcp_config: Dict[str, Any] = {},
-                 **kwargs
-                 ):
+                 feedback_tool_result: bool = False,
+                 sandbox: Sandbox = None,
+                 **kwargs):
+        """Base agent init.
+
+        Args:
+            conf: Agent config for internal processes.
+            name: Agent name as identifier.
+            desc: Agent description as tool description.
+            tool_names: Tool names of local that agents can use.
+            agent_names: Agents as tool name list.
+            mcp_servers: Mcp names that the agent can use.
+            mcp_config: Mcp config for mcp servers.
+            feedback_tool_result: Whether feedback on the results of the tool.
+                Agent1 uses tool1 when the value is True, it does not go to the other agent after obtaining the result of tool1.
+                Instead, Agent1 uses the tool's result and makes a decision again.
+            sandbox: Sandbox instance for tool execution, advanced usage.
+        """
         self.conf = conf
         if isinstance(conf, ConfigDict):
             pass
@@ -85,20 +105,18 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         else:
             logger.warning(f"Unknown conf type: {type(conf)}")
 
-        self._name = kwargs.pop("name", self.conf.get(
-            "name", convert_to_snake(self.__class__.__name__)))
-        self._desc = kwargs.pop("desc") if kwargs.get(
-            "desc") else self.conf.get('desc', '')
+        self._name = name if name else convert_to_snake(self.__class__.__name__)
+        self._desc = desc if desc else self._name
         # Unique flag based agent name
         self._id = f"{self._name}__uuid{uuid.uuid1().hex[0:6]}uuid"
         self.task = None
         # An agent can use the tool list
-        self.tool_names: List[str] = kwargs.pop("tool_names", [])
+        self.tool_names: List[str] = tool_names
         human_tools = self.conf.get("human_tools", [])
         for tool in human_tools:
             self.tool_names.append(tool)
         # An agent can delegate tasks to other agent
-        self.handoffs: List[str] = kwargs.pop("agent_names", [])
+        self.handoffs: List[str] = agent_names
         # Supported MCP server
         self.mcp_servers: List[str] = mcp_servers
         self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config)
@@ -117,11 +135,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.state = AgentStatus.START
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
+        self.feedback_tool_result = feedback_tool_result
         self.sandbox = sandbox or Sandbox(
             mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
-
-        for k, v in kwargs.items():
-            setattr(self, k, v)
 
     def id(self) -> str:
         return self._id
@@ -143,7 +159,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if eventbus is not None:
             await eventbus.publish(Message(
                 category=Constants.OUTPUT,
-                payload=StepOutput.build_start_output(name=f"{self.id()}",alias_name=self.name(),step_num=0),
+                payload=StepOutput.build_start_output(name=f"{self.id()}", alias_name=self.name(), step_num=0),
                 sender=self.id(),
                 session_id=Context.instance().session_id
             ))
