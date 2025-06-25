@@ -2,7 +2,7 @@ import json
 import uuid
 from dataclasses import dataclass
 
-from pydantic import Field
+from pydantic import Field, BaseModel
 
 from aworld.output import (
     MessageOutput,
@@ -19,18 +19,32 @@ from abc import ABC, abstractmethod
 from typing_extensions import override
 
 
+class ToolCard(BaseModel):
+    tool_type: str = Field(None, description="tool type")
+    tool_name: str = Field(None, description="tool name")
+    function_name: str = Field(None, description="function name")
+    tool_call_id: str = Field(None, description="tool call id")
+    arguments: str = Field(None, description="arguments")
+    results: str = Field(None, description="results")
+    card_type: str = Field(None, description="card type")
+    card_data: dict = Field(None, description="card data")
+
+    @staticmethod
+    def from_tool_result(output: ToolResultOutput) -> "ToolCard":
+        return ToolCard(
+            tool_type=output.tool_type,
+            tool_name=output.tool_name,
+            function_name=output.origin_tool_call.function.name,
+            tool_call_id=output.origin_tool_call.id,
+            arguments=output.origin_tool_call.function.arguments,
+            results=output.data,
+        )
+
+
 class BaseToolResultParser(ABC):
 
     def __init__(self, tool_name: str = None):
         self.tool_name = tool_name
-
-    def get_tool_call_data(self, output: ToolResultOutput):
-        tool_type = output.tool_type
-        tool_name = output.tool_name
-        function_name = output.origin_tool_call.function.name
-        arguments = output.origin_tool_call.function.arguments
-        results = output.data
-        return tool_type, tool_name, function_name, arguments, results
 
     @abstractmethod
     async def parse(self, output: ToolResultOutput):
@@ -41,48 +55,50 @@ class DefaultToolResultParser(BaseToolResultParser):
 
     @override
     async def parse(self, output: ToolResultOutput):
-        tool_type, tool_name, function_name, arguments, results = (
-            self.get_tool_call_data(output)
-        )
-        return (
-            f"{tool_name}#{function_name}",
-            f"Call {tool_name}#{function_name} with {arguments}",
-            f"```tool_card\n{results}\n```",
-        )
+        tool_card = ToolCard.from_tool_result(output)
+
+        tool_card.card_type = "tool_call_card_default"
+
+        return f"""\
+**🔧 Tool: {tool_card.tool_name}#{tool_card.function_name}**\n\n
+```tool_card
+{json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
+```
+"""
 
 
 class GooglePseSearchToolResultParser(BaseToolResultParser):
 
     @override
     async def parse(self, output: ToolResultOutput):
-        tool_type, tool_name, function_name, arguments, results = (
-            self.get_tool_call_data(output)
-        )
+        tool_card = ToolCard.from_tool_result(output)
 
         query = ""
         try:
-            args = json.loads(arguments)
+            args = json.loads(tool_card.arguments)
             query = args.get("query")
         except Exception:
             pass
 
         result_items = []
         try:
-            result_items = json.loads(results)
+            result_items = json.loads(tool_card.results)
         except Exception:
             pass
 
-        tool_card = {
-            "card_type": "link_card",
+        tool_card.card_type = "tool_call_card_link_list"
+        tool_card.card_data = {
+            "title": "🔎 Google Search",
             "query": query,
-            "items": result_items,
+            "search_items": result_items,
         }
 
-        return (
-            "🔎 Google Search",
-            f"Google Find {len(result_items)} Result for {query}",
-            f"```tool_card\n{json.dumps(tool_card, ensure_ascii=False, indent=2)}\n```",
-        )
+        return f"""\
+**🔎 Google Search**\n\n
+```tool_card
+{json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
+```
+"""
 
 
 class ToolResultParserFactory:
@@ -163,12 +179,8 @@ class AWorldAgentUI(AworldUI):
         """
         tool_result
         """
-        tool_type = output.tool_type
-        tool_name = output.tool_name
-        function_name = output.origin_tool_call.function.name
-        parser = ToolResultParserFactory.get_parser(tool_type, tool_name)
-        title, description, card_data = await parser.parse(output)
-        return f"**🔧 Tool: {title}** \n\n{description} \n\n{card_data}\n"
+        parser = ToolResultParserFactory.get_parser(output.tool_type, output.tool_name)
+        return await parser.parse(output)
 
     async def _gen_custom_output(self, output):
         """
@@ -192,7 +204,7 @@ class AWorldAgentUI(AworldUI):
         emptyLine = "\n\n----\n\n"
         if output.status == "START":
             self.cur_agent_name = output.name
-            return f"\n\n ### 🏁 STEP {output.step_num}: {output.show_name} \n\n"
+            return f"\n\n # 🌐 {output.show_name} \n\n"
         elif output.status == "FINISHED":
             return f"{emptyLine}"
         elif output.status == "FAILED":
