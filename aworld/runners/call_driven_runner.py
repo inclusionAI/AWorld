@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Tuple
 
 from aworld.config.conf import ToolConfig
 from aworld.core.agent.base import is_agent
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
@@ -39,7 +39,7 @@ def action_result_transform(message: Message, sandbox: Sandbox) -> Tuple[Observa
                              action_result=action_results), 1.0, result.is_done, result.is_done, {}
 
 
-class SequenceRunner(TaskRunner):
+class WorkflowRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task=task, *args, **kwargs)
 
@@ -366,7 +366,7 @@ class SequenceRunner(TaskRunner):
         return f"{self.task.id}_{step}_{cur_agent_name}_{exp_index}"
 
 
-class LoopSequenceRunner(SequenceRunner):
+class LoopWorkflowRunner(WorkflowRunner):
 
     async def _do_run(self, context: Context = None) -> TaskResponse:
         observation = self.observation
@@ -412,7 +412,7 @@ class LoopSequenceRunner(SequenceRunner):
                                 usage=self.context.token_usage)
 
 
-class SocialRunner(TaskRunner):
+class HandoffRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task=task, *args, **kwargs)
 
@@ -422,7 +422,7 @@ class SocialRunner(TaskRunner):
         return resp
 
     async def _do_run(self, context: Context = None) -> TaskResponse:
-        """Multi-agent general process workflow.
+        """Multi-agent general process based on handoff.
 
         NOTE: Use the agent's finished state to control the loop, so the agent must carefully set finished state.
 

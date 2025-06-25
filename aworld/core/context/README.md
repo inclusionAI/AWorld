@@ -204,7 +204,7 @@ Controls intelligent context compression:
 > **📋 Test Implementation**: See default configuration test at [`tests/test_context_management.py::TestContextManagement::test_default_context_configuration()`](../../../tests/test_context_management.py)
 
 ```python
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 
 # No need to explicitly configure context_rule, system automatically uses default configuration

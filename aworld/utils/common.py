@@ -59,6 +59,11 @@ def override_in_subclass(name: str, sub_cls: object, base_cls: object) -> bool:
     return this_method is not base_method
 
 
+def convert_to_subclass(obj, subclass):
+    obj.__class__ = subclass
+    return obj
+
+
 def _walk_to_root(path: str) -> Iterator[str]:
     """Yield directories starting from the given directory up to the root."""
     if not os.path.exists(path):
@@ -273,13 +278,22 @@ def get_local_ip():
     except Exception:
         return "127.0.0.1"
 
+
 def replace_env_variables(config) -> Any:
+    """Replace environment variables in configuration.
+
+    Environment variables should be in the format ${ENV_VAR_NAME}.
+
+    Args:
+        config: Configuration to process (dict, list, or other value)
+
+    Returns:
+        Processed configuration with environment variables replaced
+    """
     if isinstance(config, dict):
         for key, value in config.items():
             if isinstance(value, str):
-                # 处理字符串中嵌入的环境变量
                 if "${" in value and "}" in value:
-                    # 寻找所有 ${ENV_VAR} 模式的子串
                     pattern = r'\${([^}]+)}'
                     matches = re.findall(pattern, value)
                     result = value
@@ -293,7 +307,6 @@ def replace_env_variables(config) -> Any:
     elif isinstance(config, list):
         for index, item in enumerate(config):
             if isinstance(item, str):
-                # 处理字符串中嵌入的环境变量
                 if "${" in item and "}" in item:
                     pattern = r'\${([^}]+)}'
                     matches = re.findall(pattern, item)
