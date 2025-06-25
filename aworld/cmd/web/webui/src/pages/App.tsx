@@ -224,8 +224,8 @@ const App: React.FC = () => {
 
   // 右侧抽屉
   type DrawerContentType = 'Team workspace' | 'trace';
-  const [drawerVisible, setDrawerVisible] = useState(true);
-  const [drawerContent, setDrawerContent] = useState<DrawerContentType>('trace');
+  const [drawerVisible, setDrawerVisible] = useState(false);
+  const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Team workspace');
   const openDrawer = (content: DrawerContentType) => {
     setDrawerVisible(true);
     setDrawerContent(content);
