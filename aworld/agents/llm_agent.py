@@ -70,9 +70,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.history_messages = kwargs.get("history_messages") if kwargs.get("history_messages") else 100
         self.use_tools_in_prompt = kwargs.get('use_tools_in_prompt', conf.use_tools_in_prompt)
         # init agent context
-        context_rule = kwargs.get("context_rule") if kwargs.get("context_rule") else conf.context_rule
+        self.context_rule = kwargs.get("context_rule") if kwargs.get("context_rule") else conf.context_rule
         # update agent context by llm_agent
-        self.init_agent_context(conf.llm_config, context_rule)
+        # self.init_agent_context(conf.llm_config, context_rule)
         self.tools_instances = {}
         self.tools_conf = {}
 
@@ -429,14 +429,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                            caller=caller,
                            sender=self.id(),
                            receiver=actions[0].tool_name,
-                           session_id=self.context.session_id,
+                           session_id=self.context.session_id if self.context else "",
                            category=Constants.AGENT)
         else:
             return ToolMessage(payload=actions,
                                caller=caller,
                                sender=self.id(),
                                receiver=actions[0].tool_name,
-                               session_id=self.context.session_id)
+                               session_id=self.context.session_id if self.context else "")
 
     def post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
         return self._agent_result(
@@ -835,7 +835,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=output,
                         sender=self.id(),
-                        session_id=Context.instance().session_id
+                        session_id=self.context.session_id if self.context else ""
                     )
                     await eventbus.publish(output_message)
                 elif not self.event_driven and outputs:
@@ -857,7 +857,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=llm_response,
                         sender=self.id(),
-                        session_id=Context.instance().session_id
+                        session_id=self.context.session_id if self.context else ""
                     ))
                 elif not self.event_driven and outputs:
                     outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
@@ -961,6 +961,18 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.agent_context.context_rule = context_rule
         self.agent_context.system_prompt = self.system_prompt
         self.agent_context.agent_prompt = self.agent_prompt
+
+    def _init_context(self, context: Context):
+        self.context = context
+        self.agent_context = AgentContext(
+            agent_id=self.id(),
+            agent_name=self.name(),
+            agent_desc=self.desc(),
+            tool_names=self.tool_names,
+            context=self.context,
+            parent_state=self.context.state  # Pass Context's state as parent state
+        )
+        self.init_agent_context(self.conf, self.context_rule)
 
     def update_system_prompt(self, system_prompt: str):
         self.system_prompt = system_prompt
