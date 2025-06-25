@@ -125,7 +125,7 @@ class InMemoryWithPersistStorage(TraceStorage):
         self._pending_spans = []
         self.storage_dir = os.path.abspath(storage_dir)
         os.makedirs(self.storage_dir, exist_ok=True)
-        self._lock = open("trace_lock", 'r')
+        self._lock = threading.Lock()
         self._persist_thread = None
         self._load_today_traces()
         self.current_filename = None
