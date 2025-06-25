@@ -56,26 +56,23 @@
   }
 
 .controls-area {
-  position: absolute;
-  bottom: 12px;
-  left: 20px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  width: 100%;
+  margin-top: 20px;
 }
 
+
 .model-select {
-  width: fit-content;
-  height: 40px;
+  width: 100%;
+  // width: fit-content;
+  height: 44px;
+  border-radius: 50px;
 
   .ant-select-selector {
-    border-radius: 20px !important;
+    border-radius: 12px !important;
     padding-left: 12px !important;
-    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="brown" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.93 2.55 12 8l2.07 5.45L20 16l-5.45 2.07L12 24l-2.07-5.45L4 16l5.45-2.07L12 8l-2.07-5.45Z" /></svg>');
-    background-repeat: no-repeat;
-    background-position: 10px center;
     border: 1px solid #d9d9d9 !important;
   }
+
   .ant-select-selection-item {
     padding-right: 24px !important;
   }
@@ -84,4 +81,14 @@
     right: 15px;
   }
 }
-  
+.select-item{
+  line-height: 30px;
+  small{
+    margin-left: 10px;
+    color: #b8b8b8;
+    font-weight: normal;
+  }
+  .icon-right{
+    color: #d9d9d9;
+  }
+}
