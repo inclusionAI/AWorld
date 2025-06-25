@@ -54,6 +54,9 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    def _init_context(self, context: Context):
+        self.context = context
+
     def name(self):
         """Tool unique name."""
         return self._name
@@ -67,7 +70,9 @@ class BaseTool(Generic[AgentInput, ToolInput]):
                   **kwargs) -> Message:
         pass
 
-    def step(self, action: ToolInput, **kwargs) -> Message:
+    def step(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        action = message.payload
         tool_id_mapping = {}
         if isinstance(action, list):
             for act in action:
@@ -77,6 +82,9 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         self.pre_step(action, **kwargs)
         res = self.do_step(action, **kwargs)
         final_res = self.post_step(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        if isinstance(final_res, Message):
+            final_res.context = self.context
+            final_res.session_id = self.context.session_id
         return final_res
 
     @abc.abstractmethod
@@ -137,6 +145,9 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    def _init_context(self, context: Context):
+        self.context = context
+
     def name(self):
         """Tool unique name."""
         return self._name
@@ -150,7 +161,9 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
                         **kwargs) -> Message:
         pass
 
-    async def step(self, action: ToolInput, **kwargs) -> Message:
+    async def step(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        action = message.payload
         tool_id_mapping = {}
         if isinstance(action, list):
             for act in action:
@@ -160,6 +173,9 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        if isinstance(final_res, Message):
+            final_res.context = self.context
+            final_res.session_id = self.context.session_id
         return final_res
 
     @abc.abstractmethod

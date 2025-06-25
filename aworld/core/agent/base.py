@@ -105,15 +105,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
-        self.context = Context.instance()
-        self.agent_context = AgentContext(
-            agent_id=self.id(),
-            agent_name=self.name(),
-            agent_desc=self.desc(),
-            tool_names=self.tool_names,
-            context=self.context,
-            parent_state=self.context.state  # Pass Context's state as parent state
-        )
+        self.context = None
+        self.agent_context = None
         self.state = AgentStatus.START
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
@@ -122,6 +115,17 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+    def _init_context(self, context: Context):
+        self.context = context
+        self.agent_context = AgentContext(
+            agent_id=self.id(),
+            agent_name=self.name(),
+            agent_desc=self.desc(),
+            tool_names=self.tool_names,
+            context=self.context,
+            parent_state=self.context.state  # Pass Context's state as parent state
+        )
 
     def id(self) -> str:
         return self._id
@@ -132,25 +136,35 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def desc(self) -> str:
         return self._desc
 
-    def run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
+    def run(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        observation = message.payload
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self.pre_run()
-            result = self.policy(observation, info, **kwargs)
+            result = self.policy(observation, **kwargs)
             final_result = self.post_run(result, observation)
+            if isinstance(final_result, Message):
+                final_result.context = self.context
+                final_result.session_id = self.context.session_id
             return final_result if final_result else result
 
-    async def async_run(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Message:
+    async def async_run(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        observation = message.payload
         if eventbus is not None:
             await eventbus.publish(Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_start_output(name=f"{self.id()}",alias_name=self.name(),step_num=0),
                 sender=self.id(),
-                session_id=Context.instance().session_id
+                session_id=self.context.session_id
             ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             await self.async_pre_run()
-            result = await self.async_policy(observation, info, **kwargs)
+            result = await self.async_policy(observation, **kwargs)
             final_result = await self.async_post_run(result, observation)
+            if isinstance(final_result, Message):
+                final_result.context = self.context
+                final_result.session_id = self.context.session_id
             return final_result if final_result else result
 
     @abc.abstractmethod

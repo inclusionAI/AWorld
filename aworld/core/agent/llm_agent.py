@@ -429,14 +429,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                            caller=caller,
                            sender=self.id(),
                            receiver=actions[0].tool_name,
-                           session_id=self.context.session_id,
+                           session_id=self.context.session_id if self.context else "",
                            category=Constants.AGENT)
         else:
             return ToolMessage(payload=actions,
                                caller=caller,
                                sender=self.id(),
                                receiver=actions[0].tool_name,
-                               session_id=self.context.session_id)
+                               session_id=self.context.session_id if self.context else "")
 
     def post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
         return self._agent_result(
@@ -835,7 +835,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=output,
                         sender=self.id(),
-                        session_id=Context.instance().session_id
+                        session_id=self.context.session_id if self.context else ""
                     )
                     await eventbus.publish(output_message)
                 elif not self.event_driven and outputs:
@@ -857,7 +857,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=llm_response,
                         sender=self.id(),
-                        session_id=Context.instance().session_id
+                        session_id=self.context.session_id if self.context else ""
                     ))
                 elif not self.event_driven and outputs:
                     outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
