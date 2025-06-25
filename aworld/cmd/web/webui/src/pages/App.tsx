@@ -399,9 +399,9 @@ const App: React.FC = () => {
     }
   };
 
-  // 重新发送消息
-  const resendMessage = (assistantMessageIndex: number) => {
-    // 找到对应的用户消息
+  const resendMessage = (assistantMessage: any) => {
+    console.log('resendMessage: assistantMessage', assistantMessage, assistantMessage.messageIndex, assistantMessage.content, assistantMessage.message);
+    const assistantMessageIndex = assistantMessage.messageIndex;
     const userMessageIndex = assistantMessageIndex - 1;
     if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
       const userMessage = messages[userMessageIndex].message.content;
@@ -498,9 +498,17 @@ const App: React.FC = () => {
                 console.log('delete session: session_id', conversation.key);
                 fetch('/api/session/delete', {
                   method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
                   body: JSON.stringify({ session_id: conversation.key }),
-                }).then(() => {
-                  fetchSessions();
+                }).then((res) => res.json()).then((data) => {
+                  if (data.code === 0) {
+                    message.success('Session deleted');
+                    fetchSessions();
+                  } else {
+                    message.error('Failed to delete session');
+                  }
                 });
               },
             },
