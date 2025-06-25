@@ -2,10 +2,9 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import List, Dict
 
-from aworld.config import ConfigDict
+from aworld.config import RunConfig
 from aworld.core.agent.swarm import WORKFLOW
 from aworld.core.common import Config
-from aworld.core.runtime_engine import LOCAL
 
 from aworld.core.task import Task, Runner, TaskResponse
 from aworld.logs.util import logger
@@ -55,10 +54,10 @@ async def execute_runner(runners: List[Runner], run_conf: Config) -> Dict[str, T
         run_conf: Runtime config, can choose the special computing engine to execute the runner.
     """
     if not run_conf:
-        run_conf = ConfigDict({"name": LOCAL})
+        run_conf = RunConfig()
 
     name = run_conf.name
-    if run_conf.get('cls'):
+    if run_conf.cls:
         runtime_backend = new_instance(run_conf.cls, run_conf)
     else:
         runtime_backend = new_instance(

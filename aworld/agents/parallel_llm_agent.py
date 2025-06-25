@@ -20,14 +20,15 @@ class ParallelizableAgent(Agent):
     aggregate_func: Callable[..., Any] = None
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
-        from aworld.core.runtime_engine import RUNTIME, LocalRuntime
+        from aworld.core.task import Task
+        from aworld.runners.utils import choose_runners, execute_runner
 
-        funcs = [agent.async_policy for agent in self.agents]
-        runtime_engine = RUNTIME.get(self.context.engine)
-        if not runtime_engine:
-            res = await LocalRuntime(RunConfig()).execute(funcs, observation, info, **kwargs)
-        else:
-            res = await runtime_engine.execute(funcs, observation, info, **kwargs)
+        tasks = []
+        for agent in self.agents:
+            tasks.append(Task(input=observation, agent=agent))
+
+        runners = await choose_runners(tasks)
+        res = await execute_runner(runners, RunConfig())
 
         if self.aggregate_func:
             return self.aggregate_func(self, res)

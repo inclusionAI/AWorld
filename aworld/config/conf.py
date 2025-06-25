@@ -258,8 +258,9 @@ class ToolConfig(BaseConfig):
 
 
 class RunConfig(BaseConfig):
-    engine: str = 'local'
+    name: str = 'local'
     worker_num: int = 1
+    cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
     replay_buffer: Optional[Dict[str, Any]] = None

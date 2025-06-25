@@ -9,8 +9,7 @@ from concurrent.futures.process import ProcessPoolExecutor
 from types import MethodType
 from typing import List, Callable, Any, Dict
 
-from aworld.config import RunConfig
-from aworld.core.task import TaskResponse
+from aworld.config import RunConfig, ConfigDict
 from aworld.logs.util import logger
 from aworld.utils.common import sync_exec
 
@@ -27,7 +26,7 @@ class RuntimeEngine(object):
 
     def __init__(self, conf: RunConfig):
         """Engine runtime instance initialize."""
-        self.conf = conf
+        self.conf = ConfigDict(conf.model_dump())
         self.runtime = None
         register(conf.name, self)
 
