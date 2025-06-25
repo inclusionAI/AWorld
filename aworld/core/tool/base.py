@@ -263,7 +263,6 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                           step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                           action: List[ActionModel],
                           **kwargs):
-        event_bus = InMemoryEventbus.instance()
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
