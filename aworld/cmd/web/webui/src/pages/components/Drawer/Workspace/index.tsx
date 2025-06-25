@@ -67,7 +67,7 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
           <div className="title">Google Search</div>
           <div className="listbox">
             {lists.map((item) => (
-              <div className="list">
+              <div className="list" key={item.key}>
                 <div className="name">{item.title}</div>
                 <Text ellipsis className="desc">
                   {item.desc}
