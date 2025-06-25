@@ -1,11 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-from typing import AsyncGenerator, Any
+from typing import AsyncGenerator
 
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem
-from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.tool.base import AsyncTool, Tool, ToolFactory
 from aworld.logs.util import logger
@@ -37,7 +36,7 @@ class DefaultToolHandler(ToolHandler):
                 category=Constants.TASK,
                 payload=TaskItem(msg="no data to process.", data=data, stop=True),
                 sender='agent_handler',
-                session_id=Context.instance().session_id,
+                session_id=message.session_id,
                 topic=TopicType.ERROR
             )
             return
@@ -49,7 +48,7 @@ class DefaultToolHandler(ToolHandler):
                     category=Constants.TASK,
                     payload=TaskItem(msg="action not a ActionModel.", data=data, stop=True),
                     sender=self.name(),
-                    session_id=Context.instance().session_id,
+                    session_id=message.session_id,
                     topic=TopicType.ERROR
                 )
                 return
@@ -83,7 +82,7 @@ class DefaultToolHandler(ToolHandler):
                 category=Constants.TASK,
                 payload=TaskItem(data=new_tools),
                 sender=self.name(),
-                session_id=Context.instance().session_id,
+                session_id=message.session_id,
                 topic=TopicType.SUBSCRIBE_TOOL
             )
 
@@ -97,6 +96,6 @@ class DefaultToolHandler(ToolHandler):
                 category=Constants.TOOL,
                 payload=actions,
                 sender=actions[0].agent_name if actions else '',
-                session_id=Context.instance().session_id,
+                session_id=message.session_id,
                 receiver=tool_name
             )

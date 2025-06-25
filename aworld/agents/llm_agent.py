@@ -664,7 +664,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             context_rule=context_rule,
             context_usage=ContextUsage(total_context_length=self.conf.llm_config.max_model_len)
         )
-        self.context.set_current_agent_context(self.id(), current_agent_context)
         self.current_agent_context = current_agent_context
 
     def update_current_agent_messages(self, messages: List[Message]):
@@ -672,16 +671,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def restore_current_agent_context(self) -> List[Message]:
         return self.current_agent_context.messages
-
-    async def run_hooks(self, context: Context, current_agent_context: AgentContext, hook_point: str) -> AsyncGenerator[Message, None]:
-        hooks = HookFactory.hooks(hook_point).get(hook_point)
-        for hook in hooks:
-            try:
-                msg = hook.exec(message=None, current_agent_context=current_agent_context, context=context)
-                if msg:
-                    yield msg
-            except:
-                logger.warning(f"{hook.point()} {hook.id()} execute fail.")
 
     async def llm_and_tool_execution(self, observation: Observation, messages: List[Dict[str, str]] = [], info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
         """Perform combined LLM call and tool execution operations.

@@ -26,13 +26,13 @@ The Context Management system implements intelligent context processing with mul
 - `Hook System`: Extensible hook system supporting full-process LLM call intervention
 
 
-## Context Lifecycle
+## Multi-Level Context
 
 ![Context Lifecycle](../../../readme_assets/context_lifecycle.png)
 
 The AWorld framework implements a hierarchical context management system with distinct lifecycles:
 
-### Context Lifecycle (Global)
+### Context Lifecycle (Session)
 Context is a singleton object that spans the entire AWorld Runner execution lifecycle, enabling global state sharing and coordination between multiple Agents in the AWorld framework.
 
 - **Scope**: Spans the entire AWorld Runner execution period
@@ -61,17 +61,52 @@ Context is a singleton object that spans the entire AWorld Runner execution life
 > **📋 Test Implementation**: See complete test implementation at [`tests/test_context_management.py::TestContextManagement::test_state_management_and_recovery()`](../../../tests/test_context_management.py)
 
 ```python
-# Test state modification
-agent.agent_context.system_prompt = "You are a Python expert who provides detailed and practical answers."
-agent.agent_context['state'] = 1
+class StateModifyAgent(Agent):
+    async def async_policy(self, observation, info=None, **kwargs):
+        result = await super().async_policy(observation, info, **kwargs)
+        self.context.state['policy_executed'] = True
+        return result
 
-# run with new state
-response = agent.run("What is an agent. describe within 20 words")
-assert response.answer is not None
+class StateTrackingAgent(Agent):
+    async def async_policy(self, observation, info=None, **kwargs):
+        result = await super().async_policy(observation, info, **kwargs)
+        assert self.context.state['policy_executed'] == True
+        return result
 
-# Verify state changes
-assert agent.agent_context.system_prompt == "You are a Python expert who provides detailed and practical answers."
-assert agent.agent_context['state'] == 1
+# Create custom agent instance
+custom_agent = StateModifyAgent(
+    conf=AgentConfig(
+        llm_model_name=mock_model_name,
+        llm_base_url=mock_base_url,
+        llm_api_key=mock_api_key
+    ),
+    name="state_modify_agent",
+    system_prompt="You are a Python expert who provides detailed and practical answers.",
+    agent_prompt="You are a Python expert who provides detailed and practical answers.",
+)
+
+# Create a second agent for multi-agent testing
+second_agent = StateTrackingAgent(
+    conf=AgentConfig(
+        llm_model_name=mock_model_name,
+        llm_base_url=mock_base_url,
+        llm_api_key=mock_api_key
+    ),
+    name="state_tracking_agent",
+    system_prompt="You are a helpful assistant.",
+    agent_prompt="You are a helpful assistant.",
+)
+
+# Run multi-agent scenario
+response = run_multi_agent(
+    input="What is an agent. describe within 20 words",
+    agent1=custom_agent,
+    agent2=second_agent
+)
+
+# Verify state changes after execution
+assert custom_agent.context.state.get('policy_executed', True)
+assert second_agent.agent_context.state.get('policy_executed', True)
 ```
 
 ### Example: Hook System, LLM Call Intervention and Agent state sharing

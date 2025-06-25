@@ -3,6 +3,7 @@
 import asyncio
 from typing import List, Dict, Union
 
+from aworld.config import RunConfig
 from aworld.config.conf import TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
@@ -35,7 +36,7 @@ class Runners:
         return streamed_result
 
     @staticmethod
-    async def run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:
+    async def run_task(task: Union[Task, List[Task]], run_conf: RunConfig = None) -> Dict[str, TaskResponse]:
         """Run tasks for some complex scenarios where agents cannot be directly used.
 
         Args:

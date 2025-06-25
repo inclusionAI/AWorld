@@ -6,7 +6,7 @@ from aworld.config import RunConfig
 from aworld.core.agent.swarm import WORKFLOW
 from aworld.core.common import Config
 
-from aworld.core.task import Task, Runner, TaskResponse
+from aworld.core.task import Task, TaskResponse, Runner
 from aworld.logs.util import logger
 from aworld.utils.common import new_instance, snake_to_camel
 

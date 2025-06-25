@@ -85,13 +85,13 @@ class LocalRuntime(RuntimeEngine):
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         # opt of the one task process
-        if len(funcs) == 1:
-            func = funcs[0]
-            if inspect.iscoroutinefunction(func):
-                res = await func(*args, **kwargs)
-            else:
-                res = func(*args, **kwargs)
-            return {res.id: res}
+        # if len(funcs) == 1:
+        #     func = funcs[0]
+        #     if inspect.iscoroutinefunction(func):
+        #         res = await func(*args, **kwargs)
+        #     else:
+        #         res = func(*args, **kwargs)
+        #     return {res.id: res}
 
         num_executor = self.conf.get('worker_num', os.cpu_count() - 1)
         num_process = len(funcs)
