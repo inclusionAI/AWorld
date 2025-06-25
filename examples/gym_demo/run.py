@@ -1,9 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+from aworld.config import RunConfig
 
-from aworld.core.runtime_engine import LOCAL
-
-from aworld.config.conf import AgentConfig, ConfigDict
+from aworld.config.conf import AgentConfig
 from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.tools.common import Tools, Agents
@@ -19,7 +18,7 @@ def main():
     # It can also be used `ToolFactory` for simplification.
     # gym_tool = ToolFactory(Tools.GYM.value)
     task = Task(agent=agent, tools=[gym_tool])
-    res = Runners.sync_run_task(task=task, run_conf=ConfigDict({"name": LOCAL}))
+    res = Runners.sync_run_task(task=task, run_conf=RunConfig())
     return res
 
 

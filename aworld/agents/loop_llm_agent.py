@@ -33,7 +33,7 @@ class LoopableAgent(Agent):
             return self.loop_point_finder(self)
         if self.loop_point:
             return self.loop_point
-        return self.name()
+        return self.id()
 
     @property
     def finished(self) -> bool:

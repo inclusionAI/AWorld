@@ -18,7 +18,10 @@ class SerialableAgent(Agent):
         for agent in self.agents:
             message = await agent.async_run(ob, info, **kwargs)
             ob = self._action_to_observation(message.payload, agent.name())
-        return message.payload
+        if message:
+            return message.payload
+        else:
+            raise Exception(f"{self.id()} execute fail.")
 
     def _action_to_observation(self, policy: List[ActionModel], agent_name: str):
         if not policy:

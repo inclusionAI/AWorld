@@ -35,7 +35,7 @@ class ParallelizableAgent(Agent):
 
         results = []
         for k, v in res.items():
-            results.append(v)
+            results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
         return results
 
     def finished(self) -> bool:

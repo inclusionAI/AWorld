@@ -46,7 +46,7 @@ async def choose_runners(tasks: List[Task]) -> List[Runner]:
     return runners
 
 
-async def execute_runner(runners: List[Runner], run_conf: Config) -> Dict[str, TaskResponse]:
+async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str, TaskResponse]:
     """Execute runner in the runtime engine.
 
     Args:
