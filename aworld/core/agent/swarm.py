@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import json
-from typing import Dict, List, Any, Callable, Optional
+from typing import Dict, List, Any, Callable, Optional, Tuple
 
 from aworld.agents.parallel_llm_agent import ParallelizableAgent
 from aworld.agents.serial_llm_agent import SerialableAgent
@@ -271,7 +271,7 @@ class AgentGraph:
     # The direct successor of the agent
     successor: Dict[str, Dict[str, EdgeInfo]] = {}
 
-    def topological_sequence(self):
+    def topological_sequence(self) -> Tuple[List[BaseAgent], bool]:
         """Obtain the agent sequence of topology, and be able to determine whether the topology has cycle during the process.
 
         Returns:
@@ -375,11 +375,13 @@ class AgentGraph:
             left_agent: As the agent node of the predecessor node.
             right_agent: As the agent node of the successor node.
         """
-        del self.successor[left_agent.id()][right_agent.id()]
-        del self.predecessor[right_agent.id()][left_agent.id()]
+        if left_agent.id() in self.successor and right_agent.id() in self.successor[left_agent.id()]:
+            del self.successor[left_agent.id()][right_agent.id()]
+        if right_agent.id() in self.predecessor and left_agent.id() in self.successor[right_agent.id()]:
+            del self.predecessor[right_agent.id()][left_agent.id()]
 
     def in_degree(self) -> Dict[str, int]:
-        """In degree of the agent  is the number of agents pointing to the agent."""
+        """In degree of the agent is the number of agents pointing to the agent."""
         in_degree = {}
         for k, _ in self.agents.items():
             agents = self.predecessor[k]
@@ -543,7 +545,7 @@ class HandoffBuilder(TopologyBuilder):
     Examples:
     >>> agent1 = Agent(name='agent1'); agent2 = Agent(name='agent2'); agent3 = Agent(name='agent3')
     >>> agent4 = Agent(name='agent4'); agent5 = Agent(name='agent5'); agent6 = Agent(name='agent6')
-    >>> Swarm((agent1, agent2), (agent1, agent3), (agent2, agent3), determinacy=False)
+    >>> Swarm((agent1, agent2), (agent1, agent3), (agent2, agent3), workflow=False)
     """
 
     def build(self):
@@ -573,6 +575,10 @@ class HandoffBuilder(TopologyBuilder):
         for pair in valid_agent_pair:
             TopologyBuilder.register_agent(pair[0])
             TopologyBuilder.register_agent(pair[1])
+
+            # need feedback
+            pair[0].feedback_tool_result = True
+            pair[1].feedback_tool_result = True
 
             agent_graph.add_node(pair[0])
             agent_graph.add_node(pair[1])
