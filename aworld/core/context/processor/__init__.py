@@ -38,6 +38,7 @@ class ChunkResult:
 
 class CompressionType(Enum):
     LLM_BASED = "llm_based"
+    LLMLINGUA = "llmlingua"
 
 @dataclass
 class CompressionResult:

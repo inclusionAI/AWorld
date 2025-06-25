@@ -7,12 +7,12 @@ from typing import Any, Union, List, Dict, Callable, Optional
 
 from pydantic import BaseModel
 
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
-from aworld.output.outputs import Outputs, StreamingOutputs, DefaultOutputs
+from aworld.output.outputs import Outputs, DefaultOutputs
 
 
 @dataclass

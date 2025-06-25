@@ -20,8 +20,8 @@ from examples.android.utils import (
 )
 from examples.browsers.common import AgentStepInfo
 from aworld.config.conf import AgentConfig, ConfigDict
-from aworld.core.agent.base import AgentFactory, AgentResult
-from aworld.core.agent.llm_agent import Agent
+from aworld.core.agent.base import AgentResult
+from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel, ToolActionInfo
 from aworld.logs.util import logger
 from examples.tools.tool_action import AndroidAction

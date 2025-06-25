@@ -2,11 +2,11 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import List, Dict
 
-from aworld.config import ConfigDict
+from aworld.config import RunConfig
+from aworld.core.agent.swarm import WORKFLOW
 from aworld.core.common import Config
-from aworld.core.runtime_engine import LOCAL
 
-from aworld.core.task import Task, Runner, TaskResponse
+from aworld.core.task import Task, TaskResponse, Runner
 from aworld.logs.util import logger
 from aworld.utils.common import new_instance, snake_to_camel
 
@@ -31,22 +31,22 @@ async def choose_runners(tasks: List[Task]) -> List[Runner]:
             if task.swarm:
                 task.swarm.event_driven = task.event_driven
                 task.swarm.reset(task.input)
-                topology = task.swarm.topology_type
+                execute_type = task.swarm.execute_type
             else:
-                topology = "sequence"
+                execute_type = WORKFLOW
 
             if task.event_driven:
                 runner = new_instance("aworld.runners.event_runner.TaskEventRunner", task)
             else:
                 runner = new_instance(
-                    f"aworld.runners.call_driven_runner.{snake_to_camel(topology)}Runner",
+                    f"aworld.runners.call_driven_runner.{snake_to_camel(execute_type)}Runner",
                     task
                 )
         runners.append(runner)
     return runners
 
 
-async def execute_runner(runners: List[Runner], run_conf: Config) -> Dict[str, TaskResponse]:
+async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str, TaskResponse]:
     """Execute runner in the runtime engine.
 
     Args:
@@ -54,10 +54,10 @@ async def execute_runner(runners: List[Runner], run_conf: Config) -> Dict[str, T
         run_conf: Runtime config, can choose the special computing engine to execute the runner.
     """
     if not run_conf:
-        run_conf = ConfigDict({"name": LOCAL})
+        run_conf = RunConfig()
 
     name = run_conf.name
-    if run_conf.get('cls'):
+    if run_conf.cls:
         runtime_backend = new_instance(run_conf.cls, run_conf)
     else:
         runtime_backend = new_instance(
