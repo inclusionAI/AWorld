@@ -51,7 +51,7 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
   return (
     <>
       <div className="border workspacebox">
-        <Button className="btn">查看Workspace</Button>
+        <div>从 api/workspaces/{sessionId}/tree 获取</div>
         <Flex className="tabbox" justify="space-between">
           {tabs.map((item) => (
             <Flex className={`border tab ${item.key === currentTab ? 'active' : ''}`} key={item.key} align="center" onClick={() => setCurrentTab(item.key)}>

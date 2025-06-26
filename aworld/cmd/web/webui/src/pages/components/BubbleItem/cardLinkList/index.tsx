@@ -1,8 +1,8 @@
-import React from 'react';
-import './index.less';
-import type { ToolCardData } from '../utils';
-import { Card, Flex } from 'antd';
 import { CheckOutlined } from '@ant-design/icons';
+import { Card, Flex } from 'antd';
+import React from 'react';
+import type { ToolCardData } from '../utils';
+import './index.less';
 
 const MAX_DISPLAY_ITEMS = 3;
 
@@ -24,13 +24,13 @@ const cardLinkList: React.FC<Props> = ({ data }) => {
     ...items.slice(0, MAX_DISPLAY_ITEMS),
     ...(remainingCount > 0
       ? [
-          {
-            title: `View ${remainingCount} more`,
-            snippet: '',
-            link: 'https://www.baidu.com',
-            isViewMore: true
-          }
-        ]
+        {
+          title: `View ${remainingCount} more`,
+          snippet: '',
+          link: 'https://www.baidu.com',
+          isViewMore: true
+        }
+      ]
       : [])
   ];
 
@@ -44,7 +44,7 @@ const cardLinkList: React.FC<Props> = ({ data }) => {
       )}
       <Flex className="cardbox" justify="space-between">
         {cardItems.map((item: ItemInterface, index: number) => (
-          <Card key={index} className={`card-item ${item.isViewMore ? 'view-more' : ''}`} onClick={() => item.link && (window.location.href = item.link)}>
+          <Card key={index} className={`card-item ${item.isViewMore ? 'view-more' : ''}`} onClick={() => item.link && (window.open(item.link, '_blank'))}>
             <Card.Meta title={item.title} description={item.snippet} />
           </Card>
         ))}

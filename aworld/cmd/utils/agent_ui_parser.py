@@ -1,5 +1,4 @@
 import json
-import uuid
 from dataclasses import dataclass
 
 from pydantic import Field, BaseModel
@@ -8,10 +7,7 @@ from aworld.output import (
     MessageOutput,
     AworldUI,
     Output,
-    Artifact,
-    ArtifactType,
     WorkSpace,
-    SearchOutput,
 )
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.output.utils import consume_content
@@ -118,10 +114,8 @@ class ToolResultParserFactory:
 
 @dataclass
 class AWorldAgentUI(AworldUI):
-
     session_id: str = Field(default="", description="session id")
     workspace: WorkSpace = Field(default=None, description="workspace")
-    cur_agent_name: str = Field(default=None, description="cur agent name")
 
     def __init__(self, session_id: str = None, workspace: WorkSpace = None, **kwargs):
         """
@@ -182,28 +176,10 @@ class AWorldAgentUI(AworldUI):
         parser = ToolResultParserFactory.get_parser(output.tool_type, output.tool_name)
         return await parser.parse(output)
 
-    async def _gen_custom_output(self, output):
-        """
-        hook for custom output
-        """
-        custom_output = f"{output.tool_name}#{output.origin_tool_call.function.name}"
-        if (
-            output.tool_name == "aworld-playwright"
-            and output.origin_tool_call.function.name == "browser_navigate"
-        ):
-            custom_output = f"🔍 search `{json.loads(output.origin_tool_call.function.arguments)['url']}`"
-        if (
-            output.tool_name == "aworldsearch-server"
-            and output.origin_tool_call.function.name == "search"
-        ):
-            custom_output = f"🔍 search keywords: {' '.join(json.loads(output.origin_tool_call.function.arguments)['query_list'])}"
-        return custom_output
-
     @override
     async def step(self, output: StepOutput):
-        emptyLine = "\n\n----\n\n"
+        emptyLine = "\n\n"
         if output.status == "START":
-            self.cur_agent_name = output.name
             return f"\n\n # {output.show_name} \n\n"
         elif output.status == "FINISHED":
             return f"{emptyLine}"
@@ -215,43 +191,3 @@ class AWorldAgentUI(AworldUI):
     @override
     async def custom_output(self, output: Output):
         return output.data
-
-    async def _parse_tool_artifacts(self, metadata):
-        result = []
-        if not metadata:
-            return result
-
-        # screenshots
-        if (
-            metadata.get("screenshots")
-            and isinstance(metadata.get("screenshots"), list)
-            and len(metadata.get("screenshots")) > 0
-        ):
-            for index, screenshot in enumerate(metadata.get("screenshots")):
-                image_artifact = Artifact(
-                    artifact_id=str(uuid.uuid4()),
-                    artifact_type=ArtifactType.IMAGE,
-                    content=screenshot.get("ossPath"),
-                )
-                await self.workspace.add_artifact(image_artifact)
-                result.append(
-                    {
-                        "artifact_type": "IMAGE",
-                        "artifact_id": image_artifact.artifact_id,
-                    }
-                )
-
-        # web_pages
-        if metadata.get("artifact_type") == "WEB_PAGES":
-            search_output = SearchOutput.from_dict(metadata.get("artifact_data"))
-            artifact_id = str(uuid.uuid4())
-            await self.workspace.create_artifact(
-                artifact_type=ArtifactType.WEB_PAGES,
-                artifact_id=artifact_id,
-                content=search_output,
-                metadata={
-                    "query": search_output.query,
-                },
-            )
-            result.append({"artifact_type": "WEB_PAGES", "artifact_id": artifact_id})
-        return result
