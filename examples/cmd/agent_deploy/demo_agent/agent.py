@@ -47,7 +47,7 @@ class AWorldAgent(BaseAWorldAgent):
 
         super_agent = Agent(
             conf=agent_config,
-            name="Demo Agent",
+            name="🙋🏻‍♂️ Demo Agent",
             system_prompt="You are a demo agent, you can query current time and fetch data from the internet. you must use search engine to get url, then fetch data from the url, don't use url don't exist.",
             mcp_config=mcp_config,
             mcp_servers=mcp_config.get("mcpServers", {}).keys(),
