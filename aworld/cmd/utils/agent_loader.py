@@ -49,6 +49,9 @@ def _list_agents() -> List[AgentModel]:
         logger.warning(f"Agents directory {agents_dir} does not exist")
         return []
 
+    if agents_dir not in sys.path:
+        sys.path.append(agents_dir)
+
     agents = []
     for agent_id in os.listdir(agents_dir):
         try:
@@ -109,26 +112,16 @@ def _list_agents() -> List[AgentModel]:
 
 def _get_agent_instance(agent_name):
     try:
-        agent_package_path = os.path.join(
-            os.getcwd(),
-            "agent_deploy",
-            agent_name,
+        agent_module = importlib.import_module(
+            name=f"{agent_name}.agent",
         )
-        agent_module_file = os.path.join(agent_package_path, "agent.py")
-
-        spec = importlib.util.spec_from_file_location(agent_name, agent_module_file)
-
-        if spec is None or spec.loader is None:
-            msg = f"Could not load spec for agent {agent_name} from {agent_module_file}"
-            logger.error(msg)
-            raise Exception(msg)
-
-        agent_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(agent_module)
     except Exception as e:
         msg = f"Error loading agent {agent_name}, cwd:{os.getcwd()}, sys.path:{sys.path}: {traceback.format_exc()}"
         logger.error(msg)
         raise Exception(msg)
 
-    agent = agent_module.AWorldAgent()
-    return agent
+    if hasattr(agent_module, "AWorldAgent"):
+        agent = agent_module.AWorldAgent()
+        return agent
+    else:
+        raise Exception(f"Agent {agent_name} does not have AWorldAgent class")
