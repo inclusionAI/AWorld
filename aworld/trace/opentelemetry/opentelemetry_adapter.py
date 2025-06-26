@@ -47,7 +47,7 @@ from aworld.utils.common import get_local_ip
 from .memory_storage import InMemorySpanExporter, InMemoryStorage
 from ..constants import ATTRIBUTES_MESSAGE_KEY
 from .export import FileSpanExporter, NoOpSpanExporter, SpanConsumerExporter
-from ..server import start_trace_server
+from ..server import set_trace_server
 
 
 class OTLPTraceProvider(TraceProvider):
@@ -367,9 +367,12 @@ def configure_otlp_provider(
             server_port = kwargs.get("server_port") or 7079
             if (server_enabled.lower() == "true"):
                 logger.info(f"Starting trace server on port {server_port}.")
-                start_trace_server(storage=storage, port=int(server_port))
+                set_trace_server(storage=storage, port=int(
+                    server_port), start_server=True)
             else:
                 logger.info("Trace server is not started.")
+                set_trace_server(storage=storage, port=int(
+                    server_port), start_server=False)
         else:
             span_exporter = _configure_otlp_exporter(
                 base_url=base_url, **kwargs)

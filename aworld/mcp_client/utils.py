@@ -6,15 +6,122 @@ from contextlib import AsyncExitStack
 import traceback
 
 import requests
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, TextContent, ImageContent
 
 from aworld.core.common import ActionResult
 
 from aworld.logs.util import logger
 from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio
+from aworld.tools import get_function_tools
 from aworld.utils.common import find_file
 
 MCP_SERVERS_CONFIG = {}
+
+def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
+    openai_tools = []
+    try:
+        if not sever_name:
+            return []
+        tool_server = get_function_tools(sever_name)
+        if not tool_server:
+            return []
+        tools  = tool_server.list_tools()
+        if not tools:
+            return []
+        for tool in tools:
+            required = []
+            properties = {}
+            if tool.inputSchema and tool.inputSchema.get("properties"):
+                required = tool.inputSchema.get("required", [])
+                _properties = tool.inputSchema["properties"]
+                for param_name, param_info in _properties.items():
+                    param_type = param_info.get("type") if param_info.get("type") != "str" and param_info.get(
+                        "type") is not None else "string"
+                    param_desc = param_info.get("description", "")
+                    if param_type == "array":
+                        # Handle array type parameters
+                        items_info = param_info.get("items", {})
+                        item_type = items_info.get("type", "string")
+
+                        # Process nested array type parameters
+                        if item_type == "array":
+                            nested_items = items_info.get("items", {})
+                            nested_type = nested_items.get("type", "string")
+
+                            # If the nested type is an object
+                            if nested_type == "object":
+                                properties[param_name] = {
+                                    "description": param_desc,
+                                    "type": param_type,
+                                    "items": {
+                                        "type": item_type,
+                                        "items": {
+                                            "type": nested_type,
+                                            "properties": nested_items.get("properties", {}),
+                                            "required": nested_items.get("required", [])
+                                        }
+                                    }
+                                }
+                            else:
+                                properties[param_name] = {
+                                    "description": param_desc,
+                                    "type": param_type,
+                                    "items": {
+                                        "type": item_type,
+                                        "items": {
+                                            "type": nested_type
+                                        }
+                                    }
+                                }
+                        # Process object type cases
+                        elif item_type == "object":
+                            properties[param_name] = {
+                                "description": param_desc,
+                                "type": param_type,
+                                "items": {
+                                    "type": item_type,
+                                    "properties": items_info.get("properties", {}),
+                                    "required": items_info.get("required", [])
+                                }
+                            }
+                        # Process basic type cases
+                        else:
+                            if item_type == "str":
+                                item_type = "string"
+                            properties[param_name] = {
+                                "description": param_desc,
+                                "type": param_type,
+                                "items": {
+                                    "type": item_type
+                                }
+                            }
+                    else:
+                        # Handle non-array type parameters
+                        properties[param_name] = {
+                            "description": param_desc,
+                            "type": param_type
+                        }
+
+            openai_function_schema = {
+                "name": f'mcp__{sever_name}__{tool.name}',
+                "description": tool.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                }
+            }
+            openai_tools.append({
+                "type": "function",
+                "function": openai_function_schema,
+            })
+        logging.info(f"✅ function_tool_server #({sever_name}) connected success，tools: {len(tools)}")
+
+    except Exception as e:
+        logging.warning(f"server_name-get_function_tool:{sever_name} translate failed: {e}")
+        return []
+    finally:
+        return openai_tools
 
 async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
     openai_tools = []
@@ -235,7 +342,6 @@ async def mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, 
     return openai_tools
 
 
-
 async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -247,6 +353,9 @@ async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Di
     openai_tools = []
     mcp_openai_tools = []
 
+    global MCP_SERVERS_CONFIG
+    MCP_SERVERS_CONFIG = mcp_config
+
     for server_name, server_config in mcp_servers_config.items():
         # Skip disabled servers
         if server_config.get("disabled", False):
@@ -254,7 +363,13 @@ async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Di
 
         if tools is None or server_name in tools:
             # Handle SSE server
-            if "api" == server_config.get("type", ""):
+            if "function_tool" == server_config.get("type", ""):
+                try:
+                    tmp_function_tool = get_function_tool(server_name)
+                    openai_tools.extend(tmp_function_tool)
+                except Exception as e:
+                    logging.warning(f"server_name:{server_name} translate failed: {e}")
+            elif "api" == server_config.get("type", ""):
                 api_result = requests.get(server_config["url"]+"/list_tools")
                 try:
                     if not api_result or not api_result.text:
@@ -342,6 +457,65 @@ async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Di
 
     return openai_tools
 
+async def call_function_tool(
+        server_name: str,
+        tool_name: str,
+        parameter: Dict[str, Any] = None,
+        mcp_config: Dict[str, Any] = None,
+) -> ActionResult:
+    """Specifically handle API type server calls
+
+    Args:
+        server_name: Server name
+        tool_name: Tool name
+        parameter: Parameters
+        mcp_config: MCP configuration
+
+    Returns:
+        ActionResult: Call result
+    """
+    action_result = ActionResult(
+        tool_name=server_name,
+        action_name=tool_name,
+        content="",
+        keep=True
+    )
+    try:
+        tool_server = get_function_tools(server_name)
+        if not tool_server:
+            return action_result
+        call_result_raw =tool_server.call_tool(tool_name, parameter)
+        if call_result_raw and call_result_raw.content:
+            if isinstance(call_result_raw.content[0], TextContent):
+                action_result = ActionResult(
+                    tool_name=server_name,
+                    action_name=tool_name,
+                    content=call_result_raw.content[0].text,
+                    keep=True,
+                    metadata=call_result_raw.content[0].model_extra.get(
+                        "metadata", {}
+                    ),
+                )
+            elif isinstance(call_result_raw.content[0], ImageContent):
+                action_result = ActionResult(
+                    tool_name=server_name,
+                    action_name=tool_name,
+                    content=f"data:image/jpeg;base64,{call_result_raw.content[0].data}",
+                    keep=True,
+                    metadata=call_result_raw.content[0].model_extra.get("metadata", {}),
+                )
+
+    except Exception as e:
+        logging.warning(f"call_function_tool ({server_name})({tool_name}) failed: {e}")
+        action_result = ActionResult(
+            tool_name=server_name,
+            action_name=tool_name,
+            content="",
+            keep=True
+        )
+
+    return action_result
+
 
 async def call_api(
         server_name: str,
@@ -404,7 +578,6 @@ async def call_api(
         )
 
     return action_result
-
 
 
 async def get_server_instance(server_name: str, mcp_config: Dict[str, Any] = None) -> Any:

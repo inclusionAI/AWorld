@@ -1,22 +1,26 @@
 import copy
 import json
+import aworld.trace.instrumentation.semconv as semconv
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.trace.base import Span
-from aworld.trace.instrumentation.openai.inout_parse import should_trace_prompts
+from aworld.trace.instrumentation.openai.inout_parse import should_trace_prompts, need_flatten_messages
 from aworld.logs.util import logger
 
 
 def parser_request_params(kwargs, instance: 'aworld.models.llm.LLMModel'):
     attributes = {
-        "llm.system": instance.provider_name,
-        "llm.model": instance.provider.model_name,
-        "llm.max_tokens": kwargs.get("max_tokens", ""),
-        "llm.temperature": kwargs.get("temperature", ""),
-        "llm.stop": str(kwargs.get("stop", "")),
-        "llm.frequency_penalty": kwargs.get("frequency_penalty", ""),
-        "llm.presence_penalty": kwargs.get("presence_penalty", ""),
-        "llm.user": kwargs.get("user", ""),
-        "llm.stream": kwargs.get("stream", "")
+        semconv.GEN_AI_SYSTEM: instance.provider_name,
+        semconv.GEN_AI_REQUEST_MODEL: instance.provider.model_name,
+        semconv.GEN_AI_REQUEST_MAX_TOKENS: kwargs.get("max_tokens", ""),
+        semconv.GEN_AI_REQUEST_TEMPERATURE: kwargs.get("temperature", ""),
+        semconv.GEN_AI_REQUEST_STOP_SEQUENCES: str(kwargs.get("stop", [])),
+        semconv.GEN_AI_REQUEST_FREQUENCY_PENALTY: kwargs.get("frequency_penalty", ""),
+        semconv.GEN_AI_REQUEST_PRESENCE_PENALTY: kwargs.get("presence_penalty", ""),
+        semconv.GEN_AI_REQUEST_USER: kwargs.get("user", ""),
+        semconv.GEN_AI_REQUEST_EXTRA_HEADERS: kwargs.get("extra_headers", ""),
+        semconv.GEN_AI_REQUEST_STREAMING: kwargs.get("stream", ""),
+        semconv.GEN_AI_REQUEST_TOP_P: kwargs.get("top_p", ""),
+        semconv.GEN_AI_OPERATION_NAME: "chat"
     }
     return attributes
 
@@ -28,48 +32,20 @@ async def handle_request(span: Span, kwargs, instance):
         attributes = parser_request_params(kwargs, instance)
         if should_trace_prompts():
             messages = kwargs.get("messages")
-            for i, msg in enumerate(messages):
-                prefix = f"llm.prompts.{i}"
-                attributes.update({f"{prefix}.role": msg.get("role")})
-                if msg.get("content"):
-                    content = copy.deepcopy(msg.get("content"))
-                    content = json.dumps(content, ensure_ascii=False)
-                    attributes.update({f"{prefix}.content": content})
-                if msg.get("tool_call_id"):
-                    attributes.update({
-                        f"{prefix}.tool_call_id": msg.get("tool_call_id")})
-                tool_calls = msg.get("tool_calls")
-                # logger.info(f"input tool_calls={tool_calls}")
-                if tool_calls:
-                    for i, tool_call in enumerate(tool_calls):
-                        if isinstance(tool_call, dict):
-                            function = tool_call.get('function')
-                            attributes.update({
-                                f"{prefix}.tool_calls.{i}.id": tool_call.get("id")})
-                            attributes.update({
-                                f"{prefix}.tool_calls.{i}.name": function.get("name")})
-                            attributes.update({
-                                f"{prefix}.tool_calls.{i}.arguments": function.get("arguments")})
-                        elif isinstance(tool_call, ToolCall):
-                            function = tool_call.function
-                            attributes.update({
-                                f"{prefix}.tool_calls.{i}.id": tool_call.id})
-                            attributes.update({
-                                f"{prefix}.tool_calls.{i}.name": function.name})
-                            attributes.update({
-                                f"{prefix}.tool_calls.{i}.arguments": function.arguments})
-
+            if need_flatten_messages():
+                attributes.update(parse_request_message(messages))
+            else:
+                attributes.update({
+                    semconv.GEN_AI_PROMPT: covert_to_jsonstr(messages)
+                })
         tools = kwargs.get("tools")
         if tools:
-            for i, tool in enumerate(tools):
-                prefix = f"llm.prompts.tools.{i}"
-                if isinstance(tool, dict):
-                    tool_type = tool.get("type")
-                    attributes.update({
-                        f"{prefix}.type": tool_type})
-                    if tool.get(tool_type):
-                        attributes.update({
-                            f"{prefix}.name": tool.get(tool_type).get("name")})
+            if need_flatten_messages():
+                attributes.update(parse_prompt_tools(tools))
+            else:
+                attributes.update({
+                    semconv.GEN_AI_PROMPT_TOOLS: covert_to_jsonstr(tools)
+                })
 
         filterd_attri = {k: v for k, v in attributes.items()
                          if (v and v is not "")}
@@ -84,11 +60,10 @@ def get_common_attributes_from_response(instance: 'LLMModel', is_async, is_strea
     if is_streaming:
         operation = "astream_completion" if is_async else "stream_completion"
     return {
-        "llm.system": instance.provider_name,
-        "llm.response.model": instance.provider.model_name,
-        "llm.operation.name": operation,
-        "llm.server.address": instance.provider.base_url,
-        "llm.stream": is_streaming,
+        semconv.GEN_AI_SYSTEM: instance.provider_name,
+        semconv.GEN_AI_RESPONSE_MODEL: instance.provider.model_name,
+        semconv.GEN_AI_METHOD_NAME: operation,
+        semconv.GEN_AI_SERVER_ADDRESS: instance.provider.base_url
     }
 
 
@@ -106,21 +81,97 @@ def record_stream_token_usage(complete_response, request_kwargs) -> tuple[int, i
     return (0, 0)
 
 
+def parse_request_message(messages):
+    '''
+    flatten request message to attributes
+    '''
+    attributes = {}
+    for i, msg in enumerate(messages):
+        prefix = f"{semconv.GEN_AI_PROMPT}.{i}"
+        attributes.update({f"{prefix}.role": msg.get("role")})
+        if msg.get("content"):
+            content = copy.deepcopy(msg.get("content"))
+            content = json.dumps(content, ensure_ascii=False)
+            attributes.update({f"{prefix}.content": content})
+        if msg.get("tool_call_id"):
+            attributes.update({
+                f"{prefix}.tool_call_id": msg.get("tool_call_id")})
+        tool_calls = msg.get("tool_calls")
+        # logger.info(f"input tool_calls={tool_calls}")
+        if tool_calls:
+            for i, tool_call in enumerate(tool_calls):
+                if isinstance(tool_call, dict):
+                    function = tool_call.get('function')
+                    attributes.update({
+                        f"{prefix}.tool_calls.{i}.id": tool_call.get("id")})
+                    attributes.update({
+                        f"{prefix}.tool_calls.{i}.name": function.get("name")})
+                    attributes.update({
+                        f"{prefix}.tool_calls.{i}.arguments": function.get("arguments")})
+                elif isinstance(tool_call, ToolCall):
+                    function = tool_call.function
+                    attributes.update({
+                        f"{prefix}.tool_calls.{i}.id": tool_call.id})
+                    attributes.update({
+                        f"{prefix}.tool_calls.{i}.name": function.name})
+                    attributes.update({
+                        f"{prefix}.tool_calls.{i}.arguments": function.arguments})
+    return attributes
+
+
+def parse_prompt_tools(tools):
+    attributes = {}
+    for i, tool in enumerate(tools):
+        prefix = f"{semconv.GEN_AI_PROMPT_TOOLS}.{i}"
+        if isinstance(tool, dict):
+            tool_type = tool.get("type")
+            attributes.update({
+                f"{prefix}.type": tool_type})
+            if tool.get(tool_type):
+                attributes.update({
+                    f"{prefix}.name": tool.get(tool_type).get("name")})
+    return attributes
+
+
 def parse_response_message(tool_calls) -> dict:
     attributes = {}
-    prefix = "llm.completions"
+    prefix = semconv.GEN_AI_COMPLETION_TOOL_CALLS
     if tool_calls:
-        for i, tool_call in enumerate(tool_calls):
-            function = tool_call.get("function")
-            attributes.update(
-                {f"{prefix}.tool_calls.{i}.id": tool_call.get("id")})
-            attributes.update(
-                {f"{prefix}.tool_calls.{i}.name": function.get("name")})
-            attributes.update(
-                {f"{prefix}.tool_calls.{i}.arguments": function.get("arguments")})
+        if need_flatten_messages():
+            for i, tool_call in enumerate(tool_calls):
+                function = tool_call.get("function")
+                attributes.update(
+                    {f"{prefix}.{i}.id": tool_call.get("id")})
+                attributes.update(
+                    {f"{prefix}.{i}.name": function.get("name")})
+                attributes.update(
+                    {f"{prefix}.{i}.arguments": function.get("arguments")})
+        else:
+            attributes.update({
+                prefix: covert_to_jsonstr(tool_calls)
+            })
     return attributes
 
 
 def response_to_dic(response: ModelResponse) -> dict:
     logger.info(f"completion response= {response}")
     return response.to_dict()
+
+
+def covert_to_jsonstr(obj):
+    return json.dumps(_to_serializable(obj), ensure_ascii=False)
+
+
+def _to_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_to_serializable(i) for i in obj]
+    elif hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    elif hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    elif hasattr(obj, "dict"):
+        return obj.dict()
+    else:
+        return obj

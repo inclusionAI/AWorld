@@ -13,17 +13,24 @@ class TraceServer:
         self._port = port
         self._thread = None
         self.app = None
+        self._started = False
 
     def start(self):
         self._thread = threading.Thread(target=self._start_app, daemon=True)
         self._thread.start()
+        self._started = True
 
     def join(self):
         if self._thread:
             self._thread.join()
+        else:
+            raise Exception("Trace server not started.")
 
     def get_storage(self):
         return self._storage
+
+    def is_started(self):
+        return self._started
 
     def _start_app(self):
         app = setup_routes(self._storage)
@@ -31,12 +38,14 @@ class TraceServer:
         app.run(port=self._port)
 
 
-def start_trace_server(storage, port: int = 8000):
+def set_trace_server(storage, port: int = 7079, start_server=False):
     global GLOBAL_TRACE_SERVER
-    if GLOBAL_TRACE_SERVER is not None:
-        setup_routes(storage)
-    else:
+    if GLOBAL_TRACE_SERVER is None:
         GLOBAL_TRACE_SERVER = TraceServer(storage, port)
+    if GLOBAL_TRACE_SERVER.is_started():
+        setup_routes(storage)
+        return
+    if start_server:
         GLOBAL_TRACE_SERVER.start()
 
 
