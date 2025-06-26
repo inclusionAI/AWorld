@@ -24,7 +24,7 @@ from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.memory import MemoryItem, MemoryConfig
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.logs.util import logger, color_log, Color, trace_logger
-from aworld.mcp_client.utils import mcp_tool_desc_transform
+from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform
 from aworld.memory.main import MemoryFactory
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse, ToolCall
@@ -108,7 +108,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def _mcp_is_tool(self):
         """Description of mcp servers are tools."""
         try:
-            return sync_exec(mcp_tool_desc_transform, self.mcp_servers, self.mcp_config)
+            return sync_exec(sandbox_mcp_tool_desc_transform, self.mcp_servers, self.mcp_config)
         except Exception as e:
             logger.error(f"mcp_is_tool error: {traceback.format_exc()}")
             return []
@@ -140,7 +140,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             mcp_tools = await sand_box.mcpservers.list_tools()
             self.tools.extend(mcp_tools)
         else:
-            self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
+            self.tools.extend(await sandbox_mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
         # load to agent context
         self.agent_context.set_tools(self.tools)
 

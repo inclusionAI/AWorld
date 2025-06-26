@@ -9,7 +9,6 @@ import requests
 from mcp.server import FastMCP
 
 from aworld.logs.util import logger
-from aworld.mcp_client.utils import mcp_tool_desc_transform
 
 
 def get_mime_type(file_path: str, default_mime: Optional[str] = None) -> str:
@@ -190,5 +189,5 @@ def get_file_from_source(
 
 
 if __name__ == "__main__":
-    mcp_tools = asyncio.run(mcp_tool_desc_transform(["search"]))
+    mcp_tools = []
     logger.success(f"{json.dumps(mcp_tools, indent=4, ensure_ascii=False)}")
