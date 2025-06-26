@@ -432,6 +432,8 @@ class OpenAIProvider(LLMProviderBase):
         }
 
         supported_params = [
+            "max_completion_tokens", "meta_data", "modalities", "n", "parallel_tool_calls",
+            "prediction", "reasoning_effort", "service_tier", "stream_options", "web_search_options"
             "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
             "presence_penalty", "response_format", "seed", "stream", "top_p",
             "user", "function_call", "functions", "tools", "tool_choice"

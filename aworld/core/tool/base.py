@@ -54,6 +54,9 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    def _init_context(self, context: Context):
+        self.context = context
+
     def name(self):
         """Tool unique name."""
         return self._name
@@ -67,22 +70,12 @@ class BaseTool(Generic[AgentInput, ToolInput]):
                   **kwargs) -> Message:
         pass
 
-    def postprocess(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
-                    action: ToolInput,
-                    **kwargs):
-        pass
-
-    def step(self, action: ToolInput, **kwargs) -> Message:
-        tool_id_mapping = {}
-        if isinstance(action, list):
-            for act in action:
-                tool_id = act.tool_id
-                tool_name = act.tool_name
-                tool_id_mapping[tool_id] = tool_name
+    def step(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        action = message.payload
         self.pre_step(action, **kwargs)
         res = self.do_step(action, **kwargs)
-        final_res = self.post_step(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
-        self.postprocess(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        final_res = self.post_step(res, action, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -143,6 +136,9 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    def _init_context(self, context: Context):
+        self.context = context
+
     def name(self):
         """Tool unique name."""
         return self._name
@@ -156,22 +152,12 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
                         **kwargs) -> Message:
         pass
 
-    async def postprocess(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
-                          action: ToolInput,
-                          **kwargs):
-        pass
-
-    async def step(self, action: ToolInput, **kwargs) -> Message:
-        tool_id_mapping = {}
-        if isinstance(action, list):
-            for act in action:
-                tool_id = act.tool_id
-                tool_name = act.tool_name
-                tool_id_mapping[tool_id] = tool_name
+    async def step(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        action = message.payload
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
-        final_res = await self.post_step(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
-        await self.postprocess(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        final_res = await self.post_step(res, action, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -204,16 +190,12 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
 
 
 class Tool(BaseTool[Observation, List[ActionModel]]):
-    def post_step(self,
-                  step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
-                  action: List[ActionModel],
-                  **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
-        if not step_res:
-            raise Exception(f'{self.name()} no observation has been made.')
-
-        step_res[0].from_agent_name = action[0].agent_name
+    def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
+                    action: ToolInput,
+                    **kwargs):
+        if not step_res or not action:
+            return
         for idx, act in enumerate(action):
-            step_res[0].action_result[idx].tool_id = act.tool_id
             if eventbus is not None:
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
@@ -231,21 +213,29 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                     category=Constants.OUTPUT,
                     payload=tool_output,
                     sender=self.name(),
-                    session_id=Context.instance().session_id
+                    session_id=self.context.session_id if self.context else "",
+                    headers={"context": self.context}
                 )
                 sync_exec(eventbus.publish, tool_output_message)
-        return AgentMessage(payload=step_res,
-                            caller=action[0].agent_name,
-                            sender=self.name(),
-                            receiver=action[0].agent_name,
-                            session_id=Context.instance().session_id)
 
+    def step(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        action = message.payload
+        tool_id_mapping = {}
+        for act in action:
+            tool_id = act.tool_id
+            tool_name = act.tool_name
+            tool_id_mapping[tool_id] = tool_name
+        self.pre_step(action, **kwargs)
+        res = self.do_step(action, **kwargs)
+        final_res = self.post_step(res, action, **kwargs)
+        self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        return final_res
 
-class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
-    async def post_step(self,
-                        step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
-                        action: List[ActionModel],
-                        **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
+    def post_step(self,
+                  step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                  action: List[ActionModel],
+                  **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
 
@@ -257,11 +247,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                             caller=action[0].agent_name,
                             sender=self.name(),
                             receiver=action[0].agent_name,
-                            session_id=Context.instance().session_id)
+                            session_id=kwargs.get("session_id", ""),
+                            headers={"context": self.context})
 
-    async def postprocess(self,
-                          step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
-                          action: List[ActionModel],
+
+class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
+    async def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
+                          action: ToolInput,
                           **kwargs):
         for idx, act in enumerate(action):
             # send tool results output
@@ -282,7 +274,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     category=Constants.OUTPUT,
                     payload=tool_output,
                     sender=self.name(),
-                    session_id=Context.instance().session_id
+                    session_id=self.context.session_id if self.context else "",
+                    headers={"context": self.context}
                 )
                 await eventbus.publish(tool_output_message)
 
@@ -293,8 +286,41 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                                          step_num=0),
                 sender=self.name(),
                 receiver=action[0].agent_name,
-                session_id=Context.instance().session_id
+                session_id=self.context.session_id if self.context else "",
+                headers={"context": self.context}
             ))
+
+    async def step(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        action = message.payload
+        tool_id_mapping = {}
+        for act in action:
+            tool_id = act.tool_id
+            tool_name = act.tool_name
+            tool_id_mapping[tool_id] = tool_name
+        await self.pre_step(action, **kwargs)
+        res = await self.do_step(action, **kwargs)
+        final_res = await self.post_step(res, action, **kwargs)
+        await self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        return final_res
+
+    async def post_step(self,
+                        step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                        action: List[ActionModel],
+                        **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
+        if not step_res:
+            raise Exception(f'{self.name()} no observation has been made.')
+
+        step_res[0].from_agent_name = action[0].agent_name
+        for idx, act in enumerate(action):
+            step_res[0].action_result[idx].tool_id = act.tool_id
+
+        return AgentMessage(payload=step_res,
+                            caller=action[0].agent_name,
+                            sender=self.name(),
+                            receiver=action[0].agent_name,
+                            session_id=self.context.session_id if self.context else "",
+                            headers={"context": self.context})
 
 
 class ToolsManager(Factory):

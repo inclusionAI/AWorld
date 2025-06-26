@@ -414,7 +414,7 @@ class AgentGraph:
         from aworld.agents.loop_llm_agent import LoopableAgent
 
         if agent not in self.ordered_agents:
-            raise RuntimeError(f"{agent.name()} not in swarm, agent instance {agent}.")
+            raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
 
         loop_agent: LoopableAgent = convert_to_subclass(agent, LoopableAgent)
         # loop_agent: LoopableAgent = type(LoopableAgent)(agent)
@@ -440,10 +440,10 @@ class AgentGraph:
         from aworld.agents.parallel_llm_agent import ParallelizableAgent
 
         if agent not in self.ordered_agents:
-            raise RuntimeError(f"{agent.name()} not in swarm, agent instance {agent}.")
+            raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
         for agent in agents:
             if agent not in self.ordered_agents:
-                raise RuntimeError(f"{agent.name()} not in swarm, agent instance {agent}.")
+                raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
 
         parallel_agent: ParallelizableAgent = convert_to_subclass(agent, ParallelizableAgent)
         parallel_agent.agents = agents
@@ -581,5 +581,5 @@ class HandoffBuilder(TopologyBuilder):
             agent_graph.add_edge(pair[0], pair[1])
 
             # explicitly set handoffs in the agent
-            pair[0].handoffs.append(pair[1].name())
+            pair[0].handoffs.append(pair[1].id())
         return agent_graph

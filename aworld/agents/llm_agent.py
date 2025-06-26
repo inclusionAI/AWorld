@@ -69,10 +69,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.resp_parse_func = resp_parse_func if resp_parse_func else self.response_parse
         self.history_messages = kwargs.get("history_messages") if kwargs.get("history_messages") else 100
         self.use_tools_in_prompt = kwargs.get('use_tools_in_prompt', conf.use_tools_in_prompt)
-        # init agent context
-        context_rule = kwargs.get("context_rule") if kwargs.get("context_rule") else conf.context_rule
-        # update agent context by llm_agent
-        self.init_agent_context(conf.llm_config, context_rule)
+        self.context_rule = kwargs.get("context_rule") if kwargs.get("context_rule") else conf.context_rule
         self.tools_instances = {}
         self.tools_conf = {}
 
@@ -429,14 +426,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                            caller=caller,
                            sender=self.id(),
                            receiver=actions[0].tool_name,
-                           session_id=self.context.session_id,
-                           category=Constants.AGENT)
+                           session_id=self.context.session_id if self.context else "",
+                           category=Constants.AGENT,
+                           headers={"context": self.context})
         else:
             return ToolMessage(payload=actions,
                                caller=caller,
                                sender=self.id(),
                                receiver=actions[0].tool_name,
-                               session_id=self.context.session_id)
+                               session_id=self.context.session_id if self.context else "",
+                               headers={"context": self.context})
 
     def post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
         return self._agent_result(
@@ -835,7 +834,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=output,
                         sender=self.id(),
-                        session_id=Context.instance().session_id
+                        session_id=self.context.session_id if self.context else "",
+                        headers={"context": self.context}
                     )
                     await eventbus.publish(output_message)
                 elif not self.event_driven and outputs:
@@ -857,7 +857,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=llm_response,
                         sender=self.id(),
-                        session_id=Context.instance().session_id
+                        session_id=self.context.session_id if self.context else "",
+                        headers={"context": self.context}
                     ))
                 elif not self.event_driven and outputs:
                     outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
@@ -944,8 +945,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             ))
         return [ActionModel(agent_name=self.id(), policy_info=observation.content)]
 
-    def init_agent_context(self, llm_config: ModelConfig, context_rule: ContextRuleConfig):
+    def _init_context(self, context: Context):
+        super()._init_context(context)
         # Generate default configuration when context_rule is empty
+        llm_config = self.conf.llm_config
+        context_rule = self.context_rule
         if context_rule is None:
             context_rule = ContextRuleConfig(
                 optimization_config=OptimizationConfig(
@@ -956,7 +960,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     enabled=False  # Compression disabled by default
                 )
             )
-        
         self.agent_context.set_model_config(llm_config)
         self.agent_context.context_rule = context_rule
         self.agent_context.system_prompt = self.system_prompt
@@ -1000,7 +1003,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     category="agent_hook",
                     payload=None,
                     sender=self.id(),
-                    session_id=context.session_id if hasattr(context, 'session_id') else None
+                    session_id=context.session_id if hasattr(context, 'session_id') else None,
+                    headers={"context": self.context}
                 )
                 
                 # Execute hook

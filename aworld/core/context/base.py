@@ -60,7 +60,6 @@ class Context(InheritanceSingleton):
         }
         self.state = ContextState()
         # TODO swarm topology
-        # TODO EventManager
         # TODO workspace
 
         self._swarm = None

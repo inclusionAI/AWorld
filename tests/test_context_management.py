@@ -60,14 +60,7 @@ class TestPostLLMHook(PostLLMCallHook):
 class TestContextManagement(BaseTest):
     """Test cases for Context Management system based on README examples"""
 
-    def __init__(self, config_type: str = "1"):
-        """Set up test fixtures"""
-        self.mock_model_name = "qwen/qwen3-1.7b"
-        self.mock_base_url = "http://localhost:1234/v1"
-        self.mock_api_key = "lm-studio"
-        os.environ["LLM_API_KEY"] = self.mock_api_key
-        os.environ["LLM_BASE_URL"] = self.mock_base_url
-        os.environ["LLM_MODEL_NAME"] = self.mock_model_name
+    def init_agent(self, config_type: str = "1", context_rule: ContextRuleConfig = None):
         if config_type == "1":
             conf=AgentConfig(
                 llm_model_name=self.mock_model_name,
@@ -82,12 +75,23 @@ class TestContextManagement(BaseTest):
                     llm_api_key=self.mock_api_key
                 )
             )
-        self.mock_agent = Agent(
+        return Agent(
             conf=conf,
             name="my_agent",
             system_prompt="You are a helpful assistant.",
             agent_prompt="You are a helpful assistant.",
+            context_rule=context_rule
         )
+
+    def __init__(self, config_type: str = "1"):
+        """Set up test fixtures"""
+        self.mock_model_name = "qwen/qwen3-1.7b"
+        self.mock_base_url = "http://localhost:1234/v1"
+        self.mock_api_key = "lm-studio"
+        os.environ["LLM_API_KEY"] = self.mock_api_key
+        os.environ["LLM_BASE_URL"] = self.mock_base_url
+        os.environ["LLM_MODEL_NAME"] = self.mock_model_name
+        self.mock_agent = self.init_agent(config_type)
 
     class _AssertRaisesContext:
         """Context manager for assertRaises"""
@@ -147,7 +151,7 @@ class TestContextManagement(BaseTest):
     def test_custom_context_configuration(self):
         """Test custom context configuration (README Configuration example)"""
         # Create custom context rules
-        context_rule = ContextRuleConfig(
+        self.mock_agent = self.init_agent(context_rule=ContextRuleConfig(
             optimization_config=OptimizationConfig(
                 enabled=True,
                 max_token_budget_ratio=0.00015
@@ -161,9 +165,7 @@ class TestContextManagement(BaseTest):
                     llm_api_key=self.mock_api_key,
                 )
             )
-        )
-        origin_rule = self.mock_agent.agent_context.context_rule
-        self.mock_agent.update_context_rule(context_rule)
+        ))
         
         response = self.run_agent(input= """describe What is an agent in details""")
         self.assertIsNotNone(response.answer)
@@ -171,7 +173,6 @@ class TestContextManagement(BaseTest):
         # Test configuration values
         self.assertTrue(self.mock_agent.agent_context.context_rule.optimization_config.enabled)
         self.assertTrue(self.mock_agent.agent_context.context_rule.llm_compression_config.enabled)
-        self.mock_agent.update_context_rule(origin_rule)
 
     def test_state_management_and_recovery(self):
         class StateModifyAgent(Agent):
