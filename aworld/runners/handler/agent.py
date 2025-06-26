@@ -40,6 +40,7 @@ class DefaultAgentHandler(AgentHandler):
                     self.agent_calls.append(message.sender)
             return
 
+        headers = {"context": message.context}
         session_id = message.session_id
         data = message.payload
         if not data:
@@ -50,14 +51,16 @@ class DefaultAgentHandler(AgentHandler):
                                                        step_num=0,
                                                        data="no data to process."),
                 sender=self.name(),
-                session_id=session_id
+                session_id=session_id,
+                headers=headers
             )
             yield Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg="no data to process.", data=data, stop=True),
                 sender=self.name(),
                 session_id=session_id,
-                topic=TopicType.ERROR
+                topic=TopicType.ERROR,
+                headers=headers
             )
             return
 
@@ -72,7 +75,8 @@ class DefaultAgentHandler(AgentHandler):
                     payload=data.content,
                     sender=data.observer,
                     session_id=session_id,
-                    topic=TopicType.FINISHED
+                    topic=TopicType.FINISHED,
+                    headers=headers
                 )
                 logger.info(f"agent handler send finished message: {msg}")
                 yield msg
@@ -88,7 +92,8 @@ class DefaultAgentHandler(AgentHandler):
                         payload=data.content,
                         sender=agent.id(),
                         session_id=session_id,
-                        topic=TopicType.FINISHED
+                        topic=TopicType.FINISHED,
+                        headers=headers
                     )
                     logger.info(f"agent handler send finished message: {msg}")
                     yield msg
@@ -98,7 +103,8 @@ class DefaultAgentHandler(AgentHandler):
                         payload=Observation(content=data.content),
                         sender=agent.id(),
                         session_id=session_id,
-                        receiver=self.swarm.communicate_agent.id()
+                        receiver=self.swarm.communicate_agent.id(),
+                        headers=headers
                     )
                     logger.info(f"agent handler send agent message: {msg}")
                     yield msg
@@ -123,14 +129,16 @@ class DefaultAgentHandler(AgentHandler):
                                                            step_num=0,
                                                            data="action not a ActionModel."),
                     sender=self.name(),
-                    session_id=session_id
+                    session_id=session_id,
+                    headers=headers
                 )
                 msg = Message(
                     category=Constants.TASK,
                     payload=TaskItem(msg="action not a ActionModel.", data=data, stop=True),
                     sender=self.name(),
                     session_id=session_id,
-                    topic=TopicType.ERROR
+                    topic=TopicType.ERROR,
+                    headers=headers
                 )
                 logger.info(f"agent handler send task message: {msg}")
                 yield msg
@@ -151,6 +159,7 @@ class DefaultAgentHandler(AgentHandler):
                 sender=self.name(),
                 session_id=session_id,
                 receiver=DefaultToolHandler.name(),
+                headers=headers
             )
             logger.info(f"agent handler send tool message: {msg}")
             yield msg
@@ -161,7 +170,8 @@ class DefaultAgentHandler(AgentHandler):
                                                          step_num=0),
                 sender=self.name(),
                 receiver=agents[0].tool_name,
-                session_id=session_id
+                session_id=session_id,
+                headers=headers
             )
 
         for agent in agents:
@@ -179,6 +189,7 @@ class DefaultAgentHandler(AgentHandler):
                 yield event
             return
 
+        headers = {"context": message.context}
         session_id = message.session_id
         cur_agent = self.swarm.agents.get(agent_name)
         if not cur_agent or not agent:
@@ -189,7 +200,8 @@ class DefaultAgentHandler(AgentHandler):
                                  stop=True),
                 sender=self.name(),
                 session_id=session_id,
-                topic=TopicType.ERROR
+                topic=TopicType.ERROR,
+                headers=headers
             )
             return
 
@@ -209,7 +221,8 @@ class DefaultAgentHandler(AgentHandler):
                               payload=TaskItem(msg=f"Can not handoffs {agent_name} agent ", data=observation),
                               sender=self.name(),
                               session_id=session_id,
-                              topic=TopicType.RERUN)
+                              topic=TopicType.RERUN,
+                              headers=headers)
             return
 
         yield Message(
@@ -219,6 +232,7 @@ class DefaultAgentHandler(AgentHandler):
             sender=action.agent_name,
             session_id=session_id,
             receiver=action.tool_name,
+            headers=headers
         )
 
     async def _stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
@@ -234,6 +248,7 @@ class DefaultAgentHandler(AgentHandler):
                     yield event
 
     async def _sequence_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
+        headers = {"context": message.context}
         session_id = message.session_id
         agent = self.swarm.agents.get(action.agent_name)
         ordered_agents = self.swarm.ordered_agents
@@ -245,6 +260,7 @@ class DefaultAgentHandler(AgentHandler):
                 sender=self.name(),
                 session_id=session_id,
                 topic=TopicType.ERROR,
+                headers=headers
             )
             return
 
@@ -263,7 +279,8 @@ class DefaultAgentHandler(AgentHandler):
                     payload=Observation(content=action.policy_info),
                     sender=agent.id(),
                     session_id=session_id,
-                    receiver=receiver
+                    receiver=receiver,
+                    headers=headers
                 )
             else:
                 logger.info(f"execute loop {self.swarm.cur_step}.")
@@ -272,7 +289,8 @@ class DefaultAgentHandler(AgentHandler):
                     payload=action.policy_info,
                     sender=agent.id(),
                     session_id=session_id,
-                    topic=TopicType.FINISHED
+                    topic=TopicType.FINISHED,
+                    headers=headers
                 )
             return
 
@@ -291,10 +309,12 @@ class DefaultAgentHandler(AgentHandler):
             payload=Observation(content=action.policy_info),
             sender=agent.id(),
             session_id=session_id,
-            receiver=receiver
+            receiver=receiver,
+            headers=headers
         )
 
     async def _loop_sequence_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
+        headers = {"context": message.context}
         session_id = message.session_id
         agent = self.swarm.agents.get(action.agent_name)
         idx = next((i for i, x in enumerate(self.swarm.ordered_agents) if x == agent), -1)
@@ -306,6 +326,7 @@ class DefaultAgentHandler(AgentHandler):
                 sender=self.name(),
                 session_id=session_id,
                 topic=TopicType.ERROR,
+                headers=headers
             )
             return
         if idx == len(self.swarm.ordered_agents) - 1:
@@ -324,7 +345,8 @@ class DefaultAgentHandler(AgentHandler):
                         payload=Observation(content=action.policy_info),
                         sender=agent.id(),
                         session_id=session_id,
-                        receiver=receiver
+                        receiver=receiver,
+                        headers=headers
                     )
                 else:
                     # means the task finished
@@ -333,7 +355,8 @@ class DefaultAgentHandler(AgentHandler):
                         payload=action.policy_info,
                         sender=agent.id(),
                         session_id=session_id,
-                        topic=TopicType.FINISHED
+                        topic=TopicType.FINISHED,
+                        headers=headers
                     )
             else:
                 self.swarm.cur_step += 1
@@ -343,7 +366,8 @@ class DefaultAgentHandler(AgentHandler):
                     payload='',
                     sender=agent.id(),
                     session_id=session_id,
-                    topic=TopicType.START
+                    topic=TopicType.START,
+                    headers=headers
                 )
             return
 
@@ -361,10 +385,12 @@ class DefaultAgentHandler(AgentHandler):
             payload=Observation(content=action.policy_info),
             sender=agent.name(),
             session_id=session_id,
-            receiver=receiver
+            receiver=receiver,
+            headers=headers
         )
 
     async def _social_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
+        headers = {"context": message.context}
         agent = self.swarm.agents.get(action.agent_name)
         caller = message.caller
         session_id = message.session_id
@@ -376,7 +402,8 @@ class DefaultAgentHandler(AgentHandler):
                 payload=action.policy_info,
                 sender=agent.id(),
                 session_id=session_id,
-                topic=TopicType.FINISHED
+                topic=TopicType.FINISHED,
+                headers=headers
             )
             return
 
@@ -387,7 +414,8 @@ class DefaultAgentHandler(AgentHandler):
                     payload=action.policy_info,
                     sender=agent.id(),
                     session_id=session_id,
-                    topic=TopicType.FINISHED
+                    topic=TopicType.FINISHED,
+                    headers=headers
                 )
             else:
                 self.swarm.cur_step += 1
@@ -397,7 +425,8 @@ class DefaultAgentHandler(AgentHandler):
                     payload=Observation(content=action.policy_info),
                     sender=agent.id(),
                     session_id=session_id,
-                    receiver=self.swarm.communicate_agent.id()
+                    receiver=self.swarm.communicate_agent.id(),
+                    headers=headers
                 )
         else:
             idx = 0
@@ -413,5 +442,6 @@ class DefaultAgentHandler(AgentHandler):
                 payload=Observation(content=action.policy_info),
                 sender=agent.id(),
                 session_id=session_id,
-                receiver=caller
+                receiver=caller,
+                headers=headers
             )

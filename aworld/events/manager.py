@@ -10,10 +10,10 @@ from aworld.core.event.base import Constants, Message
 class EventManager:
     """The event manager is now used to build an event bus instance and store the messages recently."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, context: Context, **kwargs):
         # use conf to build event bus instance
         self.event_bus = eventbus
-        self.context = Context.instance()
+        self.context = context
         # Record events in memory for re-consume.
         self.messages: Dict[str, List[Message]] = {'None': []}
         self.max_len = kwargs.get('max_len', 1000)
@@ -66,7 +66,7 @@ class EventManager:
         return await self.event_bus.consume(msg)
 
     async def done(self):
-        await self.event_bus.done(self.context.session_id)
+        await self.event_bus.done(self.context.task_id)
 
     async def register(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         await self.event_bus.subscribe(event_type, topic, handler, **kwargs)

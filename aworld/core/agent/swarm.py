@@ -564,10 +564,11 @@ class WorkflowBuilder(TopologyBuilder):
         """Built as workflow, different forms will be internally constructed as different agents,
         such as ParallelizableAgent, SerialableAgent or LoopableAgent.
 
+        # TODO: Complete Graph Definition Capability
         Returns:
             Direct topology diagram (AgentGraph) of the agents.
         """
-        agent_graph = AgentGraph(agents={}, ordered_agents=[], predecessor={}, successor={})
+        agent_graph = AgentGraph()
         valid_agents = []
         for agent in self.agent_list:
             if isinstance(agent, BaseAgent):
