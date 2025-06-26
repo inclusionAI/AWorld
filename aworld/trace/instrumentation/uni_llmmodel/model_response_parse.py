@@ -36,19 +36,16 @@ async def handle_request(span: Span, kwargs, instance):
                 attributes.update(parse_request_message(messages))
             else:
                 attributes.update({
-                    semconv.GEN_AI_PROMPT: str(messages)
+                    semconv.GEN_AI_PROMPT: covert_to_jsonstr(messages)
                 })
         tools = kwargs.get("tools")
         if tools:
-            for i, tool in enumerate(tools):
-                prefix = f"{semconv.GEN_AI_PROMPT}.tools.{i}"
-                if isinstance(tool, dict):
-                    tool_type = tool.get("type")
-                    attributes.update({
-                        f"{prefix}.type": tool_type})
-                    if tool.get(tool_type):
-                        attributes.update({
-                            f"{prefix}.name": tool.get(tool_type).get("name")})
+            if need_flatten_messages():
+                attributes.update(parse_prompt_tools(tools))
+            else:
+                attributes.update({
+                    semconv.GEN_AI_PROMPT_TOOLS: covert_to_jsonstr(tools)
+                })
 
         filterd_attri = {k: v for k, v in attributes.items()
                          if (v and v is not "")}
@@ -122,21 +119,59 @@ def parse_request_message(messages):
     return attributes
 
 
+def parse_prompt_tools(tools):
+    attributes = {}
+    for i, tool in enumerate(tools):
+        prefix = f"{semconv.GEN_AI_PROMPT_TOOLS}.{i}"
+        if isinstance(tool, dict):
+            tool_type = tool.get("type")
+            attributes.update({
+                f"{prefix}.type": tool_type})
+            if tool.get(tool_type):
+                attributes.update({
+                    f"{prefix}.name": tool.get(tool_type).get("name")})
+    return attributes
+
+
 def parse_response_message(tool_calls) -> dict:
     attributes = {}
-    prefix = semconv.GEN_AI_COMPLETION
+    prefix = semconv.GEN_AI_COMPLETION_TOOL_CALLS
     if tool_calls:
-        for i, tool_call in enumerate(tool_calls):
-            function = tool_call.get("function")
-            attributes.update(
-                {f"{prefix}.tool_calls.{i}.id": tool_call.get("id")})
-            attributes.update(
-                {f"{prefix}.tool_calls.{i}.name": function.get("name")})
-            attributes.update(
-                {f"{prefix}.tool_calls.{i}.arguments": function.get("arguments")})
+        if need_flatten_messages():
+            for i, tool_call in enumerate(tool_calls):
+                function = tool_call.get("function")
+                attributes.update(
+                    {f"{prefix}.{i}.id": tool_call.get("id")})
+                attributes.update(
+                    {f"{prefix}.{i}.name": function.get("name")})
+                attributes.update(
+                    {f"{prefix}.{i}.arguments": function.get("arguments")})
+        else:
+            attributes.update({
+                prefix: covert_to_jsonstr(tool_calls)
+            })
     return attributes
 
 
 def response_to_dic(response: ModelResponse) -> dict:
     logger.info(f"completion response= {response}")
     return response.to_dict()
+
+
+def covert_to_jsonstr(obj):
+    return json.dumps(_to_serializable(obj), ensure_ascii=False)
+
+
+def _to_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_to_serializable(i) for i in obj]
+    elif hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    elif hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    elif hasattr(obj, "dict"):
+        return obj.dict()
+    else:
+        return obj

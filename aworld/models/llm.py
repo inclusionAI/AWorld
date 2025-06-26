@@ -8,7 +8,6 @@ from typing import (
 from aworld.config import ConfigDict
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.logs.util import logger
-import aworld.trace as trace
 
 from aworld.core.llm_provider_base import LLMProviderBase
 from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
@@ -414,9 +413,12 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
     if (llm_provider == "chatopenai"):
         from langchain_openai import ChatOpenAI
 
-        base_url = kwargs.get("base_url") or (conf.llm_base_url if conf_contains_key(conf, "llm_base_url") else None)
-        model_name = kwargs.get("model_name") or (conf.llm_model_name if conf_contains_key(conf, "llm_model_name") else None)
-        api_key = kwargs.get("api_key") or (conf.llm_api_key if conf_contains_key(conf, "llm_api_key") else None)
+        base_url = kwargs.get("base_url") or (
+            conf.llm_base_url if conf_contains_key(conf, "llm_base_url") else None)
+        model_name = kwargs.get("model_name") or (
+            conf.llm_model_name if conf_contains_key(conf, "llm_model_name") else None)
+        api_key = kwargs.get("api_key") or (
+            conf.llm_api_key if conf_contains_key(conf, "llm_api_key") else None)
 
         return ChatOpenAI(
             model=model_name,
@@ -452,23 +454,22 @@ def call_llm_model(
     Returns:
         Model response or response generator.
     """
-    with trace.span(llm_model.provider.model_name, run_type=trace.RunType.LLM) as llm_span:
-        if stream:
-            return llm_model.stream_completion(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                **kwargs
-            )
-        else:
-            return llm_model.completion(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                **kwargs
-            )
+    if stream:
+        return llm_model.stream_completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            **kwargs
+        )
+    else:
+        return llm_model.completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            **kwargs
+        )
 
 
 async def acall_llm_model(
@@ -494,14 +495,14 @@ async def acall_llm_model(
     Returns:
         Model response or response generator.
     """
-    async with trace.span(llm_model.provider.model_name, run_type=trace.RunType.LLM) as llm_span:
-        return await llm_model.acompletion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            **kwargs
-        )
+    return await llm_model.acompletion(
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stop=stop,
+        **kwargs
+    )
+
 
 async def acall_llm_model_stream(
         llm_model: LLMModel,
@@ -511,15 +512,14 @@ async def acall_llm_model_stream(
         stop: List[str] = None,
         **kwargs
 ) -> AsyncGenerator[ModelResponse, None]:
-    async with trace.span(llm_model.provider.model_name, run_type=trace.RunType.LLM) as llm_span:
-        async for chunk in llm_model.astream_completion(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                **kwargs
-        ):
-            yield chunk
+    async for chunk in llm_model.astream_completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            **kwargs
+    ):
+        yield chunk
 
 
 def speech_to_text(

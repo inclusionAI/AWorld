@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import json
-from typing import Dict, List, Any, Callable, Optional
+from typing import Dict, List, Any, Callable, Optional, Tuple
 
 from aworld.agents.parallel_llm_agent import ParallelizableAgent
 from aworld.agents.serial_llm_agent import SerialableAgent
@@ -264,14 +264,26 @@ class EdgeInfo:
 
 class AgentGraph:
     """The agent's graph is a directed graph, and can update the topology at runtime."""
-    ordered_agents: List[BaseAgent] = []
-    agents: Dict[str, BaseAgent] = {}
-    # The direct predecessor of the agent
-    predecessor: Dict[str, Dict[str, EdgeInfo]] = {}
-    # The direct successor of the agent
-    successor: Dict[str, Dict[str, EdgeInfo]] = {}
 
-    def topological_sequence(self):
+    def __init__(self,
+                 ordered_agents: List[BaseAgent] = [],
+                 agents: Dict[str, BaseAgent] = {},
+                 predecessor: Dict[str, Dict[str, EdgeInfo]] = {},
+                 successor: Dict[str, Dict[str, EdgeInfo]] = {}):
+        """Agent graph init.
+
+        Args:
+            ordered_agents: Order of agents.
+            agents: Agent nodes.
+            predecessor: The direct predecessor of the agent.
+            successor: The direct successor of the agent.
+        """
+        self.ordered_agents = ordered_agents
+        self.agents = agents
+        self.predecessor = predecessor
+        self.successor = successor
+
+    def topological_sequence(self) -> Tuple[List[BaseAgent], bool]:
         """Obtain the agent sequence of topology, and be able to determine whether the topology has cycle during the process.
 
         Returns:
@@ -356,11 +368,11 @@ class AgentGraph:
         if right_agent and right_agent.id() not in self.agents:
             raise RuntimeError(f"{right_agent.id()} not in agents node.")
 
-        if left_agent not in self.successor:
+        if left_agent.id() not in self.successor:
             self.successor[left_agent.id()] = {}
             self.predecessor[left_agent.id()] = {}
 
-        if right_agent not in self.successor:
+        if right_agent.id() not in self.successor:
             self.successor[right_agent.id()] = {}
             self.predecessor[right_agent.id()] = {}
 
@@ -375,11 +387,13 @@ class AgentGraph:
             left_agent: As the agent node of the predecessor node.
             right_agent: As the agent node of the successor node.
         """
-        del self.successor[left_agent.id()][right_agent.id()]
-        del self.predecessor[right_agent.id()][left_agent.id()]
+        if left_agent.id() in self.successor and right_agent.id() in self.successor[left_agent.id()]:
+            del self.successor[left_agent.id()][right_agent.id()]
+        if right_agent.id() in self.predecessor and left_agent.id() in self.successor[right_agent.id()]:
+            del self.predecessor[right_agent.id()][left_agent.id()]
 
     def in_degree(self) -> Dict[str, int]:
-        """In degree of the agent  is the number of agents pointing to the agent."""
+        """In degree of the agent is the number of agents pointing to the agent."""
         in_degree = {}
         for k, _ in self.agents.items():
             agents = self.predecessor[k]
@@ -474,16 +488,16 @@ class TopologyBuilder:
 
     @staticmethod
     def register_agent(agent: BaseAgent):
-        if agent.name() not in AgentFactory:
-            AgentFactory._cls[agent.name()] = agent.__class__
-            AgentFactory._desc[agent.name()] = agent.desc()
-            AgentFactory._agent_conf[agent.name()] = agent.conf
-            AgentFactory._agent_instance[agent.name()] = agent
+        if agent.id() not in AgentFactory:
+            AgentFactory._cls[agent.id()] = agent.__class__
+            AgentFactory._desc[agent.id()] = agent.desc()
+            AgentFactory._agent_conf[agent.id()] = agent.conf
+            AgentFactory._agent_instance[agent.id()] = agent
         else:
-            if agent.name() not in AgentFactory._agent_instance:
-                AgentFactory._agent_instance[agent.name()] = agent
+            if agent.id() not in AgentFactory._agent_instance:
+                AgentFactory._agent_instance[agent.id()] = agent
             if agent.desc():
-                AgentFactory._desc[agent.name()] = agent.desc()
+                AgentFactory._desc[agent.id()] = agent.desc()
 
 
 class WorkflowBuilder(TopologyBuilder):
