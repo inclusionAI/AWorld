@@ -2,7 +2,8 @@ import logging
 import json
 from typing_extensions import Optional, List, Dict, Any
 
-from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server
+from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
+    call_function_tool
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
@@ -82,6 +83,19 @@ class McpServers:
                 if self.mcp_config and self.mcp_config.get("mcpServers"):
                     server_config = self.mcp_config.get("mcpServers").get(server_name, {})
                     server_type = server_config.get("type", "")
+
+                if server_type == "function_tool":
+                    try:
+                        call_result = await call_function_tool(
+                            server_name, tool_name, parameter, self.mcp_config
+                        )
+                        results.append(call_result)
+
+                        self._update_metadata(result_key, call_result, operation_info)
+                    except Exception as e:
+                        logging.warning(f"Error calling function_tool tool: {e}")
+                        self._update_metadata(result_key, {"error": str(e)}, operation_info)
+                    continue
 
                 # For API type servers, use call_api function directly
                 if server_type == "api":
