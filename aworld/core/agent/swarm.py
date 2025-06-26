@@ -264,12 +264,24 @@ class EdgeInfo:
 
 class AgentGraph:
     """The agent's graph is a directed graph, and can update the topology at runtime."""
-    ordered_agents: List[BaseAgent] = []
-    agents: Dict[str, BaseAgent] = {}
-    # The direct predecessor of the agent
-    predecessor: Dict[str, Dict[str, EdgeInfo]] = {}
-    # The direct successor of the agent
-    successor: Dict[str, Dict[str, EdgeInfo]] = {}
+
+    def __init__(self,
+                 ordered_agents: List[BaseAgent] = [],
+                 agents: Dict[str, BaseAgent] = {},
+                 predecessor: Dict[str, Dict[str, EdgeInfo]] = {},
+                 successor: Dict[str, Dict[str, EdgeInfo]] = {}):
+        """Agent graph init.
+
+        Args:
+            ordered_agents: Order of agents.
+            agents: Agent nodes.
+            predecessor: The direct predecessor of the agent.
+            successor: The direct successor of the agent.
+        """
+        self.ordered_agents = ordered_agents
+        self.agents = agents
+        self.predecessor = predecessor
+        self.successor = successor
 
     def topological_sequence(self) -> Tuple[List[BaseAgent], bool]:
         """Obtain the agent sequence of topology, and be able to determine whether the topology has cycle during the process.
