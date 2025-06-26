@@ -71,6 +71,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
                  name: str,
                  desc: str = None,
+                 agent_id: str = None,
                  *,
                  tool_names: List[str] = [],
                  agent_names: List[str] = [],
@@ -108,7 +109,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._name = name if name else convert_to_snake(self.__class__.__name__)
         self._desc = desc if desc else self._name
         # Unique flag based agent name
-        self._id = f"{self._name}__uuid{uuid.uuid1().hex[0:6]}uuid"
+        self._id = agent_id if agent_id else f"{self._name}__uuid{uuid.uuid1().hex[0:6]}uuid"
         self.task = None
         # An agent can use the tool list
         self.tool_names: List[str] = tool_names

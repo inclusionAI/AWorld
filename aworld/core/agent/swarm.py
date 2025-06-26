@@ -52,7 +52,7 @@ class Swarm(object):
         if builder_cls:
             self.builder = new_instance(builder_cls, self)
         else:
-            self.builder = BUILD_CLS.get(self.build_type)(self.agent_list, register_agents)
+            self.builder = BUILD_CLS.get(self.build_type)(self.agent_list, register_agents, max_steps)
 
         self.agent_graph: AgentGraph = None
 
@@ -252,6 +252,55 @@ class Swarm(object):
     @finished.setter
     def finished(self, finished):
         self._finished = finished
+
+
+class WorkflowSwarm(Swarm):
+    def __init__(self,
+                 *args,  # agent
+                 root_agent: BaseAgent = None,
+                 max_steps: int = 0,
+                 register_agents: List[BaseAgent] = [],
+                 builder_cls: str = None,
+                 event_driven: bool = True):
+        super().__init__(*args,
+                         root_agent=root_agent,
+                         max_steps=max_steps,
+                         register_agents=register_agents,
+                         build_type=GraphBuildType.WORKFLOW,
+                         builder_cls=builder_cls,
+                         event_driven=event_driven)
+
+
+class TeamSwarm(Swarm):
+    def __init__(self,
+                 *args,  # agent
+                 root_agent: BaseAgent = None,
+                 max_steps: int = 0,
+                 register_agents: List[BaseAgent] = [],
+                 builder_cls: str = None,
+                 event_driven: bool = True):
+        super().__init__(*args,
+                         root_agent=root_agent,
+                         max_steps=max_steps,
+                         register_agents=register_agents,
+                         build_type=GraphBuildType.TEAM,
+                         builder_cls=builder_cls,
+                         event_driven=event_driven)
+
+
+class HandoffSwarm(Swarm):
+    def __init__(self,
+                 *args,  # agent
+                 max_steps: int = 0,
+                 register_agents: List[BaseAgent] = [],
+                 builder_cls: str = None,
+                 event_driven: bool = True):
+        super().__init__(*args,
+                         max_steps=max_steps,
+                         register_agents=register_agents,
+                         build_type=GraphBuildType.HANDOFF,
+                         builder_cls=builder_cls,
+                         event_driven=event_driven)
 
 
 class EdgeInfo:
@@ -461,8 +510,9 @@ class TopologyBuilder:
     """Multi-agent topology base builder."""
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, agent_list: List[BaseAgent], register_agents: List[BaseAgent] = []):
+    def __init__(self, agent_list: List[BaseAgent], register_agents: List[BaseAgent] = [], max_steps: int = 0):
         self.agent_list = agent_list
+        self.max_steps = max_steps
 
         for agent in register_agents:
             TopologyBuilder.register_agent(agent)
@@ -492,10 +542,10 @@ class WorkflowBuilder(TopologyBuilder):
     Examples:
     >>> agent1 = Agent(name='agent1'); agent2 = Agent(name='agent2'); agent3 = Agent(name='agent3')
     >>> agent4 = Agent(name='agent4'); agent5 = Agent(name='agent5'); agent6 = Agent(name='agent6')
-    >>> Swarm(agent1, (agent2, agent3), [agent4, agent5], agent6)
+    >>> Swarm(agent1, [agent2, agent3], (agent2, agent4), (agent3, agent5), agent6)
 
-    The meaning of the topology is that after agent1 completes execution, agent2 and agent3 are executed sequentially,
-    then agent4 and agent5 are executed in parallel, and agent6 is executed after completion.
+    The meaning of the topology is that after agent1 completes execution, agent2 and agent3 are executed in parallel,
+    then agent4 and agent5 are executed sequentially after agent2 and agent3, and agent6 is executed after completion.
     """
 
     def build(self):
@@ -582,14 +632,14 @@ class HandoffBuilder(TopologyBuilder):
             agent_graph.add_edge(pair[0], pair[1])
 
             # explicitly set handoffs in the agent
-            pair[0].handoffs.append(pair[1].name())
+            pair[0].handoffs.append(pair[1].id())
         return agent_graph
 
 
 class TeamBuilder(TopologyBuilder):
     """Team mechanism requires a leadership agent, and other agents follow its command.
     If there is interaction between agents other than the leadership agent, they need to explicitly
-    set `agent_names` themselves.
+    set `agent_names` themselves or use a tuple with two agents.
 
     Team builder supported form of single agent, tuple of paired agents, and agent list, similar to workflow.
     Examples:
@@ -597,8 +647,8 @@ class TeamBuilder(TopologyBuilder):
     >>> agent4 = Agent(name='agent4'); agent5 = Agent(name='agent5'); agent6 = Agent(name='agent6')
     >>> Swarm(agent1, agent2, agent3, (agent4, agent5), agent6, build_type=GraphBuildType.TEAM)
 
-    The topology means that agent1 is the leader agent, agent4 and agent5 are executed sequentially and
-    defined as agent4_5, and agent2, agent3, agent6, agent4_5 are executors of agent1.
+    The topology means that agent1 is the leader agent, agent5 as a tool of agent4,
+    and agent2, agent3, agent6, agent4 are executors of agent1.
 
     Using the `root_agent` parameter, will obtain the same topology as above.
     >>> Swarm(agent2, agent3, (agent4, agent5), agent6, root_agent=agent1, build_type=GraphBuildType.TEAM)
@@ -609,29 +659,45 @@ class TeamBuilder(TopologyBuilder):
         agent_graph = AgentGraph()
         valid_agents = []
         root_agent = self.agent_list[0]
+        root_agent.feedback_tool_result = True
+
+        single_agents = []
         for agent in self.agent_list[1:]:
             if isinstance(agent, BaseAgent):
-                valid_agents.append(agent)
+                single_agents.append(agent)
             elif isinstance(agent, tuple):
-                serial_agent = SerialableAgent(name="_".join(agent), conf=agent[0].conf, agents=list(agent))
-                valid_agents.append(serial_agent)
+                valid_agents.append(agent)
             elif isinstance(agent, list):
-                # list
+                # list of agent can parallel
                 parallel_agent = ParallelizableAgent(name="_".join(agent), conf=agent[0].conf, agents=agent)
-                valid_agents.append(parallel_agent)
+                single_agents.append(parallel_agent)
             else:
                 raise RuntimeError(f"agent in {agent} is not a agent or agent list, please check it.")
 
-        if not valid_agents:
+        if not valid_agents and not single_agents:
             raise RuntimeError(f"no valid agent in swarm to build execution graph.")
 
-        for agent in valid_agents:
+        for agent in single_agents:
             TopologyBuilder.register_agent(agent)
 
+            agent.feedback_tool_result = True
             agent_graph.add_node(agent)
             agent_graph.add_edge(root_agent, agent)
 
             root_agent.handoffs.append(agent.id())
+
+        for pair in valid_agents:
+            TopologyBuilder.register_agent(pair[0])
+            pair[0].feedback_tool_result = True
+            if len(pair) > 1:
+                TopologyBuilder.register_agent(pair[1])
+                pair[1].feedback_tool_result = True
+
+            agent_graph.add_node(pair[0])
+            agent_graph.add_edge(root_agent, pair[0])
+
+            root_agent.handoffs.append(pair[0].id())
+            pair[0].handoffs.append(pair[1].id())
         return agent_graph
 
 
