@@ -204,7 +204,7 @@ class AWorldAgentUI(AworldUI):
         emptyLine = "\n\n----\n\n"
         if output.status == "START":
             self.cur_agent_name = output.name
-            return f"\n\n # 🌐 {output.show_name} \n\n"
+            return f"\n\n # {output.show_name} \n\n"
         elif output.status == "FINISHED":
             return f"{emptyLine}"
         elif output.status == "FAILED":
