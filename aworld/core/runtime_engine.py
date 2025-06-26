@@ -84,15 +84,6 @@ class LocalRuntime(RuntimeEngine):
         return res
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
-        # opt of the one task process
-        if len(funcs) == 1 and self.conf.get("reuse_process", True):
-            func = funcs[0]
-            if inspect.iscoroutinefunction(func):
-                res = await func(*args, **kwargs)
-            else:
-                res = func(*args, **kwargs)
-            return {res.id: res}
-
         num_executor = self.conf.get('worker_num', os.cpu_count() - 1)
         num_process = len(funcs)
         if num_process > num_executor:
@@ -209,7 +200,7 @@ RUNTIME: Dict[str, RuntimeEngine] = {}
 
 def register(key, runtime_backend):
     if RUNTIME.get(key, None) is not None:
-        logger.warning("{} runtime backend already exists.".format(key))
+        logger.debug("{} runtime backend already exists, will reuse the client.".format(key))
         return
 
     RUNTIME[key] = runtime_backend
