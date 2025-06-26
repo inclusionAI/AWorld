@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import json
+from enum import Enum
 from typing import Dict, List, Any, Callable, Optional, Tuple
 
 from aworld.agents.parallel_llm_agent import ParallelizableAgent
@@ -14,8 +15,11 @@ from aworld.core.exceptions import AworldException
 from aworld.logs.util import logger
 from aworld.utils.common import new_instance, convert_to_subclass
 
-WORKFLOW = "workflow"
-HANDOFF = "handoff"
+
+class GraphBuildType(Enum):
+    WORKFLOW = "workflow"
+    HANDOFF = "handoff"
+    TEAM = "team"
 
 
 class Swarm(object):
@@ -30,8 +34,8 @@ class Swarm(object):
                  *args,  # agent
                  root_agent: BaseAgent = None,
                  max_steps: int = 0,
-                 workflow: bool = True,
                  register_agents: List[BaseAgent] = [],
+                 build_type: GraphBuildType = GraphBuildType.WORKFLOW,
                  builder_cls: str = None,
                  event_driven: bool = True):
         self._communicate_agent = root_agent
@@ -40,16 +44,15 @@ class Swarm(object):
         else:
             self.agent_list: List[BaseAgent] = list(args)
 
-        self.setting_execute_type(workflow)
+        self.setting_build_type(build_type)
         self.max_steps = max_steps
         self._cur_step = 0
         self._event_driven = event_driven
-        self.execute_type = WORKFLOW if self.workflow else HANDOFF
+        self.build_type = build_type.value
         if builder_cls:
             self.builder = new_instance(builder_cls, self)
         else:
-            self.builder = WorkflowBuilder(self.agent_list, register_agents) if self.workflow \
-                else HandoffBuilder(self.agent_list, register_agents)
+            self.builder = BUILD_CLS.get(self.build_type)(self.agent_list, register_agents)
 
         self.agent_graph: AgentGraph = None
 
@@ -59,26 +62,20 @@ class Swarm(object):
         self.initialized: bool = False
         self._finished: bool = False
 
-    def setting_execute_type(self, workflow):
-        self.workflow = workflow
-        all_single = True
-        has_single = False
-        has_pair = False
+    def setting_build_type(self, build_type: GraphBuildType):
+        all_pair = True
         for agent in self.agent_list:
             if isinstance(agent, (list, tuple)):
-                has_pair = True
-
-            if isinstance(agent, BaseAgent):
-                has_single = True
+                if len(agent) != 2:
+                    all_pair = False
+            elif isinstance(agent, BaseAgent):
+                all_pair = False
             else:
-                all_single = False
+                raise AworldException(f"Unknown type {type(agent)}, supported list, tuple, Agent only.")
 
-        if all_single:
-            self.workflow = True
-        else:
-            # ((a1, a2), a3, (a4, a5))
-            if has_single and has_pair:
-                raise AworldException("The definition of swarm is confusing.")
+        # team and workflow support mixing individual agents and agent lists.
+        if build_type == GraphBuildType.HANDOFF and not all_pair:
+            raise AworldException('The type of `handoff` requires all pairs to appear.')
 
         for agent in self.agent_list:
             if isinstance(agent, BaseAgent):
@@ -545,7 +542,7 @@ class HandoffBuilder(TopologyBuilder):
     Examples:
     >>> agent1 = Agent(name='agent1'); agent2 = Agent(name='agent2'); agent3 = Agent(name='agent3')
     >>> agent4 = Agent(name='agent4'); agent5 = Agent(name='agent5'); agent6 = Agent(name='agent6')
-    >>> Swarm((agent1, agent2), (agent1, agent3), (agent2, agent3), workflow=False)
+    >>> Swarm((agent1, agent2), (agent1, agent3), (agent2, agent3), build_type=GraphBuildType.HANDOFF)
     """
 
     def build(self):
@@ -587,3 +584,59 @@ class HandoffBuilder(TopologyBuilder):
             # explicitly set handoffs in the agent
             pair[0].handoffs.append(pair[1].name())
         return agent_graph
+
+
+class TeamBuilder(TopologyBuilder):
+    """Team mechanism requires a leadership agent, and other agents follow its command.
+    If there is interaction between agents other than the leadership agent, they need to explicitly
+    set `agent_names` themselves.
+
+    Team builder supported form of single agent, tuple of paired agents, and agent list, similar to workflow.
+    Examples:
+    >>> agent1 = Agent(name='agent1'); agent2 = Agent(name='agent2'); agent3 = Agent(name='agent3')
+    >>> agent4 = Agent(name='agent4'); agent5 = Agent(name='agent5'); agent6 = Agent(name='agent6')
+    >>> Swarm(agent1, agent2, agent3, (agent4, agent5), agent6, build_type=GraphBuildType.TEAM)
+
+    The topology means that agent1 is the leader agent, agent4 and agent5 are executed sequentially and
+    defined as agent4_5, and agent2, agent3, agent6, agent4_5 are executors of agent1.
+
+    Using the `root_agent` parameter, will obtain the same topology as above.
+    >>> Swarm(agent2, agent3, (agent4, agent5), agent6, root_agent=agent1, build_type=GraphBuildType.TEAM)
+    >>> Swarm(agent1, agent2, agent3, (agent4, agent5), agent6, root_agent=agent1, build_type=GraphBuildType.TEAM)
+    """
+
+    def build(self):
+        agent_graph = AgentGraph()
+        valid_agents = []
+        root_agent = self.agent_list[0]
+        for agent in self.agent_list[1:]:
+            if isinstance(agent, BaseAgent):
+                valid_agents.append(agent)
+            elif isinstance(agent, tuple):
+                serial_agent = SerialableAgent(name="_".join(agent), conf=agent[0].conf, agents=list(agent))
+                valid_agents.append(serial_agent)
+            elif isinstance(agent, list):
+                # list
+                parallel_agent = ParallelizableAgent(name="_".join(agent), conf=agent[0].conf, agents=agent)
+                valid_agents.append(parallel_agent)
+            else:
+                raise RuntimeError(f"agent in {agent} is not a agent or agent list, please check it.")
+
+        if not valid_agents:
+            raise RuntimeError(f"no valid agent in swarm to build execution graph.")
+
+        for agent in valid_agents:
+            TopologyBuilder.register_agent(agent)
+
+            agent_graph.add_node(agent)
+            agent_graph.add_edge(root_agent, agent)
+
+            root_agent.handoffs.append(agent.id())
+        return agent_graph
+
+
+BUILD_CLS = {
+    GraphBuildType.WORKFLOW.value: WorkflowBuilder,
+    GraphBuildType.HANDOFF.value: HandoffBuilder,
+    GraphBuildType.TEAM.value: TeamBuilder,
+}
