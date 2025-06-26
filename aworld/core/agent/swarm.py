@@ -476,16 +476,16 @@ class TopologyBuilder:
 
     @staticmethod
     def register_agent(agent: BaseAgent):
-        if agent.name() not in AgentFactory:
-            AgentFactory._cls[agent.name()] = agent.__class__
-            AgentFactory._desc[agent.name()] = agent.desc()
-            AgentFactory._agent_conf[agent.name()] = agent.conf
-            AgentFactory._agent_instance[agent.name()] = agent
+        if agent.id() not in AgentFactory:
+            AgentFactory._cls[agent.id()] = agent.__class__
+            AgentFactory._desc[agent.id()] = agent.desc()
+            AgentFactory._agent_conf[agent.id()] = agent.conf
+            AgentFactory._agent_instance[agent.id()] = agent
         else:
-            if agent.name() not in AgentFactory._agent_instance:
-                AgentFactory._agent_instance[agent.name()] = agent
+            if agent.id() not in AgentFactory._agent_instance:
+                AgentFactory._agent_instance[agent.id()] = agent
             if agent.desc():
-                AgentFactory._desc[agent.name()] = agent.desc()
+                AgentFactory._desc[agent.id()] = agent.desc()
 
 
 class WorkflowBuilder(TopologyBuilder):
