@@ -412,7 +412,7 @@ class AgentGraph:
         from aworld.agents.loop_llm_agent import LoopableAgent
 
         if agent not in self.ordered_agents:
-            raise RuntimeError(f"{agent.name()} not in swarm, agent instance {agent}.")
+            raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
 
         loop_agent: LoopableAgent = convert_to_subclass(agent, LoopableAgent)
         # loop_agent: LoopableAgent = type(LoopableAgent)(agent)
@@ -438,10 +438,10 @@ class AgentGraph:
         from aworld.agents.parallel_llm_agent import ParallelizableAgent
 
         if agent not in self.ordered_agents:
-            raise RuntimeError(f"{agent.name()} not in swarm, agent instance {agent}.")
+            raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
         for agent in agents:
             if agent not in self.ordered_agents:
-                raise RuntimeError(f"{agent.name()} not in swarm, agent instance {agent}.")
+                raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
 
         parallel_agent: ParallelizableAgent = convert_to_subclass(agent, ParallelizableAgent)
         parallel_agent.agents = agents
@@ -474,16 +474,16 @@ class TopologyBuilder:
 
     @staticmethod
     def register_agent(agent: BaseAgent):
-        if agent.name() not in AgentFactory:
-            AgentFactory._cls[agent.name()] = agent.__class__
-            AgentFactory._desc[agent.name()] = agent.desc()
-            AgentFactory._agent_conf[agent.name()] = agent.conf
-            AgentFactory._agent_instance[agent.name()] = agent
+        if agent.id() not in AgentFactory:
+            AgentFactory._cls[agent.id()] = agent.__class__
+            AgentFactory._desc[agent.id()] = agent.desc()
+            AgentFactory._agent_conf[agent.id()] = agent.conf
+            AgentFactory._agent_instance[agent.id()] = agent
         else:
-            if agent.name() not in AgentFactory._agent_instance:
-                AgentFactory._agent_instance[agent.name()] = agent
+            if agent.id() not in AgentFactory._agent_instance:
+                AgentFactory._agent_instance[agent.id()] = agent
             if agent.desc():
-                AgentFactory._desc[agent.name()] = agent.desc()
+                AgentFactory._desc[agent.id()] = agent.desc()
 
 
 class WorkflowBuilder(TopologyBuilder):
@@ -579,5 +579,5 @@ class HandoffBuilder(TopologyBuilder):
             agent_graph.add_edge(pair[0], pair[1])
 
             # explicitly set handoffs in the agent
-            pair[0].handoffs.append(pair[1].name())
+            pair[0].handoffs.append(pair[1].id())
         return agent_graph
