@@ -3,6 +3,7 @@
 import abc
 from typing import AsyncGenerator, Tuple
 
+from aworld.agents.loop_llm_agent import LoopableAgent
 from aworld.core.agent.base import is_agent
 from aworld.core.agent.swarm import HANDOFF
 from aworld.core.common import ActionModel, Observation, TaskItem
@@ -233,41 +234,27 @@ class DefaultAgentHandler(AgentHandler):
                 session_id=session_id,
                 topic=TopicType.ERROR,
             )
-        elif idx == len(self.swarm.ordered_agents) - 1:
-            logger.info(f"execute loop {self.swarm.cur_step}.")
-            yield Message(
-                category=Constants.TASK,
-                payload=action.policy_info,
-                sender=agent.id(),
-                session_id=session_id,
-                topic=TopicType.FINISHED
-            )
-        else:
-            # means the loop finished
-            yield Message(
-                category=Constants.AGENT,
-                payload=Observation(content=action.policy_info),
-                sender=agent.id(),
-                session_id=session_id,
-                receiver=self.swarm.ordered_agents[idx + 1].id()
-            )
+            return
 
-    async def _loop_sequence_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
-        session_id = message.session_id
-        agent = self.swarm.agents.get(action.agent_name)
-        idx = next((i for i, x in enumerate(self.swarm.ordered_agents) if x == agent), -1)
-        if idx == -1:
-            yield Message(
-                category=Constants.TASK,
-                payload=action,
-                sender=self.name(),
-                session_id=session_id,
-                topic=TopicType.ERROR,
-            )
-        elif idx == len(self.swarm.ordered_agents) - 1:
-            # supported sequence loop
-            if self.swarm.cur_step >= self.swarm.max_steps:
-                # means the task finished
+        # The last agent
+        if idx == len(self.swarm.ordered_agents) - 1:
+            receiver = None
+            # agent loop
+            if isinstance(agent, LoopableAgent):
+                agent.cur_run_times += 1
+                if not agent.finished:
+                    receiver = agent.goto
+
+            if receiver:
+                yield Message(
+                    category=Constants.AGENT,
+                    payload=Observation(content=action.policy_info),
+                    sender=agent.id(),
+                    session_id=session_id,
+                    receiver=receiver
+                )
+            else:
+                logger.info(f"execute loop {self.swarm.cur_step}.")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
@@ -275,6 +262,67 @@ class DefaultAgentHandler(AgentHandler):
                     session_id=session_id,
                     topic=TopicType.FINISHED
                 )
+            return
+
+            # loop agent type
+        if isinstance(agent, LoopableAgent):
+            agent.cur_run_times += 1
+            if agent.finished:
+                receiver = self.swarm.ordered_agents[idx + 1].id()
+            else:
+                receiver = agent.goto
+        else:
+            # means the loop finished
+            receiver = self.swarm.ordered_agents[idx + 1].id()
+        yield Message(
+            category=Constants.AGENT,
+            payload=Observation(content=action.policy_info),
+            sender=agent.id(),
+            session_id=session_id,
+            receiver=receiver
+        )
+
+    async def _loop_sequence_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
+        session_id = message.session_id
+        agent = self.swarm.agents.get(action.agent_name)
+        idx = next((i for i, x in enumerate(self.swarm.ordered_agents) if x == agent), -1)
+        if idx == -1:
+            # unknown agent, means something wrong
+            yield Message(
+                category=Constants.TASK,
+                payload=action,
+                sender=self.name(),
+                session_id=session_id,
+                topic=TopicType.ERROR,
+            )
+            return
+        if idx == len(self.swarm.ordered_agents) - 1:
+            # supported sequence loop
+            if self.swarm.cur_step >= self.swarm.max_steps:
+                receiver = None
+                # agent loop
+                if isinstance(agent, LoopableAgent):
+                    agent.cur_run_times += 1
+                    if not agent.finished:
+                        receiver = agent.goto
+
+                if receiver:
+                    yield Message(
+                        category=Constants.AGENT,
+                        payload=Observation(content=action.policy_info),
+                        sender=agent.id(),
+                        session_id=session_id,
+                        receiver=receiver
+                    )
+                else:
+                    # means the task finished
+                    yield Message(
+                        category=Constants.TASK,
+                        payload=action.policy_info,
+                        sender=agent.id(),
+                        session_id=session_id,
+                        topic=TopicType.FINISHED
+                    )
             else:
                 self.swarm.cur_step += 1
                 logger.info(f"execute loop {self.swarm.cur_step}.")
@@ -285,15 +333,24 @@ class DefaultAgentHandler(AgentHandler):
                     session_id=session_id,
                     topic=TopicType.START
                 )
+            return
+
+        if isinstance(agent, LoopableAgent):
+            agent.cur_run_times += 1
+            if agent.finished:
+                receiver = self.swarm.ordered_agents[idx + 1].id()
+            else:
+                receiver = agent.goto
         else:
             # means the loop finished
-            yield Message(
-                category=Constants.AGENT,
-                payload=Observation(content=action.policy_info),
-                sender=agent.id(),
-                session_id=session_id,
-                receiver=self.swarm.ordered_agents[idx + 1].id()
-            )
+            receiver = self.swarm.ordered_agents[idx + 1].id()
+        yield Message(
+            category=Constants.AGENT,
+            payload=Observation(content=action.policy_info),
+            sender=agent.name(),
+            session_id=session_id,
+            receiver=receiver
+        )
 
     async def _social_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
         agent = self.swarm.agents.get(action.agent_name)
