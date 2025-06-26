@@ -235,7 +235,6 @@ async def mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, 
     return openai_tools
 
 
-
 async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -246,6 +245,9 @@ async def sandbox_mcp_tool_desc_transform(tools: List[str] = None,mcp_config: Di
     server_configs = []
     openai_tools = []
     mcp_openai_tools = []
+
+    global MCP_SERVERS_CONFIG
+    MCP_SERVERS_CONFIG = mcp_config
 
     for server_name, server_config in mcp_servers_config.items():
         # Skip disabled servers
@@ -404,7 +406,6 @@ async def call_api(
         )
 
     return action_result
-
 
 
 async def get_server_instance(server_name: str, mcp_config: Dict[str, Any] = None) -> Any:
