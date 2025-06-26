@@ -21,7 +21,7 @@ class GymDemoAgent(Agent):
         import numpy as np
 
         env_id = observation.info.get('env_id')
-        if env_id != 'CartPole-v1':
+        if env_id and env_id != 'CartPole-v1':
             raise ValueError("Unsupported env")
 
         res = np.random.randint(2)

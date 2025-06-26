@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Callable
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
-from aworld.core.common import Observation, ActionModel
+from aworld.core.common import Observation, ActionModel, Config
 
 
 class ParallelizableAgent(Agent):
@@ -15,9 +15,17 @@ class ParallelizableAgent(Agent):
     >>> def agg(agent: ParallelizableAgent, res: Dict[str, List[ActionModel]]):
     >>>     ...
     """
-    agents: List[Agent] = []
-    # The function of aggregating the results of the parallel execution of agents.
-    aggregate_func: Callable[..., Any] = None
+
+    def __init__(self,
+                 conf: Config,
+                 resp_parse_func: Callable[..., Any] = None,
+                 agents: List[Agent] = [],
+                 aggregate_func: Callable[..., Any] = None,
+                 **kwargs):
+        super().__init__(conf=conf, resp_parse_func=resp_parse_func, **kwargs)
+        self.agents = agents
+        # The function of aggregating the results of the parallel execution of agents.
+        self.aggregate_func = aggregate_func
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
         from aworld.core.task import Task
@@ -25,10 +33,10 @@ class ParallelizableAgent(Agent):
 
         tasks = []
         for agent in self.agents:
-            tasks.append(Task(input=observation, agent=agent))
+            tasks.append(Task(input=observation, agent=agent, context=self.context))
 
         runners = await choose_runners(tasks)
-        res = await execute_runner(runners, RunConfig())
+        res = await execute_runner(runners, RunConfig(reuse_process=False))
 
         if self.aggregate_func:
             return self.aggregate_func(self, res)

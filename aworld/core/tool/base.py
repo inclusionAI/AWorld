@@ -251,11 +251,13 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
-                                session_id=Context.instance().session_id)
+                                session_id=self.context.session_id,
+                                headers={"context": self.context})
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
-                                session_id=Context.instance().session_id)
+                                session_id=self.context.session_id,
+                                headers={"context": self.context})
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
@@ -328,11 +330,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
-                                session_id=Context.instance().session_id)
+                                session_id=Context.instance().session_id,
+                                headers={"context": self.context})
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
-                                session_id=Context.instance().session_id)
+                                session_id=Context.instance().session_id,
+                                headers={"context": self.context})
 
 
 class ToolsManager(Factory):

@@ -85,7 +85,7 @@ class LocalRuntime(RuntimeEngine):
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         # opt of the one task process
-        if len(funcs) == 1:
+        if len(funcs) == 1 and self.conf.get("reuse_process", True):
             func = funcs[0]
             if inspect.iscoroutinefunction(func):
                 res = await func(*args, **kwargs)

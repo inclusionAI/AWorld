@@ -115,7 +115,7 @@ class DefaultAgentHandler(AgentHandler):
                                                         message):
                         yield event
                     return
-                logger.info(f"agent handler send message: {message}")
+                logger.info(f"agent handler send observation message: {message}")
                 yield message
             return
 
