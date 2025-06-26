@@ -427,13 +427,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                            sender=self.id(),
                            receiver=actions[0].tool_name,
                            session_id=self.context.session_id if self.context else "",
-                           category=Constants.AGENT)
+                           category=Constants.AGENT,
+                           headers={"context": self.context})
         else:
             return ToolMessage(payload=actions,
                                caller=caller,
                                sender=self.id(),
                                receiver=actions[0].tool_name,
-                               session_id=self.context.session_id if self.context else "")
+                               session_id=self.context.session_id if self.context else "",
+                               headers={"context": self.context})
 
     def post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
         return self._agent_result(
@@ -832,7 +834,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=output,
                         sender=self.id(),
-                        session_id=self.context.session_id if self.context else ""
+                        session_id=self.context.session_id if self.context else "",
+                        headers={"context": self.context}
                     )
                     await eventbus.publish(output_message)
                 elif not self.event_driven and outputs:
@@ -854,7 +857,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=llm_response,
                         sender=self.id(),
-                        session_id=self.context.session_id if self.context else ""
+                        session_id=self.context.session_id if self.context else "",
+                        headers={"context": self.context}
                     ))
                 elif not self.event_driven and outputs:
                     outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
@@ -999,7 +1003,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     category="agent_hook",
                     payload=None,
                     sender=self.id(),
-                    session_id=context.session_id if hasattr(context, 'session_id') else None
+                    session_id=context.session_id if hasattr(context, 'session_id') else None,
+                    headers={"context": self.context}
                 )
                 
                 # Execute hook
