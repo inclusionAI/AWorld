@@ -154,16 +154,18 @@ Here are the content:
 {task}
 """
 
-trace_sys_prompt = "You are a helpful trace agent."
+trace_sys_prompt = "You are a helpful trace summary agent."
 
 trace_prompt = """
-    Please act as a trace agent, Using the provided trace data, summarize the token usage of each agent,
-    whether the runotype attribute of span is an agent or a large model call: 
-        run_type=AGNET represents the agent, 
-        run_type=LLM represents the large model call.
-    The LLM call of a certain agent is represented as LLM span, which is a child span of that agent span
-
-    Here are the content: {task}
+    Please act as a trace summary agent, Using the provided trace data, summarize the main tasks completed by each agent and their token usage,
+    whether the run_type attribute of span is an agent or a large model call: 
+        run_type=AGNET and is_event=True represents the agent, 
+        run_type=LLM and is_event=False represents the large model call.
+        run_type=TOOL and is_event=True represents the tool call.
+    The tool call and large model call of agent are manifested as the nearest child span of AGENT Span.
+    Please output in the following standard JSON format without any additional explanatory text:
+    [{{"agent":"xxx","summary":"xxx","token_usage":"xxx","input_tokens":"xxx","output_tokens":"xxx","use_tools":["xxx"]}}]
+    Here are the trace data: {task}
     """
 
 

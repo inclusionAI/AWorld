@@ -2,6 +2,9 @@ import aworld.trace as trace
 import aworld.trace.instrumentation.semconv as semconv
 from aworld.trace.server import get_trace_server
 from aworld.trace.server.util import build_trace_tree
+import aworld.trace.instrumentation.semconv as semconv
+from aworld.trace.server import get_trace_server
+from aworld.trace.server.util import build_trace_tree
 from aworld.core.tool.base import Tool, AgentInput, ToolFactory
 from examples.tools.tool_action import GetTraceAction
 from aworld.tools.utils import build_observation
@@ -120,6 +123,7 @@ class TraceTool(Tool):
                 'root_span': [],
             }
         '''
+        trace_data = {"trace_id": trace_id, "root_span": []}
         try:
             if trace_id:
                 trace_server = get_trace_server()
@@ -129,11 +133,14 @@ class TraceTool(Tool):
                     trace_storage = trace_server.get_storage()
                     spans = trace_storage.get_all_spans(trace_id)
                     if spans:
-                        return self.proccess_trace(build_trace_tree(spans))
-            return {"trace_id": trace_id, "root_span": []}
+                        trace_data["root_span"] = build_trace_tree(spans)
+                        return self.proccess_trace(trace_data)
+            return trace_data
         except Exception as e:
-            logger.error(f"Error fetching trace data: {e}")
-            return {"trace_id": trace_id, "root_span": []}
+            import traceback
+            logger.error(
+                f"Error fetching trace data traceback: {traceback.format_exc()}")
+            return trace_data
 
     def proccess_trace(self, trace_data):
         root_spans = trace_data.get("root_span")
@@ -143,7 +150,8 @@ class TraceTool(Tool):
 
     def choose_attribute(self, span):
         include_attr = [semconv.GEN_AI_USAGE_INPUT_TOKENS,
-                        semconv.GEN_AI_USAGE_OUTPUT_TOKENS, semconv.GEN_AI_USAGE_TOTAL_TOKENS]
+                        semconv.GEN_AI_USAGE_OUTPUT_TOKENS, semconv.GEN_AI_USAGE_TOTAL_TOKENS,
+                        semconv.GEN_AI_COMPLETION_TOOL_CALLS]
         result_attributes = {}
         origin_attributes = span.get("attributes") or {}
         for key, value in origin_attributes.items():

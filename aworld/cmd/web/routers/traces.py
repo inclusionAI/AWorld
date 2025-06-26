@@ -1,8 +1,10 @@
 import logging
+import asyncio
 from fastapi import APIRouter
 from aworld.trace.server import get_trace_server
 from aworld.trace.constants import RunType
 from aworld.trace.server.util import build_trace_tree
+from aworld.cmd.utils.trace_summarize import summarize_trace
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ async def list_traces():
 
 @router.get("/agent")
 async def get_agent_trace(trace_id: str):
+    task = asyncio.create_task(summarize_trace(trace_id))
     storage = get_trace_server().get_storage()
     spans = storage.get_all_spans(trace_id)
     spans_dict = {span.span_id: span.dict() for span in spans}
@@ -58,6 +61,7 @@ async def get_agent_trace(trace_id: str):
 
     root_spans = [span for span in filtered_spans.values()
                   if span['parent_id'] is None or span['parent_id'] not in filtered_spans]
+    await task
     return {
         "data": root_spans
     }
