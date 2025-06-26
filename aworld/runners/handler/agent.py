@@ -5,7 +5,7 @@ from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
 from aworld.core.agent.base import is_agent
-from aworld.core.agent.swarm import HANDOFF
+from aworld.core.agent.swarm import GraphBuildType
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.logs.util import logger
@@ -210,7 +210,7 @@ class DefaultAgentHandler(AgentHandler):
         )
 
     async def _stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
-        if HANDOFF == self.swarm.execute_type:
+        if GraphBuildType.HANDOFF.value == self.swarm.build_type:
             async for event in self._social_stop_check(action, message):
                 yield event
         else:
