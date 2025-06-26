@@ -4,7 +4,7 @@ import abc
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
-from aworld.core.agent.base import is_agent
+from aworld.core.agent.base import is_agent, AgentFactory
 from aworld.core.agent.swarm import GraphBuildType
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType
@@ -32,6 +32,12 @@ class AgentHandler(DefaultHandler):
 class DefaultAgentHandler(AgentHandler):
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
         if message.category != Constants.AGENT:
+            if message.sender in self.swarm.agents and message.sender in AgentFactory:
+                if self.agent_calls:
+                    if self.agent_calls[-1] != message.sender:
+                        self.agent_calls.append(message.sender)
+                else:
+                    self.agent_calls.append(message.sender)
             return
 
         session_id = message.session_id
@@ -97,6 +103,12 @@ class DefaultAgentHandler(AgentHandler):
                     logger.info(f"agent handler send agent message: {msg}")
                     yield msg
             else:
+                if data.info.get('done'):
+                    agent_name = self.agent_calls[-1]
+                    async for event in self._stop_check(ActionModel(agent_name=agent_name, policy_info=data.content),
+                                                        message):
+                        yield event
+                    return
                 logger.info(f"agent handler send message: {message}")
                 yield message
             return

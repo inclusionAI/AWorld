@@ -10,7 +10,6 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 
 
-@AgentFactory.register(name=Agents.GYM.value, desc="gym agent")
 class GymDemoAgent(Agent):
     """Example agent"""
 
