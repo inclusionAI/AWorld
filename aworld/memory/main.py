@@ -20,27 +20,21 @@ class InMemoryMemoryStore(MemoryStore):
         return next((item for item in self.memory_items if item.id == memory_id), None)
 
     def get_first(self, filters: dict = None) -> Optional[MemoryItem]:
-        """
-        Get the first memory item.
-        """
+        """Get the first memory item."""
         filtered_items = self.get_all(filters)
         if len(filtered_items) == 0:
             return None
         return filtered_items[0]
 
     def total_rounds(self, filters: dict = None) -> int:
-        """
-        Get the total number of rounds.
-        """
+        """Get the total number of rounds."""
         return len(self.get_all(filters))
 
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
-        """
-        Filter memory items based on filters.
-        """
+        """Filter memory items based on filters."""
         filtered_items = [item for item in self.memory_items if self._filter_memory_item(item, filters)]
         return filtered_items
-    
+
     def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None) -> bool:
         if memory_item.deleted:
             return False
@@ -123,23 +117,32 @@ class MemoryFactory:
         else:
             raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
 
+
 class Memory(MemoryBase):
 
     def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
         self.memory_store = memory_store
         self.config = config
-        self.default_llm_instance = get_llm_model(conf=ConfigDict({
-            "llm_model_name": os.getenv("MEM_LLM_MODEL_NAME") if os.getenv("MEM_LLM_MODEL_NAME") else os.getenv(
-                'LLM_MODEL_NAME'),
-            "llm_api_key": os.getenv("MEM_LLM_API_KEY") if os.getenv("MEM_LLM_API_KEY") else os.getenv('LLM_API_KEY'),
-            "llm_base_url": os.getenv("MEM_LLM_BASE_URL") if os.getenv("MEM_LLM_BASE_URL") else os.getenv('LLM_BASE_URL'),
-            "temperature": os.getenv("MEM_LLM_TEMPERATURE") if os.getenv("MEM_LLM_TEMPERATURE") else 1.0,
-            "streaming": 'False'
-        }))
+        self._llm_instance = None
+
+    @property
+    def default_llm_instance(self):
+        def get_env(key: str, default_key: str, default_val: object=None):
+            return os.getenv(key) if os.getenv(key) else os.getenv(default_key, default_val)
+
+        if not self._llm_instance:
+            self._llm_instance = get_llm_model(conf=ConfigDict({
+                "llm_model_name": get_env("MEM_LLM_MODEL_NAME", "LLM_MODEL_NAME"),
+                "llm_api_key": get_env("MEM_LLM_API_KEY", "LLM_MODEL_NAME") ,
+                "llm_base_url": get_env("MEM_LLM_BASE_URL", 'LLM_BASE_URL'),
+                "temperature": get_env("MEM_LLM_TEMPERATURE", "MEM_LLM_TEMPERATURE", 1.0),
+                "streaming": 'False'
+            }))
+        return self._llm_instance
 
     def _build_history_context(self, messages) -> str:
-        """
-        Build the history context string from a list of messages.
+        """Build the history context string from a list of messages.
+
         Args:
             messages: List of message objects with 'role', 'content', and optional 'tool_calls'.
         Returns:
@@ -147,12 +150,13 @@ class Memory(MemoryBase):
         """
         history_context = ""
         for item in messages:
-            history_context += f"\n\n{item['role']}: {item['content']}, {'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else '' }"
+            history_context += (f"\n\n{item['role']}: {item['content']}, "
+                                f"{'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else ''}")
         return history_context
 
     async def _call_llm_summary(self, summary_messages: list) -> str:
-        """
-        Call LLM to generate summary and log the process.
+        """Call LLM to generate summary and log the process.
+
         Args:
             summary_messages: List of messages to send to LLM.
         Returns:
@@ -164,12 +168,12 @@ class Memory(MemoryBase):
             messages=summary_messages,
             stream=False
         )
-        logger.info(f'🤔 [Summary] summary_content: result is {llm_response.content[:400]+"...truncated"} ')
+        logger.info(f'🤔 [Summary] summary_content: result is {llm_response.content[:400] + "...truncated"} ')
         return llm_response.content
 
     def _get_parsed_history_messages(self, history_items: list[MemoryItem]) -> list[dict]:
-        """
-        Get and format history messages for summary.
+        """Get and format history messages for summary.
+
         Args:
             history_items: list[MemoryItem]
         Returns:
@@ -199,11 +203,10 @@ class Memory(MemoryBase):
         return await self._call_llm_summary(summary_messages)
 
     async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
-        """
-        A tool for summarizing the conversation history.
-        """
+        """A tool for summarizing the conversation history."""
 
-        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]")
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, "
+                    f"last_rounds -> {last_rounds}]")
         history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
         if len(history_items) == 0:
             return ""
@@ -220,7 +223,8 @@ class Memory(MemoryBase):
         if self.config.enable_summary and len(to_be_summary.content) < self.config.summary_single_context_length:
             return to_be_summary.content
 
-        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]: to be summary content is {to_be_summary.content}")
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, "
+                    f"last_rounds -> {last_rounds}]: to be summary content is {to_be_summary.content}")
         history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
         if len(history_items) == 0:
             return ""
@@ -245,8 +249,7 @@ class Memory(MemoryBase):
 
 
 class InMemoryStorageMemory(Memory):
-
-    def __init__(self, memory_store: MemoryStore,  config: MemoryConfig, enable_summary: bool = True, **kwargs):
+    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, enable_summary: bool = True, **kwargs):
         super().__init__(memory_store=memory_store, config=config)
         self.summary = {}
         self.summary_rounds = self.config.summary_rounds
@@ -262,8 +265,7 @@ class InMemoryStorageMemory(Memory):
                 self._create_or_update_summary(total_rounds)
 
     def _create_or_update_summary(self, total_rounds: int):
-        """
-        Create or update summary based on current total rounds.
+        """Create or update summary based on current total rounds.
 
         Args:
             total_rounds (int): Total number of rounds.
@@ -306,8 +308,7 @@ class InMemoryStorageMemory(Memory):
             self.summary[range_key] = summary_item
 
     def _summarize_items(self, items: list[MemoryItem], summary_index: int) -> str:
-        """
-        Summarize a list of memory items.
+        """Summarize a list of memory items.
 
         Args:
             items (list[MemoryItem]): List of memory items to summarize.
@@ -333,8 +334,7 @@ class InMemoryStorageMemory(Memory):
         return self.memory_store.get_all()
 
     def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None) -> list[MemoryItem]:
-        """
-        Get last n memories.
+        """Get last n memories.
 
         Args:
             last_rounds (int): Number of memories to retrieve.

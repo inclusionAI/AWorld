@@ -30,7 +30,7 @@ async def choose_runners(tasks: List[Task]) -> List[Runner]:
             # user runner class in the framework
             if task.swarm:
                 task.swarm.event_driven = task.event_driven
-                task.swarm.reset(task.input)
+                # task.swarm.reset(task.input)
                 execute_type = task.swarm.execute_type
             else:
                 execute_type = WORKFLOW
