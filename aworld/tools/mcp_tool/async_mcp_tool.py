@@ -55,6 +55,7 @@ class McpTool(AsyncTool):
         terminated = kwargs.get("terminated", False)
         # todo sandbox
         agent = AgentFactory.agent_instance(actions[0].agent_name)
+        logger.warning(f"async_mcp_tool can not get agent,agent_name:{actions[0].agent_name}")
         task_id = Context.instance().task_id
         session_id = Context.instance().session_id
 
