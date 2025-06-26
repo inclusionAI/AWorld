@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import json
-from typing import Dict, List, Any, Callable, Optional
+from typing import Dict, List, Any, Callable, Optional, Tuple
 
 from aworld.agents.parallel_llm_agent import ParallelizableAgent
 from aworld.agents.serial_llm_agent import SerialableAgent
@@ -271,7 +271,7 @@ class AgentGraph:
     # The direct successor of the agent
     successor: Dict[str, Dict[str, EdgeInfo]] = {}
 
-    def topological_sequence(self):
+    def topological_sequence(self) -> Tuple[List[BaseAgent], bool]:
         """Obtain the agent sequence of topology, and be able to determine whether the topology has cycle during the process.
 
         Returns:
@@ -356,11 +356,11 @@ class AgentGraph:
         if right_agent and right_agent.id() not in self.agents:
             raise RuntimeError(f"{right_agent.id()} not in agents node.")
 
-        if left_agent not in self.successor:
+        if left_agent.id() not in self.successor:
             self.successor[left_agent.id()] = {}
             self.predecessor[left_agent.id()] = {}
 
-        if right_agent not in self.successor:
+        if right_agent.id() not in self.successor:
             self.successor[right_agent.id()] = {}
             self.predecessor[right_agent.id()] = {}
 
@@ -375,11 +375,13 @@ class AgentGraph:
             left_agent: As the agent node of the predecessor node.
             right_agent: As the agent node of the successor node.
         """
-        del self.successor[left_agent.id()][right_agent.id()]
-        del self.predecessor[right_agent.id()][left_agent.id()]
+        if left_agent.id() in self.successor and right_agent.id() in self.successor[left_agent.id()]:
+            del self.successor[left_agent.id()][right_agent.id()]
+        if right_agent.id() in self.predecessor and left_agent.id() in self.successor[right_agent.id()]:
+            del self.predecessor[right_agent.id()][left_agent.id()]
 
     def in_degree(self) -> Dict[str, int]:
-        """In degree of the agent  is the number of agents pointing to the agent."""
+        """In degree of the agent is the number of agents pointing to the agent."""
         in_degree = {}
         for k, _ in self.agents.items():
             agents = self.predecessor[k]
