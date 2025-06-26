@@ -1,14 +1,13 @@
-from typing import List, Optional
-from typing_extensions import override
-from datetime import datetime
-from aworld.cmd import SessionModel, ChatCompletionMessage
-from .base_session_service import BaseSessionService
-import logging
 import os
 import pickle
 import threading
 
-logger = logging.getLogger(__name__)
+from typing import List, Optional
+from typing_extensions import override
+from datetime import datetime
+from aworld.cmd import SessionModel, ChatCompletionMessage
+from aworld.logs.util import logger
+from .base_session_service import BaseSessionService
 
 
 class SimpleSessionService(BaseSessionService):
@@ -43,7 +42,7 @@ class SimpleSessionService(BaseSessionService):
 
     @override
     async def get_session(
-        self, user_id: str, session_id: str
+            self, user_id: str, session_id: str
     ) -> Optional[SessionModel]:
         session_key = f"{user_id}:{session_id}"
         with self._lock:
@@ -73,7 +72,7 @@ class SimpleSessionService(BaseSessionService):
 
     @override
     async def append_messages(
-        self, user_id: str, session_id: str, messages: List[ChatCompletionMessage]
+            self, user_id: str, session_id: str, messages: List[ChatCompletionMessage]
     ) -> None:
         session_key = f"{user_id}:{session_id}"
         with self._lock:

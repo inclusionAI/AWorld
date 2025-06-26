@@ -5,7 +5,7 @@ from typing import AsyncGenerator
 
 from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.output.ui.base import AworldUI
 from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI

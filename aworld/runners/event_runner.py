@@ -9,7 +9,7 @@ from typing import List, Callable, Any
 from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
 
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager

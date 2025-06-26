@@ -16,7 +16,7 @@ We provide a complete and simple example for writing an agent and multi-agent:
 
 ```python
 from aworld.config.conf import AgentConfig
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 
 prompt = """
 Please act as a search agent, constructing appropriate keywords and searach terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
@@ -64,7 +64,7 @@ It can also quickly develop multi-agent based on the framework.
 On the basis of the above agent(SearchAgent), we provide a multi-agent example:
 
 ```python
-from aworld.core.agent.llm_agent import Agent
+from aworld.agents.llm_agent import Agent
 
 summary_prompt = """
 Summarize the following text in one clear and concise paragraph, capturing the key ideas without missing critical points. 

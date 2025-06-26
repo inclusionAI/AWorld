@@ -70,6 +70,11 @@ class BaseTool(Generic[AgentInput, ToolInput]):
                   **kwargs) -> Message:
         pass
 
+    def postprocess(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
+                    action: ToolInput,
+                    **kwargs):
+        pass
+
     def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
         action = message.payload
@@ -85,6 +90,7 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         if isinstance(final_res, Message):
             final_res.context = self.context
             final_res.session_id = self.context.session_id
+        self.postprocess(final_res, action, tool_id_mapping=tool_id_mapping, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -161,6 +167,11 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
                         **kwargs) -> Message:
         pass
 
+    async def postprocess(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
+                          action: ToolInput,
+                          **kwargs):
+        pass
+
     async def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
         action = message.payload
@@ -176,6 +187,7 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         if isinstance(final_res, Message):
             final_res.context = self.context
             final_res.session_id = self.context.session_id
+        await self.postprocess(final_res, action, tool_id_mapping=tool_id_mapping, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -256,6 +268,18 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
+
+        return AgentMessage(payload=step_res,
+                            caller=action[0].agent_name,
+                            sender=self.name(),
+                            receiver=action[0].agent_name,
+                            session_id=Context.instance().session_id)
+
+    async def postprocess(self,
+                          step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                          action: List[ActionModel],
+                          **kwargs):
+        for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
                 tool_output = ToolResultOutput(
@@ -287,12 +311,6 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 receiver=action[0].agent_name,
                 session_id=Context.instance().session_id
             ))
-
-        return AgentMessage(payload=step_res,
-                            caller=action[0].agent_name,
-                            sender=self.name(),
-                            receiver=action[0].agent_name,
-                            session_id=Context.instance().session_id)
 
 
 class ToolsManager(Factory):

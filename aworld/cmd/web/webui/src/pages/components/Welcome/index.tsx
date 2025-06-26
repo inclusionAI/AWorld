@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Input, Button, Typography, Row, Col, Select } from 'antd';
-import { ArrowUpOutlined } from '@ant-design/icons';
+import { Input, Button, Typography, Row, Col, Select, Flex } from 'antd';
+import { ArrowUpOutlined, RightOutlined } from '@ant-design/icons';
 import './index.less';
 
 const { Title } = Typography;
@@ -21,7 +21,6 @@ const Welcome: React.FC<WelcomeProps> = ({
   modelsLoading,
 }) => {
   const [inputValue, setInputValue] = useState('');
-  
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -46,20 +45,6 @@ const Welcome: React.FC<WelcomeProps> = ({
             autoSize={{ minRows: 3, maxRows: 5 }}
             className="text-input"
           />
-          <div className="controls-area">
-            <Select
-              value={selectedModel}
-              onChange={onModelChange}
-              options={models}
-              loading={modelsLoading}
-              placeholder="Select a model"
-              className="model-select"
-              showSearch
-              filterOption={(input, option) =>
-                (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-              }
-            />
-          </div>
           <Button
             type="primary"
             shape="circle"
@@ -68,7 +53,32 @@ const Welcome: React.FC<WelcomeProps> = ({
             }}
             icon={<ArrowUpOutlined />}
             className="submit-button"
-            disabled={inputValue.trim() === ""}
+            disabled={inputValue.trim() === ''}
+          />
+        </div>
+        <div className="controls-area">
+          <Select
+            value={selectedModel}
+            onChange={onModelChange}
+            options={models}
+            loading={modelsLoading}
+            placeholder="Select a model"
+            className="model-select"
+            showSearch
+            filterOption={(input, option) =>
+              (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+            }
+            optionRender={(option) => (
+              <div className="select-item">
+                <Flex justify="space-between">
+                  <div>
+                    <strong>{option.label}</strong>
+                    <small>{option.value}</small>
+                  </div>
+                  <RightOutlined className="icon-right" />
+                </Flex>
+              </div>
+            )}
           />
         </div>
       </div>

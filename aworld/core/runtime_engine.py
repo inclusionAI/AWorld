@@ -9,8 +9,7 @@ from concurrent.futures.process import ProcessPoolExecutor
 from types import MethodType
 from typing import List, Callable, Any, Dict
 
-from aworld.config import RunConfig
-from aworld.core.task import TaskResponse
+from aworld.config import RunConfig, ConfigDict
 from aworld.logs.util import logger
 from aworld.utils.common import sync_exec
 
@@ -27,7 +26,7 @@ class RuntimeEngine(object):
 
     def __init__(self, conf: RunConfig):
         """Engine runtime instance initialize."""
-        self.conf = conf
+        self.conf = ConfigDict(conf.model_dump())
         self.runtime = None
         register(conf.name, self)
 
@@ -136,16 +135,17 @@ class SparkRuntime(RuntimeEngine):
         from pyspark.sql import SparkSession
 
         conf = self.conf
-        is_local = getattr(conf, 'is_local', False)
+        is_local = conf.get('is_local', True)
         logger.info('build runtime is_local:{}'.format(is_local))
         spark_builder = SparkSession.builder
         if is_local:
             if 'PYSPARK_PYTHON' not in os.environ:
-                raise Exception('`PYSPARK_PYTHON` need to set first in environment variables.')
+                import sys
+                os.environ['PYSPARK_PYTHON'] = sys.executable
 
             spark_builder = spark_builder.master('local[1]').config('spark.executor.instances', '1')
 
-        self.runtime = spark_builder.appName(conf.job_name).getOrCreate()
+        self.runtime = spark_builder.appName(conf.get('job_name', 'aworld_spark_job')).getOrCreate()
 
     def args_process(self, *args):
         re_args = []

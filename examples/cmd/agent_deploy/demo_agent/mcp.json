@@ -1,5 +1,16 @@
 {
     "mcpServers": {
+        "google-pse-search": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@adenot/mcp-google-search"
+            ],
+            "env": {
+                "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+                "GOOGLE_SEARCH_ENGINE_ID": "${GOOGLE_SEARCH_ENGINE_ID}"
+            }
+        },
         "fetch": {
             "command": "uvx",
             "args": [

@@ -2,6 +2,7 @@ import wrapt
 import time
 import inspect
 import traceback
+import aworld.trace.instrumentation.semconv as semconv
 from typing import Collection, Any
 from aworld.trace.instrumentation import Instrumentor
 from aworld.trace.base import (
@@ -171,11 +172,11 @@ def record_completion(span,
 
     span_attributes = {
         **attributes,
-        "llm.prompt_tokens": prompt_tokens,
-        "llm.completion_tokens": completion_tokens,
-        "llm.total_tokens": total_tokens,
-        "llm.duration": duration,
-        "llm.content": content
+        semconv.GEN_AI_USAGE_INPUT_TOKENS: prompt_tokens,
+        semconv.GEN_AI_USAGE_OUTPUT_TOKENS: completion_tokens,
+        semconv.GEN_AI_USAGE_TOTAL_TOKENS: total_tokens,
+        semconv.GEN_AI_DURATION: duration,
+        semconv.GEN_AI_COMPLETION_CONTENT: content
     }
     span_attributes.update(parse_response_message(tool_calls))
     span.set_attributes(span_attributes)
@@ -263,10 +264,10 @@ class WrappedGeneratorResponse(wrapt.ObjectProxy):
         choices = self._complete_response.get("choices")
         span_attributes = {
             **attributes,
-            "llm.prompt_tokens": prompt_usage,
-            "llm.completion_tokens": completion_usage,
-            "llm.duration": duration,
-            "llm.first_token_duration": first_token_duration
+            semconv.GEN_AI_USAGE_INPUT_TOKENS: prompt_usage,
+            semconv.GEN_AI_USAGE_OUTPUT_TOKENS: completion_usage,
+            semconv.GEN_AI_DURATION: duration,
+            semconv.GEN_AI_FIRST_TOKEN_DURATION: first_token_duration
         }
         span_attributes.update(parse_response_message(choices))
 
