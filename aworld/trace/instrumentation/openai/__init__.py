@@ -2,6 +2,7 @@ import wrapt
 import time
 import openai
 import traceback
+import aworld.trace.instrumentation.semconv as semconv
 from typing import Collection, Any, Union
 from aworld.trace.instrumentation import Instrumentor
 from aworld.trace.base import (
@@ -159,9 +160,9 @@ def record_completion(span,
 
     span_attributes = {
         **attributes,
-        "llm.prompt_tokens": prompt_tokens,
-        "llm.completion_tokens": completion_tokens,
-        "llm.duration": duration
+        semconv.GEN_AI_USAGE_INPUT_TOKENS: prompt_tokens,
+        semconv.GEN_AI_USAGE_OUTPUT_TOKENS: completion_tokens,
+        semconv.GEN_AI_DURATION: duration
     }
     span_attributes.update(parse_response_message(choices))
     span.set_attributes(span_attributes)

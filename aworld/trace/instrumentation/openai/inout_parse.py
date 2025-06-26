@@ -8,6 +8,7 @@ from importlib.metadata import version
 from aworld.logs.util import logger
 from aworld.trace.base import Span
 from aworld.utils import import_package
+import aworld.trace.instrumentation.semconv as semconv
 
 _PYDANTIC_VERSION = version("pydantic")
 
@@ -16,6 +17,12 @@ def should_trace_prompts():
     '''Determine whether it is necessary to record the message
     '''
     return (os.getenv("SHOULD_TRACE_PROMPTS") or "true").lower() == "true"
+
+
+def need_flatten_messages():
+    '''Determine whether it is necessary to flatten the messages
+    '''
+    return (os.getenv("TRACE_FLATTEN_MESSAGES") or "false").lower() == "true"
 
 
 def run_async(method):
@@ -39,28 +46,12 @@ async def handle_openai_request(span: Span, kwargs, instance):
         attributes = parser_request_params(kwargs, instance)
         if should_trace_prompts():
             messages = kwargs.get("messages")
-            for i, msg in enumerate(messages):
-                prefix = f"llm.prompts.{i}"
-                attributes.update({f"{prefix}.role": msg.get("role")})
-                if msg.get("content"):
-                    content = copy.deepcopy(msg.get("content"))
-                    content = json.dumps(content)
-                    attributes.update({f"{prefix}.content": content})
-                if msg.get("tool_call_id"):
-                    attributes.update({
-                        f"{prefix}.tool_call_id": msg.get("tool_call_id")})
-                tool_calls = msg.get("tool_calls")
-                if tool_calls:
-                    for i, tool_call in enumerate(tool_calls):
-                        tool_call = model_as_dict(tool_call)
-                        function = tool_call.get("function")
-                        attributes.update({
-                            f"{prefix}.tool_calls.{i}.id": tool_call.get("id")})
-                        attributes.update({
-                            f"{prefix}.tool_calls.{i}.name": function.get("name")})
-                        attributes.update({
-                            f"{prefix}.tool_calls.{i}.arguments": function.get("arguments")})
-
+            if need_flatten_messages():
+                attributes.update(parse_request_message(messages))
+            else:
+                attributes.update({
+                    semconv.GEN_AI_PROMPT: str(messages),
+                })
         span.set_attributes(attributes)
     except ValueError as e:
         logger.warning(f"trace handle openai request error: {e}")
@@ -68,17 +59,17 @@ async def handle_openai_request(span: Span, kwargs, instance):
 
 def parser_request_params(kwargs, instance):
     attributes = {
-        "llm.system": "OpenAI",
-        "llm.model": kwargs.get("model", ""),
-        "llm.max_tokens": kwargs.get("max_tokens", ""),
-        "llm.temperature": kwargs.get("temperature", ""),
-        "llm.top_p": kwargs.get("top_p", ""),
-        "llm.frequency_penalty": kwargs.get("frequency_penalty", ""),
-        "llm.presence_penalty": kwargs.get("presence_penalty", ""),
-        "llm.user": kwargs.get("user", ""),
-        "llm.headers": kwargs.get("headers", ""),
-        "llm.extra_headers": kwargs.get("extra_headers", ""),
-        "llm.stream": kwargs.get("stream", "")
+        semconv.GEN_AI_SYSTEM: "OpenAI",
+        semconv.GEN_AI_REQUEST_MODEL: kwargs.get("model", ""),
+        semconv.GEN_AI_REQUEST_MAX_TOKENS: kwargs.get("max_tokens", ""),
+        semconv.GEN_AI_REQUEST_TEMPERATURE: kwargs.get("temperature", ""),
+        semconv.GEN_AI_REQUEST_TOP_P: kwargs.get("top_p", ""),
+        semconv.GEN_AI_REQUEST_FREQUENCY_PENALTY: kwargs.get("frequency_penalty", ""),
+        semconv.GEN_AI_REQUEST_PRESENCE_PENALTY: kwargs.get("presence_penalty", ""),
+        semconv.GEN_AI_REQUEST_USER: kwargs.get("user", ""),
+        semconv.GEN_AI_REQUEST_EXTRA_HEADERS: kwargs.get("extra_headers", ""),
+        semconv.GEN_AI_REQUEST_STREAMING: kwargs.get("stream", ""),
+        semconv.GEN_AI_OPERATION_NAME: "chat"
     }
 
     client = instance._client
@@ -96,11 +87,8 @@ def is_streaming_response(response):
 
 def parse_openai_response(response, request_kwargs, instance, is_streaming):
     return {
-        "llm.system": "OpenAI",
-        "llm.response.model": response.get("model") or request_kwargs.get("model") or None,
-        "llm.operation.name": "chat",
-        "llm.server.address": _get_openai_base_url(instance),
-        "llm.stream": is_streaming,
+        semconv.GEN_AI_RESPONSE_MODEL: response.get("model") or request_kwargs.get("model") or None,
+        semconv.GEN_AI_SERVER_ADDRESS: _get_openai_base_url(instance)
     }
 
 
@@ -225,13 +213,42 @@ def record_stream_response_chunk(chunk, complete_response):
                         "arguments")
 
 
+def parse_request_message(messages):
+    '''
+    flatten request message to attributes
+    '''
+    attributes = {}
+    for i, msg in enumerate(messages):
+        prefix = f"{semconv.GEN_AI_PROMPT}.{i}"
+        attributes.update({f"{prefix}.role": msg.get("role")})
+        if msg.get("content"):
+            content = copy.deepcopy(msg.get("content"))
+            content = json.dumps(content)
+            attributes.update({f"{prefix}.content": content})
+        if msg.get("tool_call_id"):
+            attributes.update({
+                f"{prefix}.tool_call_id": msg.get("tool_call_id")})
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            for i, tool_call in enumerate(tool_calls):
+                tool_call = model_as_dict(tool_call)
+                function = tool_call.get("function")
+                attributes.update({
+                    f"{prefix}.tool_calls.{i}.id": tool_call.get("id")})
+                attributes.update({
+                    f"{prefix}.tool_calls.{i}.name": function.get("name")})
+                attributes.update({
+                    f"{prefix}.tool_calls.{i}.arguments": function.get("arguments")})
+    return attributes
+
+
 def parse_response_message(choices) -> dict:
     attributes = {}
     if not should_trace_prompts():
         return attributes
     for choice in choices:
         index = choice.get("index")
-        prefix = f"llm.completions.{index}"
+        prefix = f"{semconv.GEN_AI_COMPLETION}.{index}"
         attributes.update(
             {f"{prefix}.finish_reason": choice.get("finish_reason")})
 
