@@ -660,6 +660,7 @@ class HandoffBuilder(TopologyBuilder):
 
             # explicitly set handoffs in the agent
             pair[0].handoffs.append(pair[1].id())
+            pair[1].handoffs.remove(pair[1].id())
         return agent_graph
 
 
