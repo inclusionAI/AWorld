@@ -15,6 +15,7 @@ from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants
 from aworld.core.factory import Factory
+from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
@@ -191,8 +192,8 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
 
 class Tool(BaseTool[Observation, List[ActionModel]]):
     def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
-                    action: ToolInput,
-                    **kwargs):
+                          action: ToolInput,
+                          **kwargs):
         if not step_res or not action:
             return
         for idx, act in enumerate(action):
@@ -216,7 +217,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                     session_id=self.context.session_id if self.context else "",
                     headers={"context": self.context}
                 )
-                sync_exec(eventbus.publish, tool_output_message)
+                sync_exec(send_message, tool_output_message)
 
     def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
@@ -243,18 +244,26 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
 
-        return AgentMessage(payload=step_res,
-                            caller=action[0].agent_name,
-                            sender=self.name(),
-                            receiver=action[0].agent_name,
-                            session_id=kwargs.get("session_id", ""),
-                            headers={"context": self.context})
+        agent = self.context.swarm.agents.get(action[0].agent_name)
+        feedback_tool_result = agent.feedback_tool_result if agent else False
+        if feedback_tool_result:
+            return AgentMessage(payload=step_res,
+                                caller=action[0].agent_name,
+                                sender=self.name(),
+                                receiver=action[0].agent_name,
+                                session_id=self.context.session_id,
+                                headers={"context": self.context})
+        else:
+            return AgentMessage(payload=step_res,
+                                sender=action[0].agent_name,
+                                session_id=self.context.session_id,
+                                headers={"context": self.context})
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
     async def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
-                          action: ToolInput,
-                          **kwargs):
+                                action: ToolInput,
+                                **kwargs):
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
@@ -277,18 +286,17 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     session_id=self.context.session_id if self.context else "",
                     headers={"context": self.context}
                 )
-                await eventbus.publish(tool_output_message)
+                await send_message(tool_output_message)
 
-        if eventbus is not None:
-            await eventbus.publish(Message(
-                category=Constants.OUTPUT,
-                payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
-                                                         step_num=0),
-                sender=self.name(),
-                receiver=action[0].agent_name,
-                session_id=self.context.session_id if self.context else "",
-                headers={"context": self.context}
-            ))
+        await send_message(Message(
+            category=Constants.OUTPUT,
+            payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
+                                                     step_num=0),
+            sender=self.name(),
+            receiver=action[0].agent_name,
+            session_id=self.context.session_id if self.context else "",
+            headers={"context": self.context}
+        ))
 
     async def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
@@ -315,12 +323,20 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
 
-        return AgentMessage(payload=step_res,
-                            caller=action[0].agent_name,
-                            sender=self.name(),
-                            receiver=action[0].agent_name,
-                            session_id=self.context.session_id if self.context else "",
-                            headers={"context": self.context})
+        agent = self.context.swarm.agents.get(action[0].agent_name)
+        feedback_tool_result = agent.feedback_tool_result if agent else False
+        if feedback_tool_result:
+            return AgentMessage(payload=step_res,
+                                caller=action[0].agent_name,
+                                sender=self.name(),
+                                receiver=action[0].agent_name,
+                                session_id=Context.instance().session_id,
+                                headers={"context": self.context})
+        else:
+            return AgentMessage(payload=step_res,
+                                sender=action[0].agent_name,
+                                session_id=Context.instance().session_id,
+                                headers={"context": self.context})
 
 
 class ToolsManager(Factory):

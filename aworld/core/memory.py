@@ -119,7 +119,7 @@ class MemoryBase(ABC):
         Returns:
             list: List of all memories.
         """
-    
+
     @abstractmethod
     def get_last_n(self, last_rounds, filters: dict = None) -> Optional[list[MemoryItem]]:
         """get last_rounds memories.
@@ -133,7 +133,7 @@ class MemoryBase(ABC):
         Returns:
             list: List of latest memories.
         """
-    
+
     @abstractmethod
     def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
         """
@@ -181,12 +181,10 @@ class MemoryBase(ABC):
         Returns:
             dict: Updated memory.
         """
-    
 
     @abstractmethod
     async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
-        """
-        A tool for reducing the context length of the current round.
+        """A tool for reducing the context length of the current round.
 
         Step 1: Retrieve historical conversation content based on filters and last_rounds
         Step 2: Extract current round content and most relevant historical content  
@@ -203,19 +201,15 @@ class MemoryBase(ABC):
 
     @abstractmethod
     async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
-
-        """
-        A tool for summarizing the list of memory item.
+        """A tool for summarizing the list of memory item.
 
         Args:
             to_be_summary (list[MemoryItem]): the list of memory item.
         """
-    pass
 
     @abstractmethod
     async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
-        """
-        A tool for summarizing the conversation history.
+        """A tool for summarizing the conversation history.
 
         Step 1: Retrieve historical conversation content based on filters and last_rounds
         Step 2: Generate corresponding summary for conversation history
@@ -224,7 +218,6 @@ class MemoryBase(ABC):
             filters (dict): filters to get memory list.
             last_rounds (int): last rounds of memory list.
         """
-        pass
 
     @abstractmethod
     def delete(self, memory_id):
@@ -233,6 +226,7 @@ class MemoryBase(ABC):
         Args:
             memory_id (str): ID of the memory to delete.
         """
+
 
 SUMMARY_PROMPT = """
 You are a helpful assistant that summarizes the conversation history.
@@ -248,7 +242,8 @@ class MemoryConfig(BaseModel):
     """Configuration for procedural memory."""
 
     model_config = ConfigDict(
-        from_attributes=True, validate_default=True, revalidate_instances='always', validate_assignment=True, arbitrary_types_allowed=True
+        from_attributes=True, validate_default=True, revalidate_instances='always', validate_assignment=True,
+        arbitrary_types_allowed=True
     )
 
     # Memory Config
