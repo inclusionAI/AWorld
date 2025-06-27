@@ -1,5 +1,6 @@
 import { Flex, Typography } from 'antd';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { getWorkspaceTree } from '@/api/workspace';
 import './index.less';
 const { Text } = Typography;
 
@@ -9,6 +10,21 @@ interface WorkspaceProps {
 
 const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
   const [currentTab, setCurrentTab] = React.useState('1');
+  const [treeData, setTreeData] = useState<any>(null);
+
+  useEffect(() => {
+    const fetchWorkspaceTree = async () => {
+      try {
+        const data = await getWorkspaceTree(sessionId);
+        setTreeData(data);
+        console.log("data: ", data)
+      } catch (error) {
+        console.error('获取工作空间树失败:', error);
+      }
+    };
+
+    fetchWorkspaceTree();
+  }, [sessionId]);
   const tabs = [
     {
       key: '1',
@@ -51,7 +67,7 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
   return (
     <>
       <div className="border workspacebox">
-        <div>从 api/workspaces/{sessionId}/tree 获取</div>
+        <div>工作空间树数据: {treeData ? JSON.stringify(treeData) : '加载中...'}</div>
         <Flex className="tabbox" justify="space-between">
           {tabs.map((item) => (
             <Flex className={`border tab ${item.key === currentTab ? 'active' : ''}`} key={item.key} align="center" onClick={() => setCurrentTab(item.key)}>

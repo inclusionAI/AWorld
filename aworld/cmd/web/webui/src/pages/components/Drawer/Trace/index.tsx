@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import mermaid from 'mermaid';
+import { fetchTraceData } from '@/api/trace';
 import { treeToMermaid } from './mermaidUtils';
 import './index.less';
 
@@ -14,14 +15,11 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
   const [mermaidCode, setMermaidCode] = useState<string>('');
   const isFetching = useRef(false);
 
-  const fetchTraceDetails = useCallback(async () => {
+  const handleFetchTrace = useCallback(async () => {
     if (!traceId || isFetching.current) return;
     isFetching.current = true;
     try {
-      const response = await fetch(`/api/trace/agent?trace_id=${traceId}`);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      
-      const result = await response.json();
+      const result = await fetchTraceData(traceId);
       if (!result?.data) throw new Error('Invalid trace data format');
       
       const mermaidData = treeToMermaid(result.data);
@@ -40,12 +38,12 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
 
   useEffect(() => {
     if (traceId && drawerVisible) {
-      fetchTraceDetails();
+      handleFetchTrace();
     }
     return () => {
       // Cleanup if component unmounts during fetch
     };
-  }, [traceId, drawerVisible, fetchTraceDetails]);
+  }, [traceId, drawerVisible, handleFetchTrace]);
 
   useEffect(() => {
     if (!mermaidCode) return;
