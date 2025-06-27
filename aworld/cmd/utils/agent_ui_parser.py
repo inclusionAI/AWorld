@@ -82,6 +82,9 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
         except Exception:
             pass
 
+        if len(result_items) > 0:
+            tool_card.results = ""
+
         tool_card.card_type = "tool_call_card_link_list"
         tool_card.card_data = {
             "title": "🔎 Google Search",
