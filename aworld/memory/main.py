@@ -136,20 +136,18 @@ class Memory(MemoryBase):
     def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
         self.memory_store = memory_store
         self.config = config
-        self.default_llm_instance = get_llm_model(conf=ConfigDict({
-            "llm_model_name": os.getenv("MEM_LLM_MODEL_NAME") if os.getenv("MEM_LLM_MODEL_NAME") else os.getenv(
-                'LLM_MODEL_NAME'),
-            "llm_api_key": os.getenv("MEM_LLM_API_KEY") if os.getenv("MEM_LLM_API_KEY") else os.getenv('LLM_API_KEY'),
-            "llm_base_url": os.getenv("MEM_LLM_BASE_URL") if os.getenv("MEM_LLM_BASE_URL") else os.getenv('LLM_BASE_URL'),
-            "temperature": os.getenv("MEM_LLM_TEMPERATURE") if os.getenv("MEM_LLM_TEMPERATURE") else 1.0,
-            "streaming": 'False'
-        }))
+        self._llm_instance = None
 
         # Initialize long-term memory components
         if self.config.enable_long_term:
             self.longterm_config = config.long_term_config or LongTermConfig.create_simple_config()
             self.memory_orchestrator = SimpleMemoryOrchestrator(self.default_llm_instance)
-        self._llm_instance = None
+            logger.info(f"🧠 [LongTermMemory] Initialized with config: "
+                        f"threshold={self.longterm_config.trigger.message_count_threshold}, "
+                        f"user_profiles={self.longterm_config.extraction.enable_user_profile_extraction}, "
+                        f"agent_experiences={self.longterm_config.extraction.enable_agent_experience_extraction}")
+
+
 
     @property
     def default_llm_instance(self):
@@ -165,11 +163,6 @@ class Memory(MemoryBase):
                 "streaming": 'False'
             }))
         return self._llm_instance
-
-            logger.info(f"🧠 [LongTermMemory] Initialized with config: "
-                        f"threshold={self.longterm_config.trigger.message_count_threshold}, "
-                        f"user_profiles={self.longterm_config.extraction.enable_user_profile_extraction}, "
-                        f"agent_experiences={self.longterm_config.extraction.enable_agent_experience_extraction}")
 
 
     def _build_history_context(self, messages) -> str:

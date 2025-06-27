@@ -17,7 +17,7 @@ class MessageMetadata(BaseModel):
     task_id: str = Field(description="The ID of the task")
     agent_id: str = Field(description="The ID of the agent")
     agent_name: str = Field(description="The name of the agent")
-    user_id: Optional[str] = Field(default=None, description="The ID of the user")
+    user_id: str = Field(default=None, description="The ID of the user")
     is_use_tool_prompt: Optional[bool] = Field(default=False, description="Whether the agent uses tool prompt")
 
     model_config = ConfigDict(extra="allow")
