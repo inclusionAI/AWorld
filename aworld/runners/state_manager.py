@@ -48,7 +48,7 @@ class RunNode(BaseModel):
     # {busi_id}_{busi_type}
     node_id: Optional[str] = None
     busi_type: str = None
-    busi_id: str = None
+    busi_id: Optional[str] = None
     session_id: str = None
     msg_id: Optional[str] = None  # input message id
     # busi_id of node that send the input message

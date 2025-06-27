@@ -151,7 +151,7 @@ class TraceTool(Tool):
     def choose_attribute(self, span):
         include_attr = [semconv.GEN_AI_USAGE_INPUT_TOKENS,
                         semconv.GEN_AI_USAGE_OUTPUT_TOKENS, semconv.GEN_AI_USAGE_TOTAL_TOKENS,
-                        semconv.GEN_AI_COMPLETION_TOOL_CALLS]
+                        semconv.GEN_AI_COMPLETION_TOOL_CALLS, "event.id"]
         result_attributes = {}
         origin_attributes = span.get("attributes") or {}
         for key, value in origin_attributes.items():
