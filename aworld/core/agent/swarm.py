@@ -686,6 +686,9 @@ class TeamBuilder(TopologyBuilder):
         agent_graph = AgentGraph()
         valid_agents = []
         root_agent = self.agent_list[0]
+        if isinstance(root_agent, tuple):
+            valid_agents.append(root_agent)
+            root_agent = root_agent[0]
         agent_graph.add_node(root_agent)
         root_agent.feedback_tool_result = True
 
@@ -713,6 +716,7 @@ class TeamBuilder(TopologyBuilder):
             agent_graph.add_edge(root_agent, agent)
 
             root_agent.handoffs.append(agent.id())
+            agent.handoffs.remove(agent.id())
 
         for pair in valid_agents:
             TopologyBuilder.register_agent(pair[0])
@@ -722,10 +726,13 @@ class TeamBuilder(TopologyBuilder):
                 pair[1].feedback_tool_result = True
 
             agent_graph.add_node(pair[0])
-            agent_graph.add_edge(root_agent, pair[0])
-
-            root_agent.handoffs.append(pair[0].id())
-            pair[0].handoffs.append(pair[1].id())
+            agent_graph.add_node(pair[1])
+            if pair[0] != root_agent:
+                agent_graph.add_edge(root_agent, pair[0])
+                root_agent.handoffs.append(pair[0].id())
+            else:
+                agent_graph.add_edge(root_agent, pair[1])
+                root_agent.handoffs.append(pair[1].id())
         return agent_graph
 
 
