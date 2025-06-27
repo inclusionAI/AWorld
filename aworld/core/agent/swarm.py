@@ -108,6 +108,10 @@ class Swarm(object):
             return
 
         agent_graph.topological_sequence()
+        if self.build_type == GraphBuildType.TEAM.value:
+            agent_graph.ordered_agents.clear()
+            agent_graph.ordered_agents.append(agent_graph.root_agent)
+
         # Agent that communicate with the outside world, the default is the first if the root agent is None.
         if not self._communicate_agent:
             self._communicate_agent = agent_graph.ordered_agents[0]
@@ -304,8 +308,11 @@ class HandoffSwarm(Swarm):
 
 
 class EdgeInfo:
-    clause: Optional[Callable[..., Any]] = None
-    weight: Optional[float] = 0.
+    def __init__(self,
+                 clause: Optional[Callable[..., Any]] = None,
+                 weight: float = 0.):
+        self.clause = clause
+        self.weight = weight
 
 
 class AgentGraph:
@@ -328,8 +335,10 @@ class AgentGraph:
         self.agents = agents
         self.predecessor = predecessor
         self.successor = successor
+        self.first = True
+        self.root_agent = None
 
-    def topological_sequence(self) -> Tuple[List[BaseAgent], bool]:
+    def topological_sequence(self) -> Tuple[List[str], bool]:
         """Obtain the agent sequence of topology, and be able to determine whether the topology has cycle during the process.
 
         Returns:
@@ -378,6 +387,10 @@ class AgentGraph:
         if not agent:
             raise AworldException("agent is None, can not build the graph.")
 
+        if self.first:
+            self.root_agent = agent
+            self.first = False
+
         if agent.id() not in self.agents:
             self.agents[agent.id()] = agent
             self.successor[agent.id()] = {}
@@ -401,13 +414,14 @@ class AgentGraph:
             del self.successor[key][agent.id()]
         del self.predecessor[agent.id()]
 
-    def add_edge(self, left_agent: BaseAgent, right_agent: BaseAgent):
+    def add_edge(self, left_agent: BaseAgent, right_agent: BaseAgent, edge_info: EdgeInfo = EdgeInfo()):
         """Adding an edge between the left and the right agent means establishing the relationship
         between these two agents.
 
         Args:
             left_agent: As the agent node of the predecessor node.
             right_agent: As the agent node of the successor node.
+            edge_info: Edge info between the agents.
         """
         if left_agent and left_agent.id() not in self.agents:
             raise RuntimeError(f"{left_agent.id()} not in agents node.")
@@ -422,8 +436,8 @@ class AgentGraph:
             self.successor[right_agent.id()] = {}
             self.predecessor[right_agent.id()] = {}
 
-        self.successor[left_agent.id()][right_agent.id()] = EdgeInfo()
-        self.predecessor[right_agent.id()][left_agent.id()] = EdgeInfo()
+        self.successor[left_agent.id()][right_agent.id()] = edge_info
+        self.predecessor[right_agent.id()][left_agent.id()] = edge_info
 
     def remove_edge(self, left_agent: BaseAgent, right_agent: BaseAgent):
         """Removing an edge between the left and the right agent means removing the relationship
@@ -672,6 +686,7 @@ class TeamBuilder(TopologyBuilder):
         agent_graph = AgentGraph()
         valid_agents = []
         root_agent = self.agent_list[0]
+        agent_graph.add_node(root_agent)
         root_agent.feedback_tool_result = True
 
         single_agents = []

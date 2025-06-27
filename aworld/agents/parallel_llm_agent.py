@@ -32,8 +32,12 @@ class ParallelizableAgent(Agent):
         from aworld.runners.utils import choose_runners, execute_runner
 
         tasks = []
-        for agent in self.agents:
-            tasks.append(Task(input=observation, agent=agent, context=self.context))
+        if self.agents:
+            for agent in self.agents:
+                tasks.append(Task(input=observation, agent=agent, context=self.context))
+
+        if not tasks:
+            raise RuntimeError("no task need to run in parallelizable agent.")
 
         runners = await choose_runners(tasks)
         res = await execute_runner(runners, RunConfig(reuse_process=False))
