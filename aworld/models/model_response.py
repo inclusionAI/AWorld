@@ -24,7 +24,7 @@ class LLMResponseError(Exception):
         self.message = message
         self.model = model
         self.response = response
-        super().__init__(f"LLM Error ({model}): {message}")
+        super().__init__(f"LLM Error ({model}): {message}. Response: {response}")
 
 
 class Function(BaseModel):

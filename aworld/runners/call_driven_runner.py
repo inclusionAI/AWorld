@@ -636,7 +636,7 @@ class HandoffRunner(TaskRunner):
                                                             outputs=self.outputs,
                                                             stream=self.conf.get("stream", False))
                     policy = message.payload
-                    color_log(f"{cur_agent.name()} policy: {policy}")
+                    color_log(f"{cur_agent.id()} policy: {policy}")
 
             if policy:
                 response = policy[0].policy_info if policy[0].policy_info else policy[0].action_name

@@ -161,7 +161,7 @@ class TaskEventRunner(TaskRunner):
             return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
-        con = message.payload
+        con = message
         async with trace.span(handler.__name__):
             try:
                 logger.info(
