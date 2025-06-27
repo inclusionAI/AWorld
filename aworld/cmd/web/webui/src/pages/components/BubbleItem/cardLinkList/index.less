@@ -19,8 +19,11 @@
 }
 
 .cardbox{
+  width: 668px;
+  overflow-x: auto;
   .card-item{
-    width: 24.4%;
+    width: 175px;
+    min-width: 175px;
     margin-bottom: 16px;
     
     .ant-card-meta-title {
@@ -30,19 +33,14 @@
     .ant-card-meta-description {
       display: -webkit-box;
       -webkit-line-clamp: 2;
+      line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
       text-overflow: ellipsis;
       color: #666;
     }
-
-    &.view-more {
-      cursor: pointer;
-      text-align: center;
-      padding-top: 20px;
-      .ant-card-meta-title {
-        color: #999;
-      }
+    &+.card-item{
+      margin-left: 6px;
     }
   }
 }

@@ -33,7 +33,7 @@ const downloadJsonFile = (data: DownloadData) => {
 
 const CardDefault: React.FC<Props> = ({ data }) => {
   // 当前展开的面板keys
-  const [activeKeys, setActiveKeys] = useState<string[]>(['1']);
+  const [activeKeys, setActiveKeys] = useState<string[]>([]);
   const togglePanel = useCallback((panelKey: string) => {
     setActiveKeys(
       (prev) =>
