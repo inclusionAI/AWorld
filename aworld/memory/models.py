@@ -13,12 +13,12 @@ class MessageMetadata(BaseModel):
         task_id (str): The ID of the task.
         agent_id (str): The ID of the agent.
     """
-    application_id: str = Field(description="The ID of the application")
-    user_id: str = Field(description="The ID of the user")
     session_id: str = Field(description="The ID of the session")
     task_id: str = Field(description="The ID of the task")
     agent_id: str = Field(description="The ID of the agent")
     agent_name: str = Field(description="The name of the agent")
+    user_id: Optional[str] = Field(default=None, description="The ID of the user")
+    is_use_tool_prompt: Optional[bool] = Field(default=False, description="Whether the agent uses tool prompt")
 
     model_config = ConfigDict(extra="allow")
 
@@ -137,7 +137,7 @@ class SystemMessage(MemoryMessage):
     def content(self) -> str:
         return self._content
 
-class HumanMessage(MemoryMessage):
+class MemoryHumanMessage(MemoryMessage):
     """
     Represents a human message with role and content.
     Args:
@@ -151,7 +151,7 @@ class HumanMessage(MemoryMessage):
     def content(self) -> str:
         return self._content
 
-class AIMessage(MemoryMessage):
+class MemoryAIMessage(MemoryMessage):
     """
     Represents an AI message with role and content.
     Args:
@@ -171,7 +171,7 @@ class AIMessage(MemoryMessage):
     def tool_calls(self) -> List[ToolCall]:
         return [ToolCall(**tool_call) for tool_call in self.metadata['tool_calls']]
 
-class ToolMessage(MemoryMessage):
+class MemoryToolMessage(MemoryMessage):
     """
     Represents a tool message with role, content, tool_call_id, and status.
     Args:
@@ -180,7 +180,7 @@ class ToolMessage(MemoryMessage):
         status (Literal["success", "error"]): The status of the tool call.
         content (str): The content of the message.
     """
-    def __init__(self, tool_call_id: str, content: str, status: Literal["success", "error"] = "success", metadata: MessageMetadata = None) -> None:
+    def __init__(self, tool_call_id: str, content: Any, status: Literal["success", "error"] = "success", metadata: MessageMetadata = None) -> None:
         metadata.tool_call_id = tool_call_id
         metadata.status = status
         super().__init__(role="tool", metadata=metadata, content=content)

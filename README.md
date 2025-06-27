@@ -42,6 +42,42 @@ pip install aworld
 ```
 
 ## Usage
+### Long-Term Memory Example
+
+```python
+from aworld.memory.main import MemoryFactory
+from aworld.memory.longterm import LongTermConfig
+from aworld.core.memory import MemoryConfig, MemoryItem
+
+# Configure long-term memory
+longterm_config = LongTermConfig.create_simple_config(
+    message_threshold=10,  # Trigger processing after 10 messages
+    enable_user_profiles=True,
+    enable_agent_experiences=True,
+    enable_background=True
+)
+
+# Create memory instance with long-term capabilities
+memory_config = MemoryConfig(provider="inmemory", enable_summary=True)
+memory = MemoryFactory.from_config(
+    config=memory_config
+)
+
+# Add memories - long-term processing will be triggered automatically
+for i in range(15):
+    memory_item = MemoryItem(
+        content=f"User message {i}: This is a test conversation",
+        metadata={
+            'role': 'user',
+            'application_id': 'my_app',
+            'user_id': 'user123',
+            'agent_id': 'agent456',
+            'session_id': 'session789'
+        }
+    )
+    memory.add(memory_item, filters={'application_id': 'my_app'})
+```
+
 ### Quick Start
 ```python
 from aworld.config.conf import AgentConfig
@@ -197,7 +233,15 @@ AWorld uses a client-server architecture with three main components:
     - Decouples agents and environments for better scalability and flexibility
     - Provides a unified interaction protocol for all agent-environment interactions
 
-2. **Agent/Actor**: 
+2. **Long-Term Memory System**: A sophisticated dual-memory architecture featuring:
+    - **UserProfile Memory**: Extracts and maintains comprehensive user profiles including personal information, preferences, habits, and communication styles
+    - **AgentExperience Memory**: Captures and stores agent experience patterns, successful action sequences, problem-solving approaches, and tool usage patterns
+    - **MemoryOrchestrator**: Core orchestration layer that determines when to trigger memory processing based on configurable thresholds (message count, time intervals, content importance)
+    - **MemoryGungnir**: Processing engine (named after Odin's eternal spear) that extracts meaningful long-term memories from short-term conversational data
+    - **Configurable Triggers**: Supports message count thresholds, time-based triggers, and content importance detection
+    - **Multi-tenant Support**: Full application_id support for isolated memory spaces across different applications
+
+3. **Agent/Actor**: 
    - Encapsulates system prompts, tools, mcp servers, and models with the capability to hand off execution to other agents
 
     | Field        | Type      | Description                                                           |
