@@ -13,6 +13,7 @@ class MessageMetadata(BaseModel):
         task_id (str): The ID of the task.
         agent_id (str): The ID of the agent.
     """
+    application_id: str = Field(description="The ID of the application")
     user_id: str = Field(description="The ID of the user")
     session_id: str = Field(description="The ID of the session")
     task_id: str = Field(description="The ID of the task")

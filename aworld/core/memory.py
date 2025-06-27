@@ -5,7 +5,10 @@ from typing import Optional, Any, Literal, Union
 
 from pydantic import BaseModel, Field, ConfigDict
 
+from aworld.memory.longterm.config import LongTermConfig
 from aworld.models.llm import LLMModel
+
+from aworld.memory.longterm.base import LongTermMemoryConfig
 
 
 class MemoryItem(BaseModel):
@@ -257,6 +260,10 @@ class MemoryConfig(BaseModel):
     summary_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
     summary_single_context_length: int = Field(default=4000, description=" when the content length is greater than the summary_single_context_length, the summary will be created")
     summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
+
+    # Long-term memory config
+    enable_long_term_memory: bool = Field(default=False, description="enable_long_term_memory use to store long-term memory")
+    long_term_config: LongTermConfig = Field(default=LongTermConfig(), description="long_term_config")
 
     # Embedder settings
     embedder_provider: Literal['openai', 'gemini', 'ollama', 'huggingface'] = 'huggingface'

@@ -46,6 +46,11 @@ class InMemoryMemoryStore(MemoryStore):
             return False
         if filters is None:
             return True
+        if filters.get('application_id') is not None:
+            if memory_item.metadata.get('application_id') is None:
+                return False
+            if memory_item.metadata.get('application_id') != filters['application_id']:
+                return False
         if filters.get('user_id') is not None:
             if memory_item.metadata.get('user_id') is None:
                 return False
