@@ -1,51 +1,88 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import mermaid from 'mermaid';
-import './index.less'
+import { treeToMermaid } from './mermaidUtils';
+import './index.less';
 
 interface TraceProps {
-  sessionId: string;
+  sessionId?: string;
+  traceId?: string;
+  drawerVisible?: boolean;
 }
 
-const Trace: React.FC<TraceProps> = ({ sessionId }) => {
+const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
   const diagramRef = useRef<HTMLDivElement>(null);
+  const [mermaidCode, setMermaidCode] = useState<string>('');
+  const isFetching = useRef(false);
+
+  const fetchTraceDetails = useCallback(async () => {
+    if (!traceId || isFetching.current) return;
+    isFetching.current = true;
+    try {
+      const response = await fetch(`/api/trace/agent?trace_id=${traceId}`);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      
+      const result = await response.json();
+      if (!result?.data) throw new Error('Invalid trace data format');
+      
+      const mermaidData = treeToMermaid(result.data);
+      if (!mermaidData.includes('graph') && !mermaidData.includes('flowchart')) {
+        throw new Error(`Invalid mermaid data format: ${mermaidData.substring(0, 50)}...`);
+      }
+      setMermaidCode(mermaidData);
+    } catch (error) {
+      console.error('Trace processing error:', error);
+      const errorMessage = error instanceof Error ? error.message : '未知错误';
+      setMermaidCode(`graph TD\n  A[数据处理错误: ${errorMessage}]`);
+    } finally {
+      isFetching.current = false;
+    }
+  }, [traceId]);
 
   useEffect(() => {
-    const initializeMermaid = async () => {
+    if (traceId && drawerVisible) {
+      fetchTraceDetails();
+    }
+    return () => {
+      // Cleanup if component unmounts during fetch
+    };
+  }, [traceId, drawerVisible, fetchTraceDetails]);
+
+  useEffect(() => {
+    if (!mermaidCode) return;
+
+    const renderMermaid = async () => {
       try {
-        await mermaid.initialize({
+        mermaid.initialize({
           startOnLoad: false,
-          theme: 'default',
-          fontFamily: 'Arial',
           securityLevel: 'loose'
         });
-
+        
         if (diagramRef.current) {
-          await mermaid.run({
-            nodes: [diagramRef.current]
-          });
+          diagramRef.current.innerHTML = mermaidCode;
         }
-      } catch (err) {
-        console.error('Mermaid initialization error:', err);
+
+        await mermaid.run({
+          nodes: [diagramRef.current as HTMLElement],
+          suppressErrors: true
+        });
+      } catch (error) {
+        console.error('Mermaid error:', error);
+        const errorMessage = error instanceof Error ? error.message : '图表渲染错误';
+        setMermaidCode(`graph TD\n  A[${errorMessage}]`);
       }
     };
 
-    initializeMermaid();
-  }, []);
+    renderMermaid();
+  }, [mermaidCode]);
 
   return (
-    <div className='tracebox'>
+    <div className="tracebox">
       <div ref={diagramRef} className="mermaid">
-        {`graph TD
-          A[会话开始] --> B[初始化环境]
-          B --> C[加载配置]
-          C --> D[执行任务]
-          D --> E{成功?}
-          E -->|是| F[保存结果]
-          E -->|否| G[错误处理]
-          F --> H[会话结束]
-          G --> H`}
+        {mermaidCode ||
+          `graph TD
+          A[加载中...]`}
       </div>
-      <p style={{textAlign:'center'}}>Session ID: {sessionId}</p>
+      <p className='trace-id'>traceId: {traceId}</p>
     </div>
   );
 };

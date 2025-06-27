@@ -35,12 +35,14 @@ import './index.less';
 type BubbleDataType = {
   role: string;
   content: string;
+  trace_id?: string;
 };
 
 // 添加会话数据类型定义
 type SessionMessage = {
   role: string;
   content: string;
+  trace_id?: string;
 };
 
 type SessionData = {
@@ -226,9 +228,13 @@ const App: React.FC = () => {
   type DrawerContentType = 'Team workspace' | 'trace';
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Team workspace');
-  const openDrawer = (content: DrawerContentType) => {
+  const [traceId, setTraceId] = useState<string>('');
+  const openDrawer = (content: DrawerContentType, id?: string) => {
     setDrawerVisible(true);
     setDrawerContent(content);
+    if(id){
+      setTraceId(id);
+    }
   }
   const closeDrawer = () =>{
     setDrawerVisible(false);
@@ -352,12 +358,16 @@ const App: React.FC = () => {
       const { originMessage, chunk } = info || {};
       let currentContent = '';
       let currentThink = '';
-      try {
-        if (chunk?.data && !chunk?.data.includes('DONE')) {
-          const message = JSON.parse(chunk?.data);
-          currentThink = message?.choices?.[0]?.delta?.reasoning_content || '';
-          currentContent = message?.choices?.[0]?.delta?.content || '';
+    try {
+      if (chunk?.data && !chunk?.data.includes('DONE')) {
+        const message = JSON.parse(chunk?.data);
+        const traceId = message?.choices?.[0]?.delta?.trace_id;
+        if (traceId) {
+          setTraceId(traceId);
         }
+        currentThink = message?.choices?.[0]?.delta?.reasoning_content || '';
+        currentContent = message?.choices?.[0]?.delta?.content || '';
+      }
       } catch (error) {
         console.error(error);
       }
@@ -491,6 +501,7 @@ const App: React.FC = () => {
               id: `${val}-${index}`,
               message: {
                 role: msg.role,
+                trace_id: msg.trace_id,
                 content: msg.content
               },
               status: 'success' as const
@@ -545,7 +556,7 @@ const App: React.FC = () => {
             items={messages?.map((i, index) => ({
               ...i.message,
               content: (
-                <BubbleItem data={i.message.content || ''}/>
+                <BubbleItem data={i.message.content || ''} trace_id={i.message?.trace_id || ''}/>
               ),
               classNames: {
                 content: i.status === 'loading' ? styles.loadingMessage : '',
@@ -581,7 +592,7 @@ const App: React.FC = () => {
                       type="text"
                       size="small"
                       icon={<BoxPlotOutlined />}
-                      onClick={() => openDrawer('trace')}
+                      onClick={() => openDrawer('trace',messageItem.props?.trace_id)}
                     />
                     <Button
                       type="text"
@@ -734,7 +745,7 @@ const App: React.FC = () => {
         maskClosable={true}
         open={drawerVisible}
       >
-        {drawerContent === 'Team workspace' ? <Workspace sessionId={sessionId} /> : <Trace sessionId={sessionId} />}
+        {drawerContent === 'Team workspace' ? <Workspace sessionId={sessionId} /> : <Trace key={`${traceId}-${drawerVisible}`} sessionId={sessionId} drawerVisible={drawerVisible} traceId={traceId} />}
       </Drawer>
     </div>
   );

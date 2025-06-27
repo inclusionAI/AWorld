@@ -6,11 +6,12 @@ import CardLinkList from './cardLinkList';
 
 interface BubbleItemProps {
   data: string;
+  trace_id: string
 }
 
 const BubbleItem: React.FC<BubbleItemProps> = ({ data }) => {
   const { segments } = extractToolCards(data);
-  console.log(segments);
+  // console.log(segments);
   return (
     <div className="card">
       {segments.map((segment, index) => {
