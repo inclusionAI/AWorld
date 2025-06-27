@@ -7,7 +7,6 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 from aworld.runner import Runners
-from examples.plan_execute.agent import PlanAgent
 from .prompt import *
 
 logger = logging.getLogger(__name__)
@@ -48,11 +47,9 @@ class AWorldAgent(BaseAWorldAgent):
         with open(mcp_path, "r") as f:
             mcp_config = json.load(f)
 
-        plan_agent = PlanAgent(name="🙋🏻‍♂️ Team Agent Demo", conf=agent_config)
-
         search_agent = Agent(
             conf=agent_config,
-            name="🔎 Search Agent",
+            name="🔎 Team Search Agent",
             system_prompt=search_sys_prompt,
             agent_prompt=search_agent_prompt,
             mcp_config=mcp_config,
@@ -61,14 +58,14 @@ class AWorldAgent(BaseAWorldAgent):
 
         summary_agent = Agent(
             conf=agent_config,
-            name="💬 Summary Agent",
+            name="💬 Team Summary Agent",
             system_prompt=summary_sys_prompt,
             agent_prompt=summary_agent_prompt,
         )
 
         output_agent = Agent(
             conf=agent_config,
-            name="💬 Output Agent",
+            name="🙋🏻‍♂️ Team Output Agent",
             system_prompt=output_sys_prompt,
             agent_prompt=output_agent_prompt,
             mcp_config=mcp_config,
@@ -76,9 +73,7 @@ class AWorldAgent(BaseAWorldAgent):
         )
 
         # default is sequence swarm mode
-        swarm = Swarm(
-            plan_agent, search_agent, summary_agent, output_agent, max_steps=10
-        )
+        swarm = Swarm(search_agent, summary_agent, output_agent, max_steps=10)
 
         if prompt is None and request is not None:
             prompt = request.messages[-1].content
