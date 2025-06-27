@@ -26,7 +26,6 @@ class TaskRunner(Runner):
 
     def __init__(self,
                  task: Task,
-                 context: Context = None,
                  *,
                  agent_oriented: bool = True,
                  daemon_target: Callable[..., Any] = None):
@@ -58,7 +57,7 @@ class TaskRunner(Runner):
         if check_input and not task.input:
             raise ValueError("task no input")
 
-        self.context = context if context else Context()
+        self.context = task.context if task.context else Context.instance()
         self.task = task
         self.context.set_task(task)
         self.agent_oriented = agent_oriented

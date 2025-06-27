@@ -4,10 +4,8 @@
 from typing import Any, Dict, Tuple, Union
 
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message
 
 from aworld.config.conf import ToolConfig, ConfigDict
-from aworld.core.agent.base import AgentFactory
 from aworld.core.common import ActionModel, Observation, ActionResult
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
@@ -49,12 +47,16 @@ class McpTool(AsyncTool):
         Returns:
             Observation, float, bool, bool, dict[str, Any]: -
         """
+        from aworld.core.agent.base import AgentFactory
+
         self._finished = False
         reward = 0
         fail_error = ""
         terminated = kwargs.get("terminated", False)
         # todo sandbox
         agent = AgentFactory.agent_instance(actions[0].agent_name)
+        if not agent:
+            logger.warning(f"async_mcp_tool can not get agent,agent_name:{actions[0].agent_name}")
         task_id = Context.instance().task_id
         session_id = Context.instance().session_id
 

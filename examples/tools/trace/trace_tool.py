@@ -1,5 +1,7 @@
-import requests
 import aworld.trace as trace
+import aworld.trace.instrumentation.semconv as semconv
+from aworld.trace.server import get_trace_server
+from aworld.trace.server.util import build_trace_tree
 from aworld.core.tool.base import Tool, AgentInput, ToolFactory
 from examples.tools.tool_action import GetTraceAction
 from aworld.tools.utils import build_observation
@@ -120,13 +122,15 @@ class TraceTool(Tool):
         '''
         try:
             if trace_id:
-                url = self.get_trace_url or "http://localhost:7079/api/traces"
-                response = requests.get(f'{url.rstrip("/")}/{trace_id}')
-                response.raise_for_status()
-                logger.info(f"response={response.json()}")
-                if response:
-                    return self.proccess_trace(response.json())
-                return {"trace_id": trace_id, "root_span": []}
+                trace_server = get_trace_server()
+                if not trace_server:
+                    logger.error("No memory trace server has been set.")
+                else:
+                    trace_storage = trace_server.get_storage()
+                    spans = trace_storage.get_all_spans(trace_id)
+                    if spans:
+                        return self.proccess_trace(build_trace_tree(spans))
+            return {"trace_id": trace_id, "root_span": []}
         except Exception as e:
             logger.error(f"Error fetching trace data: {e}")
             return {"trace_id": trace_id, "root_span": []}
@@ -138,8 +142,8 @@ class TraceTool(Tool):
         return trace_data
 
     def choose_attribute(self, span):
-        include_attr = ["llm.completion_tokens",
-                        "llm.prompt_tokens", "llm.total_tokens"]
+        include_attr = [semconv.GEN_AI_USAGE_INPUT_TOKENS,
+                        semconv.GEN_AI_USAGE_OUTPUT_TOKENS, semconv.GEN_AI_USAGE_TOTAL_TOKENS]
         result_attributes = {}
         origin_attributes = span.get("attributes") or {}
         for key, value in origin_attributes.items():

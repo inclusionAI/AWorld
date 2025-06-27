@@ -55,11 +55,11 @@ class OSSArtifactRepository(ArtifactRepository):
             print(f"Failed to load index file: {e}")
             return {"artifacts": [], "versions": []}
 
-    def save_index(self) -> None:
+    def save_index(self, index: Dict[str, Any]) -> None:
         """
         Save the current index to OSS
         """
-        self._save_index(self.index)
+        self._save_index(index)
 
     def _save_index(self, index: Dict[str, Any]) -> None:
         """
@@ -235,6 +235,7 @@ class OSSArtifactRepository(ArtifactRepository):
         except Exception as e:
             print(f"Failed to list artifacts: {e}")
             return []
+    
 
     def generate_tree_data(self, workspace_name: str) -> dict:
         """

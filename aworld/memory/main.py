@@ -1,3 +1,6 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
+import abc
 import asyncio
 import json
 import os
@@ -22,27 +25,21 @@ class InMemoryMemoryStore(MemoryStore):
         return next((item for item in self.memory_items if item.id == memory_id), None)
 
     def get_first(self, filters: dict = None) -> Optional[MemoryItem]:
-        """
-        Get the first memory item.
-        """
+        """Get the first memory item."""
         filtered_items = self.get_all(filters)
         if len(filtered_items) == 0:
             return None
         return filtered_items[0]
 
     def total_rounds(self, filters: dict = None) -> int:
-        """
-        Get the total number of rounds.
-        """
+        """Get the total number of rounds."""
         return len(self.get_all(filters))
 
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
-        """
-        Filter memory items based on filters.
-        """
+        """Filter memory items based on filters."""
         filtered_items = [item for item in self.memory_items if self._filter_memory_item(item, filters)]
         return filtered_items
-    
+
     def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None) -> bool:
         if memory_item.deleted:
             return False
@@ -132,7 +129,9 @@ class MemoryFactory:
         else:
             raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
 
+
 class Memory(MemoryBase):
+    __metaclass__ = abc.ABCMeta
 
     def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
         self.memory_store = memory_store
@@ -145,11 +144,27 @@ class Memory(MemoryBase):
             "temperature": os.getenv("MEM_LLM_TEMPERATURE") if os.getenv("MEM_LLM_TEMPERATURE") else 1.0,
             "streaming": 'False'
         }))
-        
+
         # Initialize long-term memory components
         if self.config.enable_long_term:
             self.longterm_config = config.long_term_config or LongTermConfig.create_simple_config()
             self.memory_orchestrator = SimpleMemoryOrchestrator(self.default_llm_instance)
+        self._llm_instance = None
+
+    @property
+    def default_llm_instance(self):
+        def get_env(key: str, default_key: str, default_val: object=None):
+            return os.getenv(key) if os.getenv(key) else os.getenv(default_key, default_val)
+
+        if not self._llm_instance:
+            self._llm_instance = get_llm_model(conf=ConfigDict({
+                "llm_model_name": get_env("MEM_LLM_MODEL_NAME", "LLM_MODEL_NAME"),
+                "llm_api_key": get_env("MEM_LLM_API_KEY", "LLM_MODEL_NAME") ,
+                "llm_base_url": get_env("MEM_LLM_BASE_URL", 'LLM_BASE_URL'),
+                "temperature": get_env("MEM_LLM_TEMPERATURE", "MEM_LLM_TEMPERATURE", 1.0),
+                "streaming": 'False'
+            }))
+        return self._llm_instance
 
             logger.info(f"🧠 [LongTermMemory] Initialized with config: "
                         f"threshold={self.longterm_config.trigger.message_count_threshold}, "
@@ -158,8 +173,8 @@ class Memory(MemoryBase):
 
 
     def _build_history_context(self, messages) -> str:
-        """
-        Build the history context string from a list of messages.
+        """Build the history context string from a list of messages.
+
         Args:
             messages: List of message objects with 'role', 'content', and optional 'tool_calls'.
         Returns:
@@ -167,12 +182,13 @@ class Memory(MemoryBase):
         """
         history_context = ""
         for item in messages:
-            history_context += f"\n\n{item['role']}: {item['content']}, {'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else '' }"
+            history_context += (f"\n\n{item['role']}: {item['content']}, "
+                                f"{'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else ''}")
         return history_context
 
     async def _call_llm_summary(self, summary_messages: list) -> str:
-        """
-        Call LLM to generate summary and log the process.
+        """Call LLM to generate summary and log the process.
+
         Args:
             summary_messages: List of messages to send to LLM.
         Returns:
@@ -184,12 +200,12 @@ class Memory(MemoryBase):
             messages=summary_messages,
             stream=False
         )
-        logger.info(f'🤔 [Summary] summary_content: result is {llm_response.content[:400]+"...truncated"} ')
+        logger.info(f'🤔 [Summary] summary_content: result is {llm_response.content[:400] + "...truncated"} ')
         return llm_response.content
 
     def _get_parsed_history_messages(self, history_items: list[MemoryItem]) -> list[dict]:
-        """
-        Get and format history messages for summary.
+        """Get and format history messages for summary.
+
         Args:
             history_items: list[MemoryItem]
         Returns:
@@ -219,11 +235,10 @@ class Memory(MemoryBase):
         return await self._call_llm_summary(summary_messages)
 
     async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
-        """
-        A tool for summarizing the conversation history.
-        """
+        """A tool for summarizing the conversation history."""
 
-        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]")
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, "
+                    f"last_rounds -> {last_rounds}]")
         history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
         if len(history_items) == 0:
             return ""
@@ -240,7 +255,8 @@ class Memory(MemoryBase):
         if self.config.enable_summary and len(to_be_summary.content) < self.config.summary_single_context_length:
             return to_be_summary.content
 
-        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, last_rounds -> {last_rounds}]: to be summary content is {to_be_summary.content}")
+        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, "
+                    f"last_rounds -> {last_rounds}]: to be summary content is {to_be_summary.content}")
         history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
         if len(history_items) == 0:
             return ""
@@ -262,11 +278,11 @@ class Memory(MemoryBase):
 
     def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
         pass
-    
+
     def _check_and_trigger_longterm_processing(self, filters: dict = None) -> None:
         """
         Check if long-term memory processing should be triggered and process if necessary.
-        
+
         Args:
             filters: Filters to apply when retrieving memory items for processing
         """
@@ -275,16 +291,16 @@ class Memory(MemoryBase):
         try:
             # Get all current memory items
             all_memory_items = self.memory_store.get_all(filters)
-            
+
             if not all_memory_items:
                 return
-                
+
             # Extract identifiers from filters or use defaults
             application_id = filters.get('application_id', 'default') if filters else 'default'
             agent_id = filters.get('agent_id', 'default') if filters else 'default'
             user_id = filters.get('user_id', 'default') if filters else 'default'
             session_id = filters.get('session_id', 'default') if filters else 'default'
-            
+
             # Check if processing should be triggered
             should_process = self.memory_orchestrator.should_process_memory(
                 memory_items=all_memory_items,
@@ -294,12 +310,12 @@ class Memory(MemoryBase):
                 session_id=session_id,
                 longterm_config=self.longterm_config
             )
-            
+
             if should_process:
                 logger.info(f"🧠 [LongTermMemory] Triggering long-term memory processing for "
                            f"app_id={application_id}, agent_id={agent_id}, user_id={user_id}, "
                            f"session_id={session_id}, total_items={len(all_memory_items)}")
-                
+
                 # Create processing task
                 task = self.memory_orchestrator.create_memory_task(
                     memory_items=all_memory_items,
@@ -310,26 +326,26 @@ class Memory(MemoryBase):
                     task_id="MEMORY_TASK_" + str(uuid.uuid4()),  # Will be auto-generated
                     longterm_config=self.longterm_config
                 )
-                
+
                 # For now, just log the task creation
                 # In the future, this could be sent to a background processor
                 logger.info(f"🧠 [LongTermMemory] Created processing task {task.task_id} "
                            f"with trigger_reason: {task.metadata.get('trigger_reason', 'unknown')}")
-                
+
                 if self.longterm_config.processing.enable_background_processing:
                     # Schedule background processing
                     asyncio.create_task(self._process_longterm_memory_task(task))
                 else:
                     # Process immediately
                     asyncio.run(self._process_longterm_memory_task(task))
-                    
+
         except Exception as e:
             logger.error(f"🧠 [LongTermMemory] Error during long-term memory processing check: {e}")
-    
+
     async def _process_longterm_memory_task(self, task) -> None:
         """
         Process a long-term memory task (placeholder implementation).
-        
+
         Args:
             task: MemoryProcessingTask to process
         """
@@ -337,25 +353,24 @@ class Memory(MemoryBase):
             if not self.config.enable_long_term:
                 return
             logger.info(f"🧠 [LongTermMemory] Processing task {task.task_id} started")
-            
+
             # This is a placeholder implementation
             # In a real implementation, this would:
             # 1. Use MemoryGungnir to extract user profiles and agent experiences
             # 2. Store the extracted long-term memories
             # 3. Update the task status
-            
+
             # For now, just simulate processing time
             await asyncio.sleep(0.1)
-            
+
             logger.info(f"🧠 [LongTermMemory] Processing task {task.task_id} completed "
                        f"(placeholder implementation)")
-                       
+
         except Exception as e:
             logger.error(f"🧠 [LongTermMemory] Error processing task {task.task_id}: {e}")
 
 
 class InMemoryStorageMemory(Memory):
-
     def __init__(self, memory_store: MemoryStore, config: MemoryConfig, enable_summary: bool = True, **kwargs):
         super().__init__(memory_store=memory_store, config=config, longterm_config=config.long_term_config)
         self.summary = {}
@@ -370,13 +385,12 @@ class InMemoryStorageMemory(Memory):
             total_rounds = len(self.memory_store.get_all())
             if total_rounds > self.summary_rounds:
                 self._create_or_update_summary(total_rounds)
-        
+
         # Check and trigger long-term memory processing
         self._check_and_trigger_longterm_processing(filters)
 
     def _create_or_update_summary(self, total_rounds: int):
-        """
-        Create or update summary based on current total rounds.
+        """Create or update summary based on current total rounds.
 
         Args:
             total_rounds (int): Total number of rounds.
@@ -419,8 +433,7 @@ class InMemoryStorageMemory(Memory):
             self.summary[range_key] = summary_item
 
     def _summarize_items(self, items: list[MemoryItem], summary_index: int) -> str:
-        """
-        Summarize a list of memory items.
+        """Summarize a list of memory items.
 
         Args:
             items (list[MemoryItem]): List of memory items to summarize.
@@ -446,8 +459,7 @@ class InMemoryStorageMemory(Memory):
         return self.memory_store.get_all()
 
     def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None) -> list[MemoryItem]:
-        """
-        Get last n memories.
+        """Get last n memories.
 
         Args:
             last_rounds (int): Number of memories to retrieve.
