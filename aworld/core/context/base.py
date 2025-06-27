@@ -338,10 +338,10 @@ class AgentContext:
         return self._context.get_task()
 
     def get_session(self) -> Session:
-        return self._context.get_session()
+        return self._context.session
 
     def get_engine(self) -> str:
-        return self._context.get_engine()
+        return self._context.engine
     
     def get_user(self) -> str:
-        return self._context.get_user()
+        return self._context.user

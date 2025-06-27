@@ -226,6 +226,12 @@ class MemoryBase(ABC):
         Args:
             memory_id (str): ID of the memory to delete.
         """
+    def delete_items(self, message_type: str, session_id: str, task_id: str, filters: dict = None):
+        """Delete a memory by ID.
+        Args:
+            memory_id (str): ID of the memory to delete.
+        """
+        pass
 
 
 SUMMARY_PROMPT = """
