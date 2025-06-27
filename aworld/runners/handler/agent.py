@@ -236,7 +236,7 @@ class DefaultAgentHandler(AgentHandler):
         )
 
     async def _stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
-        if GraphBuildType.HANDOFF.value == self.swarm.build_type:
+        if GraphBuildType.WORKFLOW.value != self.swarm.build_type:
             async for event in self._social_stop_check(action, message):
                 yield event
         else:
