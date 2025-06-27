@@ -1,3 +1,4 @@
+import logging
 import os
 import traceback
 import uuid
@@ -235,17 +236,15 @@ class WorkSpace(BaseModel):
         # Add to workspace
         for artifact in artifacts:
             # Store in repository
-            self._store_artifact(artifact)
+            await self._store_artifact(artifact)
+            logging.info(f"[📂WORKSPACE]💾 Storing artifact in repository: {artifact.artifact_id}")
+
 
         # Update workspace time
         self.updated_at = datetime.now().isoformat()
 
         # Save workspace state to create new version
         self.save()
-
-        # Notify observers
-        for artifact in artifacts:
-            await self._notify_observers("create", artifact)
 
         return artifacts  # Return the list of created artifacts
 
@@ -264,7 +263,7 @@ class WorkSpace(BaseModel):
         """
 
         # Store in repository
-        self._store_artifact(artifact)
+        await self._store_artifact(artifact)
 
         # Update workspace time
         self.updated_at = datetime.now().isoformat()
@@ -274,6 +273,17 @@ class WorkSpace(BaseModel):
 
         await self._notify_observers("create", artifact)
 
+    async def mark_as_completed(self, artifact_id: str) -> None:
+        """
+        Mark an artifact as completed
+        """
+        artifact = self.get_artifact(artifact_id)
+        if artifact:
+            artifact.mark_complete()
+            self.repository.store_artifact(artifact)
+            logging.info(f"[📂WORKSPACE]🎉 Marking artifact as completed: {artifact_id}")
+            await self._notify_observers("complete", artifact)
+        self.save()
 
     def get_artifact(self, artifact_id: str) -> Optional[Artifact]:
         """Get artifact with the specified ID"""
@@ -312,13 +322,7 @@ class WorkSpace(BaseModel):
             artifact.update_content(content, description)
 
             # Update storage
-            self._store_artifact(artifact)
-
-            # Update workspace time
-            self.updated_at = datetime.now().isoformat()
-
-            # Notify observers
-            await self._notify_observers("update", artifact)
+            await self._store_artifact(artifact)
 
             return artifact
         return None
@@ -333,6 +337,9 @@ class WorkSpace(BaseModel):
         Returns:
             Whether deletion was successful
         """
+        existed = self._check_artifact_exists(artifact_id)
+        if not existed:
+            return True
         for i, artifact in enumerate(self.artifacts):
             if artifact.artifact_id == artifact_id:
                 # Remove from list
@@ -341,6 +348,7 @@ class WorkSpace(BaseModel):
                 # Update workspace time
                 self.updated_at = datetime.now().isoformat()
 
+                self.repository.delete_artifact(artifact_id)
                 # Save workspace state to create new version
                 self.save()
 
@@ -411,18 +419,28 @@ class WorkSpace(BaseModel):
     
     def _check_artifact_exists(self, artifact_id: str) -> bool:
         return self.artifact_id_index.get(artifact_id, -1) >= 0
-    
+
+
+    def _append_artifact(self, artifact: Artifact) -> None:
+        self.artifacts.append(artifact)
+        logging.info(f"[📂WORKSPACE]🆕 Appending artifact in repository: {artifact.artifact_id}")
+
+
     def _update_artifact(self, artifact: Artifact) -> None:
         for i, a in enumerate(self.artifacts):
             if a.artifact_id == artifact.artifact_id:
                 self.artifacts[i] = artifact
+                logging.info(f"[📂WORKSPACE]🔄 Updating artifact in repository: {artifact.artifact_id}")
                 break
+
     
-    def _store_artifact(self, artifact: Artifact) -> None:
+    async def _store_artifact(self, artifact: Artifact) -> None:
         if self._check_artifact_exists(artifact.artifact_id):
             self._update_artifact(artifact)
+            await self._notify_observers("update", artifact)
         else:
-            self.artifacts.append(artifact)
+            self._append_artifact(artifact)
+            await self._notify_observers("create", artifact)
 
         """Store artifact in repository"""
         artifact_data = artifact.to_dict()
@@ -460,7 +478,7 @@ class WorkSpace(BaseModel):
         }
 
         # Store workspace information with workspace_id in metadata
-        self.repository.save_index()
+        self.repository.save_index(workspace_data)
         self._rebuild_artifact_id_index()
 
     def get_file_content_by_artifact_id(self, artifact_id: str) -> str:

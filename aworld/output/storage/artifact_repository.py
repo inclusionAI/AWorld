@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import uuid
 from enum import Enum
@@ -21,7 +22,7 @@ class ArtifactRepository:
         """Load or create index file"""
         pass
 
-    def save_index(self) -> None:
+    def save_index(self, index_data: Dict[str, Any]) -> None:
         """Save index to file"""
 
     def store_artifact(self,
@@ -37,6 +38,12 @@ class ArtifactRepository:
 
         Returns:
             Version identifier
+        """
+        pass
+
+    def delete_artifact(self, artifact_id: str) -> None:
+        """
+        Delete artifact from repository
         """
         pass
 
@@ -119,8 +126,8 @@ class LocalArtifactRepository(ArtifactRepository):
             self._save_index(index)
             return index
 
-    def save_index(self) -> None:
-        self._save_index(self.index)
+    def save_index(self, workspace_data) -> None:
+        self._save_index(workspace_data)
 
     def _save_index(self, index: Dict[str, Any]) -> None:
         """Save index to file"""
@@ -152,9 +159,9 @@ class LocalArtifactRepository(ArtifactRepository):
         # Store content
         content_path = Path(self.artifact_path(artifact.artifact_id))
         content_path.parent.mkdir(parents=True, exist_ok=True)
-        if not content_path.exists():
-            with open(content_path, 'w') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False, cls=CommonEncoder)
+        with open(content_path, 'w') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, cls=CommonEncoder)
+
         if artifact.attachments:
             for attachment in artifact.attachments:
                 attachment_path = content_path.parent / attachment.filename
@@ -162,14 +169,7 @@ class LocalArtifactRepository(ArtifactRepository):
                 with open(attachment_path, 'w') as f:
                     f.write(attachment.content)
 
-        if artifact.artifact_id not in self.index["artifacts"]:
-            self.index["artifacts"].append({
-                'artifact_id': artifact.artifact_id,
-                'type': artifact.artifact_type,
-                'version': version
-            })
 
-        self._save_index(self.index)
 
         return "success"
 
@@ -211,6 +211,34 @@ class LocalArtifactRepository(ArtifactRepository):
             versions.append(version_info)
 
         return versions
+    
+    def delete_artifact(self, artifact_id: str) -> bool:
+        """
+        Delete the specified artifact and its attachments from storage
+        Args:
+            artifact_id: Artifact identifier
+        Returns:
+            Whether deletion was successful
+        """
+        content_path = Path(self.artifact_path(artifact_id))
+        if not Path(content_path).exists():
+            return False
+            
+        # Delete the artifact file
+        os.remove(content_path)
+        
+        # Delete the artifact directory and all its contents
+        artifact_dir = content_path.parent
+        if artifact_dir.exists():
+            for item in artifact_dir.glob('**/*'):
+                if item.is_file():
+                    os.remove(item)
+            for item in reversed(list(artifact_dir.glob('**/*'))):
+                if item.is_dir():
+                    os.rmdir(item)
+            os.rmdir(artifact_dir)
+        
+        return True
 
     def super_path(self):
         return str(self.storage_path)

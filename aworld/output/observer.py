@@ -106,27 +106,27 @@ class DecoratorBasedObserver(WorkspaceObserver):
     
     def register_create_handler(self, func, instance=None, workspace_id=None, filters=None):
         """Register a handler for artifact creation"""
-        logging.info(f"Registering create handler for {func}")
+        logging.info(f"[📂WORKSPACE]✨ Registering create handler for {func}")
         self.create_handlers.append(Handler(func, instance, workspace_id, filters))
         return func
 
     def un_register_create_handler(self, func, instance=None, workspace_id=None):
         """Register a handler for artifact creation"""
-        logging.info(f"UnRegister create handler for {func}")
+        logging.info(f"[📂WORKSPACE] UnRegister create handler for {func}")
         for handler in self.create_handlers:
             if handler.func == func:
                 self.create_handlers.remove(handler)
-                logging.info(f"UnRegister create handler for {func} success")
+                logging.info(f"[📂WORKSPACE] UnRegister create handler for {func} success")
 
     def register_update_handler(self, func, instance=None, workspace_id=None, filters=None):
         """Register a handler for artifact update"""
-        logging.info(f"Registering update handler for {func}")
+        logging.info(f"[📂WORKSPACE]✨ Registering update handler for {func}")
         self.update_handlers.append(Handler(func, instance, workspace_id, filters))
         return func
         
     def register_delete_handler(self, func, instance=None, workspace_id=None, filters=None):
         """Register a handler for artifact deletion"""
-        logging.info(f"Registering delete handler for {func}")
+        logging.info(f"[📂WORKSPACE]✨ Registering delete handler for {func}")
         self.delete_handlers.append(Handler(func, instance, workspace_id, filters))
         return func
 

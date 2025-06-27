@@ -1,4 +1,6 @@
 import asyncio
+import os
+from dotenv import load_dotenv
 
 from aworld.logs.util import logger
 from aworld.output import WorkSpace, ArtifactType
@@ -27,8 +29,16 @@ class DemoClass:
     async def artifact_create(self, artifact, **kwargs):
         logger.info(f"DemoClass : text artifact created in specific workspace {kwargs['workspace_id']}: {artifact.artifact_id}")
 
+async def run():
+    load_dotenv()
+    DemoClass()
+
+    workspace = WorkSpace.from_local_storages(workspace_id="demo")
+    await workspace.create_artifact(ArtifactType.TEXT, "artifact_001", content="123")
+    await workspace.create_artifact(ArtifactType.TEXT, "artifact_001", content="456")
+    await workspace.update_artifact("artifact_001", content="7890")
+    await workspace.mark_as_completed("artifact_001")
+    # await workspace.delete_artifact("artifact_001")
 
 if __name__ == '__main__':
-    DemoClass()
-    workspace = WorkSpace.from_local_storages(workspace_id="demo")
-    asyncio.run(workspace.create_artifact(ArtifactType.TEXT, "artifact_001"))
+    asyncio.run(run())
