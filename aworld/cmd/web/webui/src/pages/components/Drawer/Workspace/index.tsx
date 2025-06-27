@@ -11,7 +11,7 @@ interface WorkspaceProps {
 const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
   const [currentTab, setCurrentTab] = React.useState('1');
   const [treeData, setTreeData] = useState<any>(null);
-
+  console.log(treeData)
   useEffect(() => {
     const fetchWorkspaceTree = async () => {
       try {
@@ -67,7 +67,6 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
   return (
     <>
       <div className="border workspacebox">
-        <div>工作空间树数据: {treeData ? JSON.stringify(treeData) : '加载中...'}</div>
         <Flex className="tabbox" justify="space-between">
           {tabs.map((item) => (
             <Flex className={`border tab ${item.key === currentTab ? 'active' : ''}`} key={item.key} align="center" onClick={() => setCurrentTab(item.key)}>

@@ -21,6 +21,7 @@ import {
   useXChat
 } from '@ant-design/x';
 import { Avatar, Button, Flex, type GetProp, message, Spin, Drawer } from 'antd';
+import TraceXY from './components/Drawer/TraceXY';
 import { createStyles } from 'antd-style';
 import React, { useEffect, useRef, useState } from 'react';
 import logo from '../assets/aworld_logo.png';
@@ -225,7 +226,7 @@ const App: React.FC = () => {
   const [modelsLoading, setModelsLoading] = useState(false);
 
   // 右侧抽屉
-  type DrawerContentType = 'Team workspace' | 'trace';
+  type DrawerContentType = 'Team workspace' | 'Trace' | 'TraceXY';
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Team workspace');
   const [traceId, setTraceId] = useState<string>('');
@@ -592,7 +593,13 @@ const App: React.FC = () => {
                       type="text"
                       size="small"
                       icon={<BoxPlotOutlined />}
-                      onClick={() => openDrawer('trace',messageItem.props?.trace_id)}
+                      onClick={() => openDrawer('Trace',messageItem.props?.trace_id)}
+                    />
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<BoxPlotOutlined />}
+                      onClick={() => openDrawer('TraceXY',messageItem.props?.trace_id)}
                     />
                     <Button
                       type="text"
@@ -745,7 +752,13 @@ const App: React.FC = () => {
         maskClosable={true}
         open={drawerVisible}
       >
-        {drawerContent === 'Team workspace' ? <Workspace sessionId={sessionId} /> : <Trace key={`${traceId}-${drawerVisible}`} sessionId={sessionId} drawerVisible={drawerVisible} traceId={traceId} />}
+        {drawerContent === 'Team workspace' ? (
+          <Workspace sessionId={sessionId} />
+        ) : drawerContent === 'Trace' ? (
+          <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
+        ) : (
+          <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} drawerVisible={drawerVisible} />
+        )}
       </Drawer>
     </div>
   );

@@ -17,6 +17,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
+    "reactflow": "^11.11.4",
     "uuid": "^11.1.0"
   },
   "devDependencies": {

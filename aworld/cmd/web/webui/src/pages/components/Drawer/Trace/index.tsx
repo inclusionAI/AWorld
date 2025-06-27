@@ -5,7 +5,6 @@ import { treeToMermaid } from './mermaidUtils';
 import './index.less';
 
 interface TraceProps {
-  sessionId?: string;
   traceId?: string;
   drawerVisible?: boolean;
 }
@@ -14,6 +13,10 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
   const diagramRef = useRef<HTMLDivElement>(null);
   const [mermaidCode, setMermaidCode] = useState<string>('');
   const isFetching = useRef(false);
+
+  const renderError = (message: string) => {
+    return `graph TD\n  A[${message}]`;
+  };
 
   const handleFetchTrace = useCallback(async () => {
     if (!traceId || isFetching.current) return;
@@ -24,13 +27,12 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
       
       const mermaidData = treeToMermaid(result.data);
       if (!mermaidData.includes('graph') && !mermaidData.includes('flowchart')) {
-        throw new Error(`Invalid mermaid data format: ${mermaidData.substring(0, 50)}...`);
+        throw new Error(`Invalid mermaid data format`);
       }
       setMermaidCode(mermaidData);
     } catch (error) {
       console.error('Trace processing error:', error);
-      const errorMessage = error instanceof Error ? error.message : '未知错误';
-      setMermaidCode(`graph TD\n  A[数据处理错误: ${errorMessage}]`);
+      setMermaidCode(renderError(error instanceof Error ? error.message : '数据处理错误'));
     } finally {
       isFetching.current = false;
     }
@@ -57,16 +59,14 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
         
         if (diagramRef.current) {
           diagramRef.current.innerHTML = mermaidCode;
+          await mermaid.run({
+            nodes: [diagramRef.current],
+            suppressErrors: true
+          });
         }
-
-        await mermaid.run({
-          nodes: [diagramRef.current as HTMLElement],
-          suppressErrors: true
-        });
       } catch (error) {
         console.error('Mermaid error:', error);
-        const errorMessage = error instanceof Error ? error.message : '图表渲染错误';
-        setMermaidCode(`graph TD\n  A[${errorMessage}]`);
+        setMermaidCode(renderError(error instanceof Error ? error.message : '图表渲染错误'));
       }
     };
 
