@@ -582,7 +582,7 @@ class WorkflowBuilder(TopologyBuilder):
         Returns:
             Direct topology diagram (AgentGraph) of the agents.
         """
-        agent_graph = AgentGraph()
+        agent_graph = AgentGraph(ordered_agents=[], agents={}, successor={}, predecessor={})
         valid_agents = []
         for agent in self.agent_list:
             if isinstance(agent, BaseAgent):
@@ -645,7 +645,7 @@ class HandoffBuilder(TopologyBuilder):
             raise RuntimeError(f"no valid agent pair to build execution graph.")
 
         # agent handoffs graph build.
-        agent_graph = AgentGraph()
+        agent_graph = AgentGraph(ordered_agents=[], agents={}, successor={}, predecessor={})
         for pair in valid_agent_pair:
             TopologyBuilder.register_agent(pair[0])
             TopologyBuilder.register_agent(pair[1])
@@ -684,7 +684,7 @@ class TeamBuilder(TopologyBuilder):
     """
 
     def build(self):
-        agent_graph = AgentGraph()
+        agent_graph = AgentGraph(ordered_agents=[], agents={}, successor={}, predecessor={})
         valid_agents = []
         root_agent = self.agent_list[0]
         if isinstance(root_agent, tuple):
