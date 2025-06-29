@@ -124,6 +124,7 @@ class TaskEventRunner(TaskRunner):
 
         key = message.category
         transformer = event_bus.get_transform_handlers(key)
+        print(f"_common_process: {message}")
         if transformer:
             message = await event_bus.transform(message, handler=transformer)
 
@@ -177,6 +178,7 @@ class TaskEventRunner(TaskRunner):
                     self.state_manager.save_message_handle_result(name=handler.__name__,
                                                                   message=message,
                                                                   result=con)
+                    print(f"con: {con} \n handlers: {self.handlers}")
                     async for event in self._inner_handler_process(
                             results=[con],
                             handlers=self.handlers

@@ -13,7 +13,7 @@ from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, ModelConfig, OptimizationConfig, \
     LlmCompressionConfig
 from aworld.core.agent.agent_desc import get_agent_desc
-from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
+from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import AgentContext
 from aworld.core.context.base import Context
@@ -310,9 +310,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 # format in framework
                 names = full_name.split("__")
                 tool_name = names[0]
-                if is_agent_by_name(tool_name):
+                print(f"param_info={params} tool_name={tool_name} full_name={full_name} is_agent_by_name={is_agent_by_name(full_name)} AgentFactory._agent_instance={AgentFactory._agent_instance}")
+                if is_agent_by_name(full_name):
                     param_info = params.get('content', "") + ' ' + params.get('info', '')
-                    results.append(ActionModel(tool_name=tool_name,
+                    results.append(ActionModel(tool_name=full_name,
                                                tool_id=tool_call.id,
                                                agent_name=self.id(),
                                                params=params,
@@ -338,9 +339,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     continue
                 names = full_name.split("__")
                 tool_name = names[0]
-                if is_agent_by_name(tool_name):
+                if is_agent_by_name(full_name):
                     param_info = params.get('content', "") + ' ' + params.get('info', '')
-                    results.append(ActionModel(tool_name=tool_name,
+                    results.append(ActionModel(tool_name=full_name,
                                                tool_id=use_tool.get('id'),
                                                agent_name=self.id(),
                                                params=params,
@@ -636,6 +637,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(traceback.format_exc())
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
+        print(f"agent_result: {agent_result}")
         if not agent_result.is_call_tool:
             self._finished = True
         return agent_result.actions
@@ -781,6 +783,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
 
         try:
+            print(f"serializable_messages: {messages} tools: {self.tools}")
+
             stream_mode = kwargs.get("stream", False)
             if stream_mode:
                 llm_response = ModelResponse(id="", model="", content="", tool_calls=[])
