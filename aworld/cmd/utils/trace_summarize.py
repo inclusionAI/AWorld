@@ -66,6 +66,11 @@ async def _do_summarize_trace(trace_id: str):
 
 def summarize_trace(trace_id: str):
     if trace_id not in _trace_summary_cache:
+        if trace_agent.conf.llm_api_key is None:
+            logger.warning(
+                "LLM_API_KEY_TRACE is not set, trace summarize will not be executed.")
+            return
+
         task = asyncio.create_task(_do_summarize_trace(trace_id))
         _trace_summary_cache[trace_id] = task
 
