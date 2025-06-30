@@ -50,6 +50,25 @@ class MemoryItem(BaseModel):
         """
         return cls(**data)
 
+    @property
+    def user_id(self) -> str:
+        return self.metadata.get('user_id')
+
+    @property
+    def session_id(self) -> str:
+        return self.metadata.get('session_id')
+
+    @property
+    def task_id(self) -> str:
+        return self.metadata.get('task_id')
+
+    @property
+    def agent_id(self) -> str:
+        return self.metadata.get('agent_id')
+
+    @property
+    def application_id(self) -> str:
+        return self.metadata.get('application_id', 'default')
 
 class MemoryStore(ABC):
     """
@@ -256,7 +275,7 @@ class TriggerConfig(BaseModel):
     time_interval_minutes: int = Field(default=60, description="Time interval in minutes for periodic processing")
 
     # Content importance triggers
-    enable_importance_trigger: bool = Field(default=True, description="Enable content importance based triggers")
+    enable_importance_trigger: bool = Field(default=False, description="Enable content importance based triggers")
     importance_keywords: List[str] = Field(default_factory=lambda: ["error", "success", "完成", "失败"],
                                            description="Keywords that indicate important content")
 
