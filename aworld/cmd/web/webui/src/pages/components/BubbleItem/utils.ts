@@ -7,9 +7,10 @@ export interface ToolCardData {
   results: string;
   card_type: string;
   card_data: any;
+  artifacts: any[];
 }
 
-type ContentSegment = 
+type ContentSegment =
   | { type: 'text'; content: string }
   | { type: 'tool_card'; data: ToolCardData; raw: string };
 
@@ -21,11 +22,11 @@ export const extractToolCards = (content: string): ParsedContent => {
   const toolCardRegex = /(.*?)(```tool_card\s*({[\s\S]*?})\s*```)/gs;
   const segments: ContentSegment[] = [];
   let lastIndex = 0;
-  
+
   let match;
   while ((match = toolCardRegex.exec(content)) !== null) {
     const [, textBefore, fullToolCard, toolCardJson] = match;
-    
+
     // 添加文本内容
     if (textBefore) {
       segments.push({

@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { Collapse, Space, message } from 'antd';
+import { Button, Collapse, Space, message } from 'antd';
+import React, { useCallback, useState } from 'react';
 import type { ToolCardData } from '../utils';
 import './index.less';
 
@@ -103,6 +103,16 @@ const CardDefault: React.FC<Props> = ({ data }) => {
           </pre>
         </Panel>
       </Collapse>
+      {data?.artifacts?.length > 0 && (
+        <Button
+          type="link"
+          onClick={() => {
+            alert(`Open Workspace: ${data?.artifacts[0]?.artifact_id}`);
+          }}
+        >
+          View Workspace
+        </Button>
+      )}
     </div>
   );
 };

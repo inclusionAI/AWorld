@@ -1,5 +1,5 @@
-import { CheckOutlined } from '@ant-design/icons';
-import { Card, Flex } from 'antd';
+import { CheckOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Card, Flex } from 'antd';
 import React from 'react';
 import type { ToolCardData } from '../utils';
 import './index.less';
@@ -22,17 +22,22 @@ const cardLinkList: React.FC<Props> = ({ data }) => {
     <div className="cardwrap">
       {items.length > 0 && (
         <div className="card-length">
+          <Button icon={<SearchOutlined />} >{`search keywords: ${data?.card_data?.query || ''}`}</Button>
           <CheckOutlined className="check-icon" />
           {items.length} results
         </div>
       )}
-      <Flex className="cardbox">
-        {cardItems.map((item: ItemInterface, index: number) => (
-          <Card key={index} className="card-item" onClick={() => item.link && (window.open(item.link, '_blank', 'noopener,noreferrer'))}>
-            <Card.Meta title={item.title} description={item.snippet} />
-          </Card>
-        ))}
-      </Flex>
+      <div className="border-box">
+        <Flex className="cardbox">
+          {cardItems.map((item: ItemInterface, index: number) => (
+            <Card title={item.title} key={index} className="card-item" onClick={() => item.link && (window.open(item.link, '_blank', 'noopener,noreferrer'))}>
+              <p>{item.snippet}</p>
+              {/* 提取域名展示 */}
+              <p style={{ maxWidth: '125px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.link}</p>
+            </Card>
+          ))}
+        </Flex>
+      </div>
     </div>
   );
 };

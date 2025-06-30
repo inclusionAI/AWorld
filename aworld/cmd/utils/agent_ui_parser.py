@@ -28,6 +28,7 @@ class ToolCard(BaseModel):
     results: str = Field(None, description="results")
     card_type: str = Field(None, description="card type")
     card_data: dict = Field(None, description="card data")
+    artifacts: list = Field(default_factory=list, description="artifacts")
 
     @staticmethod
     def from_tool_result(output: ToolResultOutput) -> "ToolCard":
@@ -38,6 +39,7 @@ class ToolCard(BaseModel):
             tool_call_id=output.origin_tool_call.id,
             arguments=output.origin_tool_call.function.arguments,
             results=output.data,
+            artifacts=[],
         )
 
 
@@ -59,6 +61,26 @@ class DefaultToolResultParser(BaseToolResultParser):
 
         tool_card.card_type = "tool_call_card_default"
 
+        # screenshots
+        if (
+            output.metadata.get("screenshots")
+            and isinstance(output.metadata.get("screenshots"), list)
+            and len(output.metadata.get("screenshots")) > 0
+        ):
+            for _, screenshot in enumerate(output.metadata.get("screenshots")):
+                image_artifact = Artifact(
+                    artifact_id=str(uuid.uuid4()),
+                    artifact_type=ArtifactType.IMAGE,
+                    content=screenshot.get("ossPath"),
+                )
+                await workspace.add_artifact(image_artifact)
+                tool_card.artifacts.append(
+                    {
+                        "artifact_type": "WEB_PAGES",
+                        "artifact_id": image_artifact.artifact_id,
+                    }
+                )
+
         return f"""\
 **🔧 Tool: {tool_card.tool_name}#{tool_card.function_name}**\n\n
 ```tool_card
@@ -77,12 +99,20 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
         try:
             args = json.loads(tool_card.arguments)
             query = args.get("query")
+            # aworld search server
+            if not query:
+                query = args.get("query_list")
         except Exception:
             pass
 
         result_items = []
         try:
             result_items = json.loads(tool_card.results)
+            # aworld search server return url, not link
+            if result_items and isinstance(result_items, list):
+                for item in result_items:
+                    if not item.get("link", None) and item.get("url", None):
+                        item["link"] = item.get("url")
         except Exception:
             pass
 
@@ -104,6 +134,12 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
             metadata={
                 "query": query,
             },
+        )
+        tool_card.artifacts.append(
+            {
+                "artifact_type": "WEB_PAGES",
+                "artifact_id": artifact_id,
+            }
         )
 
         return f"""\
@@ -190,7 +226,6 @@ class AWorldWebAgentUI(AworldUI):
         """
         tool_result
         """
-        await self.parse_tool_artifacts(output.metadata)
         parser = ToolResultParserFactory.get_parser(output.tool_type, output.tool_name)
         return await parser.parse(output, workspace=self.workspace)
 
@@ -209,21 +244,3 @@ class AWorldWebAgentUI(AworldUI):
     @override
     async def custom_output(self, output: Output):
         return output.data
-
-    async def parse_tool_artifacts(self, metadata):
-        if not metadata:
-            return
-
-        # screenshots
-        if (
-            metadata.get("screenshots")
-            and isinstance(metadata.get("screenshots"), list)
-            and len(metadata.get("screenshots")) > 0
-        ):
-            for index, screenshot in enumerate(metadata.get("screenshots")):
-                image_artifact = Artifact(
-                    artifact_id=str(uuid.uuid4()),
-                    artifact_type=ArtifactType.IMAGE,
-                    content=screenshot.get("ossPath"),
-                )
-                await self.workspace.add_artifact(image_artifact)

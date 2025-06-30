@@ -60,7 +60,6 @@ async def stream_run(request: ChatCompletionRequest):
         session_id=request.session_id,
         workspace=WorkSpace.from_local_storages(
             workspace_id=request.session_id,
-            storage_path=os.path.join(os.curdir, "workspaces", request.session_id),
         ),
     )
 
