@@ -84,6 +84,7 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
                 'agent_experience_extraction': longterm_config.extraction.enable_agent_experience_extraction
             }
         })
+
         logger.info(f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] created memory task#{extract_param.extract_type}[{extract_param.session_id}:{extract_param.task_id}]: {memory_task.task_id}, reason: {reason}")
         return memory_task
     
