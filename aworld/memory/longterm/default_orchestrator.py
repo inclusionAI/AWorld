@@ -7,6 +7,7 @@ from aworld.core.memory import MemoryItem, LongTermConfig
 from aworld.models.llm import LLMModel
 from .base import MemoryOrchestrator, MemoryProcessingTask
 from ..models import LongTermExtractParams
+from ...logs.util import logger
 
 
 class DefaultMemoryOrchestrator(MemoryOrchestrator):
@@ -62,8 +63,10 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
             extract_param,
             longterm_config=longterm_config
         )
+        logger.info(f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] flag of should_process: {should_process}, reason: {reason}")
 
         if not should_process:
+            logger.info(f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] not trigger memory task#{extract_param.extract_type}[{extract_param.session_id}:{extract_param.task_id}]: {extract_param.task_id}, reason: {reason}")
             return None
 
         # create long-term memory task
@@ -81,7 +84,7 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
                 'agent_experience_extraction': longterm_config.extraction.enable_agent_experience_extraction
             }
         })
-
+        logger.info(f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] created memory task#{extract_param.extract_type}[{extract_param.session_id}:{extract_param.task_id}]: {memory_task.task_id}, reason: {reason}")
         return memory_task
     
     def check_message_count_threshold(self, memory_items: List[MemoryItem], longterm_config: LongTermConfig) -> bool:

@@ -49,29 +49,29 @@ class InMemoryMemoryStore(MemoryStore):
         if filters is None:
             return True
         if filters.get('application_id') is not None:
-            if memory_item.metadata.get('application_id') is None:
+            if memory_item.application_id is None:
                 return False
-            if memory_item.metadata.get('application_id') != filters['application_id']:
+            if memory_item.application_id != filters['application_id']:
                 return False
         if filters.get('user_id') is not None:
-            if memory_item.metadata.get('user_id') is None:
+            if memory_item.user_id is None:
                 return False
-            if memory_item.metadata.get('user_id') != filters['user_id']:
+            if memory_item.user_id != filters['user_id']:
                 return False
         if filters.get('agent_id') is not None:
-            if memory_item.metadata.get('agent_id') is None:
+            if memory_item.agent_id is None:
                 return False
-            if memory_item.metadata.get('agent_id') != filters['agent_id']:
+            if memory_item.agent_id != filters['agent_id']:
                 return False
         if filters.get('task_id') is not None:
-            if memory_item.metadata.get('task_id') is None:
+            if memory_item.task_id is None:
                 return False
-            if memory_item.metadata.get('task_id') != filters['task_id']:
+            if memory_item.task_id != filters['task_id']:
                 return False
         if filters.get('session_id') is not None:
-            if memory_item.metadata.get('session_id') is None:
+            if memory_item.session_id is None:
                 return False
-            if memory_item.metadata.get('session_id') != filters['session_id']:
+            if memory_item.session_id != filters['session_id']:
                 return False
         if filters.get('memory_type') is not None:
             if memory_item.memory_type is None:
@@ -307,6 +307,7 @@ class Memory(MemoryBase):
             })
 
             task_params = []
+
             # Check if user profile extraction is enabled
             if long_term_config.extraction.enable_user_profile_extraction:
                 if memory_item.user_id:
@@ -320,6 +321,7 @@ class Memory(MemoryBase):
                     task_params.append(user_profile_task_params)
                 else:
                     logger.warning(f"🧠 [MEMORY:long-term] memory_item.user_id is None, skip user profile extraction")
+
             # Check if agent experience extraction is enabled
             if long_term_config.extraction.enable_agent_experience_extraction:
                 if memory_item.agent_id:
