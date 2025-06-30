@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass
+import uuid
 
 from pydantic import Field, BaseModel, ConfigDict
 
@@ -9,6 +10,7 @@ from aworld.output import (
     Output,
     WorkSpace,
 )
+from aworld.output.artifact import Artifact, ArtifactType
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.output.utils import consume_content
 from abc import ABC, abstractmethod
@@ -42,17 +44,17 @@ class ToolCard(BaseModel):
 class BaseToolResultParser(ABC):
 
     def __init__(self, tool_name: str = None):
-        self.tool_name = tool_name
+        self.tool_name = tool_name or self.__class__.__name__
 
     @abstractmethod
-    async def parse(self, output: ToolResultOutput):
+    async def parse(self, output: ToolResultOutput, workspace: WorkSpace):
         pass
 
 
 class DefaultToolResultParser(BaseToolResultParser):
 
     @override
-    async def parse(self, output: ToolResultOutput):
+    async def parse(self, output: ToolResultOutput, workspace: WorkSpace):
         tool_card = ToolCard.from_tool_result(output)
 
         tool_card.card_type = "tool_call_card_default"
@@ -68,7 +70,7 @@ class DefaultToolResultParser(BaseToolResultParser):
 class GooglePseSearchToolResultParser(BaseToolResultParser):
 
     @override
-    async def parse(self, output: ToolResultOutput):
+    async def parse(self, output: ToolResultOutput, workspace: WorkSpace):
         tool_card = ToolCard.from_tool_result(output)
 
         query = ""
@@ -93,6 +95,16 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
             "query": query,
             "search_items": result_items,
         }
+
+        artifact_id = str(uuid.uuid4())
+        await workspace.create_artifact(
+            artifact_type=ArtifactType.WEB_PAGES,
+            artifact_id=artifact_id,
+            content=result_items,
+            metadata={
+                "query": query,
+            },
+        )
 
         return f"""\
 **🔎 Google Search**\n\n
@@ -178,8 +190,9 @@ class AWorldWebAgentUI(AworldUI):
         """
         tool_result
         """
+        await self.parse_tool_artifacts(output.metadata)
         parser = ToolResultParserFactory.get_parser(output.tool_type, output.tool_name)
-        return await parser.parse(output)
+        return await parser.parse(output, workspace=self.workspace)
 
     @override
     async def step(self, output: StepOutput):
@@ -196,3 +209,21 @@ class AWorldWebAgentUI(AworldUI):
     @override
     async def custom_output(self, output: Output):
         return output.data
+
+    async def parse_tool_artifacts(self, metadata):
+        if not metadata:
+            return
+
+        # screenshots
+        if (
+            metadata.get("screenshots")
+            and isinstance(metadata.get("screenshots"), list)
+            and len(metadata.get("screenshots")) > 0
+        ):
+            for index, screenshot in enumerate(metadata.get("screenshots")):
+                image_artifact = Artifact(
+                    artifact_id=str(uuid.uuid4()),
+                    artifact_type=ArtifactType.IMAGE,
+                    content=screenshot.get("ossPath"),
+                )
+                await self.workspace.add_artifact(image_artifact)

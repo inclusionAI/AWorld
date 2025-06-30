@@ -11,6 +11,22 @@
                 "GOOGLE_SEARCH_ENGINE_ID": "${GOOGLE_SEARCH_ENGINE_ID}"
             }
         },
+        "aworldsearch-server": {
+            "command": "python",
+            "args": [
+                "agent_deploy/demo_agent/mcp_servers/aworldsearch_server.py"
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "60",
+                "AWORLD_SEARCH_URL": "${AWORLD_SEARCH_URL}",
+                "AWORLD_SEARCH_TOTAL_NUM": "${AWORLD_SEARCH_TOTAL_NUM}",
+                "AWORLD_SEARCH_SLICE_NUM": "${AWORLD_SEARCH_SLICE_NUM}",
+                "AWORLD_SEARCH_DOMAIN": "${AWORLD_SEARCH_DOMAIN}",
+                "AWORLD_SEARCH_SEARCHMODE": "${AWORLD_SEARCH_SEARCHMODE}",
+                "AWORLD_SEARCH_SOURCE": "${AWORLD_SEARCH_SOURCE}",
+                "AWORLD_SEARCH_UID": "${AWORLD_SEARCH_UID}"
+            }
+        },
         "fetch": {
             "command": "uvx",
             "args": [

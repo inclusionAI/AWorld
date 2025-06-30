@@ -1,8 +1,7 @@
-import { Flex, Typography } from 'antd';
-import React, { useEffect, useState } from 'react';
 import { getWorkspaceTree } from '@/api/workspace';
+import { Flex, Tree } from 'antd';
+import React, { useEffect, useState } from 'react';
 import './index.less';
-const { Text } = Typography;
 
 interface WorkspaceProps {
   sessionId: string;
@@ -13,11 +12,20 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
   const [treeData, setTreeData] = useState<any>(null);
   console.log(treeData)
   useEffect(() => {
+    const mapTreeNode = (node: any) => {
+      return {
+        title: node.name,
+        key: node.id,
+        children: node.children ? node.children.map(mapTreeNode) : []
+      }
+    }
+
     const fetchWorkspaceTree = async () => {
       try {
         const data = await getWorkspaceTree(sessionId);
-        setTreeData(data);
         console.log("data: ", data)
+        const mapTreeData = [mapTreeNode(data)];
+        setTreeData(mapTreeData);
       } catch (error) {
         console.error('获取工作空间树失败:', error);
       }
@@ -28,40 +36,18 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
   const tabs = [
     {
       key: '1',
-      name: 'Agent 1的电脑',
+      name: 'Agent 1',
       desc: '正在使用搜索工作'
     },
     {
       key: '2',
-      name: 'Agent 2的电脑',
+      name: 'Agent 2',
       desc: '正在使用搜索工作'
     },
     {
       key: '3',
-      name: 'Agent 3的电脑',
+      name: 'Agent 3',
       desc: '正在使用搜索工作'
-    }
-  ];
-  const lists = [
-    {
-      key: '1',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '2',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '3',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '4',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
     }
   ];
   return (
@@ -79,20 +65,15 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
           ))}
         </Flex>
         <div className="border listwrap">
-          <div className="title">Google Search</div>
+          <div className="title">Agent1 Workspace</div>
           <div className="listbox">
-            {lists.map((item) => (
-              <div className="list" key={item.key}>
-                <div className="name">{item.title}</div>
-                <Text ellipsis className="desc">
-                  {item.desc}
-                </Text>
-              </div>
-            ))}
+            <Tree
+              checkable
+              treeData={treeData}
+            />
           </div>
         </div>
       </div>
-      <p>Session ID: {sessionId}</p>
     </>
   );
 };

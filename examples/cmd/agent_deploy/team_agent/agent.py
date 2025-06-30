@@ -47,13 +47,31 @@ class AWorldAgent(BaseAWorldAgent):
         with open(mcp_path, "r") as f:
             mcp_config = json.load(f)
 
-        search_agent = Agent(
+        google_pse_search_agent = Agent(
             conf=agent_config,
             name="🔎 Team Search Agent",
             system_prompt=search_sys_prompt,
             agent_prompt=search_agent_prompt,
             mcp_config=mcp_config,
-            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
+            mcp_servers=["google-pse-search"],
+        )
+
+        aworldsearch_server_agent = Agent(
+            conf=agent_config,
+            name="🔎 Team Aworldsearch Server Agent",
+            system_prompt=search_sys_prompt,
+            agent_prompt=search_agent_prompt,
+            mcp_config=mcp_config,
+            mcp_servers=["aworldsearch-server"],
+        )
+
+        aworld_playwright_agent = Agent(
+            conf=agent_config,
+            name="🔎 Team Aworld Playwright Agent",
+            system_prompt=search_sys_prompt,
+            agent_prompt=search_agent_prompt,
+            mcp_config=mcp_config,
+            mcp_servers=["aworld-playwright"],
         )
 
         summary_agent = Agent(
@@ -63,17 +81,13 @@ class AWorldAgent(BaseAWorldAgent):
             agent_prompt=summary_agent_prompt,
         )
 
-        output_agent = Agent(
-            conf=agent_config,
-            name="🙋🏻‍♂️ Team Output Agent",
-            system_prompt=output_sys_prompt,
-            agent_prompt=output_agent_prompt,
-            mcp_config=mcp_config,
-            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
-        )
-
         # default is sequence swarm mode
-        swarm = Swarm(search_agent, summary_agent, output_agent, max_steps=10)
+        swarm = Swarm(
+            google_pse_search_agent,
+            aworldsearch_server_agent,
+            summary_agent,
+            max_steps=10,
+        )
 
         if prompt is None and request is not None:
             prompt = request.messages[-1].content
