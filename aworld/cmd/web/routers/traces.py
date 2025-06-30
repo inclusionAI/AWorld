@@ -87,7 +87,8 @@ async def _add_trace_summary(trace_id, spans):
 
     for span in list(spans.values()):
         event_id = span.get('attributes', {}).get('event.id')
-        if event_id and summary:
-            span['summary'] = json_summary_dict.get(event_id)
+        if event_id:
             span['event_id'] = event_id
+        if summary:
+            span['summary'] = json_summary_dict.get(event_id)
         span['attributes'] = None
