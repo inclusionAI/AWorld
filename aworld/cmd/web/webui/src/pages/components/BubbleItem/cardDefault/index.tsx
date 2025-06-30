@@ -1,3 +1,4 @@
+import { MenuUnfoldOutlined } from '@ant-design/icons';
 import { Button, Collapse, Space, message } from 'antd';
 import React, { useCallback, useState } from 'react';
 import type { ToolCardData } from '../utils';
@@ -15,6 +16,7 @@ interface DownloadData extends PanelContent {
 }
 
 interface Props {
+  sessionId: string;
   data: ToolCardData;
 }
 
@@ -31,7 +33,7 @@ const downloadJsonFile = (data: DownloadData) => {
   URL.revokeObjectURL(url);
 };
 
-const CardDefault: React.FC<Props> = ({ data }) => {
+const CardDefault: React.FC<Props> = ({ sessionId, data }) => {
   // 当前展开的面板keys
   const [activeKeys, setActiveKeys] = useState<string[]>([]);
   const togglePanel = useCallback((panelKey: string) => {
@@ -106,8 +108,23 @@ const CardDefault: React.FC<Props> = ({ data }) => {
       {data?.artifacts?.length > 0 && (
         <Button
           type="link"
+          icon={< MenuUnfoldOutlined />}
           onClick={() => {
-            alert(`Open Workspace: ${data?.artifacts[0]?.artifact_id}`);
+            console.log(`Open Workspace: ${data}`);
+
+            fetch(`/api/workspaces/${sessionId}/artifacts`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                artifact_ids: [data?.artifacts[0]?.artifact_id],
+                artifact_types: ['WEB_PAGES']
+              })
+            }).then((res) => res.json())
+              .then((data) => {
+                console.log(data);
+              });
           }}
         >
           View Workspace

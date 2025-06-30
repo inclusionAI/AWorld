@@ -28,9 +28,9 @@ import { useSessionId } from '../hooks/useSessionId';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
 import BubbleItem from './components/BubbleItem';
+import Trace from './components/Drawer/TraceThoughtChain';
 import TraceXY from './components/Drawer/TraceXY';
 import Workspace from './components/Drawer/Workspace';
-import Trace from './components/Drawer/TraceThoughtChain';
 import './index.less';
 
 type BubbleDataType = {
@@ -557,7 +557,7 @@ const App: React.FC = () => {
           items={messages?.map((i, index) => ({
             ...i.message,
             content: (
-              <BubbleItem data={i.message.content || ''} trace_id={i.message?.trace_id || ''} />
+              <BubbleItem sessionId={sessionId} data={i.message.content || ''} trace_id={i.message?.trace_id || ''} />
             ),
             classNames: {
               content: i.status === 'loading' ? styles.loadingMessage : '',
