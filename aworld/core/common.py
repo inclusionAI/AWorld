@@ -3,6 +3,7 @@
 
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, Union, List
+from enum import Enum
 
 from aworld.config import ConfigDict
 from aworld.core.memory import MemoryItem
@@ -90,3 +91,17 @@ class TaskItem(BaseModel):
     action_name: Optional[str] = None
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None
+
+class CallbackItem(BaseModel):
+    data: Any
+    node_id: str = None
+    actions: List[ActionModel] = []
+
+class CallbackActionType(str, Enum):
+    BYPASS = "bypass"
+    OVERRIDE = "override"
+
+class CallbackResult(BaseModel):
+    success: bool = False
+    result_data: Any = None
+    callback_action_type: CallbackActionType = None
