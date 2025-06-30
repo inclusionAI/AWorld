@@ -9,7 +9,7 @@ from .. import (
     ChatCompletionResponse,
 )
 from . import agent_loader
-from .agent_ui_parser import AWorldAgentUI
+from .agent_ui_parser import AWorldWebAgentUI
 import logging
 import aworld.trace as trace
 import os
@@ -56,7 +56,7 @@ async def stream_run(request: ChatCompletionRequest):
             ]
         )
 
-    rich_ui = AWorldAgentUI(
+    rich_ui = AWorldWebAgentUI(
         session_id=request.session_id,
         workspace=WorkSpace.from_local_storages(
             workspace_id=request.session_id,

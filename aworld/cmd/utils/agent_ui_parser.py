@@ -118,7 +118,7 @@ class ToolResultParserFactory:
 
 
 @dataclass
-class AWorldAgentUI(AworldUI):
+class AWorldWebAgentUI(AworldUI):
     session_id: str = Field(default="", description="session id")
     workspace: WorkSpace = Field(default=None, description="workspace")
 
