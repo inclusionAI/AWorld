@@ -52,7 +52,6 @@ class AWorldAgent(BaseAWorldAgent):
             mcp_config=mcp_config,
             # mcp_servers=mcp_config.get("mcpServers", {}).keys(),
             mcp_servers=["aworldsearch-server"],
-            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
             feedback_tool_result=True
         )
 
