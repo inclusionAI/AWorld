@@ -151,8 +151,7 @@ class Memory(MemoryBase):
         history_context = ""
         for item in messages:
             history_context += (f"\n\n{item['role']}: {item['content']}, "
-                                f"{'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and 
-                                                                                     item['tool_calls'] else ''}")
+                                f"{'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else ''}")
         return history_context
 
     async def _call_llm_summary(self, summary_messages: list) -> str:

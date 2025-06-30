@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 import abc
+import asyncio
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 
@@ -11,10 +12,11 @@ from aworld.config.conf import ToolConfig, load_config, ConfigDict
 from aworld.core.event import eventbus
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
-from aworld.core.common import Observation, ActionModel, ActionResult
+from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants
 from aworld.core.factory import Factory
+from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
@@ -136,8 +138,8 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def _init_context(self, context: Context):
-        self.context = context
+    def _init_context(self, message: Message):
+        self.context = message.context
 
     def name(self):
         """Tool unique name."""
@@ -230,6 +232,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         res = self.do_step(action, **kwargs)
         final_res = self.post_step(res, action, **kwargs)
         self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        logger.warn(f"==== syncTool final_res: {final_res} ====")
         return final_res
 
     def post_step(self,
@@ -253,8 +256,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
     async def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
-                          action: ToolInput,
-                          **kwargs):
+                                action: ToolInput,
+                                input_message: Message,
+                                **kwargs):
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
@@ -290,8 +294,53 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 headers={"context": self.context}
             ))
 
+            callback_msg = Message(
+                category=Constants.TOOL_CALLBACK,
+                payload=CallbackItem(
+                    data=step_res,
+                    actions=action,
+                    node_id=input_message.id
+                ),
+                sender=self.name(),
+                receiver=action[0].agent_name,
+                session_id=self.context.session_id
+            )
+
+            logger.warn("===================================")
+            logger.warn(f"=== send callback message: {callback_msg} ===")
+            logger.warn("===================================")
+
+            await eventbus.publish(callback_msg)
+            # 在这里进行延迟导入
+            from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
+            state_mng = RuntimeStateManager.instance()
+
+            msg_id = callback_msg.id
+            msg_node = state_mng.get_node(msg_id)
+            logger.warn(f"======== _emit_callback init_status: {msg_node}.")
+
+            while (True):
+                check_node = state_mng.get_node(msg_id)
+                if check_node and check_node.status != RunNodeStatus.INIT:
+                    break
+                log_node_id = state_mng.get_node(msg_id).node_id if state_mng.get_node(msg_id) else "None"
+                log_node_status = state_mng.get_node(msg_id).status if state_mng.get_node(msg_id) else "None"
+                logger.warn(f"----- wait#{log_node_id}/{log_node_status} -----")
+                await asyncio.sleep(1)
+            logger.warn(f"======== {msg_id}#_emit_callback node_status: {state_mng.get_node(msg_id).status}.")
+            res_node = await state_mng.wait_for_node_completion(msg_id)
+            if res_node.status == RunNodeStatus.SUCCESS:
+                logger.info(f"Agent {self.name()} _emit_callback finished with node result: {res_node.results}.")
+                if not res_node.results:
+                    logger.warn(f"tool {self.name()} _emit_callback finished with empty node result.")
+                    return None
+                return [ActionModel(agent_name=self.name(), policy_info=res_node.results[0].result.payload)]
+            else:
+                logger.warn(f"Agent {self.name()} _emit_callback failed with node: {res_node}.")
+                return None
+
     async def step(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
+        self._init_context(message)
         action = message.payload
         tool_id_mapping = {}
         for act in action:
@@ -301,7 +350,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, **kwargs)
-        await self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
+        logger.warn(f"==== AsyncTool final_res: {final_res} ====")
         return final_res
 
     async def post_step(self,
