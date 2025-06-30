@@ -30,7 +30,7 @@ import { useSessionId } from '../hooks/useSessionId';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
 import Workspace from './components/Drawer/Workspace';
-import Trace from '../pages/components/Drawer/Trace';
+import Trace from './components/Drawer/TraceThoughtChain';
 import './index.less';
 
 type BubbleDataType = {
