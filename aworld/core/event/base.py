@@ -21,12 +21,6 @@ class Constants:
     TOOL_CALLBACK = "tool_callback"
     AGENT_CALLBACK = "agent_callback"
 
-class CallbackActionType:
-    BYPASS = "bypass"
-    USE_RESULT = "use_result"
-
-
-
 
 class TopicType:
     START = "__start"
