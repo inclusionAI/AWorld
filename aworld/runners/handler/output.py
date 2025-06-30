@@ -26,7 +26,8 @@ class DefaultOutputHandler(DefaultHandler):
                 payload=TaskItem(msg="Cannot get outputs.", data=message, stop=True),
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TopicType.ERROR
+                topic=TopicType.ERROR,
+                headers={"context": message.context}
             )
             return
         # 2. build Output
@@ -49,7 +50,8 @@ class DefaultOutputHandler(DefaultHandler):
                 payload=TaskItem(msg="Failed to parse output.", data=payload, stop=True),
                 sender=self.name(),
                 session_id=Context.instance().session_id,
-                topic=TopicType.ERROR
+                topic=TopicType.ERROR,
+                headers={"context": message.context}
             )
         finally:
             if output:

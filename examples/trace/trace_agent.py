@@ -196,10 +196,12 @@ def _print_tree(graph, node_id, prefix, is_last):
 
 if __name__ == "__main__":
     agent_config = AgentConfig(
-        llm_provider="ant",
-        llm_model_name="claude-3.7-sonnet",
-        llm_base_url="",
-        llm_api_key=''
+        llm_provider="openai",
+        llm_model_name="gpt-4o",
+        llm_temperature=0.3,
+
+        llm_base_url="http://localhost:34567",
+        llm_api_key="dummy-key",
     )
 
     search = Agent(

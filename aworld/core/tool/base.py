@@ -138,8 +138,8 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def _init_context(self, message: Message):
-        self.context = message.context
+    def _init_context(self, context: Context):
+        self.context = context
 
     def name(self):
         """Tool unique name."""
@@ -193,8 +193,8 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
 
 class Tool(BaseTool[Observation, List[ActionModel]]):
     def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
-                    action: ToolInput,
-                    **kwargs):
+                          action: ToolInput,
+                          **kwargs):
         if not step_res or not action:
             return
         for idx, act in enumerate(action):
@@ -218,7 +218,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                     session_id=self.context.session_id if self.context else "",
                     headers={"context": self.context}
                 )
-                sync_exec(eventbus.publish, tool_output_message)
+                sync_exec(send_message, tool_output_message)
 
     def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
@@ -232,7 +232,6 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         res = self.do_step(action, **kwargs)
         final_res = self.post_step(res, action, **kwargs)
         self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
-        logger.warn(f"==== syncTool final_res: {final_res} ====")
         return final_res
 
     def post_step(self,
@@ -246,12 +245,20 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
 
-        return AgentMessage(payload=step_res,
-                            caller=action[0].agent_name,
-                            sender=self.name(),
-                            receiver=action[0].agent_name,
-                            session_id=kwargs.get("session_id", ""),
-                            headers={"context": self.context})
+        agent = self.context.swarm.agents.get(action[0].agent_name)
+        feedback_tool_result = agent.feedback_tool_result if agent else False
+        if feedback_tool_result:
+            return AgentMessage(payload=step_res,
+                                caller=action[0].agent_name,
+                                sender=self.name(),
+                                receiver=action[0].agent_name,
+                                session_id=self.context.session_id,
+                                headers={"context": self.context})
+        else:
+            return AgentMessage(payload=step_res,
+                                sender=action[0].agent_name,
+                                session_id=self.context.session_id,
+                                headers={"context": self.context})
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
@@ -281,66 +288,64 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     session_id=self.context.session_id if self.context else "",
                     headers={"context": self.context}
                 )
-                await eventbus.publish(tool_output_message)
+                await send_message(tool_output_message)
 
-        if eventbus is not None:
-            await eventbus.publish(Message(
-                category=Constants.OUTPUT,
-                payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
-                                                         step_num=0),
-                sender=self.name(),
-                receiver=action[0].agent_name,
-                session_id=self.context.session_id if self.context else "",
-                headers={"context": self.context}
-            ))
+        await send_message(Message(
+            category=Constants.OUTPUT,
+            payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
+                                                     step_num=0),
+            sender=self.name(),
+            receiver=action[0].agent_name,
+            session_id=self.context.session_id if self.context else "",
+            headers={"context": self.context}
+        ))
+        callback_msg = Message(
+            category=Constants.TOOL_CALLBACK,
+            payload=CallbackItem(
+                data=step_res,
+                actions=action,
+                node_id=input_message.id
+            ),
+            sender=self.name(),
+            receiver=action[0].agent_name,
+            session_id=self.context.session_id
+        )
 
-            callback_msg = Message(
-                category=Constants.TOOL_CALLBACK,
-                payload=CallbackItem(
-                    data=step_res,
-                    actions=action,
-                    node_id=input_message.id
-                ),
-                sender=self.name(),
-                receiver=action[0].agent_name,
-                session_id=self.context.session_id
-            )
+        logger.warn("===================================")
+        logger.warn(f"=== send callback message: {callback_msg} ===")
+        logger.warn("===================================")
 
-            logger.warn("===================================")
-            logger.warn(f"=== send callback message: {callback_msg} ===")
-            logger.warn("===================================")
+        await eventbus.publish(callback_msg)
+        # 在这里进行延迟导入
+        from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
+        state_mng = RuntimeStateManager.instance()
 
-            await eventbus.publish(callback_msg)
-            # 在这里进行延迟导入
-            from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
-            state_mng = RuntimeStateManager.instance()
+        msg_id = callback_msg.id
+        msg_node = state_mng.get_node(msg_id)
+        logger.warn(f"======== _emit_callback init_status: {msg_node}.")
 
-            msg_id = callback_msg.id
-            msg_node = state_mng.get_node(msg_id)
-            logger.warn(f"======== _emit_callback init_status: {msg_node}.")
-
-            while (True):
-                check_node = state_mng.get_node(msg_id)
-                if check_node and check_node.status != RunNodeStatus.INIT:
-                    break
-                log_node_id = state_mng.get_node(msg_id).node_id if state_mng.get_node(msg_id) else "None"
-                log_node_status = state_mng.get_node(msg_id).status if state_mng.get_node(msg_id) else "None"
-                logger.warn(f"----- wait#{log_node_id}/{log_node_status} -----")
-                await asyncio.sleep(1)
-            logger.warn(f"======== {msg_id}#_emit_callback node_status: {state_mng.get_node(msg_id).status}.")
-            res_node = await state_mng.wait_for_node_completion(msg_id)
-            if res_node.status == RunNodeStatus.SUCCESS:
-                logger.info(f"Agent {self.name()} _emit_callback finished with node result: {res_node.results}.")
-                if not res_node.results:
-                    logger.warn(f"tool {self.name()} _emit_callback finished with empty node result.")
-                    return None
-                return [ActionModel(agent_name=self.name(), policy_info=res_node.results[0].result.payload)]
-            else:
-                logger.warn(f"Agent {self.name()} _emit_callback failed with node: {res_node}.")
+        while (True):
+            check_node = state_mng.get_node(msg_id)
+            if check_node and check_node.status != RunNodeStatus.INIT:
+                break
+            log_node_id = state_mng.get_node(msg_id).node_id if state_mng.get_node(msg_id) else "None"
+            log_node_status = state_mng.get_node(msg_id).status if state_mng.get_node(msg_id) else "None"
+            logger.warn(f"----- wait#{log_node_id}/{log_node_status} -----")
+            await asyncio.sleep(1)
+        logger.warn(f"======== {msg_id}#_emit_callback node_status: {state_mng.get_node(msg_id).status}.")
+        res_node = await state_mng.wait_for_node_completion(msg_id)
+        if res_node.status == RunNodeStatus.SUCCESS:
+            logger.info(f"Agent {self.name()} _emit_callback finished with node result: {res_node.results}.")
+            if not res_node.results:
+                logger.warn(f"tool {self.name()} _emit_callback finished with empty node result.")
                 return None
+            return [ActionModel(agent_name=self.name(), policy_info=res_node.results[0].result.payload)]
+        else:
+            logger.warn(f"Agent {self.name()} _emit_callback failed with node: {res_node}.")
+            return None
 
     async def step(self, message: Message, **kwargs) -> Message:
-        self._init_context(message)
+        self._init_context(message.context)
         action = message.payload
         tool_id_mapping = {}
         for act in action:
@@ -350,8 +355,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, **kwargs)
-        await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
-        logger.warn(f"==== AsyncTool final_res: {final_res} ====")
+        await self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
         return final_res
 
     async def post_step(self,
@@ -365,12 +369,20 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_id = act.tool_id
 
-        return AgentMessage(payload=step_res,
-                            caller=action[0].agent_name,
-                            sender=self.name(),
-                            receiver=action[0].agent_name,
-                            session_id=self.context.session_id if self.context else "",
-                            headers={"context": self.context})
+        agent = self.context.swarm.agents.get(action[0].agent_name)
+        feedback_tool_result = agent.feedback_tool_result if agent else False
+        if feedback_tool_result:
+            return AgentMessage(payload=step_res,
+                                caller=action[0].agent_name,
+                                sender=self.name(),
+                                receiver=action[0].agent_name,
+                                session_id=Context.instance().session_id,
+                                headers={"context": self.context})
+        else:
+            return AgentMessage(payload=step_res,
+                                sender=action[0].agent_name,
+                                session_id=Context.instance().session_id,
+                                headers={"context": self.context})
 
 
 class ToolsManager(Factory):

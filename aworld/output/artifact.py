@@ -56,27 +56,11 @@ class Artifact(Output):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata associated with the artifact")
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Creation timestamp")
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Last updated timestamp")
-    status: ArtifactStatus = Field(default=ArtifactStatus.ARCHIVED, description="Current status of the artifact")
+    status: ArtifactStatus = Field(default=ArtifactStatus.COMPLETE, description="Current status of the artifact")
     current_version: str = Field(default="", description="Current version of the artifact")
     version_history: list = Field(default_factory=list, description="History of versions for the artifact")
     create_file: bool = Field(default=False, description="Flag to indicate if a file should be created")
     attachments: Optional[list[ArtifactAttachment]] = Field(default_factory=list, description="Attachments associated with the artifact")
-
-    # Use model_validator for initialization logic
-    @model_validator(mode='after')
-    def setup_artifact(self):
-        """Initialize the artifact after validation"""
-        # Ensure artifact_id is always a valid string
-        if not self.artifact_id:
-            self.artifact_id = str(uuid.uuid4())
-
-        # Reset status to DRAFT for new artifacts
-        if not self.version_history:
-            self.status = ArtifactStatus.DRAFT
-            # Record initial version
-            self._record_version("Initial version")
-        
-        return self
 
     def _record_version(self, description: str) -> None:
         """Record current state as a new version"""
@@ -113,6 +97,7 @@ class Artifact(Output):
     def mark_complete(self) -> None:
         """Mark the artifact as complete"""
         self.status = ArtifactStatus.COMPLETE
+        self.updated_at = datetime.now().isoformat()
         self._record_version("Marked as complete")
 
     def archive(self) -> None:

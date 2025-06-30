@@ -44,6 +44,7 @@ class DefaultTaskHandler(TaskHandler):
 
         logger.info(f"task handler receive message: {message}")
 
+        headers = {"context": message.context}
         topic = message.topic
         task_item: TaskItem = message.payload
         if topic == TopicType.SUBSCRIBE_TOOL:
@@ -82,7 +83,8 @@ class DefaultTaskHandler(TaskHandler):
                 payload='',
                 sender=self.name(),
                 session_id=self.runner.context.session_id,
-                topic=TopicType.START
+                topic=TopicType.START,
+                headers=headers
             )
         elif topic == TopicType.FINISHED:
             async for event in self.run_hooks(message, HookPoint.FINISHED):

@@ -40,7 +40,7 @@ async def _send_message(msg: Message) -> str:
 
     event_mng = context.event_manager
     if not event_mng:
-        event_mng = EventManager()
+        event_mng = EventManager(context)
 
     await event_mng.emit_message(msg)
     return msg.id

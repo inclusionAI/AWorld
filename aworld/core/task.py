@@ -43,7 +43,8 @@ class Task:
     runner_cls: Optional[str] = None
     # such as: {"start": ["init_tool", "init_context", ...]}
     hooks: Dict[str, List[str]] = field(default_factory=dict)
-
+    # task specified context
+    context: 'Context' = None
 
 class TaskResponse(BaseModel):
     id: str

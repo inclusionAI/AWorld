@@ -85,6 +85,10 @@ class Message(Generic[DataType]):
         return self.topic == TopicType.ERROR
 
     @property
+    def task_id(self):
+        return self.context.task_id
+
+    @property
     def context(self) -> Context:
         return self.headers.get('context')
 

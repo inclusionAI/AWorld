@@ -1,13 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import json
-import socket
-import struct
-import threading
-import time
-import uuid
-from asyncio import iscoroutinefunction, Queue
+from asyncio import Queue, PriorityQueue
 from inspect import isfunction
 from typing import Callable, Any, Dict, List
 
@@ -33,12 +27,12 @@ class Eventbus(Messageable, InheritanceSingleton):
         return await self.publish(message, **kwargs)
 
     async def receive(self, message: Message, **kwargs):
-        return await self.consume(message, **kwargs)
+        return await self.consume(message)
 
     async def publish(self, messages: Message, **kwargs):
         """Publish a message, equals `send`."""
 
-    async def consume(self, messages: Message, **kwargs):
+    async def consume(self, message: Message, **kwargs):
         """Consume the message queue."""
 
     async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
@@ -93,22 +87,22 @@ class InMemoryEventbus(Eventbus):
         return self._message_queue.get(id, Queue()).qsize()
 
     async def publish(self, message: Message, **kwargs):
-        queue = self._message_queue.get(message.session_id)
+        queue = self._message_queue.get(message.task_id)
         if not queue:
-            queue = Queue()
-            self._message_queue[message.session_id] = queue
+            queue = PriorityQueue()
+            self._message_queue[message.task_id] = queue
         await queue.put(message)
 
     async def consume(self, message: Message, **kwargs):
-        return await self._message_queue.get(message.session_id, Queue()).get()
+        return await self._message_queue.get(message.task_id, PriorityQueue()).get()
 
     async def consume_nowait(self, message: Message):
-        return await self._message_queue.get(message.session_id, Queue()).get_nowait()
+        return self._message_queue.get(message.task_id, PriorityQueue()).get_nowait()
 
     async def done(self, id: str):
-        while not self._message_queue.get(id, Queue()).empty():
-            self._message_queue.get(id, Queue()).get_nowait()
-        self._message_queue.get(id, Queue()).task_done()
+        while not self._message_queue.get(id, PriorityQueue()).empty():
+            self._message_queue.get(id, PriorityQueue()).get_nowait()
+        self._message_queue.get(id, PriorityQueue()).task_done()
 
     async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):
