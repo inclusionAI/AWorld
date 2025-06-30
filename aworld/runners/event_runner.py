@@ -78,23 +78,6 @@ class TaskEventRunner(TaskRunner):
             for hand in handler_list:
                 handlers.append(new_instance(hand, self))
 
-            has_task_handler = False
-            has_tool_handler = False
-            has_agent_handler = False
-            for hand in handlers:
-                if isinstance(hand, TaskHandler):
-                    has_task_handler = True
-                elif isinstance(hand, ToolHandler):
-                    has_tool_handler = True
-                elif isinstance(hand, AgentHandler):
-                    has_agent_handler = True
-
-            if not has_agent_handler:
-                self.handlers.append(DefaultAgentHandler(runner=self))
-            if not has_tool_handler:
-                self.handlers.append(DefaultToolHandler(runner=self))
-            if not has_task_handler:
-                self.handlers.append(DefaultTaskHandler(runner=self))
             self.handlers = handlers
         else:
             self.handlers = [DefaultAgentHandler(runner=self),
@@ -135,8 +118,10 @@ class TaskEventRunner(TaskRunner):
                 if message.topic:
                     handlers = {message.topic: handlers.get(message.topic, [])}
                 elif message.receiver:
-                    handlers = {message.receiver: handlers.get(
-                        message.receiver, [])}
+                    handlers = {message.receiver: handlers.get(message.receiver, [])}
+                else:
+                    logger.warning(f"{message.id} no receiver and topic, be ignored.")
+                    handlers.clear()
 
                 for topic, handler_list in handlers.items():
                     if not handler_list:
@@ -144,8 +129,7 @@ class TaskEventRunner(TaskRunner):
                         continue
 
                     for handler in handler_list:
-                        t = asyncio.create_task(
-                            self._handle_task(message, handler))
+                        t = asyncio.create_task(self._handle_task(message, handler))
                         self.background_tasks.add(t)
                         t.add_done_callback(self.background_tasks.discard)
             else:

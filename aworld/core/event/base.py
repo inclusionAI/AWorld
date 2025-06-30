@@ -47,22 +47,22 @@ class Message(Generic[DataType]):
     Specific message recognition and processing can be achieved through the type of `payload`
     or by extending `Message`.
     """
-    session_id: str
-    payload: Optional[DataType]
+    session_id: field(default_factory=str)
+    payload: Optional[DataType] = field(default_factory=Any)
     # Current caller
-    sender: str
+    sender: str = field(default_factory=str)
     # event type
-    category: str
+    category: str = field(default_factory=str)
     # Next caller
-    receiver: str = None
+    receiver: str = field(default_factory=str)
     # The previous caller
-    caller: str = None
-    id: str = uuid.uuid4().hex
-    priority: int = 0
+    caller: str = field(default_factory=str)
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    priority: int = field(default_factory=int)
     # Topic of message
-    topic: str = None
+    topic: str = field(default_factory=str)
     headers: Dict[str, Any] = field(default_factory=dict)
-    timestamp: int = time.time()
+    timestamp: int = field(default_factory=lambda: time.time())
 
     def __post_init__(self):
         context = self.headers.get("context")
