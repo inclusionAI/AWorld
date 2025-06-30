@@ -1,0 +1,32 @@
+{
+    "mcpServers": {
+        "google-pse-search": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@adenot/mcp-google-search"
+            ],
+            "env": {
+                "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+                "GOOGLE_SEARCH_ENGINE_ID": "${GOOGLE_SEARCH_ENGINE_ID}"
+            }
+        },
+        "fetch": {
+            "command": "uvx",
+            "args": [
+                "-i",
+                "https://mirrors.aliyun.com/pypi/simple/",
+                "mcp-server-fetch",
+                "--ignore-robots-txt"
+            ]
+        },
+        "time": {
+            "command": "uvx",
+            "args": [
+                "mcp-server-time",
+                "--local-timezone",
+                "Asia/Shanghai"
+            ]
+        }
+    }
+}

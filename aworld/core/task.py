@@ -17,8 +17,8 @@ from aworld.output.outputs import Outputs, DefaultOutputs
 
 @dataclass
 class Task:
-    id: str = uuid.uuid1().hex
-    name: str = uuid.uuid1().hex
+    id: str = field(default_factory=lambda: str(uuid.uuid4().hex))
+    name: str = field(default_factory=lambda: str(uuid.uuid4().hex))
     user_id: str = None
     session_id: str = None
     input: Any = None
@@ -43,7 +43,8 @@ class Task:
     runner_cls: Optional[str] = None
     # such as: {"start": ["init_tool", "init_context", ...]}
     hooks: Dict[str, List[str]] = field(default_factory=dict)
-
+    # task specified context
+    context: 'Context' = None
 
 class TaskResponse(BaseModel):
     id: str

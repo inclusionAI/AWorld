@@ -3,7 +3,7 @@
 from typing import List, Dict
 
 from aworld.config import RunConfig
-from aworld.core.agent.swarm import WORKFLOW
+from aworld.core.agent.swarm import GraphBuildType
 from aworld.core.common import Config
 
 from aworld.core.task import Task, TaskResponse, Runner
@@ -30,10 +30,9 @@ async def choose_runners(tasks: List[Task]) -> List[Runner]:
             # user runner class in the framework
             if task.swarm:
                 task.swarm.event_driven = task.event_driven
-                task.swarm.reset(task.input)
-                execute_type = task.swarm.execute_type
+                execute_type = task.swarm.build_type
             else:
-                execute_type = WORKFLOW
+                execute_type = GraphBuildType.WORKFLOW.value
 
             if task.event_driven:
                 runner = new_instance("aworld.runners.event_runner.TaskEventRunner", task)

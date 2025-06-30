@@ -1,12 +1,11 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-from aworld.config.conf import AgentConfig
-
-from examples.tools.common import Tools
 from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
+from examples.tools.common import Tools
 
 search_sys_prompt = "You are a helpful search agent."
 search_prompt = """
@@ -54,7 +53,7 @@ if __name__ == "__main__":
         system_prompt=summary_sys_prompt,
         agent_prompt=summary_prompt
     )
-    # default is sequence swarm mode
+    # default is workflow swarm
     swarm = Swarm(search, summary, max_steps=1)
 
     prefix = ""

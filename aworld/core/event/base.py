@@ -57,7 +57,7 @@ class Message(Generic[DataType]):
     receiver: str = None
     # The previous caller
     caller: str = None
-    id: str = uuid.uuid4().hex
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
     priority: int = 0
     # Topic of message
     topic: str = None
@@ -83,6 +83,10 @@ class Message(Generic[DataType]):
 
     def is_error(self):
         return self.topic == TopicType.ERROR
+
+    @property
+    def task_id(self):
+        return self.context.task_id
 
     @property
     def context(self) -> Context:

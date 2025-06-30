@@ -10,10 +10,11 @@ from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.event.base import Message, Constants, TopicType
+from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
+from aworld.runners.callback.tool import ToolCallbackHandler
 from aworld.runners.handler.agent import DefaultAgentHandler, AgentHandler
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.output import DefaultOutputHandler
@@ -31,7 +32,7 @@ class TaskEventRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task, *args, **kwargs)
         self._task_response = None
-        self.event_mng = EventManager()
+        self.event_mng = EventManager(self.context)
         self.hooks = {}
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
@@ -100,24 +101,26 @@ class TaskEventRunner(TaskRunner):
             self.handlers = [DefaultAgentHandler(runner=self),
                              DefaultToolHandler(runner=self),
                              DefaultTaskHandler(runner=self),
-                             DefaultOutputHandler(runner=self)]
+                             DefaultOutputHandler(runner=self),
+                             ToolCallbackHandler(runner=self)
+                             ]
 
     def _build_first_message(self):
         # build the first message
         if self.agent_oriented:
-            self.init_message = Message(payload=self.observation,
-                                        sender='runner',
-                                        receiver=self.swarm.communicate_agent.id(),
-                                        session_id=self.context.session_id,
-                                        category=Constants.AGENT)
+            self.init_message = AgentMessage(payload=self.observation,
+                                             sender='runner',
+                                             receiver=self.swarm.communicate_agent.id(),
+                                             session_id=self.context.session_id,
+                                             headers={'context': self.context})
         else:
             actions = self.observation.content
             receiver = actions[0].tool_name
-            self.init_message = Message(payload=self.observation.content,
-                                        sender='runner',
-                                        receiver=receiver,
-                                        session_id=self.context.session_id,
-                                        category=Constants.TOOL)
+            self.init_message = ToolMessage(payload=self.observation.content,
+                                            sender='runner',
+                                            receiver=receiver,
+                                            session_id=self.context.session_id,
+                                            headers={'context': self.context})
 
     async def _common_process(self, message: Message) -> List[Message]:
         event_bus = self.event_mng.event_bus
@@ -138,17 +141,30 @@ class TaskEventRunner(TaskRunner):
                     handlers = {message.receiver: handlers.get(
                         message.receiver, [])}
 
+                handle_tasks = []
                 for topic, handler_list in handlers.items():
                     if not handler_list:
                         logger.warning(f"{topic} no handler, ignore.")
                         continue
 
                     for handler in handler_list:
+                        # 创建异步任务处理消息
                         t = asyncio.create_task(
                             self._handle_task(message, handler))
+                        handle_tasks.append(t)  # 收集所有_handle_task任务
                         self.background_tasks.add(t)
                         t.add_done_callback(self.background_tasks.discard)
+                
+                # # 对于_handle_task的情况，异步结束消息节点
+                # async def end_message_node_later():
+                #     # 等待所有_handle_task任务完成后再结束消息节点
+                #     if handle_tasks:
+                #         await asyncio.gather(*handle_tasks)
+                #     self.state_manager.end_message_node(message)
+                #
+                # asyncio.create_task(end_message_node_later())
             else:
+                logger.warn(f"==== {message.id}# {key} not handler, _raw_task ===")
                 # not handler, return raw message
                 results.append(message)
 
@@ -157,11 +173,12 @@ class TaskEventRunner(TaskRunner):
                 t.add_done_callback(self.background_tasks.discard)
                 # wait until it is complete
                 await t
-            self.state_manager.end_message_node(message)
+                # 对于_raw_task的情况，同步结束消息节点
+                # self.state_manager.end_message_node(message)
             return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
-        con = message.payload
+        con = message
         async with trace.span(handler.__name__):
             try:
                 logger.info(
@@ -233,7 +250,7 @@ class TaskEventRunner(TaskRunner):
                                                            success=True if not msg else False,
                                                            id=self.task.id,
                                                            time_cost=(
-                                                               time.time() - start),
+                                                                   time.time() - start),
                                                            usage=self.context.token_usage)
                     break
 

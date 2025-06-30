@@ -11,6 +11,7 @@ import {
   QuestionCircleOutlined,
   ReloadOutlined
 } from '@ant-design/icons';
+import BubbleItem from './components/BubbleItem';
 import {
   Attachments,
   Bubble,
@@ -22,7 +23,6 @@ import {
 import { Avatar, Button, Flex, type GetProp, message, Spin, Drawer } from 'antd';
 import { createStyles } from 'antd-style';
 import React, { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
 import logo from '../assets/aworld_logo.png';
 import { useAgentId } from '../hooks/useAgentId';
 import { useSessionId } from '../hooks/useSessionId';
@@ -541,63 +541,61 @@ const App: React.FC = () => {
     <div className={styles.chatList}>
       {messages?.length ? (
         /* 🌟 消息列表 */
-        <Bubble.List
-          items={messages?.map((i, index) => ({
-            ...i.message,
-            content: (
-              <ReactMarkdown>
-                {i.message.content || ''}
-              </ReactMarkdown>
-            ),
-            classNames: {
-              content: i.status === 'loading' ? styles.loadingMessage : '',
-            },
-            typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
-            messageIndex: index,
-          }))}
-          style={{ height: '100%', paddingInline: 'calc(calc(100% - 700px) /2)' }}
-          roles={{
-            assistant: {
-              placement: 'start',
-              footer: (messageItem) => (
-                <div style={{ display: 'flex' }}>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<ReloadOutlined />}
-                    onClick={() => resendMessage(messageItem.messageIndex)}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<CopyOutlined />}
-                    onClick={() => copyMessageContent(messageItem.content || '')}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<MenuUnfoldOutlined />}
-                    onClick={() => openDrawer('Team workspace')}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<BoxPlotOutlined />}
-                    onClick={() => openDrawer('trace')}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<AlertFilled />}
-                    onClick={() => window.open('/trace_ui.html', '_blank')}
-                  />
-                </div>
+          <Bubble.List
+            items={messages?.map((i, index) => ({
+              ...i.message,
+              content: (
+                <BubbleItem data={i.message.content || ''}/>
               ),
-              loadingRender: () => <Spin size="small" />,
-            },
-            user: { placement: 'end' },
-          }}
-        />
+              classNames: {
+                content: i.status === 'loading' ? styles.loadingMessage : '',
+              },
+              typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
+              messageIndex: index,
+            }))}
+            style={{ height: '100%', paddingInline: 'calc(calc(100% - 700px) /2)' }}
+            roles={{
+              assistant: {
+                placement: 'start',
+                footer: (messageItem) => (
+                  <div style={{ display: 'flex' }}>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      onClick={() => resendMessage(messageItem.messageIndex)}
+                    />
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={() => copyMessageContent(messageItem.content || '')}
+                    />
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<MenuUnfoldOutlined />}
+                      onClick={() => openDrawer('Team workspace')}
+                    />
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<BoxPlotOutlined />}
+                      onClick={() => openDrawer('trace')}
+                    />
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<AlertFilled />}
+                      onClick={() => window.open('/trace_ui.html', '_blank')}
+                    />
+                  </div>
+                ),
+                loadingRender: () => <Spin size="small" />,
+              },
+              user: { placement: 'end' },
+            }}
+          />
       ) : (
         <div
           className={styles.placeholder}

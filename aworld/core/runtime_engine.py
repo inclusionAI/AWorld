@@ -209,7 +209,7 @@ RUNTIME: Dict[str, RuntimeEngine] = {}
 
 def register(key, runtime_backend):
     if RUNTIME.get(key, None) is not None:
-        logger.warning("{} runtime backend already exists.".format(key))
+        logger.debug("{} runtime backend already exists, will reuse the client.".format(key))
         return
 
     RUNTIME[key] = runtime_backend
