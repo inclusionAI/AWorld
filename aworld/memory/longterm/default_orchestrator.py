@@ -1,16 +1,15 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-import uuid
 from typing import List, Optional, Tuple
 
-from aworld.core.memory import MemoryItem, MemoryConfig,LongTermConfig
+from aworld.core.memory import MemoryItem, LongTermConfig
 from aworld.models.llm import LLMModel
 from .base import MemoryOrchestrator, MemoryProcessingTask
 from ..models import LongTermExtractParams
 
 
-class SimpleMemoryOrchestrator(MemoryOrchestrator):
+class DefaultMemoryOrchestrator(MemoryOrchestrator):
     """
     Simple implementation of MemoryOrchestrator that provides basic memory processing decisions.
     This orchestrator evaluates trigger conditions and creates processing tasks based on configuration.
@@ -30,11 +29,12 @@ class SimpleMemoryOrchestrator(MemoryOrchestrator):
         extract_param: LongTermExtractParams,
         longterm_config: LongTermConfig
     ) -> Tuple[bool, str]:
-        # Check message count threshold
+
+        # 1.Check message count threshold
         if self.check_message_count_threshold(extract_param.memories, longterm_config):
             return True,"message_count"
             
-        # Check content importance if enabled
+        # 2.Check content importance if enabled
         if longterm_config.trigger.enable_importance_trigger:
             if self.check_content_importance(extract_param.memories, longterm_config):
                 return True,"content_importance"

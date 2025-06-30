@@ -14,7 +14,7 @@ from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.models import UserProfileExtractParams, AgentExperienceExtractParams, LongTermExtractParams
 from aworld.models.llm import get_llm_model, acall_llm_model
-from aworld.memory.longterm import SimpleMemoryOrchestrator, LongTermConfig
+from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
 
 
 class InMemoryMemoryStore(MemoryStore):
@@ -144,7 +144,7 @@ class Memory(MemoryBase):
         # Initialize long-term memory components
         if self.config.enable_long_term:
             self.longterm_config = config.long_term_config or LongTermConfig.create_simple_config()
-            self.memory_orchestrator = SimpleMemoryOrchestrator(self.default_llm_instance)
+            self.memory_orchestrator = DefaultMemoryOrchestrator(self.default_llm_instance)
             logger.info(f"🧠 [MEMORY:long-term] Initialized with config: "
                         f"threshold={self.longterm_config.trigger.message_count_threshold}, "
                         f"user_profiles={self.longterm_config.extraction.enable_user_profile_extraction}, "
@@ -190,13 +190,13 @@ class Memory(MemoryBase):
         Returns:
             Summary content string.
         """
-        logger.info(f"🤔 [Summary] Creating summary memory, history messages: {summary_messages}")
+        logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages: {summary_messages}")
         llm_response = await acall_llm_model(
             self.default_llm_instance,
             messages=summary_messages,
             stream=False
         )
-        logger.info(f'🤔 [Summary] summary_content: result is {llm_response.content[:400] + "...truncated"} ')
+        logger.info(f'🧠 [MEMORY:short-term] [Summary] summary_content: result is {llm_response.content[:400] + "...truncated"} ')
         return llm_response.content
 
     def _get_parsed_history_messages(self, history_items: list[MemoryItem]) -> list[dict]:
@@ -218,7 +218,7 @@ class Memory(MemoryBase):
 
     async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
         logger.info(
-            f"🤔 [Summary] Creating summary memory, history messages")
+            f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages")
         if len(to_be_summary) == 0:
             return ""
         parsed_messages = self._get_parsed_history_messages(to_be_summary)
@@ -233,7 +233,7 @@ class Memory(MemoryBase):
     async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
         """A tool for summarizing the conversation history."""
 
-        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, "
+        logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages [filters -> {filters}, "
                     f"last_rounds -> {last_rounds}]")
         history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
         if len(history_items) == 0:
@@ -251,7 +251,7 @@ class Memory(MemoryBase):
         if self.config.enable_summary and len(to_be_summary.content) < self.config.summary_single_context_length:
             return to_be_summary.content
 
-        logger.info(f"🤔 [Summary] Creating summary memory, history messages [filters -> {filters}, "
+        logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages [filters -> {filters}, "
                     f"last_rounds -> {last_rounds}]: to be summary content is {to_be_summary.content}")
         history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
         if len(history_items) == 0:

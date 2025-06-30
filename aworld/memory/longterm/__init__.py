@@ -3,7 +3,7 @@
 
 from .base import MemoryOrchestrator, MemoryGungnir, MemoryProcessingTask, ProcessingResult
 from aworld.core.memory import LongTermConfig, TriggerConfig, ExtractionConfig, StorageConfig, ProcessingConfig
-from .simple_orchestrator import SimpleMemoryOrchestrator
+from .default_orchestrator import DefaultMemoryOrchestrator
 
 __all__ = [
     "MemoryOrchestrator",
@@ -15,5 +15,5 @@ __all__ = [
     "ExtractionConfig", 
     "StorageConfig",
     "ProcessingConfig",
-    "SimpleMemoryOrchestrator"
+    "DefaultMemoryOrchestrator"
 ] 
