@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass
 
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, ConfigDict
 
 from aworld.output import (
     MessageOutput,
@@ -16,6 +16,8 @@ from typing_extensions import override
 
 
 class ToolCard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tool_type: str = Field(None, description="tool type")
     tool_name: str = Field(None, description="tool name")
     function_name: str = Field(None, description="function name")
