@@ -1,3 +1,6 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
+import abc
 import asyncio
 import json
 import os
@@ -119,6 +122,7 @@ class MemoryFactory:
 
 
 class Memory(MemoryBase):
+    __metaclass__ = abc.ABCMeta
 
     def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
         self.memory_store = memory_store

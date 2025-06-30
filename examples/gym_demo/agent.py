@@ -10,7 +10,6 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 
 
-@AgentFactory.register(name=Agents.GYM.value, desc="gym agent")
 class GymDemoAgent(Agent):
     """Example agent"""
 
@@ -22,7 +21,7 @@ class GymDemoAgent(Agent):
         import numpy as np
 
         env_id = observation.info.get('env_id')
-        if env_id != 'CartPole-v1':
+        if env_id and env_id != 'CartPole-v1':
             raise ValueError("Unsupported env")
 
         res = np.random.randint(2)

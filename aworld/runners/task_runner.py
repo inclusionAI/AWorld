@@ -26,7 +26,6 @@ class TaskRunner(Runner):
 
     def __init__(self,
                  task: Task,
-                 context: Context = None,
                  *,
                  agent_oriented: bool = True,
                  daemon_target: Callable[..., Any] = None):

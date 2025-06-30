@@ -28,6 +28,7 @@ class DefaultToolHandler(ToolHandler):
         if message.category != Constants.TOOL:
             return
 
+        headers = {"context": message.context}
         # data is List[ActionModel]
         data = message.payload
         if not data:
@@ -37,7 +38,8 @@ class DefaultToolHandler(ToolHandler):
                 payload=TaskItem(msg="no data to process.", data=data, stop=True),
                 sender='agent_handler',
                 session_id=message.session_id,
-                topic=TopicType.ERROR
+                topic=TopicType.ERROR,
+                headers=headers
             )
             return
 
@@ -49,7 +51,8 @@ class DefaultToolHandler(ToolHandler):
                     payload=TaskItem(msg="action not a ActionModel.", data=data, stop=True),
                     sender=self.name(),
                     session_id=message.session_id,
-                    topic=TopicType.ERROR
+                    topic=TopicType.ERROR,
+                    headers=headers
                 )
                 return
 
@@ -83,7 +86,8 @@ class DefaultToolHandler(ToolHandler):
                 payload=TaskItem(data=new_tools),
                 sender=self.name(),
                 session_id=message.session_id,
-                topic=TopicType.SUBSCRIBE_TOOL
+                topic=TopicType.SUBSCRIBE_TOOL,
+                headers=headers
             )
 
         for tool_name, actions in tool_mapping.items():
@@ -97,5 +101,6 @@ class DefaultToolHandler(ToolHandler):
                 payload=actions,
                 sender=actions[0].agent_name if actions else '',
                 session_id=message.session_id,
-                receiver=tool_name
+                receiver=tool_name,
+                headers=headers
             )
