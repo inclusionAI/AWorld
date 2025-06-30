@@ -79,11 +79,19 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.tools_conf = {}
 
     def reset(self, options: Dict[str, Any]):
+        logger.info("[LLM_AGENT] reset start")
         super().reset(options)
         if self.memory:
-            self.memory.delete_items(message_type='message', session_id=self._agent_context.get_task().session_id, task_id=self._agent_context.get_task().id, filters={"user_id": self._agent_context.get_user()})
+            # self.memory.delete_items(message_type='message', session_id=self._agent_context.get_task().session_id, task_id=self._agent_context.get_task().id, filters={"user_id": self._agent_context.get_user()})
+            if self._agent_context:
+                session_id = self._agent_context.get_task().session_id
+                task_id = self._agent_context.get_task().id
+                user_id = self._agent_context.get_user()
+                self.memory.delete_items(message_type='message', session_id=session_id, task_id=task_id, filters={"user_id": user_id})
+
         else:
             self.memory = MemoryFactory.from_config(MemoryConfig(provider=options.pop("memory_store") if options.get("memory_store") else "inmemory"))
+        logger.info("[LLM_AGENT] reset finished")
 
     def set_tools_instances(self, tools, tools_conf):
         self.tools_instances = tools
@@ -989,7 +997,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self._agent_context.agent_name,
             )
         ))
-        logger.info(f"[🧠 MEMORY] Added human input to memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 {content[:10]}...")
+        logger.info(f"🧠 [MEMORY:short-term] Added human input to memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 {content[:10]}...")
 
     def _add_llm_response_to_memory(self, llm_response):
         """Add LLM response to memory"""
@@ -1008,7 +1016,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self._agent_context.agent_name,
             )
         ))
-        logger.info(f"[🧠 MEMORY] Added LLM response to memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 tool_calls: {len(llm_response.tool_calls)}, content: {llm_response.content[:100]}... ")
+        logger.info(f"🧠 [MEMORY:short-term] Added LLM response to memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, "
+                    f"Task#{self._agent_context.get_task().id}, Agent#{self.id()},"
+                    f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
+                    f" content: {llm_response.content[:100]}... ")
 
 
     def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: Any):
@@ -1025,7 +1036,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self._agent_context.agent_name,
             )
         ))
-        logger.info(f"[🧠 MEMORY] Added tool result to memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
+        logger.info(f"🧠 [MEMORY:short-term] Added tool result to memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
 
 
 
