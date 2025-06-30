@@ -4,7 +4,7 @@ import json
 from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import Swarm
+from aworld.core.agent.swarm import GraphBuildType, Swarm
 from aworld.core.task import Task
 from aworld.runner import Runners
 from .prompt import *
@@ -50,8 +50,7 @@ class AWorldAgent(BaseAWorldAgent):
         google_pse_search_agent = Agent(
             conf=agent_config,
             name="🔎 Team Search Agent",
-            system_prompt=search_sys_prompt,
-            agent_prompt=search_agent_prompt,
+            system_prompt=google_pse_search_sys_prompt,
             mcp_config=mcp_config,
             mcp_servers=["google-pse-search"],
         )
@@ -59,8 +58,7 @@ class AWorldAgent(BaseAWorldAgent):
         aworldsearch_server_agent = Agent(
             conf=agent_config,
             name="🔎 Team Aworldsearch Server Agent",
-            system_prompt=search_sys_prompt,
-            agent_prompt=search_agent_prompt,
+            system_prompt=aworldsearch_server_sys_prompt,
             mcp_config=mcp_config,
             mcp_servers=["aworldsearch-server"],
         )
@@ -68,8 +66,7 @@ class AWorldAgent(BaseAWorldAgent):
         aworld_playwright_agent = Agent(
             conf=agent_config,
             name="🔎 Team Aworld Playwright Agent",
-            system_prompt=search_sys_prompt,
-            agent_prompt=search_agent_prompt,
+            system_prompt=aworld_playwright_sys_prompt,
             mcp_config=mcp_config,
             mcp_servers=["aworld-playwright"],
         )
@@ -77,15 +74,16 @@ class AWorldAgent(BaseAWorldAgent):
         summary_agent = Agent(
             conf=agent_config,
             name="💬 Team Summary Agent",
-            system_prompt=summary_sys_prompt,
-            agent_prompt=summary_agent_prompt,
+            system_prompt=summary_agent_sys_prompt,
         )
 
         # default is sequence swarm mode
         swarm = Swarm(
             google_pse_search_agent,
             aworldsearch_server_agent,
-            summary_agent,
+            aworld_playwright_agent,
+            root_agent=summary_agent,
+            build_type=GraphBuildType.TEAM,
             max_steps=10,
         )
 
