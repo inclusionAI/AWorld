@@ -17,7 +17,7 @@ def gen_video(actionResult:ActionResult) -> CallbackResult:
         calback_result = CallbackResult(
             success=True,
             result_data=None,
-            callback_action_type=CallbackActionType.UNDO
+            callback_action_type=CallbackActionType.BYPASS
         )
         if not actionResult or not actionResult.content:
             calback_result.success = False

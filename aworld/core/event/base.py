@@ -22,7 +22,7 @@ class Constants:
     AGENT_CALLBACK = "agent_callback"
 
 class CallbackActionType:
-    UNDO = "undo"
+    BYPASS = "bypass"
     USE_RESULT = "use_result"
 
 
