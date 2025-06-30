@@ -35,7 +35,6 @@ from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint
-from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNode
 from aworld.utils.common import sync_exec, nest_dict_counter
 
 
@@ -696,54 +695,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return agent_result.actions
         else:
             result = await self._execute_tool(agent_result.actions)
-            # result = await self._tool_event_call(agent_result.actions)
             return result
-
-    async def _tool_event_call(self, actions: List[ActionModel]) -> Any:
-        """Execute tool calls
-
-        Args:
-            action: The action(s) to execute
-
-        Returns:
-            The result of tool execution
-        """
-        if not actions:
-            return []
-
-        tool_msg = ToolMessage(payload=actions,
-                               caller=self.id(),
-                               sender=self.id(),
-                               receiver=actions[0].tool_name,
-                               session_id=self.context.session_id)
-        # await send_message(tool_msg)
-        # await eventbus.publish(tool_msg)
-        # state_mng = RuntimeStateManager.instance()
-        #
-        # msg_id = tool_msg.id
-        # msg_node = state_mng.get_node(msg_id)
-        # logger.warn(f"======== _execute_tool init_status: {msg_node}.")
-        #
-        # while (True):
-        #     check_node = state_mng.get_node(msg_id)
-        #     log_node_id = state_mng.get_node(msg_id).node_id if state_mng.get_node(msg_id) else "None"
-        #     log_node_status = state_mng.get_node(msg_id).status if state_mng.get_node(msg_id) else "None"
-        #     logger.warn(f"----- wait#{log_node_id}/{log_node_status} -----")
-        #     if check_node and check_node.status != RunNodeStatus.INIT:
-        #         break
-        #     await asyncio.sleep(1)
-        # logger.warn(f"======== {msg_id}#_execute_tool node_status: {state_mng.get_node(msg_id).status}.")
-        # res_node = await state_mng.wait_for_node_completion(msg_id)
-        # if res_node.status == RunNodeStatus.SUCCESS:
-        #     logger.info(f"Agent {self.name()} _execute_tool finished with node result: {res_node.results}.")
-        #     if not res_node.results:
-        #         logger.warn(f"Agent {self.id()} _execute_tool finished with empty node result.")
-        #         return None
-        #     return [ActionModel(agent_name=self.id(), policy_info=res_node.results[0].result.payload)]
-        # else:
-        #     logger.warn(f"Agent {self.id()} _execute_tool failed with node: {res_node}.")
-        #     return None
-
 
     async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs):
         """Prepare LLM input

@@ -299,8 +299,6 @@ class RuntimeStateManager(InheritanceSingleton):
             if not node:
                 raise Exception(f"Node not found, node_id: {node_id}")
 
-            logger.info(f"====wait_for_node_completion node_id#{node_id}: {node}")
-
             # Check if node has completed
             if node.status in [RunNodeStatus.SUCCESS, RunNodeStatus.FAILED, RunNodeStatus.BREAKED,
                                RunNodeStatus.TIMEOUT]:
@@ -351,15 +349,10 @@ class EventRuntimeStateManager(RuntimeStateManager):
                     name=name,
                     status=RunNodeStatus.FAILED,
                     result=result)
-            elif self.get_node(message.id).status ==RunNodeStatus.RUNNING:
-                handle_result = HandleResult(
-                    name=name,
-                    status=RunNodeStatus.RUNNING,
-                    result=result)
             else:
                 handle_result = HandleResult(
                     name=name,
-                    status=RunNodeStatus.SUCCESS,
+                    status=self.get_node(message.id).status if self.get_node(message.id) else RunNodeStatus.FAILED,
                     result=result)
             self.save_result(node_id=message.id, result=handle_result)
 
