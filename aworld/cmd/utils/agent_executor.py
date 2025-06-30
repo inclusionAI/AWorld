@@ -16,6 +16,7 @@ import os
 import uuid
 from dotenv import load_dotenv
 from .agent_server import CURRENT_SERVER
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -64,19 +65,21 @@ async def stream_run(request: ChatCompletionRequest):
     )
 
     await CURRENT_SERVER.on_chat_completion_request(request)
+    try:
+        async for output in instance.run(request=request):
+            logger.info(f"Agent {agent.name} output: {output}")
 
-    async for output in instance.run(request=request):
-        logger.info(f"Agent {agent.name} output: {output}")
-
-        if isinstance(output, str):
-            yield build_response(output)
-        else:
-            res = await AworldUI.parse_output(output, rich_ui)
-            for item in res if isinstance(res, list) else [res]:
-                if isinstance(item, AsyncGenerator):
-                    async for sub_item in item:
-                        yield build_response(sub_item)
-                else:
-                    yield build_response(item)
-
-    await CURRENT_SERVER.on_chat_completion_end(request, final_response)
+            if isinstance(output, str):
+                yield build_response(output)
+            else:
+                res = await AworldUI.parse_output(output, rich_ui)
+                for item in res if isinstance(res, list) else [res]:
+                    if isinstance(item, AsyncGenerator):
+                        async for sub_item in item:
+                            yield build_response(sub_item)
+                    else:
+                        yield build_response(item)
+    except:
+        logger.error(f"Agent {agent.name} error: {traceback.format_exc()}")
+    finally:
+        await CURRENT_SERVER.on_chat_completion_end(request, final_response)
