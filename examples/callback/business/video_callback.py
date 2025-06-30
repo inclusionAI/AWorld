@@ -3,10 +3,9 @@ import os
 import time
 
 import requests
-from aworld.core.common import Observation, ActionResult, CallbackResult
+from aworld.core.common import Observation, ActionResult, CallbackResult, CallbackActionType
 from typing_extensions import Any
 
-from aworld.core.event.base import CallbackActionType
 from aworld.runners.callback.decorator import reg_callback
 
 from aworld.logs.util import logger
