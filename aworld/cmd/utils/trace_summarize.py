@@ -42,7 +42,8 @@ trace_agent = Agent(
     name="trace_agent",
     system_prompt=trace_sys_prompt,
     agent_prompt=trace_prompt,
-    tool_names=["trace"]
+    tool_names=["trace"],
+    feedback_tool_result=True
 )
 
 
@@ -71,16 +72,17 @@ def summarize_trace(trace_id: str):
 
 async def get_summarize_trace(trace_id: str):
     if trace_id not in _trace_summary_cache:
-        return ""
+        return None
     cached_value = _trace_summary_cache[trace_id]
     if isinstance(cached_value, Task):
-        try:
-            result = await cached_value
-            if isinstance(result, Task):
-                result = await result
-            _trace_summary_cache[trace_id] = _fetch_json_from_result(result)
-        except Exception as e:
-            logger.error(traceback.format_exc())
+        # try:
+        #     result = await cached_value
+        #     if isinstance(result, Task):
+        #         result = await result
+        #     _trace_summary_cache[trace_id] = _fetch_json_from_result(result)
+        # except Exception as e:
+        #     logger.error(traceback.format_exc())
+        return None
     return _trace_summary_cache[trace_id]
 
 
