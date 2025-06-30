@@ -1,46 +1,35 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-import datetime
+import uuid
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from datetime import datetime
+from typing import List, Dict, Any, Optional, TYPE_CHECKING, Literal
+
+from pydantic import BaseModel, Field
 
 from aworld.core.memory import MemoryItem, MemoryStore, LongTermConfig
 from aworld.models.llm import LLMModel
-from aworld.memory.models import UserProfile, AgentExperience
+from aworld.memory.models import UserProfile, AgentExperience, LongTermExtractParams
 
 
-class MemoryProcessingTask:
+class MemoryProcessingTask(BaseModel):
     """
     Represents a memory processing task containing information needed for long-term memory processing.
     
     Args:
-        task_id: Unique identifier for the task
-        application_id: Application identifier for multi-tenant support
-        agent_id: Agent identifier
-        user_id: User identifier
-        session_id: Session identifier
-        memories: List of short-term memory items to process
+        memory_task_id: Task identifier
+        task_type: Task type
+        extract_params: Long-term extract parameters
+        created_at: Creation timestamp
+        finished_at: Finished timestamp
     """
-    
-    def __init__(
-        self, 
-        task_id: str, 
-        application_id: str, 
-        agent_id: str, 
-        user_id: str, 
-        session_id: str, 
-        memories: List[MemoryItem]
-    ) -> None:
-        self.task_id = task_id
-        self.application_id = application_id
-        self.agent_id = agent_id
-        self.user_id = user_id
-        self.session_id = session_id
-        self.short_term_memories = memories
-        self.created_at = datetime.datetime.now()
-        self.metadata: Dict[str, Any] = {}
-
+    memory_task_id: str = Field(default=str(uuid.uuid4()), description="Memory task identifier")
+    task_type: Literal['user_profile', 'agent_experience'] = Field(..., description="Memory task type")
+    extract_params: LongTermExtractParams = Field(description="Long-term extract parameters")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Metadata")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Creation timestamp")
+    finished_at: str = Field(default=None, description="Finished timestamp")
 
 class ProcessingResult:
     """
@@ -79,23 +68,15 @@ class MemoryOrchestrator(ABC):
     
     @abstractmethod
     def should_process_memory(
-        self, 
-        memory_items: List[MemoryItem], 
-        application_id: str, 
-        agent_id: str, 
-        user_id: str, 
-        session_id: str,
-        longterm_config: "LongTermConfig"
+            self,
+            extract_param: LongTermExtractParams,
+            longterm_config: LongTermConfig
     ) -> bool:
         """
         Determine whether the given memory items should be processed for long-term storage.
         
         Args:
-            memory_items: List of memory items to evaluate
-            application_id: Application identifier
-            agent_id: Agent identifier
-            user_id: User identifier
-            session_id: Session identifier
+            extract_param: Long-term extract parameters
             longterm_config: Long-term memory configuration settings
             
         Returns:
@@ -105,25 +86,15 @@ class MemoryOrchestrator(ABC):
     
     @abstractmethod
     def create_memory_task(
-        self, 
-        memory_items: List[MemoryItem], 
-        application_id: str, 
-        agent_id: str, 
-        user_id: str, 
-        session_id: str, 
-        task_id: str,
+        self,
+        extract_param: LongTermExtractParams,
         longterm_config: "LongTermConfig"
-    ) -> MemoryProcessingTask:
+    ) -> Optional[MemoryProcessingTask]:
         """
         Create a memory processing task from the given memory items.
         
         Args:
-            memory_items: List of memory items to process
-            application_id: Application identifier
-            agent_id: Agent identifier
-            user_id: User identifier
-            session_id: Session identifier
-            task_id: Task identifier
+            extract_param: Long-term extract parameters
             longterm_config: Long-term memory configuration settings
             
         Returns:

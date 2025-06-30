@@ -68,6 +68,7 @@ class TaskRunner(Runner):
         self.step_agent_counter = {}
 
     async def pre_run(self):
+        logger.info("[TaskRunner]pre_run start")
         task = self.task
         self.swarm = task.swarm
         self.input = task.input
@@ -119,6 +120,7 @@ class TaskRunner(Runner):
         if self.swarm:
             self.swarm.event_driven = task.event_driven
             self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
+        logger.info("[TaskRunner]pre_run finish")
 
     async def post_run(self):
         self.context.reset()

@@ -3,13 +3,16 @@
 import abc
 import asyncio
 import json
+import logging
 import os
+import traceback
 import uuid
 from typing import Optional
 
 from aworld.config import ConfigDict
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
 from aworld.logs.util import logger
+from aworld.memory.models import UserProfileExtractParams, AgentExperienceExtractParams, LongTermExtractParams
 from aworld.models.llm import get_llm_model, acall_llm_model
 from aworld.memory.longterm import SimpleMemoryOrchestrator, LongTermConfig
 
@@ -112,7 +115,7 @@ class MemoryFactory:
             MemoryBase: Memory instance.
         """
         if config.provider == "inmemory":
-            logger.info("🧠setup memory store: inmemory")
+            logger.info("🧠 [MEMORY]setup memory store: inmemory")
             return InMemoryStorageMemory(
                 memory_store=InMemoryMemoryStore(),
                 config=config,
@@ -121,7 +124,7 @@ class MemoryFactory:
             )
         elif config.provider == "mem0":
             from aworld.memory.mem0.mem0_memory import Mem0Memory
-            logger.info("🧠setup memory store: mem0")
+            logger.info("🧠 [MEMORY]setup memory store: mem0")
             return Mem0Memory(
                 memory_store=InMemoryMemoryStore(),
                 config=config
@@ -142,7 +145,7 @@ class Memory(MemoryBase):
         if self.config.enable_long_term:
             self.longterm_config = config.long_term_config or LongTermConfig.create_simple_config()
             self.memory_orchestrator = SimpleMemoryOrchestrator(self.default_llm_instance)
-            logger.info(f"🧠 [LongTermMemory] Initialized with config: "
+            logger.info(f"🧠 [MEMORY:long-term] Initialized with config: "
                         f"threshold={self.longterm_config.trigger.message_count_threshold}, "
                         f"user_profiles={self.longterm_config.extraction.enable_user_profile_extraction}, "
                         f"agent_experiences={self.longterm_config.extraction.enable_agent_experience_extraction}")
@@ -272,68 +275,100 @@ class Memory(MemoryBase):
     def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
         pass
 
-    def _check_and_trigger_longterm_processing(self, filters: dict = None) -> None:
+    def add(self, memory_item: MemoryItem, filters: dict = None):
+        self._add(memory_item, filters)
+        self.post_add(memory_item, filters)
+
+    @abc.abstractmethod
+    def _add(self, memory_item: MemoryItem, filters: dict = None):
+        pass
+
+    def post_add(self, memory_item: MemoryItem, filters: dict = None):
+        try:
+            self.post_process_long_terms(memory_item, filters)
+        except Exception as err:
+            logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exception(err)}")
+
+    def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None):
+        if self.config.enable_long_term:
+            if memory_item.memory_type != 'message':
+                return
+
+            long_term_config = self.config.long_term_config
+            if not long_term_config:
+                return
+
+
+            task_memory_items = self.memory_store.get_all({
+                'memory_type': 'message',
+                'application_id': memory_item.application_id,
+                'session_id': memory_item.session_id,
+                'task_id': memory_item.task_id
+            })
+
+            task_params = []
+            # Check if user profile extraction is enabled
+            if long_term_config.extraction.enable_user_profile_extraction:
+                if memory_item.user_id:
+                    user_profile_task_params = UserProfileExtractParams(
+                        user_id=memory_item.user_id,
+                        session_id=memory_item.session_id,
+                        task_id=memory_item.task_id,
+                        application_id=memory_item.application_id,
+                        memories=task_memory_items
+                    )
+                    task_params.append(user_profile_task_params)
+                else:
+                    logger.warning(f"🧠 [MEMORY:long-term] memory_item.user_id is None, skip user profile extraction")
+            # Check if agent experience extraction is enabled
+            if long_term_config.extraction.enable_agent_experience_extraction:
+                if memory_item.agent_id:
+                    agent_experience_task_params = AgentExperienceExtractParams(
+                        agent_id=memory_item.agent_id,
+                        session_id=memory_item.session_id,
+                        task_id=memory_item.task_id,
+                        application_id=memory_item.application_id,
+                        memories=task_memory_items
+                    )
+                    task_params.append(agent_experience_task_params)
+                else:
+                    logger.warning(f"🧠 [MEMORY:long-term] memory_item.agent_id is None, skip agent experience extraction")
+            self._create_longterm_processing_tasks(task_params)
+
+    def delete(self, memory_id):
+        pass
+
+    def update(self, memory_item: MemoryItem):
+        pass
+
+    def _create_longterm_processing_tasks(self, task_params: list[LongTermExtractParams]) -> None:
+        for task_param in task_params:
+            self._create_longterm_processing_task(task_param)
+
+    def _create_longterm_processing_task(self, extract_param: LongTermExtractParams) -> None:
         """
         Check if long-term memory processing should be triggered and process if necessary.
 
         Args:
             filters: Filters to apply when retrieving memory items for processing
         """
-        if not self.config.enable_long_term:
-            return
         try:
             # Get all current memory items
-            all_memory_items = self.memory_store.get_all(filters)
-
-            if not all_memory_items:
-                return
-
-            # Extract identifiers from filters or use defaults
-            application_id = filters.get('application_id', 'default') if filters else 'default'
-            agent_id = filters.get('agent_id', 'default') if filters else 'default'
-            user_id = filters.get('user_id', 'default') if filters else 'default'
-            session_id = filters.get('session_id', 'default') if filters else 'default'
-
-            # Check if processing should be triggered
-            should_process = self.memory_orchestrator.should_process_memory(
-                memory_items=all_memory_items,
-                application_id=application_id,
-                agent_id=agent_id,
-                user_id=user_id,
-                session_id=session_id,
+            memory_task = self.memory_orchestrator.create_memory_task(
+                extract_param,
                 longterm_config=self.longterm_config
             )
 
-            if should_process:
-                logger.info(f"🧠 [LongTermMemory] Triggering long-term memory processing for "
-                           f"app_id={application_id}, agent_id={agent_id}, user_id={user_id}, "
-                           f"session_id={session_id}, total_items={len(all_memory_items)}")
-
-                # Create processing task
-                task = self.memory_orchestrator.create_memory_task(
-                    memory_items=all_memory_items,
-                    application_id=application_id,
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    session_id=session_id,
-                    task_id="MEMORY_TASK_" + str(uuid.uuid4()),  # Will be auto-generated
-                    longterm_config=self.longterm_config
-                )
-
-                # For now, just log the task creation
-                # In the future, this could be sent to a background processor
-                logger.info(f"🧠 [LongTermMemory] Created processing task {task.task_id} "
-                           f"with trigger_reason: {task.metadata.get('trigger_reason', 'unknown')}")
+            if memory_task:
+                logger.info(f"🧠 [MEMORY:long-term] Created processing task {memory_task.task_id} "
+                            f"with trigger_reason: {memory_task.metadata.get('trigger_reason', 'unknown')}")
 
                 if self.longterm_config.processing.enable_background_processing:
-                    # Schedule background processing
-                    asyncio.create_task(self._process_longterm_memory_task(task))
+                    asyncio.create_task(self._process_longterm_memory_task(memory_task))
                 else:
-                    # Process immediately
-                    asyncio.run(self._process_longterm_memory_task(task))
-
+                    asyncio.run(self._process_longterm_memory_task(memory_task))
         except Exception as e:
-            logger.error(f"🧠 [LongTermMemory] Error during long-term memory processing check: {e}")
+            logger.error(f"🧠 [MEMORY:long-term] Error during long-term memory processing check: {e}")
 
     async def _process_longterm_memory_task(self, task) -> None:
         """
@@ -345,7 +380,7 @@ class Memory(MemoryBase):
         try:
             if not self.config.enable_long_term:
                 return
-            logger.info(f"🧠 [LongTermMemory] Processing task {task.task_id} started")
+            logger.info(f"🧠 [MEMORY:long-term] Processing task {task.task_id} started")
 
             # This is a placeholder implementation
             # In a real implementation, this would:
@@ -356,11 +391,11 @@ class Memory(MemoryBase):
             # For now, just simulate processing time
             await asyncio.sleep(0.1)
 
-            logger.info(f"🧠 [LongTermMemory] Processing task {task.task_id} completed "
+            logger.info(f"🧠 [MEMORY:long-term] Processing task {task.task_id} completed "
                        f"(placeholder implementation)")
 
         except Exception as e:
-            logger.error(f"🧠 [LongTermMemory] Error processing task {task.task_id}: {e}")
+            logger.error(f"🧠 [MEMORY:long-term] Error processing task {task.task_id}: {e}")
 
 
 class InMemoryStorageMemory(Memory):
@@ -370,7 +405,7 @@ class InMemoryStorageMemory(Memory):
         self.summary_rounds = self.config.summary_rounds
         self.enable_summary = self.config.enable_summary
 
-    def add(self, memory_item: MemoryItem, filters: dict = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None):
         self.memory_store.add(memory_item)
 
         # Check if we need to create or update summary
@@ -379,8 +414,6 @@ class InMemoryStorageMemory(Memory):
             if total_rounds > self.summary_rounds:
                 self._create_or_update_summary(total_rounds)
 
-        # Check and trigger long-term memory processing
-        self._check_and_trigger_longterm_processing(filters)
 
     def _create_or_update_summary(self, total_rounds: int):
         """Create or update summary based on current total rounds.

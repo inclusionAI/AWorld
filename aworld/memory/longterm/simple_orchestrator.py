@@ -2,11 +2,12 @@
 # Copyright (c) 2025 inclusionAI.
 
 import uuid
-from typing import List
+from typing import List, Optional, Tuple
 
 from aworld.core.memory import MemoryItem, MemoryConfig,LongTermConfig
 from aworld.models.llm import LLMModel
 from .base import MemoryOrchestrator, MemoryProcessingTask
+from ..models import LongTermExtractParams
 
 
 class SimpleMemoryOrchestrator(MemoryOrchestrator):
@@ -26,86 +27,62 @@ class SimpleMemoryOrchestrator(MemoryOrchestrator):
     
     def should_process_memory(
         self, 
-        memory_items: List[MemoryItem], 
-        application_id: str, 
-        agent_id: str, 
-        user_id: str, 
-        session_id: str,
+        extract_param: LongTermExtractParams,
         longterm_config: LongTermConfig
-    ) -> bool:
-        """
-        Determine whether the given memory items should be processed for long-term storage.
-        
-        Args:
-            memory_items: List of memory items to evaluate
-            application_id: Application identifier
-            agent_id: Agent identifier
-            user_id: User identifier
-            session_id: Session identifier
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            True if processing should be triggered, False otherwise
-        """
+    ) -> Tuple[bool, str]:
         # Check message count threshold
-        if self.check_message_count_threshold(memory_items, longterm_config):
-            return True
+        if self.check_message_count_threshold(extract_param.memories, longterm_config):
+            return True,"message_count"
             
         # Check content importance if enabled
         if longterm_config.trigger.enable_importance_trigger:
-            if self.check_content_importance(memory_items, longterm_config):
-                return True
+            if self.check_content_importance(extract_param.memories, longterm_config):
+                return True,"content_importance"
         
-        return False
+        return False,"not_trigger"
     
     def create_memory_task(
         self, 
-        memory_items: List[MemoryItem], 
-        application_id: str, 
-        agent_id: str, 
-        user_id: str, 
-        session_id: str, 
-        task_id: str,
+        extract_param: LongTermExtractParams,
         longterm_config: LongTermConfig
-    ) -> MemoryProcessingTask:
+    ) -> Optional[MemoryProcessingTask]:
         """
         Create a memory processing task from the given memory items.
         
         Args:
-            memory_items: List of memory items to process
-            application_id: Application identifier
-            agent_id: Agent identifier
-            user_id: User identifier
-            session_id: Session identifier
-            task_id: Task identifier
+            extract_param: Long-term extract parameters
             longterm_config: Long-term memory configuration settings
             
         Returns:
             Memory processing task
         """
-        if not task_id:
-            task_id = str(uuid.uuid4())
-            
-        task = MemoryProcessingTask(
-            task_id=task_id,
-            application_id=application_id,
-            agent_id=agent_id,
-            user_id=user_id,
-            session_id=session_id,
-            memories=memory_items
+
+        # Check if processing should be triggered
+        should_process,reason = self.should_process_memory(
+            extract_param,
+            longterm_config=longterm_config
         )
-        
+
+        if not should_process:
+            return None
+
+        # create long-term memory task
+        memory_task = MemoryProcessingTask(
+            task_type=extract_param.extract_type,
+            extract_params=extract_param
+        )
+
         # Add metadata based on configuration
-        task.metadata.update({
-            'trigger_reason': self._get_trigger_reason(memory_items, longterm_config),
+        memory_task.metadata.update({
+            "trigger_reason": reason,
             'config_snapshot': {
                 'message_threshold': longterm_config.trigger.message_count_threshold,
                 'user_profile_extraction': longterm_config.extraction.enable_user_profile_extraction,
                 'agent_experience_extraction': longterm_config.extraction.enable_agent_experience_extraction
             }
         })
-        
-        return task
+
+        return memory_task
     
     def check_message_count_threshold(self, memory_items: List[MemoryItem], longterm_config: LongTermConfig) -> bool:
         """
@@ -135,7 +112,7 @@ class SimpleMemoryOrchestrator(MemoryOrchestrator):
             return False
             
         # Check for importance keywords in recent messages
-        recent_items = memory_items[-5:] if len(memory_items) > 5 else memory_items
+        recent_items = memory_items[-1:] if len(memory_items) > 1 else memory_items
         importance_keywords = longterm_config.trigger.importance_keywords
         
         for item in recent_items:
@@ -145,24 +122,3 @@ class SimpleMemoryOrchestrator(MemoryOrchestrator):
                     return True
         
         return False
-    
-    def _get_trigger_reason(self, memory_items: List[MemoryItem], longterm_config: LongTermConfig) -> str:
-        """
-        Get the reason why processing was triggered.
-        
-        Args:
-            memory_items: List of memory items
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            String describing the trigger reason
-        """
-        reasons = []
-        
-        if self.check_message_count_threshold(memory_items, longterm_config):
-            reasons.append(f"message_count_threshold({longterm_config.trigger.message_count_threshold})")
-            
-        if self.check_content_importance(memory_items, longterm_config):
-            reasons.append("content_importance")
-            
-        return ", ".join(reasons) if reasons else "unknown" 
