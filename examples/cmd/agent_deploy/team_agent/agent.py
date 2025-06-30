@@ -47,9 +47,15 @@ class AWorldAgent(BaseAWorldAgent):
         with open(mcp_path, "r") as f:
             mcp_config = json.load(f)
 
+        plan_agent = Agent(
+            conf=agent_config,
+            name="🔎 Team Plan Agent",
+            system_prompt=plan_agent_sys_prompt,
+        )
+
         google_pse_search_agent = Agent(
             conf=agent_config,
-            name="🔎 Team Search Agent",
+            name="🔎 Google PSE Search Agent",
             system_prompt=google_pse_search_sys_prompt,
             mcp_config=mcp_config,
             mcp_servers=["google-pse-search"],
@@ -57,7 +63,7 @@ class AWorldAgent(BaseAWorldAgent):
 
         aworldsearch_server_agent = Agent(
             conf=agent_config,
-            name="🔎 Team Aworldsearch Server Agent",
+            name="🔎 Aworldsearch Server Agent",
             system_prompt=aworldsearch_server_sys_prompt,
             mcp_config=mcp_config,
             mcp_servers=["aworldsearch-server"],
@@ -65,7 +71,7 @@ class AWorldAgent(BaseAWorldAgent):
 
         aworld_playwright_agent = Agent(
             conf=agent_config,
-            name="🔎 Team Aworld Playwright Agent",
+            name="🔎 Aworld Playwright Agent",
             system_prompt=aworld_playwright_sys_prompt,
             mcp_config=mcp_config,
             mcp_servers=["aworld-playwright"],
@@ -73,7 +79,7 @@ class AWorldAgent(BaseAWorldAgent):
 
         summary_agent = Agent(
             conf=agent_config,
-            name="💬 Team Summary Agent",
+            name="💬 Summary Agent",
             system_prompt=summary_agent_sys_prompt,
         )
 
@@ -82,7 +88,8 @@ class AWorldAgent(BaseAWorldAgent):
             google_pse_search_agent,
             aworldsearch_server_agent,
             aworld_playwright_agent,
-            root_agent=summary_agent,
+            summary_agent,
+            root_agent=plan_agent,
             build_type=GraphBuildType.TEAM,
             max_steps=10,
         )
