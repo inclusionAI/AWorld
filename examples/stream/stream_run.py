@@ -27,13 +27,25 @@ if __name__ == '__main__':
         conf=agent_config,
         name="amap_agent",
         system_prompt=amap_sys_prompt,
-        mcp_servers=["filesystem", "amap-amap-sse"],  # MCP server name for agent to use
-        history_messages=100
+        mcp_servers=["amap-amap-sse"],  # MCP server name for agent to use
+        history_messages=100,
+        mcp_config={
+            "mcpServers": {
+                "amap-amap-sse": {
+                    "type": "sse",
+                    "url": "https://mcp.amap.com/sse?key=08c925b190caf1cd566f2cf4c4517fdb",
+                    "timeout": 5.0,
+                    "sse_read_timeout": 300.0
+                }
+            }
+        }
     )
 
-    user_input = ("How long does it take to drive from Hangzhou of Zhejiang to  Weihai of Shandong (generate a table with columns for starting point, destination, duration, distance), "
-                  "which cities are passed along the way, what interesting places are there along the route, "
-                  "and finally generate the content as markdown and save it")
+    user_input = (
+        "How long does it take to drive from Hangzhou of Zhejiang to  Weihai of Shandong (generate a table with columns for starting point, destination, duration, distance), "
+        "which cities are passed along the way, what interesting places are there along the route, "
+        "and finally generate the content as markdown and save it")
+
 
     async def _run(agent, input):
         task = Task(
@@ -46,5 +58,6 @@ if __name__ == '__main__':
 
         async for output in Runners.streamed_run_task(task).stream_events():
             await AworldUI.parse_output(output, rich_ui)
+
 
     asyncio.run(_run(amap_agent, user_input))

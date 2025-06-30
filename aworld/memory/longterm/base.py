@@ -4,14 +4,25 @@
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List, Dict, Any, Optional, TYPE_CHECKING, Literal
+from typing import List, Any, Optional, Literal
 
 from pydantic import BaseModel, Field
 
-from aworld.core.memory import MemoryItem, MemoryStore, LongTermConfig
+from aworld.core.memory import MemoryStore, LongTermConfig
 from aworld.models.llm import LLMModel
 from aworld.memory.models import UserProfile, AgentExperience, LongTermExtractParams
 
+
+class MemoryProcessingResult(BaseModel):
+    """
+    Represents the result of memory processing operation.
+    """
+    task_id: str = Field(default=None, description="Task identifier")
+    success: bool = Field(default=False, description="Success flag")
+    user_profiles: Optional[List[UserProfile]] = Field(default_factory=list, description="User profiles")
+    agent_experiences: Optional[List[AgentExperience]] = Field(default_factory=list, description="Agent experiences")
+    finished_at: Optional[str] = Field(default=str(datetime.now().isoformat()), description="Finished timestamp")
+    error_message: Optional[str] = Field(default=None, description="Error message")
 
 class MemoryProcessingTask(BaseModel):
     """
@@ -30,103 +41,84 @@ class MemoryProcessingTask(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict, description="Metadata")
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Creation timestamp")
     finished_at: str = Field(default=None, description="Finished timestamp")
-
-class ProcessingResult:
-    """
-    Represents the result of memory processing operation.
-    
-    Args:
-        task_id: Task identifier
-        application_id: Application identifier
-        success: Whether the processing was successful
-    """
-    
-    def __init__(self, task_id: str, application_id: str, success: bool) -> None:
-        self.task_id = task_id
-        self.application_id = application_id
-        self.success = success
-        self.user_profiles: List[UserProfile] = []
-        self.agent_experiences: List[AgentExperience] = []
-        self.processing_time: float = 0.0
-        self.error_message: str = ""
+    status: Literal['initial', 'processing', 'completed', 'failed'] = Field(default='initial', description="Task status")
+    result: Optional[MemoryProcessingResult] = Field(default=None, description="Processing result")
 
 
 class MemoryOrchestrator(ABC):
+
     """
     Abstract base class for memory orchestrator that determines when and how to process memories.
     Responsible for evaluating trigger conditions and creating processing tasks.
     """
     
-    def __init__(self, llm_instance: LLMModel) -> None:
+    def __init__(self, llm_instance: LLMModel,
+                 longterm_config: LongTermConfig,
+                 embedding_model: Optional[Any] = None,
+                 long_term_memory_store: MemoryStore = None) -> None:
         """
         Initialize the memory orchestrator.
         
         Args:
             llm_instance: LLM model instance for processing
         """
-        self.llm_instance = llm_instance
-    
+        self._llm_instance = llm_instance
+        self._longterm_config = longterm_config
+        self._embedding_model = embedding_model
+        self._long_term_memory_store: MemoryStore = long_term_memory_store
+
+
     @abstractmethod
-    def should_process_memory(
-            self,
-            extract_param: LongTermExtractParams,
-            longterm_config: LongTermConfig
-    ) -> bool:
+    def create_longterm_processing_tasks(self,
+                                         extract_param_list: list[LongTermExtractParams],
+                                         ) -> None:
         """
-        Determine whether the given memory items should be processed for long-term storage.
-        
+        Create long-term memory processing tasks from the given memory items.
+
         Args:
-            extract_param: Long-term extract parameters
+            task_params: List of long-term extract parameters
             longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            True if processing should be triggered, False otherwise
         """
         pass
-    
+
+
     @abstractmethod
-    def create_memory_task(
-        self,
-        extract_param: LongTermExtractParams,
-        longterm_config: "LongTermConfig"
-    ) -> Optional[MemoryProcessingTask]:
+    async def retrieve_agent_experience(
+        self, 
+        query: str, 
+        agent_id: Optional[str] = None,
+        application_id: Optional[str] = "default",
+    ) -> List[AgentExperience]:
         """
-        Create a memory processing task from the given memory items.
+        Retrieve similar agent experiences from long-term storage for context.
         
         Args:
-            extract_param: Long-term extract parameters
-            longterm_config: Long-term memory configuration settings
+            query: Query string for similarity search
+            agent_id: Agent identifier for filtering
+            application_id: Application identifier for filtering
             
         Returns:
-            Memory processing task
+            List of similar memory items
         """
         pass
-    
+
     @abstractmethod
-    def check_message_count_threshold(self, memory_items: List[MemoryItem], longterm_config: "LongTermConfig") -> bool:
+    async def retrieve_user_profile(
+        self, 
+        query: str, 
+        user_id: Optional[str] = None,
+        application_id: Optional[str] = "default",
+    ) -> List[UserProfile]:
         """
-        Check if the message count threshold is reached.
-        
+        Retrieve similar user profiles from long-term storage for context.
+
         Args:
-            memory_items: List of memory items to check
-            longterm_config: Long-term memory configuration settings
+            query: Query string for similarity search
+            user_id: User identifier for filtering
+            application_id: Application identifier for filtering
             
         Returns:
-            True if threshold is reached, False otherwise
-        """
-        pass
-    
-    @abstractmethod
-    def check_content_importance(self, memory_items: List[MemoryItem], longterm_config: "LongTermConfig") -> bool:
-        """
-        Check if the content importance threshold is reached.
-        
-        Args:
-            memory_items: List of memory items to check
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            True if content is important enough, False otherwise
+            List of similar memory items
         """
         pass
 
@@ -137,173 +129,30 @@ class MemoryGungnir(ABC):
     Responsible for extracting and processing long-term memories from short-term memory items.
     """
     
-    def __init__(self, llm_instance: LLMModel, embedding_model: Optional[Any] = None) -> None:
+    def __init__(self, llm_instance: LLMModel) -> None:
         """
         Initialize the memory processing engine.
         
         Args:
             llm_instance: LLM model instance for processing
-            embedding_model: Embedding model for semantic operations
         """
-        self.llm_instance = llm_instance
-        self.embedding_model = embedding_model
+        self._llm_instance = llm_instance
     
+
     @abstractmethod
-    def process_memory_task(
+    async def process_memory_task(
         self, 
-        task: MemoryProcessingTask, 
-        long_term_memory: MemoryStore,
-        longterm_config: "LongTermConfig"
-    ) -> ProcessingResult:
+        task: MemoryProcessingTask
+    ) -> MemoryProcessingResult:
         """
         Process a memory task and extract long-term memories.
         
         Args:
             task: Memory processing task to execute
-            long_term_memory: Long-term memory store for context retrieval
-            longterm_config: Long-term memory configuration settings
             
         Returns:
             Processing result containing extracted memories
         """
         pass
-    
-    @abstractmethod
-    def extract_user_profiles(
-        self, 
-        messages: List[MemoryItem], 
-        application_id: str, 
-        agent_id: str, 
-        user_id: str,
-        longterm_config: "LongTermConfig"
-    ) -> List[UserProfile]:
-        """
-        Extract user profiles from memory items.
-        
-        Args:
-            messages: List of memory items to analyze
-            application_id: Application identifier
-            agent_id: Agent identifier
-            user_id: User identifier
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            List of extracted user profiles
-        """
-        pass
-    
-    @abstractmethod
-    def extract_agent_experiences(
-        self, 
-        messages: List[MemoryItem], 
-        application_id: str, 
-        agent_id: str,
-        longterm_config: "LongTermConfig"
-    ) -> List[AgentExperience]:
-        """
-        Extract agent experiences from memory items.
-        
-        Args:
-            messages: List of memory items to analyze
-            application_id: Application identifier
-            agent_id: Agent identifier
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            List of extracted agent experiences
-        """
-        pass
-    
-    @abstractmethod
-    def retrieve_similar_memories(
-        self, 
-        query: str, 
-        long_term_memory: MemoryStore, 
-        application_id: str,
-        longterm_config: "LongTermConfig"
-    ) -> List[MemoryItem]:
-        """
-        Retrieve similar memories from long-term storage for context.
-        
-        Args:
-            query: Query string for similarity search
-            long_term_memory: Long-term memory store
-            application_id: Application identifier for filtering
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            List of similar memory items
-        """
-        pass
-    
-    @abstractmethod
-    def call_llm_for_user_profile_extraction(self, messages: List[MemoryItem], longterm_config: "LongTermConfig") -> str:
-        """
-        Call LLM to extract user profile information from messages.
-        
-        Args:
-            messages: List of memory items to analyze
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            LLM response containing user profile information
-        """
-        pass
-    
-    @abstractmethod
-    def call_llm_for_agent_experience_extraction(self, messages: List[MemoryItem], longterm_config: "LongTermConfig") -> str:
-        """
-        Call LLM to extract agent experience information from messages.
-        
-        Args:
-            messages: List of memory items to analyze
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            LLM response containing agent experience information
-        """
-        pass
-    
-    @abstractmethod
-    def parse_user_profiles_from_llm_response(
-        self, 
-        response: str, 
-        application_id: str, 
-        user_id: str,
-        longterm_config: "LongTermConfig"
-    ) -> List[UserProfile]:
-        """
-        Parse user profiles from LLM response.
-        
-        Args:
-            response: LLM response string
-            application_id: Application identifier
-            user_id: User identifier
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            List of parsed user profiles
-        """
-        pass
-    
-    @abstractmethod
-    def parse_agent_experiences_from_llm_response(
-        self, 
-        response: str, 
-        application_id: str, 
-        agent_id: str,
-        longterm_config: "LongTermConfig"
-    ) -> List[AgentExperience]:
-        """
-        Parse agent experiences from LLM response.
-        
-        Args:
-            response: LLM response string
-            application_id: Application identifier
-            agent_id: Agent identifier
-            longterm_config: Long-term memory configuration settings
-            
-        Returns:
-            List of parsed agent experiences
-        """
-        pass 
+
+ 

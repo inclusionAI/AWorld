@@ -11,9 +11,9 @@ from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.core.memory import MemoryConfig, LongTermConfig
 from aworld.core.task import Task
 from aworld.memory.main import MemoryFactory
+from aworld.output import PrinterAworldUI
 from aworld.output.ui.base import AworldUI
 from aworld.runner import Runners
-from custom.custom_rich_aworld_ui import RichAworldUI
 
 if __name__ == '__main__':
     application = "stream_run_with_langitem"
@@ -30,7 +30,8 @@ if __name__ == '__main__':
             enable_long_term=True,
             long_term_config=LongTermConfig.create_simple_config(
                 application_id=application,
-                message_threshold=1
+                enable_user_profiles=False,
+                message_threshold=2
             )
         )
     )
@@ -59,13 +60,13 @@ if __name__ == '__main__':
             conf=TaskConfig()
         )
 
-        rich_ui = RichAworldUI()
+        aworld_ui = PrinterAworldUI()
 
         async for output in Runners.streamed_run_task(task).stream_events():
-            await AworldUI.parse_output(output, rich_ui)
+            await AworldUI.parse_output(output, aworld_ui)
 
-        logging.info("stream_run_with_langitem end, await 100s")
-        await asyncio.sleep(100)
+        logging.info("stream_run_with_langitem end, await 10s")
+        await asyncio.sleep(40)
 
     asyncio.run(_run(amap_agent, user_input))
 

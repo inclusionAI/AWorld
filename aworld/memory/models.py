@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from pydantic import BaseModel, ConfigDict, Field
 from aworld.core.memory import MemoryItem
 from typing import Any, Dict, List, Optional, Literal, Union
@@ -13,10 +14,10 @@ class MessageMetadata(BaseModel):
         task_id (str): The ID of the task.
         agent_id (str): The ID of the agent.
     """
-    session_id: str = Field(description="The ID of the session")
-    task_id: str = Field(description="The ID of the task")
     agent_id: str = Field(description="The ID of the agent")
     agent_name: str = Field(description="The name of the agent")
+    session_id: Optional[str] = Field(default=None,description="The ID of the session")
+    task_id: Optional[str] = Field(default=None,description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
     is_use_tool_prompt: Optional[bool] = Field(default=False, description="Whether the agent uses tool prompt")
 
@@ -98,10 +99,10 @@ class MemoryMessage(MemoryItem):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (Optional[Any]): Content of the message.
     """
-    def __init__(self, role: str, metadata: MessageMetadata, content: Optional[Any] = None) -> None:
+    def __init__(self, role: str, metadata: MessageMetadata, content: Optional[Any] = None, memory_type="message") -> None:
         meta = metadata.to_dict
         meta['role'] = role
-        super().__init__(content=content, metadata=meta, memory_type="message")
+        super().__init__(content=content, metadata=meta, memory_type=memory_type)
 
     @property
     def role(self) -> str:
@@ -122,8 +123,12 @@ class MemoryMessage(MemoryItem):
     @property
     def agent_id(self) -> str:
         return self.metadata['agent_id']
+    
+    @abstractmethod
+    def to_openai_message(self) -> dict:
+        pass
 
-class SystemMessage(MemoryMessage):
+class MemorySystemMessage(MemoryMessage):
     """
     Represents a system message with role and content.
     Args:
@@ -131,11 +136,17 @@ class SystemMessage(MemoryMessage):
         content (str): The content of the message.
     """
     def __init__(self, content: str, metadata: MessageMetadata) -> None:
-        super().__init__(role="system", metadata=metadata, content=content)
+        super().__init__(role="system", metadata=metadata, content=content, memory_type="init")
 
     @property
     def content(self) -> str:
         return self._content
+    
+    def to_openai_message(self) -> dict:
+        return {
+            "role": self.role,
+            "content": self._content
+        }
 
 class MemoryHumanMessage(MemoryMessage):
     """
@@ -146,10 +157,12 @@ class MemoryHumanMessage(MemoryMessage):
     """
     def __init__(self, metadata: MessageMetadata, content: str) -> None:
         super().__init__(role="user", metadata=metadata, content=content)
-
-    @property
-    def content(self) -> str:
-        return self._content
+    
+    def to_openai_message(self) -> dict:
+        return {
+            "role": self.role,
+            "content": self.content
+        }
 
 class MemoryAIMessage(MemoryMessage):
     """
@@ -165,14 +178,17 @@ class MemoryAIMessage(MemoryMessage):
         super().__init__(role="assistant", metadata=MessageMetadata(**meta), content=content)
 
     @property
-    def content(self) -> str:
-        return self._content
-    
-    @property
     def tool_calls(self) -> List[ToolCall]:
         if "tool_calls" not in self.metadata or not self.metadata['tool_calls']:
             return []
         return [ToolCall(**tool_call) for tool_call in self.metadata['tool_calls']]
+    
+    def to_openai_message(self) -> dict:
+        return {
+            "role": self.role,
+            "content": self.content,
+            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls]
+        }
 
 class MemoryToolMessage(MemoryMessage):
     """
@@ -196,9 +212,13 @@ class MemoryToolMessage(MemoryMessage):
     def status(self) -> str:
         return self.metadata['status']
 
-    @property
-    def content(self) -> str:
-        return self._content
+    
+    def to_openai_message(self) -> dict:
+        return {
+            "role": self.role,
+            "content": self.content,
+            "tool_call_id": self.tool_call_id,
+        }
 
 
 class LongTermExtractParams(BaseModel):
@@ -208,6 +228,9 @@ class LongTermExtractParams(BaseModel):
 
     application_id: Optional[str] = Field(default=None, description="The ID of the application")
     extract_type: Literal["user_profile", "agent_experience"] = Field(description="The type of long-term extract")
+
+    def to_openai_messages(self) -> List[dict]:
+        return [memory.to_openai_message() for memory in self.memories]
 
 class UserProfileExtractParams(LongTermExtractParams):
     user_id: str = Field(description="The ID of the user")

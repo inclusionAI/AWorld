@@ -319,15 +319,16 @@ Conversation:
     )
 
     agent_experience_extraction_prompt: str = Field(
-        default="""Analyze the following conversation and extract agent experience patterns.
-Focus on:
-1. Skills demonstrated by the agent
-2. Action sequences that led to success
-3. Problem-solving approaches
-4. Tool usage patterns
+        default="""Analyze the following conversation and extract the MOST IMPORTANT agent experience pattern.
+Focus on the SINGLE MOST SIGNIFICANT:
+1. Primary skill demonstrated
+2. Key action sequence that led to success
+3. Main problem-solving approach used
 
-Format your response as JSON with skill-actions pairs:
-{{"skill": "code_debugging", "actions": ["analyze_error", "identify_root_cause", "provide_solution", "verify_fix"]}}
+Format your response as a SINGLE JSON object with ONE skill and its actions:
+{{"skill": "data_presentation", "actions": ["gather_data", "organize_info", "format_output"]}}
+
+Note: Keep it simple - just ONE skill and 2-4 actions that best represent the interaction.
 
 Conversation:
 {messages}""",

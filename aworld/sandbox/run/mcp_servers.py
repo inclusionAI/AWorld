@@ -1,5 +1,7 @@
 import logging
 import json
+import traceback
+
 from typing_extensions import Optional, List, Dict, Any
 
 from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
@@ -35,6 +37,7 @@ class McpServers:
             self.tool_list = await sandbox_mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
             return self.tool_list
         except Exception as e:
+            traceback.print_exc()
             logging.warning(f"Failed to list tools: {e}")
             return []
 
