@@ -5,6 +5,7 @@ import type { ToolCardData } from '../utils';
 import './index.less';
 
 interface Props {
+  sessionId: string;
   data: ToolCardData;
 }
 
