@@ -70,8 +70,8 @@ class McpServers:
                 
                 if parameter is None:
                     parameter = {}
-                if task_id:
-                    parameter["task_id"] = task_id
+                # if task_id:
+                #     parameter["task_id"] = task_id
                 if session_id:
                     parameter["session_id"] = session_id
 

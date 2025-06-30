@@ -95,3 +95,9 @@ class CallbackItem(BaseModel):
     data: Any
     node_id: str = None
     actions: List[ActionModel] = []
+
+
+class CallbackResult(BaseModel):
+    success: bool = False
+    result_data: Any = None
+    callback_action_type: str = None

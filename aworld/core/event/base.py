@@ -19,6 +19,13 @@ class Constants:
     TASK = "task"
     OUTPUT = "output"
     TOOL_CALLBACK = "tool_callback"
+    AGENT_CALLBACK = "agent_callback"
+
+class CallbackActionType:
+    UNDO = "undo"
+    USE_RESULT = "use_result"
+
+
 
 
 class TopicType:
