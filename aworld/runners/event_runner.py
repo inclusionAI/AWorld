@@ -148,23 +148,20 @@ class TaskEventRunner(TaskRunner):
                         continue
 
                     for handler in handler_list:
-                        # 创建异步任务处理消息
                         t = asyncio.create_task(
                             self._handle_task(message, handler))
-                        handle_tasks.append(t)  # 收集所有_handle_task任务
+                        handle_tasks.append(t)
                         self.background_tasks.add(t)
                         t.add_done_callback(self.background_tasks.discard)
                 
-                # # 对于_handle_task的情况，异步结束消息节点
-                # async def end_message_node_later():
-                #     # 等待所有_handle_task任务完成后再结束消息节点
-                #     if handle_tasks:
-                #         await asyncio.gather(*handle_tasks)
-                #     self.state_manager.end_message_node(message)
-                #
-                # asyncio.create_task(end_message_node_later())
+                # For _handle_task case, end message node asynchronously
+                async def async_end_message_node():
+                    # Wait for all _handle_task tasks to complete before ending message node
+                    if handle_tasks:
+                        await asyncio.gather(*handle_tasks)
+                    self.state_manager.end_message_node(message)
+                asyncio.create_task(async_end_message_node())
             else:
-                logger.warn(f"==== {message.id}# {key} not handler, _raw_task ===")
                 # not handler, return raw message
                 results.append(message)
 
@@ -173,8 +170,7 @@ class TaskEventRunner(TaskRunner):
                 t.add_done_callback(self.background_tasks.discard)
                 # wait until it is complete
                 await t
-                # 对于_raw_task的情况，同步结束消息节点
-                # self.state_manager.end_message_node(message)
+                self.state_manager.end_message_node(message)
             return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):

@@ -373,7 +373,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             msg_id=msg_id,
             msg_from=message.sender)
         res_node = await state_mng.wait_for_node_completion(msg_id)
-        if res_node.status == RunNodeStatus.SUCCESS:
+        if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
             tool_act_results = step_res[0].action_result
             callback_act_results = res_node.results
             if not callback_act_results:
