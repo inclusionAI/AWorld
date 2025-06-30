@@ -355,7 +355,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, **kwargs)
-        await self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
         return final_res
 
     async def post_step(self,
