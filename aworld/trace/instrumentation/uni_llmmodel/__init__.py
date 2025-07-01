@@ -231,9 +231,11 @@ class WrappedGeneratorResponse():
         request_kwargs=None
     ):
         self._span = span
+        self._response = response
         self._instance = instance
         self._start_time = start_time
-        self._complete_response = {"choices": [], "model": ""}
+        self._complete_response = {
+            "id": "", "model": "", "content": "", "tool_calls": [], "usage": {}}
         self._first_token_recorded = False
         self._time_of_first_token = None
         self._request_kwargs = request_kwargs
@@ -246,7 +248,7 @@ class WrappedGeneratorResponse():
 
     def __next__(self):
         try:
-            chunk = self.__wrapped__.__next__()
+            chunk = self._response.__next__()
         except Exception as e:
             if isinstance(e, StopIteration):
                 self._close_span(False)
@@ -257,7 +259,7 @@ class WrappedGeneratorResponse():
 
     async def __anext__(self):
         try:
-            chunk = await self.__wrapped__.__anext__()
+            chunk = await self._response.__anext__()
         except Exception as e:
             if isinstance(e, StopAsyncIteration):
                 self._close_span(True)
@@ -293,22 +295,24 @@ class WrappedGeneratorResponse():
         attributes = get_common_attributes_from_response(
             self._instance, is_async, True)
 
-        choices = self._complete_response.get("choices")
         span_attributes = {
             **attributes,
             semconv.GEN_AI_USAGE_INPUT_TOKENS: prompt_usage,
             semconv.GEN_AI_USAGE_OUTPUT_TOKENS: completion_usage,
+            semconv.GEN_AI_USAGE_TOTAL_TOKENS: prompt_usage + completion_usage,
             semconv.GEN_AI_DURATION: duration,
-            semconv.GEN_AI_FIRST_TOKEN_DURATION: first_token_duration
+            semconv.GEN_AI_FIRST_TOKEN_DURATION: first_token_duration,
+            semconv.GEN_AI_COMPLETION_CONTENT: self._complete_response.get(
+                "content", "")
         }
-        span_attributes.update(parse_response_message(choices))
+        span_attributes.update(parse_response_message(
+            self._complete_response.get("tool_calls", [])))
 
         self._span.set_attributes(span_attributes)
         record_chat_response_metric(attributes=attributes,
                                     prompt_tokens=prompt_usage,
                                     completion_tokens=completion_usage,
-                                    duration=duration,
-                                    choices=choices
+                                    duration=duration
                                     )
         record_streaming_time_to_generate(
             first_token_to_generate_duration, attributes)
@@ -350,6 +354,7 @@ class LLMModelInstrumentor(Instrumentor):
             "LLMModel.astream_completion",
             _stream_completion_class_wrapper(tracer)
         )
+        logger.info(f"LLMModelInstrumentor wrap aworld.models.llm")
 
     def _uninstrument(self, **kwargs: Any):
         pass
