@@ -48,6 +48,7 @@ class PlanAgent(Agent):
         Returns:
             Message: Execution result message
         """
+        self.context = message.context
         # Only init context if cur_step = 0
         if self.cur_step == 0:
             self._init_context(message.context)
@@ -214,7 +215,7 @@ class PlanAgent(Agent):
             payload=Observation(content=agents_result_actions + tools_result_actions),
             sender=self.id(),
             receiver=self.id(),
-            session_id=original_message.session_id,
-            headers=original_message.headers
+            session_id=self.context.session_id,
+            headers={"context": self.context}
         )
         return new_message
