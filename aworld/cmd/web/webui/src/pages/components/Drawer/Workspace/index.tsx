@@ -1,10 +1,12 @@
 import { getWorkspaceArtifacts } from '@/api/workspace';
-import { Tabs } from 'antd';
+import { Tabs, Typography } from 'antd';
 import React, { useEffect, useState } from 'react';
 import './index.less';
 import type { ToolCardData } from '../../BubbleItem/utils';
 
 interface ArtifactItem {
+  doc: string;
+  link: string;
   key: string;
   title: string;
   content: string;
@@ -17,7 +19,6 @@ interface WorkspaceProps {
 
 const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
-  // console.log(artifacts);
   useEffect(() => {
     console.log('Workspace中的toolCardData:', toolCardData);
     const fetchWorkspaceArtifacts = async () => {
@@ -26,8 +27,9 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
           artifact_types: [toolCardData?.artifacts[0]?.artifact_type],
           artifact_ids: [toolCardData?.artifacts[0]?.artifact_id]
         });
-        setArtifacts(Array.isArray(data) ? data : []);
-        console.log('工作空间数据: ', data);
+        const list = data?.data?.[0]?.content;
+        setArtifacts(Array.isArray(list) ? list : []);
+        console.log('工作空间数据: ', data, list);
       } catch (error) {
         console.error('获取工作空间树失败:', error);
       }
@@ -44,18 +46,19 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
             <div className="border listwrap">
               <div className="title">Google Search</div>
               <div className="listbox">
-                {artifacts.map((item) => (
-                  <div className="list" key={item.key}>
+                {artifacts.map((item, index) => (
+                  <div className="list" key={index}>
                     <div className="name">{item.title}</div>
-                    <div>{item.content}</div>
+                    <Typography.Paragraph className="desc" ellipsis={{ rows: 3 }}>
+                      {item.doc}
+                    </Typography.Paragraph>
+                    <Typography.Text className="link">{item.link}</Typography.Text>
                   </div>
                 ))}
               </div>
             </div>
           </Tabs.TabPane>
-          <Tabs.TabPane tab="Images" key="IMAGES">
-
-          </Tabs.TabPane>
+          <Tabs.TabPane tab="Images" key="IMAGES"></Tabs.TabPane>
         </Tabs>
       </div>
     </>
