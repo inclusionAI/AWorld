@@ -9,9 +9,11 @@ from aworld.agents.plan_agent import PlanAgent
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-LLM_BASE_URL = "https://agi.alipay.com/api"
+# LLM_BASE_URL = "https://agi.alipay.com/api"
+LLM_BASE_URL = "http://localhost:1234/v1"
 LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
-LLM_MODEL_NAME = "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
+# LLM_MODEL_NAME = "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
+LLM_MODEL_NAME = "qwen/qwen3-1.7b"
 os.environ["LLM_API_KEY"] = LLM_API_KEY
 os.environ["LLM_BASE_URL"] = LLM_BASE_URL
 os.environ["LLM_MODEL_NAME"] = LLM_MODEL_NAME
@@ -25,10 +27,10 @@ from aworld.runner import Runners
 from examples.tools.common import Tools
 
 plan_sys_prompt = "You are a helpful plan agent."
-plan_prompt = """一次性返回所有以下工具调用
-用 search_agent1 工具搜索地平线公司的未来发展计划
-用 search_agent2 工具搜索Momenta公司的未来发展计划
-然后用 summary_agent 工具总结地平线公司和Momenta公司的未来发展计划
+plan_prompt = """搜索结果，tool_calls的content参数是包含以下内容的一个列表
+1. 地平线公司的未来发展计划
+2. Momenta公司的未来发展计划
+3. 地平线公司和Momenta公司的未来发展计划
 """
 
 search_sys_prompt = "You are a helpful search agent."
@@ -94,14 +96,14 @@ if __name__ == "__main__":
         # tool_names=[Tools.SEARCH_API.value],
     )
 
-    search2 = Agent(
-        conf=agent_config,
-        name="search_agent2",
-        desc="search_agent2",
-        system_prompt=search_sys_prompt,
-        agent_prompt=search_prompt,
-        # tool_names=[Tools.SEARCH_API.value],
-    )
+    # search2 = Agent(
+    #     conf=agent_config,
+    #     name="search_agent2",
+    #     desc="search_agent2",
+    #     system_prompt=search_sys_prompt,
+    #     agent_prompt=search_prompt,
+    #     # tool_names=[Tools.SEARCH_API.value],
+    # )
 
     planer = PlanAgent(
         conf=agent_config,
@@ -109,12 +111,12 @@ if __name__ == "__main__":
         desc="planer_agent",
         system_prompt=plan_sys_prompt,
         agent_prompt=plan_prompt,
-        agent_names=[search1.id(), search2.id(), summary.id()]
+        agent_names=[search1.id(), summary.id()]
     )
 
     # default is workflow swarm
     # swarm = TeamSwarm(planer, search1, search2, summary, max_steps=1)
-    swarm = Swarm(planer, search1, search2, summary, max_steps=1)
+    swarm = Swarm(planer, search1, summary, max_steps=1)
 
     prefix = ""
     # can special search google, wiki, duck go, or baidu. such as:
