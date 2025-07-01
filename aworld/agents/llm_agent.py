@@ -744,7 +744,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         session_id=self.context.session_id if self.context else "",
                         headers={"context": self.context}
                     )
-                    await eventbus.publish(output_message)
+                    await send_message(output_message)
                 elif not self.event_driven and outputs:
                     outputs.add_output(output)
 
@@ -760,7 +760,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if eventbus is None:
                     logger.warn("=============== eventbus is none ============")
                 if eventbus is not None and llm_response:
-                    await eventbus.publish(Message(
+                    await send_message(Message(
                         category=Constants.OUTPUT,
                         payload=llm_response,
                         sender=self.id(),

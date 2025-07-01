@@ -14,6 +14,7 @@ from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import AgentContext, Context
 from aworld.core.event import eventbus
+from aworld.events.util import send_message
 from aworld.core.event.base import Message, Constants
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
@@ -106,7 +107,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         else:
             logger.warning(f"Unknown conf type: {type(conf)}")
 
-        self._name = name if name else convert_to_snake(self.__class__.__name__)
+        self._name = name if name else convert_to_snake(
+            self.__class__.__name__)
         self._desc = desc if desc else self._name
         # Unique flag based agent name
         self._id = agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
@@ -163,19 +165,19 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
-        observation = message.payload
-        if eventbus is not None:
-            await eventbus.publish(Message(
-                category=Constants.OUTPUT,
-                payload=StepOutput.build_start_output(name=f"{self.id()}",
-                                                      alias_name=self.name(),
-                                                      step_num=0,
-                                                      task_id=self.context.task_id),
-                sender=self.id(),
-                session_id=self.context.session_id
-            ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
+            self._init_context(message.context)
+            observation = message.payload
+            if eventbus is not None:
+                await send_message(Message(
+                    category=Constants.OUTPUT,
+                    payload=StepOutput.build_start_output(name=f"{self.id()}",
+                                                          alias_name=self.name(),
+                                                          step_num=0,
+                                                          task_id=self.context.task_id),
+                    sender=self.id(),
+                    session_id=self.context.session_id
+                ))
             await self.async_pre_run()
             result = await self.async_policy(observation, **kwargs)
             final_result = await self.async_post_run(result, observation)
