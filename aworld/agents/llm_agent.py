@@ -735,7 +735,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
 
         try:
-            print(f"serializable_messages: {messages} tools: {self.tools}")
+            print(f"serializable_messages: {messages}\ntools: {self.tools}")
 
             stream_mode = kwargs.get("stream", False)
             if stream_mode:
