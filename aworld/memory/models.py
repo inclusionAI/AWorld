@@ -1,4 +1,4 @@
-from abc import abstractmethod
+from abc import abstractmethod, ABC
 from pydantic import BaseModel, ConfigDict, Field
 from aworld.core.memory import MemoryItem
 from typing import Any, Dict, List, Optional, Literal, Union
@@ -31,7 +31,16 @@ class AgentExperienceItem(BaseModel):
     skill: str = Field(description="The skill demonstrated in the experience")
     actions: List[str] = Field(description="The actions taken by the agent")
 
-class AgentExperience(MemoryItem):
+class LongTermEmbedding(ABC):
+    """
+    Abstract class for long-term embedding.
+    """
+
+    @abstractmethod
+    def get_embedding_text(self):
+        pass
+
+class AgentExperience(MemoryItem, LongTermEmbedding):
     """
     Represents an agent's experience, including skills and actions.
     All custom attributes are stored in content and metadata.
@@ -59,11 +68,14 @@ class AgentExperience(MemoryItem):
     def actions(self) -> List[str]:
         return self.content.actions
 
+    def get_embedding_text(self):
+        return f"agent_id:{self.agent_id} skill:{self.skill} actions:{self.actions}"
+
 class UserProfileItem(BaseModel):
     key: str = Field(description="The key of the profile")
     value: Any = Field(description="The value of the profile")
 
-class UserProfile(MemoryItem):
+class UserProfile(MemoryItem, LongTermEmbedding):
     """
     Represents a user profile key-value pair.
     All custom attributes are stored in content and metadata.
@@ -90,6 +102,10 @@ class UserProfile(MemoryItem):
     @property
     def value(self) -> Any:
         return self.content.value
+
+    def get_embedding_text(self):
+        return f"user_id:{self.user_id} key:{self.key} value:{self.value}"
+
 
 class MemoryMessage(MemoryItem):
     """
