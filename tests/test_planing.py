@@ -6,7 +6,7 @@ import os, sys
 import json
 import logging
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
 
 from aworld.agents.plan_agent import PlanAgent
 # Add the project root to Python path
@@ -91,11 +91,11 @@ if __name__ == "__main__":
 
     search1 = Agent(
         conf=agent_config,
-        name="search_agent1",
-        desc="search_agent1",
+        name="search_agent",
+        desc="search_agent",
         system_prompt=search_sys_prompt,
         agent_prompt=search_prompt,
-        # tool_names=[Tools.SEARCH_API.value],
+        tool_names=[Tools.SEARCH_API.value],
     )
 
     # search2 = Agent(
@@ -122,7 +122,8 @@ if __name__ == "__main__":
             arguments = json.loads(func_content.arguments)
             contents = arguments.get('content', [])
         except Exception as e:
-            logger.error(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
+            print(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
+            # logger.error(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
             # 返回空的AgentResult
             return AgentResult(actions=[], current_state=None)
         print(f'contents: {contents}')
