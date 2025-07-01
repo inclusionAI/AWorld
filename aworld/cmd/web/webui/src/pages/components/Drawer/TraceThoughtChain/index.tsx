@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { ThoughtChain } from '@ant-design/x';
 import type { ThoughtChainProps, ThoughtChainItem } from '@ant-design/x';
 import { Card, Typography, message } from 'antd';
-// import { fetchTraceData } from '@/api/trace';
+import { fetchTraceData } from '@/api/trace';
 
 const { Paragraph } = Typography;
 
@@ -11,12 +11,20 @@ interface TraceProps {
   drawerVisible?: boolean;
 }
 
+type TraceNodeStatus = 'success' | 'pending' | 'error';
+
 interface TraceNode {
   id: string;
+  status?: TraceNodeStatus;
   show_name: string;
-  status?: 'success' | 'pending' | 'error';
   children?: TraceNode[];
   description?: string;
+  event_id: string;
+  summary?: string;
+  token_usage?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  use_tools?: string[];
 }
 
 const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
@@ -24,54 +32,18 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
   const [traceData, setTraceData] = useState<TraceNode[]>([]);
 
   const fetchData = useCallback(async () => {
-    // if (!traceId || !drawerVisible) return;
+    if (!traceId || !drawerVisible) return;
     try {
-      // const res = await fetchTraceData(traceId);
-      const res = {
-        data: [
-          {
-            show_name: '节点1',
-            id: 'node1',
-            description: '描述内容1-In the process of internal desktop applications development, many different design specs and implementations would be involved, which might cause designers and developers difficulties and duplication and reduce the efficiency of development.',
-            children: [
-              {
-                show_name: '子节点1-1',
-                description:
-                  '描述内容1-1 In the process of internal desktop applications development, many different design specs and implementations would be involved, which might cause designers and developers difficulties and duplication and reduce the efficiency of development.',
+      const res = await fetchTraceData(traceId);
 
-                id: 'subNode1'
-              }
-            ],
-            status: 'success'
-          },
-          {
-            show_name: '节点2',
-            id: 'node2',
-            description: '描述内容2',
-            children: [
-              {
-                show_name: '子节点2-1',
-                description: '描述内容2-After massive project practice and summaries, Ant Design, a design language for background applications, is refined by Ant UED Team, which aims to uniform the user interface specs for internal background projects, lower the unnecessary cost of design differences and implementation and liberate the resources of design and front-end development',
-                id: 'subNode1'
-              }
-            ],
-            status: 'pending'
-          },
-          {
-            show_name: '节点3',
-            id: 'node3',
-            description: '描述内容3 In the process of internal desktop applications development, many different design specs and implementations would be involved, which might cause designers and developers difficulties and duplication and reduce the efficiency of development.',
-            children: []
-          }
-        ]
+      const validateStatus = (status?: string): TraceNodeStatus | undefined => {
+        return status === 'success' || status === 'pending' || status === 'error' ? (status as TraceNodeStatus) : undefined;
       };
 
-      const validatedData = (res.data || []).map(item => ({
+      const validatedData = (res.data || []).map((item: TraceNode) => ({
         ...item,
-        status: item.status === 'success' || item.status === 'pending' || item.status === 'error' 
-          ? item.status 
-          : undefined
-      })) as TraceNode[];
+        status: validateStatus(item.status)
+      }));
       setTraceData(validatedData);
       // 默认展开第一个节点
       if (validatedData?.[0]?.id) {
@@ -87,20 +59,38 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
     fetchData();
   }, [fetchData]);
 
-  const convertToItems = useCallback((nodes: TraceNode[]): ThoughtChainItem[] => {
-    return nodes.map((node) => ({
-      key: node.id,
-      title: node.show_name || node.id, // 使用 show_name 作为标题，没有则使用 id
-      description: node.id,
-      content: (
-        <>
-          <Typography>{node.description && <Paragraph>{node.description}</Paragraph>}</Typography>
-          {node.children && node.children.length > 0 && <ThoughtChain items={convertToItems(node.children)} />}
-        </>
-      ),
-      status: node.status || 'pending' // 默认状态为 pending
-    }));
-  }, []);
+  const renderNodeContent = useCallback(
+    (node: TraceNode) => (
+      <>
+        {node.token_usage && <p>token_usage: {node.token_usage}</p>}
+        {node.input_tokens && <p>input_tokens: {node.input_tokens}</p>}
+        {node.output_tokens && <p>output_tokens: {node.output_tokens}</p>}
+        {node.use_tools?.length && <p>use_tools: {node.use_tools.join(', ')}</p>}
+        {node.summary && (
+          <Typography>
+            <Paragraph>
+              <pre>{JSON.stringify(JSON.parse(node.summary), null, 2)}</pre>
+            </Paragraph>
+          </Typography>
+        )}
+        {node.children?.length ? <ThoughtChain items={convertToItems(node.children)} /> : null}
+      </>
+    ),
+    []
+  );
+
+  const convertToItems = useCallback(
+    (nodes: TraceNode[]): ThoughtChainItem[] => {
+      return nodes.map((node) => ({
+        key: node.event_id,
+        title: node.show_name,
+        description: node.event_id,
+        content: renderNodeContent(node),
+        status: node.status || 'pending'
+      }));
+    },
+    [renderNodeContent]
+  );
 
   const items = useMemo(() => convertToItems(traceData), [traceData, convertToItems]);
 

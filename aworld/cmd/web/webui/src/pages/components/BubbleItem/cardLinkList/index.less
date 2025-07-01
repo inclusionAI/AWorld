@@ -1,15 +1,8 @@
-.cardwrap{
-  position: relative;
-  
+.cardwrap {
   .card-length {
-    // position: absolute;
-    // top: -38px;
-    // right: 4px;
-    display: flex;
-    align-items: center;
     font-size: 14px;
     color: #333;
-    
+    margin-bottom: 10px;
     .check-icon {
       color: #1890ff;
       margin-right: 8px;
@@ -18,18 +11,18 @@
   }
 }
 
-.cardbox{
+.cardbox {
   width: 668px;
   overflow-x: auto;
-  .card-item{
+  .card-item {
     width: 175px;
     min-width: 175px;
     margin-bottom: 16px;
-    
+
     .ant-card-meta-title {
       font-size: 16px;
     }
-    
+
     .ant-card-meta-description {
       display: -webkit-box;
       -webkit-line-clamp: 2;
@@ -39,7 +32,7 @@
       text-overflow: ellipsis;
       color: #666;
     }
-    &+.card-item{
+    & + .card-item {
       margin-left: 6px;
     }
   }

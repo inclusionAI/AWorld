@@ -6,12 +6,12 @@ import type { ToolCardData } from '../../BubbleItem/utils';
 
 interface WorkspaceProps {
   sessionId: string;
-  toolCardData: ToolCardData;
+  toolCardData?: ToolCardData;
 }
 
 const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
   const [artifacts, setArtifacts] = useState<any>(null);
-  console.log(artifacts)
+  console.log(artifacts);
   useEffect(() => {
     const fetchWorkspaceArtifacts = async () => {
       try {
@@ -20,7 +20,7 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
           artifact_ids: []
         });
         setArtifacts(data);
-        console.log("data: ", data)
+        console.log('data: ', data);
       } catch (error) {
         console.error('获取工作空间树失败:', error);
       }
@@ -28,7 +28,6 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
 
     fetchWorkspaceArtifacts();
   }, [sessionId, toolCardData]);
-
 
   const lists = [
     {
@@ -55,7 +54,7 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
   return (
     <>
       <div className="border workspacebox">
-        <Tabs defaultActiveKey="1" type="card" >
+        <Tabs defaultActiveKey="1" type="card">
           <Tabs.TabPane tab="Web Pages" key="WEB_PAGES">
             <div className="border listwrap">
               <div className="title">Google Search</div>
@@ -63,17 +62,13 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
                 {lists.map((item) => (
                   <div className="list" key={item.key}>
                     <div className="name">{item.title}</div>
-                    <div>
-                      {item.desc}
-                    </div>
+                    <div>{item.desc}</div>
                   </div>
                 ))}
               </div>
             </div>
           </Tabs.TabPane>
-          <Tabs.TabPane tab="Images" key="IMAGES">
-
-          </Tabs.TabPane>
+          <Tabs.TabPane tab="Images" key="IMAGES"></Tabs.TabPane>
         </Tabs>
       </div>
     </>
