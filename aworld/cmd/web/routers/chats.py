@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from aworld.cmd import AgentModel, ChatCompletionRequest
 from aworld.cmd.utils import agent_loader, agent_executor
+from aworld.cmd.utils.trace_summarize import summarize_trace
 from aworld.cmd.web.web_server import get_user_id_from_jwt
 import aworld.trace as trace
 
@@ -35,7 +36,7 @@ async def chat_completion(
             form_data.trace_id = span.get_trace_id()
             async for chunk in agent_executor.stream_run(form_data):
                 yield f"data: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n"
-        # summarize_trace(form_data.trace_id)
+        summarize_trace(form_data.trace_id)
 
     return StreamingResponse(
         generate_stream(),

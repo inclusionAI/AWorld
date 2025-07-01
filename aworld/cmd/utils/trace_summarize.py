@@ -8,7 +8,10 @@ from asyncio.tasks import Task
 from aworld.config.conf import AgentConfig
 from aworld.agents.llm_agent import Agent
 from typing import Dict, Union
+
+from aworld.core.context.base import Context
 from aworld.runner import Runners
+from aworld.utils.exec_util import exec_tasks
 from examples.tools.common import Tools
 
 logger = logging.getLogger(__name__)
@@ -54,10 +57,8 @@ async def _do_summarize_trace(trace_id: str):
             "LLM_API_KEY_TRACE is not set, trace summarize will not be executed.")
         return ""
     try:
-        res = await Runners.run(
-            input=trace_id,
-            agent=trace_agent
-        )
+        res = await exec_tasks(trace_id, [trace_agent], Context.instance())
+        res = res[0]
         _trace_summary_cache[trace_id] = _fetch_json_from_result(res.answer)
         return _trace_summary_cache[trace_id]
     except Exception as e:
