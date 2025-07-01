@@ -3,7 +3,7 @@
 from pathlib import Path
 import sys
 
-from aworld.logs.util import color_log
+from aworld.logs.util import Color, color_log
 
 
 project_root = Path(__file__).parent.parent
@@ -28,5 +28,5 @@ class CheckContextPreLLMHook(PreLLMCallHook):
         return convert_to_snake("CheckContextPreLLMHook")
     async def exec(self, message: Message, context: Context = None) -> Message:
         assert context.state.get("task") == "What is an agent."
-        color_log("CheckContextPreLLMHook test ok", color="green")
+        color_log(f"CheckContextPreLLMHook test state: {context.state}", color=Color.green)
         return message

@@ -183,7 +183,7 @@ class PlanAgent(Agent):
             logger.warn(traceback.format_exc())
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
-        print(f"agent_result: {agent_result}")
+        print(f"plan_agent.agent_result: {agent_result}")
         return agent_result.actions
 
     async def _create_agents_and_tools(self, actions: List[ActionModel]):

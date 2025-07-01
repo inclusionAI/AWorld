@@ -3,6 +3,8 @@
 
 from pathlib import Path
 import os, sys
+
+from aworld.agents.plan_agent import PlanAgent
 # Add the project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -18,9 +20,16 @@ os.environ['TAVILY_API_KEY'] = "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"
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
-from aworld.core.agent.swarm import Swarm
+from aworld.core.agent.swarm import Swarm, TeamSwarm
 from aworld.runner import Runners
 from examples.tools.common import Tools
+
+plan_sys_prompt = "You are a helpful plan agent."
+plan_prompt = """一次性返回所有以下工具调用
+用 search_agent1 工具搜索地平线公司的未来发展计划
+用 search_agent2 工具搜索Momenta公司的未来发展计划
+然后用 summary_agent 工具总结地平线公司和Momenta公司的未来发展计划
+"""
 
 search_sys_prompt = "You are a helpful search agent."
 # search_prompt = """
@@ -30,15 +39,21 @@ search_sys_prompt = "You are a helpful search agent."
 
 #     pleas only use one action complete this task, at least results 6 pages.
 #     """
-search_prompt = """
-using summary_agent tools to summarize the following content:
-1. 今天是周一
-2. 周一是好天气
-3. 好天气适合运动
+search_prompt = """Conduct targeted aworld_search tools to gather the most recent, credible information on "{research_topic}" and synthesize it into a verifiable text artifact.
+
+Instructions:
+- Query should ensure that the most current information is gathered. The current date is {current_date}.
+- Conduct multiple, diverse searches to gather comprehensive information.
+- Consolidate key findings while meticulously tracking the source(s) for each specific piece of information.
+- The output should be a well-written summary or report based on your search findings. 
+- Only include the information found in the search results, don't make up any information.
+- 输出中文结果
+- 搜索工具的入参数量为1，结果数也为1
+Research Topic:
+{task}
 """
 
 summary_sys_prompt = "You are a helpful general summary agent."
-
 summary_prompt = """
 Summarize the following text in one clear and concise paragraph, capturing the key ideas without missing critical points. 
 Ensure the summary is easy to understand and avoids excessive detail.
@@ -70,23 +85,42 @@ if __name__ == "__main__":
         agent_prompt=summary_prompt
     )
 
-    search = Agent(
+    search1 = Agent(
         conf=agent_config,
-        name="search_agent",
+        name="search_agent1",
+        desc="search_agent1",
         system_prompt=search_sys_prompt,
         agent_prompt=search_prompt,
         # tool_names=[Tools.SEARCH_API.value],
-        agent_names=[summary.id()]
+    )
+
+    search2 = Agent(
+        conf=agent_config,
+        name="search_agent2",
+        desc="search_agent2",
+        system_prompt=search_sys_prompt,
+        agent_prompt=search_prompt,
+        # tool_names=[Tools.SEARCH_API.value],
+    )
+
+    planer = PlanAgent(
+        conf=agent_config,
+        name="planer_agent",
+        desc="planer_agent",
+        system_prompt=plan_sys_prompt,
+        agent_prompt=plan_prompt,
+        agent_names=[search1.id(), search2.id(), summary.id()]
     )
 
     # default is workflow swarm
-    swarm = Swarm(search, summary, max_steps=1)
+    # swarm = TeamSwarm(planer, search1, search2, summary, max_steps=1)
+    swarm = Swarm(planer, search1, search2, summary, max_steps=1)
 
     prefix = ""
     # can special search google, wiki, duck go, or baidu. such as:
     # prefix = "search wiki: "
     res = Runners.sync_run(
-        input=prefix + search_prompt,
+        input=prefix + plan_prompt,
         swarm=swarm
     )
     print(res.answer)

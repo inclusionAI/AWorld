@@ -2,7 +2,8 @@
 # Copyright (c) 2025 inclusionAI.
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Optional, TYPE_CHECKING, Union
+from pydantic import BaseModel, Field
 
 from aworld.config import ConfigDict
 from aworld.config.conf import ContextRuleConfig, ModelConfig
@@ -14,6 +15,7 @@ from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
     from aworld.core.task import Task
+    from aworld.core.common import ActionModel
 
 @dataclass
 class ContextUsage:
@@ -227,13 +229,7 @@ class AgentContext:
     """
     
     # ===== Immutable Configuration Fields =====
-    agent_id: str = None
-    agent_name: str = None
-    agent_desc: str = None
-    system_prompt: str = None
-    agent_prompt: str = None
-    tool_names: List[str] = None
-    model_config: ModelConfig = None
+    agent_info: 'BaseAgent' = None
     context_rule: ContextRuleConfig = None
     _context: Context = None
     state: ContextState = None
@@ -246,13 +242,7 @@ class AgentContext:
     llm_output: ModelResponse = None
 
     def __init__(self, 
-                 agent_id: str = None,
-                 agent_name: str = None,
-                 agent_desc: str = None,
-                 system_prompt: str = None,
-                 agent_prompt: str = None,
-                 tool_names: List[str] = None,
-                 model_config: ModelConfig = None,
+                 agent_info: 'BaseAgent' = None,
                  context_rule: ContextRuleConfig = None,
                  tools: List[str] = None,
                  step: int = 0,
@@ -263,15 +253,9 @@ class AgentContext:
                  parent_state: ContextState = None,
                  **kwargs):
         # Configuration fields
-        self.agent_id = agent_id
-        self.agent_name = agent_name
-        self.agent_desc = agent_desc
-        self.system_prompt = system_prompt
-        self.agent_prompt = agent_prompt
-        self.tool_names = tool_names if tool_names is not None else []
-        self.model_config = model_config
+        self.agent_info = agent_info
         self.context_rule = context_rule
-        
+
         # Runtime state fields
         self.tools = tools if tools is not None else []
         self.step = step
@@ -288,11 +272,43 @@ class AgentContext:
         # Additional fields for backward compatibility
         self._init(**kwargs)
 
+    @property
+    def agent_id(self):
+        return self.agent_info.id()
+
+    @property
+    def agent_name(self):
+        return self.agent_info.name()
+
+    @property
+    def agent_desc(self):
+        return self.agent_info.desc()
+
+    @property
+    def memory(self):
+        return self.agent_info.memory
+
+    @property
+    def system_prompt(self):
+        return self.agent_info.system_prompt
+
+    @property
+    def agent_prompt(self):
+        return self.agent_info.agent_prompt
+
+    @property
+    def tool_names(self):
+        return self.agent_info.tool_names
+
+    @property
+    def model_config(self):
+        return self.agent_info.conf.llm_config
+
     def _init(self, **kwargs):
         self._task_id = kwargs.get('task_id')
-    
-    def set_model_config(self, model_config: ModelConfig):
-        self.model_config = model_config
+
+    def set_agent_info(self, agent_info: 'BaseAgent'):
+        self.agent_info = agent_info
 
     def set_messages(self, messages: List[Dict[str, Any]]):
         self.messages = messages

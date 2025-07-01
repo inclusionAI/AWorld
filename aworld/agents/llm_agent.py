@@ -144,56 +144,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # load to agent context
         self.agent_context.set_tools(self.tools)
 
-    def _messages_transform(
-            self,
-            observation: Observation,
-    ):
-        agent_prompt = self.agent_context.agent_prompt
-        sys_prompt = self.agent_context.sys_prompt
-        messages = []
-        if sys_prompt:
-            messages.append(
-                {'role': 'system', 'content': sys_prompt if not self.use_tools_in_prompt else sys_prompt.format(
-                    tool_list=self.tools)})
-
-        content = observation.content
-        if agent_prompt and '{task}' in agent_prompt:
-            content = agent_prompt.format(task=observation.content)
-
-        cur_msg = {'role': 'user', 'content': content}
-        # query from memory,
-        # histories = self.memory.get_last_n(self.history_messages, filter={"session_id": self.context.session_id})
-        histories = self.memory.get_last_n(self.history_messages)
-        messages.extend(histories)
-
-        action_results = observation.action_result
-        if action_results:
-            for action_result in action_results:
-                cur_msg['role'] = 'tool'
-                cur_msg['tool_call_id'] = action_result.tool_id
-
-        agent_info = self.context.context_info.get(self.id())
-        if (self.use_tools_in_prompt and "is_use_tool_prompt" in agent_info and "tool_calls"
-                in agent_info and agent_prompt):
-            cur_msg['content'] = agent_prompt.format(action_list=agent_info["tool_calls"],
-                                                     result=content)
-
-        if observation.images:
-            urls = [{'type': 'text', 'text': content}]
-            for image_url in observation.images:
-                urls.append({'type': 'image_url', 'image_url': {"url": image_url}})
-
-            cur_msg['content'] = urls
-        messages.append(cur_msg)
-
-        # truncate and other process
-        try:
-            messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
-        except Exception as e:
-            logger.warning(f"Failed to process messages in _messages_transform: {e}")
-            logger.debug(f"Process messages error details: {traceback.format_exc()}")
-        self.agent_context.update_messages(messages)
-        return messages
 
     def messages_transform(self,
                            content: str,
@@ -952,10 +902,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     enabled=False  # Compression disabled by default
                 )
             )
-        self.agent_context.set_model_config(llm_config)
+        self.agent_context.set_agent_info(self)
         self.agent_context.context_rule = context_rule
-        self.agent_context.system_prompt = self.system_prompt
-        self.agent_context.agent_prompt = self.agent_prompt
         logger.debug(f'init_context llm_agent {self.name()} {self.agent_context} {self.conf} {self.context_rule}')
 
     def update_system_prompt(self, system_prompt: str):
