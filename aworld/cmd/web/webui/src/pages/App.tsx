@@ -448,8 +448,10 @@ const App: React.FC = () => {
     <div className={styles.sider}>
       {/* 🌟 Logo */}
       <div className={styles.logo}>
-        <img src={logo} alt="AWorld Logo" width="24" height="24" />
-        <span>AWorld</span>
+        <a href="https://github.com/inclusionAI/AWorld" target="_blank">
+          <img src={logo} alt="AWorld Logo" width="24" height="24" />
+          <span>AWorld</span>
+        </a>
       </div>
 
       {/* 🌟 添加会话 */}
@@ -490,25 +492,27 @@ const App: React.FC = () => {
         onActiveChange={async (val) => {
           console.log('active change: session_id', val);
           setCurConversation(val);
-
           setSessionId(val);
           updateURLSessionId(val);
-
-          const session = sessionData[val];
-          if (session && session.messages.length > 0) {
-            const chatMessages = session.messages.map((msg, index) => ({
-              id: `${val}-${index}`,
-              message: {
-                role: msg.role,
-                trace_id: msg.trace_id,
-                content: msg.content
-              },
-              status: 'success' as const
-            }));
-            setMessages(chatMessages);
-          } else {
-            setMessages(messageHistory?.[val] || []);
-          }
+          
+          fetchSessions().then(() => {
+            console.log('fetchSessions: sessionData', sessionData);
+            const session = sessionData[val];
+            if (session && session.messages.length > 0) {
+              const chatMessages = session.messages.map((msg, index) => ({
+                id: `${val}-${index}`,
+                message: {
+                  role: msg.role,
+                  trace_id: msg.trace_id,
+                  content: msg.content
+                },
+                status: 'success' as const
+              }));
+              setMessages(chatMessages);
+            } else {
+              setMessages(messageHistory?.[val] || []);
+            }
+          });
         }}
         groupable={false}
         styles={{ item: { padding: '0 8px' } }}
