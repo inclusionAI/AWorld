@@ -4,7 +4,6 @@ import {
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
-  MenuUnfoldOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
@@ -30,7 +29,6 @@ import Welcome from '../pages/components/Welcome';
 import BubbleItem from './components/BubbleItem';
 import Trace from './components/Drawer/TraceThoughtChain';
 import TraceXY from './components/Drawer/TraceXY';
-import Workspace from './components/Drawer/Workspace';
 import './index.less';
 
 type BubbleDataType = {
@@ -408,7 +406,6 @@ const App: React.FC = () => {
     onRequest({
       stream: true,
       message: { role: 'user', content: val },
-      session_id: sessionId,
       headers: {
         'X-Session-ID': sessionId,
       },
@@ -587,12 +584,6 @@ const App: React.FC = () => {
                   <Button
                     type="text"
                     size="small"
-                    icon={<MenuUnfoldOutlined />}
-                    onClick={() => openDrawer('Workspace')}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
                     icon={<BoxPlotOutlined />}
                     onClick={() => openDrawer('Trace', messageItem.props?.trace_id)}
                   />
@@ -753,9 +744,7 @@ const App: React.FC = () => {
         maskClosable={true}
         open={drawerVisible}
       >
-        {drawerContent === 'Workspace' ? (
-          <Workspace sessionId={sessionId} />
-        ) : drawerContent === 'Trace' ? (
+        {drawerContent === 'Trace' ? (
           <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
         ) : (
           <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} drawerVisible={drawerVisible} />

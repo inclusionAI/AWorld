@@ -1,8 +1,14 @@
 import { getWorkspaceArtifacts } from '@/api/workspace';
 import { Tabs } from 'antd';
 import React, { useEffect, useState } from 'react';
-import type { ToolCardData } from '../../BubbleItem/utils';
 import './index.less';
+import type { ToolCardData } from '../../BubbleItem/utils';
+
+interface ArtifactItem {
+  key: string;
+  title: string;
+  content: string;
+}
 
 interface WorkspaceProps {
   sessionId: string;
@@ -10,17 +16,18 @@ interface WorkspaceProps {
 }
 
 const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
-  const [artifacts, setArtifacts] = useState<any>(null);
-  console.log(artifacts);
+  const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
+  // console.log(artifacts);
   useEffect(() => {
+    console.log('Workspace中的toolCardData:', toolCardData);
     const fetchWorkspaceArtifacts = async () => {
       try {
         const data = await getWorkspaceArtifacts(sessionId, {
-          artifact_types: ['WEB_PAGES'],
-          artifact_ids: []
+          artifact_types: [toolCardData?.artifacts[0]?.artifact_type],
+          artifact_ids: [toolCardData?.artifacts[0]?.artifact_id]
         });
-        setArtifacts(data);
-        console.log('data: ', data);
+        setArtifacts(Array.isArray(data) ? data : []);
+        console.log('工作空间数据: ', data);
       } catch (error) {
         console.error('获取工作空间树失败:', error);
       }
@@ -29,28 +36,6 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
     fetchWorkspaceArtifacts();
   }, [sessionId, toolCardData]);
 
-  const lists = [
-    {
-      key: '1',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '2',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '3',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '4',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    }
-  ];
   return (
     <>
       <div className="border workspacebox">
@@ -59,16 +44,18 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
             <div className="border listwrap">
               <div className="title">Google Search</div>
               <div className="listbox">
-                {lists.map((item) => (
+                {artifacts.map((item) => (
                   <div className="list" key={item.key}>
                     <div className="name">{item.title}</div>
-                    <div>{item.desc}</div>
+                    <div>{item.content}</div>
                   </div>
                 ))}
               </div>
             </div>
           </Tabs.TabPane>
-          <Tabs.TabPane tab="Images" key="IMAGES"></Tabs.TabPane>
+          <Tabs.TabPane tab="Images" key="IMAGES">
+
+          </Tabs.TabPane>
         </Tabs>
       </div>
     </>
