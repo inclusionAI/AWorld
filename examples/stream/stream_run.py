@@ -29,16 +29,6 @@ if __name__ == '__main__':
         system_prompt=amap_sys_prompt,
         mcp_servers=["amap-amap-sse"],  # MCP server name for agent to use
         history_messages=100,
-        mcp_config={
-            "mcpServers": {
-                "amap-amap-sse": {
-                    "type": "sse",
-                    "url": "https://mcp.amap.com/sse?key=08c925b190caf1cd566f2cf4c4517fdb",
-                    "timeout": 5.0,
-                    "sse_read_timeout": 300.0
-                }
-            }
-        }
     )
 
     user_input = (
