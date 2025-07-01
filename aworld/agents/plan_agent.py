@@ -76,8 +76,8 @@ class PlanAgent(Agent):
 
         from aworld.runners.utils import choose_runners, execute_runner
         # todo: parallelize tool execution and agent execution
+        tool_results = []
         if tools:
-            tool_results = []
             tool_tasks = []
             # get tool results
             from aworld.core.task import Task
@@ -94,9 +94,9 @@ class PlanAgent(Agent):
                 tool_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
             logger.info(f"Get tool results: {tool_results}")
 
+        agent_results = []
         if agents:
             parallel_agent_res = None
-            agent_results = []
             # Decide whether to use parallel or serial execution
             agent_tasks = []
             for agent_action in agents:
