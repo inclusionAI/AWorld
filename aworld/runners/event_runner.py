@@ -79,23 +79,6 @@ class TaskEventRunner(TaskRunner):
             for hand in handler_list:
                 handlers.append(new_instance(hand, self))
 
-            has_task_handler = False
-            has_tool_handler = False
-            has_agent_handler = False
-            for hand in handlers:
-                if isinstance(hand, TaskHandler):
-                    has_task_handler = True
-                elif isinstance(hand, ToolHandler):
-                    has_tool_handler = True
-                elif isinstance(hand, AgentHandler):
-                    has_agent_handler = True
-
-            if not has_agent_handler:
-                self.handlers.append(DefaultAgentHandler(runner=self))
-            if not has_tool_handler:
-                self.handlers.append(DefaultToolHandler(runner=self))
-            if not has_task_handler:
-                self.handlers.append(DefaultTaskHandler(runner=self))
             self.handlers = handlers
         else:
             self.handlers = [DefaultAgentHandler(runner=self),
@@ -154,7 +137,7 @@ class TaskEventRunner(TaskRunner):
                         handle_tasks.append(t)
                         self.background_tasks.add(t)
                         t.add_done_callback(self.background_tasks.discard)
-                
+
                 # For _handle_task case, end message node asynchronously
                 async def async_end_message_node():
                     # Wait for all _handle_task tasks to complete before ending message node
@@ -171,7 +154,7 @@ class TaskEventRunner(TaskRunner):
                 t.add_done_callback(self.background_tasks.discard)
                 # wait until it is complete
                 await t
-                self.state_manager.end_message_node(message)
+            self.state_manager.end_message_node(message)
             return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
@@ -191,7 +174,6 @@ class TaskEventRunner(TaskRunner):
                     self.state_manager.save_message_handle_result(name=handler.__name__,
                                                                   message=message,
                                                                   result=con)
-                    print(f"con: {con} \n handlers: {self.handlers}")
                     async for event in self._inner_handler_process(
                             results=[con],
                             handlers=self.handlers
@@ -240,7 +222,7 @@ class TaskEventRunner(TaskRunner):
             while True:
                 if await self.is_stopped():
                     await self.event_mng.done()
-                    logger.info("stop task...")
+                    logger.info(f"stop task {self.task.id}...")
                     if self._task_response is None:
                         # send msg to output
                         self._task_response = TaskResponse(msg=msg,

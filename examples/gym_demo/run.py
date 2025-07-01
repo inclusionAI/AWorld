@@ -20,7 +20,7 @@ async def main():
                                 agents=[agent])
     # It can also be used `ToolFactory` for simplification.
     task = Task(agent=agent,
-                tools_conf={Tools.GYM.value: {"env_id": "CartPole-v1", "render_mode": "human", "render": True}})
+                tools_conf={Tools.GYM.value: {"env_id": "CartPole-v1", "render_mode": "human", "render": True, "use_async": True}})
     res = await Runners.run_task(task=task, run_conf=RunConfig())
     return res
 
