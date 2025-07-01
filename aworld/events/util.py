@@ -33,6 +33,7 @@ def subscribe(key: str, category: str = None):
 
     return decorator
 
+
 async def _send_message(msg: Message) -> str:
     context = msg.context
     if not context:
@@ -46,7 +47,7 @@ async def _send_message(msg: Message) -> str:
     return msg.id
 
 
-async def send_message(msg: Message) -> asyncio.Task:
+async def send_message(msg: Message):
     """Utility function of send event.
 
     Args:

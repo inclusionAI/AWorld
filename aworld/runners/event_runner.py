@@ -215,7 +215,7 @@ class TaskEventRunner(TaskRunner):
                 self.state_manager.save_message_handle_result(name=handler.__name__,
                                                               message=message,
                                                               result=error_msg)
-                await self.event_mng.event_bus.publish(error_msg)
+                await self.event_mng.emit_message(error_msg)
 
     async def _raw_task(self, messages: List[Message]):
         # process in framework
@@ -250,7 +250,7 @@ class TaskEventRunner(TaskRunner):
                                                            success=True if not msg else False,
                                                            id=self.task.id,
                                                            time_cost=(
-                                                                   time.time() - start),
+                                                               time.time() - start),
                                                            usage=self.context.token_usage)
                     break
 

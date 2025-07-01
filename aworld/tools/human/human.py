@@ -4,7 +4,7 @@ from typing import Any, Dict, Tuple
 from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event import eventbus
+from aworld.events.util import send_message
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
@@ -27,7 +27,7 @@ class HumanTool(AsyncTool):
         self.step_finished = True
 
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
-        Observation, dict[str, Any]]:
+            Observation, dict[str, Any]]:
         await super().reset(seed=seed, options=options)
 
         await self.close()
@@ -45,7 +45,7 @@ class HumanTool(AsyncTool):
         return self.step_finished
 
     async def do_step(self, actions: list[ActionModel], **kwargs) -> Tuple[
-        Observation, float, bool, bool, Dict[str, Any]]:
+            Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
         fail_error = ""
@@ -82,7 +82,7 @@ class HumanTool(AsyncTool):
         self.content = None
         try:
             self.content = confirm_content
-            await eventbus.publish(Message(
+            await send_message(Message(
                 category=Constants.TASK,
                 payload=confirm_content,
                 sender=self.name(),
