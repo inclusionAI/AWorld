@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
-import pyautogui
 from dotenv import load_dotenv
 from openpyxl import load_workbook
 from pydantic import Field
@@ -58,6 +57,8 @@ class XLSXExtractionCollection(ActionCollection):
             Path to the generated JPEG screenshot
         """
         try:
+            import pyautogui
+
             # Generate unique filename
             timestamp = int(time.time())
             screenshot_filename = f"{file_path.stem}_{sheet_name or 'sheet'}_{timestamp}.jpg"
