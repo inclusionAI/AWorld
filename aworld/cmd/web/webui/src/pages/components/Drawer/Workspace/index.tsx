@@ -6,10 +6,10 @@ import type { ToolCardData } from '../../BubbleItem/utils';
 
 interface WorkspaceProps {
   sessionId: string;
-  cardData: ToolCardData;
+  toolCardData: ToolCardData;
 }
 
-const Workspace: React.FC<WorkspaceProps> = ({ sessionId, cardData }) => {
+const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
   const [artifacts, setArtifacts] = useState<any>(null);
   console.log(artifacts)
   useEffect(() => {
@@ -27,7 +27,7 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, cardData }) => {
     };
 
     fetchWorkspaceArtifacts();
-  }, [sessionId, cardData]);
+  }, [sessionId, toolCardData]);
 
 
   const lists = [
