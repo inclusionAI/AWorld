@@ -67,5 +67,5 @@ class AWorldAgent(BaseAWorldAgent):
         with open("data/output.txt", "w") as f:
             f.write(f"AGENT START: agent={self.name()}, prompt: {prompt}\n")
             async for output in Runners.streamed_run_task(task).stream_events():
-                f.write(f"{output}\n")
+                f.write(f"Agent {self.name()} received output: {output}\n")
                 yield output
