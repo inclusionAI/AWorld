@@ -31,7 +31,7 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data }) => {
           return <ReactMarkdown key={`text-${index}`}>{segment.content}</ReactMarkdown>;
         } else if (segment.type === 'tool_card') {
           const cardType = segment.data?.card_type;
-          if (cardType !== 'tool_call_card_link_list') {
+          if (cardType === 'tool_call_card_link_list') {
             return <CardLinkList key={`tool-${index}`} sessionId={sessionId} data={segment.data} />;
           } else {
             return <CardDefault key={`tool-${index}`} sessionId={sessionId} data={segment.data} onOpenWorkspace={openWorkspace} />;
