@@ -955,7 +955,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             )
         ))
         logger.info(
-            f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:10]}...")
+            f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
     def _add_human_input_to_memory(self, content: str):
         """Add user input to memory"""
@@ -969,7 +969,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ))
-        logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 {content[:10]}...")
+        logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: "
+                    f"User#{self._agent_context.get_user()}, "
+                    f"Session#{self._agent_context._context.session_id}, "
+                    f"Task#{self._agent_context._context.task_id}, "
+                    f"Agent#{self.id()}, 💬 {content[:100]}...")
 
     def _add_llm_response_to_memory(self, llm_response):
         """Add LLM response to memory"""
@@ -988,10 +992,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ))
-        logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, "
-                    f"Task#{self._agent_context.get_task().id}, Agent#{self.id()},"
+        logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: User#{self._agent_context.get_user()}, "
+                    f"Session#{self._agent_context._context.session_id}, "
+                    f"Task#{self._agent_context._context.task_id}, Agent#{self.id()},"
                     f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
-                    f" content: {llm_response.content[:100]}... ")
+                    f" content: {llm_response.content[:100] if llm_response.content else ''}... ")
 
 
     def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: Any):
@@ -1008,7 +1013,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ))
-        logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
+        logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory:"
+                    f" User#{self._agent_context.get_user()}, "
+                    f"Session#{self._agent_context._context.session_id}, "
+                    f"Task#{self._agent_context._context.task_id}, "
+                    f"Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
 
 
 
