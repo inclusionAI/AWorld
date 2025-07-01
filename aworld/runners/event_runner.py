@@ -38,7 +38,9 @@ class TaskEventRunner(TaskRunner):
         self.state_manager = EventRuntimeStateManager.instance()
 
     async def pre_run(self):
+        logger.info(f"event_runner pre_run")
         await super().pre_run()
+        logger.info(f"event_runner pre_run finish")
 
         if self.swarm and not self.swarm.max_steps:
             self.swarm.max_steps = self.task.conf.get('max_steps', 10)
