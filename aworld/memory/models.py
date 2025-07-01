@@ -138,14 +138,10 @@ class MemorySystemMessage(MemoryMessage):
     def __init__(self, content: str, metadata: MessageMetadata) -> None:
         super().__init__(role="system", metadata=metadata, content=content, memory_type="init")
 
-    @property
-    def content(self) -> str:
-        return self._content
-    
     def to_openai_message(self) -> dict:
         return {
             "role": self.role,
-            "content": self._content
+            "content": self.content
         }
 
 class MemoryHumanMessage(MemoryMessage):

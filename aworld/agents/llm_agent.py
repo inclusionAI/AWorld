@@ -1,16 +1,15 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import abc
 import json
 import time
 import traceback
 import uuid
 from collections import OrderedDict
-from typing import AsyncGenerator, Dict, Any, List, Union, Callable
+from typing import Dict, Any, List, Union, Callable
 
 import aworld.trace as trace
 from aworld.config import ToolConfig
-from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, ModelConfig, OptimizationConfig, \
+from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, OptimizationConfig, \
     LlmCompressionConfig
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
@@ -20,20 +19,19 @@ from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
+from aworld.core.memory import MemoryConfig, MemoryBase
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
-from aworld.core.memory import MemoryItem, MemoryConfig, MemoryBase
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MessageMetadata, MemoryAIMessage, MemoryToolMessage, MemoryHumanMessage, \
-    MemorySystemMessage
+    MemorySystemMessage, MemoryMessage
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
-from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint
 from aworld.utils.common import sync_exec, nest_dict_counter
 
@@ -79,7 +77,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.tools_instances = {}
         self.tools_conf = {}
 
-        self._add_system_message_to_memory()
 
 
     def reset(self, options: Dict[str, Any]):
@@ -164,6 +161,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def messages_transform(self,
                            content: str,
                            image_urls: List[str] = None,
+                           observation: Observation = None,
                            **kwargs):
         """Transform the original content to LLM messages of native format.
 
@@ -175,68 +173,54 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             Message list for LLM.
         """
-        sys_prompt = self.agent_context.system_prompt
         agent_prompt = self.agent_context.agent_prompt
         messages = []
-        if sys_prompt:
-            messages.append(
-                {'role': 'system', 'content': sys_prompt if not self.use_tools_in_prompt else sys_prompt.format(
-                    tool_list=self.tools)})
 
+        ## append sys_prompt to memory
+        sys_prompt = self.agent_context.system_prompt
+        if sys_prompt:
+            self._add_system_message_to_memory()
+
+        ## append observation to memory
+        if observation.is_tool_result:
+            for action_item in observation.action_result:
+                content = action_item.content
+                tool_call_id = action_item.tool_call_id
+                self._add_tool_result_to_memory(tool_call_id, content)
+        else:
+            content = observation.content
+            if agent_prompt and '{task}' in agent_prompt:
+                content = agent_prompt.format(task=content)
+            if image_urls:
+                urls = [{'type': 'text', 'text': content}]
+                for image_url in image_urls:
+                    urls.append({'type': 'image_url', 'image_url': {"url": image_url}})
+                content = urls
+            self._add_human_input_to_memory(content)
+
+
+        ## from memory get last n messages
         histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self._agent_context.agent_id,
-            "session_id": self._agent_context.agent_id,
-            "task_id": self._agent_context.agent_id,
+            "session_id": self._agent_context._context.session_id,
+            "task_id": self._agent_context._context.task_id,
             "message_type": "message"
         })
-        user_content = content
-        if not histories and agent_prompt and '{task}' in agent_prompt:
-            user_content = agent_prompt.format(task=content)
-
-        cur_msg = {'role': 'user', 'content': user_content}
-        # query from memory,
-        # histories = self.memory.get_last_n(self.history_messages, filter={"session_id": self.context.session_id})
-
         if histories:
             # default use the first tool call
             for history in histories:
-                if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata['tool_calls']:
-                    messages.append({'role': history.metadata['role'], 'content': history.content,
-                                     'tool_calls': [history.metadata["tool_calls"][0]]})
+                if isinstance(history, MemoryMessage):
+                    messages.append(history.to_openai_message())
                 else:
-                    messages.append({'role': history.metadata['role'], 'content': history.content,
-                                     "tool_call_id": history.metadata.get("tool_call_id")})
+                    if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
+                        'tool_calls']:
+                        messages.append({'role': history.metadata['role'], 'content': history.content,
+                                         'tool_calls': [history.metadata["tool_calls"][0]]})
+                    else:
+                        messages.append({'role': history.metadata['role'], 'content': history.content,
+                                         "tool_call_id": history.metadata.get("tool_call_id")})
 
-            if not self.use_tools_in_prompt and "tool_calls" in histories[-1].metadata and histories[-1].metadata[
-                'tool_calls']:
-                tool_id = histories[-1].metadata["tool_calls"][0].id
-                if tool_id:
-                    cur_msg['role'] = 'tool'
-                    cur_msg['tool_call_id'] = tool_id
-            if self.use_tools_in_prompt and "is_use_tool_prompt" in histories[-1].metadata and "tool_calls" in \
-                    histories[-1].metadata and agent_prompt:
-                cur_msg['content'] = agent_prompt.format(action_list=histories[-1].metadata["tool_calls"],
-                                                         result=content)
-
-        if image_urls:
-            urls = [{'type': 'text', 'text': content}]
-            for image_url in image_urls:
-                urls.append({'type': 'image_url', 'image_url': {"url": image_url}})
-
-            cur_msg['content'] = urls
-
-        # add cur_msg to memory
-        if cur_msg['role'] == 'user':
-            # if the last message is the same as the previous message, remove it
-            if messages[-1]['content'] != cur_msg['content']:
-               self._add_human_input_to_memory(cur_msg['content'])
-               messages.append(cur_msg)
-        elif cur_msg['role'] == 'tool':
-            self._add_tool_result_to_memory(cur_msg["tool_call_id"] , cur_msg['content'])
-            messages.append(cur_msg)
-
-
-        # truncate and other process
+        ## truncate and other process
         try:
             messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
         except Exception as e:
@@ -296,14 +280,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if is_agent_by_name(tool_name):
                     param_info = params.get('content', "") + ' ' + params.get('info', '')
                     results.append(ActionModel(tool_name=tool_name,
-                                               tool_id=tool_call.id,
+                                               tool_call_id=tool_call.id,
                                                agent_name=self.id(),
                                                params=params,
                                                policy_info=content + param_info))
                 else:
                     action_name = '__'.join(names[1:]) if len(names) > 1 else ''
                     results.append(ActionModel(tool_name=tool_name,
-                                               tool_id=tool_call.id,
+                                               tool_call_id=tool_call.id,
                                                action_name=action_name,
                                                agent_name=self.id(),
                                                params=params,
@@ -324,14 +308,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if is_agent_by_name(tool_name):
                     param_info = params.get('content', "") + ' ' + params.get('info', '')
                     results.append(ActionModel(tool_name=tool_name,
-                                               tool_id=use_tool.get('id'),
+                                               tool_call_id=use_tool.get('id'),
                                                agent_name=self.id(),
                                                params=params,
                                                policy_info=content + param_info))
                 else:
                     action_name = '__'.join(names[1:]) if len(names) > 1 else ''
                     results.append(ActionModel(tool_name=tool_name,
-                                               tool_id=use_tool.get('id'),
+                                               tool_call_id=use_tool.get('id'),
                                                action_name=action_name,
                                                agent_name=self.id(),
                                                params=params,
@@ -372,8 +356,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             if 'tool_calls' in msg and msg['tool_calls']:
                 for tool_call in msg.get('tool_calls'):
                     if isinstance(tool_call, dict):
-                        logger.info(f"[agent] Tool call: {tool_call.get('name')} - ID: {tool_call.get('id')}")
-                        args = str(tool_call.get('args', {}))[:1000]
+                        logger.info(f"[agent] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
+                        args = str(tool_call.get('function', {}).get('arguments', {}))[:1000]
                         logger.info(f"[agent] Tool args: {args}...")
                     elif isinstance(tool_call, ToolCall):
                         logger.info(f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
@@ -468,7 +452,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             images = [observation.image]
             observation.images = images
         messages = self.messages_transform(content=observation.content,
-                                           image_urls=observation.images)
+                                           image_urls=observation.images,
+                                           observation=observation)
 
         self._log_messages(messages)
 
@@ -650,7 +635,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
         messages = self.messages_transform(content=observation.content,
-                                           image_urls=images)
+                                           image_urls=images, observation = observation)
 
         self._log_messages(messages)
 
@@ -857,7 +842,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                  action_result=observation.action_result)
             trace_logger.info(f"{tool_name} observation: {log_ob}", color=Color.green)
 
-            self._add_tool_result_to_memory(action[0].tool_id, observation.action_result)
+            self._add_tool_result_to_memory(action[0].tool_call_id, observation.action_result)
         return [ActionModel(agent_name=self.id(), policy_info=observation.content)]
 
     def _init_context(self, context: Context):
@@ -944,6 +929,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return self.agent_context
 
     def _add_system_message_to_memory(self):
+        histories = self.memory.get_last_n(self.history_messages, filters={
+            "agent_id": self._agent_context.agent_id,
+            "session_id": self._agent_context._context.session_id,
+            "task_id": self._agent_context._context.task_id,
+            "message_type": "message"
+        })
+        if histories and len(histories) > 0:
+            logger.debug(f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
+            return
         if not self.system_prompt:
             return
         content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(
@@ -952,6 +946,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.memory.add(MemorySystemMessage(
             content=content,
             metadata=MessageMetadata(
+                session_id=self._agent_context._context.session_id,
+                user_id=self._agent_context.get_user(),
+                task_id=self._agent_context._context.task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
@@ -964,11 +961,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.memory.add(MemoryHumanMessage(
             content=content,
             metadata=MessageMetadata(
-                session_id=self._agent_context.get_task().session_id,
+                session_id=self._agent_context._context.session_id,
                 user_id=self._agent_context.get_user(),
-                task_id=self._agent_context.get_task().id,
-                agent_id=self._agent_context.agent_id,
-                agent_name=self._agent_context.agent_name,
+                task_id=self._agent_context._context.task_id,
+                agent_id=self.id(),
+                agent_name=self.name(),
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 {content[:10]}...")
@@ -983,11 +980,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             content=llm_response.content,
             tool_calls=llm_response.tool_calls if not self.use_tools_in_prompt else custom_prompt_tool_calls,
             metadata=MessageMetadata(
-                session_id=self._agent_context.get_task().session_id,
+                session_id=self._agent_context._context.session_id,
                 user_id=self._agent_context.get_user(),
-                task_id=self._agent_context.get_task().id,
-                agent_id=self._agent_context.agent_id,
-                agent_name=self._agent_context.agent_name,
+                task_id=self._agent_context._context.task_id,
+                agent_id=self.id(),
+                agent_name=self.name(),
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, "
@@ -1003,11 +1000,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             tool_call_id=tool_call_id,
             status="success",
             metadata=MessageMetadata(
-                session_id=self._agent_context.get_task().session_id,
+                session_id=self._agent_context._context.session_id,
                 user_id=self._agent_context.get_user(),
-                task_id=self._agent_context.get_task().id,
-                agent_id=self._agent_context.agent_id,
-                agent_name=self._agent_context.agent_name,
+                task_id=self._agent_context._context.task_id,
+                agent_id=self.id(),
+                agent_name=self.name(),
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
