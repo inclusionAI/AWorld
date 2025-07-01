@@ -1,11 +1,11 @@
 import { getWorkspaceArtifacts } from '@/api/workspace';
 import { Tabs, Typography } from 'antd';
 import React, { useEffect, useState } from 'react';
-import './index.less';
 import type { ToolCardData } from '../../BubbleItem/utils';
+import './index.less';
 
 interface ArtifactItem {
-  doc: string;
+  snippet: string;
   link: string;
   key: string;
   title: string;
@@ -42,23 +42,31 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
     <>
       <div className="border workspacebox">
         <Tabs defaultActiveKey="1" type="card">
-          <Tabs.TabPane tab="Web Pages" key="WEB_PAGES">
-            <div className="border listwrap">
-              <div className="title">Google Search</div>
-              <div className="listbox">
-                {artifacts.map((item, index) => (
-                  <div className="list" key={index}>
-                    <div className="name">{item.title}</div>
-                    <Typography.Paragraph className="desc" ellipsis={{ rows: 3 }}>
-                      {item.doc}
-                    </Typography.Paragraph>
-                    <Typography.Text className="link">{item.link}</Typography.Text>
-                  </div>
-                ))}
+          {toolCardData?.artifacts[0]?.artifact_type === 'WEB_PAGES' && (
+            <Tabs.TabPane tab="Web Pages" key="WEB_PAGES">
+              <div className="border listwrap">
+                <div className="title">Search Results</div>
+                <div className="listbox">
+                  {artifacts.map((item, index) => (
+                    <div className="list" key={index}>
+                      <Typography.Link href={item.link} target="_blank">
+                        <Typography.Paragraph className="name">{item.title}</Typography.Paragraph >
+                        <Typography.Paragraph className="desc" ellipsis={{ rows: 3 }}>{item.snippet}</Typography.Paragraph>
+                        <Typography.Paragraph className="link">  {item.link}</Typography.Paragraph>
+                      </Typography.Link>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          </Tabs.TabPane>
-          <Tabs.TabPane tab="Images" key="IMAGES"></Tabs.TabPane>
+            </Tabs.TabPane>
+          )}
+          {toolCardData?.artifacts[0]?.artifact_type === 'IMAGES' && (
+            <Tabs.TabPane tab="Images" key="IMAGES">
+              <div className="border listwrap">
+                <div className="title">Search Results</div>
+              </div>
+            </Tabs.TabPane>
+          )}
         </Tabs>
       </div>
     </>
