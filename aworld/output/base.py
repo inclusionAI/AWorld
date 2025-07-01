@@ -366,6 +366,7 @@ class StepOutput(Output):
 class SearchItem(BaseModel):
     title: str = Field(default="", description="search result title")
     url: str = Field(default="", description="search result url")
+    type: str = Field(default="PAGE", description="search result type, such as PAGE, VIDEO, IMAGE")
     snippet: str = Field(default="", description="search result snippet")
     content: str = Field(default="", description="search content", exclude=True)
     raw_content: Optional[str] = Field(default="", description="search raw content", exclude=True)

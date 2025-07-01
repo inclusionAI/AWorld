@@ -51,7 +51,8 @@ class AWorldAgent(BaseAWorldAgent):
             system_prompt="""You are a Super Search Agent, your goal is to accomplish the ultimate task following the instructions.""",
             mcp_config=mcp_config,
             # mcp_servers=mcp_config.get("mcpServers", {}).keys(),
-            mcp_servers=["aworldsearch-server", "aworld-playwright"],
+            # mcp_servers=["aworldsearch-server", "aworld-playwright"],
+            mcp_servers=["google-pse-search", "aworld-playwright"],
             feedback_tool_result=True,
         )
 

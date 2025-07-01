@@ -70,7 +70,7 @@ def aworld_log(logger, color: str = Color.black, level: int = logging.INFO):
 
 def init_logger(logger: logging.Logger):
     logger.debug = aworld_log(logger, color=Color.lightgrey, level=logging.DEBUG)
-    logger.info = aworld_log(logger, color=Color.black, level=logging.INFO)
+    logger.info = aworld_log(logger, color=Color.green, level=logging.INFO)
     logger.warning = aworld_log(logger, color=Color.orange, level=logging.WARNING)
     logger.warn = logger.warning
     logger.error = aworld_log(logger, color=Color.red, level=logging.ERROR)
