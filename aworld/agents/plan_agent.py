@@ -1,0 +1,372 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
+import abc
+import json
+import traceback
+from typing import AsyncGenerator, Dict, Any, List, Union, Callable
+
+import aworld.trace as trace
+from aworld.agents.parallel_llm_agent import ParallelizableAgent
+from aworld.agents.serial_llm_agent import SerialableAgent
+from aworld.config.conf import AgentConfig, ConfigDict, RunConfig
+from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent
+from aworld.core.common import Observation, ActionModel
+from aworld.core.context.base import AgentContext
+from aworld.core.context.base import Context
+from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
+from aworld.core.memory import MemoryItem, MemoryConfig
+from aworld.logs.util import logger
+from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
+from aworld.runners.hook.hooks import HookPoint
+from aworld.utils.common import sync_exec
+from aworld.agents.llm_agent import Agent
+
+
+# plan = Agent("")
+# execute1 = Agent("")
+# execute2 = Agent("")
+# execute3 = Agent("")
+# execute4 = Agent("")
+# # 定义
+# TeamSwarm(plan, execute1, execute2, execute3, execute4, build_type=GraphBuildType.TEAM)
+#
+# # 执行
+
+class PlanAgent(Agent):
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
+        super().__init__(conf, **kwargs)
+        self.max_steps = 10
+        self.cur_step = 0
+
+    async def async_run(self, message: Message, context: Context, **kwargs) -> Message:
+        """Execute the main logic of the plan agent, supporting parallel or serial execution of multiple actions.
+        
+        Args:
+            message: Input message
+            **kwargs: Additional parameters
+            
+        Returns:
+            Message: Execution result message
+        """
+        # Only init context if cur_step = 0
+        if self.cur_step == 0:
+            self._init_context(message.context)
+        # Check if maximum steps reached
+        if self.cur_step >= self.max_steps:
+            logger.info(f"Maximum steps {self.max_steps} reached, stopping execution")
+            return self._create_finished_message(message, "Maximum steps limit reached")
+
+        observation = message.payload
+        if not isinstance(observation, Observation):
+            logger.warn(f"Invalid message payload, 'Observation' expected, got: {observation}")
+            return self._create_finished_message(message, "Invalid message payload")
+
+        actions = await self.async_policy(message.payload, **kwargs)
+        if not actions:
+            return self._create_finished_message(message, "No valid actions from llm response")
+
+        # Create corresponding agents or tools based on actions
+        agents, tools = await self._create_agents_and_tools(actions)
+
+        # should stop
+        if not agents and not tools:
+            logger.info("No more actions, all tasks completed.")
+            return self._create_finished_message(message, actions)
+
+        # todo: parallelize tool execution and agent execution
+        tool_results = []
+        tool_tasks = []
+        # get tool results
+        from aworld.core.task import Task
+        for action in tools:
+            tool_tasks.append(Task(input=Observation(content=[action]), context=self.context))
+
+        from aworld.runners.utils import choose_runners, execute_runner
+        if not tool_tasks:
+            raise RuntimeError("no task need to run in plan agent.")
+
+        runners = await choose_runners(tool_tasks)
+        res = await execute_runner(runners, RunConfig(reuse_process=False))
+
+        for k, v in res.items():
+            tool_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
+        logger.info(f"Get tool results: {tool_results}")
+
+        agent_results = []
+        # Decide whether to use parallel or serial execution
+        if self._should_use_parallel(actions):
+            logger.info("Using parallel execution mode")
+            parallel_agent = ParallelizableAgent(conf=self.conf, agents=agents)
+            agent_results = await parallel_agent.async_run(message, **kwargs)
+        else:
+            logger.info("Using serial execution mode")
+            serial_agent = SerialableAgent(conf=self.conf, agents=agents)
+            agent_results = await serial_agent.async_run(message, **kwargs)
+
+        logger.info(f"Get agent results: {agent_results}")
+
+        # replan
+        # Increment step counter
+        self.cur_step += 1
+        logger.info(f"Current execution step: {self.cur_step}/{self.max_steps}")
+        # todo:
+        #  1. update context
+        #  2. build next step message from agent_results and tools_results
+        next_message = Message()
+        return await self.async_run(next_message, **kwargs)
+
+    async def async_policy(self, observation: Observation, **kwargs) -> List[ActionModel]:
+        # Otherwise, parse actions using LLM
+        # Prepare LLM input
+        llm_messages = await self._prepare_llm_input(observation)
+        llm_response = None
+        try:
+            llm_response = await self._call_llm_model(observation, llm_messages, **kwargs)
+        except Exception as e:
+            logger.warn(traceback.format_exc())
+            raise e
+        finally:
+            if llm_response:
+                # update usage
+                self.update_context_usage(used_context_length=llm_response.usage['total_tokens'])
+                # update current step output
+                self.update_llm_output(llm_response)
+
+                use_tools = self.use_tool_list(llm_response)
+                is_use_tool_prompt = len(use_tools) > 0
+                if llm_response.error:
+                    logger.info(f"llm result error: {llm_response.error}")
+                else:
+                    self.memory.add(MemoryItem(
+                        content=llm_response.content,
+                        metadata={
+                            "role": "assistant",
+                            "agent_name": self.id(),
+                            "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
+                            "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
+                        }
+                    ))
+            else:
+                logger.error(f"{self.id()} failed to get LLM response")
+                raise RuntimeError(f"{self.id()} failed to get LLM response")
+
+        try:
+            events = []
+            async for event in self.run_hooks(self.context, HookPoint.POST_LLM_CALL):
+                events.append(event)
+        except Exception as e:
+            logger.warn(traceback.format_exc())
+
+        agent_result = sync_exec(self.resp_parse_func, llm_response)
+        print(f"agent_result: {agent_result}")
+        return agent_result.actions
+            
+    async def _parse_actions_from_message(self, message: Message, **kwargs) -> List[Dict[str, Any]]:
+        """Parse actions from the message"""
+        actions = []
+        observation = message.payload
+        if not isinstance(observation, Observation):
+            logger.warn(f"Invalid message payload, 'Observation' expected, got: {observation}")
+            return []
+            
+        # Otherwise, parse actions using LLM
+        try:
+            # Prepare LLM input
+            messages = await self._prepare_llm_input(observation)
+            llm_response = await self._call_llm_model(observation, messages, **kwargs)
+            
+            # Parse actions from LLM response
+            if llm_response and llm_response.tool_calls:
+                for tool_call in llm_response.tool_calls:
+                    try:
+                        action_data = json.loads(tool_call.function.arguments)
+                        actions.append({
+                            "name": tool_call.function.name,
+                            "arguments": action_data,
+                            "id": tool_call.id
+                        })
+                    except Exception as e:
+                        logger.error(f"Failed to parse action: {e}")
+        except Exception as e:
+            logger.error(f"Failed to parse actions from message: {e}")
+            logger.error(traceback.format_exc())
+            
+        return actions
+        
+    async def _create_agents_and_tools(self, actions: List[ActionModel]):
+        """Create corresponding agents or tools based on actions"""
+        agents_and_tools = []
+        agents = []
+        tools = []
+        
+        for action in actions:
+            try:
+                if is_agent(action):
+                    agent_name = action.tool_name
+                    agent = AgentFactory.agent_instance(agent_name)
+                    if agent:
+                        agents.append(agent)
+                    else:
+                        logger.warn(f"Failed to get agent instance '{agent_name}'")
+                elif action.tool_name:
+                    tools.append(action)
+                    # tool_name = action.tool_name
+                    # tool = ToolFactory.tool_instance(tool_name)
+                    # if tool:
+                    #     tools.append(tool)
+                    # else:
+                    #     logger.error(f"Failed to get agent instance '{tool_name}'")
+            except Exception as e:
+                logger.error(f"Failed to parse actions from actions to agent or tool: {e}")
+
+        return agents, tools
+        
+    def _should_use_parallel(self, actions: List[ActionModel]) -> bool:
+        """Decide whether to use parallel execution mode"""
+        # More complex logic can be implemented based on actual requirements
+        # For example: check if there are dependencies between actions
+        
+        # By default, use parallel mode if there are more than one action
+        return len(actions) > 1
+        
+    async def _process_results(self, results: Message) -> List[Dict[str, Any]]:
+        """Process execution results and generate next actions"""
+        next_actions = []
+        
+        # Parse information from results to generate new actions
+        # More complex logic can be implemented based on actual requirements
+        
+        # Example: Determine next operations based on result content
+        if hasattr(results, 'content') and results.content:
+            try:
+                # Call LLM to parse results and generate new actions
+                messages = [
+                    {"role": "system", "content": "Based on the execution results, determine the next actions to be performed."},
+                    {"role": "user", "content": f"Execution results: {results.content}"}
+                ]
+                
+                llm_response = await acall_llm_model(
+                    model_config=self.model_config,
+                    messages=messages,
+                    tools=self.tools_desc,
+                    tool_choice="auto"
+                )
+                
+                if llm_response and llm_response.tool_calls:
+                    for tool_call in llm_response.tool_calls:
+                        try:
+                            action_data = json.loads(tool_call.function.arguments)
+                            next_actions.append({
+                                "name": tool_call.function.name,
+                                "arguments": action_data,
+                                "id": tool_call.id
+                            })
+                        except Exception as e:
+                            logger.error(f"Failed to parse next_action: {e}")
+            except Exception as e:
+                logger.error(f"Failed to process results to generate next actions: {e}")
+                
+        return next_actions
+        
+    def _is_done(self, actions: List[Dict[str, Any]]) -> bool:
+        """Check if all tasks are completed"""
+        # If there are no next actions, or actions contain specific completion markers, consider the task completed
+        if not actions:
+            return True
+            
+        # Check if there are explicit completion markers
+        for action in actions:
+            if action.get("name") == "finish" or action.get("name") == "done":
+                return True
+                
+        return False
+        
+    def _create_finished_message(self, original_message: Message, result: Any) -> Message:
+        """Create a message indicating task completion"""
+        # Create a message containing the final result
+        # todo: create message from context
+        return AgentMessage(payload=result,
+                            sender=self.id(),
+                            receiver=self.id(),
+                            session_id=self.context.session_id if self.context else "",
+                            headers={"context": self.context})
+
+    def _actions_to_message(self, actions: List[Dict[str, Any]], original_message: Message) -> Message:
+        """Convert actions to a new message"""
+        # Create a new message containing actions
+        new_message = AgentMessage(
+            agent_name=self.id(),
+            content=f"Execution step {self.cur_step+1}",
+            context=original_message.context if hasattr(original_message, 'context') else None,
+            metadata={
+                "status": "in_progress",
+                "steps": self.cur_step,
+                "original_message_id": original_message.id if hasattr(original_message, 'id') else None
+            }
+        )
+        
+        # Add actions to the message
+        setattr(new_message, 'actions', actions)
+        
+        return new_message
+
+    # 这个函数不用管，只是为了兼容老的代码，不要改
+    async def deprecated_async_policy(self, observation: Observation, **kwargs) -> List[ActionModel]:
+
+        if hasattr(observation, 'context') and observation.context:
+            self.task_histories = observation.context
+
+        try:
+            events = []
+            async for event in self.run_hooks(self.context, HookPoint.PRE_LLM_CALL):
+                events.append(event)
+        except Exception as e:
+            logger.warn(traceback.format_exc())
+
+        self._finished = False
+        messages = await self._prepare_llm_input(observation, **kwargs)
+
+        serializable_messages = self._to_serializable(messages)
+        llm_response = None
+        if llm_response:
+            use_tools = self.use_tool_list(llm_response)
+            is_use_tool_prompt = len(use_tools) > 0
+            if llm_response.error:
+                logger.info(f"llm result error: {llm_response.error}")
+            else:
+                self.memory.add(MemoryItem(
+                    content=llm_response.content,
+                    metadata={
+                        "role": "assistant",
+                        "agent_name": self.id(),
+                        "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
+                        "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
+                    }
+                ))
+        else:
+            logger.error(f"{self.id()} failed to get LLM response")
+            raise RuntimeError(f"{self.id()} failed to get LLM response")
+
+        agent_result = sync_exec(self.resp_parse_func, llm_response)
+        if not agent_result.is_call_tool:
+            self._finished = True
+            return agent_result.actions
+        else:
+            tasks = []
+            from aworld.core.task import Task
+            for action in agent_result.actions:
+                if is_agent(action):
+                    continue
+                tasks.append(Task(input=Observation(content=[action]), context=self.context))
+
+            from aworld.runners.utils import choose_runners, execute_runner
+            if not tasks:
+                raise RuntimeError("no task need to run in plan agent.")
+
+            runners = await choose_runners(tasks)
+            res = await execute_runner(runners, RunConfig(reuse_process=False))
+
+            results = []
+            for k, v in res.items():
+                results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
+            return results
