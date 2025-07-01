@@ -75,12 +75,12 @@ class PlanAgent(Agent):
             return self._create_finished_message(message, actions)
 
         from aworld.runners.utils import choose_runners, execute_runner
+        from aworld.core.task import Task
         # todo: parallelize tool execution and agent execution
         tool_results = []
         if tools:
             tool_tasks = []
             # get tool results
-            from aworld.core.task import Task
             for action in tools:
                 tool_tasks.append(Task(input=Observation(content=[action]), context=self.context))
 
