@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import uuid
 from typing import List
 
 from aworld.agents.llm_agent import Agent
@@ -13,7 +14,10 @@ async def exec_tasks(question: str, agents: List[Agent], context: Context):
     tasks = []
     if agents:
         for agent in agents:
-            tasks.append(Task(input=question, agent=agent, context=context))
+            task_id = uuid.uuid4().hex
+            if context:
+                context.task_id = task_id
+            tasks.append(Task(id=task_id, input=question, agent=agent, context=context))
 
     if not tasks:
         raise RuntimeError("no task need to run in parallelizable agent.")

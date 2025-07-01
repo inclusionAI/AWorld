@@ -128,7 +128,7 @@ class TaskEventRunner(TaskRunner):
             message = await event_bus.transform(message, handler=transformer)
 
         results = []
-        handlers = event_bus.get_handlers(key)
+        handlers = self.event_mng.get_handlers(key)
         async with trace.message_span(message=message):
             self.state_manager.start_message_node(message)
             if handlers:

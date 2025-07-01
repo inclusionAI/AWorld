@@ -75,7 +75,7 @@ class McpTool(AsyncTool):
         for action in actions:
             tool_name = action.tool_name
             if 'mcp' != tool_name:
-                logger.warning(f"Unsupported tool: {tool_name}")
+                logger.warning(f"Unsupported tool: {tool_name}. {actions}")
                 continue
             full_tool_name = action.action_name
             names = full_tool_name.split("__")
@@ -85,11 +85,18 @@ class McpTool(AsyncTool):
             action.action_name = names[1]
             action.tool_name = names[0]
             mcp_actions.append(action)
+
         if not mcp_actions:
             self._finished = True
+            action_results = [ActionResult(success=False,
+                                           content="something wrong, no mcp tool find",
+                                           error="something wrong, no mcp tool find")
+                              for _ in actions]
             observation = build_observation(observer=self.name(),
                                             content="no valid mcp actions",
-                                            ability=actions[-1].action_name)
+                                            ability=actions[-1].action_name,
+                                            action_result=action_results)
+
             return (observation, reward,
                     terminated,
                     kwargs.get("truncated", False),

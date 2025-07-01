@@ -40,18 +40,18 @@ agent_config = AgentConfig(
     llm_api_key=os.getenv("LLM_API_KEY_TRACE")
 )
 
-trace_agent = Agent(
-    conf=agent_config,
-    name="trace_agent",
-    system_prompt=trace_sys_prompt,
-    agent_prompt=trace_prompt,
-    tool_names=["trace"],
-    feedback_tool_result=True
-)
-
 
 async def _do_summarize_trace(trace_id: str):
     logger.info(f"_do_summarize_trace trace_id: {trace_id}")
+    trace_agent = Agent(
+        conf=agent_config,
+        name="trace_agent",
+        system_prompt=trace_sys_prompt,
+        agent_prompt=trace_prompt,
+        tool_names=["trace"],
+        feedback_tool_result=True
+    )
+
     if trace_agent.conf.llm_api_key is None:
         logger.warning(
             "LLM_API_KEY_TRACE is not set, trace summarize will not be executed.")
@@ -67,7 +67,7 @@ async def _do_summarize_trace(trace_id: str):
 
 def summarize_trace(trace_id: str):
     if trace_id not in _trace_summary_cache:
-        if trace_agent.conf.llm_api_key is None:
+        if agent_config.llm_api_key is None:
             logger.warning(
                 "LLM_API_KEY_TRACE is not set, trace summarize will not be executed.")
             return

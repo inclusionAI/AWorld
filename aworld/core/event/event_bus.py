@@ -17,8 +17,8 @@ class Eventbus(Messageable, InheritanceSingleton):
 
     def __init__(self, conf: Config = None, **kwargs):
         super().__init__(conf, **kwargs)
-        # {event_type: {topic: [handler1, handler2]}}
-        self._subscribers: Dict[str, Dict[str, List[Callable[..., Any]]]] = {}
+        # {task_id: {event_type: {topic: [handler1, handler2]}}}
+        self._subscribers: Dict[str, Dict[str, Dict[str, List[Callable[..., Any]]]]] = {}
 
         # {event_type, handler}
         self._transformer: Dict[str, Callable[..., Any]] = {}
@@ -35,7 +35,7 @@ class Eventbus(Messageable, InheritanceSingleton):
     async def consume(self, message: Message, **kwargs):
         """Consume the message queue."""
 
-    async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
+    async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], task_id: str, **kwargs):
         """Subscribe the handler to the event type and the topic.
 
         NOTE: The handler list is executed sequentially in the topic, the output
@@ -50,7 +50,7 @@ class Eventbus(Messageable, InheritanceSingleton):
                 - order: Handler order in the topic.
         """
 
-    async def unsubscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
+    async def unsubscribe(self, event_type: str, topic: str, handler: Callable[..., Any], task_id: str, **kwargs):
         """Unsubscribe the handler to the event type and the topic.
 
         Args:
@@ -61,11 +61,11 @@ class Eventbus(Messageable, InheritanceSingleton):
                 - transformer: Whether it is a transformer handler.
         """
 
-    def get_handlers(self, event_type: str) -> Dict[str, List[Callable[..., Any]]]:
-        return self._subscribers.get(event_type, {})
+    def get_handlers(self, task_id: str, event_type: str) -> Dict[str, List[Callable[..., Any]]]:
+        return self._subscribers.get(task_id, {}).get(event_type, {})
 
-    def get_topic_handlers(self, event_type: str, topic: str) -> List[Callable[..., Any]]:
-        return self._subscribers.get(event_type, {}).get(topic, [])
+    def get_topic_handlers(self, task_id: str, event_type: str, topic: str) -> List[Callable[..., Any]]:
+        return self._subscribers.get(task_id, {}).get(event_type, {}).get(topic, [])
 
     def get_transform_handlers(self, key: str) -> Callable[..., Any]:
         return self._transformer.get(key, None)
@@ -104,7 +104,7 @@ class InMemoryEventbus(Eventbus):
             self._message_queue.get(id, PriorityQueue()).get_nowait()
         self._message_queue.get(id, PriorityQueue()).task_done()
 
-    async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
+    async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], task_id: str, **kwargs):
         if kwargs.get("transformer"):
             if event_type in self._transformer:
                 logger.warning(f"{event_type} transform already subscribe.")
@@ -117,34 +117,42 @@ class InMemoryEventbus(Eventbus):
             return
 
         order = kwargs.get('order', 99999)
+        task_handlers = self._subscribers.get(task_id)
+        if not task_handlers:
+            task_handlers = {}
+            self._subscribers[task_id] = task_handlers
 
-        handlers = self._subscribers.get(event_type)
+        handlers = task_handlers.get(event_type)
         if not handlers:
-            self._subscribers[event_type] = {}
-        topic_handlers = self._subscribers[event_type].get(topic)
+            task_handlers[event_type] = {}
+        topic_handlers = task_handlers[event_type].get(topic)
         if not topic_handlers:
-            self._subscribers[event_type][topic] = []
+            task_handlers[event_type][topic] = []
 
-        if order >= len(self._subscribers[event_type][topic]):
-            self._subscribers[event_type][topic].append(handler)
+        if order >= len(self._subscribers[task_id][event_type][topic]):
+            self._subscribers[task_id][event_type][topic].append(handler)
         else:
-            self._subscribers[event_type][topic].insert(order, handler)
+            self._subscribers[task_id][event_type][topic].insert(order, handler)
         logger.info(f"subscribe {event_type} {topic} {handler} success.")
         logger.info(f"{self._subscribers}")
 
-    async def unsubscribe(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
+    async def unsubscribe(self, event_type: str, topic: str, handler: Callable[..., Any], task_id: str, **kwargs):
         if kwargs.get("transformer"):
-            if event_type not in self._transformer:
-                logger.warning(f"{event_type} transform not subscribe.")
+            if task_id not in self._transformer:
+                logger.warning(f"{task_id} transform not subscribe.")
                 return
 
-            self._transformer.pop(event_type, None)
+            self._transformer.pop(task_id, None)
             return
 
-        if event_type not in self._subscribers:
+        if task_id not in self._subscribers:
+            logger.warning(f"{task_id} handler not register.")
+            return
+
+        if event_type not in self._subscribers[task_id]:
             logger.warning(f"{event_type} handler not register.")
             return
 
-        handlers = self._subscribers[event_type]
+        handlers = self._subscribers[task_id][event_type]
         topic_handlers: List = handlers.get(topic, [])
         topic_handlers.remove(handler)
