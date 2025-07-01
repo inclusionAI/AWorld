@@ -179,3 +179,6 @@ For academic citations or wish to contact us, please use the following BibTeX en
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Star History
+![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date)

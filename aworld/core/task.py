@@ -45,6 +45,8 @@ class Task:
     hooks: Dict[str, List[str]] = field(default_factory=dict)
     # task specified context
     context: 'Context' = None
+    max_retry_count: int = 0
+
 
 class TaskResponse(BaseModel):
     id: str
