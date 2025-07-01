@@ -66,7 +66,7 @@ class AWorldAgent(BaseAWorldAgent):
             conf=TaskConfig(max_steps=20),
         )
 
-        rich_ui = MarkdownAworldUI()
+        rich_ui = MarkdownAworldUI(task.id)
         async for output in Runners.streamed_run_task(task).stream_events():
             logger.info(f"Agent Output: {output}")
             res = await AworldUI.parse_output(output, rich_ui)

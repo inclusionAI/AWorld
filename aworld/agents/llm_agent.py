@@ -509,7 +509,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
 
         if output:
-            output.add_part(MessageOutput(source=llm_response, json_parse=False))
+            output.add_part(MessageOutput(source=llm_response, json_parse=False, task_id=self.context.task_id))
             output.mark_finished()
         return agent_result.actions
 
@@ -731,7 +731,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                             llm_resp.model = chunk.model
                             llm_resp.usage = nest_dict_counter(llm_resp.usage, chunk.usage)
 
-                    return MessageOutput(source=async_generator(), json_parse=json_parse), llm_resp
+                    return MessageOutput(source=async_generator(),
+                                         json_parse=json_parse,
+                                         task_id=self.context.task_id), llm_resp
 
                 output, response = await async_call_llm(resp_stream)
                 llm_response = response
@@ -768,7 +770,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         headers={"context": self.context}
                     ))
                 elif not self.event_driven and outputs:
-                    outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
+                    outputs.add_output(MessageOutput(source=llm_response,
+                                                     json_parse=False,
+                                                     task_id=self.context.task_id))
 
             logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
 
@@ -969,7 +973,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ))
-        logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: User#{self._agent_context.get_user()}, Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, Agent#{self.id()}, 💬 {content[:10]}...")
+        logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: User#{self._agent_context.get_user()}, "
+                    # f"Session#{self._agent_context.get_task().session_id}, Task#{self._agent_context.get_task().id}, "
+                    f"Agent#{self.id()}, 💬 {content[:10]}...")
 
     def _add_llm_response_to_memory(self, llm_response):
         """Add LLM response to memory"""

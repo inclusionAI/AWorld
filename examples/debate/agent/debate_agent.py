@@ -79,7 +79,8 @@ class DebateAgent(StreamOutputAgent, ABC):
                         "name": "search",
                         "arguments": keywords
                     }
-                })
+                }),
+                "task_id": self.context.task_id
             }
             search_output = SearchOutput.from_dict(search_item)
             await self.workspace.create_artifact(

@@ -25,7 +25,7 @@ class DefaultOutputHandler(DefaultHandler):
                 category=Constants.TASK,
                 payload=TaskItem(msg="Cannot get outputs.", data=message, stop=True),
                 sender=self.name(),
-                session_id=Context.instance().session_id,
+                session_id=self.runner.context.session_id,
                 topic=TopicType.ERROR,
                 headers={"context": message.context}
             )
@@ -37,19 +37,20 @@ class DefaultOutputHandler(DefaultHandler):
         try:
             if isinstance(payload, Output):
                 output = payload
+                output.task_id = self.runner.task.id
             elif isinstance(payload, TaskResponse):
                 logger.info(f"output get task_response with usage: {json.dumps(payload.usage)}")
                 if message.topic == TopicType.FINISHED or message.topic == TopicType.ERROR:
                     mark_complete = True
             elif isinstance(payload, ModelResponse) or isinstance(payload, AsyncGenerator):
-                output = MessageOutput(source=payload)
+                output = MessageOutput(source=payload, task_id=self.runner.task.id)
         except Exception as e:
             logger.warning(f"Failed to parse output: {e}")
             yield Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg="Failed to parse output.", data=payload, stop=True),
                 sender=self.name(),
-                session_id=Context.instance().session_id,
+                session_id=self.runner.context.session_id,
                 topic=TopicType.ERROR,
                 headers={"context": message.context}
             )

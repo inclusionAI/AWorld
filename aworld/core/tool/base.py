@@ -208,7 +208,8 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                             "arguments": act.params,
                         }
                     }),
-                    metadata=step_res[0].action_result[idx].metadata
+                    metadata=step_res[0].action_result[idx].metadata,
+                    task_id=self.context.task_id
                 )
                 tool_output_message = Message(
                     category=Constants.OUTPUT,
@@ -278,7 +279,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                             "arguments": act.params,
                         }
                     }),
-                    metadata=step_res[0].action_result[idx].metadata
+                    metadata=step_res[0].action_result[idx].metadata,
+                    task_id=self.context.task_id
                 )
                 tool_output_message = Message(
                     category=Constants.OUTPUT,
@@ -292,7 +294,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         await send_message(Message(
             category=Constants.OUTPUT,
             payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
-                                                     step_num=0),
+                                                     step_num=0,
+                                                     task_id=self.context.task_id),
             sender=self.name(),
             receiver=action[0].agent_name,
             session_id=self.context.session_id if self.context else "",
@@ -311,8 +314,6 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                            session_id=self.context.session_id
                                        ),
                                        **kwargs)
-
-
 
     async def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)

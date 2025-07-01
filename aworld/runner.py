@@ -29,6 +29,7 @@ class Runners:
             is_complete=False
         )
         task.outputs = streamed_result
+        streamed_result.task_id = task.id
 
         streamed_result._run_impl_task = asyncio.create_task(
             Runners.run_task(task)
