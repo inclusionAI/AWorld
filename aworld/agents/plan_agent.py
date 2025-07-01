@@ -74,38 +74,61 @@ class PlanAgent(Agent):
             logger.info("No more actions, all tasks completed.")
             return self._create_finished_message(message, actions)
 
-        # todo: parallelize tool execution and agent execution
-        tool_results = []
-        tool_tasks = []
-        # get tool results
-        from aworld.core.task import Task
-        for action in tools:
-            tool_tasks.append(Task(input=Observation(content=[action]), context=self.context))
-
         from aworld.runners.utils import choose_runners, execute_runner
-        if not tool_tasks:
-            raise RuntimeError("no task need to run in plan agent.")
+        # todo: parallelize tool execution and agent execution
+        if tools:
+            tool_results = []
+            tool_tasks = []
+            # get tool results
+            from aworld.core.task import Task
+            for action in tools:
+                tool_tasks.append(Task(input=Observation(content=[action]), context=self.context))
 
-        runners = await choose_runners(tool_tasks)
-        res = await execute_runner(runners, RunConfig(reuse_process=False))
+            if not tool_tasks:
+                raise RuntimeError("no tool task need to run in plan agent.")
 
-        for k, v in res.items():
-            tool_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
-        logger.info(f"Get tool results: {tool_results}")
+            runners = await choose_runners(tool_tasks)
+            res = await execute_runner(runners, RunConfig(reuse_process=False))
 
-        parallel_agent_res = None
-        # Decide whether to use parallel or serial execution
-        if self._should_use_parallel(actions):
-            logger.info("Using parallel execution mode")
-            parallel_agent = ParallelizableAgent(conf=self.conf, agents=agents)
-            parallel_agent_res = await parallel_agent.async_run(message, **kwargs)
-        else:
-            logger.info("Using serial execution mode")
-            serial_agent = SerialableAgent(conf=self.conf, agents=agents)
-            parallel_agent_res = await serial_agent.async_run(message, **kwargs)
-        agent_results = parallel_agent_res.payload if parallel_agent_res else []
+            for k, v in res.items():
+                tool_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
+            logger.info(f"Get tool results: {tool_results}")
 
-        logger.info(f"Get agent results: {agent_results}")
+        if agents:
+            parallel_agent_res = None
+            agent_results = []
+            # Decide whether to use parallel or serial execution
+            agent_tasks = []
+            for agent_action in agents:
+                agent_name = agent_action.tool_name
+                agent = AgentFactory.agent_instance(agent_name)
+                input = agent_action.params
+                agent_tasks.append(Task(input=Observation(content=input), agent=agent, context=self.context))
+                if not agent_tasks:
+                    raise RuntimeError("no agent task need to run in plan agent.")
+
+            if self._should_use_parallel(actions):
+                agent_runners = await choose_runners(agent_tasks)
+                parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
+
+                for k, v in parallel_agent_res.items():
+                    agent_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
+                logger.info(f"Get agent results: {agent_results}")
+                # logger.info("Using parallel execution mode")
+                # parallel_agent = ParallelizableAgent(conf=self.conf, agents=agents)
+                # parallel_agent_res = await parallel_agent.async_run(message, **kwargs)
+            else:
+                for task in agent_tasks:
+                    agent_runners = await choose_runners([task])
+                    agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
+
+                    for k, v in agent_res.items():
+                        agent_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
+                    logger.info(f"Get agent results: {agent_results}")
+                # logger.info("Using serial execution mode")
+                # serial_agent = SerialableAgent(conf=self.conf, agents=agents)
+                # parallel_agent_res = await serial_agent.async_run(message, **kwargs)
+            logger.info(f"Get agent results: {agent_results}")
 
         # replan
         # Increment step counter
@@ -172,12 +195,7 @@ class PlanAgent(Agent):
         for action in actions:
             try:
                 if is_agent(action):
-                    agent_name = action.tool_name
-                    agent = AgentFactory.agent_instance(agent_name)
-                    if agent:
-                        agents.append(agent)
-                    else:
-                        logger.warn(f"Failed to get agent instance '{agent_name}'")
+                    agents.append(action)
                 elif action.tool_name:
                     tools.append(action)
             except Exception as e:
