@@ -1,139 +1,153 @@
 {
     "mcpServers": {
-        "e2b-server": {
+        "arxiv": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.tools.mcparxiv"
+            ]
+        },
+        "audio": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.media.audio"
+            ]
+        },
+        "browser": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.tools.browser"
+            ]
+        },
+        "chess": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.intelligence.playchess"
+            ]
+        },
+        "code": {
             "command": "npx",
             "args": [
                 "-y",
                 "@e2b/mcp-server"
             ],
             "env": {
-                "E2B_API_KEY": "${E2B_API_KEY}",
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+                "E2B_API_KEY": "${E2B_API_KEY}"
             }
         },
-        "filesystem": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                "${FILESYSTEM_SERVER_WORKDIR}"
-            ]
-        },
-        "terminal-controller": {
+        "csv": {
             "command": "python",
             "args": [
                 "-m",
-                "terminal_controller"
+                "examples.gaia.mcp_collections.documents.mscsv"
             ]
         },
-        "calculator": {
+        "docx": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_server_calculator"
+                "examples.gaia.mcp_collections.documents.msdocx"
             ]
         },
-        "excel": {
-            "command": "npx",
-            "args": [
-                "--yes",
-                "@negokaz/excel-mcp-server"
-            ],
-            "env": {
-                "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000"
-            }
-        },
-        "playwright": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@executeautomation/playwright-mcp-server"
-            ]
-        },
-        "google-search": {
-            "command": "npx",
-            "args": [
-                "-y",
-                "@adenot/mcp-google-search"
-            ],
-            "env": {
-                "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
-                "GOOGLE_SEARCH_ENGINE_ID": "${GOOGLE_SEARCH_ENGINE_ID}"
-            }
-        },
-        "ms-playwright": {
-            "command": "npx",
-            "args": [
-                "@playwright/mcp@latest",
-                "--no-sandbox",
-                "--headless"
-            ],
-            "env": {
-                "PLAYWRIGHT_TIMEOUT": "120000",
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-            }
-        },
-        "audio_server": {
+        "download": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.audio_server"
+                "examples.gaia.mcp_collections.tools.download"
             ]
         },
-        "image_server": {
+        "xlsx": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.image_server"
+                "examples.gaia.mcp_collections.documents.msxlsx"
             ]
         },
-        "youtube_server": {
+        "image": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.youtube_server"
+                "examples.gaia.mcp_collections.media.image"
             ]
         },
-        "video_server": {
+        "pdf": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.video_server"
+                "examples.gaia.mcp_collections.documents.pdf"
             ]
         },
-        "search_server": {
+        "pptx": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.search_server"
+                "examples.gaia.mcp_collections.documents.mspptx"
             ]
         },
-        "download_server": {
+        "pubchem": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.download_server"
+                "examples.gaia.mcp_collections.tools.pubchem"
             ]
         },
-        "document_server": {
+        "reasoning": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.document_server"
+                "examples.gaia.mcp_collections.intelligence.think"
             ]
         },
-        "browser_server": {
+        "search": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.browser_server"
+                "examples.gaia.mcp_collections.tools.search"
             ]
         },
-        "reasoning_server": {
+        "terminal": {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.reasoning_server"
+                "examples.gaia.mcp_collections.tools.terminal"
+            ]
+        },
+        "video": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.media.video"
+            ]
+        },
+        "wayback": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.tools.wayback"
+            ]
+        },
+        "wikipedia": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.tools.wiki"
+            ]
+        },
+        "youtube": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.tools.youtube"
+            ]
+        },
+        "txt": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.documents.txt"
             ]
         }
     }
