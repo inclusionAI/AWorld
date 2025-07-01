@@ -205,7 +205,7 @@ if __name__ == "__main__":
                 task = Task(input=question, agent=super_agent, conf=TaskConfig())
                 result = Runners.sync_run_task(task=task)
 
-                match = re.search(r"<answer>(.*?)</answer>", result[task.id].get('answer'))
+                match = re.search(r"<answer>(.*?)</answer>", result[task.id].answer)
                 if match:
                     answer = match.group(1)
                     logging.info(f"Agent answer: {answer}")
