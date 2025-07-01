@@ -408,10 +408,8 @@ const App: React.FC = () => {
 
     onRequest({
       stream: true,
+      session_id: sessionId,
       message: { role: 'user', content: val },
-      headers: {
-        'X-Session-ID': sessionId,
-      },
     });
   };
 
@@ -502,7 +500,7 @@ const App: React.FC = () => {
           setCurConversation(val);
           setSessionId(val);
           updateURLSessionId(val);
-          
+
           fetchSessions().then(() => {
             console.log('fetchSessions: sessionData', sessionData);
             const session = sessionData[val];
