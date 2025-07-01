@@ -167,6 +167,7 @@ class StreamingOutputs(AsyncOutputs):
                 self._visited_outputs.append(output)
 
             except asyncio.CancelledError:
+                logger.error("Outputs Breaking due to CancelledError")
                 break
 
             if output == RUN_FINISHED_SIGNAL:

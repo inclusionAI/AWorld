@@ -19,6 +19,7 @@ class Constants:
     TASK = "task"
     OUTPUT = "output"
     TOOL_CALLBACK = "tool_callback"
+    AGENT_CALLBACK = "agent_callback"
 
 
 class TopicType:

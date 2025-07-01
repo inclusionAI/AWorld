@@ -160,9 +160,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.pre_run()
             result = self.policy(observation, **kwargs)
             final_result = self.post_run(result, observation)
-            if final_result:
-                final_result.context = self.context
-                final_result.session_id = self.context.session_id
             return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
@@ -179,9 +176,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             await self.async_pre_run()
             result = await self.async_policy(observation, **kwargs)
             final_result = await self.async_post_run(result, observation)
-            if final_result:
-                final_result.context = self.context
-                final_result.session_id = self.context.session_id
             return final_result
 
     @abc.abstractmethod
