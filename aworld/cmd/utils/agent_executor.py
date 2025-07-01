@@ -29,6 +29,8 @@ async def stream_run(request: ChatCompletionRequest):
         request.session_id = str(uuid.uuid4())
     if not request.query_id:
         request.query_id = str(uuid.uuid4())
+    if request.messages and request.messages[-1].trace_id is None:
+        request.messages[-1].trace_id = request.trace_id
 
     logger.info(f"Stream run agent: request={request.model_dump_json()}")
     agent = agent_loader.get_agent(request.model)

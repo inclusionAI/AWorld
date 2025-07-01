@@ -408,6 +408,7 @@ const App: React.FC = () => {
     onRequest({
       stream: true,
       message: { role: 'user', content: val },
+      session_id: sessionId,
       headers: {
         'X-Session-ID': sessionId,
       },
@@ -753,7 +754,7 @@ const App: React.FC = () => {
         open={drawerVisible}
       >
         {drawerContent === 'Workspace' ? (
-          <Workspace sessionId={sessionId}/>
+          <Workspace sessionId={sessionId} />
         ) : drawerContent === 'Trace' ? (
           <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
         ) : (

@@ -10,17 +10,17 @@ from aworld.output.base import Output
 class ChatCompletionMessage(BaseModel):
     role: str = Field(..., description="The role of the message")
     content: str = Field(..., description="The content of the message")
-    trace_id: str = Field(None, description="The trace id")
+    trace_id: Optional[str] = Field(None, description="The trace id")
 
 
 class ChatCompletionRequest(BaseModel):
-    user_id: str = Field(None, description="The user id")
+    user_id: Optional[str] = Field(None, description="The user id")
     session_id: str = Field(
         None,
         description="The session id, if not provided, a new session will be created",
     )
-    query_id: str = Field(None, description="The query id")
-    trace_id: str = Field(None, description="The trace id")
+    query_id: Optional[str] = Field(None, description="The query id")
+    trace_id: Optional[str] = Field(None, description="The trace id")
     model: str = Field(..., description="The model to use")
     messages: List[ChatCompletionMessage] = Field(
         ..., description="The messages to send to the agent"

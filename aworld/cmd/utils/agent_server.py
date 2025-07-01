@@ -30,7 +30,7 @@ class AgentServer:
         await self.get_session_service().append_messages(
             request.user_id,
             request.session_id,
-            request.messages,
+            request.messages[-1:],
         )
 
     async def on_chat_completion_end(

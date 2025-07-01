@@ -1,8 +1,8 @@
 import { getWorkspaceArtifacts } from '@/api/workspace';
 import { Tabs } from 'antd';
 import React, { useEffect, useState } from 'react';
-import './index.less';
 import type { ToolCardData } from '../../BubbleItem/utils';
+import './index.less';
 
 interface WorkspaceProps {
   sessionId: string;
