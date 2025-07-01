@@ -204,7 +204,7 @@ const useStyle = createStyles(({ token, css }) => {
 
 const App: React.FC = () => {
   const { styles } = useStyle();
-  const abortController = useRef<AbortController>(null);
+  const abortController = useRef<AbortController | null>(null);
   const { sessionId, generateNewSessionId, updateURLSessionId, setSessionId } = useSessionId();
   const { agentId, setAgentIdAndUpdateURL } = useAgentId();
 
@@ -390,6 +390,9 @@ const App: React.FC = () => {
       };
     },
     resolveAbortController: (controller) => {
+      if (abortController.current) {
+        abortController.current.abort();
+      }
       abortController.current = controller;
     },
   });
@@ -457,6 +460,11 @@ const App: React.FC = () => {
       {/* 🌟 添加会话 */}
       <Button
         onClick={() => {
+          if (conversations.some(conv => conv.label === 'New Conversation')) {
+            message.warning('新建会话已存在，请提问');
+            return;
+          }
+
           if (agent.isRequesting()) {
             message.error(
               'Message is Requesting, you can create a new conversation after request done or abort it right now...',
@@ -727,7 +735,7 @@ const App: React.FC = () => {
       {chatSider}
       <div className={styles.chat}>
         {chatList}
-        {(messages?.length > 0 || curConversation) && chatSender}
+        {messages?.length > 0 && chatSender}
       </div>
       <Drawer
         placement="right"
