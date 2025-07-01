@@ -76,7 +76,7 @@ class DefaultToolResultParser(BaseToolResultParser):
                 await workspace.add_artifact(image_artifact)
                 tool_card.artifacts.append(
                     {
-                        "artifact_type": image_artifact.artifact_type,
+                        "artifact_type": str(image_artifact.artifact_type),
                         "artifact_id": image_artifact.artifact_id,
                     }
                 )
@@ -137,7 +137,7 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
         )
         tool_card.artifacts.append(
             {
-                "artifact_type": ArtifactType.WEB_PAGES,
+                "artifact_type": "WEB_PAGES",
                 "artifact_id": artifact_id,
             }
         )
