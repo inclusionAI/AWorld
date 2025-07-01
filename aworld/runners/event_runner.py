@@ -142,6 +142,8 @@ class TaskEventRunner(TaskRunner):
                 elif message.receiver:
                     handlers = {message.receiver: handlers.get(
                         message.receiver, [])}
+                else:
+                    handlers.clear()
 
                 handle_tasks = []
                 for topic, handler_list in handlers.items():

@@ -17,8 +17,8 @@ from aworld.output.outputs import Outputs, DefaultOutputs
 
 @dataclass
 class Task:
-    id: str = field(default_factory=lambda: str(uuid.uuid4().hex))
-    name: str = field(default_factory=lambda: str(uuid.uuid4().hex))
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    name: str = field(default_factory=lambda: uuid.uuid4().hex)
     user_id: str = None
     session_id: str = None
     input: Any = None

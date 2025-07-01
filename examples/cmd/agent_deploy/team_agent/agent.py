@@ -4,10 +4,9 @@ import json
 from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import Swarm
+from aworld.core.agent.swarm import GraphBuildType, Swarm
 from aworld.core.task import Task
 from aworld.runner import Runners
-from examples.plan_execute.agent import PlanAgent
 from .prompt import *
 
 logger = logging.getLogger(__name__)
@@ -48,36 +47,51 @@ class AWorldAgent(BaseAWorldAgent):
         with open(mcp_path, "r") as f:
             mcp_config = json.load(f)
 
-        plan_agent = PlanAgent(name="🙋🏻‍♂️ Team Agent Demo", conf=agent_config)
-
-        search_agent = Agent(
+        plan_agent = Agent(
             conf=agent_config,
-            name="🔎 Search Agent",
-            system_prompt=search_sys_prompt,
-            agent_prompt=search_agent_prompt,
+            name="🔎 Team Plan Agent",
+            system_prompt=plan_agent_sys_prompt,
+        )
+
+        google_pse_search_agent = Agent(
+            conf=agent_config,
+            name="🔎 Google PSE Search Agent",
+            system_prompt=google_pse_search_sys_prompt,
             mcp_config=mcp_config,
-            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
+            mcp_servers=["google-pse-search"],
+        )
+
+        aworldsearch_server_agent = Agent(
+            conf=agent_config,
+            name="🔎 Aworldsearch Server Agent",
+            system_prompt=aworldsearch_server_sys_prompt,
+            mcp_config=mcp_config,
+            mcp_servers=["aworldsearch-server"],
+        )
+
+        aworld_playwright_agent = Agent(
+            conf=agent_config,
+            name="🔎 Aworld Playwright Agent",
+            system_prompt=aworld_playwright_sys_prompt,
+            mcp_config=mcp_config,
+            mcp_servers=["aworld-playwright"],
         )
 
         summary_agent = Agent(
             conf=agent_config,
             name="💬 Summary Agent",
-            system_prompt=summary_sys_prompt,
-            agent_prompt=summary_agent_prompt,
-        )
-
-        output_agent = Agent(
-            conf=agent_config,
-            name="💬 Output Agent",
-            system_prompt=output_sys_prompt,
-            agent_prompt=output_agent_prompt,
-            mcp_config=mcp_config,
-            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
+            system_prompt=summary_agent_sys_prompt,
         )
 
         # default is sequence swarm mode
         swarm = Swarm(
-            plan_agent, search_agent, summary_agent, output_agent, max_steps=10
+            google_pse_search_agent,
+            aworldsearch_server_agent,
+            aworld_playwright_agent,
+            summary_agent,
+            root_agent=plan_agent,
+            build_type=GraphBuildType.TEAM,
+            max_steps=10,
         )
 
         if prompt is None and request is not None:

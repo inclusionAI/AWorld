@@ -1,18 +1,16 @@
 import json
-import uuid
 from dataclasses import dataclass
+import uuid
 
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, ConfigDict
 
 from aworld.output import (
     MessageOutput,
     AworldUI,
     Output,
-    Artifact,
-    ArtifactType,
     WorkSpace,
-    SearchOutput,
 )
+from aworld.output.artifact import Artifact, ArtifactType
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.output.utils import consume_content
 from abc import ABC, abstractmethod
@@ -20,6 +18,8 @@ from typing_extensions import override
 
 
 class ToolCard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tool_type: str = Field(None, description="tool type")
     tool_name: str = Field(None, description="tool name")
     function_name: str = Field(None, description="function name")
@@ -28,6 +28,7 @@ class ToolCard(BaseModel):
     results: str = Field(None, description="results")
     card_type: str = Field(None, description="card type")
     card_data: dict = Field(None, description="card data")
+    artifacts: list = Field(default_factory=list, description="artifacts")
 
     @staticmethod
     def from_tool_result(output: ToolResultOutput) -> "ToolCard":
@@ -38,26 +39,47 @@ class ToolCard(BaseModel):
             tool_call_id=output.origin_tool_call.id,
             arguments=output.origin_tool_call.function.arguments,
             results=output.data,
+            artifacts=[],
         )
 
 
 class BaseToolResultParser(ABC):
 
     def __init__(self, tool_name: str = None):
-        self.tool_name = tool_name
+        self.tool_name = tool_name or self.__class__.__name__
 
     @abstractmethod
-    async def parse(self, output: ToolResultOutput):
+    async def parse(self, output: ToolResultOutput, workspace: WorkSpace):
         pass
 
 
 class DefaultToolResultParser(BaseToolResultParser):
 
     @override
-    async def parse(self, output: ToolResultOutput):
+    async def parse(self, output: ToolResultOutput, workspace: WorkSpace):
         tool_card = ToolCard.from_tool_result(output)
 
         tool_card.card_type = "tool_call_card_default"
+
+        # screenshots
+        if (
+            output.metadata.get("screenshots")
+            and isinstance(output.metadata.get("screenshots"), list)
+            and len(output.metadata.get("screenshots")) > 0
+        ):
+            for _, screenshot in enumerate(output.metadata.get("screenshots")):
+                image_artifact = Artifact(
+                    artifact_id=str(uuid.uuid4()),
+                    artifact_type=ArtifactType.IMAGE,
+                    content=screenshot.get("ossPath"),
+                )
+                await workspace.add_artifact(image_artifact)
+                tool_card.artifacts.append(
+                    {
+                        "artifact_type": image_artifact.artifact_type.value,
+                        "artifact_id": image_artifact.artifact_id,
+                    }
+                )
 
         return f"""\
 **🔧 Tool: {tool_card.tool_name}#{tool_card.function_name}**\n\n
@@ -70,21 +92,32 @@ class DefaultToolResultParser(BaseToolResultParser):
 class GooglePseSearchToolResultParser(BaseToolResultParser):
 
     @override
-    async def parse(self, output: ToolResultOutput):
+    async def parse(self, output: ToolResultOutput, workspace: WorkSpace):
         tool_card = ToolCard.from_tool_result(output)
 
         query = ""
         try:
             args = json.loads(tool_card.arguments)
             query = args.get("query")
+            # aworld search server
+            if not query:
+                query = args.get("query_list")
         except Exception:
             pass
 
         result_items = []
         try:
             result_items = json.loads(tool_card.results)
+            # aworld search server return url, not link
+            if result_items and isinstance(result_items, list):
+                for item in result_items:
+                    if not item.get("link", None) and item.get("url", None):
+                        item["link"] = item.get("url")
         except Exception:
             pass
+
+        if len(result_items) > 0:
+            tool_card.results = ""
 
         tool_card.card_type = "tool_call_card_link_list"
         tool_card.card_data = {
@@ -92,6 +125,22 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
             "query": query,
             "search_items": result_items,
         }
+
+        artifact_id = str(uuid.uuid4())
+        await workspace.create_artifact(
+            artifact_type=ArtifactType.WEB_PAGES,
+            artifact_id=artifact_id,
+            content=result_items,
+            metadata={
+                "query": query,
+            },
+        )
+        tool_card.artifacts.append(
+            {
+                "artifact_type": ArtifactType.WEB_PAGES.value,
+                "artifact_id": artifact_id,
+            }
+        )
 
         return f"""\
 **🔎 Google Search**\n\n
@@ -117,11 +166,9 @@ class ToolResultParserFactory:
 
 
 @dataclass
-class AWorldAgentUI(AworldUI):
-
+class AWorldWebAgentUI(AworldUI):
     session_id: str = Field(default="", description="session id")
     workspace: WorkSpace = Field(default=None, description="workspace")
-    cur_agent_name: str = Field(default=None, description="cur agent name")
 
     def __init__(self, session_id: str = None, workspace: WorkSpace = None, **kwargs):
         """
@@ -180,30 +227,12 @@ class AWorldAgentUI(AworldUI):
         tool_result
         """
         parser = ToolResultParserFactory.get_parser(output.tool_type, output.tool_name)
-        return await parser.parse(output)
-
-    async def _gen_custom_output(self, output):
-        """
-        hook for custom output
-        """
-        custom_output = f"{output.tool_name}#{output.origin_tool_call.function.name}"
-        if (
-            output.tool_name == "aworld-playwright"
-            and output.origin_tool_call.function.name == "browser_navigate"
-        ):
-            custom_output = f"🔍 search `{json.loads(output.origin_tool_call.function.arguments)['url']}`"
-        if (
-            output.tool_name == "aworldsearch-server"
-            and output.origin_tool_call.function.name == "search"
-        ):
-            custom_output = f"🔍 search keywords: {' '.join(json.loads(output.origin_tool_call.function.arguments)['query_list'])}"
-        return custom_output
+        return await parser.parse(output, workspace=self.workspace)
 
     @override
     async def step(self, output: StepOutput):
-        emptyLine = "\n\n----\n\n"
+        emptyLine = "\n\n"
         if output.status == "START":
-            self.cur_agent_name = output.name
             return f"\n\n # {output.show_name} \n\n"
         elif output.status == "FINISHED":
             return f"{emptyLine}"
@@ -215,43 +244,3 @@ class AWorldAgentUI(AworldUI):
     @override
     async def custom_output(self, output: Output):
         return output.data
-
-    async def _parse_tool_artifacts(self, metadata):
-        result = []
-        if not metadata:
-            return result
-
-        # screenshots
-        if (
-            metadata.get("screenshots")
-            and isinstance(metadata.get("screenshots"), list)
-            and len(metadata.get("screenshots")) > 0
-        ):
-            for index, screenshot in enumerate(metadata.get("screenshots")):
-                image_artifact = Artifact(
-                    artifact_id=str(uuid.uuid4()),
-                    artifact_type=ArtifactType.IMAGE,
-                    content=screenshot.get("ossPath"),
-                )
-                await self.workspace.add_artifact(image_artifact)
-                result.append(
-                    {
-                        "artifact_type": "IMAGE",
-                        "artifact_id": image_artifact.artifact_id,
-                    }
-                )
-
-        # web_pages
-        if metadata.get("artifact_type") == "WEB_PAGES":
-            search_output = SearchOutput.from_dict(metadata.get("artifact_data"))
-            artifact_id = str(uuid.uuid4())
-            await self.workspace.create_artifact(
-                artifact_type=ArtifactType.WEB_PAGES,
-                artifact_id=artifact_id,
-                content=search_output,
-                metadata={
-                    "query": search_output.query,
-                },
-            )
-            result.append({"artifact_type": "WEB_PAGES", "artifact_id": artifact_id})
-        return result

@@ -1,61 +1,18 @@
-import React, { useState, useCallback } from 'react';
-import { Collapse, Space, message } from 'antd';
+import { MenuUnfoldOutlined } from '@ant-design/icons';
+import { Button, Collapse, Space, message } from 'antd';
+import React, { useCallback, useState } from 'react';
 import type { ToolCardData } from '../utils';
 import './index.less';
 
-const { Panel } = Collapse;
-
-interface PanelContent {
-  arguments: string;
-  results: string;
-}
-
-interface DownloadData extends PanelContent {
-  timestamp: string;
-}
-
 interface Props {
+  sessionId: string;
   data: ToolCardData;
+  onOpenWorkspace: (data: ToolCardData) => void;
 }
 
-//下载JSON文件工具函数
-const downloadJsonFile = (data: DownloadData) => {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `tool_data_${new Date().getTime()}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-};
-
-const CardDefault: React.FC<Props> = ({ data }) => {
+const CardDefault: React.FC<Props> = ({ sessionId, data, onOpenWorkspace }) => {
   // 当前展开的面板keys
-  const [activeKeys, setActiveKeys] = useState<string[]>(['1']);
-  const togglePanel = useCallback((panelKey: string) => {
-    setActiveKeys(
-      (prev) =>
-        prev.includes(panelKey)
-          ? prev.filter((key) => key !== panelKey) // 如果已展开则折叠
-          : [...prev, panelKey] // 如果已折叠则展开
-    );
-  }, []);
-
-  // 处理下载操作
-  const handleDownload = useCallback(() => {
-    try {
-      downloadJsonFile({
-        arguments: data.arguments,
-        results: data.results,
-        timestamp: new Date().toISOString()
-      });
-      message.success('Download Successful');
-    } catch (error) {
-      message.error('Download Failed');
-    }
-  }, [data]);
+  const [activeKeys, setActiveKeys] = useState<string[]>([]);
 
   // 处理复制
   const handleCopy = useCallback(
@@ -70,39 +27,56 @@ const CardDefault: React.FC<Props> = ({ data }) => {
     },
     [data]
   );
+  // 打开workspace
+  const handleOpenWorkspace = useCallback(() => {
+    if (onOpenWorkspace) {
+      onOpenWorkspace(data);
+    }
+  }, [onOpenWorkspace, sessionId, data]);
 
   //操作按钮
   const renderExtra = useCallback(
     (panelKey: string) => (
       <Space size="small" onClick={(e) => e.stopPropagation()}>
-        <span className="action-btn" onClick={() => togglePanel(panelKey)}>
-          {activeKeys.includes(panelKey) ? 'Collapsed' : 'Expanded'}
-        </span>
-        <span className="action-btn" onClick={handleDownload}>
-          Save
-        </span>
         <span className="action-btn" onClick={() => handleCopy(panelKey)}>
           Copy
         </span>
       </Space>
     ),
-    [activeKeys, togglePanel, handleDownload, handleCopy]
+    [handleCopy]
   );
+
+  const items = [
+    {
+      key: '1',
+      label: 'tool_call_arguments',
+      extra: renderExtra('1'),
+      children: (
+        <pre className="pre-wrap">
+          <code>{data.arguments}</code>
+        </pre>
+      )
+    },
+    {
+      key: '2',
+      label: 'tool_call_result',
+      extra: renderExtra('2'),
+      children: (
+        <pre className="pre-wrap">
+          <code>{data.results}</code>
+        </pre>
+      )
+    }
+  ];
 
   return (
     <div className="defaultbox">
-      <Collapse activeKey={activeKeys} onChange={(keys) => setActiveKeys(Array.isArray(keys) ? keys : [keys])}>
-        <Panel header="tool_call_arguments" key="1" extra={renderExtra('1')}>
-          <pre className="pre-wrap">
-            <code>{data.arguments}</code>
-          </pre>
-        </Panel>
-        <Panel header="tool_call_result" key="2" extra={renderExtra('2')}>
-          <pre className="pre-wrap">
-            <code>{data.results}</code>
-          </pre>
-        </Panel>
-      </Collapse>
+      {data?.artifacts?.length > 0 && (
+        <Button type="link" className="btn-workspace" icon={<MenuUnfoldOutlined />} onClick={handleOpenWorkspace}>
+          View Workspace
+        </Button>
+      )}
+      <Collapse activeKey={activeKeys} onChange={(keys) => setActiveKeys(Array.isArray(keys) ? keys : [keys])} items={items} />
     </div>
   );
 };
