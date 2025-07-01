@@ -199,7 +199,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             if eventbus is not None:
                 tool_output = ToolResultOutput(
-                    tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
+                    tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
                     data=step_res[0].content,
                     origin_tool_call=ToolCall.from_dict({
@@ -224,7 +224,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         action = message.payload
         tool_id_mapping = {}
         for act in action:
-            tool_id = act.tool_id
+            tool_id = act.tool_call_id
             tool_name = act.tool_name
             tool_id_mapping[tool_id] = tool_name
         self.pre_step(action, **kwargs)
@@ -242,7 +242,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
-            step_res[0].action_result[idx].tool_id = act.tool_id
+            step_res[0].action_result[idx].tool_call_id = act.tool_call_id
 
         agent = self.context.swarm.agents.get(action[0].agent_name)
         feedback_tool_result = agent.feedback_tool_result if agent else False
@@ -268,7 +268,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             # send tool results output
             if eventbus is not None:
                 tool_output = ToolResultOutput(
-                    tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_id) or self.name(),
+                    tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
                     data=step_res[0].content,
                     origin_tool_call=ToolCall.from_dict({
@@ -303,7 +303,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         action = message.payload
         tool_id_mapping = {}
         for act in action:
-            tool_id = act.tool_id
+            tool_id = act.tool_call_id
             tool_name = act.tool_name
             tool_id_mapping[tool_id] = tool_name
         await self.pre_step(action, **kwargs)
@@ -321,7 +321,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
-            step_res[0].action_result[idx].tool_id = act.tool_id
+            step_res[0].action_result[idx].tool_call_id = act.tool_call_id
 
         agent = self.context.swarm.agents.get(action[0].agent_name)
         feedback_tool_result = agent.feedback_tool_result if agent else False

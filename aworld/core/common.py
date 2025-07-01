@@ -19,8 +19,8 @@ class ActionResult(BaseModel):
     keep: bool = False
     action_name: str = None
     tool_name: str = None
-    # llm tool id
-    tool_id: str = None
+    # llm tool call id
+    tool_call_id: str = None
     metadata: Optional[Dict[str, Any]] = {}
 
 
@@ -51,6 +51,10 @@ class Observation(BaseModel):
     # extend key value pair. `done` is an internal key
     info: Optional[Dict[str, Any]] = {}
 
+    @property
+    def is_tool_result(self) -> bool:
+        return self.action_result is not None and len(self.action_result) > 0
+
 
 class StatefulObservation(Observation):
     """Observations with contextual states."""
@@ -73,7 +77,7 @@ class ToolActionInfo(BaseModel):
 
 class ActionModel(BaseModel):
     tool_name: Optional[str] = None
-    tool_id: Optional[str] = None
+    tool_call_id: Optional[str] = None
     # agent name
     agent_name: Optional[str] = None
     # action_name is a tool action name by agent policy.
