@@ -14,6 +14,14 @@ export interface WorkspaceTreeResponse {
 }
 
 /**
+ * Get Artifact的请求参数
+ */
+export interface ArtifactQueryRequest {
+  artifact_types: string[];    // Artifact类型
+  artifact_ids: string[];    // Artifact ID
+}
+
+/**
  * 创建Artifact的请求参数
  */
 export interface ArtifactCreateRequest {
@@ -36,6 +44,17 @@ export interface ArtifactCreateResponse {
  */
 export const getWorkspaceTree = (sessionId: string) =>
   request(`api/workspaces/${sessionId}/tree`);
+
+
+/**
+ * 获取工作空间Artifacts
+ */
+export const getWorkspaceArtifacts = (sessionId: string, body: ArtifactQueryRequest) =>
+  request(`api/workspaces/${sessionId}/artifacts`, {
+    method: 'POST',
+    body
+  });
+
 
 /**
  * 创建工作空间Artifact

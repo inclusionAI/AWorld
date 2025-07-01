@@ -753,7 +753,7 @@ const App: React.FC = () => {
         open={drawerVisible}
       >
         {drawerContent === 'Workspace' ? (
-          <Workspace sessionId={sessionId} />
+          <Workspace sessionId={sessionId} cardData={} />
         ) : drawerContent === 'Trace' ? (
           <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
         ) : (
