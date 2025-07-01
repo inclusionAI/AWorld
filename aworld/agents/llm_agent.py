@@ -22,6 +22,7 @@ from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
 from aworld.core.memory import MemoryConfig, MemoryBase
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.tool.tool_desc import get_tool_desc
+from aworld.events.util import send_message
 from aworld.logs.util import logger, color_log, Color, trace_logger
 from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform
 from aworld.memory.main import MemoryFactory

@@ -1,15 +1,12 @@
-import json
-from typing import AsyncGenerator
+from typing import Tuple
 
-from aworld.core.task import TaskResponse
-from aworld.models.model_response import ModelResponse
-from aworld.output import Output, MessageOutput
 from aworld.runners.callback.decorator import CallbackRegistry
 from aworld.runners.handler.base import DefaultHandler
-from aworld.core.common import TaskItem, Observation
-from aworld.core.context.base import Context
-from aworld.core.event.base import Message, Constants, TopicType
+from aworld.core.common import Observation, CallbackItem
+from aworld.core.event.base import Message, Constants
 from aworld.logs.util import logger
+from aworld.runners.state_manager import RuntimeStateManager, HandleResult, RunNodeStatus
+
 
 class ToolCallbackHandler(DefaultHandler):
     def __init__(self, runner):
@@ -19,47 +16,67 @@ class ToolCallbackHandler(DefaultHandler):
         if message.category != Constants.TOOL_CALLBACK:
             return
         logger.info(f"-------ToolCallbackHandler start handle message----: {message}")
-        outputs = self.runner.task.outputs
-        output = None
+        self.context = message.context
+        observation = None
+        state_mng = RuntimeStateManager.instance()
+        if not state_mng:
+            logger.eror("-------ToolCallbackHandler state_mng is None----")
+            return
         try:
             payload = message.payload
-            if not payload or not payload[0]:
+            if not payload:
+                state_mng.run_failed(message.id, "callback failed", [])
                 return
-            observation=payload[0]
+            if isinstance(payload, CallbackItem):
+                observation = payload.data[0] if isinstance(payload.data, Tuple) else payload.data
+            elif isinstance(payload, Tuple) and isinstance(payload[0], Observation):
+                observation=payload[0]
             if not isinstance(observation, Observation):
+                state_mng.run_failed(message.id, "callback failed", [])
                 return
             if not observation.action_result:
+                state_mng.run_failed(message.id, "callback failed", [])
                 return
+
+            results = []
             for res in observation.action_result:
+                success = False
+                result = HandleResult(
+                    result=Message(payload=None,
+                                   category=Constants.TOOL_CALLBACK,
+                                   sender=self.name(),
+                                   session_id=message.context.session_id,
+                                   headers={"context": message.context}),
+                    status=RunNodeStatus.FAILED
+                )
                 if not res or not res.content or not res.tool_name or not res.action_name:
+                    results.append(result)
                     continue
                 callback_func = CallbackRegistry.get(res.tool_name + "__" + res.action_name)
                 if not callback_func:
+                    result.status = RunNodeStatus.SUCCESS
+                    results.append(result)
                     continue
-                callback_func(res)
-                logger.info(f"-------ToolCallbackHandler callback_func-res: {res}")
-            logger.info(f"-------ToolCallbackHandler end  handle message: {observation}")
+                callback_res = callback_func(res)
+                if not callback_res or callback_res.success is False:
+                    results.append(result)
+                    continue
+                result.status = RunNodeStatus.SUCCESS
+                result.result.payload = callback_res
+                results.append(result)
+
+            state_mng.run_succeed(message.id, "test callback succ", results)
         except Exception as e:
             # todo
             logger.warning(f"ToolCallbackHandler Failed to parse payload: {e}")
-            yield Message(
-                category=Constants.TASK,
-                payload=TaskItem(msg="Failed to parse output.", data=payload, stop=True),
-                sender=self.name(),
-                session_id=Context.instance().session_id,
-                topic=TopicType.ERROR
-            )
+            state_mng.run_failed(message.id, "callback failed", [])
         finally:
-            #todo
-            if output:
-                if not output.metadata:
-                    output.metadata = {}
-                output.metadata['sender'] = message.sender
-                output.metadata['receiver'] = message.receiver
-                await outputs.add_output(output)
-            # 1\Update the current message node status
-            # 2\Update the incoming message node status
-
+            yield Message(
+                category=Constants.OUTPUT,
+                payload=None,
+                sender=self.name(),
+                session_id=message.session_id
+            )
 
         return
 

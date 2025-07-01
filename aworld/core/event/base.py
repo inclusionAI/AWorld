@@ -19,6 +19,7 @@ class Constants:
     TASK = "task"
     OUTPUT = "output"
     TOOL_CALLBACK = "tool_callback"
+    AGENT_CALLBACK = "agent_callback"
 
 
 class TopicType:
@@ -57,7 +58,7 @@ class Message(Generic[DataType]):
     receiver: str = None
     # The previous caller
     caller: str = None
-    id: str = uuid.uuid4().hex
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
     priority: int = 0
     # Topic of message
     topic: str = None

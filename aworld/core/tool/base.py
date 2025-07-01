@@ -11,7 +11,7 @@ from aworld.config.conf import ToolConfig, load_config, ConfigDict
 from aworld.core.event import eventbus
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
-from aworld.core.common import Observation, ActionModel, ActionResult
+from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants
 from aworld.core.factory import Factory
@@ -261,8 +261,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
-    async def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
-                                action: ToolInput,
+    async def _internal_process(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                                action: List[ActionModel],
+                                input_message: Message,
                                 **kwargs):
         for idx, act in enumerate(action):
             # send tool results output
@@ -297,6 +298,21 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             session_id=self.context.session_id if self.context else "",
             headers={"context": self.context}
         ))
+        await self._exec_tool_callback(step_res, action,
+                                       Message(
+                                           category=Constants.TOOL_CALLBACK,
+                                           payload=CallbackItem(
+                                               data=step_res,
+                                               actions=action,
+                                               node_id=input_message.id
+                                           ),
+                                           sender=self.name(),
+                                           receiver=action[0].agent_name,
+                                           session_id=self.context.session_id
+                                       ),
+                                       **kwargs)
+
+
 
     async def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
@@ -309,7 +325,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         await self.pre_step(action, **kwargs)
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, **kwargs)
-        await self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
         return final_res
 
     async def post_step(self,
@@ -337,6 +353,49 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 sender=action[0].agent_name,
                                 session_id=Context.instance().session_id,
                                 headers={"context": self.context})
+
+    async def _exec_tool_callback(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                                  action: List[ActionModel],
+                                  message: Message,
+                                  **kwargs):
+        logger.info(f"send callback message: {message}")
+        await send_message(message)
+
+        from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
+        state_mng = RuntimeStateManager.instance()
+        msg_id = message.id
+        msg_node = state_mng.get_node(msg_id)
+        state_mng.create_node(
+            node_id=msg_id,
+            busi_type=RunNodeBusiType.from_message_category(Constants.TOOL_CALLBACK),
+            busi_id=message.receiver or "",
+            session_id=message.session_id,
+            msg_id=msg_id,
+            msg_from=message.sender)
+        res_node = await state_mng.wait_for_node_completion(msg_id)
+        if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
+            tool_act_results = step_res[0].action_result
+            callback_act_results = res_node.results
+            if not callback_act_results:
+                logger.warn(f"tool {self.name()} callback finished with empty node result.")
+                return
+            if len(tool_act_results) != len(callback_act_results):
+                logger.warn("tool action result and callback action result length not match.")
+                return
+            for idx, res in enumerate(callback_act_results):
+                if res.status == RunNodeStatus.SUCCESS:
+                    callback_res = res.result.payload
+                    if isinstance(callback_res, CallbackResult):
+                        if callback_res.callback_action_type == CallbackActionType.OVERRIDE:
+                            tool_act_results[idx].content = callback_res.result_data
+                else:
+                    logger.warn(f"tool {self.name()} callback finished with node result: {res}.")
+                    continue
+
+            return
+        else:
+            logger.warn(f"tool {self.name()} callback failed with node: {res_node}.")
+            return
 
 
 class ToolsManager(Factory):

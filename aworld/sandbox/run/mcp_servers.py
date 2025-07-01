@@ -73,8 +73,8 @@ class McpServers:
                 
                 if parameter is None:
                     parameter = {}
-                if task_id:
-                    parameter["task_id"] = task_id
+                # if task_id:
+                #     parameter["task_id"] = task_id
                 if session_id:
                     parameter["session_id"] = session_id
 
@@ -129,17 +129,33 @@ class McpServers:
                         continue
 
                 # Use server instance to call the tool
-                try:
-                    call_result_raw = await server.call_tool(tool_name, parameter)
+                call_result_raw = None
+                action_result = ActionResult(
+                    tool_name=server_name,
+                    action_name=tool_name,
+                    content="",
+                    keep=True
+                )
+                max_retry = 3
+                for i in range(max_retry):
+                    try:
+                        call_result_raw = await server.call_tool(tool_name, parameter)
+                        break
+                    except Exception as e:
+                        logging.warning(f"Error calling tool error: {e}")
+                if not call_result_raw:
+                    logging.warning(f"Error calling tool with cached server: {e}")
 
-                    # Process the return result, consistent with the original logic
-                    action_result = ActionResult(
-                        tool_name=server_name,
-                        action_name=tool_name,
-                        content="",
-                        keep=True
-                    )
+                    self._update_metadata(result_key, {"error": str(e)}, operation_info)
 
+                    # If using cached server instance fails, try to clean up and recreate
+                    if server_name in self.server_instances:
+                        try:
+                            await cleanup_server(self.server_instances[server_name])
+                            del self.server_instances[server_name]
+                        except Exception as e:
+                            logging.warning(f"Failed to cleanup server {server_name}: {e}")
+                else:
                     if call_result_raw and call_result_raw.content:
                         if isinstance(call_result_raw.content[0], TextContent):
                             action_result = ActionResult(
@@ -161,19 +177,7 @@ class McpServers:
                             )
                     results.append(action_result)
                     self._update_metadata(result_key, action_result, operation_info)
-                    
-                except Exception as e:
-                    logging.warning(f"Error calling tool with cached server: {e}")
 
-                    self._update_metadata(result_key, {"error": str(e)}, operation_info)
-                    
-                    # If using cached server instance fails, try to clean up and recreate
-                    if server_name in self.server_instances:
-                        try:
-                            await cleanup_server(self.server_instances[server_name])
-                            del self.server_instances[server_name]
-                        except Exception as e:
-                            logging.warning(f"Failed to cleanup server {server_name}: {e}")
         except Exception as e:
             logging.warning(f"Failed to call_tool: {e}")
             return None

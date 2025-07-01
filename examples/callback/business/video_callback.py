@@ -3,7 +3,7 @@ import os
 import time
 
 import requests
-from aworld.core.common import Observation, ActionResult
+from aworld.core.common import Observation, ActionResult, CallbackResult, CallbackActionType
 from typing_extensions import Any
 
 from aworld.runners.callback.decorator import reg_callback
@@ -11,21 +11,32 @@ from aworld.runners.callback.decorator import reg_callback
 from aworld.logs.util import logger
 
 @reg_callback("gen_video_server__video_tasks")
-def gen_video(actionResult:ActionResult) -> ActionResult:
+def gen_video(actionResult:ActionResult) -> CallbackResult:
     try:
+        calback_result = CallbackResult(
+            success=True,
+            result_data=None,
+            callback_action_type=CallbackActionType.BYPASS
+        )
         if not actionResult or not actionResult.content:
-            return actionResult
+            calback_result.success = False
+            return calback_result
         content = json.loads(actionResult.content)
-        task_id = content.get("video_id")
+        task_id = content.get("task_id")
         if not task_id:
-            return actionResult
-        gen_video_item(task_id)
+            calback_result.success = False
+            return calback_result
+        item = gen_video_item(task_id)
+        if not item:
+            calback_result.success = False
+            return calback_result
 
-        return actionResult
-
+        calback_result.success = True
+        return calback_result
     except Exception as e:
         logger.warning(f"Exception gen_video occurred: {e}")
-        return actionResult
+        calback_result.success = False
+        return calback_result
 
 def gen_video_item(task_id:str) -> Any:
     if not task_id:
