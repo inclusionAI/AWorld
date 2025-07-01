@@ -1,5 +1,5 @@
 import { getWorkspaceArtifacts } from '@/api/workspace';
-import { Tabs, Typography, Image } from 'antd';
+import { Image, Tabs, Typography } from 'antd';
 import React, { useEffect, useState } from 'react';
 import type { ToolCardData } from '../../BubbleItem/utils';
 import './index.less';
