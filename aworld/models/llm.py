@@ -1,3 +1,4 @@
+import traceback
 from typing import (
     List,
     Dict,
@@ -213,13 +214,17 @@ class LLMModel:
             ModelResponse: Unified model response object.
         """
         # Call provider's acompletion method directly
-        return await self.provider.acompletion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            **kwargs
-        )
+        try:
+            return await self.provider.acompletion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                **kwargs
+            )
+        except Exception as e:
+            logger.error(f"Error calling model: {traceback.format_exc()}, messages: {messages}")
+            raise e
 
     def completion(self,
                    messages: List[Dict[str, str]],
