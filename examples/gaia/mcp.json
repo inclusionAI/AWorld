@@ -25,7 +25,7 @@
             "command": "python",
             "args": [
                 "-m",
-                "examples.gaia.mcp_collections.intelligence.playchess"
+                "examples.gaia.mcp_collections.tools.playchess"
             ]
         },
         "code": {
