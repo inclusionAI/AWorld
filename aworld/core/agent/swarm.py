@@ -107,10 +107,13 @@ class Swarm(object):
             logger.warning("No valid agent in swarm.")
             return
 
-        agent_graph.topological_sequence()
+        _, has_cycle = agent_graph.topological_sequence()
         if self.build_type == GraphBuildType.TEAM.value:
             agent_graph.ordered_agents.clear()
             agent_graph.ordered_agents.append(agent_graph.root_agent)
+
+        if self.build_type == GraphBuildType.WORKFLOW.value and has_cycle:
+            raise Exception("Workflow unsupported cycle graph.")
 
         # Agent that communicate with the outside world, the default is the first if the root agent is None.
         if not self._communicate_agent:
