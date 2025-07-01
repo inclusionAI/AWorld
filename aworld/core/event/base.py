@@ -28,6 +28,7 @@ class TopicType:
     ERROR = "__error"
     RERUN = "__rerun"
     HUMAN_CONFIRM = "__human_confirm"
+    CANCEL = "__cancel"
     # for dynamic subscribe
     SUBSCRIBE_TOOL = "__subscribe_tool"
     SUBSCRIBE_AGENT = "__subscribe_agent"
@@ -48,7 +49,7 @@ class Message(Generic[DataType]):
     or by extending `Message`.
     """
     session_id: field(default_factory=str)
-    payload: Optional[DataType] = field(default_factory=Any)
+    payload: Optional[DataType] = field(default_factory=object)
     # Current caller
     sender: str = field(default_factory=str)
     # event type
@@ -119,6 +120,14 @@ class ToolMessage(Message[List[ActionModel]]):
     For example, `tool` event can interact with other tools through the MCP protocol.
     """
     category: str = 'tool'
+
+
+@dataclass
+class CancelMessage(Message[TaskItem]):
+    """Cancel event of the task, has higher priority."""
+    category: str = 'task'
+    priority: int = -1
+    topic: str = TopicType.CANCEL
 
 
 class Messageable(object):

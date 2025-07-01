@@ -111,12 +111,17 @@ class DefaultAgentHandler(AgentHandler):
             else:
                 if data.info.get('done'):
                     agent_name = self.agent_calls[-1]
+                    async for event in self._stop_check(ActionModel(agent_name=agent_name, policy_info=data.content),
+                                                        message):
+                        yield event
+                elif not message.receiver:
+                    agent_name = message.sender
+                    async for event in self._stop_check(ActionModel(agent_name=agent_name, policy_info=data.content),
+                                                        message):
+                        yield event
                 else:
                     logger.info(f"agent handler send observation message: {message}")
-                    agent_name = message.sender
-                async for event in self._stop_check(ActionModel(agent_name=agent_name, policy_info=data.content),
-                                                    message):
-                    yield event
+                    yield message
             return
 
         # data is List[ActionModel]

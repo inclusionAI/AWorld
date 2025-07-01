@@ -209,7 +209,7 @@ class TaskEventRunner(TaskRunner):
             while True:
                 if await self.is_stopped():
                     await self.event_mng.done()
-                    logger.info("stop task...")
+                    logger.info(f"stop task {self.task.id}...")
                     if self._task_response is None:
                         # send msg to output
                         self._task_response = TaskResponse(msg=msg,
