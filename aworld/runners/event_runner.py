@@ -111,12 +111,12 @@ class TaskEventRunner(TaskRunner):
         event_bus = self.event_mng.event_bus
 
         key = message.category
-        transformer = event_bus.get_transform_handlers(key)
+        transformer = self.event_mng.get_transform_handler(key)
         if transformer:
             message = await event_bus.transform(message, handler=transformer)
 
         results = []
-        handlers = event_bus.get_handlers(key)
+        handlers = self.event_mng.get_handlers(key)
         async with trace.message_span(message=message):
             self.state_manager.start_message_node(message)
             if handlers:
@@ -250,7 +250,7 @@ class TaskEventRunner(TaskRunner):
                 session_id=Context.instance().session_id,
                 topic=TopicType.ERROR
             )
-            self.state_manager.save_message_handle_result(name=self.__name__,
+            self.state_manager.save_message_handle_result(name=TaskEventRunner.__name__,
                                                           message=message,
                                                           result=error_msg)
             await self.event_mng.event_bus.publish(error_msg)
