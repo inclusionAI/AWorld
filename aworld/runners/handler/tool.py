@@ -3,6 +3,7 @@
 import abc
 from typing import AsyncGenerator
 
+from aworld.config import ConfigDict
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType
@@ -67,6 +68,8 @@ class DefaultToolHandler(ToolHandler):
             if not self.tools or (self.tools and act.tool_name not in self.tools):
                 # dynamic only use default config in module.
                 conf = self.tools_conf.get(act.tool_name)
+                if isinstance(conf, dict):
+                    conf = ConfigDict(conf)
                 tool = ToolFactory(act.tool_name, conf=conf, asyn=conf.use_async if conf else False)
                 tool.event_driven = True
                 if isinstance(tool, Tool):

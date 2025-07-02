@@ -70,19 +70,22 @@ class EventManager:
         await self.event_bus.done(self.context.task_id)
 
     async def register(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
-        await self.event_bus.subscribe(event_type, topic, handler, self.context.task_id, **kwargs)
+        await self.event_bus.subscribe(self.context.task_id, event_type, topic, handler, **kwargs)
 
     async def unregister(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
-        await self.event_bus.unsubscribe(event_type, topic, handler, self.context.task_id, **kwargs)
+        await self.event_bus.unsubscribe(self.context.task_id, event_type, topic, handler, **kwargs)
 
     async def register_transformer(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
-        await self.event_bus.subscribe(event_type, topic, handler, self.context.task_id, transformer=True, **kwargs)
+        await self.event_bus.subscribe(self.context.task_id, event_type, topic, handler, transformer=True, **kwargs)
 
     async def unregister_transformer(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
-        await self.event_bus.unsubscribe(event_type, topic, handler, self.context.task_id, transformer=True, **kwargs)
+        await self.event_bus.unsubscribe(self.context.task_id, event_type, topic, handler, transformer=True, **kwargs)
 
     def get_handlers(self, event_type: str) -> Dict[str, List[Callable[..., Any]]]:
         return self.event_bus.get_handlers(self.context.task_id, event_type)
+
+    def get_transform_handler(self, key: str) -> Callable[..., Any]:
+        return self.event_bus.get_transform_handler(self.context.task_id, key)
 
     def messages_by_key(self, key: str) -> List[Message]:
         return self.messages.get(key, [])

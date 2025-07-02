@@ -20,8 +20,8 @@ class Eventbus(Messageable, InheritanceSingleton):
         # {task_id: {event_type: {topic: [handler1, handler2]}}}
         self._subscribers: Dict[str, Dict[str, Dict[str, List[Callable[..., Any]]]]] = {}
 
-        # {event_type, handler}
-        self._transformer: Dict[str, Callable[..., Any]] = {}
+        # {task_id: {event_type, handler}}
+        self._transformer: Dict[str, Dict[str, Callable[..., Any]]] = {}
 
     async def send(self, message: Message, **kwargs):
         return await self.publish(message, **kwargs)
@@ -67,8 +67,8 @@ class Eventbus(Messageable, InheritanceSingleton):
     def get_topic_handlers(self, task_id: str, event_type: str, topic: str) -> List[Callable[..., Any]]:
         return self._subscribers.get(task_id, {}).get(event_type, {}).get(topic, [])
 
-    def get_transform_handlers(self, key: str) -> Callable[..., Any]:
-        return self._transformer.get(key, None)
+    def get_transform_handler(self, task_id: str, key: str) -> Callable[..., Any]:
+        return self._transformer.get(task_id, {}).get(key, None)
 
     def close(self):
         pass
@@ -104,7 +104,7 @@ class InMemoryEventbus(Eventbus):
             self._message_queue.get(id, PriorityQueue()).get_nowait()
         self._message_queue.get(id, PriorityQueue()).task_done()
 
-    async def subscribe(self, event_type: str, topic: str, handler: Callable[..., Any], task_id: str, **kwargs):
+    async def subscribe(self, task_id: str, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):
             if event_type in self._transformer:
                 logger.warning(f"{event_type} transform already subscribe.")
@@ -136,13 +136,13 @@ class InMemoryEventbus(Eventbus):
         logger.info(f"subscribe {event_type} {topic} {handler} success.")
         logger.info(f"{self._subscribers}")
 
-    async def unsubscribe(self, event_type: str, topic: str, handler: Callable[..., Any], task_id: str, **kwargs):
+    async def unsubscribe(self, task_id: str, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):
             if task_id not in self._transformer:
                 logger.warning(f"{task_id} transform not subscribe.")
                 return
 
-            self._transformer.pop(task_id, None)
+            self._transformer[task_id].pop(event_type, None)
             return
 
         if task_id not in self._subscribers:
