@@ -204,6 +204,7 @@ class PlanAgent(Agent):
         return agents, tools
         
     def _should_use_parallel(self, actions: List[ActionModel]) -> bool:
+        return False
         """Decide whether to use parallel execution mode"""
         # More complex logic can be implemented based on actual requirements
         # For example: check if there are dependencies between actions

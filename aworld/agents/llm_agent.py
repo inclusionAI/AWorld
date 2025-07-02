@@ -9,6 +9,8 @@ import uuid
 from collections import OrderedDict
 from typing import AsyncGenerator, Dict, Any, List, Union, Callable
 
+from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
+from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 import aworld.trace as trace
 from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, ModelConfig, OptimizationConfig, \
@@ -57,7 +59,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self._llm = None
         self.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory"))
         self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
+        self.system_prompt_template: BasePromptTemplate = kwargs.pop("system_prompt_template") if kwargs.get("system_prompt_template") else StringPromptTemplate(self.system_prompt)
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
+        self.agent_prompt_template: BasePromptTemplate = kwargs.pop("agent_prompt_template") if kwargs.get("agent_prompt_template") else StringPromptTemplate(self.agent_prompt)
 
         self.event_driven = kwargs.pop('event_driven', conf.get('event_driven', False))
         self.handler: Callable[..., Any] = kwargs.get('handler')
@@ -170,7 +174,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         histories = self.memory.get_last_n(self.history_messages)
         user_content = content
         if not histories and agent_prompt and '{task}' in agent_prompt:
-            user_content = agent_prompt.format(task=content)
+            if self.agent_prompt_template is not None:
+                user_content = self.agent_prompt_template.format(task=content, research_topic=content)
+                print(f"agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
+            else:
+                user_content = agent_prompt.format(task=content)
 
         cur_msg = {'role': 'user', 'content': user_content}
         # query from memory,

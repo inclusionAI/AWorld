@@ -10,6 +10,7 @@ from aworld.core.context.prompts.formatters import (
     format_template, 
     get_template_variables
 )
+from aworld.core.context.prompts.dynamic_variables import TIME_VARIABLES, SYSTEM_VARIABLES
 
 class StringPromptTemplate(BasePromptTemplate):
     """String-based prompt template."""
@@ -18,19 +19,40 @@ class StringPromptTemplate(BasePromptTemplate):
                  template: str,
                  input_variables: Optional[List[str]] = None,
                  template_format: TemplateFormat = TemplateFormat.F_STRING,
+                 partial_variables: Optional[Dict[str, Any]] = None,
+                 auto_add_dynamic_vars: bool = True,
                  **kwargs):
         self.template = template
+        self.auto_add_dynamic_vars = auto_add_dynamic_vars
+        
+        # 自动添加通用动态变量
+        if auto_add_dynamic_vars:
+            # 合并时间和系统变量
+            auto_partial_vars = {**TIME_VARIABLES, **SYSTEM_VARIABLES}
+            
+            if partial_variables:
+                # 用户提供的变量优先，不被自动变量覆盖
+                for key, value in auto_partial_vars.items():
+                    if key not in partial_variables:
+                        partial_variables[key] = value
+            else:
+                partial_variables = auto_partial_vars
         
         if input_variables is None:
             input_variables = get_template_variables(template, template_format)
         
+        if partial_variables:
+            input_variables = [var for var in input_variables if var not in partial_variables]
+        
         super().__init__(
             input_variables=input_variables,
             template_format=template_format,
+            partial_variables=partial_variables,
             **kwargs
         )
         
     def format(self, **kwargs: Any) -> str:
+        print(f"kwargs={kwargs} self.partial_variables={self.partial_variables}")
         variables = self._merge_partial_and_user_variables(**kwargs)
         self._validate_input_variables(variables)
         return format_template(self.template, self.template_format, **variables)
@@ -40,13 +62,17 @@ class StringPromptTemplate(BasePromptTemplate):
         return StringPromptValue(formatted_text)
     
     def _get_additional_kwargs(self) -> Dict[str, Any]:
-        return {"template": self.template}
+        return {
+            "template": self.template,
+            "auto_add_dynamic_vars": getattr(self, 'auto_add_dynamic_vars', True)
+        }
     
     @classmethod
     def from_template(cls,
                      template: str,
                      template_format: TemplateFormat = TemplateFormat.F_STRING,
                      partial_variables: Optional[Dict[str, Any]] = None,
+                     auto_add_dynamic_vars: bool = True,
                      **kwargs: Any) -> 'StringPromptTemplate':
         """Create a StringPromptTemplate from a template string."""
         return cls(
@@ -54,6 +80,7 @@ class StringPromptTemplate(BasePromptTemplate):
             input_variables=None,
             template_format=template_format,
             partial_variables=partial_variables,
+            auto_add_dynamic_vars=auto_add_dynamic_vars,
             **kwargs
         )
     

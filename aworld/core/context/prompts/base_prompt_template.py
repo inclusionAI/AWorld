@@ -72,12 +72,10 @@ class BasePromptTemplate(ABC):
     def __init__(self, 
                  input_variables: Optional[List[str]] = None, 
                  template_format: TemplateFormat = TemplateFormat.F_STRING,
-                 partial_variables: Optional[Dict[str, Any]] = None,
-                 validate_template: bool = True):
+                 partial_variables: Optional[Dict[str, Any]] = None):
         self.input_variables = input_variables or []
         self.template_format = template_format
         self.partial_variables = partial_variables or {}
-        self.validate_template = validate_template
         
         overlap = set(self.input_variables) & set(self.partial_variables.keys())
         if overlap:
@@ -129,7 +127,6 @@ class BasePromptTemplate(ABC):
             input_variables=new_input_variables,
             template_format=self.template_format,
             partial_variables=new_partial_variables,
-            validate_template=self.validate_template,
             **self._get_additional_kwargs()
         )
     
