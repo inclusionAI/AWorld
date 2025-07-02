@@ -3,7 +3,6 @@
 from typing import Any, Dict, Tuple
 from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult
-from aworld.core.context.base import Context
 from aworld.events.util import send_message
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.tool.base import ToolFactory, AsyncTool
@@ -86,7 +85,7 @@ class HumanTool(AsyncTool):
                 category=Constants.TASK,
                 payload=confirm_content,
                 sender=self.name(),
-                session_id=Context.instance().session_id,
+                session_id=self.context.session_id,
                 topic=TopicType.HUMAN_CONFIRM
             ))
             return self.content, error

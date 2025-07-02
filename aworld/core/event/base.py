@@ -69,7 +69,7 @@ class Message(Generic[DataType]):
     def __post_init__(self):
         context = self.headers.get("context")
         if not context:
-            self.headers['context'] = Context.instance()
+            self.headers['context'] = Context()
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, Message):

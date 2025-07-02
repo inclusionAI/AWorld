@@ -91,6 +91,7 @@ class InMemoryEventbus(Eventbus):
         if not queue:
             queue = PriorityQueue()
             self._message_queue[message.task_id] = queue
+        logger.debug(f"publish message: {message.task_id}:  {message.session_id}, queue: {id(queue)}")
         await queue.put(message)
 
     async def consume(self, message: Message, **kwargs):

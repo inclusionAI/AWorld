@@ -118,6 +118,8 @@ class LocalRuntime(RuntimeEngine):
         results = {}
         for future in futures:
             future: Future = future
+            if future.exception():
+                logger.warning(f"exception: {future._exception}")
             res = future.result()
             results[res.id] = res
         return results

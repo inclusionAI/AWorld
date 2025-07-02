@@ -44,6 +44,7 @@ class TaskRunner(Runner):
             if not task.agent and not task.swarm:
                 raise ValueError("agent and swarm all is None.")
             if task.agent and task.swarm:
+                logger.warning("agent and swarm all is not None.")
                 raise ValueError("agent and swarm choose one only.")
             if task.agent:
                 # uniform agent
@@ -57,12 +58,13 @@ class TaskRunner(Runner):
         if check_input and not task.input:
             raise ValueError("task no input")
 
-        self.context = task.context if task.context else Context.instance()
+        self.context = task.context if task.context else Context()
         self.task = task
         self.context.set_task(task)
         self.agent_oriented = agent_oriented
         self.daemon_target = daemon_target
-        self._use_demon = False if not task.conf else task.conf.get('use_demon', False)
+        self._use_demon = False if not task.conf else task.conf.get(
+            'use_demon', False)
         self._exception = None
         self.start_time = time.time()
         self.step_agent_counter = {}
@@ -75,7 +77,8 @@ class TaskRunner(Runner):
         self.outputs = task.outputs
         self.name = task.name
         self.conf = task.conf if task.conf else ConfigDict()
-        self.tools = {tool.name(): tool for tool in task.tools} if task.tools else {}
+        self.tools = {
+            tool.name(): tool for tool in task.tools} if task.tools else {}
         task.tool_names.extend(self.tools.keys())
         # lazy load
         self.tool_names = task.tool_names
@@ -91,7 +94,8 @@ class TaskRunner(Runner):
             session = Session(session_id=task.session_id)
         else:
             session = Session(session_id=uuid.uuid4().hex)
-        trace_id = uuid.uuid1().hex if trace.get_current_span() is None else trace.get_current_span().get_trace_id()
+        trace_id = uuid.uuid1().hex if trace.get_current_span(
+        ) is None else trace.get_current_span().get_trace_id()
         self.context.task_id = self.task.id
         self.context.trace_id = trace_id
         self.context.session = session
@@ -108,7 +112,8 @@ class TaskRunner(Runner):
                 elif isinstance(tool, AsyncTool):
                     observation, info = await tool.reset()
                 else:
-                    logger.warning(f"Unsupported tool type: {tool}, will ignored.")
+                    logger.warning(
+                        f"Unsupported tool type: {tool}, will ignored.")
 
         if observation:
             if not observation.content:
@@ -119,10 +124,12 @@ class TaskRunner(Runner):
         self.observation = observation
         if self.swarm:
             self.swarm.event_driven = task.event_driven
-            self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
+            self.swarm.reset(observation.content,
+                             context=self.context, tools=self.tool_names)
         logger.info("[TaskRunner]pre_run finish")
 
-        logger.info(f'{"sub task:" if self.task.is_sub_task else "task:"}{self.task.id} started...')
+        logger.info(
+            f'{"sub task:" if self.task.is_sub_task else "task:"}{self.task.id} started...')
 
     async def post_run(self):
         self.context.reset()

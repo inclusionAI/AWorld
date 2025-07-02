@@ -1,5 +1,6 @@
 import abc
 import asyncio
+import traceback
 from abc import abstractmethod
 from dataclasses import field, dataclass
 from typing import AsyncIterator, Any, Union, Iterator
@@ -161,7 +162,7 @@ class StreamingOutputs(AsyncOutputs):
         while True:
             self._check_errors()
             if self._stored_exception:
-                logger.debug("Breaking due to stored exception")
+                logger.info("Breaking due to stored exception")
                 self.is_complete = True
                 break
 
@@ -170,11 +171,11 @@ class StreamingOutputs(AsyncOutputs):
 
             try:
                 output = await self._output_queue.get()
+                logger.debug("Outputs got output: {}".format(output.output_type()))
                 self._visited_outputs.append(output)
 
-            except asyncio.CancelledError:
-                logger.error("Outputs Breaking due to CancelledError")
-                break
+            except asyncio.CancelledError as err:
+                 break
 
             if output == RUN_FINISHED_SIGNAL:
                 self._output_queue.task_done()
