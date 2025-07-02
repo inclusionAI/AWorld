@@ -44,6 +44,7 @@ class TaskRunner(Runner):
             if not task.agent and not task.swarm:
                 raise ValueError("agent and swarm all is None.")
             if task.agent and task.swarm:
+                logger.warning("agent and swarm all is not None.")
                 raise ValueError("agent and swarm choose one only.")
             if task.agent:
                 # uniform agent
