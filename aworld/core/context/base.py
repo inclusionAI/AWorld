@@ -4,6 +4,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, TYPE_CHECKING, Union
 from pydantic import BaseModel, Field
+import copy
 
 from aworld.config import ConfigDict
 from aworld.config.conf import ContextRuleConfig, ModelConfig
@@ -52,7 +53,7 @@ class Context(InheritanceSingleton):
         self._engine = engine
         self._trace_id = trace_id
         self._session: Session = session
-        self.context_info = ConfigDict()
+        self.context_info = ContextState()
         self.agent_info = ConfigDict()
         self.trajectories = OrderedDict()
         self._token_usage = {
@@ -60,10 +61,7 @@ class Context(InheritanceSingleton):
             "prompt_tokens": 0,
             "total_tokens": 0,
         }
-        self.state = ContextState()
-        # TODO swarm topology
         # TODO workspace
-
         self._swarm = None
         self._event_manager = None
 
@@ -148,33 +146,73 @@ class Context(InheritanceSingleton):
     def event_manager(self, event_manager: 'EventManager'):
         self._event_manager = event_manager
 
-    @property
-    def record_path(self):
-        return "."
 
-    @property
-    def is_task(self):
-        return True
-
-    @property
-    def enable_visible(self):
-        return False
-
-    @property
-    def enable_failover(self):
-        return False
-
-    @property
-    def enable_cluster(self):
-        return False
-
-    def get_state(self, key: str, default: Any = None) -> Any:
-        return self.state.get(key, default)
-    
-    def set_state(self, key: str, value: Any):
-        self.state[key] = value
-
-
+    def deep_copy(self) -> 'Context':
+        """Create a deep copy of this Context instance with all attributes copied.
+        
+        Returns:
+            Context: A new Context instance with deeply copied attributes
+        """
+        # Create a new Context instance without calling __init__ to avoid singleton issues
+        new_context = object.__new__(Context)
+        
+        # Manually copy all important instance attributes
+        # Basic attributes
+        new_context._user = self._user
+        new_context._task_id = self._task_id
+        new_context._engine = self._engine
+        new_context._trace_id = self._trace_id
+        
+        # Session - shallow copy to maintain reference
+        new_context._session = self._session
+        
+        # Task - set to None to avoid circular references
+        new_context._task = None
+        
+        # Deep copy complex state objects
+        try:
+            new_context.context_info = copy.deepcopy(self.context_info)
+        except Exception:
+            new_context.context_info = copy.copy(self.context_info)
+            
+        try:
+            # Use standard deep copy and then convert to ConfigDict if needed
+            new_context.agent_info = copy.deepcopy(self.agent_info)
+            # If the result is not ConfigDict but original was, convert it
+            if isinstance(self.agent_info, ConfigDict) and not isinstance(new_context.agent_info, ConfigDict):
+                new_context.agent_info = ConfigDict(new_context.agent_info)
+        except Exception:
+            # Fallback: manual deep copy for ConfigDict
+            if isinstance(self.agent_info, ConfigDict):
+                import json
+                # Use JSON serialization for deep copy (if data is JSON-serializable)
+                try:
+                    serialized = json.dumps(dict(self.agent_info))
+                    deserialized = json.loads(serialized)
+                    new_context.agent_info = ConfigDict(deserialized)
+                except Exception:
+                    # Final fallback to shallow copy
+                    new_context.agent_info = copy.copy(self.agent_info)
+            else:
+                new_context.agent_info = copy.copy(self.agent_info)
+            
+        try:
+            new_context.trajectories = copy.deepcopy(self.trajectories)
+        except Exception:
+            new_context.trajectories = copy.copy(self.trajectories)
+            
+        try:
+            new_context._token_usage = copy.deepcopy(self._token_usage)
+        except Exception:
+            new_context._token_usage = copy.copy(self._token_usage)
+        
+        # Copy other attributes if they exist
+        if hasattr(self, '_swarm'):
+            new_context._swarm = self._swarm  # Shallow copy for complex objects
+        if hasattr(self, '_event_manager'):
+            new_context._event_manager = self._event_manager  # Shallow copy for complex objects
+        
+        return new_context
 
 @dataclass
 class AgentContext:
@@ -232,7 +270,7 @@ class AgentContext:
     agent_info: 'BaseAgent' = None
     context_rule: ContextRuleConfig = None
     _context: Context = None
-    state: ContextState = None
+    context_info: ContextState = None
 
     # ===== Mutable Configuration Fields =====
     tools: List[str] = None
@@ -267,7 +305,7 @@ class AgentContext:
         self._context = context
         # Initialize ContextState with parent state (Context's state)
         # If context_state is provided, use it as parent; otherwise will be set later
-        self.state = ContextState(parent_state=parent_state)
+        self.context_info = ContextState(parent_state=parent_state)
 
         # Additional fields for backward compatibility
         self._init(**kwargs)
@@ -343,12 +381,6 @@ class AgentContext:
 
     def set_parent_state(self, parent_state: ContextState):
         self.state._parent_state = parent_state
-
-    def get_state(self, key: str, default: Any = None) -> Any:
-        return self.state.get(key, default)
-    
-    def set_state(self, key: str, value: Any):
-        self.state[key] = value
 
     def get_task(self) -> 'Task':
         return self._context.get_task()

@@ -143,7 +143,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             agent_desc=self.desc(),
             tool_names=self.tool_names,
             context=self.context,
-            parent_state=self.context.state  # Pass Context's state as parent state
+            parent_state=self.context.context_info  # Pass Context's state as parent state
         )
 
     def id(self) -> str:

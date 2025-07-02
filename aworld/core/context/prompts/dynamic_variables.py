@@ -143,6 +143,38 @@ def get_short_uuid() -> str:
     return str(uuid.uuid4())[:8]
 
 
+# ==================== 通用路径获取函数 ====================
+
+def get_value_by_path(obj: Any, field_path: str) -> Any:
+    """通用的根据路径获取对象成员变量的函数
+    
+    Args:
+        obj: 要获取值的对象
+        field_path: 字段路径，支持嵌套访问，如 "agent_name" 或 "model_config.llm_model_name"
+        
+    Returns:
+        获取到的值，如果路径不存在则返回 None
+        
+    Examples:
+        >>> value = get_value_by_path(agent_context, "agent_name")
+        >>> model_name = get_value_by_path(agent_context, "model_config.llm_model_name")
+        >>> nested_value = get_value_by_path(obj, "a.b.c.d")
+    """
+    if obj is None:
+        return None
+        
+    try:
+        current_value = obj
+        for field in field_path.split('.'):
+            if hasattr(current_value, field):
+                current_value = getattr(current_value, field)
+            else:
+                return None
+        return current_value
+    except Exception:
+        return None
+
+
 # ==================== AgentContext 字段获取函数工厂 ====================
 
 def create_agent_field_getter(
@@ -188,14 +220,12 @@ def create_agent_field_getter(
             return default_value
             
         try:
-            # 尝试使用字段路径获取值
-            value = agent_context
-            for field in field_path.split('.'):
-                if hasattr(value, field):
-                    value = getattr(value, field)
-                else:
-                    value = None
-                    break
+            # 首先尝试从 agent_context 中获取值
+            value = get_value_by_path(agent_context, field_path)
+            
+            # 如果在 agent_context 中获取不到，尝试从 _context 成员中获取
+            if value is None and hasattr(agent_context, '_context'):
+                value = get_value_by_path(agent_context._context, field_path)
             
             # 如果字段路径失败，尝试使用后备获取函数
             if value is None and fallback_getter:
@@ -224,7 +254,7 @@ def create_agent_field_getter(
 
 # ==================== 便捷创建函数 ====================
 
-def create_simple_field_getter(field_path: str, agent_context: "AgentContext", default: str = "") -> Callable[[], str]:
+def create_simple_field_getter(field_path: str, agent_context: "AgentContext" = None, default: str = "") -> Callable[[], str]:
     """创建简单字段获取器的便捷函数
     
     Args:
@@ -312,3 +342,105 @@ SYSTEM_VARIABLES = {
 # 5. 批量创建：create_multiple_field_getters([("field1", "default1"), ...], ctx)
 # 6. 获取所有变量：create_all_variables(agent_context)
 # 7. 自定义字段扩展：create_agent_variables_with_custom_fields(ctx, custom_fields)
+
+# ==================== 支持运行时 AgentContext 的新函数 ====================
+
+def _get_agent_field_value_with_fallback(agent_context: "AgentContext", field_path: str, default_value: str) -> str:
+    """通用的获取Agent字段值的helper函数，支持从_context成员中获取
+    
+    Args:
+        agent_context: AgentContext实例
+        field_path: 字段路径，如 "agent_name" 或 "model_config.llm_model_name"
+        default_value: 默认值
+        
+    Returns:
+        字段值或默认值
+    """
+    if not agent_context:
+        return default_value
+        
+    try:
+        # 首先尝试从 agent_context 中获取值
+        value = get_value_by_path(agent_context, field_path)
+        
+        # 如果在 agent_context 中获取不到，尝试从 _context 成员中获取
+        if value is None and hasattr(agent_context, '_context'):
+            value = get_value_by_path(agent_context._context, field_path)
+        
+        # 如果获取到值，转换为字符串返回
+        if value is not None:
+            return str(value)
+        
+        return default_value
+    except Exception:
+        return default_value
+
+
+def get_agent_name_from_context(agent_context: "AgentContext" = None) -> str:
+    """从agent_context获取agent名称"""
+    return _get_agent_field_value_with_fallback(agent_context, "agent_name", "unknown_agent")
+
+
+def get_agent_id_from_context(agent_context: "AgentContext" = None) -> str:
+    """从agent_context获取agent ID"""
+    return _get_agent_field_value_with_fallback(agent_context, "agent_id", "unknown_id")
+
+
+def get_agent_desc_from_context(agent_context: "AgentContext" = None) -> str:
+    """从agent_context获取agent描述"""
+    return _get_agent_field_value_with_fallback(agent_context, "agent_desc", "unknown_desc")
+
+
+def get_system_prompt_from_context(agent_context: "AgentContext" = None) -> str:
+    """从agent_context获取系统提示"""
+    value = _get_agent_field_value_with_fallback(agent_context, "system_prompt", "")
+    return value if value else "No system prompt"
+
+
+def get_model_name_from_context(agent_context: "AgentContext" = None) -> str:
+    """从agent_context获取模型名称"""
+    return _get_agent_field_value_with_fallback(agent_context, "model_config.llm_model_name", "unknown_model")
+
+
+def get_current_step_from_context(agent_context: "AgentContext" = None) -> str:
+    """从agent_context获取当前步骤"""
+    return _get_agent_field_value_with_fallback(agent_context, "step", "0")
+
+
+def get_tools_from_context(agent_context: "AgentContext" = None) -> str:
+    """从agent_context获取工具列表"""
+    if not agent_context:
+        return "No tools available"
+    
+    try:
+        # 首先尝试从 agent_context 中获取值
+        tools = get_value_by_path(agent_context, "tool_names")
+        
+        # 如果在 agent_context 中获取不到，尝试从 _context 成员中获取
+        if tools is None and hasattr(agent_context, '_context'):
+            tools = get_value_by_path(agent_context._context, "tool_names")
+        
+        if tools and isinstance(tools, (list, tuple)):
+            return ", ".join(str(tool) for tool in tools)
+        
+        return "No tools available"
+    except Exception:
+        return "No tools available"
+
+# Agent相关变量 - 支持运行时AgentContext传入
+AGENT_CONTEXT_VARIABLES = {
+    "agent_name": get_agent_name_from_context,
+    "agent_id": get_agent_id_from_context, 
+    "agent_desc": get_agent_desc_from_context,
+    "system_prompt": get_system_prompt_from_context,
+    "model_name": get_model_name_from_context,
+    "current_step": get_current_step_from_context,
+    "tools": get_tools_from_context,
+}
+
+# 全部变量集合 - 包含时间、系统和Agent变量
+ALL_DYNAMIC_VARIABLES = {
+    **TIME_VARIABLES,
+    **SYSTEM_VARIABLES,
+    **AGENT_CONTEXT_VARIABLES,
+}

@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 """String-based prompt template implementation."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate, PromptValue, StringPromptValue
 from aworld.core.context.prompts.formatters import (
@@ -10,7 +10,10 @@ from aworld.core.context.prompts.formatters import (
     format_template, 
     get_template_variables
 )
-from aworld.core.context.prompts.dynamic_variables import TIME_VARIABLES, SYSTEM_VARIABLES
+from aworld.core.context.prompts.dynamic_variables import ALL_DYNAMIC_VARIABLES
+
+if TYPE_CHECKING:
+    from aworld.core.context.base import AgentContext
 
 class StringPromptTemplate(BasePromptTemplate):
     """String-based prompt template."""
@@ -28,7 +31,7 @@ class StringPromptTemplate(BasePromptTemplate):
         # 自动添加通用动态变量
         if auto_add_dynamic_vars:
             # 合并时间和系统变量
-            auto_partial_vars = {**TIME_VARIABLES, **SYSTEM_VARIABLES}
+            auto_partial_vars = {**ALL_DYNAMIC_VARIABLES}
             
             if partial_variables:
                 # 用户提供的变量优先，不被自动变量覆盖
@@ -51,14 +54,13 @@ class StringPromptTemplate(BasePromptTemplate):
             **kwargs
         )
         
-    def format(self, **kwargs: Any) -> str:
-        print(f"kwargs={kwargs} self.partial_variables={self.partial_variables}")
-        variables = self._merge_partial_and_user_variables(**kwargs)
+    def format(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> str:
+        variables = self._merge_partial_and_user_variables(agent_context=agent_context, **kwargs)
         self._validate_input_variables(variables)
         return format_template(self.template, self.template_format, **variables)
     
-    def format_prompt(self, **kwargs: Any) -> PromptValue:
-        formatted_text = self.format(**kwargs)
+    def format_prompt(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> PromptValue:
+        formatted_text = self.format(agent_context=agent_context, **kwargs)
         return StringPromptValue(formatted_text)
     
     def _get_additional_kwargs(self) -> Dict[str, Any]:

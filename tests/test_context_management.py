@@ -144,13 +144,13 @@ class TestContextManagement(BaseTest):
         class StateModifyAgent(Agent):
             async def async_policy(self, observation, info=None, **kwargs):
                 result = await super().async_policy(observation, info, **kwargs)
-                self.context.state['policy_executed'] = True
+                self.context.context_info.set('policy_executed', True)
                 return result
 
         class StateTrackingAgent(Agent):
             async def async_policy(self, observation, info=None, **kwargs):
                 result = await super().async_policy(observation, info, **kwargs)
-                assert self.context.state['policy_executed'] == True
+                assert self.context.context_info.set('policy_executed', True)
                 return result
 
         # Create custom agent instance
@@ -185,8 +185,8 @@ class TestContextManagement(BaseTest):
         self.assertIsNotNone(response.answer)
 
         # Verify state changes after execution
-        self.assertTrue(custom_agent.context.state.get('policy_executed', True))
-        self.assertTrue(second_agent.agent_context.state.get('policy_executed', True))
+        self.assertTrue(custom_agent.context.context_info.get('policy_executed', True))
+        self.assertTrue(second_agent.agent_context.context_info.get('policy_executed', True))
 
 
 class TestHookSystem(TestContextManagement):
@@ -219,7 +219,7 @@ class TestHookSystem(TestContextManagement):
 
         mock_agent = self.init_agent("1")
         context = Context.instance()
-        context.state.update({"task": "What is an agent."})
+        context.context_info.update({"task": "What is an agent."})
         self.run_task(context=context, agent=mock_agent)
 
 
