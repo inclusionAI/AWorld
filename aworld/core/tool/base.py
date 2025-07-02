@@ -431,10 +431,10 @@ class ToolsManager(Factory):
 
         user_conf = kwargs.pop('conf', None)
         if user_conf:
-            if isinstance(user_conf, BaseModel):
-                conf.update(user_conf.model_dump())
-            elif isinstance(user_conf, dict):
+            if isinstance(user_conf, ConfigDict) or isinstance(user_conf, dict):
                 conf.update(user_conf)
+            elif isinstance(user_conf, BaseModel):
+                conf.update(user_conf.model_dump())
             else:
                 logger.warning(f"Unknown conf type: {type(user_conf)}, ignored!")
         self._tool_conf[name] = conf
