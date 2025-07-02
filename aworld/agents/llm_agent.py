@@ -33,6 +33,7 @@ from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
+from aworld.prompt import Prompt
 from aworld.runners.hook.hooks import HookPoint
 from aworld.utils.common import sync_exec, nest_dict_counter
 
@@ -59,7 +60,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self.memory = memory
         else:
             self.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory"))
-        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
+        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else (conf.system_prompt if conf.system_prompt else Prompt().get_prompt())
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
 
         self.event_driven = kwargs.pop('event_driven', conf.get('event_driven', False))
@@ -992,9 +993,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ))
-        logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: User#{self._agent_context.get_user()}, "
+        logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: "
+                    f"User#{self._agent_context.get_user()}, "
                     f"Session#{self._agent_context._context.session_id}, "
-                    f"Task#{self._agent_context._context.task_id}, Agent#{self.id()},"
+                    f"Task#{self._agent_context._context.task_id}, "
+                    f"Agent#{self.id()},"
                     f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
                     f" content: {llm_response.content[:100] if llm_response.content else ''}... ")
 
