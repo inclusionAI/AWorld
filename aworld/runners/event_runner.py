@@ -160,7 +160,6 @@ class TaskEventRunner(TaskRunner):
                     except Exception as e:
                         logger.error(f"Error in async_end_message_node: {e}")
 
-                # 创建任务并加入到 background_tasks 中
                 end_node_task = asyncio.create_task(async_end_message_node())
                 self.background_tasks.add(end_node_task)
                 end_node_task.add_done_callback(self.background_tasks.discard)
