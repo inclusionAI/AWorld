@@ -992,9 +992,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ))
-        logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: User#{self._agent_context.get_user()}, "
+        logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: "
+                    f"User#{self._agent_context.get_user()}, "
                     f"Session#{self._agent_context._context.session_id}, "
-                    f"Task#{self._agent_context._context.task_id}, Agent#{self.id()},"
+                    f"Task#{self._agent_context._context.task_id}, "
+                    f"Agent#{self.id()},"
                     f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
                     f" content: {llm_response.content[:100] if llm_response.content else ''}... ")
 

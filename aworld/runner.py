@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import logging
 from typing import List, Dict, Union
 
 from aworld.config import RunConfig
@@ -30,6 +31,8 @@ class Runners:
         )
         task.outputs = streamed_result
 
+        logging.info(f"[Runners]streamed_run_task start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
+
         streamed_result._run_impl_task = asyncio.create_task(
             Runners.run_task(task)
         )
@@ -43,11 +46,15 @@ class Runners:
             task: User task define.
             run_conf:
         """
+        logging.debug(f"[Runners]run_task start task_id={task.id} start")
         if isinstance(task, Task):
             task = [task]
 
             runners: List[Runner] = await choose_runners(task)
-            return await execute_runner(runners, run_conf)
+            logging.debug(f"[Runners]run_task end task_id={task[0].id} choose_runners end")
+            result =  await execute_runner(runners, run_conf)
+            logging.debug(f"[Runners]run_task end task_id={task[0].id} end")
+            return result
 
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:
