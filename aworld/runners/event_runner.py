@@ -204,7 +204,7 @@ class TaskEventRunner(TaskRunner):
         start = time.time()
         msg = None
         answer = None
-
+        message = None
         try:
             while True:
                 if await self.is_stopped():
@@ -228,6 +228,17 @@ class TaskEventRunner(TaskRunner):
                 await self._common_process(message)
         except Exception as e:
             logger.error(f"consume message fail. {traceback.format_exc()}")
+            error_msg = Message(
+                category=Constants.TASK,
+                payload=TaskItem(msg=str(e), data=message),
+                sender=self.name,
+                session_id=Context.instance().session_id,
+                topic=TopicType.ERROR
+            )
+            self.state_manager.save_message_handle_result(name=self.__name__,
+                                                          message=message,
+                                                          result=error_msg)
+            await self.event_mng.event_bus.publish(error_msg)
         finally:
             if await self.is_stopped():
                 await self.task.outputs.mark_completed()

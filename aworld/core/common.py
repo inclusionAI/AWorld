@@ -83,8 +83,8 @@ class ActionModel(BaseModel):
 
 
 class TaskItem(BaseModel):
-    data: Any
-    msg: str = None
+    data: Optional[Any]
+    msg: Optional[str] = None
     stop: bool = False
     success: bool = False
     action_name: Optional[str] = None
