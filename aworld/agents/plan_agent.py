@@ -102,8 +102,8 @@ class PlanAgent(Agent):
             for agent_action in agents:
                 agent_name = agent_action.tool_name
                 agent = AgentFactory.agent_instance(agent_name)
-                input = agent_action.params
-                agent_tasks.append(Task(input=Observation(content=input), agent=agent, context=self.context))
+                input = agent_action.params['content'] # TODO: 需要修改
+                agent_tasks.append(Task(input=input, agent=agent, context=self.context))
                 if not agent_tasks:
                     raise RuntimeError("no agent task need to run in plan agent.")
 

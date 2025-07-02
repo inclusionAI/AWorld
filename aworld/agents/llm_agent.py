@@ -175,6 +175,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         user_content = content
         if not histories and agent_prompt and '{task}' in agent_prompt:
             if self.agent_prompt_template is not None:
+                # TODO: 需要修改
                 user_content = self.agent_prompt_template.format(task=content, research_topic=content)
                 print(f"agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
             else:
