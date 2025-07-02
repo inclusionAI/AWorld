@@ -31,7 +31,10 @@ from aworld.runner import Runners
 from examples.tools.common import Tools
 
 plan_sys_prompt = "You are a helpful plan agent."
-plan_prompt = """搜索，tool_calls的content参数是包含以下内容的一个json列表，必须符合json格式规范
+plan_prompt = """You need to create a search plan
+Requirements:
+1. The name in tool_calls must strictly use the name specified in tools
+2. The content parameter in tool_calls is a json list containing the following content, and must comply with json format specifications
 ["地平线公司的未来发展计划", "Momenta公司的未来发展计划", "地平线公司和Momenta公司的未来发展计划"]
 """
 
