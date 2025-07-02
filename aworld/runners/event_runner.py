@@ -109,21 +109,23 @@ class TaskEventRunner(TaskRunner):
         event_bus = self.event_mng.event_bus
 
         key = message.category
-        transformer = event_bus.get_transform_handlers(key)
+        transformer = self.event_mng.get_transform_handler(key)
         print(f"_common_process: {message}")
         if transformer:
             message = await event_bus.transform(message, handler=transformer)
 
         results = []
-        handlers = event_bus.get_handlers(key)
+        handlers = self.event_mng.get_handlers(key)
         async with trace.message_span(message=message):
             self.state_manager.start_message_node(message)
             if handlers:
                 if message.topic:
                     handlers = {message.topic: handlers.get(message.topic, [])}
                 elif message.receiver:
-                    handlers = {message.receiver: handlers.get(
-                        message.receiver, [])}
+                    handlers = {message.receiver: handlers.get(message.receiver, [])}
+                else:
+                    logger.warning(f"{message.id} no receiver and topic, be ignored.")
+                    handlers.clear()
 
                 handle_tasks = []
                 for topic, handler_list in handlers.items():
@@ -132,8 +134,7 @@ class TaskEventRunner(TaskRunner):
                         continue
 
                     for handler in handler_list:
-                        t = asyncio.create_task(
-                            self._handle_task(message, handler))
+                        t = asyncio.create_task(self._handle_task(message, handler))
                         handle_tasks.append(t)
                         self.background_tasks.add(t)
                         t.add_done_callback(self.background_tasks.discard)

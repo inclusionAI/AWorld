@@ -14,7 +14,7 @@ from examples.tools.gym_tool.async_openai_gym import OpenAIGym
 
 
 async def main():
-    agent = GymAgent(name=Agents.GYM.value, conf=AgentConfig(), tool_names=[Tools.GYM.value])
+    agent = GymAgent(name=Agents.GYM.value, conf=AgentConfig(), tool_names=[Tools.GYM.value], feedback_tool_result=True)
     agent = ParallelizableAgent(name=agent.name(), conf=agent.conf,
                                 tool_names=[Tools.GYM.value],
                                 agents=[agent])
