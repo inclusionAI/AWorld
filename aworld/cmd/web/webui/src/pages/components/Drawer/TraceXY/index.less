@@ -1,0 +1,72 @@
+.traceXYbox {
+  @box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  @border-radius: 8px;
+  @transition: all 0.3s ease;
+
+  width: 80%;
+  max-width: 700px;
+  height: 100%;
+  position: relative;
+  top: -20px;
+  background: #f8f9fa;
+  border-radius: @border-radius;
+  box-shadow: @box-shadow;
+  overflow: hidden;
+
+  .react-flow__node {
+    @node-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+    @node-hover-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    @node-selected-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+
+    border: 1px solid #d9d9d9;
+    border-radius: @border-radius;
+    padding: 12px;
+    background: linear-gradient(135deg, #fff, #f8f8f8);
+    box-shadow: @node-shadow;
+    font-size: 10px;
+    min-width: 80px;
+    transition: @transition;
+    margin-bottom: 25px;
+
+    &:hover {
+      box-shadow: @node-hover-shadow;
+      transform: translateY(-2px);
+    }
+
+    &-selected {
+      border-color: #1890ff;
+      box-shadow: @node-selected-shadow;
+    }
+
+    // 节点基础样式保持不变
+  }
+
+  .react-flow__edge-path {
+    stroke: #a3b1bf;
+    stroke-width: 2;
+    animation: dashdraw 0.5s linear;
+  }
+
+  .react-flow__controls {
+    box-shadow: @box-shadow;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .trace-id {
+    position: absolute;
+    bottom: 15px;
+    right: 15px;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 10px;
+    color: #666;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+    border: 1px solid #eee;
+  }
+
+  @keyframes dashdraw {
+    from { stroke-dashoffset: 100; }
+  }
+}

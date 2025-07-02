@@ -1,17 +1,15 @@
 import {
   AlertFilled,
+  BoxPlotOutlined,
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
-  MenuUnfoldOutlined,
-  ShrinkOutlined,
-  BoxPlotOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined
+  ReloadOutlined,
+  ShrinkOutlined
 } from '@ant-design/icons';
-import BubbleItem from './components/BubbleItem';
 import {
   Attachments,
   Bubble,
@@ -20,7 +18,7 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, message, Spin, Drawer } from 'antd';
+import { Avatar, Button, Drawer, Flex, type GetProp, message, Spin } from 'antd';
 import { createStyles } from 'antd-style';
 import React, { useEffect, useRef, useState } from 'react';
 import logo from '../assets/aworld_logo.png';
@@ -28,19 +26,22 @@ import { useAgentId } from '../hooks/useAgentId';
 import { useSessionId } from '../hooks/useSessionId';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
-import Workspace from './components/Drawer/Workspace';
-import Trace from '../pages/components/Drawer/Trace';
+import BubbleItem from './components/BubbleItem';
+import Trace from './components/Drawer/TraceThoughtChain';
+import TraceXY from './components/Drawer/TraceXY';
 import './index.less';
 
 type BubbleDataType = {
   role: string;
   content: string;
+  trace_id?: string;
 };
 
 // 添加会话数据类型定义
 type SessionMessage = {
   role: string;
   content: string;
+  trace_id?: string;
 };
 
 type SessionData = {
@@ -223,14 +224,18 @@ const App: React.FC = () => {
   const [modelsLoading, setModelsLoading] = useState(false);
 
   // 右侧抽屉
-  type DrawerContentType = 'Team workspace' | 'trace';
+  type DrawerContentType = 'Workspace' | 'Trace' | 'TraceXY';
   const [drawerVisible, setDrawerVisible] = useState(false);
-  const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Team workspace');
-  const openDrawer = (content: DrawerContentType) => {
+  const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Workspace');
+  const [traceId, setTraceId] = useState<string>('');
+  const openDrawer = (content: DrawerContentType, id?: string) => {
     setDrawerVisible(true);
     setDrawerContent(content);
+    if (id) {
+      setTraceId(id);
+    }
   }
-  const closeDrawer = () =>{
+  const closeDrawer = () => {
     setDrawerVisible(false);
   }
 
@@ -355,6 +360,10 @@ const App: React.FC = () => {
       try {
         if (chunk?.data && !chunk?.data.includes('DONE')) {
           const message = JSON.parse(chunk?.data);
+          const traceId = message?.choices?.[0]?.delta?.trace_id;
+          if (traceId) {
+            setTraceId(traceId);
+          }
           currentThink = message?.choices?.[0]?.delta?.reasoning_content || '';
           currentContent = message?.choices?.[0]?.delta?.content || '';
         }
@@ -491,6 +500,7 @@ const App: React.FC = () => {
               id: `${val}-${index}`,
               message: {
                 role: msg.role,
+                trace_id: msg.trace_id,
                 content: msg.content
               },
               status: 'success' as const
@@ -541,61 +551,61 @@ const App: React.FC = () => {
     <div className={styles.chatList}>
       {messages?.length ? (
         /* 🌟 消息列表 */
-          <Bubble.List
-            items={messages?.map((i, index) => ({
-              ...i.message,
-              content: (
-                <BubbleItem data={i.message.content || ''}/>
+        <Bubble.List
+          items={messages?.map((i, index) => ({
+            ...i.message,
+            content: (
+              <BubbleItem sessionId={sessionId} data={i.message.content || ''} trace_id={i.message?.trace_id || ''} />
+            ),
+            classNames: {
+              content: i.status === 'loading' ? styles.loadingMessage : '',
+            },
+            typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
+            messageIndex: index,
+          }))}
+          style={{ height: '100%', paddingInline: 'calc(calc(100% - 700px) /2)' }}
+          roles={{
+            assistant: {
+              placement: 'start',
+              footer: (messageItem) => (
+                <div style={{ display: 'flex' }}>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ReloadOutlined />}
+                    onClick={() => resendMessage(messageItem.messageIndex)}
+                  />
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CopyOutlined />}
+                    onClick={() => copyMessageContent(messageItem.content || '')}
+                  />
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<BoxPlotOutlined />}
+                    onClick={() => openDrawer('Trace', messageItem.props?.trace_id)}
+                  />
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<BoxPlotOutlined />}
+                    onClick={() => openDrawer('TraceXY', messageItem.props?.trace_id)}
+                  />
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<AlertFilled />}
+                    onClick={() => window.open('/trace_ui.html', '_blank')}
+                  />
+                </div>
               ),
-              classNames: {
-                content: i.status === 'loading' ? styles.loadingMessage : '',
-              },
-              typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
-              messageIndex: index,
-            }))}
-            style={{ height: '100%', paddingInline: 'calc(calc(100% - 700px) /2)' }}
-            roles={{
-              assistant: {
-                placement: 'start',
-                footer: (messageItem) => (
-                  <div style={{ display: 'flex' }}>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<ReloadOutlined />}
-                      onClick={() => resendMessage(messageItem.messageIndex)}
-                    />
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<CopyOutlined />}
-                      onClick={() => copyMessageContent(messageItem.content || '')}
-                    />
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<MenuUnfoldOutlined />}
-                      onClick={() => openDrawer('Team workspace')}
-                    />
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<BoxPlotOutlined />}
-                      onClick={() => openDrawer('trace')}
-                    />
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<AlertFilled />}
-                      onClick={() => window.open('/trace_ui.html', '_blank')}
-                    />
-                  </div>
-                ),
-                loadingRender: () => <Spin size="small" />,
-              },
-              user: { placement: 'end' },
-            }}
-          />
+              loadingRender: () => <Spin size="small" />,
+            },
+            user: { placement: 'end' },
+          }}
+        />
       ) : (
         <div
           className={styles.placeholder}
@@ -734,7 +744,11 @@ const App: React.FC = () => {
         maskClosable={true}
         open={drawerVisible}
       >
-        {drawerContent === 'Team workspace' ? <Workspace sessionId={sessionId} /> : <Trace sessionId={sessionId} />}
+        {drawerContent === 'Trace' ? (
+          <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
+        ) : (
+          <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} drawerVisible={drawerVisible} />
+        )}
       </Drawer>
     </div>
   );

@@ -68,6 +68,7 @@ class TaskRunner(Runner):
         self.step_agent_counter = {}
 
     async def pre_run(self):
+        logger.info("[TaskRunner]pre_run start")
         task = self.task
         self.swarm = task.swarm
         self.input = task.input
@@ -89,7 +90,7 @@ class TaskRunner(Runner):
         if task.session_id:
             session = Session(session_id=task.session_id)
         else:
-            session = Session(session_id=uuid.uuid1().hex)
+            session = Session(session_id=uuid.uuid4().hex)
         trace_id = uuid.uuid1().hex if trace.get_current_span() is None else trace.get_current_span().get_trace_id()
         self.context.task_id = self.task.id
         self.context.trace_id = trace_id
@@ -119,6 +120,7 @@ class TaskRunner(Runner):
         if self.swarm:
             self.swarm.event_driven = task.event_driven
             self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
+        logger.info("[TaskRunner]pre_run finish")
 
         logger.info(f'{"sub task:" if self.task.is_sub_task else "task:"}{self.task.id} started...')
 

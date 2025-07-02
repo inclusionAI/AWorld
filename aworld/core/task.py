@@ -46,6 +46,7 @@ class Task:
     # task specified context
     context: 'Context' = field(default=None)
     is_sub_task: bool = field(default=False)
+    max_retry_count: int = 0
 
 class TaskResponse(BaseModel):
     id: str

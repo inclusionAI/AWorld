@@ -22,7 +22,7 @@ class TaskHandler(DefaultHandler):
 
     def __init__(self, runner: 'TaskEventRunner'):
         self.runner = runner
-        self.retry_count = 0
+        self.retry_count = runner.task.max_retry_count
         self.hooks = {}
         if runner.task.hooks:
             for k, vals in runner.task.hooks.items():

@@ -109,7 +109,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._name = name if name else convert_to_snake(self.__class__.__name__)
         self._desc = desc if desc else self._name
         # Unique flag based agent name
-        self._id = agent_id if agent_id else f"{self._name}__uuid{uuid.uuid1().hex[0:6]}uuid"
+        self._id = agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
         self.task = None
         # An agent can use the tool list
         self.tool_names: List[str] = tool_names
@@ -160,9 +160,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.pre_run()
             result = self.policy(observation, **kwargs)
             final_result = self.post_run(result, observation)
-            if final_result:
-                final_result.context = self.context
-                final_result.session_id = self.context.session_id
             return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
@@ -179,9 +176,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             await self.async_pre_run()
             result = await self.async_policy(observation, **kwargs)
             final_result = await self.async_post_run(result, observation)
-            if final_result:
-                final_result.context = self.context
-                final_result.session_id = self.context.session_id
             return final_result
 
     @abc.abstractmethod

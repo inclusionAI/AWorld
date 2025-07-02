@@ -1,5 +1,5 @@
-
 import time
+import asyncio
 from pydantic import BaseModel
 from typing import Optional, List
 from aworld.core.event.base import Message
@@ -16,6 +16,7 @@ class RunNodeBusiType(Enum):
     AGENT = 'AGENT'
     TOOL = 'TOOL'
     TASK = 'TASK'
+    TOOL_CALLBACK = 'TOOL_CALLBACK'
 
     @staticmethod
     def from_message_category(category: str) -> 'RunNodeBusiType':
@@ -25,6 +26,8 @@ class RunNodeBusiType(Enum):
             return RunNodeBusiType.TOOL
         if category == Constants.TASK:
             return RunNodeBusiType.TASK
+        if category == Constants.TOOL_CALLBACK:
+            return RunNodeBusiType.TOOL_CALLBACK
         return None
 
 
@@ -34,7 +37,7 @@ class RunNodeStatus(Enum):
     BREAKED = 'BREAKED'
     SUCCESS = 'SUCCESS'
     FAILED = 'FAILED'
-    TIMEOUNT = 'TIMEOUNT'
+    TIMEOUT = 'TIMEOUT'
 
 
 class HandleResult(BaseModel):
@@ -48,7 +51,7 @@ class RunNode(BaseModel):
     # {busi_id}_{busi_type}
     node_id: Optional[str] = None
     busi_type: str = None
-    busi_id: str = None
+    busi_id: Optional[str] = None
     session_id: str = None
     msg_id: Optional[str] = None  # input message id
     # busi_id of node that send the input message
@@ -153,7 +156,7 @@ class RuntimeStateManager(InheritanceSingleton):
                 logger.warning(
                     f"parent node not exist, parent_node_id: {parent_node_id}")
         node = RunNode(node_id=node_id,
-                       busi_type=busi_type,
+                       busi_type=busi_type.name,
                        busi_id=busi_id,
                        session_id=session_id,
                        msg_id=msg_id,
@@ -168,6 +171,7 @@ class RuntimeStateManager(InheritanceSingleton):
         '''
             set node status to RUNNING and update to storage
         '''
+        logger.info(f"====== set node {node_id} running =======")
         node = self._node_exist(node_id)
         node.status = RunNodeStatus.RUNNING
         node.execute_time = time.time()
@@ -208,6 +212,8 @@ class RuntimeStateManager(InheritanceSingleton):
             if not node.results:
                 node.results = []
             node.results.extend(results)
+        logger.info(f"====== run_succeed set node {node_id} succeed: {node} =======")
+
         self.storage.update(node)
 
     def run_failed(self,
@@ -231,10 +237,10 @@ class RuntimeStateManager(InheritanceSingleton):
                     node_id,
                     result_msg=None):
         '''
-            set node status to TIMEOUNT and update to storage
+            set node status to TIMEOUT and update to storage
         '''
         node = self._node_exist(node_id)
-        node.status = RunNodeStatus.TIMEOUNT
+        node.status = RunNodeStatus.TIMEOUT
         node.result_msg = result_msg
         self.storage.update(node)
 
@@ -269,6 +275,44 @@ class RuntimeStateManager(InheritanceSingleton):
             return RunNodeBusiType.TOOL
         return RunNodeBusiType.TASK
 
+    async def wait_for_node_completion(self, node_id: str, timeout: float = 600.0, interval: float = 1.0) -> RunNode:
+        '''Poll for node status until completion or timeout.
+
+        Args:
+            node_id: Node ID
+            timeout: Timeout threshold in seconds
+            interval: Polling interval in seconds
+
+        Returns:
+            RunNode: Node object
+
+        Raises:
+            Exception: If node does not exist
+            TimeoutError: If waiting times out
+        '''
+        start_time = time.time()
+        log_start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        logger.info(f"wait for node completion: {node_id}, start_time:{log_start_time}")
+
+        while True:
+            node = self._find_node(node_id)
+            if not node:
+                raise Exception(f"Node not found, node_id: {node_id}")
+
+            # Check if node has completed
+            if node.status in [RunNodeStatus.SUCCESS, RunNodeStatus.FAILED, RunNodeStatus.BREAKED,
+                               RunNodeStatus.TIMEOUT]:
+                return node
+
+            # Check if timed out
+            if time.time() - start_time > timeout:
+                self.run_timeout(node_id, result_msg=f"Waiting for node completion timed out after {timeout} seconds")
+                node = self._find_node(node_id)
+                return node
+
+            # Wait for the specified interval before polling again
+            await asyncio.sleep(interval)
+
 
 class EventRuntimeStateManager(RuntimeStateManager):
 
@@ -287,7 +331,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
             self.create_node(
                 node_id=message.id,
                 busi_type=run_node_busi_type,
-                busi_id=message.receiver,
+                busi_id=message.receiver or "",
                 session_id=message.session_id,
                 msg_id=message.id,
                 msg_from=message.sender)
@@ -308,7 +352,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
             else:
                 handle_result = HandleResult(
                     name=name,
-                    status=RunNodeStatus.SUCCESS,
+                    status=self.get_node(message.id).status if self.get_node(message.id) else RunNodeStatus.FAILED,
                     result=result)
             self.save_result(node_id=message.id, result=handle_result)
 

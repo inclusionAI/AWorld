@@ -149,7 +149,7 @@ class Swarm(object):
 
         res = []
         for k, agent in self.agents.items():
-            val = re.split(r"__uuid\w{6}uuid", k)[0]
+            val = re.split(r"---uuid\w{6}uuid", k)[0]
             if name == val:
                 res.append(agent)
                 if not find_all:

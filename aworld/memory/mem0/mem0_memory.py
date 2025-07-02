@@ -50,7 +50,7 @@ class Mem0Memory(Memory):
         self.mem0 = Mem0.from_config(config_dict=self.config.full_config_dict)
         self.memory_store = memory_store
 
-    def add(self, memory_item: MemoryItem, filters: dict = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None):
         # generate summary memory if needed
         message_filters = {
             "memory_type": "message"

@@ -19,6 +19,7 @@ class Constants:
     TASK = "task"
     OUTPUT = "output"
     TOOL_CALLBACK = "tool_callback"
+    AGENT_CALLBACK = "agent_callback"
 
 
 class TopicType:
@@ -48,20 +49,20 @@ class Message(Generic[DataType]):
     Specific message recognition and processing can be achieved through the type of `payload`
     or by extending `Message`.
     """
-    session_id: field(default_factory=str)
+    session_id: str = field(default_factory=str)
     payload: Optional[DataType] = field(default_factory=object)
     # Current caller
     sender: str = field(default_factory=str)
     # event type
     category: str = field(default_factory=str)
     # Next caller
-    receiver: str = field(default_factory=str)
+    receiver: str = field(default=None)
     # The previous caller
-    caller: str = field(default_factory=str)
+    caller: str = field(default=None)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    priority: int = field(default_factory=int)
+    priority: int = field(default=0)
     # Topic of message
-    topic: str = field(default_factory=str)
+    topic: str = field(default=None)
     headers: Dict[str, Any] = field(default_factory=dict)
     timestamp: int = field(default_factory=lambda: time.time())
 

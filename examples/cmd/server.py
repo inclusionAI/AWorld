@@ -1,0 +1,1 @@
+from aworld.cmd.server import run_server
