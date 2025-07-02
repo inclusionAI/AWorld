@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import json
 import traceback
 from typing import AsyncGenerator, Dict, Any, List, Union, Callable
@@ -65,7 +66,7 @@ class PlanAgent(Agent):
         actions = await self.async_policy(message.payload, **kwargs)
         if not actions:
             return self._create_finished_message(message, "No valid actions from llm response")
-
+        self._llm = None
         # Create corresponding agents or tools based on actions
         agents, tools = await self._create_agents_and_tools(actions)
 
@@ -95,6 +96,19 @@ class PlanAgent(Agent):
             logger.info(f"Get tool results: {tool_results}")
 
         agent_results = []
+        # if agents:
+        #     parallel_agents = []
+        #     inputs = []
+        #     for agent_action in agents:
+        #         agent_name = agent_action.tool_name
+        #         agent = AgentFactory.agent_instance(agent_name)
+        #         agent = Agent(name=agent.name(), conf=agent.conf, system_prompt=agent.system_prompt,
+        #                       agent_prompt=agent.agent_prompt)
+        #         parallel_agents.append(agent)
+        #         inputs.append(Observation(content=agent_action.params.get("content")))
+        #     parallel_agent = ParallelizableAgent(conf=AgentConfig(), name="parallel", agents=parallel_agents)
+        #     agent_results = await parallel_agent.run(inputs, self.context)
+
         if agents:
             parallel_agent_res = None
             # Decide whether to use parallel or serial execution
@@ -102,12 +116,14 @@ class PlanAgent(Agent):
             for agent_action in agents:
                 agent_name = agent_action.tool_name
                 agent = AgentFactory.agent_instance(agent_name)
-                input = agent_action.params
-                agent_tasks.append(Task(input=Observation(content=input), agent=agent, context=self.context))
+                # tmp implement
+                agent = Agent(name=agent.name(), conf=agent.conf, system_prompt=agent.system_prompt, agent_prompt=agent.agent_prompt)
+                input = agent_action.params.get("content")
+                agent_tasks.append(Task(input=input, agent=agent, context=self.context, is_sub_task=True))
                 if not agent_tasks:
                     raise RuntimeError("no agent task need to run in plan agent.")
 
-            if self._should_use_parallel(actions):
+            if self._should_use_parallel(agent_tasks):
                 agent_runners = await choose_runners(agent_tasks)
                 parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
 
@@ -203,14 +219,14 @@ class PlanAgent(Agent):
 
         return agents, tools
         
-    def _should_use_parallel(self, actions: List[ActionModel]) -> bool:
-        return False
+    def _should_use_parallel(self, agent_tasks) -> bool:
+        # return False
         """Decide whether to use parallel execution mode"""
         # More complex logic can be implemented based on actual requirements
         # For example: check if there are dependencies between actions
         
         # By default, use parallel mode if there are more than one action
-        return len(actions) > 1
+        return len(agent_tasks) > 1
 
         
     def _is_done(self, actions: List[ActionModel]) -> bool:

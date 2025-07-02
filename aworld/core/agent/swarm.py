@@ -720,7 +720,6 @@ class TeamBuilder(TopologyBuilder):
             agent_graph.add_edge(root_agent, agent)
 
             root_agent.handoffs.append(agent.id())
-            agent.handoffs.remove(agent.id())
 
         for pair in valid_agents:
             TopologyBuilder.register_agent(pair[0])
@@ -734,11 +733,9 @@ class TeamBuilder(TopologyBuilder):
             if pair[0] != root_agent:
                 agent_graph.add_edge(root_agent, pair[0])
                 root_agent.handoffs.append(pair[0].id())
-                pair[0].handoffs.remove(pair[0].id())
             else:
                 agent_graph.add_edge(root_agent, pair[1])
                 root_agent.handoffs.append(pair[1].id())
-                pair[1].handoffs.remove(pair[1].id())
         return agent_graph
 
 
