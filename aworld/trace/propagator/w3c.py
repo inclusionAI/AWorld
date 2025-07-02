@@ -55,7 +55,7 @@ class W3CTraceContextPropagator(Propagator):
         span_id: str = match.group(3)
         trace_flags: str = match.group(4)
 
-        logger.info(
+        logger.debug(
             f"extract trace_id: {trace_id}, span_id: {span_id}, trace_flags: {trace_flags}, version: {version}")
 
         if trace_id == "0" * 32 or span_id == "0" * 16:
@@ -88,7 +88,7 @@ class W3CTraceContextPropagator(Propagator):
         trace_flags: str = trace_context.trace_flags
         trace_id = trace_context.trace_id
         span_id = trace_context.span_id
-        logger.info(
+        logger.debug(
             f"inject trace_id: {trace_id}, span_id: {span_id}, trace_flags: {trace_flags}, version: {version}")
         if (not trace_id or trace_id == "0" * 32
                 or not span_id or span_id == "0" * 16):

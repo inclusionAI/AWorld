@@ -50,8 +50,8 @@ def _consume_class_wrapper(tracer: Tracer):
             propagator = get_global_trace_propagator()
             if propagator and event and isinstance(event, Message) and event.headers:
                 trace_context = propagator.extract(DictCarrier(event.headers))
-                logger.info(
-                    f"extract trace_context from event: {trace_context}")
+                # logger.info(
+                #     f"extract trace_context from event: {trace_context}")
                 if trace_context:
                     get_global_trace_context().set(trace_context)
         except Exception as e:

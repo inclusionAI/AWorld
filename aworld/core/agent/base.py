@@ -14,6 +14,7 @@ from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import AgentContext, Context
 from aworld.core.event import eventbus
+from aworld.events.util import send_message
 from aworld.core.event.base import Message, Constants
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
@@ -166,7 +167,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._init_context(message.context)
         observation = message.payload
         if eventbus is not None:
-            await eventbus.publish(Message(
+            await send_message(Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_start_output(name=f"{self.id()}", alias_name=self.name(), step_num=0),
                 sender=self.id(),

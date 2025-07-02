@@ -52,7 +52,8 @@ class Swarm(object):
         if builder_cls:
             self.builder = new_instance(builder_cls, self)
         else:
-            self.builder = BUILD_CLS.get(self.build_type)(self.agent_list, register_agents, max_steps)
+            self.builder = BUILD_CLS.get(self.build_type)(
+                self.agent_list, register_agents, max_steps)
 
         self.agent_graph: AgentGraph = None
 
@@ -71,11 +72,13 @@ class Swarm(object):
             elif isinstance(agent, BaseAgent):
                 all_pair = False
             else:
-                raise AworldException(f"Unknown type {type(agent)}, supported list, tuple, Agent only.")
+                raise AworldException(
+                    f"Unknown type {type(agent)}, supported list, tuple, Agent only.")
 
         # team and workflow support mixing individual agents and agent lists.
         if build_type == GraphBuildType.HANDOFF and not all_pair:
-            raise AworldException('The type of `handoff` requires all pairs to appear.')
+            raise AworldException(
+                'The type of `handoff` requires all pairs to appear.')
 
         for agent in self.agent_list:
             if isinstance(agent, BaseAgent):
@@ -122,7 +125,7 @@ class Swarm(object):
         self.agent_graph = agent_graph
 
         if context is None:
-            context = Context.instance()
+            context = Context()
 
         for agent in agent_graph.agents.values():
             agent.event_driven = self.event_driven
@@ -186,7 +189,8 @@ class Swarm(object):
             logger.warning("no agent policy, will return origin observation.")
             # get the latest one
             if not observation:
-                raise RuntimeError("no observation and policy to transform in swarm, please check your params.")
+                raise RuntimeError(
+                    "no observation and policy to transform in swarm, please check your params.")
             return observation[-1]
 
         if not strategy:
@@ -253,7 +257,8 @@ class Swarm(object):
         """Need all agents in a finished state."""
         self._check()
         if not self._finished:
-            self._finished = all([agent.finished for _, agent in self.agents.items()])
+            self._finished = all(
+                [agent.finished for _, agent in self.agents.items()])
         return self._finished
 
     @finished.setter
@@ -348,7 +353,8 @@ class AgentGraph:
             Topological sequence and whether it is a cycle topology, False represents DAG, True represents DCG.
         """
         in_degree = dict(filter(lambda k: k[1] > 0, self.in_degree().items()))
-        zero_list = [v[0] for v in list(filter(lambda k: k[1] == 0, self.in_degree().items()))]
+        zero_list = [v[0] for v in list(
+            filter(lambda k: k[1] == 0, self.in_degree().items()))]
 
         res = []
         while zero_list:
@@ -356,13 +362,15 @@ class AgentGraph:
             zero_list = []
             for agent_id in tmp:
                 if agent_id not in self.agents:
-                    raise RuntimeError("Agent topology changed during iteration")
+                    raise RuntimeError(
+                        "Agent topology changed during iteration")
 
                 for key, _ in self.successor.get(agent_id).items():
                     try:
                         in_degree[key] -= 1
                     except KeyError as err:
-                        raise RuntimeError("Agent topology changed during iteration")
+                        raise RuntimeError(
+                            "Agent topology changed during iteration")
 
                     if in_degree[key] == 0:
                         zero_list.append(key)
@@ -489,7 +497,8 @@ class AgentGraph:
         from aworld.agents.loop_llm_agent import LoopableAgent
 
         if agent not in self.ordered_agents:
-            raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
+            raise RuntimeError(
+                f"{agent.id()} not in swarm, agent instance {agent}.")
 
         loop_agent: LoopableAgent = convert_to_subclass(agent, LoopableAgent)
         # loop_agent: LoopableAgent = type(LoopableAgent)(agent)
@@ -515,12 +524,15 @@ class AgentGraph:
         from aworld.agents.parallel_llm_agent import ParallelizableAgent
 
         if agent not in self.ordered_agents:
-            raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
+            raise RuntimeError(
+                f"{agent.id()} not in swarm, agent instance {agent}.")
         for agent in agents:
             if agent not in self.ordered_agents:
-                raise RuntimeError(f"{agent.id()} not in swarm, agent instance {agent}.")
+                raise RuntimeError(
+                    f"{agent.id()} not in swarm, agent instance {agent}.")
 
-        parallel_agent: ParallelizableAgent = convert_to_subclass(agent, ParallelizableAgent)
+        parallel_agent: ParallelizableAgent = convert_to_subclass(
+            agent, ParallelizableAgent)
         parallel_agent.agents = agents
         parallel_agent.aggregate_func = aggregate_func
 
@@ -528,7 +540,8 @@ class AgentGraph:
         self.ordered_agents[idx] = parallel_agent
 
     def save(self, filepath: str):
-        vals = {"agents": self.agents, "successor": self.successor, "predecessor": self.predecessor}
+        vals = {"agents": self.agents, "successor": self.successor,
+                "predecessor": self.predecessor}
         json.dumps(vals)
 
     def load(self, filepath: str):
@@ -585,23 +598,28 @@ class WorkflowBuilder(TopologyBuilder):
         Returns:
             Direct topology diagram (AgentGraph) of the agents.
         """
-        agent_graph = AgentGraph(ordered_agents=[], agents={}, successor={}, predecessor={})
+        agent_graph = AgentGraph(
+            ordered_agents=[], agents={}, successor={}, predecessor={})
         valid_agents = []
         for agent in self.agent_list:
             if isinstance(agent, BaseAgent):
                 valid_agents.append(agent)
             elif isinstance(agent, tuple):
-                serial_agent = SerialableAgent(name="_".join(agent), conf=agent[0].conf, agents=list(agent))
+                serial_agent = SerialableAgent(name="_".join(
+                    agent), conf=agent[0].conf, agents=list(agent))
                 valid_agents.append(serial_agent)
             elif isinstance(agent, list):
                 # list
-                parallel_agent = ParallelizableAgent(name="_".join(agent), conf=agent[0].conf, agents=agent)
+                parallel_agent = ParallelizableAgent(
+                    name="_".join(agent), conf=agent[0].conf, agents=agent)
                 valid_agents.append(parallel_agent)
             else:
-                raise RuntimeError(f"agent in {agent} is not a agent or agent list, please check it.")
+                raise RuntimeError(
+                    f"agent in {agent} is not a agent or agent list, please check it.")
 
         if not valid_agents:
-            raise RuntimeError(f"no valid agent in swarm to build execution graph.")
+            raise RuntimeError(
+                f"no valid agent in swarm to build execution graph.")
 
         last_agent = None
         for agent in valid_agents:
@@ -638,17 +656,20 @@ class HandoffBuilder(TopologyBuilder):
         valid_agent_pair = []
         for pair in self.agent_list:
             if not isinstance(pair, (list, tuple)):
-                raise RuntimeError(f"{pair} is not a tuple or list value, please check it.")
+                raise RuntimeError(
+                    f"{pair} is not a tuple or list value, please check it.")
             elif len(pair) != 2:
                 raise RuntimeError(f"{pair} is not a pair, please check it.")
 
             valid_agent_pair.append(pair)
 
         if not valid_agent_pair:
-            raise RuntimeError(f"no valid agent pair to build execution graph.")
+            raise RuntimeError(
+                f"no valid agent pair to build execution graph.")
 
         # agent handoffs graph build.
-        agent_graph = AgentGraph(ordered_agents=[], agents={}, successor={}, predecessor={})
+        agent_graph = AgentGraph(
+            ordered_agents=[], agents={}, successor={}, predecessor={})
         for pair in valid_agent_pair:
             TopologyBuilder.register_agent(pair[0])
             TopologyBuilder.register_agent(pair[1])
@@ -687,7 +708,8 @@ class TeamBuilder(TopologyBuilder):
     """
 
     def build(self):
-        agent_graph = AgentGraph(ordered_agents=[], agents={}, successor={}, predecessor={})
+        agent_graph = AgentGraph(
+            ordered_agents=[], agents={}, successor={}, predecessor={})
         valid_agents = []
         root_agent = self.agent_list[0]
         if isinstance(root_agent, tuple):
@@ -704,13 +726,16 @@ class TeamBuilder(TopologyBuilder):
                 valid_agents.append(agent)
             elif isinstance(agent, list):
                 # list of agent can parallel
-                parallel_agent = ParallelizableAgent(name="_".join(agent), conf=agent[0].conf, agents=agent)
+                parallel_agent = ParallelizableAgent(
+                    name="_".join(agent), conf=agent[0].conf, agents=agent)
                 single_agents.append(parallel_agent)
             else:
-                raise RuntimeError(f"agent in {agent} is not a agent or agent list, please check it.")
+                raise RuntimeError(
+                    f"agent in {agent} is not a agent or agent list, please check it.")
 
         if not valid_agents and not single_agents:
-            raise RuntimeError(f"no valid agent in swarm to build execution graph.")
+            raise RuntimeError(
+                f"no valid agent in swarm to build execution graph.")
 
         for agent in single_agents:
             TopologyBuilder.register_agent(agent)

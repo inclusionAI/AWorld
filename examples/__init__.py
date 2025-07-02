@@ -201,7 +201,7 @@ class TestHookSystem(ContextManagement):
     def task_context_transfer(self):
 
         mock_agent = self.init_agent("1")
-        context = Context.instance()
+        context = Context()
         context.state.update({"task": "What is an agent."})
         self.run_task(context=context, agent=mock_agent)
 

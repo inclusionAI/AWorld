@@ -15,21 +15,22 @@ from aworld.utils.common import nest_dict_counter
 if TYPE_CHECKING:
     from aworld.core.task import Task
 
+
 @dataclass
 class ContextUsage:
     total_context_length: int = 128000
     used_context_length: int = 0
+
     def __init__(self, total_context_length: int = 128000, used_context_length: int = 0):
         self.total_context_length = total_context_length
         self.used_context_length = used_context_length
 
-class Context(InheritanceSingleton):
+
+class Context():
     """Single instance, can use construction or `instance` static method to create or get `Context` instance.
 
     Examples:
         >>> context = Context()
-    or
-        >>> context = Context.instance()
     """
 
     def __init__(self,
@@ -42,7 +43,8 @@ class Context(InheritanceSingleton):
 
         super().__init__()
         self._user = user
-        self._init(task_id=task_id, trace_id=trace_id, session=session, engine=engine, **kwargs)
+        self._init(task_id=task_id, trace_id=trace_id,
+                   session=session, engine=engine, **kwargs)
 
     def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None):
         self._task_id = task_id
@@ -168,25 +170,24 @@ class Context(InheritanceSingleton):
 
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.state.get(key, default)
-    
+
     def set_state(self, key: str, value: Any):
         self.state[key] = value
-
 
 
 @dataclass
 class AgentContext:
     """Agent context containing both configuration and runtime state.
-    
+
     AgentContext is the core context management class in the AWorld architecture, used to store and manage
     the complete state information of an Agent, including configuration data and runtime state. Its main functions are:
-    
+
     1. **State Restoration**: Save all state information during Agent execution, supporting Agent state restoration and recovery
     2. **Configuration Management**: Store Agent's immutable configuration information (such as agent_id, system_prompt, etc.)
     3. **Runtime State Tracking**: Manage Agent's mutable state during execution (such as messages, step, tools, etc.)
     4. **LLM Prompt Management**: Manage and maintain the complete prompt context required for LLM calls, including system prompts, historical messages, etc.
     5. **LLM Call Intervention**: Provide complete control over the LLM call process through Hook and ContextProcessor
-    
+
     ## Lifecycle
     The lifecycle of AgentContext is completely consistent with the Agent instance:
     - **Creation**: Created during Agent initialization, containing initial configuration
@@ -199,33 +200,33 @@ class AgentContext:
     │  │  │  [LLM Call]     [Tool Call(s)]    │
     │  │  │  [       Context Update      ]    │
     ```
-    
+
     ## Field Classification
     - **Immutable Configuration Fields**: agent_id, agent_name, agent_desc, system_prompt, 
       agent_prompt, tool_names, context_rule
     - **Mutable Runtime Fields**: tools, step, messages, context_usage, llm_output
-    
+
     ## LLM Call Intervention Mechanism
     AgentContext implements complete control over LLM calls through the following mechanisms:
-    
+
     1. **Hook System**:
        - pre_llm_call_hook: Context preprocessing before LLM call
        - post_llm_call_hook: Result post-processing after LLM call
        - pre_tool_call_hook: Context adjustment before tool call
        - post_tool_call_hook: State update after tool call
-    
+
     2. **PromptProcessor**:
        - Prompt Optimization: Optimize prompt content based on context length limitations
        - Message Compression: Intelligently compress historical messages to fit model context window
        - Context Rules: Apply context_rule for customized context processing
-    
+
     ## Usage Scenarios
     1. **Agent Initialization**: Create AgentContext containing configuration information
     2. **LLM Call Control**: Pass as info parameter in policy(), async_policy() methods to control LLM behavior
     3. **Hook Callbacks**: Access and modify LLM call context in various Hooks, use PromptProcessor for prompt optimization and context processing
     4. **State Recovery**: Recover Agent's complete state from persistent storage
     """
-    
+
     # ===== Immutable Configuration Fields =====
     agent_id: str = None
     agent_name: str = None
@@ -245,7 +246,7 @@ class AgentContext:
     context_usage: ContextUsage = None
     llm_output: ModelResponse = None
 
-    def __init__(self, 
+    def __init__(self,
                  agent_id: str = None,
                  agent_name: str = None,
                  agent_desc: str = None,
@@ -271,7 +272,7 @@ class AgentContext:
         self.tool_names = tool_names if tool_names is not None else []
         self.model_config = model_config
         self.context_rule = context_rule
-        
+
         # Runtime state fields
         self.tools = tools if tools is not None else []
         self.step = step
@@ -290,7 +291,7 @@ class AgentContext:
 
     def _init(self, **kwargs):
         self._task_id = kwargs.get('task_id')
-    
+
     def set_model_config(self, model_config: ModelConfig):
         self.model_config = model_config
 
@@ -299,20 +300,20 @@ class AgentContext:
 
     def set_tools(self, tools: List[str]):
         self.tools = tools
-    
+
     def set_llm_output(self, llm_output: ModelResponse):
         self.llm_output = llm_output
 
     def increment_step(self) -> int:
         self.step += 1
         return self.step
-    
+
     def set_step(self, step: int):
         self.step = step
-    
+
     def get_step(self) -> int:
         return self.step
-    
+
     def update_context_usage(self, used_context_length: int = None, total_context_length: int = None):
         if used_context_length is not None:
             self.context_usage.used_context_length = used_context_length
@@ -330,7 +331,7 @@ class AgentContext:
 
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.state.get(key, default)
-    
+
     def set_state(self, key: str, value: Any):
         self.state[key] = value
 
@@ -342,6 +343,6 @@ class AgentContext:
 
     def get_engine(self) -> str:
         return self._context.engine
-    
+
     def get_user(self) -> str:
         return self._context.user

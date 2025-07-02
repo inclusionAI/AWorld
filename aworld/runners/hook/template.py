@@ -27,14 +27,14 @@ class {name}({point}Hook):
             if not res:
                 raise ValueError(f"{func} no result return.")
             return Message(payload=res,
-                           session_id=Context.instance().session_id,
+                           session_id=message.context.session_id,
                            sender="{name}",
                            category=Constants.TASK,
                            topic="{topic}")
         except Exception as e:
             logger.error(traceback.format_exc())
             return Message(payload=str(e),
-                           session_id=Context.instance().session_id,
+                           session_id=message.context.session_id,
                            sender="{name}",
                            category=Constants.TASK,
                            topic=TopicType.ERROR)
