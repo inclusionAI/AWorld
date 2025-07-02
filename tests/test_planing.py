@@ -80,6 +80,8 @@ def parse_multiple_contents(llm_resp):
     try:
         arguments = json.loads(func_content.arguments)
         contents = arguments.get('content', [])
+        if isinstance(contents, str):
+            contents = json.loads(contents)
     except Exception as e:
         print(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
         # logger.error(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
