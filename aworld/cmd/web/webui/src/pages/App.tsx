@@ -459,7 +459,7 @@ const App: React.FC = () => {
       <Button
         onClick={() => {
           if (conversations.some(conv => conv.label === 'New Conversation')) {
-            message.warning('新建会话已存在，请提问');
+            message.warning('New session already exists, please ask a question.');
             return;
           }
 

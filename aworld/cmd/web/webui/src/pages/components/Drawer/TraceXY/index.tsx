@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ReactFlow, { Background, Controls } from 'reactflow';
-import { CustomNode } from './customNode';
+import { CustomNode } from './CustomNode';
 import 'reactflow/dist/style.css';
 import { fetchTraceData } from '@/api/trace';
 import './index.less';
