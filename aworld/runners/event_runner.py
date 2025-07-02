@@ -165,15 +165,23 @@ class TaskEventRunner(TaskRunner):
 
                 # For _handle_task case, end message node asynchronously
                 async def async_end_message_node():
-                    logger.debug(f"[TaskEventRunner] _common_process handle_tasks process start {self.task.id}, message_id = {message.id}")
-                    # Wait for all _handle_task tasks to complete before ending message node
-                    if handle_tasks:
-                        await asyncio.gather(*handle_tasks)
-                    logger.debug(f"[TaskEventRunner] _common_process handle_tasks process end_message_node start {self.task.id}, message_id = {message.id}")
-                    self.state_manager.end_message_node(message)
-                    logger.debug(f"[TaskEventRunner] _common_process handle_tasks process finished {self.task.id}, message_id = {message.id}")
+                    logger.debug(f"[TaskEventRunner] async_end_message_node STARTED {self.task.id}, message_id = {message.id}")
+                    try:
+                        # Wait for all _handle_task tasks to complete before ending message node
+                        if handle_tasks:
+                            logger.debug(f"[TaskEventRunner] async_end_message_node {self.task.id} Before gather {len(handle_tasks)} tasks")
+                            await asyncio.gather(*handle_tasks)
+                            logger.debug(f"[TaskEventRunner] async_end_message_node {self.task.id} After gather tasks completed")
+                        logger.debug(f"[TaskEventRunner] _common_process handle_tasks process end_message_node start {self.task.id}, message_id = {message.id}")
+                        self.state_manager.end_message_node(message)
+                        logger.debug(f"[TaskEventRunner] _common_process handle_tasks process finished {self.task.id}, message_id = {message.id}")
+                    except Exception as e:
+                        logger.error(f"Error in async_end_message_node: {e}")
 
-                asyncio.create_task(async_end_message_node())
+                # 创建任务并加入到 background_tasks 中
+                end_node_task = asyncio.create_task(async_end_message_node())
+                self.background_tasks.add(end_node_task)
+                end_node_task.add_done_callback(self.background_tasks.discard)
             else:
                 # not handler, return raw message
                 results.append(message)
