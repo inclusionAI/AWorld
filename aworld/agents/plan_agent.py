@@ -68,7 +68,7 @@ class PlanAgent(Agent):
         actions = await self.async_policy(message.payload, **kwargs)
         if not actions:
             return self._create_finished_message(message, "No valid actions from llm response")
-
+        self._llm = None
         # Create corresponding agents or tools based on actions
         agents, tools = await self._create_agents_and_tools(actions)
 
@@ -89,7 +89,7 @@ class PlanAgent(Agent):
                 raise RuntimeError("no tool task need to run in plan agent.")
 
             runners = await choose_runners(tool_tasks)
-            res = await execute_runner(runners, RunConfig(reuse_process=True))
+            res = await execute_runner(runners, RunConfig(reuse_process=False))
 
             for k, v in res.items():
                 tool_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
@@ -100,6 +100,19 @@ class PlanAgent(Agent):
                 self.cur_action_step += 1
 
         agent_results = []
+        # if agents:
+        #     parallel_agents = []
+        #     inputs = []
+        #     for agent_action in agents:
+        #         agent_name = agent_action.tool_name
+        #         agent = AgentFactory.agent_instance(agent_name)
+        #         agent = Agent(name=agent.name(), conf=agent.conf, system_prompt=agent.system_prompt,
+        #                       agent_prompt=agent.agent_prompt)
+        #         parallel_agents.append(agent)
+        #         inputs.append(Observation(content=agent_action.params.get("content")))
+        #     parallel_agent = ParallelizableAgent(conf=AgentConfig(), name="parallel", agents=parallel_agents)
+        #     agent_results = await parallel_agent.run(inputs, self.context)
+
         if agents:
             parallel_agent_res = None
             # Decide whether to use parallel or serial execution
@@ -107,14 +120,14 @@ class PlanAgent(Agent):
             for agent_action in agents:
                 agent_name = agent_action.tool_name
                 agent = AgentFactory.agent_instance(agent_name)
-                input = agent_action.params['content'] # TODO: 需要修改
+                input = agent_action.params
                 agent_tasks.append(self.fork_new_task(input=input, agent=agent, context=self.context))
                 if not agent_tasks:
                     raise RuntimeError("no agent task need to run in plan agent.")
 
             if self._should_use_parallel(actions):
                 agent_runners = await choose_runners(agent_tasks)
-                parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=True))
+                parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
 
                 for k, v in parallel_agent_res.items():
                     agent_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
@@ -129,7 +142,7 @@ class PlanAgent(Agent):
             else:
                 for task in agent_tasks:
                     agent_runners = await choose_runners([task])
-                    agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=True))
+                    agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
 
                     for k, v in agent_res.items():
                         agent_results.append(ActionModel(agent_name=task.agent.id(), policy_info=v.answer))
@@ -234,14 +247,14 @@ class PlanAgent(Agent):
 
         return agents, tools
         
-    def _should_use_parallel(self, actions: List[ActionModel]) -> bool:
-        return False
+    def _should_use_parallel(self, agent_tasks) -> bool:
+        # return False
         """Decide whether to use parallel execution mode"""
         # More complex logic can be implemented based on actual requirements
         # For example: check if there are dependencies between actions
         
         # By default, use parallel mode if there are more than one action
-        return len(actions) > 1
+        return len(agent_tasks) > 1
 
         
     def _is_done(self, actions: List[ActionModel]) -> bool:

@@ -116,7 +116,7 @@ def parse_multiple_contents(llm_resp):
     if llm_resp.tool_calls is None or len(llm_resp.tool_calls) == 0:
         # 如果没有工具调用，返回空的AgentResult
         return AgentResult(actions=[], current_state=None)
-    
+
     actions = []
     
     # 遍历所有的tool_calls，而不是只处理第一个
