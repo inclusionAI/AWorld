@@ -120,7 +120,7 @@ class TaskRunner(Runner):
             self.swarm.event_driven = task.event_driven
             self.swarm.reset(observation.content, context=self.context, tools=self.tool_names)
 
-        logger.info(f'{"sub task:" if self.task.is_sub_task else "task:"}{self.task.id} started...')
+        logger.info(f'{"sub task: " if self.task.is_sub_task else "main task: "}{self.task.id} started...')
 
     async def post_run(self):
         self.context.reset()
