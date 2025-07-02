@@ -48,9 +48,11 @@ class AWorldAgent(BaseAWorldAgent):
         super_agent = Agent(
             conf=agent_config,
             name="🙋🏻‍♂️ Demo Agent",
-            system_prompt="You are a demo agent, you can query current time and fetch data from the internet. you must use search engine to get url, then fetch data from the url, don't use url don't exist.",
+            system_prompt="""You are a Super Search Agent, your goal is to accomplish the ultimate task following the instructions.""",
             mcp_config=mcp_config,
-            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
+            # mcp_servers=mcp_config.get("mcpServers", {}).keys(),
+            mcp_servers=["aworldsearch-server", "aworld-playwright"],
+            feedback_tool_result=True,
         )
 
         if prompt is None and request is not None:
@@ -62,6 +64,8 @@ class AWorldAgent(BaseAWorldAgent):
             conf=TaskConfig(max_steps=20),
         )
 
-        async for output in Runners.streamed_run_task(task).stream_events():
-            logger.info(f"Agent Ouput: {output}")
-            yield output
+        with open("data/output.txt", "w") as f:
+            f.write(f"AGENT START: agent={self.name()}, prompt: {prompt}\n")
+            async for output in Runners.streamed_run_task(task).stream_events():
+                f.write(f"Agent {self.name()} received output: {output}\n")
+                yield output

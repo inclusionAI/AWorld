@@ -512,7 +512,7 @@ async def acall_llm_model_stream(
         stop: List[str] = None,
         **kwargs
 ) -> AsyncGenerator[ModelResponse, None]:
-    async for chunk in llm_model.astream_completion(
+    async for chunk in await llm_model.astream_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,

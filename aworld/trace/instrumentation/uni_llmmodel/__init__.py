@@ -31,7 +31,7 @@ from aworld.models.model_response import ModelResponse
 from aworld.logs.util import logger
 
 
-def _completion_wrapper(tracer: Tracer):
+def _completion_class_wrapper(tracer: Tracer):
 
     @wrapt.decorator
     def wrapper(wrapped, instance, args, kwargs):
@@ -56,13 +56,6 @@ def _completion_wrapper(tracer: Tracer):
             span.end()
             raise e
 
-        if (is_streaming_response(response)):
-            return WrappedGeneratorResponse(span=span,
-                                            response=response,
-                                            instance=instance,
-                                            start_time=start_time,
-                                            request_kwargs=kwargs
-                                            )
         record_completion(span=span,
                           start_time=start_time,
                           response=response,
@@ -74,6 +67,57 @@ def _completion_wrapper(tracer: Tracer):
         return response
 
     return wrapper
+
+
+def _completion_instance_wrapper(tracer: Tracer):
+
+    @wrapt.decorator
+    def _wrapper(wrapped, instance, args, kwargs):
+        wrapper_func = _completion_class_wrapper(tracer)
+        return wrapper_func(wrapped, instance, args, kwargs)
+
+    return _wrapper
+
+
+def _stream_completion_class_wrapper(tracer: Tracer):
+    def wrapper(wrapped, instance, args, kwargs):
+        model_name = instance.provider.model_name
+        if not model_name:
+            model_name = "LLMModel"
+        span_attributes = {}
+        span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
+
+        span = tracer.start_span(
+            name=model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
+
+        run_async(handle_request(span, kwargs, instance))
+        start_time = time.time()
+        try:
+            response = wrapped(*args, **kwargs)
+        except Exception as e:
+            record_exception(span=span,
+                             start_time=start_time,
+                             exception=e
+                             )
+            span.end()
+            raise e
+        return WrappedGeneratorResponse(span=span,
+                                        response=response,
+                                        instance=instance,
+                                        start_time=start_time,
+                                        request_kwargs=kwargs
+                                        )
+    return wrapper
+
+
+def _stream_completion_instance_wrapper(tracer: Tracer):
+
+    @wrapt.decorator
+    def _stream_wrapper(wrapped, instance, args, kwargs):
+        wrapper_func = _stream_completion_class_wrapper(tracer)
+        return wrapper_func(wrapped, instance, args, kwargs)
+
+    return _stream_wrapper
 
 
 def _acompletion_class_wrapper(tracer: Tracer):
@@ -100,13 +144,6 @@ def _acompletion_class_wrapper(tracer: Tracer):
             span.end()
             raise e
 
-        if (is_streaming_response(response)):
-            return WrappedGeneratorResponse(span=span,
-                                            response=response,
-                                            instance=instance,
-                                            start_time=start_time,
-                                            request_kwargs=kwargs
-                                            )
         record_completion(span=span,
                           start_time=start_time,
                           response=response,
@@ -128,10 +165,6 @@ async def _acompletion_instance_wrapper(tracer: Tracer):
         return await wrapper_func(wrapped, instance, args, kwargs)
 
     return _awrapper
-
-
-def is_streaming_response(response):
-    return inspect.isgenerator(response)
 
 
 def record_exception(span, start_time, exception):
@@ -187,7 +220,7 @@ def record_completion(span,
                                 )
 
 
-class WrappedGeneratorResponse(wrapt.ObjectProxy):
+class WrappedGeneratorResponse():
 
     def __init__(
         self,
@@ -197,11 +230,12 @@ class WrappedGeneratorResponse(wrapt.ObjectProxy):
         start_time=None,
         request_kwargs=None
     ):
-        super().__init__(response)
         self._span = span
+        self._response = response
         self._instance = instance
         self._start_time = start_time
-        self._complete_response = {"choices": [], "model": ""}
+        self._complete_response = {
+            "id": "", "model": "", "content": "", "tool_calls": [], "usage": {}}
         self._first_token_recorded = False
         self._time_of_first_token = None
         self._request_kwargs = request_kwargs
@@ -214,7 +248,7 @@ class WrappedGeneratorResponse(wrapt.ObjectProxy):
 
     def __next__(self):
         try:
-            chunk = self.__wrapped__.__next__()
+            chunk = self._response.__next__()
         except Exception as e:
             if isinstance(e, StopIteration):
                 self._close_span(False)
@@ -225,7 +259,7 @@ class WrappedGeneratorResponse(wrapt.ObjectProxy):
 
     async def __anext__(self):
         try:
-            chunk = await self.__wrapped__.__anext__()
+            chunk = await self._response.__anext__()
         except Exception as e:
             if isinstance(e, StopAsyncIteration):
                 self._close_span(True)
@@ -261,22 +295,24 @@ class WrappedGeneratorResponse(wrapt.ObjectProxy):
         attributes = get_common_attributes_from_response(
             self._instance, is_async, True)
 
-        choices = self._complete_response.get("choices")
         span_attributes = {
             **attributes,
             semconv.GEN_AI_USAGE_INPUT_TOKENS: prompt_usage,
             semconv.GEN_AI_USAGE_OUTPUT_TOKENS: completion_usage,
+            semconv.GEN_AI_USAGE_TOTAL_TOKENS: prompt_usage + completion_usage,
             semconv.GEN_AI_DURATION: duration,
-            semconv.GEN_AI_FIRST_TOKEN_DURATION: first_token_duration
+            semconv.GEN_AI_FIRST_TOKEN_DURATION: first_token_duration,
+            semconv.GEN_AI_COMPLETION_CONTENT: self._complete_response.get(
+                "content", "")
         }
-        span_attributes.update(parse_response_message(choices))
+        span_attributes.update(parse_response_message(
+            self._complete_response.get("tool_calls", [])))
 
         self._span.set_attributes(span_attributes)
         record_chat_response_metric(attributes=attributes,
                                     prompt_tokens=prompt_usage,
                                     completion_tokens=completion_usage,
-                                    duration=duration,
-                                    choices=choices
+                                    duration=duration
                                     )
         record_streaming_time_to_generate(
             first_token_to_generate_duration, attributes)
@@ -299,13 +335,13 @@ class LLMModelInstrumentor(Instrumentor):
         wrapt.wrap_function_wrapper(
             "aworld.models.llm",
             "LLMModel.completion",
-            _completion_wrapper(tracer=tracer)
+            _completion_class_wrapper(tracer=tracer)
         )
 
         wrapt.wrap_function_wrapper(
             "aworld.models.llm",
             "LLMModel.stream_completion",
-            _completion_wrapper(tracer=tracer)
+            _stream_completion_class_wrapper(tracer=tracer)
         )
         wrapt.wrap_function_wrapper(
             "aworld.models.llm",
@@ -316,8 +352,9 @@ class LLMModelInstrumentor(Instrumentor):
         wrapt.wrap_function_wrapper(
             "aworld.models.llm",
             "LLMModel.astream_completion",
-            _acompletion_class_wrapper(tracer)
+            _stream_completion_class_wrapper(tracer)
         )
+        logger.info(f"LLMModelInstrumentor wrap aworld.models.llm")
 
     def _uninstrument(self, **kwargs: Any):
         pass
@@ -331,12 +368,13 @@ def wrap_llmmodel(client: 'aworld.models.llm.LLMModel'):
         tracer = tracer_provider.get_tracer(
             "aworld.trace.instrumentation.llmmodel")
 
-        wrapper = _completion_wrapper(tracer)
+        wrapper = _completion_instance_wrapper(tracer)
         awrapper = _acompletion_instance_wrapper(tracer)
+        stream_wrapper = _stream_completion_instance_wrapper(tracer)
         client.completion = wrapper(client.completion)
-        client.stream_completion = wrapper(client.stream_completion)
+        client.stream_completion = stream_wrapper(client.stream_completion)
         client.acompletion = awrapper(client.acompletion)
-        client.astream_completion = awrapper(client.astream_completion)
+        client.astream_completion = stream_wrapper(client.astream_completion)
     except Exception:
         logger.warning(traceback.format_exc())
 

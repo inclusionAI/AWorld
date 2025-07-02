@@ -1,15 +1,17 @@
-.cardwrap{
-  position: relative;
-  
+.cardwrap {
+  background-color: #eee;
+  overflow-x: auto;
+  border-radius: 10px;
+  padding: 10px;
   .card-length {
-    position: absolute;
-    top: -38px;
-    right: 4px;
-    display: flex;
-    align-items: center;
     font-size: 14px;
     color: #333;
-    
+    margin-bottom: 10px;
+    .ant-tag {
+      padding: 0 10px;
+      border-radius: 8px;
+      line-height: 24px;
+    }
     .check-icon {
       color: #1890ff;
       margin-right: 8px;
@@ -18,31 +20,26 @@
   }
 }
 
-.cardbox{
-  .card-item{
-    width: 24.4%;
-    margin-bottom: 16px;
-    
-    .ant-card-meta-title {
-      font-size: 16px;
-    }
-    
-    .ant-card-meta-description {
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      color: #666;
-    }
+.cardbox {
+  // width: 668px;
+  width: 648px;
 
-    &.view-more {
-      cursor: pointer;
-      text-align: center;
-      padding-top: 20px;
-      .ant-card-meta-title {
-        color: #999;
+  .card-item {
+    width: 175px;
+    min-width: 175px;
+    // margin-bottom: 16px;
+    .ant-card-head {
+      padding: 0 14px;
+      min-height: 50px;
+    }
+    .ant-card-body {
+      padding: 10px 14px 12px;
+      .desc {
+        margin-bottom: 0;
       }
+    }
+    & + .card-item {
+      margin-left: 6px;
     }
   }
 }

@@ -35,6 +35,7 @@ async def chat_completion(
             form_data.trace_id = span.get_trace_id()
             async for chunk in agent_executor.stream_run(form_data):
                 yield f"data: {json.dumps(chunk.model_dump(), ensure_ascii=False)}\n\n"
+        # summarize_trace(form_data.trace_id)
 
     return StreamingResponse(
         generate_stream(),

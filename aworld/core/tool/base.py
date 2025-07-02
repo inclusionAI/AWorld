@@ -346,12 +346,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
-                                session_id=Context.instance().session_id,
+                                session_id=self.context.session_id,
                                 headers={"context": self.context})
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
-                                session_id=Context.instance().session_id,
+                                session_id=self.context.session_id,
                                 headers={"context": self.context})
 
     async def _exec_tool_callback(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
@@ -431,10 +431,10 @@ class ToolsManager(Factory):
 
         user_conf = kwargs.pop('conf', None)
         if user_conf:
-            if isinstance(user_conf, BaseModel):
-                conf.update(user_conf.model_dump())
-            elif isinstance(user_conf, dict):
+            if isinstance(user_conf, ConfigDict) or isinstance(user_conf, dict):
                 conf.update(user_conf)
+            elif isinstance(user_conf, BaseModel):
+                conf.update(user_conf.model_dump())
             else:
                 logger.warning(f"Unknown conf type: {type(user_conf)}, ignored!")
         self._tool_conf[name] = conf

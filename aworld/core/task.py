@@ -17,13 +17,13 @@ from aworld.output.outputs import Outputs, DefaultOutputs
 
 @dataclass
 class Task:
-    id: str = field(default_factory=lambda: str(uuid.uuid4().hex))
-    name: str = field(default_factory=lambda: str(uuid.uuid4().hex))
-    user_id: str = None
-    session_id: str = None
-    input: Any = None
+    id: str = field(default_factory=lambda: uuid.uuid1().hex)
+    name: str = field(default_factory=lambda: uuid.uuid1().hex)
+    user_id: str = field(default=None)
+    session_id: str = field(default=None)
+    input: Any = field(default=None)
     # task config
-    conf: Config = None
+    conf: Config = field(default=None)
     # global tool instance
     tools: List[Union[Tool, AsyncTool]] = field(default_factory=list)
     # global tool names
@@ -32,21 +32,21 @@ class Task:
     tools_conf: Config = field(default_factory=dict)
     # custom mcp servers conf
     mcp_servers_conf: Config = field(default_factory=dict)
-    swarm: Optional[Swarm] = None
-    agent: Optional[Agent] = None
-    event_driven: bool = True
+    swarm: Optional[Swarm] = field(default=None)
+    agent: Optional[Agent] = field(default=None)
+    event_driven: bool = field(default=True)
     # for loop detect
-    endless_threshold: int = 3
+    endless_threshold: int = field(default=3)
     # task_outputs
     outputs: Outputs = field(default_factory=DefaultOutputs)
     # task special runner class, for example: package.XXRunner
-    runner_cls: Optional[str] = None
+    runner_cls: Optional[str] = field(default=None)
     # such as: {"start": ["init_tool", "init_context", ...]}
     hooks: Dict[str, List[str]] = field(default_factory=dict)
     # task specified context
-    context: 'Context' = None
+    context: 'Context' = field(default=None)
+    is_sub_task: bool = field(default=False)
     max_retry_count: int = 0
-
 
 class TaskResponse(BaseModel):
     id: str
