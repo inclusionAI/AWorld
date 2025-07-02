@@ -174,6 +174,8 @@ class TaskEventRunner(TaskRunner):
                 # wait until it is complete
                 await t
                 self.state_manager.end_message_node(message)
+            logger.debug(
+                f"[TaskEventRunner] _common_process return results {self.task.id}, message_id = {message.id},  ")
             return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
@@ -181,13 +183,13 @@ class TaskEventRunner(TaskRunner):
         async with trace.span(handler.__name__):
             try:
                 logger.info(
-                    f"event_runner _handle_task start, message: {message.id}")
+                    f"[TaskEventRunner] {self.task.id} _handle_task start, message: {message.id}")
                 if asyncio.iscoroutinefunction(handler):
                     con = await handler(con)
                 else:
                     con = handler(con)
 
-                logger.info(f"event_runner _handle_task message= {message.id}")
+                logger.info(f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message}, session_id = {self.task.session_id}, con = {con}")
                 if isinstance(con, Message):
                     # process in framework
                     self.state_manager.save_message_handle_result(name=handler.__name__,
@@ -242,8 +244,9 @@ class TaskEventRunner(TaskRunner):
         try:
             while True:
                 if await self.is_stopped():
+                    logger.debug(f"[TaskEventRunner] break snap {self.task.id}")
                     await self.event_mng.done()
-                    logger.info(f"stop task {self.task.id}...")
+                    logger.info(f" [TaskEventRunner] stop task {self.task.id}...")
                     if self._task_response is None:
                         # send msg to output
                         self._task_response = TaskResponse(msg=msg,
@@ -254,12 +257,14 @@ class TaskEventRunner(TaskRunner):
                                                                    time.time() - start),
                                                            usage=self.context.token_usage)
                     break
-
+                logger.debug(f"[TaskEventRunner] next snap {self.task.id}")
                 # consume message
                 message: Message = await self.event_mng.consume()
+                logger.debug(f"[TaskEventRunner] next consume finished {self.task.id}: message = {message}")
 
                 # use registered handler to process message
                 await self._common_process(message)
+                logger.debug(f"[TaskEventRunner] _common_process finished {self.task.id}")
         except Exception as e:
             logger.error(f"consume message fail. {traceback.format_exc()}")
             error_msg = Message(
@@ -274,8 +279,9 @@ class TaskEventRunner(TaskRunner):
                                                           result=error_msg)
             await self.event_mng.event_bus.publish(error_msg)
         finally:
+            logger.debug(f"[TaskEventRunner] _do_run finished  await_is_stopped {self.task.id}")
             if await self.is_stopped():
-                logger.debug(f"[TaskEventRunner] _do_run finished {self.task.id}")
+                logger.debug(f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
                 await self.task.outputs.mark_completed()
                 # todo sandbox cleanup
                 if self.swarm and hasattr(self.swarm, 'agents') and self.swarm.agents:
