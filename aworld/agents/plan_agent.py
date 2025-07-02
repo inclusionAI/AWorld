@@ -88,7 +88,7 @@ class PlanAgent(Agent):
                 raise RuntimeError("no tool task need to run in plan agent.")
 
             runners = await choose_runners(tool_tasks)
-            res = await execute_runner(runners, RunConfig(reuse_process=False))
+            res = await execute_runner(runners, RunConfig(reuse_process=True))
 
             for k, v in res.items():
                 tool_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
@@ -109,7 +109,7 @@ class PlanAgent(Agent):
 
             if self._should_use_parallel(actions):
                 agent_runners = await choose_runners(agent_tasks)
-                parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
+                parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=True))
 
                 for k, v in parallel_agent_res.items():
                     agent_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
@@ -120,7 +120,7 @@ class PlanAgent(Agent):
             else:
                 for task in agent_tasks:
                     agent_runners = await choose_runners([task])
-                    agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
+                    agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=True))
 
                     for k, v in agent_res.items():
                         agent_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
