@@ -87,9 +87,12 @@ class McpTool(AsyncTool):
             mcp_actions.append(action)
         if not mcp_actions:
             self._finished = True
+            action_results = [ActionResult(success=False, content="no valid mcp actions", error="no valid mcp actions")
+                              for _ in actions]
             observation = build_observation(observer=self.name(),
                                             content="no valid mcp actions",
-                                            ability=actions[-1].action_name)
+                                            ability=actions[-1].action_name,
+                                            action_result=action_results)
             return (observation, reward,
                     terminated,
                     kwargs.get("truncated", False),

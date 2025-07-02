@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import copy
+import uuid
 from typing import List, Dict, Any, Callable
 
 from aworld.agents.llm_agent import Agent
@@ -34,7 +36,7 @@ class ParallelizableAgent(Agent):
         tasks = []
         if self.agents:
             for agent in self.agents:
-                tasks.append(Task(input=observation, agent=agent, context=self.context))
+                tasks.append(Task(is_sub_task=True, input=observation, agent=agent, context=self.context))
 
         if not tasks:
             raise RuntimeError("no task need to run in parallelizable agent.")
