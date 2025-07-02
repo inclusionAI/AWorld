@@ -31,7 +31,10 @@ from aworld.runner import Runners
 from examples.tools.common import Tools
 
 plan_sys_prompt = "You are a helpful plan agent."
-plan_prompt = """搜索，tool_calls的content参数是包含以下内容的一个json列表，必须符合json格式规范
+plan_prompt = """You need to create a search plan
+Requirements:
+1. The name in tool_calls must strictly use the name specified in tools
+2. The content parameter in tool_calls is a json list containing the following content, and must comply with json format specifications
 ["地平线公司的未来发展计划", "Momenta公司的未来发展计划", "地平线公司和Momenta公司的未来发展计划"]
 """
 
@@ -65,6 +68,44 @@ Ensure the summary is easy to understand and avoids excessive detail.
 Here are the content: 
 {task}
 """
+
+"""创建解析函数的工厂函数"""
+def parse_multiple_contents(llm_resp):
+    """解析包含多个内容的工具调用响应"""
+    from aworld.core.agent.base import AgentResult
+    from aworld.core.common import ActionModel
+    
+    if llm_resp.tool_calls is None or len(llm_resp.tool_calls) == 0:
+        # 如果没有工具调用，返回空的AgentResult
+        return AgentResult(actions=[], current_state=None)
+    
+    func_content = llm_resp.tool_calls[0].function
+    try:
+        arguments = json.loads(func_content.arguments)
+        contents = arguments.get('content', [])
+        if isinstance(contents, str):
+            contents = json.loads(contents)
+    except Exception as e:
+        print(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
+        # logger.error(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
+        # 返回空的AgentResult
+        return AgentResult(actions=[], current_state=None)
+    print(f'contents: {contents}')
+    
+    actions = []
+    for content in contents:
+        # 为每个content创建一个独立的ActionModel
+        new_arguments = {'content': content}
+        actions.append(ActionModel(
+            tool_name=func_content.name,
+            tool_id=f"{llm_resp.tool_calls[0].id}" if len(contents) > 1 else llm_resp.tool_calls[0].id,
+            agent_name="planer_agent",  # 使用字符串避免循环引用
+            params=new_arguments,
+            policy_info=llm_resp.content or ""
+        ))
+    print(f'actions: {actions}')
+    return AgentResult(actions=actions, current_state=None)
+    
 
 # search and summary
 if __name__ == "__main__":
@@ -107,41 +148,7 @@ if __name__ == "__main__":
     #     # tool_names=[Tools.SEARCH_API.value],
     # )
 
-    """创建解析函数的工厂函数"""
-    def parse_multiple_contents(llm_resp):
-        """解析包含多个内容的工具调用响应"""
-        from aworld.core.agent.base import AgentResult
-        from aworld.core.common import ActionModel
-        
-        if llm_resp.tool_calls is None or len(llm_resp.tool_calls) == 0:
-            # 如果没有工具调用，返回空的AgentResult
-            return AgentResult(actions=[], current_state=None)
-        
-        func_content = llm_resp.tool_calls[0].function
-        try:
-            arguments = json.loads(func_content.arguments)
-            contents = arguments.get('content', [])
-        except Exception as e:
-            print(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
-            # logger.error(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
-            # 返回空的AgentResult
-            return AgentResult(actions=[], current_state=None)
-        print(f'contents: {contents}')
-        
-        actions = []
-        for content in contents:
-            # 为每个content创建一个独立的ActionModel
-            new_arguments = {'content': content}
-            actions.append(ActionModel(
-                tool_name=func_content.name,
-                tool_id=f"{llm_resp.tool_calls[0].id}" if len(contents) > 1 else llm_resp.tool_calls[0].id,
-                agent_name="planer_agent",  # 使用字符串避免循环引用
-                params=new_arguments,
-                policy_info=llm_resp.content or ""
-            ))
-        print(f'actions: {actions}')
-        return AgentResult(actions=actions, current_state=None)
-        
+
     planer = PlanAgent(
         conf=agent_config,
         name="planer_agent",

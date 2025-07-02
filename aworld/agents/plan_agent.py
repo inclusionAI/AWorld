@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import asyncio
 import json
 import traceback
 from typing import AsyncGenerator, Dict, Any, List, Union, Callable
@@ -116,14 +115,12 @@ class PlanAgent(Agent):
             for agent_action in agents:
                 agent_name = agent_action.tool_name
                 agent = AgentFactory.agent_instance(agent_name)
-                # tmp implement
-                agent = Agent(name=agent.name(), conf=agent.conf, system_prompt=agent.system_prompt, agent_prompt=agent.agent_prompt)
-                input = agent_action.params.get("content")
-                agent_tasks.append(Task(input=input, agent=agent, context=self.context, is_sub_task=True))
+                input = agent_action.params
+                agent_tasks.append(Task(input=Observation(content=input), agent=agent, context=self.context))
                 if not agent_tasks:
                     raise RuntimeError("no agent task need to run in plan agent.")
 
-            if self._should_use_parallel(agent_tasks):
+            if self._should_use_parallel(actions):
                 agent_runners = await choose_runners(agent_tasks)
                 parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
 
