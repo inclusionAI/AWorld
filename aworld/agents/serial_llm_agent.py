@@ -25,7 +25,7 @@ class SerialableAgent(Agent):
 
         action = ActionModel(agent_name=self.id(), policy_info=observation.content)
         for agent in self.agents:
-            task = Task(input=observation, agent=agent, context=self.context)
+            task = Task(is_sub_task=True, input=observation, agent=agent, context=self.context)
             runners = await choose_runners([task])
             res = await execute_runner(runners, RunConfig(reuse_process=False))
             if res:
