@@ -822,12 +822,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         observation = None
 
         for tool_name, action in tool_mapping.items():
+            tool_message = ToolMessage(
+                payload=action,
+                session_id=self.context.session_id,
+                headers={"context": self.context}
+            )
             # Execute action using browser tool and unpack all return values
             if isinstance(self.tools_instances[tool_name], Tool):
-                message = self.tools_instances[tool_name].step(action)
+                message = self.tools_instances[tool_name].step(tool_message)
             elif isinstance(self.tools_instances[tool_name], AsyncTool):
                 # todo sandbox
-                message = await self.tools_instances[tool_name].step(action, agent=self)
+                message = await self.tools_instances[tool_name].step(tool_message, agent=self)
             else:
                 logger.warning(f"Unsupported tool type: {self.tools_instances[tool_name]}")
                 continue

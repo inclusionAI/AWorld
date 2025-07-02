@@ -13,7 +13,7 @@ from aworld.core.agent.base import is_agent
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message
+from aworld.core.event.base import Message, ToolMessage, AgentMessage
 from aworld.core.tool.base import ToolFactory, Tool, AsyncTool
 from aworld.core.tool.tool_desc import is_tool_by_name
 from aworld.core.task import Task, TaskResponse
@@ -141,15 +141,20 @@ class WorkflowRunner(TaskRunner):
                     except:
                         pass
                     pre_agent_name = cur_agent.id()
+                    agent_message = AgentMessage(
+                        payload=observation,
+                        session_id=self.context.session_id,
+                        headers={"context": self.context}
+                    )
 
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                        message = cur_agent.run(observation,
+                        message = cur_agent.run(agent_message,
                                                 step=step,
                                                 outputs=self.outputs,
                                                 stream=self.conf.get("stream", False),
                                                 exp_id=exp_id)
                     else:
-                        message = await cur_agent.async_run(observation,
+                        message = await cur_agent.async_run(agent_message,
                                                             step=step,
                                                             outputs=self.outputs,
                                                             stream=self.conf.get("stream",
@@ -318,12 +323,17 @@ class WorkflowRunner(TaskRunner):
             tool_mapping[act.tool_name].append(act)
 
         for tool_name, action in tool_mapping.items():
+            tool_message = ToolMessage(
+                payload=action,
+                session_id=self.context.session_id,
+                headers={"context": self.context}
+            )
             # Execute action using browser tool and unpack all return values
             if isinstance(self.tools[tool_name], Tool):
-                message = self.tools[tool_name].step(action)
+                message = self.tools[tool_name].step(tool_message)
             elif isinstance(self.tools[tool_name], AsyncTool):
                 # todo sandbox
-                message = await self.tools[tool_name].step(action, agent=agent)
+                message = await self.tools[tool_name].step(tool_message, agent=agent)
             else:
                 logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
                 continue
@@ -526,13 +536,18 @@ class HandoffRunner(TaskRunner):
         self.swarm.cur_agent = self.swarm.communicate_agent
         pre_agent_name = None
         # use communicate agent every time
+        agent_message = AgentMessage(
+            payload=observation,
+            session_id=self.context.session_id,
+            headers={"context": self.context}
+        )
         if override_in_subclass('async_policy', self.swarm.cur_agent.__class__, Agent):
-            message = self.swarm.cur_agent.run(observation,
+            message = self.swarm.cur_agent.run(agent_message,
                                                step=step,
                                                outputs=self.outputs,
                                                stream=self.conf.get("stream", False))
         else:
-            message = await self.swarm.cur_agent.async_run(observation,
+            message = await self.swarm.cur_agent.async_run(agent_message,
                                                            step=step,
                                                            outputs=self.outputs,
                                                            stream=self.conf.get("stream", False))
@@ -625,13 +640,18 @@ class HandoffRunner(TaskRunner):
                 if observation:
                     if cur_agent is None:
                         cur_agent = self.swarm.cur_agent
+                    agent_message = AgentMessage(
+                        payload=observation,
+                        session_id=self.context.session_id,
+                        headers={"context": self.context}
+                    )
                     if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-                        message = cur_agent.run(observation,
+                        message = cur_agent.run(agent_message,
                                                 step=step,
                                                 outputs=self.outputs,
                                                 stream=self.conf.get("stream", False))
                     else:
-                        message = await cur_agent.async_run(observation,
+                        message = await cur_agent.async_run(agent_message,
                                                             step=step,
                                                             outputs=self.outputs,
                                                             stream=self.conf.get("stream", False))
@@ -701,13 +721,19 @@ class HandoffRunner(TaskRunner):
                              "agent_names": cur_agent.handoffs,
                              "mcp_servers": cur_agent.mcp_servers})
 
+        agent_message = AgentMessage(
+            payload=observation,
+            session_id=self.context.session_id,
+            headers={"context": self.context}
+        )
+
         if not override_in_subclass('async_policy', cur_agent.__class__, Agent):
-            message = cur_agent.run(observation,
+            message = cur_agent.run(agent_message,
                                     step=step,
                                     outputs=self.outputs,
                                     stream=self.conf.get("stream", False))
         else:
-            message = await cur_agent.async_run(observation,
+            message = await cur_agent.async_run(agent_message,
                                                 step=step,
                                                 outputs=self.outputs,
                                                 stream=self.conf.get("stream", False))
@@ -746,11 +772,16 @@ class HandoffRunner(TaskRunner):
             tool_mapping[act.tool_name].append(act)
 
         for tool_name, action in tool_mapping.items():
+            tool_message = ToolMessage(
+                payload=action,
+                session_id=self.context.session_id,
+                headers={"context": self.context}
+            )
             # Execute action using browser tool and unpack all return values
             if isinstance(self.tools[tool_name], Tool):
-                message = self.tools[tool_name].step(action)
+                message = self.tools[tool_name].step(tool_message)
             elif isinstance(self.tools[tool_name], AsyncTool):
-                message = await self.tools[tool_name].step(action)
+                message = await self.tools[tool_name].step(tool_message)
             else:
                 logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
                 continue
