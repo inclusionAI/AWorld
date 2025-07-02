@@ -36,9 +36,7 @@ class ParallelizableAgent(Agent):
         tasks = []
         if self.agents:
             for agent in self.agents:
-                task_id = uuid.uuid4().hex
-                self.context.task_id = task_id
-                tasks.append(Task(id=task_id, input=observation, agent=agent, context=self.context))
+                tasks.append(Task(is_sub_task=True, input=observation, agent=agent, context=self.context))
 
         if not tasks:
             raise RuntimeError("no task need to run in parallelizable agent.")

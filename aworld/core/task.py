@@ -45,6 +45,7 @@ class Task:
     hooks: Dict[str, List[str]] = field(default_factory=dict)
     # task specified context
     context: 'Context' = field(default=None)
+    is_sub_task: bool = field(default=False)
 
 class TaskResponse(BaseModel):
     id: str
