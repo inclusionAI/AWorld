@@ -9,6 +9,8 @@ import logging
 # logger = logging.getLogger(__name__)
 
 from aworld.agents.plan_agent import PlanAgent
+from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter
+from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 # Add the project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -16,7 +18,7 @@ sys.path.insert(0, str(project_root))
 # LLM_BASE_URL = "https://agi.alipay.com/api"
 LLM_BASE_URL = "http://localhost:1234/v1"
 LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
-# LLM_MODEL_NAME = "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
+# LLM_MODEL_NAME = "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
 LLM_MODEL_NAME = "qwen/qwen3-1.7b"
 os.environ["LLM_API_KEY"] = LLM_API_KEY
 os.environ["LLM_BASE_URL"] = LLM_BASE_URL
@@ -30,12 +32,24 @@ from aworld.core.agent.swarm import Swarm, TeamSwarm
 from aworld.runner import Runners
 from examples.tools.common import Tools
 
-plan_sys_prompt = "You are a helpful plan agent."
-plan_prompt = """You need to create a search plan
+plan_sys_prompt = """You are a strategic planning agent specialized in creating structured research plans. 
+
+Your role is to:
+1. Analyze research requirements and break them down into logical, sequential steps
+2. Create comprehensive search strategies that gather information systematically
+3. Ensure each search step builds upon previous findings for thorough analysis
+4. Generate precise tool calls that follow the specified format requirements
+
+Focus on creating plans that gather individual company information first, then synthesize comparisons."""
+plan_prompt = """You need to create a plan using tool_calls.
+
+Strategy:
+1. use search_agent to search for "地平线公司的未来发展计划" and "Momenta公司的未来发展计划" to gather comprehensive information about future plans
+2. use summary_agent to summary "地平线公司和Momenta公司的未来发展计划"
+
 Requirements:
 1. The name in tool_calls must strictly use the name specified in tools
-2. The content parameter in tool_calls is a json list containing the following content, and must comply with json format specifications
-["地平线公司的未来发展计划", "Momenta公司的未来发展计划", "地平线公司和Momenta公司的未来发展计划"]
+2. The content parameter in tool_calls is a json list like: ["地平线公司的未来发展计划"], but summary_agent only accept one content
 """
 
 search_sys_prompt = "You are a helpful search agent."
@@ -46,7 +60,7 @@ search_sys_prompt = "You are a helpful search agent."
 
 #     pleas only use one action complete this task, at least results 6 pages.
 #     """
-search_prompt = """Conduct targeted aworld_search tools to gather the most recent, credible information on "{research_topic}" and synthesize it into a verifiable text artifact.
+search_prompt = """Conduct targeted aworld_search tools to gather the most recent, credible information on "{task}" and synthesize it into a verifiable text artifact.
 
 Instructions:
 - Query should ensure that the most current information is gathered. The current date is {current_date}.
@@ -54,19 +68,43 @@ Instructions:
 - Consolidate key findings while meticulously tracking the source(s) for each specific piece of information.
 - The output should be a well-written summary or report based on your search findings. 
 - Only include the information found in the search results, don't make up any information.
-- 输出中文结果
-- 搜索工具的入参数量为1，结果数也为1
+- answer should be in English
+- search tool's input number is 1, and result number is 1
 Research Topic:
 {task}
 """
 
 summary_sys_prompt = "You are a helpful general summary agent."
-summary_prompt = """
-Summarize the following text in one clear and concise paragraph, capturing the key ideas without missing critical points. 
-Ensure the summary is easy to understand and avoids excessive detail.
+summary_prompt = """You are an expert research assistant analyzing summaries about "{task}".
 
-Here are the content: 
-{task}
+Instructions:
+- Identify knowledge gaps or areas that need deeper exploration and generate a follow-up query. (1 or multiple).
+- If provided summaries are sufficient to answer the user's question, don't generate a follow-up query.
+- If there is a knowledge gap, generate a follow-up query that would help expand your understanding.
+- Focus on technical details, implementation specifics, or emerging trends that weren't fully covered.
+- answer should be in English
+Requirements:
+- Ensure the follow-up query is self-contained and includes necessary context for web search.
+
+Output Format:
+- Format your response as a JSON object with these exact keys:
+   - "is_sufficient": true or false
+   - "knowledge_gap": Describe what information is missing or needs clarification
+   - "follow_up_queries": Write a specific question to address this gap
+
+Example:
+```
+{{
+    "is_sufficient": true, // or false
+    "knowledge_gap": "The summary lacks information about performance metrics and benchmarks", // "" if is_sufficient is true
+    "follow_up_queries": ["What are typical performance benchmarks and metrics used to evaluate [specific technology]?"] // [] if is_sufficient is true
+}}
+```
+
+Reflect carefully on the Summaries to identify knowledge gaps and produce a follow-up query. Then, produce your output following this JSON format:
+
+Summaries:
+{trajectories}
 """
 
 """创建解析函数的工厂函数"""
@@ -79,29 +117,46 @@ def parse_multiple_contents(llm_resp):
         # 如果没有工具调用，返回空的AgentResult
         return AgentResult(actions=[], current_state=None)
     
-    func_content = llm_resp.tool_calls[0].function
-    try:
-        arguments = json.loads(func_content.arguments)
-        contents = arguments.get('content', [])
-    except Exception as e:
-        print(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
-        # logger.error(f"Failed to parse tool call arguments: {llm_resp.tool_calls}, error: {e}")
-        # 返回空的AgentResult
-        return AgentResult(actions=[], current_state=None)
-    print(f'contents: {contents}')
-    
     actions = []
-    for content in contents:
-        # 为每个content创建一个独立的ActionModel
-        new_arguments = {'content': content}
-        actions.append(ActionModel(
-            tool_name=func_content.name,
-            tool_id=f"{llm_resp.tool_calls[0].id}" if len(contents) > 1 else llm_resp.tool_calls[0].id,
-            agent_name="planer_agent",  # 使用字符串避免循环引用
-            params=new_arguments,
-            policy_info=llm_resp.content or ""
-        ))
-    print(f'actions: {actions}')
+    
+    # 遍历所有的tool_calls，而不是只处理第一个
+    for tool_call in llm_resp.tool_calls:
+        func_content = tool_call.function
+        try:
+            arguments = json.loads(func_content.arguments)
+            
+            # 检查是否有content参数，且content是列表
+            if 'content' in arguments and isinstance(arguments['content'], list):
+                contents = arguments['content']
+                # 为每个content创建一个独立的ActionModel
+                for content in contents:
+                    new_arguments = {'content': content}
+                    actions.append(ActionModel(
+                        tool_name=func_content.name,
+                        tool_id=f"{tool_call.id}_{content}" if len(contents) > 1 else tool_call.id,
+                        agent_name="planer_agent",  # 使用字符串避免循环引用
+                        params=new_arguments,
+                        policy_info=llm_resp.content or ""
+                    ))
+            else:
+                # 如果content不是列表或不存在，直接使用原始参数
+                actions.append(ActionModel(
+                    tool_name=func_content.name,
+                    tool_id=tool_call.id,
+                    agent_name="planer_agent",
+                    params=arguments,
+                    policy_info=llm_resp.content or ""
+                ))
+                
+        except Exception as e:
+            print(f"Failed to parse tool call arguments: {tool_call}, error: {e}")
+            # 跳过解析失败的tool_call，继续处理下一个
+            continue
+    
+    print(f'Total tool_calls processed: {len(llm_resp.tool_calls)}')
+    print(f'Total actions created: {len(actions)}')
+    print(f'Actions: {actions}')
+    
     return AgentResult(actions=actions, current_state=None)
     
 
@@ -125,10 +180,12 @@ if __name__ == "__main__":
         name="summary_agent",
         desc="summary_agent",
         system_prompt=summary_sys_prompt,
-        agent_prompt=summary_prompt
+        # agent_prompt=summary_prompt,
+        agent_prompt_template=StringPromptTemplate(template=summary_prompt,
+                                                   partial_variables={"trajectories": create_simple_field_getter("trajectories")})
     )
 
-    search1 = Agent(
+    search = Agent(
         conf=agent_config,
         name="search_agent",
         desc="search_agent",
@@ -137,29 +194,19 @@ if __name__ == "__main__":
         tool_names=[Tools.SEARCH_API.value],
     )
 
-    # search2 = Agent(
-    #     conf=agent_config,
-    #     name="search_agent2",
-    #     desc="search_agent2",
-    #     system_prompt=search_sys_prompt,
-    #     agent_prompt=search_prompt,
-    #     # tool_names=[Tools.SEARCH_API.value],
-    # )
-
-
     planer = PlanAgent(
         conf=agent_config,
         name="planer_agent",
         desc="planer_agent",
         system_prompt=plan_sys_prompt,
         agent_prompt=plan_prompt,
-        agent_names=[search1.id(), summary.id()],
+        agent_names=[search.id(), summary.id()],
         resp_parse_func=parse_multiple_contents
     )
 
     # default is workflow swarm
     # swarm = TeamSwarm(planer, search1, search2, summary, max_steps=1)
-    swarm = Swarm(planer, search1, summary, max_steps=1)
+    swarm = Swarm(planer, search, summary, max_steps=1)
 
     prefix = ""
     # can special search google, wiki, duck go, or baidu. such as:

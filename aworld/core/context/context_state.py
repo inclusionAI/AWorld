@@ -84,6 +84,16 @@ class ContextState:
         except KeyError:
             return default
     
+    def set(self, key: str, value: Any) -> None:
+        """
+        Set state value, only writes to local state
+        
+        Args:
+            key: The key to set
+            value: The value to set
+        """
+        self._data[key] = value
+    
     def update(self, other: Union[Dict[str, Any], 'ContextState']) -> None:
         """
         Batch update state
