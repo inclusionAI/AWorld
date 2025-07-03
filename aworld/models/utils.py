@@ -100,7 +100,6 @@ def agent_desc_transform(agent_dict: Dict[str, Any],
     agent_as_tools = []
     if not agents and strategy == 'min':
         return agent_as_tools
-    print(f"agent_dict: {agent_dict} agents: {agents} provider: {provider} strategy: {strategy}")
     if provider and 'openai' in provider:
         for agent_name, agent_info in agent_dict.items():
             if agents and agent_name not in agents:
