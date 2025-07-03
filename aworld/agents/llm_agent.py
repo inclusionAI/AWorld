@@ -5,6 +5,7 @@ import time
 import traceback
 import uuid
 from collections import OrderedDict
+from datetime import datetime
 from typing import Dict, Any, List, Union, Callable
 
 from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
@@ -185,11 +186,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             Message list for LLM.
         """
-        agent_prompt = self.agent_context.agent_prompt
+        agent_prompt = self.agent_context.agent_info.agent_prompt
         messages = []
 
         # append sys_prompt to memory
-        sys_prompt = self.agent_context.system_prompt
+        sys_prompt = self.agent_context.agent_info.system_prompt
         if sys_prompt:
             self._add_system_message_to_memory()
 
@@ -198,10 +199,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if not histories and agent_prompt and '{task}' in agent_prompt:
             if self.agent_prompt_template is not None:
                 # TODO: 需要修改
-                user_content = self.agent_prompt_template.format(task=content)
+                user_content = self.agent_prompt_template.format(task=content,
+                                                                 current_date=datetime.now().strftime("%Y-%m-%d"))
                 print(f"agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
             else:
-                user_content = agent_prompt.format(task=content)
+                user_content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
 
         cur_msg = {'role': 'user', 'content': user_content}
         # query from memory,
@@ -215,7 +217,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         else:
             content = observation.content
             if agent_prompt and '{task}' in agent_prompt:
-                content = agent_prompt.format(task=content)
+                content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
             if image_urls:
                 urls = [{'type': 'text', 'text': content}]
                 for image_url in image_urls:
@@ -226,7 +228,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # from memory get last n messages
         histories = self.memory.get_last_n(self.history_messages, filters={
-            "agent_id": self._agent_context.agent_id,
+            "agent_id": self._agent_context.agent_info.id(),
             "session_id": self._agent_context._context.session_id,
             "task_id": self._agent_context._context.task_id,
             "message_type": "message"
@@ -1002,7 +1004,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _add_system_message_to_memory(self):
         histories = self.memory.get_last_n(self.history_messages, filters={
-            "agent_id": self._agent_context.agent_id,
+            "agent_id": self._agent_context.agent_info.id(),
             "session_id": self._agent_context._context.session_id,
             "task_id": self._agent_context._context.task_id,
             "message_type": "message"
