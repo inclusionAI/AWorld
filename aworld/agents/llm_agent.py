@@ -1008,7 +1008,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return
         if not self.system_prompt:
             return
-        content = self.custom_system_prompt()
+        content = self.custom_system_prompt(context=context)
 
         self.memory.add(MemorySystemMessage(
             content=content,
@@ -1023,7 +1023,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(
             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
-    def custom_system_prompt(self):
+    def custom_system_prompt(self, context: Context):
         content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(
             tool_list=self.tools)
         return content
