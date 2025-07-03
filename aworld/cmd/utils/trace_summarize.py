@@ -68,7 +68,7 @@ trace_prompt = """
     Please summarize and output separately for agents with different event.ids.
     Please output in the following standard JSON format without any additional explanatory text:
     [{{"agent":"947cc4c1b7ed406ab7fbf38b9d2b1f5a",,"summary":"xxx","token_usage":"xxx","input_tokens":"xxx","output_tokens":"xxx","use_tools":["xxx"]}},{{}}]
-    Here is the trace_id: {task}
+    Here are the trace_id: {task}
     """
 
 agent_config = None
@@ -76,7 +76,7 @@ agent_config = None
 
 async def _do_summarize_trace(trace_id: str):
     logger.info(f"_do_summarize_trace trace_id: {trace_id}")
-
+    global agent_config
     trace_agent = Agent(
         conf=agent_config,
         name="trace_agent",
@@ -101,12 +101,14 @@ async def _do_summarize_trace(trace_id: str):
 
 
 def summarize_trace(trace_id: str):
-    agent_config = AgentConfig(
-        llm_provider=os.getenv("LLM_PROVIDER_TRACE", "openai"),
-        llm_model_name=os.getenv("LLM_MODEL_NAME_TRACE", None),
-        llm_base_url=os.getenv("LLM_BASE_URL_TRACE", None),
-        llm_api_key=os.getenv("LLM_API_KEY_TRACE", None),
-    )
+    global agent_config
+    if agent_config is None:
+        agent_config = AgentConfig(
+            llm_provider=os.getenv("LLM_PROVIDER_TRACE", "openai"),
+            llm_model_name=os.getenv("LLM_MODEL_NAME_TRACE", None),
+            llm_base_url=os.getenv("LLM_BASE_URL_TRACE", None),
+            llm_api_key=os.getenv("LLM_API_KEY_TRACE", None),
+        )
     if not _trace_summary_cache.trace_exists(trace_id):
         if agent_config.llm_api_key is None or not agent_config.llm_base_url or not agent_config.llm_model_name:
             logger.warning(
