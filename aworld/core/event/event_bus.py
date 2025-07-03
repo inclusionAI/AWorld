@@ -87,6 +87,7 @@ class InMemoryEventbus(Eventbus):
         return self._message_queue.get(id, Queue()).qsize()
 
     async def publish(self, message: Message, **kwargs):
+        logger.info(f"publish taskid: {message.task_id}, message: {message}")
         queue = self._message_queue.get(message.task_id)
         if not queue:
             queue = PriorityQueue()

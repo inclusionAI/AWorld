@@ -12,6 +12,8 @@ from . import agent_loader
 from .agent_ui_parser import AWorldWebAgentUI
 import logging
 import aworld.trace as trace
+from aworld.trace.config import ObservabilityConfig
+from aworld.trace.opentelemetry.memory_storage import InMemoryWithPersistStorage
 import os
 import uuid
 from dotenv import load_dotenv
@@ -21,7 +23,7 @@ import traceback
 logger = logging.getLogger(__name__)
 
 # bugfix for tracer exception
-trace.configure()
+trace.configure(ObservabilityConfig(trace_storage=(InMemoryWithPersistStorage())))
 
 
 async def stream_run(request: ChatCompletionRequest):
