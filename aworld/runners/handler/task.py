@@ -95,9 +95,10 @@ class DefaultTaskHandler(TaskHandler):
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
-            await self.runner.stop()
 
             logger.info(f"{self.runner.task.id} finished.")
+            self.runner.task.outputs.mark_completed()
+            await self.runner.stop()
         elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):
                 yield event
@@ -120,9 +121,9 @@ class DefaultTaskHandler(TaskHandler):
                                                       usage=self.runner.context.token_usage)
             await self.runner.stop()
         elif topic == TopicType.CANCEL:
-            await self.runner.stop()
             # Avoid waiting to receive events and send a mock event for quick cancel
             yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock')
+            await self.runner.stop()
 
 
     async def run_hooks(self, message: Message, hook_point: str) -> AsyncGenerator[Message, None]:

@@ -37,8 +37,6 @@ class DefaultOutputHandler(DefaultHandler):
         try:
             if isinstance(payload, Output):
                 output = payload
-                if hasattr(output, "status") and output.status == 'FINISHED':
-                    mark_complete = True
             elif isinstance(payload, TaskResponse):
                 logger.info(
                     f"output get task_response with usage: {json.dumps(payload.usage)}")
