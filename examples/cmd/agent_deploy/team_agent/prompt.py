@@ -8,7 +8,6 @@ Instructions:
     
 - You MUST using the following agents to accomplish the search task:
     - Google-PSE-Search-Agent
-    - Aworldsearch-Server-Agent
     - Aworld-Playwright-Agent
 
 - Your MUST using the summary_agent to summarize the search result.
@@ -22,15 +21,6 @@ Instructions:
 - You must accomplish the task using the following steps:
     - STEP 1: Generate a search query based on the user's request
     - STEP 2: Call tool google-pse-search to search the web.
-"""
-
-aworldsearch_server_sys_prompt = """\
-You are Aworldsearch-Server-Agent, your goal is to use the Aworldsearch Server to search the web.
-
-Instructions:
-- You must accomplish the task using the following steps:
-    - STEP 1: Generate a search query based on the user's request
-    - STEP 2: Call tool aworldsearch-server to search the web.
 """
 
 aworld_playwright_sys_prompt = """\

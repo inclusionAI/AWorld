@@ -10,9 +10,7 @@ from aworld.agents.llm_agent import Agent
 from typing import Dict, Union
 
 from aworld.core.context.base import Context
-from aworld.runner import Runners
 from aworld.utils.exec_util import exec_tasks
-from examples.tools.common import Tools
 
 logger = logging.getLogger(__name__)
 
@@ -33,16 +31,21 @@ trace_prompt = """
     Here are the trace_id: {task}
     """
 
-agent_config = AgentConfig(
-    llm_provider=os.getenv("LLM_PROVIDER_TRACE", "openai"),
-    llm_model_name=os.getenv("LLM_MODEL_NAME_TRACE"),
-    llm_base_url=os.getenv("LLM_BASE_URL_TRACE"),
-    llm_api_key=os.getenv("LLM_API_KEY_TRACE")
-)
-
-
 async def _do_summarize_trace(trace_id: str):
     logger.info(f"_do_summarize_trace trace_id: {trace_id}")
+    model_name = os.getenv("LLM_MODEL_NAME_TRACE", None)
+    base_url = os.getenv("LLM_BASE_URL_TRACE", None)
+    api_key = os.getenv("LLM_API_KEY_TRACE", None)
+    if not model_name or not base_url or not api_key:
+        logger.warning(
+            "LLM_MODEL_NAME_TRACE, LLM_BASE_URL_TRACE, LLM_API_KEY_TRACE is not set, trace summarize will not be executed.")
+        return ""
+    agent_config = AgentConfig(
+        llm_provider=os.getenv("LLM_PROVIDER_TRACE", "openai"),
+        llm_model_name=model_name,
+        llm_base_url=base_url,
+        llm_api_key=api_key,
+    )
     trace_agent = Agent(
         conf=agent_config,
         name="trace_agent",

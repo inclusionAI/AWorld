@@ -61,14 +61,6 @@ class AWorldAgent(BaseAWorldAgent):
             mcp_servers=["google-pse-search"],
         )
 
-        aworldsearch_server_agent = Agent(
-            conf=agent_config,
-            name="Aworldsearch-Server-Agent",
-            system_prompt=aworldsearch_server_sys_prompt,
-            mcp_config=mcp_config,
-            mcp_servers=["aworldsearch-server"],
-        )
-
         aworld_playwright_agent = Agent(
             conf=agent_config,
             name="Aworld-Playwright-Agent",
@@ -86,7 +78,6 @@ class AWorldAgent(BaseAWorldAgent):
         # default is sequence swarm mode
         swarm = Swarm(
             google_pse_search_agent,
-            aworldsearch_server_agent,
             aworld_playwright_agent,
             summary_agent,
             root_agent=plan_agent,
