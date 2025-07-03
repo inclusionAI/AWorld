@@ -6,7 +6,7 @@ from typing import AsyncGenerator, Tuple
 from aworld.agents.loop_llm_agent import LoopableAgent
 from aworld.core.agent.base import is_agent, AgentFactory
 from aworld.core.agent.swarm import GraphBuildType
-from aworld.core.common import ActionModel, Observation, TaskItem
+from aworld.core.common import ActionModel, Observation, TaskItem, ActionResult
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.logs.util import logger
 from aworld.runners.handler.base import DefaultHandler
@@ -214,7 +214,11 @@ class DefaultAgentHandler(AgentHandler):
         con = action.policy_info
         if action.params and 'content' in action.params:
             con = action.params['content']
-        observation = Observation(content=con, observer=agent.id(), from_agent_name=agent.id())
+
+        observation = Observation(content=con,
+                                  observer=agent.id(),
+                                  from_agent_name=agent.id(),
+                                  action_result=[self._build_agent_action_result(action, message)])
 
         if agent.handoffs and agent_name not in agent.handoffs:
             if message.caller:
@@ -450,3 +454,11 @@ class DefaultAgentHandler(AgentHandler):
                 receiver=caller,
                 headers=headers
             )
+
+    def _build_agent_action_result(self, action: ActionModel, message: Message) -> ActionResult:
+        return ActionResult(
+            content=action.policy_info,
+            tool_call_id=action.tool_call_id,
+            tool_name=action.tool_name,
+            action_name=action.action_name
+        )
