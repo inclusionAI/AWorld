@@ -17,9 +17,10 @@ from aworld.models.model_response import ModelResponse
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-LLM_BASE_URL = "https://agi.alipay.com/api" # "http://localhost:1234/v1" # "https://agi.alipay.com/api"
+# LLM_BASE_URL = "https://agi.alipay.com/api"
+LLM_BASE_URL = "http://localhost:1234/v1"
 LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
-LLM_MODEL_NAME ="DeepSeek-V3-Function-Call" # "shangshu.claude-3.7-sonnet" # "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call"
+LLM_MODEL_NAME = "qwen/qwen3-8b" #"DeepSeek-V3-Function-Call" # "shangshu.claude-3.7-sonnet" # "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call"
 # LLM_BASE_URL = "https://matrixllm.alipay.com/v1"
 # LLM_API_KEY = "sk-5d0c421b87724cdd883cfa8e883998da"
 # LLM_MODEL_NAME = "claude-3-7-sonnet-20250219"
@@ -38,10 +39,10 @@ from examples.tools.common import Tools
 plan_sys_prompt = """You are a strategic planning agent specialized in creating structured research plans. 
 
 Requirements:
-1. You need to create a plan using tool_calls, avoid doing any work yourself including summary, try to use tools to complete tasks.
+1. **IMPORTANT**: You need to create a plan using tool_calls, try your best to use tools to complete tasks instead of doing it yourself.
 2. The name in tool_calls must strictly use the name specified in tools
-3. The content parameter in tool_calls is a json list like: ["something"], but summary_agent only accept one content
-4. **IMPORTANT: Goal Achievement Check**: If trajectories already contain the goal, don't return tool_call
+3. The content parameter in tool_calls is a json list like: ["something"], if you want to use a tool multiple times, use ["a", "b"] format
+4. **IMPORTANT: Goal Achievement Check**: If trajectories already contain the goal, don't return tool_call, and if you plan to end, output the summary report from trajectories
 
 tools:
 {tool_list}
@@ -52,23 +53,9 @@ trajectories:
 plan_prompt = """调研地平线公司和Momenta公司的未来发展计划"""
 
 search_sys_prompt = """You are a helpful search agent.
-
-Conduct targeted aworld_search tools to gather the most recent, credible information on "{task}" and synthesize it into a verifiable text artifact.
-
-Instructions:
-- Query should ensure that the most current information is gathered. The current date is {current_date}.
-- Conduct multiple, diverse searches to gather comprehensive information.
-- Consolidate key findings while meticulously tracking the source(s) for each specific piece of information.
-- The output should be a well-written summary or report based on your search findings. 
-- Only include the information found in the search results, don't make up any information.
-- answer should be in English
-- search tool's input number is 1, and result number is 1
-Research Topic:
-{task}
 """
-search_prompt = """
-"""
-"""Conduct targeted aworld_search tools to gather the most recent, credible information on "{task}" and synthesize it into a verifiable text artifact.
+
+search_prompt = """Conduct targeted aworld_search tools to gather the most recent, credible information on "{task}" and synthesize it into a verifiable text artifact.
 
 Instructions:
 - Query should ensure that the most current information is gathered. The current date is {current_date}.
@@ -83,8 +70,8 @@ Research Topic:
 """
 
 summary_sys_prompt = """You are a helpful general summary agent.
-
-You are an expert research assistant analyzing summaries about "{task}".
+"""
+summary_prompt = """You are an expert research assistant analyzing summaries about "{task}".
 
 Instructions:
 - Identify knowledge gaps or areas that need deeper exploration and generate a follow-up query. (1 or multiple).
@@ -115,8 +102,6 @@ Reflect carefully on the Summaries to identify knowledge gaps and produce a foll
 Summaries:
 {trajectories}
 """
-summary_prompt = """
-"""
 
 # search and summary
 if __name__ == "__main__":
@@ -139,7 +124,7 @@ if __name__ == "__main__":
         name="summary_agent",
         desc="summary_agent",
         system_prompt=summary_sys_prompt,
-        # agent_prompt=summary_prompt,
+        agent_prompt=summary_prompt,
     )
 
     search = Agent(
@@ -147,7 +132,7 @@ if __name__ == "__main__":
         name="search_agent",
         desc="search_agent",
         system_prompt=search_sys_prompt,
-        # agent_prompt=search_prompt,
+        agent_prompt=search_prompt,
         tool_names=[Tools.SEARCH_API.value],
     )
 
@@ -164,7 +149,7 @@ if __name__ == "__main__":
             ),
             llm_compression_config=LlmCompressionConfig(
                 enabled=True,
-                trigger_compress_token_length=10000,
+                trigger_compress_token_length=20000,
                 compress_model=ModelConfig(
                     llm_model_name=LLM_MODEL_NAME,
                     llm_base_url=LLM_BASE_URL,

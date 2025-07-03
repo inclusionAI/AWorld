@@ -309,7 +309,7 @@ class PlanAgent(Agent):
                         # 使用task.agent获取Agent名称
                         agent_name = task.agent.id() if task.agent else "unknown_agent"
                         self._save_action_trajectory(self.cur_action_step, agent_name, None, task.input, result)
-                        logger.info(f"Serial agent execution - Step {self.cur_action_step}, Agent: {agent_name}, Task: {k} -> Result: {v}")
+                        logger.info(f"Serial agent execution - Step {self.cur_action_step}, Agent: {agent_name}")
                         self.cur_action_step += 1
                 # logger.info("Using serial execution mode")
                 # serial_agent = SerialableAgent(conf=self.conf, agents=agents)
@@ -318,7 +318,7 @@ class PlanAgent(Agent):
         # replan
         # Increment step counter
         self.cur_step += 1
-        logger.info(f"Current execution step: {self.cur_step}/{self.max_steps}\ntrajectories: {self.context.trajectories}")
+        logger.info(f"Current execution step: {self.cur_step}/{self.max_steps}")
         
         # 每个step结束后写入trajectories
         self._write_trajectories_incrementally()

@@ -189,15 +189,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # append sys_prompt to memory
         sys_prompt = self.system_prompt
         if sys_prompt:
-            sys_message = None
-            if self.system_prompt_template is not None:
-                sys_message = {'role': 'system', 'content': self.system_prompt_template.format(context=self.context, task=content, tool_list=self.tools)}
-            else:
-                sys_message = {'role': 'system', 'content': sys_prompt if not self.use_tools_in_prompt else sys_prompt.format(
-                    tool_list=self.tools)}
-            logger.info(f"formatted system_message={sys_message}")
-            messages.append(sys_message)
-            self._add_system_message_to_memory()
+            self._add_system_message_to_memory(content)
 
         histories = self.memory.get_last_n(self.history_messages)
         user_content = content
@@ -205,7 +197,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             if self.agent_prompt_template is not None:
                 # TODO: 需要修改
                 user_content = self.agent_prompt_template.format(context=self.context, task=content)
-                logger.info(f"formatted agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
+                logger.debug(f"formatted agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
             else:
                 user_content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
 
@@ -221,7 +213,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         else:
             content = observation.content
             if agent_prompt and '{task}' in agent_prompt:
-                content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
+                if self.agent_prompt_template is not None:
+                    # TODO: 需要修改
+                    content = self.agent_prompt_template.format(context=self.context, task=content)
+                    logger.debug(f"formatted agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
+                else:
+                    content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
             if image_urls:
                 urls = [{'type': 'text', 'text': content}]
                 for image_url in image_urls:
@@ -974,7 +971,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(
                 f"Failed to execute hooks for {hook_point}: {traceback.format_exc()}")
 
-    def _add_system_message_to_memory(self):
+    def _add_system_message_to_memory(self, content: str):
         histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self.id(),
             "session_id": self.context.session_id,
@@ -987,8 +984,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return
         if not self.system_prompt:
             return
-        content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(
-            tool_list=self.tools)
+        if self.system_prompt_template is not None:
+            content = self.system_prompt_template.format(context=self.context, task=content, tool_list=self.tools)
+        else:
+            content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(tool_list=self.tools)
+        logger.debug(f"formatted system_message={content}")
 
         self.memory.add(MemorySystemMessage(
             content=content,

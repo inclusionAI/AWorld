@@ -203,7 +203,7 @@ class TaskEventRunner(TaskRunner):
                     con = handler(con)
 
                 logger.info(
-                    f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message}, session_id = {self.task.session_id}, con = {con}")
+                    f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message.id}, session_id = {self.task.session_id}")
                 if isinstance(con, Message):
                     # process in framework
                     self.state_manager.save_message_handle_result(name=handler.__name__,
