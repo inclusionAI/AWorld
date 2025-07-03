@@ -11,6 +11,8 @@ import logging
 from aworld.agents.plan_agent import PlanAgent
 from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
+from aworld.models.model_response import ModelResponse
+
 # Add the project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -108,14 +110,14 @@ Summaries:
 """
 
 """创建解析函数的工厂函数"""
-def parse_multiple_contents(llm_resp):
+def parse_multiple_contents(llm_resp: ModelResponse):
     """解析包含多个内容的工具调用响应"""
     from aworld.core.agent.base import AgentResult
     from aworld.core.common import ActionModel
     
     if llm_resp.tool_calls is None or len(llm_resp.tool_calls) == 0:
-        # 如果没有工具调用，返回空的AgentResult
-        return AgentResult(actions=[], current_state=None)
+        # 如果没有工具调用，返回AgentResult: is_call_tool=False
+        return AgentResult(actions=[ActionModel(policy_info=llm_resp.content)], current_state="done", is_call_tool=False)
 
     actions = []
     

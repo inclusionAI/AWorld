@@ -41,6 +41,7 @@ class PlanAgent(Agent):
         self.cur_action_step = 0
         self.max_steps = 10
         self.cur_step = 0
+        self._finished = False
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         """Execute the main logic of the plan agent, supporting parallel or serial execution of multiple actions.
@@ -167,7 +168,7 @@ class PlanAgent(Agent):
         return await self.async_run(next_message, **kwargs)
 
     async def async_policy(self, observation: Observation, **kwargs) -> List[ActionModel]:
-        # Otherwise, parse actions using LLM
+        self._finished = False
         # Prepare LLM input
         llm_messages = await self._prepare_llm_input(observation)
         llm_response = None
@@ -209,7 +210,10 @@ class PlanAgent(Agent):
             logger.warn(traceback.format_exc())
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
-        print(f"plan_agent.agent_result: {agent_result}")
+        print(f"plan_agent.agent_result: {agent_result}, agent._finished:{self._finished}")
+        if agent_result and not agent_result.is_call_tool:
+            self._finished = True
+            return agent_result.actions
         return agent_result.actions
 
     def fork_new_task(self, input, agent:Agent = None, context: Context = None):
@@ -245,6 +249,8 @@ class PlanAgent(Agent):
                     tools.append(action)
             except Exception as e:
                 logger.error(f"Failed to parse actions from actions to agent or tool: {e}")
+            if not action.agent_name:
+                action.agent_name = self.id()
 
         return agents, tools
         
@@ -260,12 +266,20 @@ class PlanAgent(Agent):
         
     def _is_done(self, actions: List[ActionModel]) -> bool:
         """Check if all tasks are completed"""
-        return False
-        
+        return self._finished
+
     def _create_finished_message(self, original_message: Message, result: Any) -> Message:
         """Create a message indicating task completion"""
         # Create a message containing the final result
         # todo: create message from context
+        # return Message(
+        #                 category=Constants.TASK,
+        #                 payload=action.policy_info,
+        #                 sender=agent.id(),
+        #                 session_id=session_id,
+        #                 topic=TopicType.FINISHED,
+        #                 headers=headers
+        #             )
         return AgentMessage(payload=result,
                             sender=self.id(),
                             receiver=self.id(),
