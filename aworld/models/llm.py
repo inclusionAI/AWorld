@@ -223,7 +223,7 @@ class LLMModel:
                 **kwargs
             )
         except Exception as e:
-            logger.error(f"Error calling model: {traceback.format_exc()}, messages: {messages}")
+            logger.error(f"Error calling model: {traceback.format_exc()}, messages: {messages}, kwargs: {kwargs}")
             raise e
 
     def completion(self,
