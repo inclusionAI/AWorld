@@ -14,7 +14,7 @@ from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agen
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import AgentContext
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
+from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, TopicType
 from aworld.core.memory import MemoryItem, MemoryConfig
 from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
@@ -272,19 +272,19 @@ class PlanAgent(Agent):
         """Create a message indicating task completion"""
         # Create a message containing the final result
         # todo: create message from context
-        # return Message(
-        #                 category=Constants.TASK,
-        #                 payload=action.policy_info,
-        #                 sender=agent.id(),
-        #                 session_id=session_id,
-        #                 topic=TopicType.FINISHED,
-        #                 headers=headers
-        #             )
-        return AgentMessage(payload=result,
-                            sender=self.id(),
-                            receiver=self.id(),
-                            session_id=self.context.session_id if self.context else "",
-                            headers={"context": self.context})
+        return Message(
+                        category=Constants.TASK,
+                        payload=result[0].policy_info,
+                        sender=self.id(),
+                        session_id=self.context.session_id,
+                        topic=TopicType.FINISHED,
+                        headers={"context": self.context}
+                    )
+        # return AgentMessage(payload=result,
+        #                     sender=self.id(),
+        #                     receiver=self.id(),
+        #                     session_id=self.context.session_id if self.context else "",
+        #                     headers={"context": self.context})
 
     def _actions_to_message(self, agents_result_actions: List[ActionModel],tools_result_actions: List[ActionModel], original_message: Message) -> Message:
         """Convert actions to a new message"""
