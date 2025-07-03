@@ -133,4 +133,5 @@ trace_data
 examples/gaia/output
 examples/**/workspaces
 examples/**/data
+examples/**/*.bak
 aworld/cmd/web/webui/dist

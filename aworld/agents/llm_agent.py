@@ -541,8 +541,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
 
         if output:
-            output.add_part(MessageOutput(
-                source=llm_response, json_parse=False))
+            output.add_part(MessageOutput(source=llm_response, json_parse=False, task_id=self.context.task_id))
             output.mark_finished()
         return agent_result.actions
 
@@ -582,7 +581,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             source_span.set_attribute("messages", json.dumps(
                 serializable_messages, ensure_ascii=False))
         try:
-            llm_response = await self._call_llm_model(observation, messages, info,message=message, **kwargs)
+            llm_response = await self._call_llm_model(observation, messages, info, message=message, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e

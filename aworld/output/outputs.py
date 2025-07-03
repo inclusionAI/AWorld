@@ -113,6 +113,7 @@ class StreamingOutputs(AsyncOutputs):
     # task: Task = Field(default=None)  # The task associated with these outputs
     input: Any = field(default=None)  # Input data for the task
     usage: dict = field(default=None)  # Usage statistics
+    task_id: str = field(default=None)  # Input data for the task
 
     # State tracking
     is_complete: bool = field(default=False)  # Flag indicating if streaming is complete
@@ -133,6 +134,8 @@ class StreamingOutputs(AsyncOutputs):
         Args:
             output (Output): The output to be added to the queue
         """
+        if self.task_id != output.task_id:
+            logger.warning(f"{self.task_id} unequals {output.task_id}, add ignored.")
         self._output_queue.put_nowait(output)
 
     async def stream_events(self) -> AsyncIterator[Output]:
@@ -149,6 +152,9 @@ class StreamingOutputs(AsyncOutputs):
         for output in self._visited_outputs:
             if output == RUN_FINISHED_SIGNAL:
                 self._output_queue.task_done()
+                return
+            if self.task_id != output.task_id:
+                logger.warning(f"{self.task_id} unequals {output.task_id}")
                 return
             yield output
 

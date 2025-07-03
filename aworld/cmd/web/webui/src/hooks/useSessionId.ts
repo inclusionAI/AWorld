@@ -22,6 +22,7 @@ export const useSessionId = () => {
     const newId = uuidv4();
     setSessionId(newId);
     updateURLSessionId(newId);
+    console.log('generateNewSessionId', newId);
     return newId;
   };
 

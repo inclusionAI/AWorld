@@ -151,14 +151,7 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
 
 
 class ToolResultParserFactory:
-    _parsers = {}
-
-    @staticmethod
-    def register_parser(parser: BaseToolResultParser):
-        ToolResultParserFactory._parsers[parser.tool_name] = parser
-
-    @staticmethod
-    def get_parser(tool_type: str, tool_name: str):
+    def get_parser(self, tool_type: str, tool_name: str):
         if "search" in tool_name:
             return GooglePseSearchToolResultParser()
         else:
@@ -169,14 +162,16 @@ class ToolResultParserFactory:
 class AWorldWebAgentUI(AworldUI):
     session_id: str = Field(default="", description="session id")
     workspace: WorkSpace = Field(default=None, description="workspace")
+    tool_result_parser_factory: ToolResultParserFactory = Field(default=ToolResultParserFactory, description="tool result parser factory")
 
-    def __init__(self, session_id: str = None, workspace: WorkSpace = None, **kwargs):
+    def __init__(self, session_id: str = None, workspace: WorkSpace = None, tool_result_parser_factory: ToolResultParserFactory = None, **kwargs):
         """
         Initialize MarkdownAworldUI
         Args:"""
         super().__init__(**kwargs)
         self.session_id = session_id
         self.workspace = workspace
+        self.tool_result_parser_factory = tool_result_parser_factory or ToolResultParserFactory()
 
     @override
     async def message_output(self, __output__: MessageOutput):
@@ -226,7 +221,7 @@ class AWorldWebAgentUI(AworldUI):
         """
         tool_result
         """
-        parser = ToolResultParserFactory.get_parser(output.tool_type, output.tool_name)
+        parser = self.tool_result_parser_factory.get_parser(output.tool_type, output.tool_name)
         return await parser.parse(output, workspace=self.workspace)
 
     @override

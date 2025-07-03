@@ -1,12 +1,13 @@
-import { CheckOutlined, SearchOutlined } from '@ant-design/icons';
-import { Card, Flex, Tag, Typography } from 'antd';
-import React from 'react';
+import { CheckOutlined, MenuUnfoldOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Card, Flex, Tag, Typography } from 'antd';
+import React, { useCallback } from 'react';
 import type { ToolCardData } from '../utils';
 import './index.less';
 
 interface Props {
   sessionId: string;
   data: ToolCardData;
+  onOpenWorkspace?: (data: ToolCardData) => void;
 }
 
 interface ItemInterface {
@@ -15,11 +16,23 @@ interface ItemInterface {
   link?: string;
 }
 
-const cardLinkList: React.FC<Props> = ({ data }) => {
+const cardLinkList: React.FC<Props> = ({ sessionId, data, onOpenWorkspace }) => {
+  console.log('data', data);
   const items = data?.card_data?.search_items || [];
   const cardItems = items;
+
+  // 打开workspace
+  const handleOpenWorkspace = useCallback(() => {
+    if (onOpenWorkspace) {
+      onOpenWorkspace(data);
+    }
+  }, [onOpenWorkspace, sessionId, data]);
+
   return (
     <div className="cardwrap bg">
+      <Button type="link" className="btn-workspace" icon={<MenuUnfoldOutlined />} onClick={handleOpenWorkspace}>
+        View Workspace
+      </Button>
       {items.length > 0 && (
         <Flex justify="space-between" align="center" className="card-length">
           <Tag icon={<SearchOutlined />}>{`search keywords: ${data?.card_data?.query || ''}`}</Tag>
@@ -31,7 +44,7 @@ const cardLinkList: React.FC<Props> = ({ data }) => {
       )}
       <div className="border-box">
         <Flex className="cardbox">
-          {cardItems.map((item: ItemInterface, index: number) => (
+          {cardItems?.map((item: ItemInterface, index: number) => (
             <Card title={item.title} key={index} className="card-item" onClick={() => item.link && window.open(item.link, '_blank', 'noopener,noreferrer')}>
               <Typography.Paragraph className="desc" ellipsis={{ rows: 3, tooltip: item.snippet }}>
                 {item.snippet}

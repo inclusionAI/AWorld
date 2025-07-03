@@ -5,13 +5,20 @@ import re
 import traceback
 from typing import AsyncGenerator
 import uuid
+from aworld.cmd.utils.agent_ui_parser import (
+    AWorldWebAgentUI,
+    BaseToolResultParser,
+    ToolCard,
+    ToolResultParserFactory,
+)
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
+from aworld.output.artifact import ArtifactType
+from aworld.output.workspace import WorkSpace
 from aworld.runner import Runners
 from aworld.output.ui.base import AworldUI
-from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
-from aworld.output.base import Output
+from aworld.output.base import Output, ToolResultOutput
 from .utils import (
     add_file_path,
     load_dataset_meta_dict,
@@ -20,6 +27,76 @@ from .utils import (
 from .prompt import system_prompt
 
 logger = logging.getLogger(__name__)
+
+
+class GaiaSearchToolResultParser(BaseToolResultParser):
+    async def parse(self, output: ToolResultOutput, workspace: WorkSpace):
+        tool_card = ToolCard.from_tool_result(output)
+
+        query = ""
+        try:
+            args = json.loads(tool_card.arguments)
+            query = args.get("query")
+            # aworld search server
+            if not query:
+                query = args.get("query_list")
+        except Exception:
+            pass
+
+        result_items = []
+        try:
+            result_items = (
+                json.loads(tool_card.results.results)
+                if tool_card and tool_card.results and tool_card.results.results
+                else []
+            )
+            # aworld search server return url, not link
+            if result_items and isinstance(result_items, list):
+                for item in result_items:
+                    if not item.get("link", None) and item.get("url", None):
+                        item["link"] = item.get("url")
+        except Exception:
+            pass
+
+        if len(result_items) > 0:
+            tool_card.results = ""
+
+        tool_card.card_type = "tool_call_card_link_list"
+        tool_card.card_data = {
+            "title": "🔎 Gaia Search",
+            "query": query,
+            "search_items": result_items,
+        }
+
+        artifact_id = str(uuid.uuid4())
+        await workspace.create_artifact(
+            artifact_type=ArtifactType.WEB_PAGES,
+            artifact_id=artifact_id,
+            content=result_items,
+            metadata={
+                "query": query,
+            },
+        )
+        tool_card.artifacts.append(
+            {
+                "artifact_type": ArtifactType.WEB_PAGES.value,
+                "artifact_id": artifact_id,
+            }
+        )
+
+        return f"""\
+**🔎 Gaia Search**\n\n
+```tool_card
+{json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
+```
+"""
+
+
+class CustomToolResultParserFactory(ToolResultParserFactory):
+    def get_parser(self, tool_type: str, tool_name: str):
+        if "search" == tool_name:
+            return GaiaSearchToolResultParser()
+        return super().get_parser(tool_type, tool_name)
 
 
 class GaiaAgentRunner:
@@ -35,7 +112,9 @@ class GaiaAgentRunner:
         llm_api_key: str,
         llm_temperature: float = 0.0,
         mcp_config: dict = {},
+        session_id: str = None,
     ):
+        self.session_id = session_id
         self.agent_config = AgentConfig(
             llm_provider=llm_provider,
             llm_model_name=llm_model_name,
@@ -55,7 +134,9 @@ class GaiaAgentRunner:
         self.gaia_dataset_path = os.path.abspath(
             os.getenv(
                 "GAIA_DATASET_PATH",
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "GAIA", "2023"),
+                os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "GAIA", "2023"
+                ),
             )
         )
         self.full_dataset = load_dataset_meta_dict(self.gaia_dataset_path)
@@ -96,12 +177,17 @@ class GaiaAgentRunner:
                 id=task_id + "." + uuid.uuid1().hex if task_id else uuid.uuid1().hex,
                 input=question,
                 agent=self.super_agent,
-                event_driven=False,
                 conf=TaskConfig(max_steps=20),
+                session_id=self.session_id,
+                endless_threshold=50,
             )
 
             last_output: Output = None
-            rich_ui = MarkdownAworldUI()
+            rich_ui = AWorldWebAgentUI(
+                session_id=self.session_id,
+                workspace=WorkSpace.from_local_storages(workspace_id=self.session_id),
+                tool_result_parser_factory=CustomToolResultParserFactory(),
+            )
             async for output in Runners.streamed_run_task(task).stream_events():
                 logger.info(f"Gaia Agent Ouput: {output}")
                 res = await AworldUI.parse_output(output, rich_ui)
