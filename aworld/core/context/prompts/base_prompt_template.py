@@ -106,7 +106,7 @@ class BasePromptTemplate(ABC):
                     if ("context" in sig.parameters.keys()) == True:
                         # 如果函数接受context或ctx参数，传入上下文
                         merged[key] = value(context=context)
-                        logger.debug(f"sig={sig.parameters} {sig.parameters.keys()} {"context" in sig.parameters.keys()} {merged[key]}")
+                        logger.debug(f"sig={sig.parameters} {sig.parameters.keys()} {'context' in sig.parameters.keys()} {merged[key]}")
                     else:
                         # 否则直接调用
                         merged[key] = value()
