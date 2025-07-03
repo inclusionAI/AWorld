@@ -164,6 +164,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                            content: str,
                            image_urls: List[str] = None,
                            observation: Observation = None,
+                           message: Message = None,
                            **kwargs):
         """Transform the original content to LLM messages of native format.
 
@@ -181,7 +182,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         ## append sys_prompt to memory
         sys_prompt = self.agent_context.system_prompt
         if sys_prompt:
-            self._add_system_message_to_memory()
+            self._add_system_message_to_memory(message.context)
 
         ## append observation to memory
         if observation.is_tool_result:
@@ -198,7 +199,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 for image_url in image_urls:
                     urls.append({'type': 'image_url', 'image_url': {"url": image_url}})
                 content = urls
-            self._add_human_input_to_memory(content)
+            self._add_human_input_to_memory(content, message.context)
 
 
         ## from memory get last n messages
@@ -420,7 +421,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer
         )
 
-    def policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
+    def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -455,7 +456,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             observation.images = images
         messages = self.messages_transform(content=observation.content,
                                            image_urls=observation.images,
-                                           observation=observation)
+                                           observation=observation,
+                                           message=message
+                                           )
 
         self._log_messages(messages)
 
@@ -493,7 +496,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     if llm_response.error:
                         logger.info(f"llm result error: {llm_response.error}")
                     else:
-                        self._add_llm_response_to_memory(llm_response)
+                        self._add_llm_response_to_memory(llm_response, message.context)
                         # rewrite
                         self.context.context_info[self.id()] = info
                 else:
@@ -514,7 +517,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             output.mark_finished()
         return agent_result.actions
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
+    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -563,7 +566,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
                 else:
-                    self._add_llm_response_to_memory(llm_response)
+                    self._add_llm_response_to_memory(llm_response, message.context)
             else:
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(f"{self.id()} failed to get LLM response")
@@ -595,7 +598,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return obj
 
     async def llm_and_tool_execution(self, observation: Observation, messages: List[Dict[str, str]] = [],
-                                     info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
+                                     info: Dict[str, Any] = {},message: Message = None, **kwargs) -> List[ActionModel]:
         """Perform combined LLM call and tool execution operations.
 
         Args:
@@ -612,7 +615,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             if llm_response.error:
                 logger.info(f"llm result error: {llm_response.error}")
             else:
-                self._add_llm_response_to_memory(llm_response)
+                self._add_llm_response_to_memory(llm_response, message.context)
         else:
             logger.error(f"{self.id()} failed to get LLM response")
             raise RuntimeError(f"{self.id()} failed to get LLM response")
@@ -930,7 +933,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def _agent_context(self) -> AgentContext:
         return self.agent_context
 
-    def _add_system_message_to_memory(self):
+    def _add_system_message_to_memory(self, context: Context):
         histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self._agent_context.agent_id,
             "session_id": self._agent_context._context.session_id,
@@ -942,8 +945,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return
         if not self.system_prompt:
             return
-        content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(
-            tool_list=self.tools)
+        content = self.custom_system_prompt()
 
         self.memory.add(MemorySystemMessage(
             content=content,
@@ -958,68 +960,85 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(
             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
-    def _add_human_input_to_memory(self, content: str):
+    def custom_system_prompt(self):
+        content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(
+            tool_list=self.tools)
+        return content
+
+    def _add_human_input_to_memory(self, content: str, context: Context):
         """Add user input to memory"""
+        session_id = context.get_task().session_id
+        user_id = context.get_task().user_id
+        task_id = context.get_task().id
         self.memory.add(MemoryHumanMessage(
             content=content,
             metadata=MessageMetadata(
-                session_id=self._agent_context._context.session_id,
-                user_id=self._agent_context.get_user(),
-                task_id=self._agent_context._context.task_id,
+                session_id=session_id,
+                user_id=user_id,
+                task_id=task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: "
-                    f"User#{self._agent_context.get_user()}, "
-                    f"Session#{self._agent_context._context.session_id}, "
-                    f"Task#{self._agent_context._context.task_id}, "
+                    f"User#{user_id}, "
+                    f"Session#{session_id}, "
+                    f"Task#{task_id}, "
                     f"Agent#{self.id()}, 💬 {content[:100]}...")
 
-    def _add_llm_response_to_memory(self, llm_response):
+    def _add_llm_response_to_memory(self, llm_response, context: Context):
         """Add LLM response to memory"""
         custom_prompt_tool_calls = []
         if self.use_tools_in_prompt:
             custom_prompt_tool_calls = self.use_tool_list(llm_response)
 
+        session_id = context.get_task().session_id
+        user_id = context.get_task().user_id
+        task_id = context.get_task().id
+
         self.memory.add(MemoryAIMessage(
             content=llm_response.content,
             tool_calls=llm_response.tool_calls if not self.use_tools_in_prompt else custom_prompt_tool_calls,
             metadata=MessageMetadata(
-                session_id=self._agent_context._context.session_id,
-                user_id=self._agent_context.get_user(),
-                task_id=self._agent_context._context.task_id,
+                session_id=session_id,
+                user_id=user_id,
+                task_id=task_id,
                 agent_id=self.id(),
-                agent_name=self.name(),
+                agent_name=self.name()
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: "
-                    f"User#{self._agent_context.get_user()}, "
-                    f"Session#{self._agent_context._context.session_id}, "
-                    f"Task#{self._agent_context._context.task_id}, "
+                    f"User#{user_id}, "
+                    f"Session#{session_id}, "
+                    f"Task#{task_id}, "
                     f"Agent#{self.id()},"
                     f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
                     f" content: {llm_response.content[:100] if llm_response.content else ''}... ")
 
 
-    def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: Any):
+    def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: Any, context: Context):
         """Add tool result to memory"""
+
+        session_id = context.get_task().session_id
+        user_id = context.get_task().user_id
+        task_id = context.get_task().id
+
         self.memory.add(MemoryToolMessage(
             content=tool_result,
             tool_call_id=tool_call_id,
             status="success",
             metadata=MessageMetadata(
-                session_id=self._agent_context._context.session_id,
-                user_id=self._agent_context.get_user(),
-                task_id=self._agent_context._context.task_id,
+                session_id=session_id,
+                user_id=user_id,
+                task_id=task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory:"
-                    f" User#{self._agent_context.get_user()}, "
-                    f"Session#{self._agent_context._context.session_id}, "
-                    f"Task#{self._agent_context._context.task_id}, "
+                    f" User#{user_id}, "
+                    f"Session#{session_id}, "
+                    f"Task#{task_id}, "
                     f"Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
 
 

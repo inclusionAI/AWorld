@@ -158,7 +158,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         observation = message.payload
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self.pre_run()
-            result = self.policy(observation, **kwargs)
+            result = self.policy(observation, message = message, **kwargs)
             final_result = self.post_run(result, observation)
             return final_result
 
@@ -174,7 +174,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             await self.async_pre_run()
-            result = await self.async_policy(observation, **kwargs)
+            result = await self.async_policy(observation,message = message, **kwargs)
             final_result = await self.async_post_run(result, observation)
             return final_result
 
