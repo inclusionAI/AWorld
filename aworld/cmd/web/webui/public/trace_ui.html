@@ -372,8 +372,10 @@
                     function renderSpans(span, depth = 0, rowIndex = 0) {
                         const spanStart = new Date(span.start_time).getTime();
                         const spanEnd = new Date(span.end_time).getTime();
-                        const position = ((spanStart - minTime) / (maxTime - minTime)) * 10 * 0.9 + 5;
-                        const width = ((spanEnd - spanStart) / (maxTime - minTime)) * 100 * 0.9 + 2;
+                        const position = Math.min(13, Math.max(5, ((spanStart - minTime) / (maxTime - minTime)) * 10 * 0.9 + 5));
+                        const width = Math.min(92, Math.max(2, ((spanEnd - spanStart) / (maxTime - minTime)) * 100 * 0.9 + 2));
+                        //const position = ((spanStart - minTime) / (maxTime - minTime)) * 10 * 0.9 + 5;
+                        //const width = ((spanEnd - spanStart) / (maxTime - minTime)) * 100 * 0.9 + 2;
 
                         const minWidth = 0.5;
                         const adjustedWidth = Math.max(width, minWidth);

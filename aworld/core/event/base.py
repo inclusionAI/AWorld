@@ -58,7 +58,7 @@ class Message(Generic[DataType]):
     # Next caller
     receiver: str = field(default=None)
     # The previous caller
-    caller: str = field(default_factory=str)
+    caller: str = field(default=None)
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     priority: int = field(default=0)
     # Topic of message
@@ -69,7 +69,7 @@ class Message(Generic[DataType]):
     def __post_init__(self):
         context = self.headers.get("context")
         if not context:
-            self.headers['context'] = Context.instance()
+            self.headers['context'] = Context()
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, Message):

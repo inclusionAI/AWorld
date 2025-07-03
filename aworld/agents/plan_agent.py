@@ -17,7 +17,7 @@ from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agen
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import AgentContext
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
+from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, TopicType
 from aworld.core.memory import MemoryItem, MemoryConfig
 from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
@@ -68,29 +68,30 @@ def compress_content(llm_config: ModelConfig, content: str) -> str:
 
 
 """创建解析函数的工厂函数"""
-def resp_parse_func(llm_resp):
+def parse_multiple_contents(llm_resp: ModelResponse):
     """解析包含多个内容的工具调用响应"""
     from aworld.core.agent.base import AgentResult
     from aworld.core.common import ActionModel
-
+    
     if llm_resp.tool_calls is None or len(llm_resp.tool_calls) == 0:
-        # 如果没有工具调用，返回空的AgentResult
-        return AgentResult(actions=[], current_state=None)
+        # 如果没有工具调用，返回AgentResult: is_call_tool=False
+        return AgentResult(actions=[ActionModel(policy_info=llm_resp.content)], current_state="done", is_call_tool=False)
 
     actions = []
-
+    
     # 遍历所有的tool_calls，而不是只处理第一个
     for tool_call in llm_resp.tool_calls:
         func_content = tool_call.function
         try:
             arguments = json.loads(func_content.arguments)
-
+            
             # 检查是否有content参数，且content是列表
             if 'content' in arguments and isinstance(arguments['content'], list):
                 contents = arguments['content']
                 # 为每个content创建一个独立的ActionModel
                 for content in contents:
                     new_arguments = {'content': content}
+                    print(f"new_arguments: {new_arguments}")
                     actions.append(ActionModel(
                         tool_name=func_content.name,
                         tool_id=f"{tool_call.id}_{content}" if len(contents) > 1 else tool_call.id,
@@ -107,16 +108,16 @@ def resp_parse_func(llm_resp):
                     params=arguments,
                     policy_info=llm_resp.content or ""
                 ))
-
+                
         except Exception as e:
             print(f"Failed to parse tool call arguments: {tool_call}, error: {e}")
             # 跳过解析失败的tool_call，继续处理下一个
             continue
-        
-    logger.info(f'Total tool_calls processed: {len(llm_resp.tool_calls)}')
-    logger.info(f'Total actions created: {len(actions)}')
-    logger.info(f'Actions: {actions}')
-
+    
+    print(f'Total tool_calls processed: {len(llm_resp.tool_calls)}')
+    print(f'Total actions created: {len(actions)}')
+    print(f'Actions: {actions}')
+    
     return AgentResult(actions=actions, current_state=None)
 
 class PlanAgent(Agent):
@@ -132,6 +133,8 @@ class PlanAgent(Agent):
 
         # 结果解析函数
         self.resp_parse_func = resp_parse_func
+
+        self._finished = False
 
     def _init_trajectories_file(self):
         """初始化trajectories文件路径"""
@@ -327,7 +330,7 @@ class PlanAgent(Agent):
         return await self.async_run(next_message, **kwargs)
 
     async def async_policy(self, observation: Observation, **kwargs) -> List[ActionModel]:
-        # Otherwise, parse actions using LLM
+        self._finished = False
         # Prepare LLM input
         llm_messages = await self._prepare_llm_input(observation)
         llm_response = None
@@ -368,7 +371,10 @@ class PlanAgent(Agent):
         self.cur_action_step += 1
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
-        logger.debug(f"plan_agent.agent_result: {agent_result}")
+        logger.debug(f"plan_agent.agent_result: {agent_result}, agent._finished:{self._finished}")
+        if agent_result and not agent_result.is_call_tool:
+            self._finished = True
+            return agent_result.actions
         return agent_result.actions
 
     def fork_new_task(self, input, agent:Agent = None, context: Context = None):
@@ -408,6 +414,8 @@ class PlanAgent(Agent):
                     logger.warning(f"Action has no tool_name, skipping: {action}")
             except Exception as e:
                 logger.error(f"Failed to parse actions from actions to agent or tool: {e}")
+            if not action.agent_name:
+                action.agent_name = self.id()
 
         logger.debug(f"Final split result - {len(agents)} agents, {len(tools)} tools")
         return agents, tools
@@ -424,17 +432,25 @@ class PlanAgent(Agent):
         
     def _is_done(self, actions: List[ActionModel]) -> bool:
         """Check if all tasks are completed"""
-        return False
-        
+        return self._finished
+
     def _create_finished_message(self, original_message: Message, result: Any) -> Message:
         """Create a message indicating task completion"""
         # Create a message containing the final result
         # todo: create message from context
-        return AgentMessage(payload=result,
-                            sender=self.id(),
-                            receiver=self.id(),
-                            session_id=self.context.session_id if self.context else "",
-                            headers={"context": self.context})
+        return Message(
+                        category=Constants.TASK,
+                        payload=result[0].policy_info,
+                        sender=self.id(),
+                        session_id=self.context.session_id,
+                        topic=TopicType.FINISHED,
+                        headers={"context": self.context}
+                    )
+        # return AgentMessage(payload=result,
+        #                     sender=self.id(),
+        #                     receiver=self.id(),
+        #                     session_id=self.context.session_id if self.context else "",
+        #                     headers={"context": self.context})
 
     def _actions_to_message(self, agents_result_actions: List[ActionModel],tools_result_actions: List[ActionModel], original_message: Message) -> Message:
         """Convert actions to a new message"""

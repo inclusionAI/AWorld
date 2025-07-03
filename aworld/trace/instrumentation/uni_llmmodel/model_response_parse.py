@@ -68,16 +68,32 @@ def get_common_attributes_from_response(instance: 'LLMModel', is_async, is_strea
 
 
 def accumulate_stream_response(chunk: ModelResponse, complete_response: dict):
-    logger.info(f"accumulate_stream_response chunk= {chunk}")
-    pass
+    from aworld.utils.common import nest_dict_counter
+    # logger.info(f"accumulate_stream_response chunk= {chunk}")
+
+    complete_response["model"] = chunk.model
+    complete_response["id"] = chunk.id
+    if chunk.content:
+        complete_response["content"] += chunk.content
+    if chunk.tool_calls:
+        complete_response["tool_calls"].extend(chunk.tool_calls)
+    if chunk.error:
+        complete_response["error"] = chunk.error
+    complete_response["usage"] = nest_dict_counter(
+        complete_response["usage"], chunk.usage)
 
 
 def record_stream_token_usage(complete_response, request_kwargs) -> tuple[int, int]:
     '''
         return (prompt_usage, completion_usage)
     '''
-    logger.info(
-        f"record_stream_token_usage complete_response= {complete_response}")
+    # logger.info(
+    #     f"record_stream_token_usage complete_response= {complete_response}")
+    usage = complete_response.get("usage", {})
+    if usage:
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        return (prompt_tokens, completion_tokens)
     return (0, 0)
 
 

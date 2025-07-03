@@ -288,7 +288,7 @@ class DefaultAgentHandler(AgentHandler):
                     headers=headers
                 )
             else:
-                logger.info(f"execute loop {self.swarm.cur_step}.")
+                logger.info(f"_sequence_stop_check execute loop {self.swarm.cur_step}. message: {message}. session_id: {session_id}.")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
@@ -365,7 +365,7 @@ class DefaultAgentHandler(AgentHandler):
                     )
             else:
                 self.swarm.cur_step += 1
-                logger.info(f"execute loop {self.swarm.cur_step}.")
+                logger.info(f"_loop_sequence_stop_check execute loop {self.swarm.cur_step}.")
                 yield Message(
                     category=Constants.TASK,
                     payload='',
@@ -424,7 +424,7 @@ class DefaultAgentHandler(AgentHandler):
                 )
             else:
                 self.swarm.cur_step += 1
-                logger.info(f"execute loop {self.swarm.cur_step}.")
+                logger.info(f"_social_stop_check execute loop {self.swarm.cur_step}.")
                 yield Message(
                     category=Constants.AGENT,
                     payload=Observation(content=action.policy_info),

@@ -16,23 +16,23 @@ from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
     from aworld.core.task import Task
-    from aworld.core.common import ActionModel
+
 
 @dataclass
 class ContextUsage:
     total_context_length: int = 128000
     used_context_length: int = 0
+
     def __init__(self, total_context_length: int = 128000, used_context_length: int = 0):
         self.total_context_length = total_context_length
         self.used_context_length = used_context_length
 
-class Context(InheritanceSingleton):
+
+class Context():
     """Single instance, can use construction or `instance` static method to create or get `Context` instance.
 
     Examples:
         >>> context = Context()
-    or
-        >>> context = Context.instance()
     """
 
     def __init__(self,
@@ -45,7 +45,8 @@ class Context(InheritanceSingleton):
 
         super().__init__()
         self._user = user
-        self._init(task_id=task_id, trace_id=trace_id, session=session, engine=engine, **kwargs)
+        self._init(task_id=task_id, trace_id=trace_id,
+                   session=session, engine=engine, **kwargs)
 
     def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None):
         self._task_id = task_id
@@ -146,7 +147,6 @@ class Context(InheritanceSingleton):
     def event_manager(self, event_manager: 'EventManager'):
         self._event_manager = event_manager
 
-
     def deep_copy(self) -> 'Context':
         """Create a deep copy of this Context instance with all attributes copied.
         
@@ -155,26 +155,26 @@ class Context(InheritanceSingleton):
         """
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
-        
+
         # Manually copy all important instance attributes
         # Basic attributes
         new_context._user = self._user
         new_context._task_id = self._task_id
         new_context._engine = self._engine
         new_context._trace_id = self._trace_id
-        
+
         # Session - shallow copy to maintain reference
         new_context._session = self._session
-        
+
         # Task - set to None to avoid circular references
         new_context._task = None
-        
+
         # Deep copy complex state objects
         try:
             new_context.context_info = copy.deepcopy(self.context_info)
         except Exception:
             new_context.context_info = copy.copy(self.context_info)
-            
+
         try:
             # Use standard deep copy and then convert to ConfigDict if needed
             new_context.agent_info = copy.deepcopy(self.agent_info)
@@ -195,38 +195,65 @@ class Context(InheritanceSingleton):
                     new_context.agent_info = copy.copy(self.agent_info)
             else:
                 new_context.agent_info = copy.copy(self.agent_info)
-            
+
         try:
             new_context.trajectories = copy.deepcopy(self.trajectories)
         except Exception:
             new_context.trajectories = copy.copy(self.trajectories)
-            
+
         try:
             new_context._token_usage = copy.deepcopy(self._token_usage)
         except Exception:
             new_context._token_usage = copy.copy(self._token_usage)
-        
+
         # Copy other attributes if they exist
         if hasattr(self, '_swarm'):
             new_context._swarm = self._swarm  # Shallow copy for complex objects
         if hasattr(self, '_event_manager'):
             new_context._event_manager = self._event_manager  # Shallow copy for complex objects
-        
+
         return new_context
+
+    @property
+    def record_path(self):
+        return "."
+
+    @property
+    def is_task(self):
+        return True
+
+    @property
+    def enable_visible(self):
+        return False
+
+    @property
+    def enable_failover(self):
+        return False
+
+    @property
+    def enable_cluster(self):
+        return False
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        return self.state.get(key, default)
+
+    def set_state(self, key: str, value: Any):
+        self.state[key] = value
+
 
 @dataclass
 class AgentContext:
     """Agent context containing both configuration and runtime state.
-    
+
     AgentContext is the core context management class in the AWorld architecture, used to store and manage
     the complete state information of an Agent, including configuration data and runtime state. Its main functions are:
-    
+
     1. **State Restoration**: Save all state information during Agent execution, supporting Agent state restoration and recovery
     2. **Configuration Management**: Store Agent's immutable configuration information (such as agent_id, system_prompt, etc.)
     3. **Runtime State Tracking**: Manage Agent's mutable state during execution (such as messages, step, tools, etc.)
     4. **LLM Prompt Management**: Manage and maintain the complete prompt context required for LLM calls, including system prompts, historical messages, etc.
     5. **LLM Call Intervention**: Provide complete control over the LLM call process through Hook and ContextProcessor
-    
+
     ## Lifecycle
     The lifecycle of AgentContext is completely consistent with the Agent instance:
     - **Creation**: Created during Agent initialization, containing initial configuration
@@ -239,33 +266,33 @@ class AgentContext:
     │  │  │  [LLM Call]     [Tool Call(s)]    │
     │  │  │  [       Context Update      ]    │
     ```
-    
+
     ## Field Classification
     - **Immutable Configuration Fields**: agent_id, agent_name, agent_desc, system_prompt, 
       agent_prompt, tool_names, context_rule
     - **Mutable Runtime Fields**: tools, step, messages, context_usage, llm_output
-    
+
     ## LLM Call Intervention Mechanism
     AgentContext implements complete control over LLM calls through the following mechanisms:
-    
+
     1. **Hook System**:
        - pre_llm_call_hook: Context preprocessing before LLM call
        - post_llm_call_hook: Result post-processing after LLM call
        - pre_tool_call_hook: Context adjustment before tool call
        - post_tool_call_hook: State update after tool call
-    
+
     2. **PromptProcessor**:
        - Prompt Optimization: Optimize prompt content based on context length limitations
        - Message Compression: Intelligently compress historical messages to fit model context window
        - Context Rules: Apply context_rule for customized context processing
-    
+
     ## Usage Scenarios
     1. **Agent Initialization**: Create AgentContext containing configuration information
     2. **LLM Call Control**: Pass as info parameter in policy(), async_policy() methods to control LLM behavior
     3. **Hook Callbacks**: Access and modify LLM call context in various Hooks, use PromptProcessor for prompt optimization and context processing
     4. **State Recovery**: Recover Agent's complete state from persistent storage
     """
-    
+
     # ===== Immutable Configuration Fields =====
     agent_info: 'BaseAgent' = None
     context_rule: ContextRuleConfig = None
@@ -279,7 +306,7 @@ class AgentContext:
     context_usage: ContextUsage = None
     llm_output: ModelResponse = None
 
-    def __init__(self, 
+    def __init__(self,
                  agent_info: 'BaseAgent' = None,
                  context_rule: ContextRuleConfig = None,
                  tools: List[str] = None,
@@ -305,42 +332,10 @@ class AgentContext:
         self._context = context
         # Initialize ContextState with parent state (Context's state)
         # If context_state is provided, use it as parent; otherwise will be set later
-        self.context_info = ContextState(parent_state=parent_state)
+        self.state = ContextState(parent_state=parent_state)
 
         # Additional fields for backward compatibility
         self._init(**kwargs)
-
-    @property
-    def agent_id(self):
-        return self.agent_info.id()
-
-    @property
-    def agent_name(self):
-        return self.agent_info.name()
-
-    @property
-    def agent_desc(self):
-        return self.agent_info.desc()
-
-    @property
-    def memory(self):
-        return self.agent_info.memory
-
-    @property
-    def system_prompt(self):
-        return self.agent_info.system_prompt
-
-    @property
-    def agent_prompt(self):
-        return self.agent_info.agent_prompt
-
-    @property
-    def tool_names(self):
-        return self.agent_info.tool_names
-
-    @property
-    def model_config(self):
-        return self.agent_info.conf.llm_config
 
     def _init(self, **kwargs):
         self._task_id = kwargs.get('task_id')
@@ -353,20 +348,20 @@ class AgentContext:
 
     def set_tools(self, tools: List[str]):
         self.tools = tools
-    
+
     def set_llm_output(self, llm_output: ModelResponse):
         self.llm_output = llm_output
 
     def increment_step(self) -> int:
         self.step += 1
         return self.step
-    
+
     def set_step(self, step: int):
         self.step = step
-    
+
     def get_step(self) -> int:
         return self.step
-    
+
     def update_context_usage(self, used_context_length: int = None, total_context_length: int = None):
         if used_context_length is not None:
             self.context_usage.used_context_length = used_context_length
@@ -382,14 +377,20 @@ class AgentContext:
     def set_parent_state(self, parent_state: ContextState):
         self.state._parent_state = parent_state
 
+    def get_state(self, key: str, default: Any = None) -> Any:
+        return self.state.get(key, default)
+
+    def set_state(self, key: str, value: Any):
+        self.state[key] = value
+
     def get_task(self) -> 'Task':
         return self._context.get_task()
 
     def get_session(self) -> Session:
-        return self._context.get_session()
+        return self._context.session
 
     def get_engine(self) -> str:
-        return self._context.get_engine()
-    
+        return self._context.engine
+
     def get_user(self) -> str:
-        return self._context.get_user()
+        return self._context.user

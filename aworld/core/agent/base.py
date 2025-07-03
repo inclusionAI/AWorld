@@ -74,10 +74,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                  desc: str = None,
                  agent_id: str = None,
                  *,
-                 tool_names: List[str] = [],
-                 agent_names: List[str] = [],
-                 mcp_servers: List[str] = [],
-                 mcp_config: Dict[str, Any] = {},
+                 tool_names: List[str] = None,
+                 agent_names: List[str] = None,
+                 mcp_servers: List[str] = None,
+                 mcp_config: Dict[str, Any] = None,
                  feedback_tool_result: bool = False,
                  sandbox: Sandbox = None,
                  **kwargs):
@@ -114,15 +114,15 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._id = agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
         self.task = None
         # An agent can use the tool list
-        self.tool_names: List[str] = tool_names
+        self.tool_names: List[str] = tool_names or []
         human_tools = self.conf.get("human_tools", [])
         for tool in human_tools:
             self.tool_names.append(tool)
         # An agent can delegate tasks to other agent
-        self.handoffs: List[str] = agent_names
+        self.handoffs: List[str] = agent_names or []
         # Supported MCP server
-        self.mcp_servers: List[str] = mcp_servers
-        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config)
+        self.mcp_servers: List[str] = mcp_servers or []
+        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
@@ -156,6 +156,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        if eventbus is not None:
+            await send_message(Message(
+                category=Constants.OUTPUT,
+                payload=StepOutput.build_start_output(name=f"{self.id()}", alias_name=self.name(), step_num=0),
+                sender=self.id(),
+                session_id=self.context.session_id
+            ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self._init_context(message.context)
             observation = message.payload

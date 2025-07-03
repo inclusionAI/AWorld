@@ -1,5 +1,8 @@
 import tiktoken
+
+from aworld.core.memory import MemoryBase
 from aworld.logs.util import logger
+from aworld.memory.models import MemoryAIMessage, MessageMetadata
 
 # TODO: merge to `models` package
 

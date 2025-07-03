@@ -11,6 +11,8 @@ import logging
 from aworld.agents.plan_agent import PlanAgent
 from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
+from aworld.models.model_response import ModelResponse
+
 # Add the project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))

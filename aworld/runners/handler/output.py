@@ -4,9 +4,8 @@ from typing import AsyncGenerator
 from aworld.core.task import TaskResponse
 from aworld.models.model_response import ModelResponse
 from aworld.runners.handler.base import DefaultHandler
-from aworld.output.base import StepOutput, MessageOutput, ToolResultOutput, Output
+from aworld.output.base import StepOutput, MessageOutput, Output
 from aworld.core.common import TaskItem
-from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.logs.util import logger
 
@@ -23,9 +22,10 @@ class DefaultOutputHandler(DefaultHandler):
         if not outputs:
             yield Message(
                 category=Constants.TASK,
-                payload=TaskItem(msg="Cannot get outputs.", data=message, stop=True),
+                payload=TaskItem(msg="Cannot get outputs.",
+                                 data=message, stop=True),
                 sender=self.name(),
-                session_id=Context.instance().session_id,
+                session_id=self.runner.context.session_id,
                 topic=TopicType.ERROR,
                 headers={"context": message.context}
             )
@@ -38,7 +38,8 @@ class DefaultOutputHandler(DefaultHandler):
             if isinstance(payload, Output):
                 output = payload
             elif isinstance(payload, TaskResponse):
-                logger.info(f"output get task_response with usage: {json.dumps(payload.usage)}")
+                logger.info(
+                    f"output get task_response with usage: {json.dumps(payload.usage)}")
                 if message.topic == TopicType.FINISHED or message.topic == TopicType.ERROR:
                     mark_complete = True
             elif isinstance(payload, ModelResponse) or isinstance(payload, AsyncGenerator):
@@ -47,9 +48,10 @@ class DefaultOutputHandler(DefaultHandler):
             logger.warning(f"Failed to parse output: {e}")
             yield Message(
                 category=Constants.TASK,
-                payload=TaskItem(msg="Failed to parse output.", data=payload, stop=True),
+                payload=TaskItem(msg="Failed to parse output.",
+                                 data=payload, stop=True),
                 sender=self.name(),
-                session_id=Context.instance().session_id,
+                session_id=message.context.session_id,
                 topic=TopicType.ERROR,
                 headers={"context": message.context}
             )

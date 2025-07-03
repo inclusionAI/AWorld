@@ -9,13 +9,14 @@ from .. import (
     ChatCompletionResponse,
 )
 from . import agent_loader
-from .agent_ui_parser import AWorldAgentUI
+from .agent_ui_parser import AWorldWebAgentUI
 import logging
 import aworld.trace as trace
 import os
 import uuid
 from dotenv import load_dotenv
 from .agent_server import CURRENT_SERVER
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ async def stream_run(request: ChatCompletionRequest):
         request.session_id = str(uuid.uuid4())
     if not request.query_id:
         request.query_id = str(uuid.uuid4())
+    if request.messages and request.messages[-1].trace_id is None:
+        request.messages[-1].trace_id = request.trace_id
 
     logger.info(f"Stream run agent: request={request.model_dump_json()}")
     agent = agent_loader.get_agent(request.model)
@@ -56,28 +59,29 @@ async def stream_run(request: ChatCompletionRequest):
             ]
         )
 
-    rich_ui = AWorldAgentUI(
+    rich_ui = AWorldWebAgentUI(
         session_id=request.session_id,
         workspace=WorkSpace.from_local_storages(
             workspace_id=request.session_id,
-            storage_path=os.path.join(os.curdir, "workspaces", request.session_id),
         ),
     )
 
     await CURRENT_SERVER.on_chat_completion_request(request)
+    try:
+        async for output in instance.run(request=request):
+            logger.info(f"Agent {agent.name} output: {output}")
 
-    async for output in instance.run(request=request):
-        logger.info(f"Agent {agent.name} output: {output}")
-
-        if isinstance(output, str):
-            yield build_response(output)
-        else:
-            res = await AworldUI.parse_output(output, rich_ui)
-            for item in res if isinstance(res, list) else [res]:
-                if isinstance(item, AsyncGenerator):
-                    async for sub_item in item:
-                        yield build_response(sub_item)
-                else:
-                    yield build_response(item)
-
-    await CURRENT_SERVER.on_chat_completion_end(request, final_response)
+            if isinstance(output, str):
+                yield build_response(output)
+            else:
+                res = await AworldUI.parse_output(output, rich_ui)
+                for item in res if isinstance(res, list) else [res]:
+                    if isinstance(item, AsyncGenerator):
+                        async for sub_item in item:
+                            yield build_response(sub_item)
+                    else:
+                        yield build_response(item)
+    except:
+        logger.error(f"Agent {agent.name} error: {traceback.format_exc()}")
+    finally:
+        await CURRENT_SERVER.on_chat_completion_end(request, final_response)
