@@ -111,148 +111,6 @@ class MemoryStore(ABC):
     def history(self, memory_id) -> list[MemoryItem] | None:
         pass
 
-
-class MemoryBase(ABC):
-
-    @abstractmethod
-    def get(self, memory_id) -> Optional[MemoryItem]:
-        """Get item in memory by ID.
-
-        Args:
-            memory_id (str): ID of the memory to retrieve.
-
-        Returns:
-            dict: Retrieved memory.
-        """
-
-    @abstractmethod
-    def get_all(self, filters: dict = None) -> Optional[list[MemoryItem]]:
-        """List all items in memory store.
-
-        Args:
-            filters (dict, optional): Filters to apply to the search. Defaults to None.
-            - user_id (str, optional): ID of the user to search for. Defaults to None.
-            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
-            - session_id (str, optional): ID of the session to search for. Defaults to None.
-
-        Returns:
-            list: List of all memories.
-        """
-
-    @abstractmethod
-    def get_last_n(self, last_rounds, filters: dict = None) -> Optional[list[MemoryItem]]:
-        """get last_rounds memories.
-
-        Args:
-            last_rounds (int): Number of last rounds to retrieve.
-            filters (dict, optional): Filters to apply to the search. Defaults to None.
-            - user_id (str, optional): ID of the user to search for. Defaults to None.
-            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
-            - session_id (str, optional): ID of the session to search for. Defaults to None.
-        Returns:
-            list: List of latest memories.
-        """
-
-    @abstractmethod
-    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
-        """
-        Search for memories.
-        Hybrid search: Retrieve memories from vector store and memory store.
-
-
-        Args:
-            query (str): Query to search for.
-            limit (int, optional): Limit the number of results. Defaults to 100.
-            filters (dict, optional): Filters to apply to the search. Defaults to None.
-            - user_id (str, optional): ID of the user to search for. Defaults to None.
-            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
-            - session_id (str, optional): ID of the session to search for. Defaults to None.
-
-        Returns:
-            list: List of search results.
-        """
-
-    @abstractmethod
-    def add(self, memory_item: MemoryItem, filters: dict = None):
-        """Add memory in the memory store.
-
-        Step 1: Add memory to memory store
-        Step 2: Add memory to vector store
-
-        Args:
-            memory_item (MemoryItem): memory item.
-            metadata (dict, optional): metadata to add.
-             - user_id (str, optional): ID of the user to search for. Defaults to None.
-             - agent_id (str, optional): ID of the agent to search for. Defaults to None.
-             - session_id (str, optional): ID of the session to search for. Defaults to None.
-            tags (list, optional): tags to add.
-            memory_type (str, optional): memory type.
-            version (int, optional): version of the memory.
-        """
-
-    @abstractmethod
-    def update(self, memory_item: MemoryItem):
-        """Update a memory by ID.
-
-        Args:
-            memory_item (MemoryItem): memory item.
-
-        Returns:
-            dict: Updated memory.
-        """
-
-    @abstractmethod
-    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
-        """A tool for reducing the context length of the current round.
-
-        Step 1: Retrieve historical conversation content based on filters and last_rounds
-        Step 2: Extract current round content and most relevant historical content  
-        Step 3: Generate corresponding summary for the current round
-
-        Args:
-            to_be_summary (MemoryItem): msg to summary.
-            filters (dict): filters to get memory list.
-            last_rounds (int): last rounds of memory list.
-
-        Returns:
-            str: summary memory.
-        """
-
-    @abstractmethod
-    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
-        """A tool for summarizing the list of memory item.
-
-        Args:
-            to_be_summary (list[MemoryItem]): the list of memory item.
-        """
-
-    @abstractmethod
-    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
-        """A tool for summarizing the conversation history.
-
-        Step 1: Retrieve historical conversation content based on filters and last_rounds
-        Step 2: Generate corresponding summary for conversation history
-
-        Args:
-            filters (dict): filters to get memory list.
-            last_rounds (int): last rounds of memory list.
-        """
-
-    @abstractmethod
-    def delete(self, memory_id):
-        """Delete a memory by ID.
-
-        Args:
-            memory_id (str): ID of the memory to delete.
-        """
-    def delete_items(self, message_type: str, session_id: str, task_id: str, filters: dict = None):
-        """Delete a memory by ID.
-        Args:
-            memory_id (str): ID of the memory to delete.
-        """
-        pass
-
-
 SUMMARY_PROMPT = """
 You are a helpful assistant that summarizes the conversation history.
 - Summarize the following text in one clear and concise paragraph, capturing the key ideas without missing critical points. 
@@ -597,3 +455,144 @@ class MemoryConfig(BaseModel):
             'llm': self.llm_config_dict,
             'vector_store': self.vector_store_config_dict,
         }
+
+
+class MemoryBase(ABC):
+
+    @abstractmethod
+    def get(self, memory_id) -> Optional[MemoryItem]:
+        """Get item in memory by ID.
+
+        Args:
+            memory_id (str): ID of the memory to retrieve.
+
+        Returns:
+            dict: Retrieved memory.
+        """
+
+    @abstractmethod
+    def get_all(self, filters: dict = None) -> Optional[list[MemoryItem]]:
+        """List all items in memory store.
+
+        Args:
+            filters (dict, optional): Filters to apply to the search. Defaults to None.
+            - user_id (str, optional): ID of the user to search for. Defaults to None.
+            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
+            - session_id (str, optional): ID of the session to search for. Defaults to None.
+
+        Returns:
+            list: List of all memories.
+        """
+
+    @abstractmethod
+    def get_last_n(self, last_rounds, filters: dict = None, memory_config: MemoryConfig= None) -> Optional[list[MemoryItem]]:
+        """get last_rounds memories.
+
+        Args:
+            last_rounds (int): Number of last rounds to retrieve.
+            filters (dict, optional): Filters to apply to the search. Defaults to None.
+            - user_id (str, optional): ID of the user to search for. Defaults to None.
+            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
+            - session_id (str, optional): ID of the session to search for. Defaults to None.
+        Returns:
+            list: List of latest memories.
+        """
+
+    @abstractmethod
+    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+        """
+        Search for memories.
+        Hybrid search: Retrieve memories from vector store and memory store.
+
+
+        Args:
+            query (str): Query to search for.
+            limit (int, optional): Limit the number of results. Defaults to 100.
+            filters (dict, optional): Filters to apply to the search. Defaults to None.
+            - user_id (str, optional): ID of the user to search for. Defaults to None.
+            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
+            - session_id (str, optional): ID of the session to search for. Defaults to None.
+
+        Returns:
+            list: List of search results.
+        """
+
+    @abstractmethod
+    def add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+        """Add memory in the memory store.
+
+        Step 1: Add memory to memory store
+        Step 2: Add memory to vector store
+
+        Args:
+            memory_item (MemoryItem): memory item.
+            metadata (dict, optional): metadata to add.
+             - user_id (str, optional): ID of the user to search for. Defaults to None.
+             - agent_id (str, optional): ID of the agent to search for. Defaults to None.
+             - session_id (str, optional): ID of the session to search for. Defaults to None.
+            tags (list, optional): tags to add.
+            memory_type (str, optional): memory type.
+            version (int, optional): version of the memory.
+        """
+
+    @abstractmethod
+    def update(self, memory_item: MemoryItem):
+        """Update a memory by ID.
+
+        Args:
+            memory_item (MemoryItem): memory item.
+
+        Returns:
+            dict: Updated memory.
+        """
+
+    @abstractmethod
+    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+        """A tool for reducing the context length of the current round.
+
+        Step 1: Retrieve historical conversation content based on filters and last_rounds
+        Step 2: Extract current round content and most relevant historical content
+        Step 3: Generate corresponding summary for the current round
+
+        Args:
+            to_be_summary (MemoryItem): msg to summary.
+            filters (dict): filters to get memory list.
+            last_rounds (int): last rounds of memory list.
+
+        Returns:
+            str: summary memory.
+        """
+
+    @abstractmethod
+    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
+        """A tool for summarizing the list of memory item.
+
+        Args:
+            to_be_summary (list[MemoryItem]): the list of memory item.
+        """
+
+    @abstractmethod
+    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
+        """A tool for summarizing the conversation history.
+
+        Step 1: Retrieve historical conversation content based on filters and last_rounds
+        Step 2: Generate corresponding summary for conversation history
+
+        Args:
+            filters (dict): filters to get memory list.
+            last_rounds (int): last rounds of memory list.
+        """
+
+    @abstractmethod
+    def delete(self, memory_id):
+        """Delete a memory by ID.
+
+        Args:
+            memory_id (str): ID of the memory to delete.
+        """
+    def delete_items(self, message_type: str, session_id: str, task_id: str, filters: dict = None):
+        """Delete a memory by ID.
+        Args:
+            memory_id (str): ID of the memory to delete.
+        """
+        pass

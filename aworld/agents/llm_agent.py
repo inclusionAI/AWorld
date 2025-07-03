@@ -44,7 +44,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def __init__(self,
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
                  resp_parse_func: Callable[..., Any] = None,
-                 memory: MemoryBase = None,
+                 memory_config: MemoryConfig = None,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -56,10 +56,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
         self._llm = None
-        if memory:
-            self.memory = memory
-        else:
-            self.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory"))
+        self.memory_config = memory_config if memory_config else MemoryConfig(provider="inmemory")
+        self.memory = MemoryFactory.instance()
         self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else (conf.system_prompt if conf.system_prompt else Prompt().get_prompt())
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
 
@@ -88,18 +86,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def reset(self, options: Dict[str, Any]):
         logger.info("[LLM_AGENT] reset start")
         super().reset(options)
-        if self.memory:
-            # self.memory.delete_items(message_type='message', session_id=self._agent_context.get_task().session_id, task_id=self._agent_context.get_task().id, filters={"user_id": self._agent_context.get_user()})
-            if self._agent_context:
-                session_id = self._agent_context.get_task().session_id
-                task_id = self._agent_context.get_task().id
-                user_id = self._agent_context.get_user()
-                self.memory.delete_items(
-                    message_type='message', session_id=session_id, task_id=task_id, filters={"user_id": user_id})
-
-        else:
-            self.memory = MemoryFactory.from_config(MemoryConfig(provider=options.pop(
-                "memory_store") if options.get("memory_store") else "inmemory"))
         logger.info("[LLM_AGENT] reset finished")
 
     def set_tools_instances(self, tools, tools_conf):
@@ -216,7 +202,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "session_id": session_id,
             "task_id": task_id,
             "message_type": "message"
-        })
+        }, memory_config=self.memory_config)
         if histories:
             # default use the first tool call
             for history in histories:
@@ -1001,7 +987,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "session_id": session_id,
             "task_id": task_id,
             "message_type": "message"
-        })
+        }, memory_config=self.memory_config)
         if histories and len(histories) > 0:
             logger.debug(
                 f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
@@ -1019,7 +1005,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
-        ))
+        ), memory_config=self.memory_config)
         logger.info(
             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
@@ -1045,7 +1031,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
-        ))
+        ), memory_config=self.memory_config)
         logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: "
                     f"User#{user_id}, "
                     f"Session#{session_id}, "
@@ -1073,7 +1059,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_id=self.id(),
                 agent_name=self.name()
             )
-        ))
+        ), memory_config=self.memory_config)
         logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: "
                     f"User#{user_id}, "
                     f"Session#{session_id}, "
@@ -1100,7 +1086,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
-        ))
+        ), memory_config=self.memory_config)
         logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory:"
                     f" User#{user_id}, "
                     f"Session#{session_id}, "

@@ -98,11 +98,24 @@ class InMemoryMemoryStore(MemoryStore):
             return exists.histories
         return None
 
-
+MEMORY_HOLDER = {}
 class MemoryFactory:
 
     @classmethod
-    def from_config(cls, config: MemoryConfig) -> "MemoryBase":
+    def instance(cls) -> "MemoryBase":
+        """
+        Get the in-memory memory instance.
+        Returns:
+            MemoryBase: In-memory memory instance.
+        """
+        if MEMORY_HOLDER.get("instance"):
+            return MEMORY_HOLDER["instance"]
+        return InMemoryStorageMemory(
+           memory_store=InMemoryMemoryStore()
+        )
+
+    @classmethod
+    def from_config(cls, config: MemoryConfig, memory_store: MemoryStore = None) -> "MemoryBase":
         """
         Initialize a Memory instance from a configuration dictionary.
 
@@ -115,16 +128,14 @@ class MemoryFactory:
         if config.provider == "inmemory":
             logger.info("🧠 [MEMORY]setup memory store: inmemory")
             return InMemoryStorageMemory(
-                memory_store=InMemoryMemoryStore(),
-                config=config,
-                enable_summary=config.enable_summary,
-                summary_rounds=config.summary_rounds
+                memory_store=memory_store or InMemoryMemoryStore(),
+                config=config
             )
         elif config.provider == "mem0":
             from aworld.memory.mem0.mem0_memory import Mem0Memory
             logger.info("🧠 [MEMORY]setup memory store: mem0")
             return Mem0Memory(
-                memory_store=InMemoryMemoryStore(),
+                memory_store=memory_store or InMemoryMemoryStore(),
                 config=config
             )
         else:
@@ -134,25 +145,18 @@ class MemoryFactory:
 class Memory(MemoryBase):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
+    def __init__(self, memory_store: MemoryStore, **kwargs):
         self.memory_store = memory_store
-        self.config = config
         self._llm_instance = None
         self._embedder_model = None
 
         # Initialize long-term memory components
-        if self.config.enable_long_term:
-            self.longterm_config = config.long_term_config or LongTermConfig.create_simple_config()
-            self.memory_orchestrator = DefaultMemoryOrchestrator(
-                self.default_llm_instance,
-                self.longterm_config,
-                embedding_model=self._embedder_model,
-                long_term_memory_store=self.memory_store
-            )
-            logger.info(f"🧠 [MEMORY:long-term] Initialized with config: "
-                        f"threshold={self.longterm_config.trigger.message_count_threshold}, "
-                        f"user_profiles={self.longterm_config.extraction.enable_user_profile_extraction}, "
-                        f"agent_experiences={self.longterm_config.extraction.enable_agent_experience_extraction}")
+        self.memory_orchestrator = DefaultMemoryOrchestrator(
+            self.default_llm_instance,
+            embedding_model=self._embedder_model,
+            long_term_memory_store=self.memory_store
+        )
+        logger.info(f"🧠 [MEMORY:long-term] Initialized with config: ")
 
 
 
@@ -279,30 +283,32 @@ class Memory(MemoryBase):
     def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
         pass
 
-    def add(self, memory_item: MemoryItem, filters: dict = None):
-        self._add(memory_item, filters)
-        self.post_add(memory_item, filters)
+    def add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+        self._add(memory_item, filters, memory_config)
+        self.post_add(memory_item, filters, memory_config)
 
     @abc.abstractmethod
-    def _add(self, memory_item: MemoryItem, filters: dict = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         pass
 
-    def post_add(self, memory_item: MemoryItem, filters: dict = None):
+    def post_add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         try:
             # TODO: add a background task to process long-term memory
-            self.post_process_long_terms(memory_item, filters)
+            self.post_process_long_terms(memory_item, filters, memory_config)
         except Exception as err:
             logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exc()}")
 
-    def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None):
+    def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         """Post process long-term memory."""
+        if not memory_config:
+            return
 
         # check if long-term memory is enabled
-        if not self.config.enable_long_term:
+        if not memory_config.enable_long_term:
             return
 
         # check if long-term memory config is valid
-        long_term_config = self.config.long_term_config
+        long_term_config = memory_config.long_term_config
         if not long_term_config:
             return
 
@@ -349,7 +355,7 @@ class Memory(MemoryBase):
                 logger.warning(
                     f"🧠 [MEMORY:long-term] memory_item.agent_id is None, skip agent experience extraction")
 
-        self.memory_orchestrator.create_longterm_processing_tasks(task_params)
+        self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config)
 
     def delete(self, memory_id):
         pass
@@ -359,19 +365,17 @@ class Memory(MemoryBase):
 
 
 class InMemoryStorageMemory(Memory):
-    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, enable_summary: bool = True, **kwargs):
-        super().__init__(memory_store=memory_store, config=config, longterm_config=config.long_term_config)
+    def __init__(self, memory_store: MemoryStore, **kwargs):
+        super().__init__(memory_store=memory_store)
         self.summary = {}
-        self.summary_rounds = self.config.summary_rounds
-        self.enable_summary = self.config.enable_summary
 
-    def _add(self, memory_item: MemoryItem, filters: dict = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         self.memory_store.add(memory_item)
 
         # Check if we need to create or update summary
-        if self.enable_summary:
+        if memory_config and memory_config.enable_summary:
             total_rounds = len(self.memory_store.get_all())
-            if total_rounds > self.summary_rounds:
+            if total_rounds > memory_config.summary_rounds:
                 self._create_or_update_summary(total_rounds)
 
 
@@ -444,7 +448,7 @@ class InMemoryStorageMemory(Memory):
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
         return self.memory_store.get_all()
 
-    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None, memory_config: MemoryConfig = None) -> list[MemoryItem]:
         """Get last n memories.
 
         Args:
@@ -461,7 +465,7 @@ class InMemoryStorageMemory(Memory):
             memory_items = self.memory_store.get_last_n(last_rounds, filters=filters)
 
         # If summary is disabled or no summaries exist, return just the last_n_items
-        if not self.enable_summary or not self.summary:
+        if not memory_config or not memory_config.enable_summary or not self.summary:
             return memory_items
 
         # Calculate the range for relevant summaries

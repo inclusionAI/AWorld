@@ -41,7 +41,7 @@ class Mem0Memory(Memory):
         self.mem0 = Mem0.from_config(config_dict=self.config.full_config_dict)
         self.memory_store = memory_store
 
-    def _add(self, memory_item: MemoryItem, filters: dict = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         # generate summary memory if needed
         message_filters = {
             "memory_type": "message"
@@ -167,7 +167,7 @@ class Mem0Memory(Memory):
             filters=filters,
         )
 
-    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None, memory_config: MemoryConfig = None) -> list[MemoryItem]:
         """
         Get last n memories.
 

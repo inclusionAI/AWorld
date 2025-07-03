@@ -19,9 +19,8 @@ class DefaultMemoryGungnir(MemoryGungnir):
     Default implementation of MemoryGungnir.
     """
 
-    def __init__(self, llm_instance: LLMModel, longterm_config: LongTermConfig):
+    def __init__(self, llm_instance: LLMModel):
         super().__init__(llm_instance)
-        self._longterm_config = longterm_config
 
 
     async def process_memory_task(self, task: MemoryProcessingTask) -> MemoryProcessingResult:
@@ -59,7 +58,7 @@ class DefaultMemoryGungnir(MemoryGungnir):
         
     async def _extract_agent_experience(self, task: MemoryProcessingTask) -> Optional[List[AgentExperience]]:
         to_be_extracted_messages = task.extract_params.to_openai_messages()
-        agent_experiences_prompt = self._longterm_config.get_agent_experience_prompt(messages=to_be_extracted_messages)
+        agent_experiences_prompt = task.longterm_config.get_agent_experience_prompt(messages=str(to_be_extracted_messages))
         messages = []
         messages.append({
             "role": "user",
@@ -91,7 +90,6 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
     This orchestrator evaluates trigger conditions and creates processing tasks based on configuration.
     """
     def __init__(self, llm_instance: LLMModel,
-                  longterm_config: LongTermConfig,
                  embedding_model: Optional[Any] = None,
                  long_term_memory_store: MemoryStore = None) -> None:
         """
@@ -100,13 +98,14 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
         Args:
             llm_instance: LLM model instance for processing
         """
-        super().__init__(llm_instance, longterm_config, embedding_model, long_term_memory_store)
-        self.memory_gungnir = DefaultMemoryGungnir(llm_instance, longterm_config)
+        super().__init__(llm_instance, embedding_model, long_term_memory_store)
+        self.memory_gungnir = DefaultMemoryGungnir(llm_instance)
         self.memory_tasks: List[MemoryProcessingTask] = []
     
-    def create_longterm_processing_tasks(self, task_params: list[LongTermExtractParams]) -> None:
+    def create_longterm_processing_tasks(self, task_params: list[LongTermExtractParams],
+                                         longterm_config: LongTermConfig) -> None:
         for task_param in task_params:
-            asyncio.create_task(self._create_longterm_processing_task(task_param, self._longterm_config))
+            asyncio.create_task(self._create_longterm_processing_task(task_param, longterm_config))
 
     
     async def _create_longterm_processing_task(self, extract_param: LongTermExtractParams, 
@@ -184,7 +183,8 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
         # create long-term memory task
         memory_task = MemoryProcessingTask(
             task_type=extract_param.extract_type,
-            extract_params=extract_param
+            extract_params=extract_param,
+            longterm_config=longterm_config
         )
 
         # Add metadata based on configuration
