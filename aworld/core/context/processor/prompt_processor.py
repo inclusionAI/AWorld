@@ -79,12 +79,6 @@ class PromptProcessor:
     def is_out_of_context(self, messages: List[Dict[str, Any]],
                           is_last_message_in_memory: bool) -> bool:
         return self._count_tokens_from_messages(messages) > self.get_max_tokens()
-        # Calculate based on historical message length to determine if threshold is reached, this is a rough statistic
-        # current_usage = self.agent_context.context_usage
-        # real_used = current_usage.used_context_length
-        # if not is_last_message_in_memory:
-        #     real_used += self._count_tokens_from_message(messages[-1])
-        # return real_used > self.get_max_tokens()
 
     def _count_tokens_from_messages(self, messages: List[Dict[str, Any]]) -> int:
         """Calculate token count for messages using utils.py method"""
@@ -439,8 +433,8 @@ class PromptProcessor:
                    f"\nTruncation processing time={truncated_result.processing_time:.3f}s"
                    f"\nTotal processing time={total_time:.3f}s"
                    f"\nMethod used={truncated_result.method_used}"
-                   f"\norigin_messages={messages}"
-                   f"\ntruncated_messages={truncated_messages}",
+                   f"\norigin_messages={num_tokens_from_messages(messages)}"
+                   f"\ntruncated_messages={num_tokens_from_messages(truncated_messages)}",
                    color=Color.pink,)
 
         return ContextProcessingResult(

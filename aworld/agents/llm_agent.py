@@ -94,11 +94,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         logger.info("[LLM_AGENT] reset start")
         super().reset(options)
         if self.memory:
-            # self.memory.delete_items(message_type='message', session_id=self._agent_context.get_task().session_id, task_id=self._agent_context.get_task().id, filters={"user_id": self._agent_context.get_user()})
-            if self._agent_context:
-                session_id = self._agent_context.get_task().session_id
-                task_id = self._agent_context.get_task().id
-                user_id = self._agent_context.get_user()
+            # self.memory.delete_items(message_type='message', session_id=self.context.get_task().session_id, task_id=self.context.get_task().id, filters={"user_id": self.context.get_user()})
+            if self.context:
+                session_id = self.context.session_id
+                task_id = self.context.task_id
+                user_id = self.context.user
                 self.memory.delete_items(
                     message_type='message', session_id=session_id, task_id=task_id, filters={"user_id": user_id})
 
@@ -187,7 +187,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         messages = []
 
         # append sys_prompt to memory
-        sys_prompt = self.agent_context.agent_info.system_prompt
+        sys_prompt = self.system_prompt
         if sys_prompt:
             sys_message = None
             if self.system_prompt_template is not None:
@@ -195,7 +195,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             else:
                 sys_message = {'role': 'system', 'content': sys_prompt if not self.use_tools_in_prompt else sys_prompt.format(
                     tool_list=self.tools)}
-            logger.debug(f"sys_message={sys_message}")
+            logger.info(f"formatted system_message={sys_message}")
             messages.append(sys_message)
             self._add_system_message_to_memory()
 
@@ -205,7 +205,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             if self.agent_prompt_template is not None:
                 # TODO: 需要修改
                 user_content = self.agent_prompt_template.format(context=self.context, task=content)
-                logger.debug(f"agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
+                logger.info(f"formatted agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
             else:
                 user_content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
 
@@ -232,9 +232,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # from memory get last n messages
         histories = self.memory.get_last_n(self.history_messages, filters={
-            "agent_id": self._agent_context.agent_info.id(),
-            "session_id": self._agent_context._context.session_id,
-            "task_id": self._agent_context._context.task_id,
+            "agent_id": self.id(),
+            "session_id": self.context.session_id,
+            "task_id": self.context.task_id,
             "message_type": "message"
         })
         if histories:
@@ -974,15 +974,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(
                 f"Failed to execute hooks for {hook_point}: {traceback.format_exc()}")
 
-    @property
-    def _agent_context(self) -> AgentContext:
-        return self.agent_context
-
     def _add_system_message_to_memory(self):
         histories = self.memory.get_last_n(self.history_messages, filters={
-            "agent_id": self._agent_context.agent_info.id(),
-            "session_id": self._agent_context._context.session_id,
-            "task_id": self._agent_context._context.task_id,
+            "agent_id": self.id(),
+            "session_id": self.context.session_id,
+            "task_id": self.context.task_id,
             "message_type": "message"
         })
         if histories and len(histories) > 0:
@@ -997,9 +993,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.memory.add(MemorySystemMessage(
             content=content,
             metadata=MessageMetadata(
-                session_id=self._agent_context._context.session_id,
-                user_id=self._agent_context.get_user(),
-                task_id=self._agent_context._context.task_id,
+                session_id=self.context.session_id,
+                user_id=self.context.user,
+                task_id=self.context.task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
@@ -1012,17 +1008,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.memory.add(MemoryHumanMessage(
             content=content,
             metadata=MessageMetadata(
-                session_id=self._agent_context._context.session_id,
-                user_id=self._agent_context.get_user(),
-                task_id=self._agent_context._context.task_id,
+                session_id=self.context.session_id,
+                user_id=self.context.user,
+                task_id=self.context.task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: "
-                    f"User#{self._agent_context.get_user()}, "
-                    f"Session#{self._agent_context._context.session_id}, "
-                    f"Task#{self._agent_context._context.task_id}, "
+                    f"User#{self.context.user}, "
+                    f"Session#{self.context.session_id}, "
+                    f"Task#{self.context.task_id}, "
                     f"Agent#{self.id()}, 💬 {content[:100]}...")
 
     def _add_llm_response_to_memory(self, llm_response):
@@ -1035,17 +1031,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             content=llm_response.content,
             tool_calls=llm_response.tool_calls if not self.use_tools_in_prompt else custom_prompt_tool_calls,
             metadata=MessageMetadata(
-                session_id=self._agent_context._context.session_id,
-                user_id=self._agent_context.get_user(),
-                task_id=self._agent_context._context.task_id,
+                session_id=self.context.session_id,
+                user_id=self.context.user,
+                task_id=self.context.task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: "
-                    f"User#{self._agent_context.get_user()}, "
-                    f"Session#{self._agent_context._context.session_id}, "
-                    f"Task#{self._agent_context._context.task_id}, "
+                    f"User#{self.context.user}, "
+                    f"Session#{self.context.session_id}, "
+                    f"Task#{self.context.task_id}, "
                     f"Agent#{self.id()},"
                     f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
                     f" content: {llm_response.content[:100] if llm_response.content else ''}... ")
@@ -1057,15 +1053,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             tool_call_id=tool_call_id,
             status="success",
             metadata=MessageMetadata(
-                session_id=self._agent_context._context.session_id,
-                user_id=self._agent_context.get_user(),
-                task_id=self._agent_context._context.task_id,
+                session_id=self.context.session_id,
+                user_id=self.context.user,
+                task_id=self.context.task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
         ))
         logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory:"
-                    f" User#{self._agent_context.get_user()}, "
-                    f"Session#{self._agent_context._context.session_id}, "
-                    f"Task#{self._agent_context._context.task_id}, "
+                    f" User#{self.context.user}, "
+                    f"Session#{self.context.session_id}, "
+                    f"Task#{self.context.task_id}, "
                     f"Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")

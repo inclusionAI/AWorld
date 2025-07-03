@@ -17,9 +17,9 @@ from aworld.models.model_response import ModelResponse
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-LLM_BASE_URL = "http://localhost:1234/v1" # "https://agi.alipay.com/api"
+LLM_BASE_URL = "https://agi.alipay.com/api" # "http://localhost:1234/v1" # "https://agi.alipay.com/api"
 LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
-LLM_MODEL_NAME = "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
+LLM_MODEL_NAME ="DeepSeek-V3-Function-Call" # "shangshu.claude-3.7-sonnet" # "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call"
 # LLM_BASE_URL = "https://matrixllm.alipay.com/v1"
 # LLM_API_KEY = "sk-5d0c421b87724cdd883cfa8e883998da"
 # LLM_MODEL_NAME = "claude-3-7-sonnet-20250219"
@@ -37,24 +37,19 @@ from examples.tools.common import Tools
 
 plan_sys_prompt = """You are a strategic planning agent specialized in creating structured research plans. 
 
-You need to create a plan using tool_calls.
-
-Strategy:
-1. use search_agent to search for "地平线公司的未来发展计划" and "Momenta公司的未来发展计划" to gather comprehensive information about future plans, at most search twice
-2. use summary_agent to summary "地平线公司和Momenta公司的未来发展计划"
+Requirements:
+1. You need to create a plan using tool_calls, avoid doing any work yourself including summary, try to use tools to complete tasks.
+2. The name in tool_calls must strictly use the name specified in tools
+3. The content parameter in tool_calls is a json list like: ["something"], but summary_agent only accept one content
+4. **IMPORTANT: Goal Achievement Check**: If trajectories already contain the goal, don't return tool_call
 
 tools:
 {tool_list}
 
-Requirements:
-1. The name in tool_calls must strictly use the name specified in tools
-2. The content parameter in tool_calls is a json list like: ["地平线公司的未来发展计划"], but summary_agent only accept one content
-3. **IMPORTANT: Goal Achievement Check**: If trajectories already contain the goal, don't return tool_call
-
 trajectories:
 {trajectories}
 """
-plan_prompt = """Generate your plan:"""
+plan_prompt = """调研地平线公司和Momenta公司的未来发展计划"""
 
 search_sys_prompt = """You are a helpful search agent.
 
@@ -135,6 +130,7 @@ if __name__ == "__main__":
         llm_temperature=1,
         llm_base_url=LLM_BASE_URL,
         llm_api_key=LLM_API_KEY,
+        max_model_len=8000,
         # need to set llm_api_key for use LLM
     )
 
@@ -168,12 +164,11 @@ if __name__ == "__main__":
             ),
             llm_compression_config=LlmCompressionConfig(
                 enabled=True,
-                trigger_compress_token_length=9600,
+                trigger_compress_token_length=10000,
                 compress_model=ModelConfig(
                     llm_model_name=LLM_MODEL_NAME,
                     llm_base_url=LLM_BASE_URL,
                     llm_api_key=LLM_API_KEY,
-                    max_model_len=4096
                 )
             )
         )

@@ -9,6 +9,7 @@ from typing import AsyncGenerator, Dict, Any, List, Union, Callable
 from datetime import datetime
 
 from aworld.core.context.processor.llm_compressor import LLMCompressor
+from aworld.models.model_response import ModelResponse
 import aworld.trace as trace
 from aworld.agents.parallel_llm_agent import ParallelizableAgent
 from aworld.agents.serial_llm_agent import SerialableAgent
@@ -132,7 +133,7 @@ class PlanAgent(Agent):
         self.written_trajectories = set()  # 记录已写入的trajectories key
 
         # 结果解析函数
-        self.resp_parse_func = resp_parse_func
+        self.resp_parse_func = parse_multiple_contents
 
         self._finished = False
 
@@ -145,7 +146,7 @@ class PlanAgent(Agent):
         # 使用session_id和timestamp生成唯一文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         session_id = getattr(self.context, 'session_id', 'unknown') if hasattr(self, 'context') and self.context else 'unknown'
-        filename = f"plan_agent_{session_id}_{timestamp}.jsonl"
+        filename = f"plan_agent_{timestamp}_{session_id}.jsonl"
         self.trajectories_file = trajectories_dir / filename
         
         logger.info(f"Trajectories will be written to: {self.trajectories_file}")
@@ -246,9 +247,9 @@ class PlanAgent(Agent):
 
             for k, v in res.items():
                 tool_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
-                self._save_action_trajectory(self.cur_action_step, v)
                 # 获取对应的工具名称
                 tool_name = tools[len(tool_results)-1].tool_name if len(tool_results) <= len(tools) else "unknown_tool"
+                self._save_action_trajectory(self.cur_action_step, None, tool_name, k, v.answer)
                 logger.info(f"Tool execution - Step {self.cur_action_step}, Tool: {tool_name}, Task: {k} -> Result: {v}")
                 self.cur_action_step += 1
 
@@ -284,9 +285,9 @@ class PlanAgent(Agent):
 
                 for k, v in parallel_agent_res.items():
                     agent_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
-                    self._save_action_trajectory(self.cur_action_step, v)
                     # 获取对应的Agent名称
                     agent_name = agents[len(agent_results)-1].tool_name if len(agent_results) <= len(agents) else "unknown_agent"
+                    self._save_action_trajectory(self.cur_action_step, agent_name, None, k, v.answer)
                     logger.info(f"Parallel agent execution - Step {self.cur_action_step}, Agent: {agent_name}, Task: {k} -> Result: {v}")
                     self.cur_action_step += 1
                 # logger.info("Using parallel execution mode")
@@ -301,14 +302,13 @@ class PlanAgent(Agent):
                         result = v.answer
                         # 压缩content
                         if self.context_rule.optimization_config.enabled:
-                            logger.info(f'to compress result= {v.answer}')
                             compressed_result = compress_content(llm_config=self.context_rule.llm_compression_config.compress_model, content = v.answer)
                             result = compressed_result.compressed_content
-                            logger.info(f'compressed_result= {result}')
+                            logger.info(f'to deserialize result= {len(v.answer)} deserialize result= {len(result)}')
                         agent_results.append(ActionModel(agent_name=task.agent.id(), policy_info=result))
-                        self._save_action_trajectory(self.cur_action_step, result)
                         # 使用task.agent获取Agent名称
                         agent_name = task.agent.id() if task.agent else "unknown_agent"
+                        self._save_action_trajectory(self.cur_action_step, agent_name, None, task.input, result)
                         logger.info(f"Serial agent execution - Step {self.cur_action_step}, Agent: {agent_name}, Task: {k} -> Result: {v}")
                         self.cur_action_step += 1
                 # logger.info("Using serial execution mode")
@@ -366,7 +366,7 @@ class PlanAgent(Agent):
         except Exception as e:
             logger.warn(traceback.format_exc())
 
-        self._save_action_trajectory(self.cur_action_step, llm_response.content)
+        self._save_action_trajectory(self.cur_action_step, self.id(), None, observation.content, llm_response.content)
         logger.info(f"Serial agent execution - Step {self.cur_action_step}, Agent: {self.name()}")
         self.cur_action_step += 1
 
@@ -385,14 +385,16 @@ class PlanAgent(Agent):
         new_context.task_id = new_task.id
         return new_task
 
-    def _save_action_trajectory(self, step, action: ActionModel):
+    def _save_action_trajectory(self, step, agent_name: str, tool_name: str, params: str, result: str):
         # 将agent_results和tool_results保存到trajectories中
         step_key = f"step_{step}"
         step_data = {
             "step": step,
-            "action": action,
+            "params": params,
+            "result": result,
             "timestamp": datetime.now().isoformat(),
-            "agent_name": self.id()
+            "agent_name": agent_name,
+            "tool_name": tool_name
         }
         self.context.trajectories[step_key] = step_data
 
