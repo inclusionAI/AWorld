@@ -209,10 +209,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._add_human_input_to_memory(content, message.context)
 
         # from memory get last n messages
+        session_id = message.context.get_task().session_id
+        task_id = message.context.get_task().id
         histories = self.memory.get_last_n(self.history_messages, filters={
-            "agent_id": self._agent_context.agent_id,
-            "session_id": self._agent_context._context.session_id,
-            "task_id": self._agent_context._context.task_id,
+            "agent_id": self.id(),
+            "session_id": session_id,
+            "task_id": task_id,
             "message_type": "message"
         })
         if histories:
@@ -580,7 +582,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             source_span.set_attribute("messages", json.dumps(
                 serializable_messages, ensure_ascii=False))
         try:
-            llm_response = await self._call_llm_model(observation, messages, info, **kwargs)
+            llm_response = await self._call_llm_model(observation, messages, info,message=message, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
