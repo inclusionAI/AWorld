@@ -94,7 +94,7 @@ class GaiaSearchToolResultParser(BaseToolResultParser):
 
 class CustomToolResultParserFactory(ToolResultParserFactory):
     def get_parser(self, tool_type: str, tool_name: str):
-        if "search" == tool_name:
+        if "search" in tool_name:
             return GaiaSearchToolResultParser()
         return super().get_parser(tool_type, tool_name)
 
