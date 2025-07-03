@@ -245,16 +245,18 @@ class LongTermExtractParams(BaseModel):
         return [memory.to_openai_message() for memory in self.memories]
 
 class UserProfileExtractParams(LongTermExtractParams):
-    user_id: str = Field(description="The ID of the user")
+    user_id: Optional[str] = Field(description="The ID of the user")
 
     def __init__(self, user_id: str, session_id: str, task_id: str, memories: List[MemoryItem] = None, application_id: str = None) -> None:
-        super().__init__(session_id=session_id,
-                         task_id=task_id,
-                         memories=memories,
-                         application_id=application_id,
-                         extract_type="user_profile"
-                         )
-        self.user_id = user_id
+        kwargs = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "task_id": task_id,
+            "memories": memories or [],
+            "application_id": application_id,
+            "extract_type": "user_profile"
+        }
+        super().__init__(**kwargs)
 
     model_config = ConfigDict(extra="allow")
 

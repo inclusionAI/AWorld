@@ -292,7 +292,7 @@ class Memory(MemoryBase):
             # TODO: add a background task to process long-term memory
             self.post_process_long_terms(memory_item, filters)
         except Exception as err:
-            logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exception(err)}")
+            logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exc()}")
 
     def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None):
         """Post process long-term memory."""
