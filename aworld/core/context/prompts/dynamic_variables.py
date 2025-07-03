@@ -320,18 +320,21 @@ def create_context_field_getter(
 
 # ==================== 便捷创建函数 ====================
 
-def create_simple_field_getter(field_path: str, context: "Context" = None, default: str = "") -> ContextFieldGetter:
+def create_simple_field_getter(field_path: str, default: str = "") -> Callable[["Context"], str]:
     """创建简单字段获取器的便捷函数
     
     Args:
         field_path: 字段路径，支持嵌套如 "model_config.llm_model_name"
-        context: Context实例
+        context: Context实例（用于向后兼容，但函数返回时会忽略）
         default: 默认值
         
     Returns:
-        可序列化的ContextFieldGetter实例
+        可以接受 context 参数的函数
     """
-    return ContextFieldGetter(field_path, context, default)
+    def field_getter(context: "Context" = None) -> str:
+        return _get_context_field_value_with_fallback(context, field_path, default)
+    
+    return field_getter
 
 
 def create_multiple_field_getters(
@@ -498,38 +501,6 @@ def get_trajectories_from_context(context: "Context" = None) -> str:
         if not trajectories:
             return "No trajectories"
         
-        # 如果是列表，格式化输出
-        if isinstance(trajectories, (list, tuple)):
-            if len(trajectories) == 0:
-                return "No trajectories"
-            
-            # 格式化轨迹信息
-            formatted_trajectories = []
-            for i, trajectory in enumerate(trajectories):
-                if hasattr(trajectory, '__dict__'):
-                    # 如果是对象，尝试获取关键信息
-                    info_parts = []
-                    if hasattr(trajectory, 'action'):
-                        info_parts.append(f"action: {trajectory.action}")
-                    if hasattr(trajectory, 'observation'):
-                        obs = str(trajectory.observation)
-                        # 截断过长的observation
-                        if len(obs) > 100:
-                            obs = obs[:100] + "..."
-                        info_parts.append(f"observation: {obs}")
-                    if hasattr(trajectory, 'thought'):
-                        info_parts.append(f"thought: {trajectory.thought}")
-                    
-                    if info_parts:
-                        formatted_trajectories.append(f"Step {i+1}: {', '.join(info_parts)}")
-                    else:
-                        formatted_trajectories.append(f"Step {i+1}: {str(trajectory)}")
-                else:
-                    # 如果不是对象，直接转换为字符串
-                    formatted_trajectories.append(f"Step {i+1}: {str(trajectory)}")
-            
-            return "\n".join(formatted_trajectories)
-        
         # 如果不是列表，直接转换为字符串
         return str(trajectories)
         
@@ -545,7 +516,7 @@ CONTEXT_VARIABLES = {
     "model_name": get_model_name_from_context,
     "current_step": get_current_step_from_context,
     "tools": get_tools_from_context,
-    "trajectories": get_trajectories_from_context,
+    "trajectories": create_simple_field_getter("trajectories"),
 }
 
 # 全部变量集合 - 包含时间、系统和Context变量

@@ -15,8 +15,7 @@ from aworld.core.context.prompts.string_prompt_template import StringPromptTempl
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# LLM_BASE_URL = "https://agi.alipay.com/api"
-LLM_BASE_URL = "http://localhost:1234/v1"
+LLM_BASE_URL = "http://localhost:1234/v1" # "https://agi.alipay.com/api"
 LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
 LLM_MODEL_NAME = "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
 # LLM_BASE_URL = "https://matrixllm.alipay.com/v1"
@@ -29,7 +28,7 @@ os.environ['GOOGLE_API_KEY'] = "AIzaSyDl7Axs2CyS0nvBJ47QL30t84N2-azuFNQ"
 os.environ['TAVILY_API_KEY'] = "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"
 
 from aworld.agents.llm_agent import Agent
-from aworld.config.conf import AgentConfig
+from aworld.config.conf import AgentConfig, ContextRuleConfig, LlmCompressionConfig, ModelConfig, OptimizationConfig
 from aworld.core.agent.swarm import Swarm, TeamSwarm
 from aworld.runner import Runners
 from examples.tools.common import Tools
@@ -42,11 +41,18 @@ Strategy:
 1. use search_agent to search for "地平线公司的未来发展计划" and "Momenta公司的未来发展计划" to gather comprehensive information about future plans, at most search twice
 2. use summary_agent to summary "地平线公司和Momenta公司的未来发展计划"
 
+tools:
+{tool_list}
+
 Requirements:
 1. The name in tool_calls must strictly use the name specified in tools
 2. The content parameter in tool_calls is a json list like: ["地平线公司的未来发展计划"], but summary_agent only accept one content
+3. **IMPORTANT: Goal Achievement Check**: If trajectories already contain the goal, don't return tool_call
+
+trajectories:
+{trajectories}
 """
-plan_prompt = """answer the plan:"""
+plan_prompt = """Generate your plan:"""
 
 search_sys_prompt = """You are a helpful search agent.
 
@@ -115,59 +121,6 @@ Summaries:
 summary_prompt = """
 """
 
-"""创建解析函数的工厂函数"""
-def parse_multiple_contents(llm_resp):
-    """解析包含多个内容的工具调用响应"""
-    from aworld.core.agent.base import AgentResult
-    from aworld.core.common import ActionModel
-    
-    if llm_resp.tool_calls is None or len(llm_resp.tool_calls) == 0:
-        # 如果没有工具调用，返回空的AgentResult
-        return AgentResult(actions=[], current_state=None)
-
-    actions = []
-    
-    # 遍历所有的tool_calls，而不是只处理第一个
-    for tool_call in llm_resp.tool_calls:
-        func_content = tool_call.function
-        try:
-            arguments = json.loads(func_content.arguments)
-            
-            # 检查是否有content参数，且content是列表
-            if 'content' in arguments and isinstance(arguments['content'], list):
-                contents = arguments['content']
-                # 为每个content创建一个独立的ActionModel
-                for content in contents:
-                    new_arguments = {'content': content}
-                    actions.append(ActionModel(
-                        tool_name=func_content.name,
-                        tool_id=f"{tool_call.id}_{content}" if len(contents) > 1 else tool_call.id,
-                        agent_name="planer_agent",  # 使用字符串避免循环引用
-                        params=new_arguments,
-                        policy_info=llm_resp.content or ""
-                    ))
-            else:
-                # 如果content不是列表或不存在，直接使用原始参数
-                actions.append(ActionModel(
-                    tool_name=func_content.name,
-                    tool_id=tool_call.id,
-                    agent_name="planer_agent",
-                    params=arguments,
-                    policy_info=llm_resp.content or ""
-                ))
-                
-        except Exception as e:
-            print(f"Failed to parse tool call arguments: {tool_call}, error: {e}")
-            # 跳过解析失败的tool_call，继续处理下一个
-            continue
-    
-    print(f'Total tool_calls processed: {len(llm_resp.tool_calls)}')
-    print(f'Total actions created: {len(actions)}')
-    print(f'Actions: {actions}')
-    
-    return AgentResult(actions=actions, current_state=None)
-    
-
 # search and summary
 if __name__ == "__main__":
     # need to set GOOGLE_API_KEY and GOOGLE_ENGINE_ID to use Google search.
@@ -189,8 +142,6 @@ if __name__ == "__main__":
         desc="summary_agent",
         system_prompt=summary_sys_prompt,
         # agent_prompt=summary_prompt,
-        system_prompt_template=StringPromptTemplate(template=summary_prompt,
-                                                   partial_variables={"trajectories": create_simple_field_getter("trajectories")})
     )
 
     search = Agent(
@@ -207,9 +158,23 @@ if __name__ == "__main__":
         name="planer_agent",
         desc="planer_agent",
         system_prompt=plan_sys_prompt,
-        # agent_prompt=plan_prompt,
         agent_names=[search.id(), summary.id()],
-        resp_parse_func=parse_multiple_contents
+        context_rule=ContextRuleConfig(
+            optimization_config=OptimizationConfig(
+                enabled=True,
+                max_token_budget_ratio=1
+            ),
+            llm_compression_config=LlmCompressionConfig(
+                enabled=True,
+                trigger_compress_token_length=9600,
+                compress_model=ModelConfig(
+                    llm_model_name=LLM_MODEL_NAME,
+                    llm_base_url=LLM_BASE_URL,
+                    llm_api_key=LLM_API_KEY,
+                    max_model_len=4096
+                )
+            )
+        )
     )
 
     # default is workflow swarm
@@ -224,3 +189,4 @@ if __name__ == "__main__":
         swarm=swarm
     )
     print(res.answer)
+

@@ -3,13 +3,15 @@
 """Base classes for prompt templates."""
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 from aworld.core.context.prompts.formatters import TemplateFormat, get_template_variables
 
 if TYPE_CHECKING:
-    from aworld.core.context.base import AgentContext
+    from aworld.core.context.base import Context
 
+logger = logging.getLogger("prompts")
 
 class PromptValue(ABC):
     """Base class for prompt values that can be passed to language models."""
@@ -85,52 +87,33 @@ class BasePromptTemplate(ABC):
             raise ValueError(f"Found overlapping input and partial variables: {overlap}")
     
     @abstractmethod
-    def format(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> str:
-        """Format the prompt with the given variables.
-        
-        Args:
-            agent_context: Agent context for dynamic variable functions
-            **kwargs: User-provided variables
-        """
+    def format(self, context: 'Context' = None, **kwargs: Any) -> str:
         pass
     
     @abstractmethod
-    def format_prompt(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> PromptValue:
-        """Format the prompt and return a PromptValue object.
-        
-        Args:
-            agent_context: Agent context for dynamic variable functions
-            **kwargs: User-provided variables
-        """
+    def format_prompt(self, context: 'Context' = None, **kwargs: Any) -> PromptValue:
         pass
     
-    def _merge_partial_and_user_variables(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> Dict[str, Any]:
-        """Merge partial variables with user-provided variables.
-        
-        Args:
-            agent_context: Agent context for dynamic variable functions
-            **kwargs: User-provided variables
-        """
+    def _merge_partial_and_user_variables(self, context: 'Context' = None, **kwargs: Any) -> Dict[str, Any]:
         merged = {}
         for key, value in self.partial_variables.items():
             if callable(value):
-                # 如果是函数，尝试传入agent_context作为参数
+                # 如果是函数，尝试传入context作为参数
                 try:
-                    # 检查函数是否接受agent_context参数
+                    # 检查函数是否接受context参数
                     import inspect
                     sig = inspect.signature(value)
-                    if 'agent_context' in sig.parameters or 'ctx' in sig.parameters:
-                        # 如果函数接受agent_context或ctx参数，传入上下文
-                        if 'agent_context' in sig.parameters:
-                            merged[key] = value(agent_context=agent_context)
-                        else:  # 'ctx' in sig.parameters
-                            merged[key] = value(ctx=agent_context)
+                    if ("context" in sig.parameters.keys()) == True:
+                        # 如果函数接受context或ctx参数，传入上下文
+                        merged[key] = value(context=context)
+                        logger.debug(f"sig={sig.parameters} {sig.parameters.keys()} {"context" in sig.parameters.keys()} {merged[key]}")
                     else:
                         # 否则直接调用
                         merged[key] = value()
                 except Exception as e:
                     # 如果出错，回退到无参数调用
                     try:
+                        logger.error(f"Error calling function {key}: {e}")
                         merged[key] = value()
                     except Exception:
                         # 如果仍然出错，使用默认值或抛出异常

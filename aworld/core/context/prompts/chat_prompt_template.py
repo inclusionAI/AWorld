@@ -3,11 +3,14 @@
 """Chat-based prompt template implementation."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Dict, List, Optional, Union, Tuple, TYPE_CHECKING
 
 from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate, PromptValue, ChatPromptValue
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.context.prompts.formatters import TemplateFormat, get_template_variables
+
+if TYPE_CHECKING:
+    from aworld.core.context.base import Context
 
 MessageLike = Union[Dict[str, Any], Tuple[str, str], 'BaseMessagePromptTemplate']
 MessageRole = str
@@ -198,9 +201,9 @@ class ChatPromptTemplate(BasePromptTemplate):
             
             return GenericMessagePromptTemplate(role, content, template_format)
     
-    def format(self, **kwargs: Any) -> str:
+    def format(self, context: 'Context' = None, **kwargs: Any) -> str:
         """Format the chat prompt as a single string."""
-        messages = self.format_messages(**kwargs)
+        messages = self.format_messages(context=context, **kwargs)
         lines = []
         for message in messages:
             role = message.get("role", "unknown")
@@ -208,14 +211,14 @@ class ChatPromptTemplate(BasePromptTemplate):
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
     
-    def format_prompt(self, **kwargs: Any) -> PromptValue:
+    def format_prompt(self, context: 'Context' = None, **kwargs: Any) -> PromptValue:
         """Format the chat prompt and return a PromptValue object."""
-        messages = self.format_messages(**kwargs)
+        messages = self.format_messages(context=context, **kwargs)
         return ChatPromptValue(messages)
     
-    def format_messages(self, **kwargs: Any) -> List[Dict[str, Any]]:
+    def format_messages(self, context: 'Context' = None, **kwargs: Any) -> List[Dict[str, Any]]:
         """Format all messages in the chat prompt."""
-        variables = self._merge_partial_and_user_variables(**kwargs)
+        variables = self._merge_partial_and_user_variables(context=context, **kwargs)
         
         formatted_messages = []
         for message_template in self.messages:

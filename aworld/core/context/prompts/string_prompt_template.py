@@ -13,7 +13,7 @@ from aworld.core.context.prompts.formatters import (
 from aworld.core.context.prompts.dynamic_variables import ALL_DYNAMIC_VARIABLES
 
 if TYPE_CHECKING:
-    from aworld.core.context.base import AgentContext
+    from aworld.core.context.base import Context
 
 class StringPromptTemplate(BasePromptTemplate):
     """String-based prompt template."""
@@ -54,13 +54,13 @@ class StringPromptTemplate(BasePromptTemplate):
             **kwargs
         )
         
-    def format(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> str:
-        variables = self._merge_partial_and_user_variables(agent_context=agent_context, **kwargs)
+    def format(self, context: 'Context' = None, **kwargs: Any) -> str:
+        variables = self._merge_partial_and_user_variables(context=context, **kwargs)
         self._validate_input_variables(variables)
         return format_template(self.template, self.template_format, **variables)
     
-    def format_prompt(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> PromptValue:
-        formatted_text = self.format(agent_context=agent_context, **kwargs)
+    def format_prompt(self, context: 'Context' = None, **kwargs: Any) -> PromptValue:
+        formatted_text = self.format(context=context, **kwargs)
         return StringPromptValue(formatted_text)
     
     def _get_additional_kwargs(self) -> Dict[str, Any]:

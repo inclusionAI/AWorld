@@ -126,8 +126,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.tools.extend(self._handoffs_agent_as_tool())
         # MCP servers are tools
         self.tools.extend(self._mcp_is_tool())
-        # load to context
-        self.agent_context.set_tools(self.tools)
         return self.tools
 
     async def async_desc_transform(self):
@@ -145,8 +143,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self.tools.extend(mcp_tools)
         else:
             self.tools.extend(await sandbox_mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
-        # load to agent context
-        self.agent_context.set_tools(self.tools)
 
 
     def messages_transform(self,
@@ -167,18 +163,22 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         agent_prompt = self.agent_prompt
         messages = []
         if sys_prompt:
-            messages.append(
-                {'role': 'system', 'content': sys_prompt if not self.use_tools_in_prompt else sys_prompt.format(
-                    tool_list=self.tools)})
+            sys_message = None
+            if self.system_prompt_template is not None:
+                sys_message = {'role': 'system', 'content': self.system_prompt_template.format(context=self.context, task=content, tool_list=self.tools)}
+            else:
+                sys_message = {'role': 'system', 'content': sys_prompt if not self.use_tools_in_prompt else sys_prompt.format(
+                    tool_list=self.tools)}
+            logger.debug(f"sys_message={sys_message}")
+            messages.append(sys_message)
 
         histories = self.memory.get_last_n(self.history_messages)
         user_content = content
-        print(f"agent_prompt={agent_prompt} \n histories={histories}")
         if not histories and agent_prompt and '{task}' in agent_prompt:
             if self.agent_prompt_template is not None:
                 # TODO: 需要修改
-                user_content = self.agent_prompt_template.format(task=content)
-                print(f"agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
+                user_content = self.agent_prompt_template.format(context=self.context, task=content)
+                logger.debug(f"agent_prompt_template={self.agent_prompt_template} \n user_content={user_content}")
             else:
                 user_content = agent_prompt.format(task=content)
 
@@ -217,11 +217,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # truncate and other process
         try:
-            messages = self._process_messages(messages=messages, agent_context=self.agent_context, context=self.context)
+            messages = self._process_messages(messages=messages, context=self.context)
         except Exception as e:
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
-        self.agent_context.set_messages(messages)
         return messages
 
     def use_tool_list(self, resp: ModelResponse) -> List[Dict[str, Any]]:
@@ -272,7 +271,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 # format in framework
                 names = full_name.split("__")
                 tool_name = names[0]
-                print(f"param_info={params} tool_name={tool_name} full_name={full_name} is_agent_by_name={is_agent_by_name(full_name)} AgentFactory._agent_instance={AgentFactory._agent_instance}")
+                logger.info(f"param_info={params} tool_name={tool_name} full_name={full_name} is_agent_by_name={is_agent_by_name(full_name)} AgentFactory._agent_instance={AgentFactory._agent_instance}")
                 if is_agent_by_name(full_name):
                     param_info = params.get('content', "") + ' ' + params.get('info', '')
                     results.append(ActionModel(tool_name=full_name,
@@ -568,11 +567,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             raise e
         finally:
             if llm_response:
-                # update usage
-                self.update_context_usage(used_context_length=llm_response.usage['total_tokens'])
-                # update current step output
-                self.update_llm_output(llm_response)
-
                 use_tools = self.use_tool_list(llm_response)
                 is_use_tool_prompt = len(use_tools) > 0
                 if llm_response.error:
@@ -599,7 +593,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(traceback.format_exc())
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
-        print(f"agent_result: {agent_result}")
+        logger.info(f"agent_result: {agent_result}")
         if not agent_result.is_call_tool:
             self._finished = True
         return agent_result.actions
@@ -685,20 +679,20 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         return messages
 
-    def _process_messages(self, messages: List[Dict[str, Any]], agent_context: AgentContext = None,
+    def _process_messages(self, messages: List[Dict[str, Any]],
                           context: Context = None) -> Message:
         origin_messages = messages
         st = time.time()
         with trace.span(f"llm_context_process", attributes={
             "start_time": st
         }) as compress_span:
-            if agent_context.context_rule is None:
+            if self.context_rule is None:
                 logger.debug('debug|skip process_messages context_rule is None')
                 return messages
             origin_len = compressed_len = len(str(messages))
             origin_messages_count = truncated_messages_count = len(messages)
             try:
-                prompt_processor = PromptProcessor(agent_context)
+                prompt_processor = PromptProcessor(self.context_rule, self.conf.llm_config)
                 result = prompt_processor.process_messages(messages, context)
                 messages = result.processed_messages
 
@@ -735,7 +729,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
             outputs = kwargs.get("outputs")
         if not messages:
-            messages = await self._prepare_llm_input(observation, self.agent_context, **kwargs)
+            messages = await self._prepare_llm_input(observation, **kwargs)
 
         llm_response = None
         source_span = trace.get_current_span()
@@ -903,7 +897,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_config = self.conf.llm_config
         context_rule = self.context_rule
         if context_rule is None:
-            context_rule = ContextRuleConfig(
+            self.context_rule = ContextRuleConfig(
                 optimization_config=OptimizationConfig(
                     enabled=True,
                     max_token_budget_ratio=1.0
@@ -912,31 +906,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     enabled=False  # Compression disabled by default
                 )
             )
-        self.agent_context.set_agent_info(self)
-        self.agent_context.context_rule = context_rule
-        logger.debug(f'init_context llm_agent {self.name()} {self.agent_context} {self.conf} {self.context_rule}')
+        logger.debug(f'init_context llm_agent {self.name()} {self.conf} {self.context_rule}')
 
     def update_system_prompt(self, system_prompt: str):
         self.system_prompt = system_prompt
-        self.agent_context.agent_info.system_prompt = system_prompt
         logger.info(f"Agent {self.name()} system_prompt updated")
 
     def update_agent_prompt(self, agent_prompt: str):
         self.agent_prompt = agent_prompt
-        self.agent_context.agent_info.agent_prompt = agent_prompt
         logger.info(f"Agent {self.name()} agent_prompt updated")
-
-    def update_context_rule(self, context_rule: ContextRuleConfig):
-        self.agent_context.context_rule = context_rule
-        logger.info(f"Agent {self.name()} context_rule updated")
-
-    def update_context_usage(self, used_context_length: int = None, total_context_length: int = None):
-        self.agent_context.update_context_usage(used_context_length, total_context_length)
-        logger.debug(f"Agent {self.name()} context usage updated: {self.agent_context.context_usage}")
-
-    def update_llm_output(self, llm_response: ModelResponse):
-        self.agent_context.set_llm_output(llm_response)
-        logger.debug(f"Agent {self.name()} llm output updated: {self.agent_context.llm_output}")
 
     async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""

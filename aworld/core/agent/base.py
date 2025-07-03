@@ -127,7 +127,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # all tools that the agent can use. note: string name/id only
         self.tools = []
         self.context = None
-        self.agent_context = None
         self.state = AgentStatus.START
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
@@ -137,14 +136,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def _init_context(self, context: Context):
         self.context = context
-        self.agent_context = AgentContext(
-            agent_id=self.id(),
-            agent_name=self.name(),
-            agent_desc=self.desc(),
-            tool_names=self.tool_names,
-            context=self.context,
-            parent_state=self.context.context_info  # Pass Context's state as parent state
-        )
 
     def id(self) -> str:
         return self._id
