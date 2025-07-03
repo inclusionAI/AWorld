@@ -98,10 +98,10 @@ class AWorldAgent(BaseAWorldAgent):
             prompt = request.messages[-1].content
 
         task = Task(
-            session_id=request.session_id,
             input=prompt,
             swarm=swarm,
             conf=TaskConfig(max_steps=20),
+            session_id=request.session_id,
             endless_threshold=50,
         )
 

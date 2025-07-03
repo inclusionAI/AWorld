@@ -63,6 +63,8 @@ class AWorldAgent(BaseAWorldAgent):
             input=prompt,
             agent=super_agent,
             conf=TaskConfig(max_steps=20),
+            session_id=request.session_id,
+            endless_threshold=50,
         )
 
         with open("data/output.txt", "w") as f:
