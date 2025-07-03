@@ -195,7 +195,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             for action_item in observation.action_result:
                 content = action_item.content
                 tool_call_id = action_item.tool_call_id
-                self._add_tool_result_to_memory(tool_call_id, content)
+                self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
         else:
             content = observation.content
             if agent_prompt and '{task}' in agent_prompt:
@@ -655,7 +655,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
             return agent_result.actions
         else:
-            result = await self._execute_tool(agent_result.actions)
+            result = await self._execute_tool(agent_result.actions, context_message = message)
             return result
 
     async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
@@ -821,7 +821,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         finally:
             return llm_response
 
-    async def _execute_tool(self, actions: List[ActionModel]) -> Any:
+    async def _execute_tool(self, actions: List[ActionModel], context_message: Message = None) -> Any:
         """Execute tool calls
 
         Args:
@@ -895,8 +895,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             trace_logger.info(
                 f"{tool_name} observation: {log_ob}", color=Color.green)
 
-            self._add_tool_result_to_memory(
-                action[0].tool_call_id, observation.action_result)
+            for action_result_item in observation.action_result:
+                self._add_tool_result_to_memory(action_result_item.tool_call_id, action_result_item.content,context=context_message.context)
+
         return [ActionModel(agent_name=self.id(), policy_info=observation.content)]
 
     def _init_context(self, context: Context):
