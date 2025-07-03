@@ -90,17 +90,17 @@ class LocalRuntime(RuntimeEngine):
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         # opt of the one task process
-        # if len(funcs) == 1:
-        #     func = funcs[0]
-        #     try:
-        #         if inspect.iscoroutinefunction(func):
-        #             res = await func(*args, **kwargs)
-        #         else:
-        #             res = func(*args, **kwargs)
-        #         return {res.id: res}
-        #     except Exception as e:
-        #         logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
-        #         raise
+        if len(funcs) == 1:
+            func = funcs[0]
+            try:
+                if inspect.iscoroutinefunction(func):
+                    res = await func(*args, **kwargs)
+                else:
+                    res = func(*args, **kwargs)
+                return {res.id: res}
+            except Exception as e:
+                logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
+                raise
 
         num_executor = self.conf.get('worker_num', os.cpu_count() - 1)
         num_process = len(funcs)
@@ -210,7 +210,7 @@ class RayRuntime(RuntimeEngine):
         for arg in args:
             params.append([arg] * len(funcs))
 
-        ray_map = lambda func, fn: [func.remote(x, *y) for x, *y in zip(fn, *params)]
+        def ray_map(func, fn): return [func.remote(x, *y) for x, *y in zip(fn, *params)]
         res_list = self.runtime.get(ray_map(fn_wrapper, funcs))
         return {res.id: res for res in res_list}
 

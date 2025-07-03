@@ -57,7 +57,7 @@ async def _do_summarize_trace(trace_id: str):
             "LLM_API_KEY_TRACE is not set, trace summarize will not be executed.")
         return ""
     try:
-        res = await exec_tasks(trace_id, [trace_agent], Context.instance())
+        res = await exec_tasks(trace_id, [trace_agent], Context())
         res = res[0]
         _trace_summary_cache[trace_id] = _fetch_json_from_result(res.answer)
         return _trace_summary_cache[trace_id]
