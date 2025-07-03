@@ -44,6 +44,6 @@ class TestPostLLMHook(PostLLMCallHook):
             if hasattr(agent_context.llm_output, 'content'):
                 content = agent_context.llm_output.content.lower()
                 if content is not None:
-                    agent_context.agent_prompt = "Success mode activated"
-        assert agent_context.agent_prompt == "Success mode activated"
+                    agent_context.agent_info.agent_prompt = "Success mode activated"
+        assert agent_context.agent_info.agent_prompt == "Success mode activated"
         return message

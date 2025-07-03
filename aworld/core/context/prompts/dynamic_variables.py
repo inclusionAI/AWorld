@@ -10,22 +10,22 @@ Example:
     >>> from aworld.core.context.prompts import PromptTemplate
     >>> from aworld.core.context.prompts.dynamic_variables import (
     ...     get_current_time, 
-    ...     create_agent_field_getter,
-    ...     create_agent_name_getter
+    ...     create_context_field_getter,
+    ...     create_context_name_getter
     ... )
     >>> 
     >>> # 使用预定义的便捷函数
-    >>> get_agent_name = create_agent_name_getter(agent_context)
+    >>> get_agent_name = create_context_name_getter(context)
     >>> 
     >>> # 或者使用通用的字段获取器
-    >>> get_agent_name = create_agent_field_getter("agent_name", agent_context, "Assistant")
+    >>> get_agent_name = create_context_field_getter("agent_name", context, "Assistant")
     >>> 
     >>> # 获取嵌套字段
-    >>> get_model_name = create_agent_field_getter("model_config.llm_model_name", agent_context, "unknown")
+    >>> get_model_name = create_context_field_getter("model_config.llm_model_name", context, "unknown")
     >>> 
     >>> # 带自定义处理的字段
-    >>> get_tools = create_agent_field_getter(
-    ...     "tool_names", agent_context, "无工具",
+    >>> get_tools = create_context_field_getter(
+    ...     "tool_names", context, "无工具",
     ...     processor=lambda tools: ", ".join(tools) if tools else "无工具可用"
     ... )
     >>> 
@@ -41,8 +41,8 @@ Example:
     ... )
 
 通用字段获取器功能：
-- 支持简单字段访问：create_agent_field_getter("agent_name", ctx)
-- 支持嵌套字段访问：create_agent_field_getter("model_config.llm_model_name", ctx) 
+- 支持简单字段访问：create_context_field_getter("agent_name", ctx)
+- 支持嵌套字段访问：create_context_field_getter("model_config.llm_model_name", ctx) 
 - 支持自定义处理函数：processor=lambda x: f"处理后的{x}"
 - 支持后备获取函数：fallback_getter=lambda ctx: ctx.get_special_field()
 - 支持默认值：default_value="默认值"
@@ -56,7 +56,7 @@ from datetime import datetime, timezone
 from typing import Callable, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from aworld.core.context.base import AgentContext
+    from aworld.core.context.base import Context
 
 
 # ==================== 通用路径获取函数 ====================
@@ -72,8 +72,8 @@ def get_value_by_path(obj: Any, field_path: str) -> Any:
         获取到的值，如果路径不存在则返回 None
         
     Examples:
-        >>> value = get_value_by_path(agent_context, "agent_name")
-        >>> model_name = get_value_by_path(agent_context, "model_config.llm_model_name")
+        >>> value = get_value_by_path(context, "agent_name")
+        >>> model_name = get_value_by_path(context, "model_config.llm_model_name")
         >>> nested_value = get_value_by_path(obj, "a.b.c.d")
     """
     if obj is None:
@@ -91,60 +91,56 @@ def get_value_by_path(obj: Any, field_path: str) -> Any:
         return None
 
 
-class AgentFieldGetter:
-    """可序列化的Agent字段获取器类，用于替代闭包函数
+class ContextFieldGetter:
+    """可序列化的Context字段获取器类，用于替代闭包函数
     
     这个类可以被pickle序列化，解决深拷贝时的序列化问题
     """
     
     def __init__(self, 
                  field_path: str, 
-                 agent_context: "AgentContext" = None, 
+                 context: "Context" = None, 
                  default_value: str = "unknown",
                  processor: Optional[Callable[[Any], str]] = None,
-                 fallback_getter: Optional[Callable[["AgentContext"], Any]] = None):
+                 fallback_getter: Optional[Callable[["Context"], Any]] = None):
         """初始化字段获取器
         
         Args:
             field_path: 字段路径，支持嵌套访问
-            agent_context: AgentContext实例
+            context: Context实例
             default_value: 默认值
             processor: 值处理函数（注意：如果使用lambda，仍然不能序列化）
             fallback_getter: 后备获取函数（注意：如果使用lambda，仍然不能序列化）
         """
         self.field_path = field_path
-        self.agent_context = agent_context
+        self.context = context
         self.default_value = default_value
         self.processor = processor
         self.fallback_getter = fallback_getter
         
         # 设置函数属性以兼容原有接口
         safe_field_name = field_path.replace('.', '_')
-        self.__name__ = f"get_agent_{safe_field_name}"
-        self.__doc__ = f"获取Agent的{field_path}字段"
+        self.__name__ = f"get_context_{safe_field_name}"
+        self.__doc__ = f"获取Context的{field_path}字段"
     
-    def __call__(self, agent_context: "AgentContext" = None) -> str:
+    def __call__(self, context: "Context" = None) -> str:
         """调用获取器获取字段值
         
         Args:
-            agent_context: 可选的AgentContext实例，如果提供则使用此实例，否则使用初始化时的实例
+            context: 可选的Context实例，如果提供则使用此实例，否则使用初始化时的实例
             
         Returns:
             字段值或默认值
         """
-        # 使用传入的agent_context或初始化时的agent_context
-        ctx = agent_context or self.agent_context
+        # 使用传入的context或初始化时的context
+        ctx = context or self.context
         
         if not ctx:
             return self.default_value
             
         try:
-            # 首先尝试从 agent_context 中获取值
+            # 首先尝试从 context 中获取值
             value = get_value_by_path(ctx, self.field_path)
-            
-            # 如果在 agent_context 中获取不到，尝试从 _context 成员中获取
-            if value is None and hasattr(ctx, '_context'):
-                value = get_value_by_path(ctx._context, self.field_path)
             
             # 如果字段路径失败，尝试使用后备获取函数
             if value is None and self.fallback_getter:
@@ -273,49 +269,49 @@ def get_short_uuid() -> str:
     return str(uuid.uuid4())[:8]
 
 
-# ==================== AgentContext 字段获取函数工厂 ====================
+# ==================== Context 字段获取函数工厂 ====================
 
-def create_agent_field_getter(
+def create_context_field_getter(
     field_path: str, 
-    agent_context: "AgentContext" = None, 
+    context: "Context" = None, 
     default_value: str = "unknown",
     processor: Optional[Callable[[Any], str]] = None,
-    fallback_getter: Optional[Callable[["AgentContext"], Any]] = None
-) -> AgentFieldGetter:
-    """创建获取AgentContext指定字段的通用动态函数
+    fallback_getter: Optional[Callable[["Context"], Any]] = None
+) -> ContextFieldGetter:
+    """创建获取Context指定字段的通用动态函数
     
     Args:
         field_path: 字段路径，支持嵌套访问，如 "agent_name" 或 "model_config.llm_model_name"
-        agent_context: AgentContext实例
+        context: Context实例
         default_value: 字段不存在时的默认值
         processor: 可选的值处理函数，接收原始值返回字符串
         fallback_getter: 可选的后备获取函数，当字段路径访问失败时使用
         
     Returns:
-        返回一个可序列化的AgentFieldGetter实例
+        返回一个可序列化的ContextFieldGetter实例
         
     Examples:
         # 简单字段
-        get_agent_name = create_agent_field_getter("agent_name", ctx, "Assistant")
+        get_agent_name = create_context_field_getter("agent_name", ctx, "Assistant")
         
         # 嵌套字段
-        get_model = create_agent_field_getter("model_config.llm_model_name", ctx, "unknown_model")
+        get_model = create_context_field_getter("model_config.llm_model_name", ctx, "unknown_model")
         
         # 带处理函数
-        get_prompt_preview = create_agent_field_getter(
+        get_prompt_preview = create_context_field_getter(
             "system_prompt", ctx, "No system prompt",
             processor=lambda p: p[:100] + "..." if len(p) > 100 else p
         )
         
         # 带后备获取函数
-        get_tools = create_agent_field_getter(
+        get_tools = create_context_field_getter(
             "tool_names", ctx, "No tools available",
             processor=lambda tools: ", ".join(tools) if tools else "No tools available"
         )
     """
-    return AgentFieldGetter(
+    return ContextFieldGetter(
         field_path=field_path,
-        agent_context=agent_context,
+        context=context,
         default_value=default_value,
         processor=processor,
         fallback_getter=fallback_getter
@@ -324,29 +320,29 @@ def create_agent_field_getter(
 
 # ==================== 便捷创建函数 ====================
 
-def create_simple_field_getter(field_path: str, agent_context: "AgentContext" = None, default: str = "") -> AgentFieldGetter:
+def create_simple_field_getter(field_path: str, context: "Context" = None, default: str = "") -> ContextFieldGetter:
     """创建简单字段获取器的便捷函数
     
     Args:
         field_path: 字段路径，支持嵌套如 "model_config.llm_model_name"
-        agent_context: AgentContext实例
+        context: Context实例
         default: 默认值
         
     Returns:
-        可序列化的AgentFieldGetter实例
+        可序列化的ContextFieldGetter实例
     """
-    return AgentFieldGetter(field_path, agent_context, default)
+    return ContextFieldGetter(field_path, context, default)
 
 
 def create_multiple_field_getters(
     field_configs: list[tuple[str, str]], 
-    agent_context: "AgentContext"
-) -> dict[str, AgentFieldGetter]:
+    context: "Context"
+) -> dict[str, ContextFieldGetter]:
     """批量创建多个字段获取器
     
     Args:
         field_configs: 字段配置列表，每个元素为 (字段路径, 默认值) 的元组
-        agent_context: AgentContext实例
+        context: Context实例
         
     Returns:
         字段名到获取函数的映射字典
@@ -356,7 +352,7 @@ def create_multiple_field_getters(
         ...     ("agent_name", "Assistant"),
         ...     ("agent_id", "unknown"),
         ...     ("model_config.llm_model_name", "unknown_model")
-        ... ], agent_context)
+        ... ], context)
         >>> 
         >>> # 使用获取器
         >>> agent_name = getters["agent_name"]()
@@ -364,7 +360,7 @@ def create_multiple_field_getters(
     getters = {}
     for field_path, default_value in field_configs:
         safe_key = field_path.replace('.', '_')
-        getters[safe_key] = AgentFieldGetter(field_path, agent_context, default_value)
+        getters[safe_key] = ContextFieldGetter(field_path, context, default_value)
     return getters
 
 # ==================== 工厂函数 ====================
@@ -404,38 +400,34 @@ SYSTEM_VARIABLES = {
     "short_uuid": get_short_uuid,
 }
 
-# 注意：Agent相关变量现在通过通用字段获取器创建，支持以下功能：
-# 1. 使用预定义便捷函数：create_agent_name_getter(agent_context)
-# 2. 使用通用字段获取器：create_agent_field_getter("agent_name", agent_context, "默认值")
-# 3. 获取嵌套字段：create_agent_field_getter("model_config.llm_model_name", agent_context)
-# 4. 自定义处理：create_agent_field_getter("field", ctx, processor=lambda x: f"处理:{x}")
+# 注意：Context相关变量现在通过通用字段获取器创建，支持以下功能：
+# 1. 使用预定义便捷函数：create_context_name_getter(context)
+# 2. 使用通用字段获取器：create_context_field_getter("agent_name", context, "默认值")
+# 3. 获取嵌套字段：create_context_field_getter("model_config.llm_model_name", context)
+# 4. 自定义处理：create_context_field_getter("field", ctx, processor=lambda x: f"处理:{x}")
 # 5. 批量创建：create_multiple_field_getters([("field1", "default1"), ...], ctx)
-# 6. 获取所有变量：create_all_variables(agent_context)
-# 7. 自定义字段扩展：create_agent_variables_with_custom_fields(ctx, custom_fields)
+# 6. 获取所有变量：create_all_variables(context)
+# 7. 自定义字段扩展：create_context_variables_with_custom_fields(ctx, custom_fields)
 
-# ==================== 支持运行时 AgentContext 的新函数 ====================
+# ==================== 支持运行时 Context 的新函数 ====================
 
-def _get_agent_field_value_with_fallback(agent_context: "AgentContext", field_path: str, default_value: str) -> str:
-    """通用的获取Agent字段值的helper函数，支持从_context成员中获取
+def _get_context_field_value_with_fallback(context: "Context", field_path: str, default_value: str) -> str:
+    """通用的获取Context字段值的helper函数
     
     Args:
-        agent_context: AgentContext实例
+        context: Context实例
         field_path: 字段路径，如 "agent_name" 或 "model_config.llm_model_name"
         default_value: 默认值
         
     Returns:
         字段值或默认值
     """
-    if not agent_context:
+    if not context:
         return default_value
         
     try:
-        # 首先尝试从 agent_context 中获取值
-        value = get_value_by_path(agent_context, field_path)
-        
-        # 如果在 agent_context 中获取不到，尝试从 _context 成员中获取
-        if value is None and hasattr(agent_context, '_context'):
-            value = get_value_by_path(agent_context._context, field_path)
+        # 首先尝试从 context 中获取值
+        value = get_value_by_path(context, field_path)
         
         # 如果获取到值，转换为字符串返回
         if value is not None:
@@ -446,49 +438,45 @@ def _get_agent_field_value_with_fallback(agent_context: "AgentContext", field_pa
         return default_value
 
 
-def get_agent_name_from_context(agent_context: "AgentContext" = None) -> str:
-    """从agent_context获取agent名称"""
-    return _get_agent_field_value_with_fallback(agent_context, "agent_name", "unknown_agent")
+def get_agent_name_from_context(context: "Context" = None) -> str:
+    """从context获取agent名称"""
+    return _get_context_field_value_with_fallback(context, "agent_name", "unknown_agent")
 
 
-def get_agent_id_from_context(agent_context: "AgentContext" = None) -> str:
-    """从agent_context获取agent ID"""
-    return _get_agent_field_value_with_fallback(agent_context, "agent_id", "unknown_id")
+def get_agent_id_from_context(context: "Context" = None) -> str:
+    """从context获取agent ID"""
+    return _get_context_field_value_with_fallback(context, "agent_id", "unknown_id")
 
 
-def get_agent_desc_from_context(agent_context: "AgentContext" = None) -> str:
-    """从agent_context获取agent描述"""
-    return _get_agent_field_value_with_fallback(agent_context, "agent_desc", "unknown_desc")
+def get_agent_desc_from_context(context: "Context" = None) -> str:
+    """从context获取agent描述"""
+    return _get_context_field_value_with_fallback(context, "agent_desc", "unknown_desc")
 
 
-def get_system_prompt_from_context(agent_context: "AgentContext" = None) -> str:
-    """从agent_context获取系统提示"""
-    value = _get_agent_field_value_with_fallback(agent_context, "system_prompt", "")
+def get_system_prompt_from_context(context: "Context" = None) -> str:
+    """从context获取系统提示"""
+    value = _get_context_field_value_with_fallback(context, "system_prompt", "")
     return value if value else "No system prompt"
 
 
-def get_model_name_from_context(agent_context: "AgentContext" = None) -> str:
-    """从agent_context获取模型名称"""
-    return _get_agent_field_value_with_fallback(agent_context, "model_config.llm_model_name", "unknown_model")
+def get_model_name_from_context(context: "Context" = None) -> str:
+    """从context获取模型名称"""
+    return _get_context_field_value_with_fallback(context, "model_config.llm_model_name", "unknown_model")
 
 
-def get_current_step_from_context(agent_context: "AgentContext" = None) -> str:
-    """从agent_context获取当前步骤"""
-    return _get_agent_field_value_with_fallback(agent_context, "step", "0")
+def get_current_step_from_context(context: "Context" = None) -> str:
+    """从context获取当前步骤"""
+    return _get_context_field_value_with_fallback(context, "step", "0")
 
 
-def get_tools_from_context(agent_context: "AgentContext" = None) -> str:
-    """从agent_context获取工具列表"""
-    if not agent_context:
+def get_tools_from_context(context: "Context" = None) -> str:
+    """从context获取工具列表"""
+    if not context:
         return "No tools available"
     
     try:
-        # 首先尝试从 agent_context 中获取值
-        tools = get_value_by_path(agent_context, "tool_names")
-        
-        # 如果在 agent_context 中获取不到，尝试从 _context 成员中获取
-        if tools is None and hasattr(agent_context, '_context'):
-            tools = get_value_by_path(agent_context._context, "tool_names")
+        # 首先尝试从 context 中获取值
+        tools = get_value_by_path(context, "tool_names")
         
         if tools and isinstance(tools, (list, tuple)):
             return ", ".join(str(tool) for tool in tools)
@@ -497,8 +485,59 @@ def get_tools_from_context(agent_context: "AgentContext" = None) -> str:
     except Exception:
         return "No tools available"
 
-# Agent相关变量 - 支持运行时AgentContext传入
-AGENT_CONTEXT_VARIABLES = {
+
+def get_trajectories_from_context(context: "Context" = None) -> str:
+    """从context获取trajectories轨迹信息"""
+    if not context:
+        return "No trajectories"
+    
+    try:
+        # 获取trajectories字段
+        trajectories = get_value_by_path(context, "trajectories")
+        
+        if not trajectories:
+            return "No trajectories"
+        
+        # 如果是列表，格式化输出
+        if isinstance(trajectories, (list, tuple)):
+            if len(trajectories) == 0:
+                return "No trajectories"
+            
+            # 格式化轨迹信息
+            formatted_trajectories = []
+            for i, trajectory in enumerate(trajectories):
+                if hasattr(trajectory, '__dict__'):
+                    # 如果是对象，尝试获取关键信息
+                    info_parts = []
+                    if hasattr(trajectory, 'action'):
+                        info_parts.append(f"action: {trajectory.action}")
+                    if hasattr(trajectory, 'observation'):
+                        obs = str(trajectory.observation)
+                        # 截断过长的observation
+                        if len(obs) > 100:
+                            obs = obs[:100] + "..."
+                        info_parts.append(f"observation: {obs}")
+                    if hasattr(trajectory, 'thought'):
+                        info_parts.append(f"thought: {trajectory.thought}")
+                    
+                    if info_parts:
+                        formatted_trajectories.append(f"Step {i+1}: {', '.join(info_parts)}")
+                    else:
+                        formatted_trajectories.append(f"Step {i+1}: {str(trajectory)}")
+                else:
+                    # 如果不是对象，直接转换为字符串
+                    formatted_trajectories.append(f"Step {i+1}: {str(trajectory)}")
+            
+            return "\n".join(formatted_trajectories)
+        
+        # 如果不是列表，直接转换为字符串
+        return str(trajectories)
+        
+    except Exception:
+        return "No trajectories"
+
+# Context相关变量 - 支持运行时Context传入
+CONTEXT_VARIABLES = {
     "agent_name": get_agent_name_from_context,
     "agent_id": get_agent_id_from_context, 
     "agent_desc": get_agent_desc_from_context,
@@ -506,11 +545,12 @@ AGENT_CONTEXT_VARIABLES = {
     "model_name": get_model_name_from_context,
     "current_step": get_current_step_from_context,
     "tools": get_tools_from_context,
+    "trajectories": get_trajectories_from_context,
 }
 
-# 全部变量集合 - 包含时间、系统和Agent变量
+# 全部变量集合 - 包含时间、系统和Context变量
 ALL_DYNAMIC_VARIABLES = {
     **TIME_VARIABLES,
     **SYSTEM_VARIABLES,
-    **AGENT_CONTEXT_VARIABLES,
+    **CONTEXT_VARIABLES,
 }

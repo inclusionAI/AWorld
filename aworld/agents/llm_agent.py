@@ -163,8 +163,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             Message list for LLM.
         """
-        sys_prompt = self.agent_context.system_prompt
-        agent_prompt = self.agent_context.agent_prompt
+        sys_prompt = self.system_prompt
+        agent_prompt = self.agent_prompt
         messages = []
         if sys_prompt:
             messages.append(
@@ -173,6 +173,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         histories = self.memory.get_last_n(self.history_messages)
         user_content = content
+        print(f"agent_prompt={agent_prompt} \n histories={histories}")
         if not histories and agent_prompt and '{task}' in agent_prompt:
             if self.agent_prompt_template is not None:
                 # TODO: 需要修改
@@ -324,40 +325,40 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
         """Log the sequence of messages for debugging purposes"""
-        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
-        for i, msg in enumerate(messages):
-            prefix = msg.get('role')
-            logger.info(f"[agent] Message {i + 1}: {prefix} ===================================")
-            if isinstance(msg['content'], list):
-                for item in msg['content']:
-                    if item.get('type') == 'text':
-                        logger.info(f"[agent] Text content: {item.get('text')}")
-                    elif item.get('type') == 'image_url':
-                        image_url = item.get('image_url', {}).get('url', '')
-                        if image_url.startswith('data:image'):
-                            logger.info(f"[agent] Image: [Base64 image data]")
-                        else:
-                            logger.info(f"[agent] Image URL: {image_url[:30]}...")
-            else:
-                content = str(msg['content'])
-                chunk_size = 500
-                for j in range(0, len(content), chunk_size):
-                    chunk = content[j:j + chunk_size]
-                    if j == 0:
-                        logger.info(f"[agent] Content: {chunk}")
-                    else:
-                        logger.info(f"[agent] Content (continued): {chunk}")
+        logger.info(f"[agent] Invoking LLM with {len(messages)} messages: {messages}")
+        # for i, msg in enumerate(messages):
+        #     prefix = msg.get('role')
+        #     logger.info(f"[agent] Message {i + 1}: {prefix} ===================================")
+        #     if isinstance(msg['content'], list):
+        #         for item in msg['content']:
+        #             if item.get('type') == 'text':
+        #                 logger.info(f"[agent] Text content: {item.get('text')}")
+        #             elif item.get('type') == 'image_url':
+        #                 image_url = item.get('image_url', {}).get('url', '')
+        #                 if image_url.startswith('data:image'):
+        #                     logger.info(f"[agent] Image: [Base64 image data]")
+        #                 else:
+        #                     logger.info(f"[agent] Image URL: {image_url[:30]}...")
+        #     else:
+        #         content = str(msg['content'])
+        #         chunk_size = 500
+        #         for j in range(0, len(content), chunk_size):
+        #             chunk = content[j:j + chunk_size]
+        #             if j == 0:
+        #                 logger.info(f"[agent] Content: {chunk}")
+        #             else:
+        #                 logger.info(f"[agent] Content (continued): {chunk}")
 
-            if 'tool_calls' in msg and msg['tool_calls']:
-                for tool_call in msg.get('tool_calls'):
-                    if isinstance(tool_call, dict):
-                        logger.info(f"[agent] Tool call: {tool_call.get('name')} - ID: {tool_call.get('id')}")
-                        args = str(tool_call.get('args', {}))[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
-                    elif isinstance(tool_call, ToolCall):
-                        logger.info(f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
-                        args = str(tool_call.function.arguments)[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+        #     if 'tool_calls' in msg and msg['tool_calls']:
+        #         for tool_call in msg.get('tool_calls'):
+        #             if isinstance(tool_call, dict):
+        #                 logger.info(f"[agent] Tool call: {tool_call.get('name')} - ID: {tool_call.get('id')}")
+        #                 args = str(tool_call.get('args', {}))[:1000]
+        #                 logger.info(f"[agent] Tool args: {args}...")
+        #             elif isinstance(tool_call, ToolCall):
+        #                 logger.info(f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
+        #                 args = str(tool_call.function.arguments)[:1000]
+        #                 logger.info(f"[agent] Tool args: {args}...")
 
     def _agent_result(self, actions: List[ActionModel], caller: str):
         if not actions:
@@ -744,7 +745,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
 
         try:
-            print(f"serializable_messages: {messages}\ntools: {self.tools}")
+            # print(f"serializable_messages: {messages}\ntools: {self.tools}")
 
             stream_mode = kwargs.get("stream", False)
             if stream_mode:
@@ -917,12 +918,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def update_system_prompt(self, system_prompt: str):
         self.system_prompt = system_prompt
-        self.agent_context.system_prompt = system_prompt
+        self.agent_context.agent_info.system_prompt = system_prompt
         logger.info(f"Agent {self.name()} system_prompt updated")
 
     def update_agent_prompt(self, agent_prompt: str):
         self.agent_prompt = agent_prompt
-        self.agent_context.agent_prompt = agent_prompt
+        self.agent_context.agent_info.agent_prompt = agent_prompt
         logger.info(f"Agent {self.name()} agent_prompt updated")
 
     def update_context_rule(self, context_rule: ContextRuleConfig):

@@ -16,13 +16,12 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 # LLM_BASE_URL = "https://agi.alipay.com/api"
-# LLM_BASE_URL = "http://localhost:1234/v1"
-# LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
-# LLM_MODEL_NAME = "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
-LLM_BASE_URL = "https://matrixllm.alipay.com/v1"
-LLM_API_KEY = "sk-5d0c421b87724cdd883cfa8e883998da"
-# LLM_MODEL_NAME = "gpt-4o-2024-08-06" # "shangshu.claude-3.7-sonnet"
-LLM_MODEL_NAME = "claude-3-7-sonnet-20250219"
+LLM_BASE_URL = "http://localhost:1234/v1"
+LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
+LLM_MODEL_NAME = "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
+# LLM_BASE_URL = "https://matrixllm.alipay.com/v1"
+# LLM_API_KEY = "sk-5d0c421b87724cdd883cfa8e883998da"
+# LLM_MODEL_NAME = "claude-3-7-sonnet-20250219"
 os.environ["LLM_API_KEY"] = LLM_API_KEY
 os.environ["LLM_BASE_URL"] = LLM_BASE_URL
 os.environ["LLM_MODEL_NAME"] = LLM_MODEL_NAME
@@ -37,33 +36,36 @@ from examples.tools.common import Tools
 
 plan_sys_prompt = """You are a strategic planning agent specialized in creating structured research plans. 
 
-Your role is to:
-1. Analyze research requirements and break them down into logical, sequential steps
-2. Create comprehensive search strategies that gather information systematically
-3. Ensure each search step builds upon previous findings for thorough analysis
-4. Generate precise tool calls that follow the specified format requirements
-
-Focus on creating plans that gather individual company information first, then synthesize comparisons."""
-plan_prompt = """You need to create a plan using tool_calls.
+You need to create a plan using tool_calls.
 
 Strategy:
-1. use search_agent to search for "地平线公司的未来发展计划" and "Momenta公司的未来发展计划" to gather comprehensive information about future plans
+1. use search_agent to search for "地平线公司的未来发展计划" and "Momenta公司的未来发展计划" to gather comprehensive information about future plans, at most search twice
 2. use summary_agent to summary "地平线公司和Momenta公司的未来发展计划"
 
 Requirements:
 1. The name in tool_calls must strictly use the name specified in tools
 2. The content parameter in tool_calls is a json list like: ["地平线公司的未来发展计划"], but summary_agent only accept one content
 """
+plan_prompt = """answer the plan:"""
 
-search_sys_prompt = "You are a helpful search agent."
-# search_prompt = """
-#     Please act as a search agent, constructing appropriate keywords and searach terms, using search toolkit to collect relevant information, including urls, webpage snapshots, etc.
+search_sys_prompt = """You are a helpful search agent.
 
-#     Here are the question: {task}
+Conduct targeted aworld_search tools to gather the most recent, credible information on "{task}" and synthesize it into a verifiable text artifact.
 
-#     pleas only use one action complete this task, at least results 6 pages.
-#     """
-search_prompt = """Conduct targeted aworld_search tools to gather the most recent, credible information on "{task}" and synthesize it into a verifiable text artifact.
+Instructions:
+- Query should ensure that the most current information is gathered. The current date is {current_date}.
+- Conduct multiple, diverse searches to gather comprehensive information.
+- Consolidate key findings while meticulously tracking the source(s) for each specific piece of information.
+- The output should be a well-written summary or report based on your search findings. 
+- Only include the information found in the search results, don't make up any information.
+- answer should be in English
+- search tool's input number is 1, and result number is 1
+Research Topic:
+{task}
+"""
+search_prompt = """
+"""
+"""Conduct targeted aworld_search tools to gather the most recent, credible information on "{task}" and synthesize it into a verifiable text artifact.
 
 Instructions:
 - Query should ensure that the most current information is gathered. The current date is {current_date}.
@@ -77,8 +79,9 @@ Research Topic:
 {task}
 """
 
-summary_sys_prompt = "You are a helpful general summary agent."
-summary_prompt = """You are an expert research assistant analyzing summaries about "{task}".
+summary_sys_prompt = """You are a helpful general summary agent.
+
+You are an expert research assistant analyzing summaries about "{task}".
 
 Instructions:
 - Identify knowledge gaps or areas that need deeper exploration and generate a follow-up query. (1 or multiple).
@@ -108,6 +111,8 @@ Reflect carefully on the Summaries to identify knowledge gaps and produce a foll
 
 Summaries:
 {trajectories}
+"""
+summary_prompt = """
 """
 
 """创建解析函数的工厂函数"""
@@ -184,7 +189,7 @@ if __name__ == "__main__":
         desc="summary_agent",
         system_prompt=summary_sys_prompt,
         # agent_prompt=summary_prompt,
-        agent_prompt_template=StringPromptTemplate(template=summary_prompt,
+        system_prompt_template=StringPromptTemplate(template=summary_prompt,
                                                    partial_variables={"trajectories": create_simple_field_getter("trajectories")})
     )
 
@@ -193,7 +198,7 @@ if __name__ == "__main__":
         name="search_agent",
         desc="search_agent",
         system_prompt=search_sys_prompt,
-        agent_prompt=search_prompt,
+        # agent_prompt=search_prompt,
         tool_names=[Tools.SEARCH_API.value],
     )
 
@@ -202,7 +207,7 @@ if __name__ == "__main__":
         name="planer_agent",
         desc="planer_agent",
         system_prompt=plan_sys_prompt,
-        agent_prompt=plan_prompt,
+        # agent_prompt=plan_prompt,
         agent_names=[search.id(), summary.id()],
         resp_parse_func=parse_multiple_contents
     )
