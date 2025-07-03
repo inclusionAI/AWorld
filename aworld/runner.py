@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import logging
+from concurrent.futures.process import ProcessPoolExecutor
 from typing import List, Dict, Union
 
 from aworld.config import RunConfig
@@ -46,15 +47,14 @@ class Runners:
             task: User task define.
             run_conf:
         """
-        logging.debug(f"[Runners]run_task start task_id={task.id} start")
         if isinstance(task, Task):
             task = [task]
 
-            runners: List[Runner] = await choose_runners(task)
-            logging.debug(f"[Runners]run_task end task_id={task[0].id} choose_runners end")
-            result =  await execute_runner(runners, run_conf)
-            logging.debug(f"[Runners]run_task end task_id={task[0].id} end")
-            return result
+        logging.debug(f"[Runners]run_task start task_id={task[0].id} start")
+        runners: List[Runner] = await choose_runners(task)
+        result =  await execute_runner(runners, run_conf)
+        logging.debug(f"[Runners]run_task end task_id={task[0].id} end")
+        return result
 
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:
