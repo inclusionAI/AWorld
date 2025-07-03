@@ -16,10 +16,13 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 # LLM_BASE_URL = "https://agi.alipay.com/api"
-LLM_BASE_URL = "http://localhost:1234/v1"
-LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
-# LLM_MODEL_NAME = "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
-LLM_MODEL_NAME = "qwen/qwen3-1.7b"
+# LLM_BASE_URL = "http://localhost:1234/v1"
+# LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
+# LLM_MODEL_NAME = "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call" # "shangshu.claude-3.7-sonnet"
+LLM_BASE_URL = "https://matrixllm.alipay.com/v1"
+LLM_API_KEY = "sk-5d0c421b87724cdd883cfa8e883998da"
+# LLM_MODEL_NAME = "gpt-4o-2024-08-06" # "shangshu.claude-3.7-sonnet"
+LLM_MODEL_NAME = "claude-3-7-sonnet-20250219"
 os.environ["LLM_API_KEY"] = LLM_API_KEY
 os.environ["LLM_BASE_URL"] = LLM_BASE_URL
 os.environ["LLM_MODEL_NAME"] = LLM_MODEL_NAME
@@ -131,7 +134,6 @@ def parse_multiple_contents(llm_resp):
                 # 为每个content创建一个独立的ActionModel
                 for content in contents:
                     new_arguments = {'content': content}
-                    print(f"new_arguments: {new_arguments}")
                     actions.append(ActionModel(
                         tool_name=func_content.name,
                         tool_id=f"{tool_call.id}_{content}" if len(contents) > 1 else tool_call.id,

@@ -66,6 +66,13 @@ class PlanAgent(Agent):
             return self._create_finished_message(message, "Invalid message payload")
 
         actions = await self.async_policy(message.payload, **kwargs)
+        
+        # 添加actions详细日志
+        logger.info(f"plan_agent received {len(actions) if actions else 0} actions from async_policy")
+        if actions:
+            for i, action in enumerate(actions):
+                logger.info(f"Action {i+1}: tool_name={action.tool_name}, params={action.params}")
+        
         if not actions:
             return self._create_finished_message(message, "No valid actions from llm response")
         self._llm = None
@@ -208,7 +215,7 @@ class PlanAgent(Agent):
             logger.warn(traceback.format_exc())
 
         agent_result = sync_exec(self.resp_parse_func, llm_response)
-        print(f"plan_agent.agent_result: {agent_result}")
+        logger.debug(f"plan_agent.agent_result: {agent_result}")
         return agent_result.actions
 
     def fork_new_task(self, input, agent:Agent = None, context: Context = None):
@@ -240,11 +247,16 @@ class PlanAgent(Agent):
             try:
                 if is_agent(action):
                     agents.append(action)
+                    logger.debug(f"Added action to agents: {action.tool_name}")
                 elif action.tool_name:
                     tools.append(action)
+                    logger.debug(f"Added action to tools: {action.tool_name}")
+                else:
+                    logger.warning(f"Action has no tool_name, skipping: {action}")
             except Exception as e:
                 logger.error(f"Failed to parse actions from actions to agent or tool: {e}")
 
+        logger.debug(f"Final split result - {len(agents)} agents, {len(tools)} tools")
         return agents, tools
         
     def _should_use_parallel(self, agent_tasks) -> bool:
