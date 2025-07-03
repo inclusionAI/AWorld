@@ -32,6 +32,8 @@ def format_template(template: str, template_format: TemplateFormat, **kwargs: An
 
 
 def get_template_variables(template: str, template_format: TemplateFormat) -> List[str]:
+    if not template:
+        return []
     if template_format == TemplateFormat.F_STRING:
         return _get_f_string_variables(template)
     elif template_format == TemplateFormat.JINJA2:
