@@ -930,8 +930,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             )
         self.agent_context.set_agent_info(self)
         self.agent_context.context_rule = context_rule
-        self.agent_context.system_prompt = self.system_prompt
-        self.agent_context.agent_prompt = self.agent_prompt
         logger.debug(f'init_context llm_agent {self.name()} {self.agent_context} {self.conf} {self.context_rule}')
 
     def update_system_prompt(self, system_prompt: str):
