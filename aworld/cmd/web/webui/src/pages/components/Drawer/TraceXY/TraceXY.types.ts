@@ -12,5 +12,6 @@ export interface FlowElements {
 
 export interface TraceXYProps {
   traceId?: string;
+  traceQuery?: string;
   drawerVisible?: boolean;
 }

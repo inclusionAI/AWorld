@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import ReactFlow, { Background, Controls } from 'reactflow';
-import { CustomNode } from './CustomNode';
+import CustomNode from './CustomNode';
 import 'reactflow/dist/style.css';
 import { fetchTraceData } from '@/api/trace';
 import './index.less';
-import type { NodeData,FlowElements,TraceXYProps } from './TraceXY.types';
+import type { NodeData, FlowElements, TraceXYProps } from './TraceXY.types';
 
 const nodeTypes = {
   customNode: CustomNode
@@ -36,7 +36,7 @@ const buildFlowElements = (data: NodeData[], horizontalSpacing = 200, verticalSp
 
   return { nodes, edges };
 };
-const TraceXY: React.FC<TraceXYProps> = ({ traceId, drawerVisible }) => {
+const TraceXY: React.FC<TraceXYProps> = ({ traceId, traceQuery, drawerVisible }) => {
   const [elements, setElements] = useState<FlowElements>({ nodes: [], edges: [] });
 
   useEffect(() => {
@@ -46,15 +46,11 @@ const TraceXY: React.FC<TraceXYProps> = ({ traceId, drawerVisible }) => {
       try {
         const result = await fetchTraceData(traceId);
 
-        //result.data.length > 1 => Wrap as root node data
+        // Always wrap as root node data
         let formattedData = [];
         if (result?.data) {
           const { data } = result;
-          if (Array.isArray(data) && data.length > 1) {
-            formattedData = [{ show_name: data[0]?.show_name, children: data }];
-          } else {
-            formattedData = data;
-          }
+          formattedData = Array.isArray(data) ? [{ show_name: traceQuery, children: data }] : data;
         }
         setElements(buildFlowElements(formattedData));
       } catch (error) {

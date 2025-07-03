@@ -58,7 +58,7 @@
   }
 
   .react-flow__node {
-    min-width: 80px;
+    min-width: 14.5%;
     text-align: center;
     max-width: 30%;
     @node-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
@@ -66,7 +66,7 @@
     @node-selected-shadow: 0 0 0 2px fade(@primary-color, 20%);
     border: 1px solid @border-color;
     border-radius: @border-radius;
-    padding: 12px;
+    // padding: 12px;
     background: @node-bg;
     box-shadow: @node-shadow;
     font-size: 10px;
@@ -126,11 +126,14 @@
   }
 }
 
-.ant-tooltip-content {
-  width: 420px;
-}
-.Tooltipbox pre {
-  white-space: pre-wrap; 
-  word-break: break-word;
-  word-wrap: break-word;
+// .ant-tooltip-content {
+  // width: 420px;
+// }
+.Tooltipbox{
+  padding: 5px 8px;
+  pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    word-wrap: break-word;
+  }
 }

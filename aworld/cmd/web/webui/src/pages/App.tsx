@@ -228,11 +228,21 @@ const App: React.FC = () => {
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Workspace');
   const [traceId, setTraceId] = useState<string>('');
+  const [traceQuery, setTraceQuery] = useState<string>('');
   const openDrawer = (content: DrawerContentType, id?: string) => {
     setDrawerVisible(true);
     setDrawerContent(content);
     if (id) {
       setTraceId(id);
+      const session = sessionData[sessionId];
+      if (session && session.messages) {
+        const userItem = session.messages.find(msg =>
+          msg.trace_id === id && msg.role === 'user'
+        );
+        if (userItem) {
+          setTraceQuery(userItem.content);
+        }
+      }
     }
   }
   const closeDrawer = () => {
@@ -411,6 +421,7 @@ const App: React.FC = () => {
       session_id: sessionId,
       message: { role: 'user', content: val },
     });
+    setTraceQuery(val)
   };
 
   // 复制消息内容到剪贴板
@@ -757,7 +768,7 @@ const App: React.FC = () => {
         {drawerContent === 'Trace' ? (
           <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
         ) : (
-          <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} drawerVisible={drawerVisible} />
+          <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} traceQuery={traceQuery} drawerVisible={drawerVisible} />
         )}
       </Drawer>
     </div>
