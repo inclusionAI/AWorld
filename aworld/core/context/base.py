@@ -16,7 +16,6 @@ from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
     from aworld.core.task import Task
-    from aworld.core.common import ActionModel
 
 
 @dataclass
@@ -333,46 +332,10 @@ class AgentContext:
         self._context = context
         # Initialize ContextState with parent state (Context's state)
         # If context_state is provided, use it as parent; otherwise will be set later
-        self.context_info = ContextState(parent_state=parent_state)
+        self.state = ContextState(parent_state=parent_state)
 
         # Additional fields for backward compatibility
         self._init(**kwargs)
-
-    @property
-    def agent_id(self):
-        return self.agent_info.id()
-
-    @property
-    def agent_name(self):
-        return self.agent_info.name()
-
-    @property
-    def agent_desc(self):
-        return self.agent_info.desc()
-
-    @property
-    def memory(self):
-        return self.agent_info.memory
-
-    @property
-    def system_prompt(self):
-        return self.agent_info.system_prompt
-
-    @property
-    def agent_prompt(self):
-        return self.agent_info.agent_prompt
-
-    @property
-    def tool_names(self):
-        return self.agent_info.tool_names
-
-    @property
-    def model_config(self):
-        return self.agent_info.conf.llm_config
-
-    @model_config.setter
-    def model_config(self, model_config: ModelConfig):
-        self.agent_info.conf.llm_config = model_config
 
     def _init(self, **kwargs):
         self._task_id = kwargs.get('task_id')
@@ -410,6 +373,15 @@ class AgentContext:
         if self.context_usage.total_context_length <= 0:
             return 0.0
         return self.context_usage.used_context_length / self.context_usage.total_context_length
+
+    def set_parent_state(self, parent_state: ContextState):
+        self.state._parent_state = parent_state
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        return self.state.get(key, default)
+
+    def set_state(self, key: str, value: Any):
+        self.state[key] = value
 
     def get_task(self) -> 'Task':
         return self._context.get_task()
