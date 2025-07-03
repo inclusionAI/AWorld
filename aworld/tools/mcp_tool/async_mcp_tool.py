@@ -27,7 +27,7 @@ class McpTool(AsyncTool):
         self.action_executor = MCPToolExecutor(self)
 
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
-        Observation, dict[str, Any]]:
+            Observation, dict[str, Any]]:
         self._finished = False
         return build_observation(observer=self.name(), ability=""), {}
 
@@ -37,8 +37,8 @@ class McpTool(AsyncTool):
         await self.action_executor.close(self.conf.get('close_servers', ['ms-playwright']))
 
     async def do_step(self,
-             actions: list[ActionModel],
-             **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
+                      actions: list[ActionModel],
+                      **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
         """Step of tool.
 
         Args:
@@ -56,9 +56,10 @@ class McpTool(AsyncTool):
         # todo sandbox
         agent = AgentFactory.agent_instance(actions[0].agent_name)
         if not agent:
-            logger.warning(f"async_mcp_tool can not get agent,agent_name:{actions[0].agent_name}")
-        task_id = Context.instance().task_id
-        session_id = Context.instance().session_id
+            logger.warning(
+                f"async_mcp_tool can not get agent,agent_name:{actions[0].agent_name}")
+        task_id = self.context.task_id
+        session_id = self.context.session_id
 
         if not actions:
             self._finished = True
@@ -103,7 +104,7 @@ class McpTool(AsyncTool):
             # todo sandbox
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
-                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions,task_id=task_id,session_id=session_id)
+                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions, task_id=task_id, session_id=session_id)
             else:
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1
@@ -127,9 +128,11 @@ class McpTool(AsyncTool):
             if self.conf.get('exit_on_failure'):
                 raise Exception(fail_error)
             else:
-                logger.warning(f"{actions} no action results, fail info: {fail_error}, will use fail action results")
+                logger.warning(
+                    f"{actions} no action results, fail info: {fail_error}, will use fail action results")
                 # every action need has the result
-                action_results = [ActionResult(success=False, content=fail_error, error=fail_error) for _ in actions]
+                action_results = [ActionResult(
+                    success=False, content=fail_error, error=fail_error) for _ in actions]
                 observation.action_result = action_results
                 observation.content = fail_error
 

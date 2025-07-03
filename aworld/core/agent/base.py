@@ -14,6 +14,7 @@ from aworld.config.conf import AgentConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import AgentContext, Context
 from aworld.core.event import eventbus
+from aworld.events.util import send_message
 from aworld.core.event.base import Message, Constants
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
@@ -73,10 +74,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                  desc: str = None,
                  agent_id: str = None,
                  *,
-                 tool_names: List[str] = [],
-                 agent_names: List[str] = [],
-                 mcp_servers: List[str] = [],
-                 mcp_config: Dict[str, Any] = {},
+                 tool_names: List[str] = None,
+                 agent_names: List[str] = None,
+                 mcp_servers: List[str] = None,
+                 mcp_config: Dict[str, Any] = None,
                  feedback_tool_result: bool = False,
                  sandbox: Sandbox = None,
                  **kwargs):
@@ -112,15 +113,15 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._id = agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
         self.task = None
         # An agent can use the tool list
-        self.tool_names: List[str] = tool_names
+        self.tool_names: List[str] = tool_names or []
         human_tools = self.conf.get("human_tools", [])
         for tool in human_tools:
             self.tool_names.append(tool)
         # An agent can delegate tasks to other agent
-        self.handoffs: List[str] = agent_names
+        self.handoffs: List[str] = agent_names or []
         # Supported MCP server
-        self.mcp_servers: List[str] = mcp_servers
-        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config)
+        self.mcp_servers: List[str] = mcp_servers or []
+        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
@@ -166,7 +167,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._init_context(message.context)
         observation = message.payload
         if eventbus is not None:
-            await eventbus.publish(Message(
+            await send_message(Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_start_output(name=f"{self.id()}", alias_name=self.name(), step_num=0),
                 sender=self.id(),
@@ -267,8 +268,8 @@ class AgentManager(Factory):
         return agent
 
     def desc(self, name: str) -> str:
-        if self._agent_instance.get(name, None) and self._agent_instance[name].desc:
-            return self._agent_instance[name].desc
+        if self._agent_instance.get(name, None) and self._agent_instance[name].desc():
+            return self._agent_instance[name].desc()
         return self._desc.get(name, "")
 
     def agent_instance(self, name: str) -> BaseAgent | None:

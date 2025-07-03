@@ -46,10 +46,12 @@ class BaseTool(Generic[AgentInput, ToolInput]):
             logger.warning(f"Unknown conf type: {type(conf)}")
         self._finished = False
 
-        self._name = kwargs.pop('name', self.conf.get("name", convert_to_snake(self.__class__.__name__)))
+        self._name = kwargs.pop('name', self.conf.get(
+            "name", convert_to_snake(self.__class__.__name__)))
         action_executor.register(name=self.name(), tool=self)
         self.action_executor = action_executor
-        self.event_driven = kwargs.pop('event_driven', self.conf.get('event_driven', False))
+        self.event_driven = kwargs.pop(
+            'event_driven', self.conf.get('event_driven', False))
         self.handler = kwargs.get('handler', self.conf.get('handler', None))
 
         for k, v in kwargs.items():
@@ -81,7 +83,7 @@ class BaseTool(Generic[AgentInput, ToolInput]):
 
     @abc.abstractmethod
     def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
-        AgentInput, dict[str, Any]]:
+            AgentInput, dict[str, Any]]:
         """Resets the initial internal state, returning an initial state and extended info."""
 
     @abc.abstractmethod
@@ -128,10 +130,12 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
             logger.warning(f"Unknown conf type: {type(conf)}")
         self._finished = False
 
-        self._name = kwargs.pop('name', self.conf.get("name", convert_to_snake(self.__class__.__name__)))
+        self._name = kwargs.pop('name', self.conf.get(
+            "name", convert_to_snake(self.__class__.__name__)))
         action_executor.register(name=self.name(), tool=self)
         self.action_executor = action_executor
-        self.event_driven = kwargs.pop('event_driven', self.conf.get('event_driven', False))
+        self.event_driven = kwargs.pop(
+            'event_driven', self.conf.get('event_driven', False))
         self.handler = kwargs.get('handler', self.conf.get('handler', None))
 
         for k, v in kwargs.items():
@@ -163,7 +167,7 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
 
     @abc.abstractmethod
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
-        AgentInput, dict[str, Any]]:
+            AgentInput, dict[str, Any]]:
         """Resets the initial internal state, returning an initial state and extended info."""
 
     @abc.abstractmethod
@@ -199,7 +203,8 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             if eventbus is not None:
                 tool_output = ToolResultOutput(
-                    tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_call_id) or self.name(),
+                    tool_type=kwargs.get("tool_id_mapping", {}).get(
+                        act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
                     data=step_res[0].content,
                     origin_tool_call=ToolCall.from_dict({
@@ -230,7 +235,8 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         self.pre_step(action, **kwargs)
         res = self.do_step(action, **kwargs)
         final_res = self.post_step(res, action, **kwargs)
-        self._internal_process(res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+        self._internal_process(
+            res, action, tool_id_mapping=tool_id_mapping, **kwargs)
         return final_res
 
     def post_step(self,
@@ -269,7 +275,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             # send tool results output
             if eventbus is not None:
                 tool_output = ToolResultOutput(
-                    tool_type=kwargs.get("tool_id_mapping", {}).get(act.tool_call_id) or self.name(),
+                    tool_type=kwargs.get("tool_id_mapping", {}).get(
+                        act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
                     data=step_res[0].content,
                     origin_tool_call=ToolCall.from_dict({
@@ -308,11 +315,10 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                            ),
                                            sender=self.name(),
                                            receiver=action[0].agent_name,
-                                           session_id=self.context.session_id
+                                           session_id=self.context.session_id,
+                                           headers={"context": self.context}
                                        ),
                                        **kwargs)
-
-
 
     async def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
@@ -367,7 +373,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         msg_node = state_mng.get_node(msg_id)
         state_mng.create_node(
             node_id=msg_id,
-            busi_type=RunNodeBusiType.from_message_category(Constants.TOOL_CALLBACK),
+            busi_type=RunNodeBusiType.from_message_category(
+                Constants.TOOL_CALLBACK),
             busi_id=message.receiver or "",
             session_id=message.session_id,
             msg_id=msg_id,
@@ -377,10 +384,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             tool_act_results = step_res[0].action_result
             callback_act_results = res_node.results
             if not callback_act_results:
-                logger.warn(f"tool {self.name()} callback finished with empty node result.")
+                logger.warn(
+                    f"tool {self.name()} callback finished with empty node result.")
                 return
             if len(tool_act_results) != len(callback_act_results):
-                logger.warn("tool action result and callback action result length not match.")
+                logger.warn(
+                    "tool action result and callback action result length not match.")
                 return
             for idx, res in enumerate(callback_act_results):
                 if res.status == RunNodeStatus.SUCCESS:
@@ -389,12 +398,14 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                         if callback_res.callback_action_type == CallbackActionType.OVERRIDE:
                             tool_act_results[idx].content = callback_res.result_data
                 else:
-                    logger.warn(f"tool {self.name()} callback finished with node result: {res}.")
+                    logger.warn(
+                        f"tool {self.name()} callback finished with node result: {res}.")
                     continue
 
             return
         else:
-            logger.warn(f"tool {self.name()} callback failed with node: {res_node}.")
+            logger.warn(
+                f"tool {self.name()} callback failed with node: {res_node}.")
             return
 
 
@@ -436,7 +447,8 @@ class ToolsManager(Factory):
             elif isinstance(user_conf, BaseModel):
                 conf.update(user_conf.model_dump())
             else:
-                logger.warning(f"Unknown conf type: {type(user_conf)}, ignored!")
+                logger.warning(
+                    f"Unknown conf type: {type(user_conf)}, ignored!")
         self._tool_conf[name] = conf
 
         # must is a dict
@@ -450,7 +462,8 @@ class ToolsManager(Factory):
             tool = self._cls[name](conf=conf, **kwargs)
             self._tool_instance[name] = tool
         else:
-            raise RuntimeError(f"can not find {name} tool in the ToolFactory, register it first.")
+            raise RuntimeError(
+                f"can not find {name} tool in the ToolFactory, register it first.")
 
         action_executor.register(name, tool)
         return tool
@@ -528,14 +541,16 @@ class ToolActionExecutor(object):
                 tool_name = action.tool_name
                 tool = self.tools.get(tool_name)
                 if tool is None:
-                    tool = ToolFactory(tool_name, conf=kwargs.get("conf", ToolConfig()))
+                    tool = ToolFactory(
+                        tool_name, conf=kwargs.get("conf", ToolConfig()))
                     self.tools[tool_name] = tool
 
             try:
                 action_result, ctx = self.do_act(action, tool, **kwargs)
             except:
                 logger.warning(traceback.format_exc())
-                action_result = ActionResult(error=traceback.format_exc(), success=False)
+                action_result = ActionResult(
+                    error=traceback.format_exc(), success=False)
             action_result.action_name = action.action_name
             action_result.tool_name = action.tool_name
             action_results.append(action_result)
@@ -557,13 +572,15 @@ class ToolActionExecutor(object):
                 tool_name = "async_" + action.tool_name
                 tool = self.tools.get(tool_name)
                 if tool is None:
-                    tool = ToolFactory(tool_name, conf=kwargs.get("conf", ToolConfig()))
+                    tool = ToolFactory(
+                        tool_name, conf=kwargs.get("conf", ToolConfig()))
                     self.tools[tool_name] = tool
             try:
                 action_result, ctx = await self.async_do_act(action, tool, **kwargs)
             except:
                 logger.warning(traceback.format_exc())
-                action_result = ActionResult(error=traceback.format_exc(), success=False)
+                action_result = ActionResult(
+                    error=traceback.format_exc(), success=False)
             action_result.action_name = action.action_name
             action_result.tool_name = action.tool_name
             action_results.append(action_result)
@@ -574,11 +591,13 @@ class ToolActionExecutor(object):
         if action_name not in ActionFactory:
             action_name = action_model.tool_name + action_model.action_name
             if action_name not in ActionFactory:
-                raise ValueError(f'Action {action_model.action_name} not found in ActionFactory')
+                raise ValueError(
+                    f'Action {action_model.action_name} not found in ActionFactory')
 
         action = ActionFactory(action_name)
         action_result, page = action.act(action_model, tool=tool, **kwargs)
-        logger.info(f"{tool.name()}-{action_model.action_name} execute finished")
+        logger.info(
+            f"{tool.name()}-{action_model.action_name} execute finished")
         return action_result, page
 
     async def async_do_act(self, action_model: ActionModel, tool: Tool,
@@ -587,11 +606,13 @@ class ToolActionExecutor(object):
         if action_name not in ActionFactory:
             action_name = action_model.tool_name + action_model.action_name
             if action_name not in ActionFactory:
-                raise ValueError(f'Action {action_model.action_name} not found in ActionFactory')
+                raise ValueError(
+                    f'Action {action_model.action_name} not found in ActionFactory')
 
         action = ActionFactory(action_name)
         action_result, page = await action.async_act(action_model, tool=tool, **kwargs)
-        logger.info(f"{tool.name()}-{action_model.action_name} execute finished")
+        logger.info(
+            f"{tool.name()}-{action_model.action_name} execute finished")
         return action_result, page
 
 
