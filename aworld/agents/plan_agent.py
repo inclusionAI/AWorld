@@ -18,6 +18,7 @@ from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
 from aworld.core.memory import MemoryItem, MemoryConfig
 from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
+from aworld.runner import Runners
 from aworld.runners.hook.hooks import HookPoint
 from aworld.utils.common import sync_exec
 from aworld.agents.llm_agent import Agent
@@ -274,8 +275,11 @@ class PlanAgent(Agent):
     def _actions_to_message(self, agents_result_actions: List[ActionModel],tools_result_actions: List[ActionModel], original_message: Message) -> Message:
         """Convert actions to a new message"""
         # Create a new message containing actions
+        content_list = []
+        content_list.extend(agents_result_actions)
+        content_list.extend(tools_result_actions)
         new_message = AgentMessage(
-            payload=Observation(content=agents_result_actions + tools_result_actions),
+            payload=Observation(content=json.dumps([content.model_dump() for content in content_list], ensure_ascii=False)),
             sender=self.id(),
             receiver=self.id(),
             session_id=self.context.session_id,
