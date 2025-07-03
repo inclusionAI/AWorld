@@ -27,7 +27,7 @@ import { useSessionId } from '../hooks/useSessionId';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
 import BubbleItem from './components/BubbleItem';
-import Trace from './components/Drawer/TraceThoughtChain';
+// import Trace from './components/Drawer/TraceThoughtChain';
 import TraceXY from './components/Drawer/TraceXY';
 import './index.less';
 
@@ -459,13 +459,10 @@ const App: React.FC = () => {
   const chatSider = (
     <div className={styles.sider}>
       {/* 🌟 Logo */}
-      <div className={styles.logo}>
-        <a href="https://github.com/inclusionAI/AWorld" target="_blank">
-          <img src={logo} alt="AWorld Logo" width="24" height="24" />
-          <span>AWorld</span>
-        </a>
-      </div>
-
+      <a href="https://github.com/inclusionAI/AWorld" className={styles.logo} target="_blank">
+        <img src={logo} alt="AWorld Logo" width="24" height="24" />
+        <span>AWorld</span>
+      </a>
       {/* 🌟 添加会话 */}
       <Button
         onClick={() => {
@@ -602,12 +599,12 @@ const App: React.FC = () => {
                     icon={<CopyOutlined />}
                     onClick={() => copyMessageContent(messageItem.content || '')}
                   />
-                  <Button
+                  {/* <Button
                     type="text"
                     size="small"
                     icon={<BoxPlotOutlined />}
                     onClick={() => openDrawer('Trace', messageItem.props?.trace_id)}
-                  />
+                  /> */}
                   <Button
                     type="text"
                     size="small"
@@ -765,11 +762,12 @@ const App: React.FC = () => {
         maskClosable={true}
         open={drawerVisible}
       >
-        {drawerContent === 'Trace' ? (
+        {/* {drawerContent === 'Trace' ? (
           <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
-        ) : (
+        ) : 
+        ( */}
           <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} traceQuery={traceQuery} drawerVisible={drawerVisible} />
-        )}
+        {/* )} */}
       </Drawer>
     </div>
   );
