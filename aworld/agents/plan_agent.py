@@ -89,7 +89,7 @@ class PlanAgent(Agent):
                 raise RuntimeError("no tool task need to run in plan agent.")
 
             runners = await choose_runners(tool_tasks)
-            res = await execute_runner(runners, RunConfig(reuse_process=False))
+            res = await execute_runner(runners, RunConfig(reuse_process=True))
 
             for k, v in res.items():
                 tool_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
@@ -120,14 +120,14 @@ class PlanAgent(Agent):
             for agent_action in agents:
                 agent_name = agent_action.tool_name
                 agent = AgentFactory.agent_instance(agent_name)
-                input = agent_action.params
+                input = agent_action.params.get("content") # TODO: 需要修改
                 agent_tasks.append(self.fork_new_task(input=input, agent=agent, context=self.context))
                 if not agent_tasks:
                     raise RuntimeError("no agent task need to run in plan agent.")
 
             if self._should_use_parallel(actions):
                 agent_runners = await choose_runners(agent_tasks)
-                parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
+                parallel_agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=True))
 
                 for k, v in parallel_agent_res.items():
                     agent_results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
@@ -142,7 +142,7 @@ class PlanAgent(Agent):
             else:
                 for task in agent_tasks:
                     agent_runners = await choose_runners([task])
-                    agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=False))
+                    agent_res = await execute_runner(agent_runners, RunConfig(reuse_process=True))
 
                     for k, v in agent_res.items():
                         agent_results.append(ActionModel(agent_name=task.agent.id(), policy_info=v.answer))
@@ -248,7 +248,7 @@ class PlanAgent(Agent):
         return agents, tools
         
     def _should_use_parallel(self, agent_tasks) -> bool:
-        # return False
+        return False
         """Decide whether to use parallel execution mode"""
         # More complex logic can be implemented based on actual requirements
         # For example: check if there are dependencies between actions

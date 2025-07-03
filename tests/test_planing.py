@@ -131,6 +131,7 @@ def parse_multiple_contents(llm_resp):
                 # 为每个content创建一个独立的ActionModel
                 for content in contents:
                     new_arguments = {'content': content}
+                    print(f"new_arguments: {new_arguments}")
                     actions.append(ActionModel(
                         tool_name=func_content.name,
                         tool_id=f"{tool_call.id}_{content}" if len(contents) > 1 else tool_call.id,

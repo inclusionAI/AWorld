@@ -49,6 +49,7 @@ class TaskEventRunner(TaskRunner):
         self._build_first_message()
 
         if self.swarm:
+            logger.debug(f"swarm: {self.swarm}")
             # register agent handler
             for _, agent in self.swarm.agents.items():
                 agent.set_tools_instances(self.tools, self.tools_conf)
@@ -110,7 +111,7 @@ class TaskEventRunner(TaskRunner):
 
         key = message.category
         transformer = self.event_mng.get_transform_handler(key)
-        print(f"_common_process: {message}")
+        logger.debug(f"_common_process: {message}")
         if transformer:
             message = await event_bus.transform(message, handler=transformer)
 
@@ -162,6 +163,7 @@ class TaskEventRunner(TaskRunner):
         con = message
         async with trace.span(handler.__name__):
             try:
+                logger.debug(f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
                 logger.info(
                     f"event_runner _handle_task start, message: {message.id}")
                 if asyncio.iscoroutinefunction(handler):
@@ -237,7 +239,7 @@ class TaskEventRunner(TaskRunner):
 
                 # consume message
                 message: Message = await self.event_mng.consume()
-
+                logger.debug(f"event_runner _do_run consume - self: {self}, event_bus: {self.event_mng.event_bus}, message: {message}")
                 # use registered handler to process message
                 await self._common_process(message)
         except Exception as e:
