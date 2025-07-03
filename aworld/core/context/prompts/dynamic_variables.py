@@ -50,12 +50,142 @@ Example:
 
 import os
 import platform
+import socket
 import uuid
 from datetime import datetime, timezone
 from typing import Callable, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aworld.core.context.base import AgentContext
+
+
+# ==================== 通用路径获取函数 ====================
+
+def get_value_by_path(obj: Any, field_path: str) -> Any:
+    """通用的根据路径获取对象成员变量的函数
+    
+    Args:
+        obj: 要获取值的对象
+        field_path: 字段路径，支持嵌套访问，如 "agent_name" 或 "model_config.llm_model_name"
+        
+    Returns:
+        获取到的值，如果路径不存在则返回 None
+        
+    Examples:
+        >>> value = get_value_by_path(agent_context, "agent_name")
+        >>> model_name = get_value_by_path(agent_context, "model_config.llm_model_name")
+        >>> nested_value = get_value_by_path(obj, "a.b.c.d")
+    """
+    if obj is None:
+        return None
+        
+    try:
+        current_value = obj
+        for field in field_path.split('.'):
+            if hasattr(current_value, field):
+                current_value = getattr(current_value, field)
+            else:
+                return None
+        return current_value
+    except Exception:
+        return None
+
+
+class AgentFieldGetter:
+    """可序列化的Agent字段获取器类，用于替代闭包函数
+    
+    这个类可以被pickle序列化，解决深拷贝时的序列化问题
+    """
+    
+    def __init__(self, 
+                 field_path: str, 
+                 agent_context: "AgentContext" = None, 
+                 default_value: str = "unknown",
+                 processor: Optional[Callable[[Any], str]] = None,
+                 fallback_getter: Optional[Callable[["AgentContext"], Any]] = None):
+        """初始化字段获取器
+        
+        Args:
+            field_path: 字段路径，支持嵌套访问
+            agent_context: AgentContext实例
+            default_value: 默认值
+            processor: 值处理函数（注意：如果使用lambda，仍然不能序列化）
+            fallback_getter: 后备获取函数（注意：如果使用lambda，仍然不能序列化）
+        """
+        self.field_path = field_path
+        self.agent_context = agent_context
+        self.default_value = default_value
+        self.processor = processor
+        self.fallback_getter = fallback_getter
+        
+        # 设置函数属性以兼容原有接口
+        safe_field_name = field_path.replace('.', '_')
+        self.__name__ = f"get_agent_{safe_field_name}"
+        self.__doc__ = f"获取Agent的{field_path}字段"
+    
+    def __call__(self, agent_context: "AgentContext" = None) -> str:
+        """调用获取器获取字段值
+        
+        Args:
+            agent_context: 可选的AgentContext实例，如果提供则使用此实例，否则使用初始化时的实例
+            
+        Returns:
+            字段值或默认值
+        """
+        # 使用传入的agent_context或初始化时的agent_context
+        ctx = agent_context or self.agent_context
+        
+        if not ctx:
+            return self.default_value
+            
+        try:
+            # 首先尝试从 agent_context 中获取值
+            value = get_value_by_path(ctx, self.field_path)
+            
+            # 如果在 agent_context 中获取不到，尝试从 _context 成员中获取
+            if value is None and hasattr(ctx, '_context'):
+                value = get_value_by_path(ctx._context, self.field_path)
+            
+            # 如果字段路径失败，尝试使用后备获取函数
+            if value is None and self.fallback_getter:
+                value = self.fallback_getter(ctx)
+            
+            # 如果仍然没有值，返回默认值
+            if value is None:
+                return self.default_value
+            
+            # 应用处理函数
+            if self.processor:
+                return self.processor(value)
+            
+            # 直接转换为字符串
+            return str(value)
+            
+        except Exception:
+            return self.default_value
+    
+    def __getstate__(self):
+        """自定义序列化状态，处理不可序列化的函数"""
+        state = self.__dict__.copy()
+        # 如果processor或fallback_getter不能序列化，则设为None
+        if self.processor and not self._is_serializable(self.processor):
+            state['processor'] = None
+        if self.fallback_getter and not self._is_serializable(self.fallback_getter):
+            state['fallback_getter'] = None
+        return state
+    
+    def __setstate__(self, state):
+        """自定义反序列化状态"""
+        self.__dict__.update(state)
+    
+    def _is_serializable(self, func):
+        """检查函数是否可序列化"""
+        try:
+            import pickle
+            pickle.dumps(func)
+            return True
+        except:
+            return False
 
 
 # ==================== 时间相关函数 ====================
@@ -143,47 +273,15 @@ def get_short_uuid() -> str:
     return str(uuid.uuid4())[:8]
 
 
-# ==================== 通用路径获取函数 ====================
-
-def get_value_by_path(obj: Any, field_path: str) -> Any:
-    """通用的根据路径获取对象成员变量的函数
-    
-    Args:
-        obj: 要获取值的对象
-        field_path: 字段路径，支持嵌套访问，如 "agent_name" 或 "model_config.llm_model_name"
-        
-    Returns:
-        获取到的值，如果路径不存在则返回 None
-        
-    Examples:
-        >>> value = get_value_by_path(agent_context, "agent_name")
-        >>> model_name = get_value_by_path(agent_context, "model_config.llm_model_name")
-        >>> nested_value = get_value_by_path(obj, "a.b.c.d")
-    """
-    if obj is None:
-        return None
-        
-    try:
-        current_value = obj
-        for field in field_path.split('.'):
-            if hasattr(current_value, field):
-                current_value = getattr(current_value, field)
-            else:
-                return None
-        return current_value
-    except Exception:
-        return None
-
-
 # ==================== AgentContext 字段获取函数工厂 ====================
 
 def create_agent_field_getter(
     field_path: str, 
-    agent_context: "AgentContext", 
+    agent_context: "AgentContext" = None, 
     default_value: str = "unknown",
     processor: Optional[Callable[[Any], str]] = None,
     fallback_getter: Optional[Callable[["AgentContext"], Any]] = None
-) -> Callable[[], str]:
+) -> AgentFieldGetter:
     """创建获取AgentContext指定字段的通用动态函数
     
     Args:
@@ -194,7 +292,7 @@ def create_agent_field_getter(
         fallback_getter: 可选的后备获取函数，当字段路径访问失败时使用
         
     Returns:
-        返回一个无参数的函数，调用时返回字段值
+        返回一个可序列化的AgentFieldGetter实例
         
     Examples:
         # 简单字段
@@ -215,46 +313,18 @@ def create_agent_field_getter(
             processor=lambda tools: ", ".join(tools) if tools else "No tools available"
         )
     """
-    def getter() -> str:
-        if not agent_context:
-            return default_value
-            
-        try:
-            # 首先尝试从 agent_context 中获取值
-            value = get_value_by_path(agent_context, field_path)
-            
-            # 如果在 agent_context 中获取不到，尝试从 _context 成员中获取
-            if value is None and hasattr(agent_context, '_context'):
-                value = get_value_by_path(agent_context._context, field_path)
-            
-            # 如果字段路径失败，尝试使用后备获取函数
-            if value is None and fallback_getter:
-                value = fallback_getter(agent_context)
-            
-            # 如果仍然没有值，返回默认值
-            if value is None:
-                return default_value
-            
-            # 应用处理函数
-            if processor:
-                return processor(value)
-            
-            # 直接转换为字符串
-            return str(value)
-            
-        except Exception:
-            return default_value
-    
-    # 设置函数名和文档
-    safe_field_name = field_path.replace('.', '_')
-    getter.__name__ = f"get_agent_{safe_field_name}"
-    getter.__doc__ = f"获取Agent的{field_path}字段"
-    return getter
+    return AgentFieldGetter(
+        field_path=field_path,
+        agent_context=agent_context,
+        default_value=default_value,
+        processor=processor,
+        fallback_getter=fallback_getter
+    )
 
 
 # ==================== 便捷创建函数 ====================
 
-def create_simple_field_getter(field_path: str, agent_context: "AgentContext" = None, default: str = "") -> Callable[[], str]:
+def create_simple_field_getter(field_path: str, agent_context: "AgentContext" = None, default: str = "") -> AgentFieldGetter:
     """创建简单字段获取器的便捷函数
     
     Args:
@@ -263,15 +333,15 @@ def create_simple_field_getter(field_path: str, agent_context: "AgentContext" = 
         default: 默认值
         
     Returns:
-        字段获取函数
+        可序列化的AgentFieldGetter实例
     """
-    return create_agent_field_getter(field_path, agent_context, default)
+    return AgentFieldGetter(field_path, agent_context, default)
 
 
 def create_multiple_field_getters(
     field_configs: list[tuple[str, str]], 
     agent_context: "AgentContext"
-) -> dict[str, Callable[[], str]]:
+) -> dict[str, AgentFieldGetter]:
     """批量创建多个字段获取器
     
     Args:
@@ -294,7 +364,7 @@ def create_multiple_field_getters(
     getters = {}
     for field_path, default_value in field_configs:
         safe_key = field_path.replace('.', '_')
-        getters[safe_key] = create_agent_field_getter(field_path, agent_context, default_value)
+        getters[safe_key] = AgentFieldGetter(field_path, agent_context, default_value)
     return getters
 
 # ==================== 工厂函数 ====================
