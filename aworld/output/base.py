@@ -25,7 +25,7 @@ class Output(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="metadata")
     parts: Any = Field(default_factory=list, exclude=True, description="parts of Output")
     data: Any = Field(default=None, exclude=True, description="Output Data")
-    task_id: str = Field(default=None, description="Task Id")
+    task_id: Optional[str] = Field(default=None, description="Task Id")
 
     @model_validator(mode='after')
     def setup_defaults(self):

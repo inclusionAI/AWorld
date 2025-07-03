@@ -98,10 +98,11 @@ class AWorldAgent(BaseAWorldAgent):
             prompt = request.messages[-1].content
 
         task = Task(
+            session_id=request.session_id,
             input=prompt,
             swarm=swarm,
             conf=TaskConfig(max_steps=20),
-            endless_threshold=50
+            endless_threshold=50,
         )
 
         async for output in Runners.streamed_run_task(task).stream_events():
