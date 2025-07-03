@@ -24,7 +24,7 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data }) => {
   };
   const closeWorkspace = () => setWorkspaceVisible(false);
   const { segments } = extractToolCards(data);
-  console.log('segments:', segments);
+  // console.log('segments:', segments);
   return (
     <div className="card">
       {segments.map((segment, index) => {
