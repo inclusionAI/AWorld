@@ -165,6 +165,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
+        logger.debug(f"context ({id(message.context)})")
         observation = message.payload
         if eventbus is not None:
             await send_message(Message(

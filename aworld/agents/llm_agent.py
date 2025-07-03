@@ -182,11 +182,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             Message list for LLM.
         """
-        agent_prompt = self.agent_context.agent_prompt
+        agent_prompt = self.agent_prompt
         messages = []
 
         # append sys_prompt to memory
-        sys_prompt = self.agent_context.system_prompt
+        sys_prompt = self.system_prompt
         if sys_prompt:
             self._add_system_message_to_memory(message.context)
 
@@ -572,7 +572,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(traceback.format_exc())
 
         self._finished = False
-        messages = await self._prepare_llm_input(observation, info, **kwargs)
+        messages = await self._prepare_llm_input(observation, info, message=message, **kwargs)
 
         serializable_messages = self._to_serializable(messages)
         llm_response = None
@@ -657,7 +657,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             result = await self._execute_tool(agent_result.actions)
             return result
 
-    async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs):
+    async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
+                                 **kwargs):
         """Prepare LLM input
         Args:
             observation: The state observed from the environment
@@ -669,7 +670,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
         messages = self.messages_transform(content=observation.content,
-                                           image_urls=images, observation=observation)
+                                           image_urls=images, observation=observation, message=message)
 
         self._log_messages(messages)
 
@@ -988,10 +989,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return self.agent_context
 
     def _add_system_message_to_memory(self, context: Context):
+        session_id =  context.get_task().session_id
+        task_id =  context.get_task().id
+        user_id =  context.get_task().user_id
+
         histories = self.memory.get_last_n(self.history_messages, filters={
-            "agent_id": self._agent_context.agent_id,
-            "session_id": self._agent_context._context.session_id,
-            "task_id": self._agent_context._context.task_id,
+            "agent_id": self.id(),
+            "session_id": session_id,
+            "task_id": task_id,
             "message_type": "message"
         })
         if histories and len(histories) > 0:
@@ -1005,9 +1010,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.memory.add(MemorySystemMessage(
             content=content,
             metadata=MessageMetadata(
-                session_id=self._agent_context._context.session_id,
-                user_id=self._agent_context.get_user(),
-                task_id=self._agent_context._context.task_id,
+                session_id=session_id,
+                user_id=user_id,
+                task_id=task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
@@ -1022,9 +1027,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _add_human_input_to_memory(self, content: str, context: Context):
         """Add user input to memory"""
+        if not context.get_task():
+            logger.error(f"Task is None")
         session_id = context.get_task().session_id
         user_id = context.get_task().user_id
         task_id = context.get_task().id
+
         self.memory.add(MemoryHumanMessage(
             content=content,
             metadata=MessageMetadata(
@@ -1046,7 +1054,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         custom_prompt_tool_calls = []
         if self.use_tools_in_prompt:
             custom_prompt_tool_calls = self.use_tool_list(llm_response)
-
+        if not context.get_task():
+            logger.error(f"Task is None")
         session_id = context.get_task().session_id
         user_id = context.get_task().user_id
         task_id = context.get_task().id

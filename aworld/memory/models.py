@@ -183,7 +183,7 @@ class MemoryAIMessage(MemoryMessage):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (str): The content of the message.
     """
-    def __init__(self, content: str, tool_calls: List[ToolCall], metadata: MessageMetadata) -> None:
+    def __init__(self, content: str, tool_calls: Optional[List[ToolCall]] = [], metadata: MessageMetadata = None) -> None:
         meta = metadata.to_dict
         if tool_calls:
             meta['tool_calls'] = [tool_call.to_dict() for tool_call in tool_calls]
@@ -235,7 +235,7 @@ class MemoryToolMessage(MemoryMessage):
 
 class LongTermExtractParams(BaseModel):
     session_id: str = Field(description="The ID of the session")
-    task_id: str = Field(description="The ID of the task")
+    task_id: Optional[str] = Field(description="The ID of the task")
     memories: List[MemoryItem] = Field(default_factory=list, description="The list of memories to process")
 
     application_id: Optional[str] = Field(default=None, description="The ID of the application")
