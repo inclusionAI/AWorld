@@ -1,52 +1,32 @@
-import os
+import logging
 import re
-from typing import Dict, Any, Optional, Union, Callable, List
+from typing import Dict, Any, Optional, Callable, List
+
+# Import system_prompt directly from the module
+try:
+    from aworld.prompt.templates.prompt import system_prompt as default_system_prompt
+except ImportError:
+    default_system_prompt = ""
 
 class Prompt:
     """
     Prompt processing class, responsible for loading templates and rendering variables
     """
     
-    def __init__(self, template: str = None, is_file_path: bool = False):
+    def __init__(self, template: str = None):
         """
         Initialize Prompt class
         
         Args:
-            template: Template content or template file path. If None, will load default system prompt.
-            is_file_path: Whether it is a file path, if true, will read file content
+            template: Template content. If None, will load default system prompt.
         """
         if template is None:
-            # Load default system prompt if template is None
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            system_prompt_path = os.path.join(base_dir, 'templates', 'system_prompt.txt')
-            self.template_content = self._load_template(system_prompt_path, is_file_path=True)
+            self.template_content = default_system_prompt
         else:
-            self.template_content = self._load_template(template, is_file_path)
+            self.template_content = template
             
         # Extract variables from the template
         self.variables = self._extract_variables(self.template_content)
-    
-    def _load_template(self, template: str, is_file_path: bool) -> str:
-        """
-        Load template content
-        
-        Args:
-            template: Template content or template file path
-            is_file_path: Whether it is a file path
-            
-        Returns:
-            Template content
-        """
-        if not is_file_path:
-            return template
-        
-        try:
-            with open(template, 'r', encoding='utf-8') as f:
-                return f.read()
-        except FileNotFoundError:
-            raise ValueError(f"Template file not found at {template}")
-        except Exception as e:
-            raise ValueError(f"Error loading template file: {str(e)}")
     
     def _extract_variables(self, template_content: str) -> List[str]:
         """
@@ -60,9 +40,16 @@ class Prompt:
         """
         # Use regular expression to extract {{variable}} format variables
         pattern = r'\{\{([a-zA-Z0-9_]+)\}\}'
-        matches = re.findall(pattern, template_content)
-        # Remove duplicates
-        return list(set(matches))
+        if not template_content:
+            return []
+        try:
+            matches = re.findall(pattern, template_content)
+            # Remove duplicates
+            return list(set(matches))
+        except Exception as e:
+            logging.warning(f"Error extracting variables from template: {str(e)}")
+            return []
+
     
     def _get_variable_values_from_api(self, variables: List[str]) -> Dict[str, Any]:
         """
@@ -134,20 +121,7 @@ class Prompt:
             
         return rendered_content
 
-# Utility function to load Prompt from file
-def load_prompt_from_file(file_path: str) -> Prompt:
-    """
-    Load Prompt from file
-    
-    Args:
-        file_path: Template file path
-        
-    Returns:
-        Prompt object
-    """
-    return Prompt(file_path, is_file_path=True)
-
-# Utility function to create Prompt from string
+# Simplified API, only keep the prompt creation functionality
 def create_prompt(template_content: str) -> Prompt:
     """
     Create Prompt from string
@@ -158,19 +132,4 @@ def create_prompt(template_content: str) -> Prompt:
     Returns:
         Prompt object
     """
-    return Prompt(template_content, is_file_path=False)
-
-# Utility function to load Prompt from default template directory
-def load_default_prompt(template_name: str) -> Prompt:
-    """
-    Load Prompt from default template directory
-    
-    Args:
-        template_name: Template name (without .txt extension)
-        
-    Returns:
-        Prompt object
-    """
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    template_path = os.path.join(base_dir, 'templates', f"{template_name}.txt")
-    return load_prompt_from_file(template_path) 
+    return Prompt(template_content)

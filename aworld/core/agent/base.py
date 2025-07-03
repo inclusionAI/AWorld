@@ -122,7 +122,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.handoffs: List[str] = agent_names or []
         # Supported MCP server
         self.mcp_servers: List[str] = mcp_servers or []
-        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config) or {}
+        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
@@ -160,26 +160,24 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         observation = message.payload
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self.pre_run()
-            result = self.policy(observation, **kwargs)
+            result = self.policy(observation, message = message, **kwargs)
             final_result = self.post_run(result, observation)
             return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
+        self._init_context(message.context)
+        logger.debug(f"context ({id(message.context)})")
+        observation = message.payload
+        if eventbus is not None:
+            await send_message(Message(
+                category=Constants.OUTPUT,
+                payload=StepOutput.build_start_output(name=f"{self.id()}", alias_name=self.name(), step_num=0),
+                sender=self.id(),
+                session_id=self.context.session_id
+            ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
-            self._init_context(message.context)
-            observation = message.payload
-            if eventbus is not None:
-                await send_message(Message(
-                    category=Constants.OUTPUT,
-                    payload=StepOutput.build_start_output(name=f"{self.id()}",
-                                                          alias_name=self.name(),
-                                                          step_num=0,
-                                                          task_id=self.context.task_id),
-                    sender=self.id(),
-                    session_id=self.context.session_id
-                ))
             await self.async_pre_run()
-            result = await self.async_policy(observation, **kwargs)
+            result = await self.async_policy(observation,message = message, **kwargs)
             final_result = await self.async_post_run(result, observation)
             return final_result
 
