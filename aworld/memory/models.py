@@ -1,4 +1,4 @@
-from abc import abstractmethod
+from abc import abstractmethod, ABC
 from pydantic import BaseModel, ConfigDict, Field
 from aworld.core.memory import MemoryItem
 from typing import Any, Dict, List, Optional, Literal, Union
@@ -31,7 +31,16 @@ class AgentExperienceItem(BaseModel):
     skill: str = Field(description="The skill demonstrated in the experience")
     actions: List[str] = Field(description="The actions taken by the agent")
 
-class AgentExperience(MemoryItem):
+class LongTermEmbedding(ABC):
+    """
+    Abstract class for long-term embedding.
+    """
+
+    @abstractmethod
+    def get_embedding_text(self):
+        pass
+
+class AgentExperience(MemoryItem, LongTermEmbedding):
     """
     Represents an agent's experience, including skills and actions.
     All custom attributes are stored in content and metadata.
@@ -59,11 +68,14 @@ class AgentExperience(MemoryItem):
     def actions(self) -> List[str]:
         return self.content.actions
 
+    def get_embedding_text(self):
+        return f"agent_id:{self.agent_id} skill:{self.skill} actions:{self.actions}"
+
 class UserProfileItem(BaseModel):
     key: str = Field(description="The key of the profile")
     value: Any = Field(description="The value of the profile")
 
-class UserProfile(MemoryItem):
+class UserProfile(MemoryItem, LongTermEmbedding):
     """
     Represents a user profile key-value pair.
     All custom attributes are stored in content and metadata.
@@ -90,6 +102,10 @@ class UserProfile(MemoryItem):
     @property
     def value(self) -> Any:
         return self.content.value
+
+    def get_embedding_text(self):
+        return f"user_id:{self.user_id} key:{self.key} value:{self.value}"
+
 
 class MemoryMessage(MemoryItem):
     """
@@ -167,7 +183,7 @@ class MemoryAIMessage(MemoryMessage):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (str): The content of the message.
     """
-    def __init__(self, content: str, tool_calls: List[ToolCall], metadata: MessageMetadata) -> None:
+    def __init__(self, content: str, tool_calls: Optional[List[ToolCall]] = [], metadata: MessageMetadata = None) -> None:
         meta = metadata.to_dict
         if tool_calls:
             meta['tool_calls'] = [tool_call.to_dict() for tool_call in tool_calls]
@@ -219,7 +235,7 @@ class MemoryToolMessage(MemoryMessage):
 
 class LongTermExtractParams(BaseModel):
     session_id: str = Field(description="The ID of the session")
-    task_id: str = Field(description="The ID of the task")
+    task_id: Optional[str] = Field(description="The ID of the task")
     memories: List[MemoryItem] = Field(default_factory=list, description="The list of memories to process")
 
     application_id: Optional[str] = Field(default=None, description="The ID of the application")
@@ -229,16 +245,18 @@ class LongTermExtractParams(BaseModel):
         return [memory.to_openai_message() for memory in self.memories]
 
 class UserProfileExtractParams(LongTermExtractParams):
-    user_id: str = Field(description="The ID of the user")
+    user_id: Optional[str] = Field(description="The ID of the user")
 
     def __init__(self, user_id: str, session_id: str, task_id: str, memories: List[MemoryItem] = None, application_id: str = None) -> None:
-        super().__init__(session_id=session_id,
-                         task_id=task_id,
-                         memories=memories,
-                         application_id=application_id,
-                         extract_type="user_profile"
-                         )
-        self.user_id = user_id
+        kwargs = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "task_id": task_id,
+            "memories": memories or [],
+            "application_id": application_id,
+            "extract_type": "user_profile"
+        }
+        super().__init__(**kwargs)
 
     model_config = ConfigDict(extra="allow")
 

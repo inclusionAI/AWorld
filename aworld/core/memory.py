@@ -518,6 +518,16 @@ class LongTermConfig(BaseModel):
             )
         )
 
+class EmbeddingsConfig(BaseModel):
+    provider: str = "openai"
+    api_key: str
+    model_name: str = "text-embedding-3-small"
+    base_url: str = "https://api.openai.com/v1"
+    context_length: int = 8191
+    dimensions: int = 1536
+    batch_size: int = 100
+    timeout: int = 60
+
 class MemoryConfig(BaseModel):
     """Configuration for procedural memory."""
 
@@ -538,9 +548,7 @@ class MemoryConfig(BaseModel):
     long_term_config: Optional[LongTermConfig] = Field(default=None, description="long_term_config")
 
     # Embedder settings
-    embedder_provider: Literal['openai', 'gemini', 'ollama', 'huggingface'] = 'huggingface'
-    embedder_model: str = Field(min_length=2, default='all-MiniLM-L6-v2')
-    embedder_dims: int = Field(default=384, gt=10, lt=10000)
+    embedding_config: Optional[EmbeddingsConfig] = Field(default=None, description="embedding_config")
 
     # LLM settings - the LLM instance can be passed separately
     llm_provider: Literal['openai', 'langchain'] = 'langchain'
@@ -558,9 +566,11 @@ class MemoryConfig(BaseModel):
     @property
     def embedder_config_dict(self) -> dict[str, Any]:
         """Returns the embedder configuration dictionary."""
+        if not self.embedding_config:
+            return None
         return {
-            'provider': self.embedder_provider,
-            'config': {'model': self.embedder_model, 'embedding_dims': self.embedder_dims},
+            'provider': self.embedding_config.provider,
+            'config': {'model': self.embedding_config.model_name, 'embedding_dims': self.embedding_config.dimensions},
         }
 
     @property
