@@ -146,7 +146,10 @@ class TaskEventRunner(TaskRunner):
                     if handle_tasks:
                         await asyncio.gather(*handle_tasks)
                     self.state_manager.end_message_node(message)
-                asyncio.create_task(async_end_message_node())
+
+                end_message_task = asyncio.create_task(async_end_message_node())
+                self.background_tasks.add(end_message_task)
+                end_message_task.add_done_callback(self.background_tasks.discard)
             else:
                 # not handler, return raw message
                 results.append(message)

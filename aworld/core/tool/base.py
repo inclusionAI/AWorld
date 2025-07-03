@@ -308,7 +308,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                            ),
                                            sender=self.name(),
                                            receiver=action[0].agent_name,
-                                           session_id=self.context.session_id
+                                           session_id=self.context.session_id,
+                                           headers={"context": self.context}
                                        ),
                                        **kwargs)
 
