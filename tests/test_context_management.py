@@ -1,3 +1,11 @@
+from tests.base_test import BaseTest
+from aworld.runners.hook.hook_factory import HookFactory
+from aworld.core.context.base import Context
+from aworld.config.conf import AgentConfig, ContextRuleConfig, ModelConfig, OptimizationConfig, LlmCompressionConfig
+from aworld.agents.llm_agent import Agent
+from aworld.runner import Runners
+from aworld.core.agent.swarm import Swarm
+from aworld.core.task import Task
 import os
 import random
 import sys
@@ -6,15 +14,6 @@ from pathlib import Path
 # Add the project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-
-from aworld.core.task import Task
-from aworld.core.agent.swarm import Swarm
-from aworld.runner import Runners
-from aworld.agents.llm_agent import Agent
-from aworld.config.conf import AgentConfig, ContextRuleConfig, ModelConfig, OptimizationConfig, LlmCompressionConfig
-from aworld.core.context.base import Context
-from aworld.runners.hook.hook_factory import HookFactory
-from tests.base_test import BaseTest
 
 
 class TestContextManagement(BaseTest):
@@ -63,9 +62,11 @@ class TestContextManagement(BaseTest):
 
         def __exit__(self, exc_type, exc_value, traceback):
             if exc_type is None:
-                raise AssertionError(f"Expected {self.expected_exception.__name__} to be raised, but no exception was raised")
+                raise AssertionError(
+                    f"Expected {self.expected_exception.__name__} to be raised, but no exception was raised")
             if not issubclass(exc_type, self.expected_exception):
-                raise AssertionError(f"Expected {self.expected_exception.__name__} to be raised, but got {exc_type.__name__}: {exc_value}")
+                raise AssertionError(
+                    f"Expected {self.expected_exception.__name__} to be raised, but got {exc_type.__name__}: {exc_value}")
             return True  # Suppress the exception
 
     def fail(self, msg=None):
@@ -88,7 +89,8 @@ class TestContextManagement(BaseTest):
 
     def run_task(self, context: Context, agent: Agent):
         swarm = Swarm(agent, max_steps=1)
-        task = Task(input="""What is an agent.""", swarm=swarm, context=context)
+        task = Task(input="""What is an agent.""",
+                    swarm=swarm, context=context)
         return Runners.sync_run_task(task)
 
     def test_default_context_configuration(self):
@@ -105,14 +107,17 @@ class TestContextManagement(BaseTest):
         #     )
         # )
         mock_agent = self.init_agent("1")
-        response = self.run_agent(input="""What is an agent. describe within 20 words""", agent=mock_agent)
+        response = self.run_agent(
+            input="""What is an agent. describe within 20 words""", agent=mock_agent)
 
         self.assertIsNotNone(response.answer)
-        self.assertEqual(mock_agent.agent_context.model_config.llm_model_name, self.mock_model_name)
+        self.assertEqual(
+            mock_agent.agent_context.model_config.llm_model_name, self.mock_model_name)
 
         # Test default context rule behavior
         self.assertIsNotNone(mock_agent.agent_context.context_rule)
-        self.assertIsNotNone(mock_agent.agent_context.context_rule.optimization_config)
+        self.assertIsNotNone(
+            mock_agent.agent_context.context_rule.optimization_config)
 
     def test_custom_context_configuration(self):
         """Test custom context configuration (README Configuration example)"""
@@ -133,12 +138,15 @@ class TestContextManagement(BaseTest):
             )
         ))
 
-        response = self.run_agent(input="""describe What is an agent in details""", agent=mock_agent)
+        response = self.run_agent(
+            input="""describe What is an agent in details""", agent=mock_agent)
         self.assertIsNotNone(response.answer)
 
         # Test configuration values
-        self.assertTrue(mock_agent.agent_context.context_rule.optimization_config.enabled)
-        self.assertTrue(mock_agent.agent_context.context_rule.llm_compression_config.enabled)
+        self.assertTrue(
+            mock_agent.agent_context.context_rule.optimization_config.enabled)
+        self.assertTrue(
+            mock_agent.agent_context.context_rule.llm_compression_config.enabled)
 
     def test_state_management_and_recovery(self):
         class StateModifyAgent(Agent):
@@ -211,14 +219,15 @@ class TestHookSystem(TestContextManagement):
         from tests.test_llm_hook import TestPreLLMHook, TestPostLLMHook
 
         mock_agent = self.init_agent("1")
-        response = self.run_agent(input="""What is an agent. describe within 20 words""", agent=mock_agent)
+        response = self.run_agent(
+            input="""What is an agent. describe within 20 words""", agent=mock_agent)
         self.assertIsNotNone(response.answer)
 
     def test_task_context_transfer(self):
         from tests.test_context_hook import CheckContextPreLLMHook
 
         mock_agent = self.init_agent("1")
-        context = Context.instance()
+        context = Context()
         context.context_info.update({"task": "What is an agent."})
         self.run_task(context=context, agent=mock_agent)
 

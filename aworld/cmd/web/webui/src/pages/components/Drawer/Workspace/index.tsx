@@ -1,83 +1,63 @@
-import React from 'react';
-import { Flex, Typography, Button } from 'antd';
+import { getWorkspaceArtifacts } from '@/api/workspace';
+import { Tabs } from 'antd';
+import React, { useEffect, useState } from 'react';
 import './index.less';
-const { Text } = Typography;
+import type { ToolCardData } from '../../BubbleItem/utils';
+
+interface ArtifactItem {
+  key: string;
+  title: string;
+  content: string;
+}
 
 interface WorkspaceProps {
   sessionId: string;
+  toolCardData?: ToolCardData;
 }
 
-const Workspace: React.FC<WorkspaceProps> = ({ sessionId }) => {
-  const [currentTab, setCurrentTab] = React.useState('1');
-  const tabs = [
-    {
-      key: '1',
-      name: 'Agent 1的电脑',
-      desc: '正在使用搜索工作'
-    },
-    {
-      key: '2',
-      name: 'Agent 2的电脑',
-      desc: '正在使用搜索工作'
-    },
-    {
-      key: '3',
-      name: 'Agent 3的电脑',
-      desc: '正在使用搜索工作'
-    }
-  ];
-  const lists = [
-    {
-      key: '1',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '2',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '3',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    },
-    {
-      key: '4',
-      title: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)',
-      desc: '深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)深度解析特斯拉新款人形机器人—擎天柱第二代 (Optimus Gen-2)'
-    }
-  ];
+const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
+  const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
+  // console.log(artifacts);
+  useEffect(() => {
+    console.log('Workspace中的toolCardData:', toolCardData);
+    const fetchWorkspaceArtifacts = async () => {
+      try {
+        const data = await getWorkspaceArtifacts(sessionId, {
+          artifact_types: [toolCardData?.artifacts[0]?.artifact_type],
+          artifact_ids: [toolCardData?.artifacts[0]?.artifact_id]
+        });
+        setArtifacts(Array.isArray(data) ? data : []);
+        console.log('工作空间数据: ', data);
+      } catch (error) {
+        console.error('获取工作空间树失败:', error);
+      }
+    };
+
+    fetchWorkspaceArtifacts();
+  }, [sessionId, toolCardData]);
+
   return (
     <>
       <div className="border workspacebox">
-        <Button className="btn">查看Workspace</Button>
-        <Flex className="tabbox" justify="space-between">
-          {tabs.map((item) => (
-            <Flex className={`border tab ${item.key === currentTab ? 'active' : ''}`} key={item.key} align="center" onClick={() => setCurrentTab(item.key)}>
-              <div className="num">{item.key}</div>
-              <div>
-                <div className="name">{item.name}</div>
-                <div className="desc">{item.desc}</div>
+        <Tabs defaultActiveKey="1" type="card">
+          <Tabs.TabPane tab="Web Pages" key="WEB_PAGES">
+            <div className="border listwrap">
+              <div className="title">Google Search</div>
+              <div className="listbox">
+                {artifacts.map((item) => (
+                  <div className="list" key={item.key}>
+                    <div className="name">{item.title}</div>
+                    <div>{item.content}</div>
+                  </div>
+                ))}
               </div>
-            </Flex>
-          ))}
-        </Flex>
-        <div className="border listwrap">
-          <div className="title">Google Search</div>
-          <div className="listbox">
-            {lists.map((item) => (
-              <div className="list" key={item.key}>
-                <div className="name">{item.title}</div>
-                <Text ellipsis className="desc">
-                  {item.desc}
-                </Text>
-              </div>
-            ))}
-          </div>
-        </div>
+            </div>
+          </Tabs.TabPane>
+          <Tabs.TabPane tab="Images" key="IMAGES">
+
+          </Tabs.TabPane>
+        </Tabs>
       </div>
-      <p>Session ID: {sessionId}</p>
     </>
   );
 };

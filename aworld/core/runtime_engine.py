@@ -4,6 +4,7 @@ import abc
 import inspect
 import os
 import asyncio
+import traceback
 from concurrent.futures import Future
 from concurrent.futures.process import ProcessPoolExecutor
 from types import MethodType
@@ -74,24 +75,32 @@ class LocalRuntime(RuntimeEngine):
     def _build_engine(self):
         self.runtime = self
 
-    def func_wrapper(self, func, *args, **kwargs):
+    def func_wrapper(self, func: Callable[..., Any], *args, **kwargs) -> Any:
         """Function is used to adapter computing form."""
-
-        if inspect.iscoroutinefunction(func):
-            res = sync_exec(func, *args, **kwargs)
-        else:
-            res = func(*args, **kwargs)
-        return res
+        try:
+            if inspect.iscoroutinefunction(func):
+                res = sync_exec(func, *args, **kwargs)
+            else:
+                res = func(*args, **kwargs)
+            return res
+        except Exception as e:
+            logger.error(f"⚠️ Function {getattr(func, '__name__', 'unknown')} execution failed: {e}")
+            # Re-raise the exception to be handled by the executor
+            raise
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         # opt of the one task process
         if len(funcs) == 1 and self.conf.get('reuse_process', True):
             func = funcs[0]
-            if inspect.iscoroutinefunction(func):
-                res = await func(*args, **kwargs)
-            else:
-                res = func(*args, **kwargs)
-            return {res.id: res}
+            try:
+                if inspect.iscoroutinefunction(func):
+                    res = await func(*args, **kwargs)
+                else:
+                    res = func(*args, **kwargs)
+                return {res.id: res}
+            except Exception as e:
+                logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
+                raise
 
         num_executor = self.conf.get('worker_num', os.cpu_count() - 1)
         num_process = len(funcs)
