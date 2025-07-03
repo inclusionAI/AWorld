@@ -9,6 +9,7 @@ from typing import AsyncGenerator, Dict, Any, List, Union, Callable
 from datetime import datetime
 
 from aworld.core.context.processor.llm_compressor import LLMCompressor
+from aworld.core.context.prompts import StringPromptTemplate
 from aworld.models.model_response import ModelResponse
 import aworld.trace as trace
 from aworld.agents.parallel_llm_agent import ParallelizableAgent
@@ -198,9 +199,13 @@ class PlanAgent(Agent):
             self._init_trajectories_file()
         # Check if maximum steps reached
         if self.cur_step >= self.max_steps:
-            logger.info(f"Maximum steps {self.max_steps} reached, stopping execution")
+            logger.info(f"Maximum steps {self.max_steps} reached, interrupt execution")
             # 写入最终的trajectories
             self._write_trajectories_incrementally()
+            # Maximum steps limit reached, interrupt execution
+            actions = await self.interrupt_plan(message.payload, **kwargs)
+            if actions and actions[0].policy_info:
+                return self._create_finished_message(message, actions)
             return self._create_finished_message(message, "Maximum steps limit reached")
 
         observation = message.payload
@@ -384,6 +389,86 @@ class PlanAgent(Agent):
         new_context.set_task(new_task)
         new_context.task_id = new_task.id
         return new_task
+
+    async def interrupt_plan(self, observation: Observation, **kwargs) -> List[ActionModel]:
+        interrupt_prompt = """
+            Based on all information collected so far, please generate a comprehensive research report about "{task}".
+            DO NOT USE ANY TOOL! 
+            The report should synthesize and analyze the following collected information:
+            
+            {trajectories}
+            
+            ## Report Structure Guidelines:
+            1. **Executive Summary**: Provide a concise overview of the key findings and conclusions.
+            2. **Introduction**: Briefly introduce the research context, objectives, and methodology.
+            3. **Key Findings**: Present the main insights discovered during the research process, organized by themes or categories.
+            4. **Analysis**: Critically analyze the collected information, identifying patterns, trends, and implications.
+            5. **Conclusions**: Summarize the main takeaways and their significance.
+            6. **Recommendations**: If applicable, suggest actionable next steps or areas for further investigation.
+            
+            Please ensure the report is:
+            - Well-structured with clear sections and logical flow
+            - Comprehensive yet concise
+            - Objective and evidence-based
+            - Focused on addressing the original task requirements
+            - Written in professional language suitable for the intended audience
+            
+            Format the report appropriately with headings, bullet points, and paragraphs as needed for optimal readability.
+        """
+        interrupt_prompt_template = StringPromptTemplate(interrupt_prompt)
+        interrupt_prompt_input = interrupt_prompt_template.format(context=self.context, task=self.task)
+        llm_messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful general summary agent.You are an expert research assistant analyzing summaries."
+            },
+            {
+                "role": "user",
+                "content": interrupt_prompt_input
+            }
+        ]
+        self._finished = False
+        # Prepare LLM input
+        llm_response = None
+        try:
+            llm_response = await self._call_llm_model(observation, llm_messages, **kwargs)
+        except Exception as e:
+            logger.warn(traceback.format_exc())
+            raise e
+        finally:
+            if llm_response:
+                use_tools = self.use_tool_list(llm_response)
+                is_use_tool_prompt = len(use_tools) > 0
+                if llm_response.error:
+                    logger.info(f"llm result error: {llm_response.error}")
+                else:
+                    self.memory.add(MemoryItem(
+                        content=llm_response.content,
+                        metadata={
+                            "role": "assistant",
+                            "agent_name": self.id(),
+                            "tool_calls": llm_response.tool_calls if not self.use_tools_in_prompt else use_tools,
+                            "is_use_tool_prompt": is_use_tool_prompt if not self.use_tools_in_prompt else False
+                        }
+                    ))
+            else:
+                logger.error(f"{self.id()} failed to get LLM response")
+                raise RuntimeError(f"{self.id()} failed to get LLM response")
+
+        try:
+            events = []
+            async for event in self.run_hooks(self.context, HookPoint.POST_LLM_CALL):
+                events.append(event)
+        except Exception as e:
+            logger.warn(traceback.format_exc())
+
+        self._save_action_trajectory(self.cur_action_step, self.id(), None, observation.content, llm_response.content)
+        logger.info(f"Serial agent execution - Step {self.cur_action_step}, Agent: {self.name()}")
+        self.cur_action_step += 1
+
+        agent_result = sync_exec(self.resp_parse_func, llm_response)
+        self._finished = True
+        return agent_result.actions
 
     def _save_action_trajectory(self, step, agent_name: str, tool_name: str, params: str, result: str):
         # 将agent_results和tool_results保存到trajectories中
