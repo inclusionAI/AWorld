@@ -14,23 +14,23 @@ Example:
     ...     create_context_name_getter
     ... )
     >>> 
-    >>> # 使用预定义的便捷函数
+    >>> # Use predefined convenience functions
     >>> get_agent_name = create_context_name_getter(context)
     >>> 
-    >>> # 或者使用通用的字段获取器
+    >>> # Or use generic field getter
     >>> get_agent_name = create_context_field_getter("agent_name", context, "Assistant")
     >>> 
-    >>> # 获取嵌套字段
+    >>> # Get nested fields
     >>> get_model_name = create_context_field_getter("model_config.llm_model_name", context, "unknown")
     >>> 
-    >>> # 带自定义处理的字段
+    >>> # Fields with custom processing
     >>> get_tools = create_context_field_getter(
-    ...     "tool_names", context, "无工具",
-    ...     processor=lambda tools: ", ".join(tools) if tools else "无工具可用"
+    ...     "tool_names", context, "No tools",
+    ...     processor=lambda tools: ", ".join(tools) if tools else "No tools available"
     ... )
     >>> 
     >>> prompt = PromptTemplate(
-    ...     template="你好，我是{agent_name}。当前时间是{current_time}。{user_input}",
+    ...     template="Hello, I'm {agent_name}. Current time is {current_time}. {user_input}",
     ...     input_variables=["user_input"],
     ...     partial_variables={
     ...         "current_time": get_current_time,
@@ -40,12 +40,12 @@ Example:
     ...     }
     ... )
 
-通用字段获取器功能：
-- 支持简单字段访问：create_context_field_getter("agent_name", ctx)
-- 支持嵌套字段访问：create_context_field_getter("model_config.llm_model_name", ctx) 
-- 支持自定义处理函数：processor=lambda x: f"处理后的{x}"
-- 支持后备获取函数：fallback_getter=lambda ctx: ctx.get_special_field()
-- 支持默认值：default_value="默认值"
+Generic field getter functionality:
+- Support simple field access: create_context_field_getter("agent_name", ctx)
+- Support nested field access: create_context_field_getter("model_config.llm_model_name", ctx) 
+- Support custom processing functions: processor=lambda x: f"Processed {x}"
+- Support fallback getter functions: fallback_getter=lambda ctx: ctx.get_special_field()
+- Support default values: default_value="Default value"
 """
 
 import os
@@ -59,17 +59,17 @@ if TYPE_CHECKING:
     from aworld.core.context.base import Context
 
 
-# ==================== 通用路径获取函数 ====================
+# ==================== Generic Path Getter Functions ====================
 
 def get_value_by_path(obj: Any, field_path: str) -> Any:
-    """通用的根据路径获取对象成员变量的函数
+    """Generic function to get object member variables by path
     
     Args:
-        obj: 要获取值的对象
-        field_path: 字段路径，支持嵌套访问，如 "agent_name" 或 "model_config.llm_model_name"
+        obj: Object to get value from
+        field_path: Field path, supports nested access like "agent_name" or "model_config.llm_model_name"
         
     Returns:
-        获取到的值，如果路径不存在则返回 None
+        Retrieved value, returns None if path doesn't exist
         
     Examples:
         >>> value = get_value_by_path(context, "agent_name")
@@ -92,9 +92,9 @@ def get_value_by_path(obj: Any, field_path: str) -> Any:
 
 
 class ContextFieldGetter:
-    """可序列化的Context字段获取器类，用于替代闭包函数
+    """Serializable Context field getter class to replace closure functions
     
-    这个类可以被pickle序列化，解决深拷贝时的序列化问题
+    This class can be pickle serialized, solving serialization issues during deep copy
     """
     
     def __init__(self, 
@@ -103,14 +103,14 @@ class ContextFieldGetter:
                  default_value: str = "unknown",
                  processor: Optional[Callable[[Any], str]] = None,
                  fallback_getter: Optional[Callable[["Context"], Any]] = None):
-        """初始化字段获取器
+        """Initialize field getter
         
         Args:
-            field_path: 字段路径，支持嵌套访问
-            context: Context实例
-            default_value: 默认值
-            processor: 值处理函数（注意：如果使用lambda，仍然不能序列化）
-            fallback_getter: 后备获取函数（注意：如果使用lambda，仍然不能序列化）
+            field_path: Field path, supports nested access
+            context: Context instance
+            default_value: Default value
+            processor: Value processing function (note: if using lambda, still cannot be serialized)
+            fallback_getter: Fallback getter function (note: if using lambda, still cannot be serialized)
         """
         self.field_path = field_path
         self.context = context
@@ -118,52 +118,52 @@ class ContextFieldGetter:
         self.processor = processor
         self.fallback_getter = fallback_getter
         
-        # 设置函数属性以兼容原有接口
+        # Set function attributes for compatibility with original interface
         safe_field_name = field_path.replace('.', '_')
         self.__name__ = f"get_context_{safe_field_name}"
-        self.__doc__ = f"获取Context的{field_path}字段"
+        self.__doc__ = f"Get Context's {field_path} field"
     
     def __call__(self, context: "Context" = None) -> str:
-        """调用获取器获取字段值
+        """Call getter to retrieve field value
         
         Args:
-            context: 可选的Context实例，如果提供则使用此实例，否则使用初始化时的实例
+            context: Optional Context instance, if provided use this instance, otherwise use initialization instance
             
         Returns:
-            字段值或默认值
+            Field value or default value
         """
-        # 使用传入的context或初始化时的context
+        # Use passed context or initialization context
         ctx = context or self.context
         
         if not ctx:
             return self.default_value
             
         try:
-            # 首先尝试从 context 中获取值
+            # First try to get value from context
             value = get_value_by_path(ctx, self.field_path)
             
-            # 如果字段路径失败，尝试使用后备获取函数
+            # If field path fails, try using fallback getter function
             if value is None and self.fallback_getter:
                 value = self.fallback_getter(ctx)
             
-            # 如果仍然没有值，返回默认值
+            # If still no value, return default value
             if value is None:
                 return self.default_value
             
-            # 应用处理函数
+            # Apply processing function
             if self.processor:
                 return self.processor(value)
             
-            # 直接转换为字符串
+            # Direct conversion to string
             return str(value)
             
         except Exception:
             return self.default_value
     
     def __getstate__(self):
-        """自定义序列化状态，处理不可序列化的函数"""
+        """Custom serialization state, handle non-serializable functions"""
         state = self.__dict__.copy()
-        # 如果processor或fallback_getter不能序列化，则设为None
+        # If processor or fallback_getter cannot be serialized, set to None
         if self.processor and not self._is_serializable(self.processor):
             state['processor'] = None
         if self.fallback_getter and not self._is_serializable(self.fallback_getter):
@@ -171,11 +171,11 @@ class ContextFieldGetter:
         return state
     
     def __setstate__(self, state):
-        """自定义反序列化状态"""
+        """Custom deserialization state"""
         self.__dict__.update(state)
     
     def _is_serializable(self, func):
-        """检查函数是否可序列化"""
+        """Check if function is serializable"""
         try:
             import pickle
             pickle.dumps(func)
@@ -184,92 +184,92 @@ class ContextFieldGetter:
             return False
 
 
-# ==================== 时间相关函数 ====================
+# ==================== Time Related Functions ====================
 
 def get_current_time() -> str:
-    """获取当前时间 (MM/DD/YYYY, HH:MM:SS)"""
+    """Get current time (MM/DD/YYYY, HH:MM:SS)"""
     return datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
 
 
 def get_current_date() -> str:
-    """获取当前日期 (YYYY-MM-DD)"""
+    """Get current date (YYYY-MM-DD)"""
     return datetime.now().strftime("%Y-%m-%d")
 
 
 def get_current_datetime() -> str:
-    """获取当前日期时间 (YYYY-MM-DD HH:MM:SS)"""
+    """Get current datetime (YYYY-MM-DD HH:MM:SS)"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_current_timestamp() -> str:
-    """获取当前时间戳"""
+    """Get current timestamp"""
     return str(int(datetime.now().timestamp()))
 
 
 def get_current_iso_time() -> str:
-    """获取当前ISO格式时间"""
+    """Get current ISO format time"""
     return datetime.now(timezone.utc).isoformat()
 
 
 def get_current_weekday() -> str:
-    """获取当前星期几"""
+    """Get current weekday"""
     weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     return weekdays[datetime.now().weekday()]
 
 
 def get_current_month() -> str:
-    """获取当前月份名称"""
+    """Get current month name"""
     return datetime.now().strftime("%B")
 
 
 def get_current_year() -> str:
-    """获取当前年份"""
+    """Get current year"""
     return str(datetime.now().year)
 
 
-# ==================== 系统信息函数 ====================
+# ==================== System Information Functions ====================
 
 def get_system_platform() -> str:
-    """获取系统平台信息"""
+    """Get system platform information"""
     return platform.platform()
 
 
 def get_system_os() -> str:
-    """获取操作系统名称"""
+    """Get operating system name"""
     return platform.system()
 
 
 def get_python_version() -> str:
-    """获取Python版本"""
+    """Get Python version"""
     return platform.python_version()
 
 
 def get_hostname() -> str:
-    """获取主机名"""
+    """Get hostname"""
     return platform.node()
 
 
 def get_username() -> str:
-    """获取当前用户名"""
+    """Get current username"""
     return os.getenv("USER") or os.getenv("USERNAME") or "unknown"
 
 
 def get_working_directory() -> str:
-    """获取当前工作目录"""
+    """Get current working directory"""
     return os.getcwd()
 
 
 def get_random_uuid() -> str:
-    """生成随机UUID"""
+    """Generate random UUID"""
     return str(uuid.uuid4())
 
 
 def get_short_uuid() -> str:
-    """生成短UUID (前8位)"""
+    """Generate short UUID (first 8 characters)"""
     return str(uuid.uuid4())[:8]
 
 
-# ==================== Context 字段获取函数工厂 ====================
+# ==================== Context Field Getter Function Factory ====================
 
 def create_context_field_getter(
     field_path: str, 
@@ -278,32 +278,32 @@ def create_context_field_getter(
     processor: Optional[Callable[[Any], str]] = None,
     fallback_getter: Optional[Callable[["Context"], Any]] = None
 ) -> ContextFieldGetter:
-    """创建获取Context指定字段的通用动态函数
+    """Create generic dynamic function to get specified Context field
     
     Args:
-        field_path: 字段路径，支持嵌套访问，如 "agent_name" 或 "model_config.llm_model_name"
-        context: Context实例
-        default_value: 字段不存在时的默认值
-        processor: 可选的值处理函数，接收原始值返回字符串
-        fallback_getter: 可选的后备获取函数，当字段路径访问失败时使用
+        field_path: Field path, supports nested access like "agent_name" or "model_config.llm_model_name"
+        context: Context instance
+        default_value: Default value when field doesn't exist
+        processor: Optional value processing function, receives original value returns string
+        fallback_getter: Optional fallback getter function, used when field path access fails
         
     Returns:
-        返回一个可序列化的ContextFieldGetter实例
+        Returns a serializable ContextFieldGetter instance
         
     Examples:
-        # 简单字段
+        # Simple field
         get_agent_name = create_context_field_getter("agent_name", ctx, "Assistant")
         
-        # 嵌套字段
+        # Nested field
         get_model = create_context_field_getter("model_config.llm_model_name", ctx, "unknown_model")
         
-        # 带处理函数
+        # With processing function
         get_prompt_preview = create_context_field_getter(
             "system_prompt", ctx, "No system prompt",
             processor=lambda p: p[:100] + "..." if len(p) > 100 else p
         )
         
-        # 带后备获取函数
+        # With fallback getter function
         get_tools = create_context_field_getter(
             "tool_names", ctx, "No tools available",
             processor=lambda tools: ", ".join(tools) if tools else "No tools available"
@@ -318,7 +318,7 @@ def create_context_field_getter(
     )
 
 
-# ==================== 支持运行时 Context 的新函数 ====================
+# ==================== Functions Supporting Runtime Context ====================
 
 def create_simple_field_getter(field_path: str, default: str = "") -> Callable[["Context"], str]:
     def field_getter(context: "Context" = None) -> str:
@@ -331,14 +331,14 @@ def create_multiple_field_getters(
     field_configs: list[tuple[str, str]], 
     context: "Context"
 ) -> dict[str, ContextFieldGetter]:
-    """批量创建多个字段获取器
+    """Batch create multiple field getters
     
     Args:
-        field_configs: 字段配置列表，每个元素为 (字段路径, 默认值) 的元组
-        context: Context实例
+        field_configs: List of field configurations, each element is a tuple of (field_path, default_value)
+        context: Context instance
         
     Returns:
-        字段名到获取函数的映射字典
+        Dictionary mapping field names to getter functions
         
     Example:
         >>> getters = create_multiple_field_getters([
@@ -347,7 +347,7 @@ def create_multiple_field_getters(
         ...     ("model_config.llm_model_name", "unknown_model")
         ... ], context)
         >>> 
-        >>> # 使用获取器
+        >>> # Use getters
         >>> agent_name = getters["agent_name"]()
     """
     getters = {}
@@ -361,10 +361,10 @@ def _get_context_field_value_with_fallback(context: "Context", field_path: str, 
         return default_value
         
     try:
-        # 首先尝试从 context 中获取值
+        # First try to get value from context
         value = get_value_by_path(context, field_path)
         
-        # 如果获取到值，转换为字符串返回
+        # If got value, convert to string and return
         if value is not None:
             return str(value)
         
@@ -375,26 +375,26 @@ def _get_context_field_value_with_fallback(context: "Context", field_path: str, 
 
 
 
-# ==================== 自定义Formatter支持的字段获取函数 ====================
+# ==================== Field Getter Functions Supporting Custom Formatters ====================
 
 def create_formatted_field_getter(
     field_path: str, 
     formatter: Optional[Callable[[Any], str]] = None,
     default: str = ""
 ) -> Callable[["Context"], str]:
-    """创建支持自定义formatter的字段获取函数
+    """Create field getter function supporting custom formatter
     
     Args:
-        field_path: 字段路径，支持嵌套访问，如 "agent_name" 或 "model_config.llm_model_name"
-        formatter: 自定义格式化函数，用于将获取到的对象转换为字符串
-                  可以处理OrderedDict、list、dict等复杂对象
-        default: 字段不存在或格式化失败时的默认值
+        field_path: Field path, supports nested access like "agent_name" or "model_config.llm_model_name"
+        formatter: Custom formatting function to convert retrieved object to string
+                  Can handle complex objects like OrderedDict, list, dict, etc.
+        default: Default value when field doesn't exist or formatting fails
         
     Returns:
-        可以接受 context 参数的函数
+        Function that can accept context parameter
         
     Examples:
-        # 格式化OrderedDict对象
+        # Format OrderedDict object
         >>> def format_ordered_dict(od):
         ...     if not od:
         ...         return "Empty OrderedDict"
@@ -407,7 +407,7 @@ def create_formatted_field_getter(
         ...     default="No OrderedDict available"
         ... )
         
-        # 格式化列表对象
+        # Format list object
         >>> def format_list_items(items):
         ...     if not items:
         ...         return "No items"
@@ -419,7 +419,7 @@ def create_formatted_field_getter(
         ...     default="No tools"
         ... )
         
-        # 格式化字典对象为JSON
+        # Format dictionary object as JSON
         >>> import json
         >>> json_getter = create_formatted_field_getter(
         ...     "config_data", 
@@ -427,7 +427,7 @@ def create_formatted_field_getter(
         ...     default="{}"
         ... )
         
-        # 格式化复杂对象
+        # Format complex object
         >>> def format_complex_object(obj):
         ...     if hasattr(obj, '__dict__'):
         ...         return f"{obj.__class__.__name__}: {vars(obj)}"
@@ -444,23 +444,23 @@ def create_formatted_field_getter(
             return default
             
         try:
-            # 获取字段值
+            # Get field value
             value = get_value_by_path(context, field_path)
             
             if value is None:
                 return default
             
-            # 如果提供了formatter，使用它来格式化
+            # If formatter is provided, use it to format
             if formatter is not None:
                 try:
                     return formatter(value)
                 except Exception as e:
-                    # 格式化失败时记录错误并返回默认值
+                    # Log error when formatting fails and return default value
                     import logging
                     logging.warning(f"Formatter failed for field '{field_path}': {e}")
                     return default
             
-            # 没有formatter时，使用默认的字符串转换
+            # Without formatter, use default string conversion
             return str(value)
             
         except Exception:
@@ -476,22 +476,22 @@ def create_advanced_field_getter(
     transform: Optional[Callable[[Any], Any]] = None,
     default: str = ""
 ) -> Callable[["Context"], str]:
-    """创建高级字段获取函数，支持多种自定义选项
+    """Create advanced field getter function supporting multiple custom options
     
     Args:
-        field_path: 主字段路径
-        formatter: 自定义格式化函数
-        fallback_paths: 后备字段路径列表，按顺序尝试
-        transform: 在格式化之前对值进行转换的函数
-        default: 默认值
+        field_path: Primary field path
+        formatter: Custom formatting function
+        fallback_paths: List of fallback field paths, tried in order
+        transform: Function to transform value before formatting
+        default: Default value
         
     Returns:
-        可以接受 context 参数的函数
+        Function that can accept context parameter
         
     Examples:
-        # 复杂的OrderedDict处理
+        # Complex OrderedDict handling
         >>> def transform_ordered_dict(od):
-        ...     # 转换OrderedDict为普通dict以便处理
+        ...     # Convert OrderedDict to regular dict for easier handling
         ...     return dict(od) if hasattr(od, 'items') else od
         
         >>> def format_dict_pretty(d):
@@ -508,9 +508,9 @@ def create_advanced_field_getter(
         ...     default="No configuration available"
         ... )
         
-        # 处理嵌套对象
+        # Handle nested objects
         >>> def extract_nested_info(obj):
-        ...     # 从复杂对象中提取关键信息
+        ...     # Extract key information from complex object
         ...     if hasattr(obj, 'name') and hasattr(obj, 'version'):
         ...         return {'name': obj.name, 'version': obj.version}
         ...     return obj
@@ -531,7 +531,7 @@ def create_advanced_field_getter(
         if not context:
             return default
             
-        # 尝试获取字段值，包括fallback路径
+        # Try to get field value including fallback paths
         value = None
         paths_to_try = [field_path] + (fallback_paths or [])
         
@@ -547,15 +547,15 @@ def create_advanced_field_getter(
             return default
         
         try:
-            # 应用转换函数
+            # Apply transform function
             if transform is not None:
                 value = transform(value)
             
-            # 应用格式化函数
+            # Apply formatting function
             if formatter is not None:
                 return formatter(value)
             
-            # 默认字符串转换
+            # Default string conversion
             return str(value)
             
         except Exception as e:
@@ -566,10 +566,10 @@ def create_advanced_field_getter(
     return field_getter
 
 
-# ==================== 预定义的Formatter函数 ====================
+# ==================== Predefined Formatter Functions ====================
 
 def format_ordered_dict_simple(od) -> str:
-    """简单的OrderedDict格式化器"""
+    """Simple OrderedDict formatter"""
     if not od or not hasattr(od, 'items'):
         return "Empty"
     items = [f"{k}={v}" for k, v in od.items()]
@@ -577,12 +577,12 @@ def format_ordered_dict_simple(od) -> str:
 
 
 def format_ordered_dict_json(od) -> str:
-    """将OrderedDict格式化为JSON字符串"""
+    """Format OrderedDict as JSON string"""
     import json
     if not od:
         return "{}"
     try:
-        # 转换为普通dict然后格式化为JSON
+        # Convert to regular dict then format as JSON
         regular_dict = dict(od) if hasattr(od, 'items') else od
         return json.dumps(regular_dict, ensure_ascii=False, indent=2)
     except Exception:
@@ -590,7 +590,7 @@ def format_ordered_dict_json(od) -> str:
 
 
 def format_list_items(items) -> str:
-    """格式化列表项"""
+    """Format list items"""
     if not items:
         return "Empty list"
     if isinstance(items, (list, tuple)):
@@ -599,14 +599,14 @@ def format_list_items(items) -> str:
 
 
 def format_dict_keys(d) -> str:
-    """格式化字典键"""
+    """Format dictionary keys"""
     if not d or not hasattr(d, 'keys'):
         return "No keys"
     return f"Keys: {', '.join(str(k) for k in d.keys())}"
 
 
 def format_object_summary(obj) -> str:
-    """格式化对象摘要信息"""
+    """Format object summary information"""
     if obj is None:
         return "None"
     
@@ -626,18 +626,18 @@ def format_object_summary(obj) -> str:
     return f"{obj_type}: {str(obj)[:50]}..."
 
 
-# ==================== 便捷函数 ====================
+# ==================== Convenience Functions ====================
 
 def create_ordered_dict_getter(field_path: str, format_style: str = "simple", default: str = "Empty") -> Callable[["Context"], str]:
-    """创建OrderedDict专用的字段获取函数
+    """Create OrderedDict-specific field getter function
     
     Args:
-        field_path: 字段路径
-        format_style: 格式化风格，可选 "simple", "json", "keys"
-        default: 默认值
+        field_path: Field path
+        format_style: Formatting style, options: "simple", "json", "keys"
+        default: Default value
         
     Returns:
-        字段获取函数
+        Field getter function
     """
     formatters = {
         "simple": format_ordered_dict_simple,
@@ -650,15 +650,15 @@ def create_ordered_dict_getter(field_path: str, format_style: str = "simple", de
 
 
 def create_list_getter(field_path: str, separator: str = ", ", default: str = "Empty list") -> Callable[["Context"], str]:
-    """创建列表专用的字段获取函数
+    """Create list-specific field getter function
     
     Args:
-        field_path: 字段路径
-        separator: 列表项分隔符
-        default: 默认值
+        field_path: Field path
+        separator: List item separator
+        default: Default value
         
     Returns:
-        字段获取函数
+        Field getter function
     """
     def list_formatter(items):
         if not items:
@@ -669,9 +669,9 @@ def create_list_getter(field_path: str, separator: str = ", ", default: str = "E
     
     return create_formatted_field_getter(field_path, list_formatter, default)
 
-# ==================== 预定义动态变量集合 ====================
+# ==================== Predefined Dynamic Variable Collections ====================
 
-# 常用时间变量
+# Common time variables
 TIME_VARIABLES = {
     "current_time": get_current_time,
     "current_date": get_current_date,
@@ -682,7 +682,7 @@ TIME_VARIABLES = {
     "current_year": get_current_year,
 }
 
-# 系统信息变量
+# System information variables
 SYSTEM_VARIABLES = {
     "system_platform": get_system_platform,
     "system_os": get_system_os,
@@ -694,12 +694,12 @@ SYSTEM_VARIABLES = {
     "short_uuid": get_short_uuid,
 }
 
-# Context相关变量 - 支持运行时Context传入
+# Context-related variables - support runtime Context passing
 CONTEXT_VARIABLES = {
     "trajectories": create_simple_field_getter("trajectories"),
 }
 
-# 全部变量集合 - 包含时间、系统和Context变量
+# All variable collections - includes time, system and Context variables
 ALL_DYNAMIC_VARIABLES = {
     **TIME_VARIABLES,
     **SYSTEM_VARIABLES,
