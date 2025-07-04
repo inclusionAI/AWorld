@@ -113,7 +113,7 @@ class WorkflowRunner(TaskRunner):
             cur_agent = agent
             while step <= self.max_steps:
                 await self.outputs.add_output(
-                    StepOutput.build_start_output(name=f"Step{step}", step_num=step))
+                    StepOutput.build_start_output(name=f"Step{step}", step_num=step, task_id=self.task.id))
 
                 terminated = False
 
@@ -171,7 +171,8 @@ class WorkflowRunner(TaskRunner):
                         await self.outputs.add_output(
                             StepOutput.build_failed_output(name=f"Step{step}",
                                                            step_num=step,
-                                                           data=f"current agent {cur_agent.id()} no policy to use.")
+                                                           data=f"current agent {cur_agent.id()} no policy to use.",
+                                                           task_id=self.context.task_id)
                         )
                         await self.outputs.mark_completed()
                         task_span.set_attributes({
@@ -205,7 +206,9 @@ class WorkflowRunner(TaskRunner):
                             break
                         elif status == 'return':
                             await self.outputs.add_output(
-                                StepOutput.build_finished_output(name=f"Step{step}", step_num=step)
+                                StepOutput.build_finished_output(name=f"Step{step}",
+                                                                 step_num=step,
+                                                                 task_id=self.context.task_id)
                             )
                             info.time_cost = (time.time() - start)
                             task_span.set_attributes({
@@ -223,9 +226,12 @@ class WorkflowRunner(TaskRunner):
                     else:
                         logger.warning(f"Unrecognized policy: {policy[0]}")
                         await self.outputs.add_output(
-                            StepOutput.build_failed_output(name=f"Step{step}",
-                                                           step_num=step,
-                                                           data=f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.")
+                            StepOutput.build_failed_output(
+                                name=f"Step{step}",
+                                step_num=step,
+                                data=f"Unrecognized policy: {policy[0]}, need to check prompt or agent / tool.",
+                                task_id=self.context.task_id
+                            )
                         )
                         await self.outputs.mark_completed()
                         task_span.set_attributes({
@@ -244,7 +250,8 @@ class WorkflowRunner(TaskRunner):
                         )
                     await self.outputs.add_output(
                         StepOutput.build_finished_output(name=f"Step{step}",
-                                                         step_num=step, )
+                                                         step_num=step,
+                                                         task_id=self.context.task_id)
                     )
                     step += 1
                     if terminated and agent.finished:
@@ -788,12 +795,16 @@ class HandoffRunner(TaskRunner):
 
             observation, reward, terminated, _, info = message.payload
             for i, item in enumerate(action):
-                tool_output = ToolResultOutput(data=observation.content, origin_tool_call=ToolCall.from_dict({
-                    "function": {
-                        "name": item.action_name,
-                        "arguments": item.params,
-                    }
-                }))
+                tool_output = ToolResultOutput(
+                    data=observation.content,
+                    origin_tool_call=ToolCall.from_dict({
+                        "function": {
+                            "name": item.action_name,
+                            "arguments": item.params,
+                        }
+                    }),
+                    task_id=self.task.id
+                )
                 await self.outputs.add_output(tool_output)
 
             # Check if there's an exception in info

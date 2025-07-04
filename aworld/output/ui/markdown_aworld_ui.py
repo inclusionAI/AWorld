@@ -25,13 +25,14 @@ class MarkdownAworldUI(AworldUI):
     workspace: WorkSpace = Field(default=None, description="workspace")
     cur_agent_name: str = Field(default=None, description="cur agent name")
 
-    def __init__(self, session_id: str = None, workspace: WorkSpace = None, **kwargs):
+    def __init__(self, session_id: str = None, task_id: str = None, workspace: WorkSpace = None, **kwargs):
         """
         Initialize MarkdownAworldUI
         Args:"""
         super().__init__(**kwargs)
         self.session_id = session_id
         self.workspace = workspace
+        self.task_id = task_id
 
     async def message_output(self, __output__: MessageOutput):
         """
@@ -152,7 +153,9 @@ class MarkdownAworldUI(AworldUI):
 
         # web_pages
         if metadata.get("artifact_type") == "WEB_PAGES":
-            search_output = SearchOutput.from_dict(metadata.get("artifact_data"))
+            data_dict = metadata.get("artifact_data")
+            data_dict['task_id'] = self.task_id
+            search_output = SearchOutput.from_dict(data_dict)
             artifact_id = str(uuid.uuid4())
             await self.workspace.create_artifact(
                 artifact_type=ArtifactType.WEB_PAGES,

@@ -223,7 +223,8 @@ class TaskEventRunner(TaskRunner):
                     payload=TaskItem(msg=str(e), data=message),
                     sender=self.name,
                     session_id=self.context.session_id,
-                    topic=TopicType.ERROR
+                    topic=TopicType.ERROR,
+                    headers={"context": self.context}
                 )
                 self.state_manager.save_message_handle_result(name=handler.__name__,
                                                               message=message,
@@ -288,7 +289,8 @@ class TaskEventRunner(TaskRunner):
                 payload=TaskItem(msg=str(e), data=message),
                 sender=self.name,
                 session_id=self.context.session_id,
-                topic=TopicType.ERROR
+                topic=TopicType.ERROR,
+                headers={"context": self.context}
             )
             self.state_manager.save_message_handle_result(name=TaskEventRunner.__name__,
                                                           message=message,

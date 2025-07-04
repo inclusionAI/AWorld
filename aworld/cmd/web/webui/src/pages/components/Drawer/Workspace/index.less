@@ -1,6 +1,5 @@
 .workspacebox {
   width: 100%;
-  padding: 15px 18px;
   box-sizing: border-box;
   .btn {
     color: #555;
@@ -70,7 +69,6 @@
           display: flex;
           align-items: center;
           &::before {
-            content: '';
             display: inline-block;
             width: 12px;
             height: 12px;
@@ -80,9 +78,13 @@
             background-color: #d8d8d8;
           }
         }
-        .desc {
+        .desc,
+        .link {
           color: #999;
           font-size: 12px;
+        }
+        .desc {
+          margin-bottom: 0;
         }
         &:not(:last-child) {
           border-bottom: 1px solid #a7a7a7;

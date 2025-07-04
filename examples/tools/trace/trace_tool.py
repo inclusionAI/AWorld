@@ -90,7 +90,7 @@ class TraceTool(Tool):
                     continue
                 try:
                     trace_data = self.fetch_trace_data(trace_id)
-                    logger.info(f"trace_data={trace_data}")
+                    # logger.info(f"trace_data={trace_data}")
                     error = ""
                 except Exception as e:
                     error = str(e)
