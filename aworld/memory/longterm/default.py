@@ -1,12 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-from datetime import datetime
 import json
 import traceback
+from datetime import datetime
 from typing import Any, List, Literal, Optional, Tuple
-
-from pydantic import BaseModel, Field
 
 from aworld.core.memory import MemoryItem, LongTermConfig, MemoryStore
 from aworld.models.llm import LLMModel, acall_llm_model
@@ -97,18 +95,21 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
     This orchestrator evaluates trigger conditions and creates processing tasks based on configuration.
     """
 
-    def __init__(self, llm_instance: LLMModel,
+    def __init__(self,
+                 llm_instance: LLMModel,
                  embedding_model: Optional[Any] = None,
-                 long_term_memory_store: MemoryStore = None) -> None:
+                 memory: "MemoryBase" = None
+                 ) -> None:
         """
         Initialize the simple memory orchestrator.
         
         Args:
             llm_instance: LLM model instance for processing
         """
-        super().__init__(llm_instance, embedding_model, long_term_memory_store)
+        super().__init__(llm_instance, embedding_model)
         self.memory_gungnir = DefaultMemoryGungnir(llm_instance)
         self.memory_tasks: List[MemoryProcessingTask] = []
+        self.memory = memory
 
     async def create_longterm_processing_tasks(self, task_params: list[LongTermExtractParams],
                                                longterm_config: LongTermConfig,
@@ -263,14 +264,14 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
             task: MemoryProcessingTask to process
         """
         try:
-            logger.info(f"🧠 [MEMORY:long-term] Processing task {task.memory_task_id} started")
+            logger.info(f"🧠 [MEMORY:long-term] Processing long-term task {task.memory_task_id} started")
             # 1. process memory task
             result = await self.memory_gungnir.process_memory_task(task)
 
             # 2. store the result
             await self._store_longterm_memories(result, task)
 
-            logger.info(f"🧠 [MEMORY:long-term] Processing task {task.memory_task_id} completed")
+            logger.info(f"🧠 [MEMORY:long-term] Processing long-term task {task.memory_task_id} completed")
 
         except Exception as e:
             logger.error(
@@ -300,22 +301,23 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
             task.status = "failed"
             await self._update_task_status(task)
 
-    async def _handle_store_longterm_memories(self, memories: List[MemoryItem],
+    async def _handle_store_longterm_memories(self, memory_items: List[MemoryItem],
                                               memory_type: Literal["user_profile", "agent_experience"]) -> None:
         """
-        Store the long-term memories.
+        Store the long-term memory_items.
 
         1. retrieve the long-term memories from the long-term memory store
         2. compare the memories with the new memories
         3. if the memories are not in the long-term memory store, store the memories
         4. if the memories are in the long-term memory store, update the memories
         """
-        if not memories:
-            logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memories: {memories}")
+        if not memory_items:
+            logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memories: {memory_items}")
             return
 
-        for memory in memories:
-            logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memory: {memory.content}")
+        for memory_item in memory_items:
+            logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memory: {memory_item.content}")
+            self.memory.add(memory_item)
 
     async def _add_memory_task(self, task: MemoryProcessingTask) -> None:
         """

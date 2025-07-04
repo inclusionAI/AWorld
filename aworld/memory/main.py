@@ -168,7 +168,7 @@ class Memory(MemoryBase):
         self.memory_orchestrator = DefaultMemoryOrchestrator(
             self.default_llm_instance,
             embedding_model=self._embedder_model,
-            long_term_memory_store=self.memory_store
+            memory=self
         )
         logger.info(f"🧠 [MEMORY:long-term] Initialized with config: ")
 
