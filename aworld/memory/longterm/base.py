@@ -43,7 +43,7 @@ class MemoryProcessingTask(BaseModel):
     finished_at: str = Field(default=None, description="Finished timestamp")
     status: Literal['initial', 'processing', 'completed', 'failed'] = Field(default='initial', description="Task status")
     result: Optional[MemoryProcessingResult] = Field(default=None, description="Processing result")
-
+    longterm_config: LongTermConfig = Field(description="Long-term memory configuration")
 
 class MemoryOrchestrator(ABC):
 
@@ -69,8 +69,9 @@ class MemoryOrchestrator(ABC):
 
 
     @abstractmethod
-    def create_longterm_processing_tasks(self,
+    async def create_longterm_processing_tasks(self,
                                          extract_param_list: list[LongTermExtractParams],
+                                         longterm_config: LongTermConfig
                                          ) -> None:
         """
         Create long-term memory processing tasks from the given memory items.
