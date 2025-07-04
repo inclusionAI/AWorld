@@ -40,7 +40,7 @@ class AndroidAgent(Agent):
         self.settings = self.conf
 
     def reset(self, options: Dict[str, Any]):
-        super(AndroidAgent, self).__init__(options)
+        super(AndroidAgent, self).reset(options)
         # State
         self.state = AgentState()
         # History
