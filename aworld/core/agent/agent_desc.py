@@ -51,7 +51,7 @@ def get_agent_desc() -> Dict[str, dict]:
 
         # content in observation
         ability_dict["params"]["content"] = {
-            "desc": "The status information of the agent making the decision, which may be sourced from the env tool or another agent or self.",
+            "desc": ability_dict["desc"],#"The status information of the agent making the decision, which may be sourced from the env tool or another agent or self.",
             "type": "str",
             "required": True
         }

@@ -1,12 +1,13 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-from typing import AsyncGenerator
-from aworld.core.context.base import Context, AgentContext
+
+from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PostLLMCallHook, PreLLMCallHook
 from aworld.utils.common import convert_to_snake
+
 
 @HookFactory.register(name="PreLLMCallContextProcessHook",
                       desc="PreLLMCallContextProcessHook")
@@ -18,8 +19,8 @@ class PreLLMCallContextProcessHook(PreLLMCallHook):
         return convert_to_snake("PreLLMCallContextProcessHook")
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        ''' context.get_agent_context(message.sender) ''' # get agent context
         # and do something
+        pass
 
 @HookFactory.register(name="PostLLMCallContextProcessHook",
                       desc="PostLLMCallContextProcessHook")
@@ -31,5 +32,6 @@ class PostLLMCallContextProcessHook(PostLLMCallHook):
         return convert_to_snake("PostLLMCallContextProcessHook")
 
     async def exec(self, message: Message, context: Context = None) -> Message:
-        '''context.get_agent_context(message.sender)''' # get agent context
+        # get context
+        pass
         

@@ -64,7 +64,7 @@ class Message(Generic[DataType]):
     # Topic of message
     topic: str = field(default=None)
     headers: Dict[str, Any] = field(default_factory=dict)
-    timestamp: int = field(default_factory=lambda: time.time())
+    timestamp: float = field(default_factory=lambda: time.time())
 
     def __post_init__(self):
         context = self.headers.get("context")

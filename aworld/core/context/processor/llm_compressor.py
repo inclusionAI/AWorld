@@ -33,7 +33,7 @@ class LLMCompressor(BaseCompressor):
     def _create_llm_client(self, llm_config: ModelConfig):
         if llm_config is None:
             return None
-        config = ConfigDict(llm_config.model_dump())
+        config = ConfigDict(llm_config)
         return get_llm_model(config)
 
     def _default_compression_prompt(self) -> str:

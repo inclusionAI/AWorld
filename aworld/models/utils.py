@@ -103,14 +103,13 @@ def agent_desc_transform(agent_dict: Dict[str, Any],
     agent_as_tools = []
     if not agents and strategy == 'min':
         return agent_as_tools
-
     if provider and 'openai' in provider:
         for agent_name, agent_info in agent_dict.items():
             if agents and agent_name not in agents:
                 logger.debug(
                     f"{agent_name} can not supported in {agents}, you can set `tools` params to support it.")
                 continue
-
+            
             for action in agent_info["abilities"]:
                 # Build parameter properties
                 properties = {}
@@ -124,7 +123,7 @@ def agent_desc_transform(agent_dict: Dict[str, Any],
                         required.append(param_name)
 
                 openai_function_schema = {
-                    "name": f'{agent_name}__{action["name"]}',
+                    "name": f'{agent_name}', # __{action["name"]}
                     "description": action["desc"],
                     "parameters": {
                         "type": "object",

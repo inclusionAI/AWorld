@@ -224,15 +224,14 @@ class TruncateCompressor(BaseCompressor):
                 # Try to truncate message
                 if (messages[i].get("role") == "user"):
                     # Truncate user message (not the last one)
-                    color_log(f"to truncate message {messages[i]}", color=Color.pink)
+                    # color_log(f"to truncate message {messages[i]}", color=Color.pink)
                     _msg = self._truncate_message(messages[i], max_tokens=int(available_token))
-                    color_log(f"truncated message {messages[i]}, {_msg}", color=Color.pink)
+                    # color_log(f"truncated message {messages[i]}, {_msg}", color=Color.pink)
                     if _msg:
                         new_messages = [_msg] + new_messages
                     break
                 elif messages[i].get("role") == "function" or messages[i].get("role") == "assistant" or messages[i].get("role") == "system":
                     # Truncate function message, keep both ends
-                    logger.debug(f"to truncate message {messages[i]}")
                     _msg = self._truncate_message(messages[i], max_tokens=int(available_token), keep_both_sides=True)
                     logger.debug(f"truncated message {messages[i]}, {_msg}")
                     if _msg:

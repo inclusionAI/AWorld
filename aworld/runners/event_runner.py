@@ -50,6 +50,7 @@ class TaskEventRunner(TaskRunner):
         self._build_first_message()
 
         if self.swarm:
+            logger.debug(f"swarm: {self.swarm}")
             # register agent handler
             for _, agent in self.swarm.agents.items():
                 agent.set_tools_instances(self.tools, self.tools_conf)
@@ -184,7 +185,7 @@ class TaskEventRunner(TaskRunner):
                 t.add_done_callback(self.background_tasks.discard)
                 # wait until it is complete
                 await t
-                self.state_manager.end_message_node(message)
+            self.state_manager.end_message_node(message)
             logger.debug(
                 f"[TaskEventRunner] _common_process return results {self.task.id}, message_id = {message.id},  ")
             return results
@@ -193,6 +194,7 @@ class TaskEventRunner(TaskRunner):
         con = message
         async with trace.span(handler.__name__):
             try:
+                logger.debug(f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
                 logger.info(
                     f"[TaskEventRunner] {self.task.id} _handle_task start, message: {message.id}")
                 if asyncio.iscoroutinefunction(handler):
@@ -201,7 +203,7 @@ class TaskEventRunner(TaskRunner):
                     con = handler(con)
 
                 logger.info(
-                    f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message}, session_id = {self.task.session_id}, con = {con}")
+                    f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message.id}, session_id = {self.task.session_id}")
                 if isinstance(con, Message):
                     # process in framework
                     self.state_manager.save_message_handle_result(name=handler.__name__,
@@ -276,8 +278,7 @@ class TaskEventRunner(TaskRunner):
                 # consume message
                 message: Message = await self.event_mng.consume()
                 logger.debug(
-                    f"[TaskEventRunner] next consume finished {self.task.id}: message = {message}")
-
+                    f"[TaskEventRunner] next consume finished {self.task.id}, event_bus: {self.event_mng.event_bus},: message = {message}")
                 # use registered handler to process message
                 await self._common_process(message)
                 logger.debug(
