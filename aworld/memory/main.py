@@ -395,13 +395,24 @@ class Memory(MemoryBase):
 
         await self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config, params.force)
 
-    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[UserProfile]]:
-        return []
+    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[UserProfile]]:
+        # TODO user_input is not used
+        return self.get_last_n(limit, filters={
+            'memory_type': 'user_profile',
+            'user_id': user_id,
+            'application_id': application_id
+        })
+        
 
-    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[AgentExperience]]:
-        return []
+    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[AgentExperience]]:
+        # TODO user_input is not used
+        return self.get_last_n(limit, filters={
+            'memory_type': 'agent_experience',
+            'agent_id': agent_id,
+            'application_id': application_id
+        })
 
-    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10) -> Optional[list[MemoryItem]]:
+    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, application_id: str = "default") -> Optional[list[MemoryItem]]:
         return []
     
 

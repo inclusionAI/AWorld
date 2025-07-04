@@ -312,7 +312,7 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
         4. if the memories are in the long-term memory store, update the memories
         """
         if not memory_items:
-            logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memories: {memory_items}")
+            logger.debug(f"🧠 [MEMORY:long-term] Storing {memory_type} memories: {memory_items}")
             return
 
         for memory_item in memory_items:
