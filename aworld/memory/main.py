@@ -393,7 +393,7 @@ class Memory(MemoryBase):
                 logger.warning(
                     f"🧠 [MEMORY:long-term] memory_item.agent_id is None, skip agent experience extraction")
 
-        await self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config)
+        await self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config, params.force)
 
     async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[UserProfile]]:
         return []

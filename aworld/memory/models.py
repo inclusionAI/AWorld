@@ -353,5 +353,6 @@ class LongTermMemoryTriggerParams(BaseModel):
     task_id: str = Field(default=None, description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
     application_id: Optional[str] = Field(default="default", description="The ID of the application, namespace for memory")
+    force: Optional[bool] = Field(default=False, description="Whether to force trigger long-term memory")
 
     model_config = ConfigDict(extra="allow")
