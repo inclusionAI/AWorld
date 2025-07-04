@@ -7,7 +7,7 @@ import CardLinkList from './cardLinkList';
 import { extractToolCards } from './utils';
 import Workspace from '../Drawer/Workspace';
 import type { ToolCardData } from './utils';
-import './index.less'
+import './index.less';
 
 interface BubbleItemProps {
   sessionId: string;
@@ -30,8 +30,8 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data }) => {
       {segments.map((segment, index) => {
         if (segment.type === 'text') {
           return (
-            <div className="markdownbox">
-              <ReactMarkdown key={`text-${index}`}>{segment.content}</ReactMarkdown>
+            <div className="markdownbox" key={`text-${index}`}>
+              <ReactMarkdown>{segment.content}</ReactMarkdown>
             </div>
           );
         } else if (segment.type === 'tool_card') {
