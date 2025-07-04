@@ -11,7 +11,7 @@ from aworld.config import ConfigDict
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
-from aworld.memory.models import UserProfileExtractParams, AgentExperienceExtractParams
+from aworld.memory.models import AgentExperience, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
 from aworld.models.llm import get_llm_model, acall_llm_model
 
 
@@ -102,6 +102,17 @@ MEMORY_HOLDER = {}
 class MemoryFactory:
 
     @classmethod
+    def init(cls, custom_memory: MemoryBase = None):
+        if custom_memory:
+            MEMORY_HOLDER["instance"] = custom_memory
+        else:
+            MEMORY_HOLDER["instance"] = InMemoryStorageMemory(
+                memory_store=InMemoryMemoryStore()
+            )
+        logger.info(f"Memory init success")
+
+
+    @classmethod
     def instance(cls) -> "MemoryBase":
         """
         Get the in-memory memory instance.
@@ -109,10 +120,13 @@ class MemoryFactory:
             MemoryBase: In-memory memory instance.
         """
         if MEMORY_HOLDER.get("instance"):
+            logger.info(f"instance use cached memory instance")
             return MEMORY_HOLDER["instance"]
-        return InMemoryStorageMemory(
+        MEMORY_HOLDER["instance"] =  InMemoryStorageMemory(
            memory_store=InMemoryMemoryStore()
         )
+        logger.info(f"instance use new memory instance")
+        return MEMORY_HOLDER["instance"]
 
     @classmethod
     def from_config(cls, config: MemoryConfig, memory_store: MemoryStore = None) -> "MemoryBase":
@@ -356,6 +370,16 @@ class Memory(MemoryBase):
                     f"🧠 [MEMORY:long-term] memory_item.agent_id is None, skip agent experience extraction")
 
         self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config)
+
+    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[UserProfile]]:
+        return []
+
+    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[AgentExperience]]:
+        return []
+
+    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10) -> Optional[list[MemoryItem]]:
+        return []
+    
 
     def delete(self, memory_id):
         pass

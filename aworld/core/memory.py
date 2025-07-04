@@ -3,72 +3,10 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Literal, Union, List, Dict
 
+from aworld.memory.models import AgentExperience, UserProfile, MemoryItem
 from pydantic import BaseModel, Field, ConfigDict
 
 from aworld.models.llm import LLMModel
-
-
-class MemoryItem(BaseModel):
-    id: str = Field(description="id")
-    content: Any = Field(description="content")
-    created_at: Optional[str] = Field(None, description="created at")
-    updated_at: Optional[str] = Field(None, description="updated at")
-    metadata: dict = Field(
-        description="metadata, use to store additional information, such as user_id, agent_id, run_id, task_id, etc.")
-    tags: list[str] = Field(description="tags")
-    histories: list["MemoryItem"] = Field(default_factory=list)
-    deleted: bool = Field(default=False)
-    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile"] = Field(default="message")
-    version: int = Field(description="version")
-
-    def __init__(self, **data):
-        # Set default values for optional fields
-        if "id" not in data:
-            data["id"] = str(uuid.uuid4())
-        if "created_at" not in data:
-            data["created_at"] = datetime.datetime.now().isoformat()
-        if "updated_at" not in data:
-            data["updated_at"] = data["created_at"]
-        if "metadata" not in data:
-            data["metadata"] = {}
-        if "tags" not in data:
-            data["tags"] = []
-        if "version" not in data:
-            data["version"] = 1
-
-        super().__init__(**data)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "MemoryItem":
-        """Create a MemoryItem instance from a dictionary.
-
-        Args:
-            data (dict): A dictionary containing the memory item data.
-
-        Returns:
-            MemoryItem: An instance of MemoryItem.
-        """
-        return cls(**data)
-
-    @property
-    def user_id(self) -> str:
-        return self.metadata.get('user_id')
-
-    @property
-    def session_id(self) -> str:
-        return self.metadata.get('session_id')
-
-    @property
-    def task_id(self) -> str:
-        return self.metadata.get('task_id')
-
-    @property
-    def agent_id(self) -> str:
-        return self.metadata.get('agent_id')
-
-    @property
-    def application_id(self) -> str:
-        return self.metadata.get('application_id', 'default')
 
 class MemoryStore(ABC):
     """
@@ -288,7 +226,7 @@ class LongTermConfig(BaseModel):
     @classmethod
     def create_simple_config(
             cls,
-            application_id: str = "SYSTEM",
+            application_id: str = "default",
             message_threshold: int = 10,
             enable_user_profiles: bool = True,
             enable_agent_experiences: bool = True,
@@ -497,6 +435,55 @@ class MemoryBase(ABC):
         Returns:
             list: List of latest memories.
         """
+    
+    @abstractmethod
+    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[UserProfile]]:
+        """
+        Retrival user profile by user_id.
+
+        Args:
+            user_id (str): ID of the user to search for.
+            user_input (str): User input to search for.
+            threshold (float, optional): Threshold for similarity. Defaults to 0.5.
+            limit (int, optional): Limit the number of results. Defaults to 3.
+
+        Returns:
+            list[UserProfile]: List of user profiles.
+        """
+        pass
+
+    @abstractmethod
+    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[AgentExperience]]:
+        """
+        Retrival agent experience by agent_id.
+
+        Args:
+            agent_id (str): ID of the agent to search for.
+            user_input (str): User input to search for.
+            threshold (float, optional): Threshold for similarity. Defaults to 0.5.
+            limit (int, optional): Limit the number of results. Defaults to 3.
+
+        Returns:
+            list[AgentExperience]: List of agent experiences.
+        """
+        pass
+
+
+    @abstractmethod
+    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10) -> Optional[list[MemoryItem]]:
+        """
+        Retrival similar user messages history by user_id.  
+
+        Args:
+            user_id (str): ID of the user to search for.
+            user_input (str): User input to search for.
+            threshold (float, optional): Threshold for similarity. Defaults to 0.5.
+            limit (int, optional): Limit the number of results. Defaults to 10.
+
+        Returns:
+            list[MemoryItem]: List of memory items.
+        """
+        pass
 
     @abstractmethod
     def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:

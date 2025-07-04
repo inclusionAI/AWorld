@@ -1,9 +1,74 @@
+import uuid
 from abc import abstractmethod, ABC
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
-from aworld.core.memory import MemoryItem
 from typing import Any, Dict, List, Optional, Literal, Union
 
 from aworld.models.model_response import ToolCall
+
+class MemoryItem(BaseModel):
+    id: str = Field(description="id")
+    content: Any = Field(description="content")
+    created_at: Optional[str] = Field(None, description="created at")
+    updated_at: Optional[str] = Field(None, description="updated at")
+    metadata: dict = Field(
+        description="metadata, use to store additional information, such as user_id, agent_id, run_id, task_id, etc.")
+    tags: list[str] = Field(description="tags")
+    histories: list["MemoryItem"] = Field(default_factory=list)
+    deleted: bool = Field(default=False)
+    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile"] = Field(default="message")
+    version: int = Field(description="version")
+
+    def __init__(self, **data):
+        # Set default values for optional fields
+        if "id" not in data:
+            data["id"] = str(uuid.uuid4())
+        if "created_at" not in data:
+            data["created_at"] = datetime.now().isoformat()
+        if "updated_at" not in data:
+            data["updated_at"] = data["created_at"]
+        if "metadata" not in data:
+            data["metadata"] = {}
+        if "tags" not in data:
+            data["tags"] = []
+        if "version" not in data:
+            data["version"] = 1
+
+        super().__init__(**data)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MemoryItem":
+        """Create a MemoryItem instance from a dictionary.
+
+        Args:
+            data (dict): A dictionary containing the memory item data.
+
+        Returns:
+            MemoryItem: An instance of MemoryItem.
+        """
+        return cls(**data)
+
+    @property
+    def user_id(self) -> str:
+        return self.metadata.get('user_id')
+
+    @property
+    def session_id(self) -> str:
+        return self.metadata.get('session_id')
+
+    @property
+    def task_id(self) -> str:
+        return self.metadata.get('task_id')
+
+    @property
+    def agent_id(self) -> str:
+        return self.metadata.get('agent_id')
+
+    @property
+    def application_id(self) -> str:
+        return self.metadata.get('application_id', 'default')
+
 
 class MessageMetadata(BaseModel):
     """
