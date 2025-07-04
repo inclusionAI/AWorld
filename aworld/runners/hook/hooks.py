@@ -1,8 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-from typing import AsyncGenerator
-from aworld.core.context.base import Context, AgentContext
+
+from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 
 

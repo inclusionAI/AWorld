@@ -8,8 +8,6 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, Any, List, Union, Callable
 
-from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 import aworld.trace as trace
 from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, OptimizationConfig, \
@@ -17,9 +15,10 @@ from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, Optim
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent
 from aworld.core.common import Observation, ActionModel
-from aworld.core.context.base import AgentContext
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
+from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
+from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
 from aworld.core.memory import MemoryConfig, MemoryBase
@@ -1077,3 +1076,4 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     f"Session#{session_id}, "
                     f"Task#{task_id}, "
                     f"Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
+

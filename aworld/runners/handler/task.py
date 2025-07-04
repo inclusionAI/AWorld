@@ -42,7 +42,7 @@ class DefaultTaskHandler(TaskHandler):
         if message.category != Constants.TASK:
             return
 
-        logger.info(f"task handler receive message: {message}")
+        logger.debug(f"task handler receive message: {message}")
 
         headers = {"context": message.context}
         topic = message.topic

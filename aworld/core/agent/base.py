@@ -3,24 +3,21 @@
 
 import abc
 import uuid
-
-import aworld.trace as trace
-
 from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union
 
 from pydantic import BaseModel
 
+import aworld.trace as trace
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
-from aworld.core.common import Observation, ActionModel
-from aworld.core.context.base import AgentContext, Context
+from aworld.core.common import ActionModel
+from aworld.core.context.base import Context
 from aworld.core.event import eventbus
-from aworld.events.util import send_message
 from aworld.core.event.base import Message, Constants
 from aworld.core.factory import Factory
+from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
-
 from aworld.utils.common import convert_to_snake, replace_env_variables
 
 INPUT = TypeVar('INPUT')

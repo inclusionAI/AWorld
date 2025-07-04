@@ -128,7 +128,8 @@ class TaskRunner(Runner):
 
     async def post_run(self):
         logger.info(f'Context reset #{id(self.context)}')
-        self.context.reset()
+        if self.task.reset_post_run:
+            self.context.reset()
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:

@@ -45,6 +45,7 @@ class Task:
     hooks: Dict[str, List[str]] = field(default_factory=dict)
     # task specified context
     context: 'Context' = field(default=None)
+    reset_post_run: bool = field(default=True)
     is_sub_task: bool = field(default=False)
     max_retry_count: int = 0
 

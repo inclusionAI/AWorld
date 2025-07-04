@@ -2,19 +2,19 @@
 # Copyright (c) 2025 inclusionAI.
 
 import time
-from dataclasses import dataclass
 import traceback
 from typing import Dict, Any, List
 
-from aworld.core.context.base import Context, AgentContext
+from aworld.config.conf import ContextRuleConfig, ModelConfig
+from aworld.core.context.base import Context
 from aworld.core.context.processor import CompressionDecision, ContextProcessingResult, MessagesProcessingResult
+from aworld.core.context.processor.chunk_utils import ChunkUtils, MessageChunk, MessageType
 from aworld.core.context.processor.llm_compressor import LLMCompressor, CompressionType
 from aworld.core.context.processor.llmlingua_compressor import LLMLinguaCompressor
 from aworld.core.context.processor.truncate_compressor import TruncateCompressor
-from aworld.core.context.processor.chunk_utils import ChunkUtils, MessageChunk, MessageType
 from aworld.logs.util import Color, color_log, logger
 from aworld.models.utils import num_tokens_from_messages, truncate_tokens_from_messages
-from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, ModelConfig, OptimizationConfig, LlmCompressionConfig
+
 
 class PromptProcessor:
     """Agent context processor, processes context according to context_rule configuration"""

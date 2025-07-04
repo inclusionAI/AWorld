@@ -1,35 +1,26 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import abc
 import json
-import os
 import traceback
-from pathlib import Path
-from typing import AsyncGenerator, Dict, Any, List, Union, Callable
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, List, Union
 
+from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig, ConfigDict, ModelConfig, RunConfig
+from aworld.core.agent.base import AgentFactory, is_agent
+from aworld.core.common import Observation, ActionModel
+from aworld.core.context.base import Context
 from aworld.core.context.processor.llm_compressor import LLMCompressor
 from aworld.core.context.prompts import StringPromptTemplate
-from aworld.models.model_response import ModelResponse
-import aworld.trace as trace
-from aworld.agents.parallel_llm_agent import ParallelizableAgent
-from aworld.agents.serial_llm_agent import SerialableAgent
-from aworld.config.conf import AgentConfig, ConfigDict, ModelConfig, RunConfig
-from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent
-from aworld.core.common import Observation, ActionModel
-from aworld.core.context.base import AgentContext
-from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, TopicType
-from aworld.core.memory import MemoryItem, MemoryConfig
-from aworld.logs.util import logger
-from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, acall_llm_model_stream
-from aworld.runner import Runners
-from aworld.runners.hook.hooks import HookPoint
-from aworld.utils.common import sync_exec
-from aworld.agents.llm_agent import Agent
-from aworld.runners.utils import choose_runners, execute_runner
+from aworld.core.event.base import Message, Constants, AgentMessage, TopicType
+from aworld.core.memory import MemoryItem
 from aworld.core.task import Task
-
+from aworld.logs.util import logger
+from aworld.models.model_response import ModelResponse
+from aworld.runners.hook.hooks import HookPoint
+from aworld.runners.utils import choose_runners, execute_runner
+from aworld.utils.common import sync_exec
 
 simple_extract_prompt = """Please extract key information from the following JSON data, handle Unicode encoding and organize it into a structured text format.
 
@@ -213,7 +204,7 @@ class PlanAgent(Agent):
             logger.warn(f"Invalid message payload, 'Observation' expected, got: {observation}")
             return self._create_finished_message(message, "Invalid message payload")
 
-        actions = await self.async_policy(message.payload, **kwargs)
+        actions = await self.async_policy(message, **kwargs)
         
         # 添加actions详细日志
         logger.info(f"plan_agent received {len(actions) if actions else 0} actions from async_policy")
@@ -358,10 +349,11 @@ class PlanAgent(Agent):
         next_message = self._actions_to_message(agent_results, tool_results, message)
         return await self.async_run(next_message, **kwargs)
 
-    async def async_policy(self, observation: Observation, **kwargs) -> List[ActionModel]:
+    async def async_policy(self, message: Message = None, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
+        observation = message.payload
         self._finished = False
         # Prepare LLM input
-        llm_messages = await self._prepare_llm_input(observation)
+        llm_messages = await self._prepare_llm_input(observation, info, message)
         llm_response = None
         try:
             llm_response = await self._call_llm_model(observation, llm_messages, **kwargs)
@@ -409,7 +401,7 @@ class PlanAgent(Agent):
     def fork_new_task(self, input, agent:Agent = None, context: Context = None):
         # Use the new deep_copy method for complete and generic copying
         new_context = context.deep_copy()
-        new_task = Task(input=input, agent=agent, context=new_context)
+        new_task = Task(input=input, agent=agent, context=new_context, reset_post_run=False)
         new_context.set_task(new_task)
         new_context.task_id = new_task.id
         return new_task

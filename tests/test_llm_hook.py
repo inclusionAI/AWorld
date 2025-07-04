@@ -26,10 +26,8 @@ class TestPreLLMHook(PreLLMCallHook):
         return convert_to_snake("TestPreLLMHook")
     async def exec(self, message: Message, context: Context = None) -> Message:
         agent = AgentFactory.agent_instance(message.sender)
-        agent_context = agent.agent_context
-        if agent_context is not None:
-            agent_context.step = 1 
-        assert agent_context.step == 1 or agent_context.step == 2
+        context = agent.context
+        context.context_info.set('step', 1)
         return message
 
 @HookFactory.register(name="TestPostLLMHook", desc="Test post-LLM hook")
@@ -38,12 +36,6 @@ class TestPostLLMHook(PostLLMCallHook):
         return convert_to_snake("TestPostLLMHook")
     async def exec(self, message: Message, context: Context = None) -> Message:
         agent = AgentFactory.agent_instance(message.sender)
-        agent_context = agent.agent_context
-        if agent_context is not None and agent_context.llm_output is not None:
-            # Test dynamic prompt adjustment based on LLM output
-            if hasattr(agent_context.llm_output, 'content'):
-                content = agent_context.llm_output.content.lower()
-                if content is not None:
-                    agent_context.agent_info.agent_prompt = "Success mode activated"
-        assert agent_context.agent_info.agent_prompt == "Success mode activated"
+        context = agent.context
+        assert context.context_info.get('step') == 1
         return message
