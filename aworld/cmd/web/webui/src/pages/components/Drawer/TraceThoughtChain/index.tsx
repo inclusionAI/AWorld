@@ -45,12 +45,12 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
         status: validateStatus(item.status)
       }));
       setTraceData(validatedData);
-      // 默认展开第一个节点
-      if (validatedData?.[0]?.id) {
-        setExpandedKeys([validatedData[0].id]);
+      // Expand the first node by default
+      if (validatedData?.[0]?.event_id) {
+        setExpandedKeys([validatedData[0].event_id]);
       }
     } catch (err) {
-      message.error('获取Trace数据失败');
+      message.error('Failed to fetch trace data');
       console.error(err);
     }
   }, [traceId, drawerVisible]);
@@ -94,13 +94,12 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
 
   const items = useMemo(() => convertToItems(traceData), [traceData, convertToItems]);
 
-  const collapsible: ThoughtChainProps['collapsible'] = useMemo(
-    () => ({
+  const collapsible: ThoughtChainProps['collapsible'] = useMemo(() => {
+    return {
       expandedKeys,
       onExpand: (keys: string[]) => setExpandedKeys(keys)
-    }),
-    [expandedKeys]
-  );
+    };
+  }, [expandedKeys]);
 
   return (
     <Card style={{ width: 650 }}>

@@ -9,6 +9,7 @@ from aworld.metrics.context_manager import MetricContext
 from aworld.logs.log import set_log_provider, instrument_logging
 from aworld.trace.instrumentation.uni_llmmodel import LLMModelInstrumentor
 from aworld.trace.instrumentation.eventbus import EventBusInstrumentor
+from aworld.trace.opentelemetry.memory_storage import TraceStorage
 
 
 class ObservabilityConfig(BaseModel):
@@ -22,6 +23,7 @@ class ObservabilityConfig(BaseModel):
     trace_base_url: Optional[str] = None
     trace_write_token: Optional[str] = None
     trace_span_consumers: Optional[Sequence[SpanConsumer]] = None
+    trace_storage: Optional[TraceStorage] = None
     # whether to start the trace service
     trace_server_enabled: Optional[bool] = False
     trace_server_port: Optional[int] = 7079
@@ -64,7 +66,8 @@ def _trace_configure(config: ObservabilityConfig):
         write_token=config.trace_write_token,
         span_consumers=config.trace_span_consumers,
         server_enabled=config.trace_server_enabled,
-        server_port=config.trace_server_port
+        server_port=config.trace_server_port,
+        storage=config.trace_storage
     )
 
 

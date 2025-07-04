@@ -49,29 +49,21 @@ class AWorldAgent(BaseAWorldAgent):
 
         plan_agent = Agent(
             conf=agent_config,
-            name="🔎 Team Plan Agent",
+            name="Team-Plan-Agent",
             system_prompt=plan_agent_sys_prompt,
         )
 
         google_pse_search_agent = Agent(
             conf=agent_config,
-            name="🔎 Google PSE Search Agent",
+            name="Google-PSE-Search-Agent",
             system_prompt=google_pse_search_sys_prompt,
             mcp_config=mcp_config,
             mcp_servers=["google-pse-search"],
         )
 
-        aworldsearch_server_agent = Agent(
-            conf=agent_config,
-            name="🔎 Aworldsearch Server Agent",
-            system_prompt=aworldsearch_server_sys_prompt,
-            mcp_config=mcp_config,
-            mcp_servers=["aworldsearch-server"],
-        )
-
         aworld_playwright_agent = Agent(
             conf=agent_config,
-            name="🔎 Aworld Playwright Agent",
+            name="Aworld-Playwright-Agent",
             system_prompt=aworld_playwright_sys_prompt,
             mcp_config=mcp_config,
             mcp_servers=["aworld-playwright"],
@@ -79,14 +71,13 @@ class AWorldAgent(BaseAWorldAgent):
 
         summary_agent = Agent(
             conf=agent_config,
-            name="💬 Summary Agent",
+            name="Summary-Agent",
             system_prompt=summary_agent_sys_prompt,
         )
 
         # default is sequence swarm mode
         swarm = Swarm(
             google_pse_search_agent,
-            aworldsearch_server_agent,
             aworld_playwright_agent,
             summary_agent,
             root_agent=plan_agent,
@@ -101,6 +92,8 @@ class AWorldAgent(BaseAWorldAgent):
             input=prompt,
             swarm=swarm,
             conf=TaskConfig(max_steps=20),
+            session_id=request.session_id,
+            endless_threshold=50,
         )
 
         async for output in Runners.streamed_run_task(task).stream_events():

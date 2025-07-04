@@ -31,6 +31,7 @@ class Runners:
             is_complete=False
         )
         task.outputs = streamed_result
+        streamed_result.task_id = task.id
 
         logging.info(f"[Runners]streamed_run_task start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
 

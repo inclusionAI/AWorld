@@ -19,12 +19,13 @@ class OutputPart(BaseModel):
         if self.metadata is None:
             self.metadata = {}
         return self
-    
+
 
 class Output(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="metadata")
     parts: Any = Field(default_factory=list, exclude=True, description="parts of Output")
     data: Any = Field(default=None, exclude=True, description="Output Data")
+    task_id: Optional[str] = Field(default=None, description="Task Id")
 
     @model_validator(mode='after')
     def setup_defaults(self):
@@ -47,14 +48,14 @@ class Output(BaseModel):
 class ToolCallOutput(Output):
 
     @classmethod
-    def from_tool_call(cls, tool_call: ToolCall):
-        return cls(data = tool_call)
+    def from_tool_call(cls, tool_call: ToolCall, task_id: str):
+        return cls(data=tool_call, task_id=task_id)
 
     def output_type(self):
         return "tool_call"
 
-class ToolResultOutput(Output):
 
+class ToolResultOutput(Output):
     origin_tool_call: Optional[ToolCall] = Field(default=None, description="origin tool call", exclude=True)
 
     image: str = Field(default=None)
@@ -70,16 +71,17 @@ class ToolResultOutput(Output):
 
     pass
 
+
 class RunFinishedSignal(Output):
 
     def output_type(self):
         return "finished_signal"
 
+
 RUN_FINISHED_SIGNAL = RunFinishedSignal()
 
 
 class MessageOutput(Output):
-
     """
     MessageOutput structure of LLM output
     if you want to get the only response, you must first call reasoning_generator or set parameter only_response to True , then call response_generator
@@ -95,7 +97,7 @@ class MessageOutput(Output):
     """
 
     source: Any = Field(default=None, exclude=True, description="Source of the message")
-    
+
     reason_generator: Any = Field(default=None, exclude=True, description="reasoning generator of the message")
     response_generator: Any = Field(default=None, exclude=True, description="response generator of the message")
 
@@ -105,7 +107,6 @@ class MessageOutput(Output):
     reasoning: str = Field(default=None, description="reasoning of the message")
     response: Any = Field(default=None, description="response of the message")
     tool_calls: list[ToolCallOutput] = Field(default_factory=list, description="tool_calls")
-
 
     """
     other config
@@ -128,7 +129,7 @@ class MessageOutput(Output):
         if isinstance(self.source, ModelResponse):
             source = self.source.content
             if self.source.tool_calls:
-                [self.tool_calls.append(ToolCallOutput.from_tool_call(tool_call)) for tool_call in
+                [self.tool_calls.append(ToolCallOutput.from_tool_call(tool_call, self.task_id)) for tool_call in
                  self.source.tool_calls]
 
         if source is not None and isinstance(source, AsyncGenerator):
@@ -160,7 +161,7 @@ class MessageOutput(Output):
                 async for item in self.response_generator:
                     pass
             return self.response
-    
+
     async def __aget_reasoning_generator(self) -> AsyncGenerator[str, None]:
         """
         Get reasoning content as async generator
@@ -168,14 +169,14 @@ class MessageOutput(Output):
         if not self.has_reasoning:
             yield ""
             self.reasoning = ""
-            return  
-        
+            return
+
         reasoning_buffer = ""
         is_in_reasoning = False
         if self.reasoning and len(self.reasoning) > 0:
             yield self.reasoning
             return
-        
+
         try:
             while True:
                 chunk = await anext(self.source)
@@ -209,7 +210,7 @@ class MessageOutput(Output):
         if self.response and len(self.response) > 0:
             yield self.response
             return
-        
+
         # if has_reasoning is True, system will first call reasoning_generator if you not call it;
         if self.has_reasoning and not self.reasoning:
             async for reason in self.reason_generator:
@@ -234,7 +235,8 @@ class MessageOutput(Output):
         else:
             return chunk
 
-    def __split_reasoning_and_response__(self) -> tuple[Generator[str, None, None], Generator[str, None, None]]: # type: ignore
+    def __split_reasoning_and_response__(self) -> tuple[
+        Generator[str, None, None], Generator[str, None, None]]:  # type: ignore
         """
         Split source into reasoning and response generators for sync source
         Returns:
@@ -243,8 +245,8 @@ class MessageOutput(Output):
         if not self.has_reasoning:
             yield ""
             self.reasoning = ""
-            return  
-        
+            return
+
         if not isinstance(self.source, Generator):
             raise ValueError("Source must be a Generator")
 
@@ -255,7 +257,7 @@ class MessageOutput(Output):
 
             reasoning_buffer = ""
             is_in_reasoning = False
-            
+
             try:
                 while True:
                     chunk = next(self.source)
@@ -280,12 +282,12 @@ class MessageOutput(Output):
             if self.response and len(self.response) > 0:
                 yield self.response
                 return
-            
+
             # if has_reasoning is True, system will first call reasoning_generator if you not call it;
             if self.has_reasoning and not self.reasoning:
                 for reason in self.reason_generator:
                     pass
-            
+
             response_buffer = ""
             try:
                 while True:
@@ -295,9 +297,8 @@ class MessageOutput(Output):
                     self.response = response_buffer
                     yield chunk_content
             except StopIteration:
-                self.response = self.__resolve_json__(response_buffer,self.json_parse)
+                self.response = self.__resolve_json__(response_buffer, self.json_parse)
                 self.finished = True
-
 
         return reasoning_generator(), response_generator()
 
@@ -324,7 +325,7 @@ class MessageOutput(Output):
 
         return llm_think, llm_result
 
-    def __resolve_json__(self, content, json_parse = False):
+    def __resolve_json__(self, content, json_parse=False):
         if json_parse:
             if content.__contains__("```json"):
                 content = content.replace("```json", "").replace("```", "")
@@ -333,6 +334,7 @@ class MessageOutput(Output):
 
     def output_type(self):
         return "message_output"
+
 
 class StepOutput(Output):
     name: str
@@ -343,16 +345,16 @@ class StepOutput(Output):
     finished_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="finished at")
 
     @classmethod
-    def build_start_output(cls, name, step_num, alias_name=None, data=None):
-        return cls(name=name, step_num=step_num, alias_name=alias_name, data=data)
+    def build_start_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
+        return cls(name=name, step_num=step_num, alias_name=alias_name, data=data, task_id=task_id)
 
     @classmethod
-    def build_finished_output(cls, name, step_num, alias_name=None, data=None):
-        return cls(name=name, step_num=step_num, alias_name=alias_name, status='FINISHED', data=data)
+    def build_finished_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
+        return cls(name=name, step_num=step_num, alias_name=alias_name, status='FINISHED', data=data, task_id=task_id)
 
     @classmethod
-    def build_failed_output(cls, name, step_num, alias_name=None, data=None):
-        return cls(name=name, step_num=step_num, alias_name=alias_name, status='FAILED', data=data)
+    def build_failed_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
+        return cls(name=name, step_num=step_num, alias_name=alias_name, status='FAILED', data=data, task_id=task_id)
 
     def output_type(self):
         return "step_output"
@@ -360,7 +362,6 @@ class StepOutput(Output):
     @property
     def show_name(self):
         return self.alias_name if self.alias_name else self.name
-
 
 
 class SearchItem(BaseModel):
@@ -386,8 +387,10 @@ class SearchOutput(ToolResultOutput):
         if query is None:
             raise ValueError("query is required")
 
+        task_id = data.get("task_id")
+
         results_data = data.get("results", [])
-        
+
         search_items = []
         for result in results_data:
             if isinstance(result, SearchItem):
@@ -399,7 +402,8 @@ class SearchOutput(ToolResultOutput):
 
         return cls(
             query=query,
-            results=search_items
+            results=search_items,
+            task_id=task_id
         )
 
     def output_type(self):

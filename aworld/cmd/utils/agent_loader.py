@@ -54,6 +54,8 @@ def _list_agents() -> List[AgentModel]:
 
     agents = []
     for agent_id in os.listdir(agents_dir):
+        if agent_id.startswith("_"):
+            continue
         try:
             agent_path = os.path.join(agents_dir, agent_id)
             if os.path.isdir(agent_path):

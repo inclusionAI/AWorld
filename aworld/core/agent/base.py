@@ -151,18 +151,21 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         observation = message.payload
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self.pre_run()
-            result = self.policy(observation, **kwargs)
+            result = self.policy(observation, message=message, **kwargs)
             final_result = self.post_run(result, observation)
             return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
+        logger.debug(f"context ({id(message.context)})")
+        observation = message.payload
         if eventbus is not None:
             await send_message(Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_start_output(name=f"{self.id()}", alias_name=self.name(), step_num=0),
                 sender=self.id(),
-                session_id=self.context.session_id
+                session_id=self.context.session_id,
+                headers={"context": self.context}
             ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self._init_context(message.context)
@@ -178,7 +181,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     headers={'context': self.context}
                 ))
             await self.async_pre_run()
-            result = await self.async_policy(observation, **kwargs)
+            result = await self.async_policy(observation, message=message, **kwargs)
             final_result = await self.async_post_run(result, observation)
             return final_result
 

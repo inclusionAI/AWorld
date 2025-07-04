@@ -21,6 +21,7 @@ class AgentHandler(DefaultHandler):
     def __init__(self, runner: 'TaskEventRunner'):
         self.swarm = runner.swarm
         self.endless_threshold = runner.endless_threshold
+        self.task_id = runner.task.id
 
         self.agent_calls = []
 
@@ -49,7 +50,8 @@ class DefaultAgentHandler(AgentHandler):
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_failed_output(name=f"{message.caller or self.name()}",
                                                        step_num=0,
-                                                       data="no data to process."),
+                                                       data="no data to process.",
+                                                       task_id=self.task_id),
                 sender=self.name(),
                 session_id=session_id,
                 headers=headers
@@ -132,7 +134,8 @@ class DefaultAgentHandler(AgentHandler):
                     category=Constants.OUTPUT,
                     payload=StepOutput.build_failed_output(name=f"{message.caller or self.name()}",
                                                            step_num=0,
-                                                           data="action not a ActionModel."),
+                                                           data="action not a ActionModel.",
+                                                           task_id=self.task_id),
                     sender=self.name(),
                     session_id=session_id,
                     headers=headers
@@ -172,7 +175,8 @@ class DefaultAgentHandler(AgentHandler):
             yield Message(
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_finished_output(name=f"{message.caller or self.name()}",
-                                                         step_num=0),
+                                                         step_num=0,
+                                                         task_id=self.task_id),
                 sender=self.name(),
                 receiver=agents[0].tool_name,
                 session_id=session_id,
