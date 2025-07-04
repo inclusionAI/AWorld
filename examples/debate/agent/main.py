@@ -40,7 +40,7 @@ class DebateArena:
         self.affirmative_speaker.set_workspace(workspace)
         self.negative_speaker.set_workspace(workspace)
         self.moderator.set_workspace(workspace)
-        self.moderator.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory", enable_summary=False))
+        self.moderator.memory = MemoryFactory.instance()
 
         # Event.register("topic", func= );
 
