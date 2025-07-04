@@ -106,7 +106,7 @@ class BasePromptTemplate(ABC):
                     if ("context" in sig.parameters.keys()) == True:
                         # If function accepts context parameter, pass the context
                         merged[key] = value(context=context)
-                        logger.debug(f"sig={sig.parameters} {sig.parameters.keys()} {'context' in sig.parameters.keys()} {merged[key]}")
+                        logger.info(f"sig={sig.parameters} {sig.parameters.keys()} {'context' in sig.parameters.keys()}\nkey={key} value={merged[key]}")
                     else:
                         # Otherwise call directly
                         merged[key] = value()

@@ -19,9 +19,9 @@ sys.path.insert(0, str(project_root))
 
 LLM_BASE_URL = "http://localhost:1234/v1"
 LLM_API_KEY = "123"
-LLM_MODEL_NAME = "qwen/qwen3-8b"
+LLM_MODEL_NAME = "qwen/qwen3-1.7b"
 #"DeepSeek-V3-Function-Call"
-# "qwen/qwen3-1.7b" 
+# "qwen/qwen3-8b" 
 # "claude-3-7-sonnet-20250219"
 # "QwQ-32B-Function-Call"
 # LLM_API_KEY = "sk-5d0c421b87724cdd883cfa8e883998da"
@@ -38,8 +38,8 @@ from aworld.runner import Runners
 from examples.tools.common import Tools
 
 plan_sys_prompt = """You are a strategic planning agent specialized in creating structured research plans. 
-
-Requirements:
+"""
+plan_prompt = """Requirements:
 1. **IMPORTANT**: You need to create a plan using tool_calls, try your best to use tools to complete tasks instead of doing it yourself.
 2. The name in tool_calls must strictly use the name specified in tools
 3. The content parameter in tool_calls is a json list like: ["something"], if you want to use a tool multiple times, use ["a", "b"] format
@@ -50,8 +50,9 @@ tools:
 
 trajectories:
 {trajectories}
-"""
-plan_prompt = """调研地平线公司和Momenta公司的未来发展计划"""
+
+Research topic:
+调研地平线公司和Momenta公司的未来发展计划"""
 
 search_sys_prompt = """You are a helpful search agent.
 """
@@ -142,6 +143,7 @@ if __name__ == "__main__":
         name="planer_agent",
         desc="planer_agent",
         system_prompt=plan_sys_prompt,
+        agent_prompt=plan_prompt,
         agent_names=[search.id(), summary.id()],
         context_rule=ContextRuleConfig(
             optimization_config=OptimizationConfig(

@@ -198,12 +198,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
         else:
             content = observation.content
-            if agent_prompt and '{task}' in agent_prompt:
-                if self.agent_prompt_template is not None:
-                    content = self.agent_prompt_template.format(context=self.context, task=content)
-                    logger.debug(f"formatted agent_prompt_template={self.agent_prompt_template} \n user_content={content}")
-                else:
-                    content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
+            if self.agent_prompt_template is not None:
+                content = self.agent_prompt_template.format(context=self.context, task=content, tool_list=self.tools)
+                logger.info(f"formatted agent_prompt_template={self.agent_prompt_template} \n user_content={content}")
+            elif agent_prompt:
+                content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
             if image_urls:
                 urls = [{'type': 'text', 'text': content}]
                 for image_url in image_urls:
@@ -977,6 +976,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if not self.system_prompt:
             return
         content = self.custom_system_prompt(content)
+        logger.info(f'system prompt content: {content}')
 
         self.memory.add(MemorySystemMessage(
             content=content,
