@@ -98,25 +98,25 @@ class BasePromptTemplate(ABC):
         merged = {}
         for key, value in self.partial_variables.items():
             if callable(value):
-                # 如果是函数，尝试传入context作为参数
+                # If it's a function, try to pass context as a parameter
                 try:
-                    # 检查函数是否接受context参数
+                    # Check if the function accepts context parameter
                     import inspect
                     sig = inspect.signature(value)
                     if ("context" in sig.parameters.keys()) == True:
-                        # 如果函数接受context或ctx参数，传入上下文
+                        # If function accepts context parameter, pass the context
                         merged[key] = value(context=context)
                         logger.debug(f"sig={sig.parameters} {sig.parameters.keys()} {'context' in sig.parameters.keys()} {merged[key]}")
                     else:
-                        # 否则直接调用
+                        # Otherwise call directly
                         merged[key] = value()
                 except Exception as e:
-                    # 如果出错，回退到无参数调用
+                    # If error occurs, fallback to no-parameter call
                     try:
                         logger.error(f"Error calling function {key}: {e}")
                         merged[key] = value()
                     except Exception:
-                        # 如果仍然出错，使用默认值或抛出异常
+                        # If still error, use default value or raise exception
                         merged[key] = f"<Error calling function {key}: {e}>"
             else:
                 merged[key] = value

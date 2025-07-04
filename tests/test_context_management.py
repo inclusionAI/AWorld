@@ -243,11 +243,11 @@ class TestHookSystem(TestContextManagement):
 
 
 if __name__ == '__main__':
-    testContextManagement = TestContextManagement()
-    testContextManagement.test_default_context_configuration()
-    testContextManagement.test_custom_context_configuration()
-    testContextManagement.test_multi_agent_state_trace()
-    testContextManagement.test_multi_task_state_trace()
+    # testContextManagement = TestContextManagement()
+    # testContextManagement.test_default_context_configuration()
+    # testContextManagement.test_custom_context_configuration()
+    # testContextManagement.test_multi_agent_state_trace()
+    # testContextManagement.test_multi_task_state_trace()
     testHookSystem = TestHookSystem()
     testHookSystem.test_hook_registration()
     testHookSystem = TestHookSystem()

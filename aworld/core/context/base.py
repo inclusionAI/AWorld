@@ -300,41 +300,41 @@ class Context():
         self.context_info[key] = value
 
     def merge_context(self, other_context: 'Context') -> None:
-        """合并另一个Context实例的状态到当前Context
+        """Merge the state of another Context instance into the current Context
         
-        这个方法用于将子Context（如fork_new_task创建的context）的状态合并回父Context。
-        合并操作包括：
-        1. 合并context_info状态
-        2. 合并trajectories轨迹
-        3. 合并token使用统计
-        4. 合并agent_info配置（如果有新的配置）
+        This method is used to merge the state of a child Context (such as one created by fork_new_task) 
+        back into the parent Context. The merge operation includes:
+        1. Merge context_info state
+        2. Merge trajectories
+        3. Merge token usage statistics
+        4. Merge agent_info configuration (if there are new configurations)
         
         Args:
-            other_context: 要合并的另一个Context实例
+            other_context: The other Context instance to merge
         """
         if not other_context or not isinstance(other_context, Context):
             return
             
-        # 1. 合并context_info状态
+        # 1. Merge context_info state
         if hasattr(other_context, 'context_info') and other_context.context_info:
             try:
-                # 获取子context的本地状态（不包括继承的父状态）
+                # Get local state from child context (excluding inherited parent state)
                 if hasattr(other_context.context_info, 'local_dict'):
                     local_state = other_context.context_info.local_dict()
                     if local_state:
                         self.context_info.update(local_state)
                 else:
-                    # 如果没有local_dict方法，直接更新所有状态
+                    # If no local_dict method, directly update all states
                     self.context_info.update(other_context.context_info)
             except Exception as e:
                 logger.warning(f"Failed to merge context_info: {e}")
         
-        # 2. 合并trajectories轨迹
+        # 2. Merge trajectories
         if hasattr(other_context, 'trajectories') and other_context.trajectories:
             try:
-                # 使用时间戳或步骤号来避免键冲突
+                # Use timestamp or step number to avoid key conflicts
                 for key, value in other_context.trajectories.items():
-                    # 如果键已存在，添加后缀以避免覆盖
+                    # If key already exists, add suffix to avoid overwriting
                     merge_key = key
                     counter = 1
                     while merge_key in self.trajectories:
@@ -344,46 +344,46 @@ class Context():
             except Exception as e:
                 logger.warning(f"Failed to merge trajectories: {e}")
         
-        # 3. 合并token使用统计
+        # 3. Merge token usage statistics
         if hasattr(other_context, '_token_usage') and other_context._token_usage:
             try:
-                # 计算子context的净增token使用量（避免重复计算从父context继承的token）
-                # 如果子context是通过deep_copy创建的，它已经包含了父context的token
-                # 我们需要计算净增量
+                # Calculate net token usage increment from child context (avoid double counting tokens inherited from parent context)
+                # If child context was created through deep_copy, it already contains parent context's tokens
+                # We need to calculate the net increment
                 parent_tokens = self._token_usage.copy()
                 child_tokens = other_context._token_usage.copy()
                 
-                # 计算净增量：子context的token - 父context的token
+                # Calculate net increment: child context tokens - parent context tokens
                 net_tokens = {}
                 for key in child_tokens:
                     child_value = child_tokens.get(key, 0)
                     parent_value = parent_tokens.get(key, 0)
                     net_value = child_value - parent_value
-                    if net_value > 0:  # 只合并净增量
+                    if net_value > 0:  # Only merge net increment
                         net_tokens[key] = net_value
                 
-                # 将净增量添加到父context
+                # Add net increment to parent context
                 if net_tokens:
                     self.add_token(net_tokens)
             except Exception as e:
                 logger.warning(f"Failed to merge token usage: {e}")
-                # 如果计算净增量失败，直接添加子context的token（可能会重复计算）
+                # If calculating net increment fails, directly add child context's tokens (may result in double counting)
                 try:
                     self.add_token(other_context._token_usage)
                 except Exception:
                     pass
         
-        # 4. 合并agent_info配置（仅合并新的配置项）
+        # 4. Merge agent_info configuration (only merge new configuration items)
         if hasattr(other_context, 'agent_info') and other_context.agent_info:
             try:
-                # 只合并父context中不存在的配置项
+                # Only merge configuration items that don't exist in parent context
                 for key, value in other_context.agent_info.items():
                     if key not in self.agent_info:
                         self.agent_info[key] = value
             except Exception as e:
                 logger.warning(f"Failed to merge agent_info: {e}")
         
-        # 记录合并操作
+        # Record merge operation
         try:
             merge_info = {
                 "merged_at": datetime.now().isoformat(),

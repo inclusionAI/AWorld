@@ -17,13 +17,14 @@ from aworld.models.model_response import ModelResponse
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# LLM_BASE_URL = "https://agi.alipay.com/api"
 LLM_BASE_URL = "http://localhost:1234/v1"
-LLM_API_KEY = "sk-9329256ff1394003b6761615361a8f0f"
-LLM_MODEL_NAME = "qwen/qwen3-8b" #"DeepSeek-V3-Function-Call" # "shangshu.claude-3.7-sonnet" # "qwen/qwen3-1.7b" # "shangshu.claude-3.7-sonnet" #"DeepSeek-V3-Function-Call" # "QwQ-32B-Function-Call"
-# LLM_BASE_URL = "https://matrixllm.alipay.com/v1"
+LLM_API_KEY = "123"
+LLM_MODEL_NAME = "qwen/qwen3-8b"
+#"DeepSeek-V3-Function-Call"
+# "qwen/qwen3-1.7b" 
+# "claude-3-7-sonnet-20250219"
+# "QwQ-32B-Function-Call"
 # LLM_API_KEY = "sk-5d0c421b87724cdd883cfa8e883998da"
-# LLM_MODEL_NAME = "claude-3-7-sonnet-20250219"
 os.environ["LLM_API_KEY"] = LLM_API_KEY
 os.environ["LLM_BASE_URL"] = LLM_BASE_URL
 os.environ["LLM_MODEL_NAME"] = LLM_MODEL_NAME
