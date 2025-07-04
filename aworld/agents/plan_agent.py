@@ -258,6 +258,14 @@ class PlanAgent(Agent):
                 logger.info(f"Tool execution - Step {self.cur_action_step}, Tool: {tool_name}, Task: {k} -> Result: {v}")
                 self.cur_action_step += 1
 
+            # 合并所有tool_tasks的context状态到父context
+            for task in tool_tasks:
+                try:
+                    self.context.merge_context(task.context)
+                    logger.debug(f"Merged context from tool task {task.id if hasattr(task, 'id') else 'unknown'}")
+                except Exception as e:
+                    logger.warning(f"Failed to merge context from tool task: {e}")
+
         agent_results = []
         # if agents:
         #     parallel_agents = []
@@ -295,6 +303,14 @@ class PlanAgent(Agent):
                     self._save_action_trajectory(self.cur_action_step, agent_name, None, k, v.answer)
                     logger.info(f"Parallel agent execution - Step {self.cur_action_step}, Agent: {agent_name}, Task: {k} -> Result: {v}")
                     self.cur_action_step += 1
+
+                # 合并所有agent_tasks的context状态到父context（并行执行）
+                for task in agent_tasks:
+                    try:
+                        self.context.merge_context(task.context)
+                        logger.debug(f"Merged context from parallel agent task {task.id if hasattr(task, 'id') else 'unknown'}")
+                    except Exception as e:
+                        logger.warning(f"Failed to merge context from parallel agent task: {e}")
                 # logger.info("Using parallel execution mode")
                 # parallel_agent = ParallelizableAgent(conf=self.conf, agents=agents)
                 # parallel_agent_res = await parallel_agent.async_run(message, **kwargs)
@@ -316,6 +332,14 @@ class PlanAgent(Agent):
                         self._save_action_trajectory(self.cur_action_step, agent_name, None, task.input, result)
                         logger.info(f"Serial agent execution - Step {self.cur_action_step}, Agent: {agent_name}")
                         self.cur_action_step += 1
+
+                    # 合并当前task的context状态到父context（串行执行）
+                    if hasattr(task, 'context') and task.context:
+                        try:
+                            self.context.merge_context(task.context)
+                            logger.debug(f"Merged context from serial agent task {task.id if hasattr(task, 'id') else 'unknown'}")
+                        except Exception as e:
+                            logger.warning(f"Failed to merge context from serial agent task: {e}")
                 # logger.info("Using serial execution mode")
                 # serial_agent = SerialableAgent(conf=self.conf, agents=agents)
                 # parallel_agent_res = await serial_agent.async_run(message, **kwargs)
