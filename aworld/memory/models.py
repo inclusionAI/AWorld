@@ -339,3 +339,19 @@ class AgentExperienceExtractParams(LongTermExtractParams):
 
     model_config = ConfigDict(extra="allow")
 
+class LongTermMemoryTriggerParams(BaseModel):
+    """
+    Metadata for memory messages, including user, session, task, and agent information.
+    Args:
+        user_id (str): The ID of the user.
+        session_id (str): The ID of the session.
+        task_id (str): The ID of the task.
+        agent_id (str): The ID of the agent.
+    """
+    agent_id: str = Field(default=None, description="The ID of the agent")
+    session_id: str = Field(default=None, description="The ID of the session")
+    task_id: str = Field(default=None, description="The ID of the task")
+    user_id: Optional[str] = Field(default=None, description="The ID of the user")
+    application_id: Optional[str] = Field(default=None, description="The ID of the application, namespace for memory")
+
+    model_config = ConfigDict(extra="allow")

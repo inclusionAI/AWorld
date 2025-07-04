@@ -11,7 +11,7 @@ from aworld.config import ConfigDict
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
-from aworld.memory.models import AgentExperience, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
 from aworld.models.llm import get_llm_model, acall_llm_model
 
 
@@ -307,13 +307,16 @@ class Memory(MemoryBase):
 
     def post_add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         try:
-            # TODO: add a background task to process long-term memory
             self.post_process_long_terms(memory_item, filters, memory_config)
         except Exception as err:
             logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exc()}")
 
     def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         """Post process long-term memory."""
+        # check if memory_item is "message"
+        if memory_item.memory_type != 'message':
+            return
+
         if not memory_config:
             return
 
@@ -326,28 +329,46 @@ class Memory(MemoryBase):
         if not long_term_config:
             return
 
-        # check if memory_item is "message"
-        if memory_item.memory_type != 'message':
+        self.trigger_short_term_memory_to_long_term(LongTermMemoryTriggerParams(
+            agent_id=memory_item.agent_id,
+            session_id=memory_item.session_id,
+            task_id=memory_item.task_id,
+            user_id=memory_item.user_id,
+            application_id=memory_item.application_id
+        ), memory_config)
+
+    def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig = None):
+        logger.info(f"🧠 [MEMORY:long-term] Trigger short-term memory to long-term memory, params is {params}")
+        if not memory_config:
+            return
+
+        # check if long-term memory is enabled
+        if not memory_config.enable_long_term:
+            return
+
+        # check if long-term memory config is valid
+        long_term_config = memory_config.long_term_config
+        if not long_term_config:
             return
 
         # get all memories of current task
         task_memory_items = self.memory_store.get_all({
             'memory_type': 'message',
-            'application_id': memory_item.application_id,
-            'session_id': memory_item.session_id,
-            'task_id': memory_item.task_id
+            'application_id': params.application_id,
+            'session_id': params.session_id,
+            'task_id': params.task_id
         })
 
         task_params = []
 
         # Check if user profile extraction is enabled
         if long_term_config.extraction.enable_user_profile_extraction:
-            if memory_item.user_id:
+            if params.user_id:
                 user_profile_task_params = UserProfileExtractParams(
-                    user_id=memory_item.user_id,
-                    session_id=memory_item.session_id,
-                    task_id=memory_item.task_id,
-                    application_id=memory_item.application_id,
+                    user_id=params.user_id,
+                    session_id=params.session_id,
+                    task_id=params.task_id,
+                    application_id=params.application_id,
                     memories=task_memory_items
                 )
                 task_params.append(user_profile_task_params)
@@ -356,12 +377,12 @@ class Memory(MemoryBase):
 
         # Check if agent experience extraction is enabled
         if long_term_config.extraction.enable_agent_experience_extraction:
-            if memory_item.agent_id:
+            if params.agent_id:
                 agent_experience_task_params = AgentExperienceExtractParams(
-                    agent_id=memory_item.agent_id,
-                    session_id=memory_item.session_id,
-                    task_id=memory_item.task_id,
-                    application_id=memory_item.application_id,
+                    agent_id=params.agent_id,
+                    session_id=params.session_id,
+                    task_id=params.task_id,
+                    application_id=params.application_id,
                     memories=task_memory_items
                 )
                 task_params.append(agent_experience_task_params)

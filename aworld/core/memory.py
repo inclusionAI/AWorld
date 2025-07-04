@@ -3,7 +3,7 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Literal, Union, List, Dict
 
-from aworld.memory.models import AgentExperience, UserProfile, MemoryItem
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfile, MemoryItem
 from pydantic import BaseModel, Field, ConfigDict
 
 from aworld.models.llm import LLMModel
@@ -435,6 +435,20 @@ class MemoryBase(ABC):
         Returns:
             list: List of latest memories.
         """
+
+    @abstractmethod
+    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig):
+        """
+        Trigger short-term memory to long-term.
+
+        Args:
+            params (TaskMemoryTriggerLongTermParams): Parameters for triggering task memory to long-term.
+            memory_config (MemoryConfig): Memory configuration.
+
+        Returns:
+            None
+        """
+        pass
     
     @abstractmethod
     async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[UserProfile]]:
