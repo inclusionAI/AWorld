@@ -299,19 +299,19 @@ class Memory(MemoryBase):
 
     def add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         self._add(memory_item, filters, memory_config)
-        self.post_add(memory_item, filters, memory_config)
+        # self.post_add(memory_item, filters, memory_config)
 
     @abc.abstractmethod
     def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         pass
 
-    def post_add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    async def post_add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         try:
-            self.post_process_long_terms(memory_item, filters, memory_config)
+            await self.post_process_long_terms(memory_item, filters, memory_config)
         except Exception as err:
             logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exc()}")
 
-    def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    async def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         """Post process long-term memory."""
         # check if memory_item is "message"
         if memory_item.memory_type != 'message':
@@ -329,7 +329,7 @@ class Memory(MemoryBase):
         if not long_term_config:
             return
 
-        self.trigger_short_term_memory_to_long_term(LongTermMemoryTriggerParams(
+        await self.trigger_short_term_memory_to_long_term(LongTermMemoryTriggerParams(
             agent_id=memory_item.agent_id,
             session_id=memory_item.session_id,
             task_id=memory_item.task_id,
@@ -337,8 +337,8 @@ class Memory(MemoryBase):
             application_id=memory_item.application_id
         ), memory_config)
 
-    def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig = None):
-        logger.info(f"🧠 [MEMORY:long-term] Trigger short-term memory to long-term memory, params is {params}")
+    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig = None):
+        logger.info(f"🧠 [MEMORY:long-term] Trigger short-term memory to long-term memory, params is {params}, long term config is {memory_config.long_term_config}")
         if not memory_config:
             return
 
@@ -354,6 +354,7 @@ class Memory(MemoryBase):
         # get all memories of current task
         task_memory_items = self.memory_store.get_all({
             'memory_type': 'message',
+            'agent_id': params.agent_id,
             'application_id': params.application_id,
             'session_id': params.session_id,
             'task_id': params.task_id
@@ -372,6 +373,7 @@ class Memory(MemoryBase):
                     memories=task_memory_items
                 )
                 task_params.append(user_profile_task_params)
+                logger.info(f"🧠 [MEMORY:long-term] add user profile extraction task params is {user_profile_task_params}")
             else:
                 logger.warning(f"🧠 [MEMORY:long-term] memory_item.user_id is None, skip user profile extraction")
 
@@ -386,11 +388,12 @@ class Memory(MemoryBase):
                     memories=task_memory_items
                 )
                 task_params.append(agent_experience_task_params)
+                logger.debug(f"🧠 [MEMORY:long-term] add agent experience extraction task params is {agent_experience_task_params}")
             else:
                 logger.warning(
                     f"🧠 [MEMORY:long-term] memory_item.agent_id is None, skip agent experience extraction")
 
-        self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config)
+        await self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config)
 
     async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3) -> Optional[list[UserProfile]]:
         return []

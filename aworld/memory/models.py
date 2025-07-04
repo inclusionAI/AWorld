@@ -352,6 +352,6 @@ class LongTermMemoryTriggerParams(BaseModel):
     session_id: str = Field(default=None, description="The ID of the session")
     task_id: str = Field(default=None, description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
-    application_id: Optional[str] = Field(default=None, description="The ID of the application, namespace for memory")
+    application_id: Optional[str] = Field(default="default", description="The ID of the application, namespace for memory")
 
     model_config = ConfigDict(extra="allow")

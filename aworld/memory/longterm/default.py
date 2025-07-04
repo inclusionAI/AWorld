@@ -102,10 +102,10 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
         self.memory_gungnir = DefaultMemoryGungnir(llm_instance)
         self.memory_tasks: List[MemoryProcessingTask] = []
     
-    def create_longterm_processing_tasks(self, task_params: list[LongTermExtractParams],
+    async def create_longterm_processing_tasks(self, task_params: list[LongTermExtractParams],
                                          longterm_config: LongTermConfig) -> None:
         for task_param in task_params:
-            asyncio.create_task(self._create_longterm_processing_task(task_param, longterm_config))
+            await self._create_longterm_processing_task(task_param, longterm_config)
 
     
     async def _create_longterm_processing_task(self, extract_param: LongTermExtractParams, 

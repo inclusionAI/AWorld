@@ -69,7 +69,7 @@ class MemoryOrchestrator(ABC):
 
 
     @abstractmethod
-    def create_longterm_processing_tasks(self,
+    async def create_longterm_processing_tasks(self,
                                          extract_param_list: list[LongTermExtractParams],
                                          longterm_config: LongTermConfig
                                          ) -> None:
