@@ -43,6 +43,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def __init__(self,
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
+                 name: str,
                  resp_parse_func: Callable[..., Any] = None,
                  memory: MemoryBase = None,
                  **kwargs):
@@ -52,7 +53,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             conf: Agent config, supported AgentConfig, ConfigDict or dict.
             resp_parse_func: Response parse function for the agent standard output, transform llm response.
         """
-        super(Agent, self).__init__(conf, **kwargs)
+        super(Agent, self).__init__(conf, name, **kwargs)
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
         self._llm = None

@@ -27,12 +27,6 @@ class ModeratorAgent(StreamOutputAgent, ABC):
     affirmative_opinion: str = Field(default=None)
     negative_opinion: str = Field(default=None)
 
-    def __init__(self, conf: AgentConfig,
-                 **kwargs
-                 ):
-        super().__init__(conf)
-
-
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
         List[ActionModel], None]:
         ## step 1: params
