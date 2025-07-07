@@ -1,5 +1,11 @@
 {
   "mcpServers": {
+    "streamable-server": {
+      "type": "streamable-http",
+      "url": "http://localhost:8000/mcp",
+      "timeout": 5.0,
+      "sse_read_timeout": 300.0
+    },
     "amap-amap-sse": {
       "type": "sse",
       "url": "https://mcp.amap.com/sse?key=${AMAP_AMAP_SSE_KEY}",

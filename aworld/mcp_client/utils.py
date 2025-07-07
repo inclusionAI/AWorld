@@ -1,4 +1,5 @@
 import logging
+from datetime import timedelta
 from typing import List, Dict, Any
 import json
 import os
@@ -11,7 +12,7 @@ from mcp.types import TextContent, ImageContent
 from aworld.core.common import ActionResult
 
 from aworld.logs.util import logger
-from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio
+from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
 from aworld.tools import get_function_tools
 from aworld.utils.common import find_file
 
@@ -450,6 +451,18 @@ async def sandbox_mcp_tool_desc_transform(
                         },
                     }
                 )
+
+            elif "streamable-http" == server_config.get("type", ""):
+                server_configs.append(
+                    {
+                        "name": "mcp__" + server_name,
+                        "type": "streamable-http",
+                        "params": {
+                            "url": server_config["url"],
+                            "headers": server_config.get("headers"),
+                        },
+                    }
+                )
             # Handle stdio server
             else:
                 # elif "stdio" == server_config.get("type", ""):
@@ -480,6 +493,15 @@ async def sandbox_mcp_tool_desc_transform(
                 if server_config["type"] == "sse":
                     server = MCPServerSse(
                         name=server_config["name"], params=server_config["params"]
+                    )
+                elif server_config["type"] == "streamable-http":
+                    params = server_config["params"].copy()
+                    if "timeout" in params and not isinstance(params["timeout"], timedelta):
+                        params["timeout"] = timedelta(seconds=float(params["timeout"]))
+                    if "sse_read_timeout" in params and not isinstance(params["sse_read_timeout"], timedelta):
+                        params["sse_read_timeout"] = timedelta(seconds=float(params["sse_read_timeout"]))
+                    server = MCPServerStreamableHttp(
+                        name=server_config["name"], params=params
                     )
                 elif server_config["type"] == "stdio":
                     server = MCPServerStdio(
@@ -657,6 +679,19 @@ async def get_server_instance(
             )
             await server.connect()
             logging.info(f"Successfully connected to SSE server: {server_name}")
+            return server
+        elif "streamable-http" == server_config.get("type", ""):
+            server = MCPServerStreamableHttp(
+                name=server_name,
+                params={
+                    "url": server_config["url"],
+                    "headers": server_config.get("headers"),
+                    "timeout": timedelta(seconds=server_config.get("timeout", 120.0)),
+                    "sse_read_timeout": timedelta(seconds=server_config.get("sse_read_timeout", 300.0)),
+                },
+            )
+            await server.connect()
+            logging.info(f"Successfully connected to STREAMABLE-HTTP server: {server_name}")
             return server
         else:  # stdio type
             params = {
