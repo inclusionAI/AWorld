@@ -90,7 +90,7 @@ class TestContextManagement(BaseTest):
     def run_task(self, context: Context, agent: Agent):
         swarm = Swarm(agent, max_steps=1)
         task = Task(input="""What is an agent.""",
-                    swarm=swarm, context=context, reset_post_run=False)
+                    swarm=swarm, context=context)
         return Runners.sync_run_task(task)
 
     def test_default_context_configuration(self):

@@ -15,17 +15,10 @@ from examples.tools.gym_tool.async_openai_gym import OpenAIGym
 
 async def main():
     agent = GymAgent(name=Agents.GYM.value, conf=AgentConfig(), tool_names=[Tools.GYM.value], feedback_tool_result=True)
-    # agent = ParallelizableAgent(name=agent.name(), conf=agent.conf,
-    #                             tool_names=[Tools.GYM.value],
-    #                             agents=[agent])
     # It can also be used `ToolFactory` for simplification.
     task = Task(agent=agent,
                 tools_conf={Tools.GYM.value: {"env_id": "CartPole-v1", "render_mode": "human", "render": True, "use_async": True}})
     res = await Runners.run_task(task=task, run_conf=RunConfig())
-    # return res
-    # Runners.streamed_run_task(task)
-    # async for output in Runners.streamed_run_task(task).stream_events():
-    #     print("----------------", output)
 
 
 if __name__ == "__main__":
