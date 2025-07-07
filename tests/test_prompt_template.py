@@ -15,7 +15,7 @@ def test_dynamic_variables():
 
 
 def test_string_prompt_template():
-    # 1. 基本功能测试
+    # 1. Basic functionality test
     template = StringPromptTemplate.from_template("Hello {name}, welcome to {place}!")
     assert "name" in template.input_variables
     assert "place" in template.input_variables
@@ -24,7 +24,7 @@ def test_string_prompt_template():
     assert result == "Hello Alice, welcome to AWorld!"
     print("✓ Basic functionality test passed")
     
-    # 2. 使用Context对象
+    # 2. Using Context object
     context = Context()
     context.context_info.update({"task": "chat"})
     
@@ -34,7 +34,7 @@ def test_string_prompt_template():
     assert "User: Hello!" in result
     print("✓ Context integration test passed")
     
-    # 3. 预设变量功能
+    # 3. Partial variables functionality
     partial_template = StringPromptTemplate.from_template(
         "System: {system_prompt}\nUser: {user_input}",
         partial_variables={"system_prompt": "You are helpful."}
@@ -46,7 +46,7 @@ def test_string_prompt_template():
     assert "System: You are helpful." in result
     print("✓ Partial variables test passed")
     
-    # 4. 模板组合
+    # 4. Template combination
     template1 = StringPromptTemplate.from_template("Hello {name}!")
     template2 = StringPromptTemplate.from_template(" Welcome to {place}.")
     combined = template1 + template2
@@ -55,7 +55,7 @@ def test_string_prompt_template():
     assert result == "Hello Bob! Welcome to AWorld."
     print("✓ Template combination test passed")
     
-    # 5. PromptTemplate别名
+    # 5. PromptTemplate alias
     alias_template = PromptTemplate.from_template("Test {value}")
     assert isinstance(alias_template, StringPromptTemplate)
     result = alias_template.format(value="success")
