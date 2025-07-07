@@ -3,125 +3,116 @@
 """Template formatters for prompt templates."""
 
 import re
-import string
 from enum import Enum
 from typing import Any, Dict, List, Mapping, Set
-
-try:
-    from jinja2 import Environment, meta
-    JINJA2_AVAILABLE = True
-except ImportError:
-    JINJA2_AVAILABLE = False
+from aworld.core.context.prompts import logger
 
 class TemplateFormat(str, Enum):
     """Template format enumeration."""
     F_STRING = "f-string"
-    JINJA2 = "jinja2"
-    STRING_TEMPLATE = "string"
 
 
 def format_template(template: str, template_format: TemplateFormat, **kwargs: Any) -> str:
-    if template_format == TemplateFormat.F_STRING:
-        return _format_f_string(template, **kwargs)
-    elif template_format == TemplateFormat.JINJA2:
-        return _format_jinja2(template, **kwargs)
-    elif template_format == TemplateFormat.STRING_TEMPLATE:
-        return _format_string_template(template, **kwargs)
-    else:
-        raise ValueError(f"Unsupported template format: {template_format}")
+    try:
+        if template_format == TemplateFormat.F_STRING:
+            return _format_f_string(template, **kwargs)
+        else:
+            # Unsupported format, return original template
+            logger.warning(f"Unsupported template format: {template_format}, returning original template")
+            return template
+    except Exception as e:
+        # Any error, return original template
+        logger.warning(f"Error formatting template: {e}, returning original template")
+        return template
 
 
 def get_template_variables(template: str, template_format: TemplateFormat) -> List[str]:
     if not template:
         return []
-    if template_format == TemplateFormat.F_STRING:
-        return _get_f_string_variables(template)
-    elif template_format == TemplateFormat.JINJA2:
-        return _get_jinja2_variables(template)
-    elif template_format == TemplateFormat.STRING_TEMPLATE:
-        return _get_string_template_variables(template)
-    else:
-        raise ValueError(f"Unsupported template format: {template_format}")
+    try:
+        if template_format == TemplateFormat.F_STRING:
+            return _get_f_string_variables(template)
+        else:
+            # Unsupported format, return empty list
+            logger.warning(f"Unsupported template format: {template_format}, returning empty variable list")
+            return []
+    except Exception as e:
+        # Any error, return empty list
+        logger.warning(f"Error extracting template variables: {e}, returning empty variable list")
+        return []
 
 
 def _format_f_string(template: str, **kwargs: Any) -> str:
     """Format using Python f-string style."""
     try:
-        return template.format(**kwargs)
-    except KeyError as e:
-        raise ValueError(f"Missing variable in template: {e}")
+        return _format_f_string_safe(template, **kwargs)
     except Exception as e:
-        raise ValueError(f"Error formatting template: {e}")
+        # Any error, return original template
+        logger.warning(f"Error in f-string formatting: {e}, returning original template")
+        return template
 
 
-def _format_jinja2(template: str, **kwargs: Any) -> str:
-    """Format using Jinja2 template engine."""
-    if not JINJA2_AVAILABLE:
-        raise ImportError("Jinja2 is required for jinja2 template format")
-    
+def _format_f_string_safe(template: str, **kwargs: Any) -> str:
+    """Safe format that preserves missing placeholders instead of raising errors."""
     try:
-        env = Environment()
-        template_obj = env.from_string(template)
-        return template_obj.render(**kwargs)
+        import re
+        
+        def replace_placeholder(match):
+            try:
+                placeholder = match.group(1)
+                # Handle format specifiers like {name:>10} -> name
+                var_name = placeholder.split(':')[0].split('!')[0].strip()
+                
+                if var_name in kwargs:
+                    # If variable exists, format it properly
+                    try:
+                        return f"{{{placeholder}}}".format(**kwargs)
+                    except Exception as e:
+                        # If formatting fails, return the original placeholder
+                        logger.debug(f"Failed to format placeholder '{placeholder}': {e}, keeping original")
+                        return match.group(0)
+                else:
+                    # If variable doesn't exist, keep the original placeholder
+                    logger.debug(f"Variable '{var_name}' not found in kwargs, keeping placeholder")
+                    return match.group(0)
+            except Exception as e:
+                # If any error in processing the match, return original
+                logger.debug(f"Error processing placeholder match: {e}, keeping original")
+                return match.group(0)
+        
+        # Find all {variable} patterns, excluding escaped {{ and }}
+        pattern = r'(?<!\{)\{([^{}]+)\}(?!\})'
+        return re.sub(pattern, replace_placeholder, template)
     except Exception as e:
-        raise ValueError(f"Error formatting Jinja2 template: {e}")
-
-
-def _format_string_template(template: str, **kwargs: Any) -> str:
-    """Format using Python string.Template style ($variable)."""
-    try:
-        template_obj = string.Template(template)
-        return template_obj.substitute(**kwargs)
-    except KeyError as e:
-        raise ValueError(f"Missing variable in template: {e}")
-    except Exception as e:
-        raise ValueError(f"Error formatting template: {e}")
+        # If any error, return original template
+        logger.warning(f"Error in safe f-string formatting: {e}, returning original template")
+        return template
 
 
 def _get_f_string_variables(template: str) -> List[str]:
     """Extract variables from f-string style template."""
-    # Find all {variable} patterns, excluding escaped {{ and }}
-    pattern = r'(?<!\{)\{([^{}]+)\}(?!\})'
-    matches = re.findall(pattern, template)
-    
-    variables = []
-    for match in matches:
-        # Handle format specifiers like {name:>10} -> name
-        var_name = match.split(':')[0].split('!')[0].strip()
-        if var_name:
-            variables.append(var_name)
-    
-    return list(set(variables))  # Remove duplicates
-
-
-def _get_jinja2_variables(template: str) -> List[str]:
-    """Extract variables from Jinja2 template."""
-    if not JINJA2_AVAILABLE:
-        raise ImportError("Jinja2 is required for jinja2 template format")
-    
     try:
-        env = Environment()
-        ast = env.parse(template)
-        variables = meta.find_undeclared_variables(ast)
-        return list(variables)
+        # Find all {variable} patterns, excluding escaped {{ and }}
+        pattern = r'(?<!\{)\{([^{}]+)\}(?!\})'
+        matches = re.findall(pattern, template)
+        
+        variables = []
+        for match in matches:
+            try:
+                # Handle format specifiers like {name:>10} -> name
+                var_name = match.split(':')[0].split('!')[0].strip()
+                if var_name:
+                    variables.append(var_name)
+            except Exception as e:
+                # If error processing this match, skip it
+                logger.debug(f"Error processing variable match '{match}': {e}, skipping")
+                continue
+        
+        return list(set(variables))  # Remove duplicates
     except Exception as e:
-        raise ValueError(f"Error parsing Jinja2 template: {e}")
-
-
-def _get_string_template_variables(template: str) -> List[str]:
-    """Extract variables from string.Template style template."""
-    # Find all $identifier and ${identifier} patterns
-    pattern = r'\$(?:([_a-zA-Z][_a-zA-Z0-9]*)|{([_a-zA-Z][_a-zA-Z0-9]*)})'
-    matches = re.findall(pattern, template)
-    
-    variables = []
-    for match in matches:
-        # match is a tuple, get the non-empty group
-        var_name = match[0] or match[1]
-        if var_name:
-            variables.append(var_name)
-    
-    return list(set(variables))  # Remove duplicates
+        # If any error, return empty list
+        logger.warning(f"Error extracting f-string variables: {e}, returning empty list")
+        return []
 
 
 def escape_template_string(text: str, template_format: TemplateFormat) -> str:
@@ -137,11 +128,5 @@ def escape_template_string(text: str, template_format: TemplateFormat) -> str:
     if template_format == TemplateFormat.F_STRING:
         # Escape curly braces by doubling them
         return text.replace('{', '{{').replace('}', '}}')
-    elif template_format == TemplateFormat.JINJA2:
-        # Escape Jinja2 special characters
-        return text.replace('{', '\\{').replace('}', '\\}').replace('%', '\\%')
-    elif template_format == TemplateFormat.STRING_TEMPLATE:
-        # Escape dollar signs
-        return text.replace('$', '$$')
     else:
         return text 

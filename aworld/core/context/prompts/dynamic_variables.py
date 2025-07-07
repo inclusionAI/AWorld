@@ -50,14 +50,13 @@ Generic field getter functionality:
 
 import os
 import platform
-import socket
 import uuid
+from aworld.core.context.prompts import logger
 from datetime import datetime, timezone
 from typing import Callable, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aworld.core.context.base import Context
-
 
 # ==================== Generic Path Getter Functions ====================
 
@@ -188,85 +187,149 @@ class ContextFieldGetter:
 
 def get_current_time() -> str:
     """Get current time (MM/DD/YYYY, HH:MM:SS)"""
-    return datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
+    try:
+        return datetime.now().strftime("%m/%d/%Y, %H:%M:%S")
+    except Exception:
+        logger.warning("Failed to get current time.")
+        return "unknown time"
 
 
 def get_current_date() -> str:
     """Get current date (YYYY-MM-DD)"""
-    return datetime.now().strftime("%Y-%m-%d")
+    try:
+        return datetime.now().strftime("%Y-%m-%d")
+    except Exception:
+        logger.warning("Failed to get current date.")
+        return "unknown date"
 
 
 def get_current_datetime() -> str:
     """Get current datetime (YYYY-MM-DD HH:MM:SS)"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        logger.warning("Failed to get current datetime.")
+        return "unknown datetime"
 
 
 def get_current_timestamp() -> str:
     """Get current timestamp"""
-    return str(int(datetime.now().timestamp()))
+    try:
+        return str(int(datetime.now().timestamp()))
+    except Exception:
+        logger.warning("Failed to get current timestamp.")
+        return "unknown timestamp"
 
 
 def get_current_iso_time() -> str:
     """Get current ISO format time"""
-    return datetime.now(timezone.utc).isoformat()
+    try:
+        return datetime.now(timezone.utc).isoformat()
+    except Exception:
+        logger.warning("Failed to get current ISO time.")
+        return "unknown iso time"
 
 
 def get_current_weekday() -> str:
     """Get current weekday"""
-    weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    return weekdays[datetime.now().weekday()]
+    try:
+        weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        return weekdays[datetime.now().weekday()]
+    except Exception:
+        logger.warning("Failed to get current weekday.")
+        return "unknown weekday"
 
 
 def get_current_month() -> str:
     """Get current month name"""
-    return datetime.now().strftime("%B")
+    try:
+        return datetime.now().strftime("%B")
+    except Exception:
+        logger.warning("Failed to get current month.")
+        return "unknown month"
 
 
 def get_current_year() -> str:
     """Get current year"""
-    return str(datetime.now().year)
+    try:
+        return str(datetime.now().year)
+    except Exception:
+        logger.warning("Failed to get current year.")
+        return "unknown year"
 
 
 # ==================== System Information Functions ====================
 
 def get_system_platform() -> str:
     """Get system platform information"""
-    return platform.platform()
+    try:
+        return platform.platform()
+    except Exception:
+        logger.warning("Failed to get system platform.")
+        return "unknown platform"
 
 
 def get_system_os() -> str:
     """Get operating system name"""
-    return platform.system()
+    try:
+        return platform.system()
+    except Exception:
+        logger.warning("Failed to get system OS.")
+        return "unknown os"
 
 
 def get_python_version() -> str:
     """Get Python version"""
-    return platform.python_version()
+    try:
+        return platform.python_version()
+    except Exception:
+        logger.warning("Failed to get Python version.")
+        return "unknown python version"
 
 
 def get_hostname() -> str:
     """Get hostname"""
-    return platform.node()
+    try:
+        return platform.node()
+    except Exception:
+        logger.warning("Failed to get hostname.")
+        return "unknown hostname"
 
 
 def get_username() -> str:
     """Get current username"""
-    return os.getenv("USER") or os.getenv("USERNAME") or "unknown"
+    try:
+        return os.getenv("USER") or os.getenv("USERNAME") or "unknown"
+    except Exception:
+        logger.warning("Failed to get username.")
+        return "unknown user"
 
 
 def get_working_directory() -> str:
     """Get current working directory"""
-    return os.getcwd()
+    try:
+        return os.getcwd()
+    except Exception:
+        logger.warning("Failed to get working directory.")
+        return "unknown directory"
 
 
 def get_random_uuid() -> str:
     """Generate random UUID"""
-    return str(uuid.uuid4())
+    try:
+        return str(uuid.uuid4())
+    except Exception:
+        logger.warning("Failed to generate random UUID.")
+        return "unknown uuid"
 
 
 def get_short_uuid() -> str:
     """Generate short UUID (first 8 characters)"""
-    return str(uuid.uuid4())[:8]
+    try:
+        return str(uuid.uuid4())[:8]
+    except Exception:
+        logger.warning("Failed to generate short UUID.")
+        return "unknown"
 
 
 # ==================== Context Field Getter Function Factory ====================
@@ -456,8 +519,7 @@ def create_formatted_field_getter(
                     return formatter(value)
                 except Exception as e:
                     # Log error when formatting fails and return default value
-                    import logging
-                    logging.warning(f"Formatter failed for field '{field_path}': {e}")
+                    logger.warning(f"Formatter failed for field '{field_path}': {e}")
                     return default
             
             # Without formatter, use default string conversion
@@ -559,8 +621,7 @@ def create_advanced_field_getter(
             return str(value)
             
         except Exception as e:
-            import logging
-            logging.warning(f"Advanced field getter failed for field '{field_path}': {e}")
+            logger.warning(f"Advanced field getter failed for field '{field_path}': {e}")
             return default
     
     return field_getter

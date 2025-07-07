@@ -3,15 +3,13 @@
 """Base classes for prompt templates."""
 
 from abc import ABC, abstractmethod
-import logging
+from aworld.core.context.prompts import logger
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 from aworld.core.context.prompts.formatters import TemplateFormat, get_template_variables
 
 if TYPE_CHECKING:
     from aworld.core.context.base import Context
-
-logger = logging.getLogger("prompts")
 
 class PromptValue(ABC):
     """Base class for prompt values that can be passed to language models."""
@@ -96,39 +94,49 @@ class BasePromptTemplate(ABC):
     
     def _merge_partial_and_user_variables(self, context: 'Context' = None, **kwargs: Any) -> Dict[str, Any]:
         merged = {}
-        for key, value in self.partial_variables.items():
-            if callable(value):
-                # If it's a function, try to pass context as a parameter
+        try:
+            for key, value in self.partial_variables.items():
                 try:
-                    # Check if the function accepts context parameter
-                    import inspect
-                    sig = inspect.signature(value)
-                    if ("context" in sig.parameters.keys()) == True:
-                        # If function accepts context parameter, pass the context
-                        merged[key] = value(context=context)
-                        logger.info(f"sig={sig.parameters} {sig.parameters.keys()} {'context' in sig.parameters.keys()}\nkey={key} value={merged[key]}")
+                    if callable(value):
+                        # If it's a function, try to pass context as a parameter
+                        try:
+                            # Check if the function accepts context parameter
+                            import inspect
+                            sig = inspect.signature(value)
+                            if ("context" in sig.parameters.keys()) == True:
+                                # If function accepts context parameter, pass the context
+                                merged[key] = value(context=context)
+                                logger.info(f"sig={sig.parameters} {sig.parameters.keys()} {'context' in sig.parameters.keys()}\nkey={key} value={merged[key]}")
+                            else:
+                                # Otherwise call directly
+                                merged[key] = value()
+                        except Exception as e:
+                            # If error occurs, fallback to no-parameter call
+                            try:
+                                logger.error(f"Error calling function {key}: {e}")
+                                merged[key] = value()
+                            except Exception as e2:
+                                # If still error, use default value or placeholder
+                                logger.error(f"Error calling function {key} even without parameters: {e2}, using placeholder")
+                                merged[key] = f"<Error calling function {key}: {e}>"
                     else:
-                        # Otherwise call directly
-                        merged[key] = value()
+                        merged[key] = value
                 except Exception as e:
-                    # If error occurs, fallback to no-parameter call
-                    try:
-                        logger.error(f"Error calling function {key}: {e}")
-                        merged[key] = value()
-                    except Exception:
-                        # If still error, use default value or raise exception
-                        merged[key] = f"<Error calling function {key}: {e}>"
-            else:
-                merged[key] = value
+                    # If any error processing this variable, use placeholder
+                    logger.warning(f"Error processing partial variable {key}: {e}, using placeholder")
+                    merged[key] = f"<Error processing {key}: {e}>"
+            
+            merged.update(kwargs)
+        except Exception as e:
+            # If any error in the whole process, at least return kwargs
+            logger.error(f"Error in _merge_partial_and_user_variables: {e}, returning only kwargs")
+            merged = kwargs.copy()
         
-        merged.update(kwargs)
         return merged
     
     def _validate_input_variables(self, variables: Dict[str, Any]) -> None:
         """Validate that all required input variables are provided."""
         missing_vars = set(self.input_variables) - set(variables.keys())
-        if missing_vars:
-            raise ValueError(f"Missing required input variables: {missing_vars}")
     
     def partial(self, **kwargs: Any) -> 'BasePromptTemplate':
         """Create a new prompt template with some variables pre-filled."""

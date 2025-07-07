@@ -15,9 +15,6 @@ def test_dynamic_variables():
 
 
 def test_string_prompt_template():
-    """Test StringPromptTemplate comprehensive functionality."""
-    print("Testing StringPromptTemplate...")
-    
     # 1. 基本功能测试
     template = StringPromptTemplate.from_template("Hello {name}, welcome to {place}!")
     assert "name" in template.input_variables
