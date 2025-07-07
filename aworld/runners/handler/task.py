@@ -62,30 +62,15 @@ class DefaultTaskHandler(TaskHandler):
             async for event in self.run_hooks(message, HookPoint.ERROR):
                 yield event
 
-            if task_item.stop:
-                await self.runner.stop()
-                logger.warning(f"task {self.runner.task.id} stop, cause: {task_item.msg}")
-                self.runner._task_response = TaskResponse(msg=task_item.msg,
-                                                          answer='',
-                                                          success=False,
-                                                          id=self.runner.task.id,
-                                                          time_cost=(time.time() - self.runner.start_time),
-                                                          usage=self.runner.context.token_usage)
-                return
-            # restart
-            logger.warning(f"The task {self.runner.task.id} will be restarted due to error: {task_item.msg}.")
-            if self.retry_count >= 3:
-                raise Exception(f"The task {self.runner.task.id} failed, due to error: {task_item.msg}.")
-
-            self.retry_count += 1
-            yield Message(
-                category=Constants.TASK,
-                payload='',
-                sender=self.name(),
-                session_id=self.runner.context.session_id,
-                topic=TopicType.START,
-                headers=headers
-            )
+            logger.warning(f"task {self.runner.task.id} stop, cause: {task_item.msg}")
+            self.runner._task_response = TaskResponse(msg=task_item.msg,
+                                                      answer='',
+                                                      success=False,
+                                                      id=self.runner.task.id,
+                                                      time_cost=(time.time() - self.runner.start_time),
+                                                      usage=self.runner.context.token_usage)
+            await self.runner.task.outputs.mark_completed()
+            await self.runner.stop()
         elif topic == TopicType.FINISHED:
             async for event in self.run_hooks(message, HookPoint.FINISHED):
                 yield event

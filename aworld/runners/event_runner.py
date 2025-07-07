@@ -33,6 +33,7 @@ class TaskEventRunner(TaskRunner):
         super().__init__(task, *args, **kwargs)
         self._task_response = None
         self.event_mng = EventManager(self.context)
+        self.context.event_manager = self.event_mng
         self.hooks = {}
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
@@ -225,7 +226,8 @@ class TaskEventRunner(TaskRunner):
                     payload=TaskItem(msg=str(e), data=message),
                     sender=self.name,
                     session_id=self.context.session_id,
-                    topic=TopicType.ERROR
+                    topic=TopicType.ERROR,
+                    headers={"context": self.context}
                 )
                 self.state_manager.save_message_handle_result(name=handler.__name__,
                                                               message=message,
@@ -289,7 +291,8 @@ class TaskEventRunner(TaskRunner):
                 payload=TaskItem(msg=str(e), data=message),
                 sender=self.name,
                 session_id=self.context.session_id,
-                topic=TopicType.ERROR
+                topic=TopicType.ERROR,
+                headers={"context": self.context}
             )
             self.state_manager.save_message_handle_result(name=TaskEventRunner.__name__,
                                                           message=message,

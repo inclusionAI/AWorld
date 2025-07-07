@@ -171,7 +171,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 category=Constants.OUTPUT,
                 payload=StepOutput.build_start_output(name=f"{self.id()}", alias_name=self.name(), step_num=0),
                 sender=self.id(),
-                session_id=self.context.session_id
+                session_id=self.context.session_id,
+                headers={"context": self.context}
             ))
         with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
             self._init_context(message.context)
