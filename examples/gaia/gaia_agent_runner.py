@@ -111,7 +111,7 @@ class GaiaAgentRunner:
         llm_base_url: str,
         llm_api_key: str,
         llm_temperature: float = 0.0,
-        mcp_config: dict = {},
+        mcp_config: dict = None,
         session_id: str = None,
     ):
         self.session_id = session_id or str(uuid.uuid4())
@@ -122,6 +122,14 @@ class GaiaAgentRunner:
             llm_base_url=llm_base_url,
             llm_temperature=llm_temperature,
         )
+
+        if mcp_config is None:
+            mcp_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "mcp.json"
+            )
+            with open(mcp_path, "r") as f:
+                mcp_config = json.load(f)
+                logger.info(f"Gaia Agent Runner mcp_config: {mcp_config}")
 
         self.super_agent = Agent(
             conf=self.agent_config,

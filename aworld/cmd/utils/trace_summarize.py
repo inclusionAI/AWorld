@@ -110,13 +110,23 @@ def summarize_trace(trace_id: str):
         llm_base_url = os.getenv("LLM_BASE_URL_TRACE", None)
         llm_api_key = os.getenv("LLM_API_KEY_TRACE", None)
 
-        if llm_provider and llm_model_name and llm_base_url and llm_api_key:
-            agent_config = AgentConfig(
-                llm_provider=os.getenv("LLM_PROVIDER_TRACE", "openai"),
-                llm_model_name=os.getenv("LLM_MODEL_NAME_TRACE", None),
-                llm_base_url=os.getenv("LLM_BASE_URL_TRACE", None),
-                llm_api_key=os.getenv("LLM_API_KEY_TRACE", None),
+        if (
+            not llm_provider
+            or not llm_model_name
+            or not llm_base_url
+            or not llm_api_key
+        ):
+            logger.warning(
+                "LLM_MODEL_NAME_TRACE, LLM_BASE_URL_TRACE, LLM_API_KEY_TRACE is not set, trace summarize will not be executed."
             )
+            return
+
+        agent_config = AgentConfig(
+            llm_provider=os.getenv("LLM_PROVIDER_TRACE", "openai"),
+            llm_model_name=os.getenv("LLM_MODEL_NAME_TRACE", None),
+            llm_base_url=os.getenv("LLM_BASE_URL_TRACE", None),
+            llm_api_key=os.getenv("LLM_API_KEY_TRACE", None),
+        )
     if not _trace_summary_cache.trace_exists(trace_id):
         if (
             agent_config.llm_api_key is None
