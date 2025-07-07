@@ -226,6 +226,7 @@ setup(
             "config/*.json",
             "config/*.tiktoken",
             "web/templates/*.html",
+            "cmd/web/webui/dist/**",
         ]
     },
     license="MIT",

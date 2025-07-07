@@ -1,59 +1,3 @@
-# opencv-python
-# pyshine
-# gymnasium
-# pygame
-# openpyxl
-# xls2xlsx
-# wikipedia
-# duckduckgo_search
-# baidusearch
-# aiohttp
-# requests
-# loguru
-# oss2
-
-# fastapi
-# pydantic
-# selenium
-# frontend
-# tools
-# PyPDF2
-# html2text
-# xmltodict
-# docx2markdown
-# python-pptx
-# faiss-cpu==1.9.0
-# pycryptodome
-# tabulate
-# flask
-# fitz
-# terminal_controller # mcp server: https://github.com/GongRzhe/terminal-controller-mcp
-# mcp_server_calculator # mcp server: https://github.com/githejie/mcp-server-calculator
-# arxiv
-# chess
-# pytesseract
-# youtube-transcript-api
-# python-magic
-# waybackpy
-# markdown
-# browser-use
-# # marker-pdf==1.7.5
-# pathvalidate
-# pdfminer.six
-# puremagic
-# pydub
-# SpeechRecognition
-# html2text
-# pre_commit
-# smolagents
-
-# ffmpeg-python
-
-
-httpx[socks]
-
-
-
 aiofiles==24.1.0
 altair==5.5.0
 annotated-types==0.7.0
@@ -145,7 +89,6 @@ langsmith==0.3.45
 lxml==5.4.0
 mammoth==1.9.1
 markdown
-# marker-pdf
 markdown-it-py==3.0.0
 markdown2==2.5.3
 markdownify==1.1.0

@@ -86,7 +86,7 @@ class GaiaSearchToolResultParser(BaseToolResultParser):
             }
         )
 
-        return f"""\
+        return f"""
 **🔎 Gaia Search**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
@@ -126,6 +126,18 @@ class GaiaAgentRunner:
                         "-U",
                         "-r",
                         requirements_file,
+                    ]
+                )
+                subprocess.check_call(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-deps",
+                        "-U",
+                        "marker-pdf",
+                        "anthropic==0.46.0",
                     ]
                 )
                 logger.info("Dependencies installed successfully")
@@ -204,7 +216,7 @@ class GaiaAgentRunner:
             question = add_file_path(data_item, file_path=self.gaia_dataset_path)[
                 "Question"
             ]
-            yield (f"\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```\n")
+            yield (f"\n### Gaia Question\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```\n")
         except Exception as e:
             pass
 

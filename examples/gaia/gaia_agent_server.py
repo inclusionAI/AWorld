@@ -78,19 +78,12 @@ class GaiaAgentServer:
 
             from examples.gaia.gaia_agent_runner import GaiaAgentRunner
 
-            mcp_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "mcp.json"
-            )
-            with open(mcp_path, "r") as f:
-                mcp_config = json.load(f)
-
             runner = GaiaAgentRunner(
                 llm_provider=llm_provider,
                 llm_model_name=llm_model_name,
                 llm_base_url=llm_base_url,
                 llm_api_key=llm_api_key,
                 llm_temperature=llm_temperature,
-                mcp_config=mcp_config,
             )
 
             logger.info(f">>> Gaia Agent: prompt={prompt}, runner={runner}")
