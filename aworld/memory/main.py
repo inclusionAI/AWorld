@@ -11,7 +11,7 @@ from aworld.config import ConfigDict
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
-from aworld.memory.models import UserProfileExtractParams, AgentExperienceExtractParams
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
 from aworld.models.llm import get_llm_model, acall_llm_model
 
 
@@ -98,11 +98,38 @@ class InMemoryMemoryStore(MemoryStore):
             return exists.histories
         return None
 
-
+MEMORY_HOLDER = {}
 class MemoryFactory:
 
     @classmethod
-    def from_config(cls, config: MemoryConfig) -> "MemoryBase":
+    def init(cls, custom_memory: MemoryBase = None):
+        if custom_memory:
+            MEMORY_HOLDER["instance"] = custom_memory
+        else:
+            MEMORY_HOLDER["instance"] = InMemoryStorageMemory(
+                memory_store=InMemoryMemoryStore()
+            )
+        logger.info(f"Memory init success")
+
+
+    @classmethod
+    def instance(cls) -> "MemoryBase":
+        """
+        Get the in-memory memory instance.
+        Returns:
+            MemoryBase: In-memory memory instance.
+        """
+        if MEMORY_HOLDER.get("instance"):
+            logger.info(f"instance use cached memory instance")
+            return MEMORY_HOLDER["instance"]
+        MEMORY_HOLDER["instance"] =  InMemoryStorageMemory(
+           memory_store=InMemoryMemoryStore()
+        )
+        logger.info(f"instance use new memory instance")
+        return MEMORY_HOLDER["instance"]
+
+    @classmethod
+    def from_config(cls, config: MemoryConfig, memory_store: MemoryStore = None) -> "MemoryBase":
         """
         Initialize a Memory instance from a configuration dictionary.
 
@@ -115,16 +142,14 @@ class MemoryFactory:
         if config.provider == "inmemory":
             logger.info("🧠 [MEMORY]setup memory store: inmemory")
             return InMemoryStorageMemory(
-                memory_store=InMemoryMemoryStore(),
-                config=config,
-                enable_summary=config.enable_summary,
-                summary_rounds=config.summary_rounds
+                memory_store=memory_store or InMemoryMemoryStore(),
+                config=config
             )
         elif config.provider == "mem0":
             from aworld.memory.mem0.mem0_memory import Mem0Memory
             logger.info("🧠 [MEMORY]setup memory store: mem0")
             return Mem0Memory(
-                memory_store=InMemoryMemoryStore(),
+                memory_store=memory_store or InMemoryMemoryStore(),
                 config=config
             )
         else:
@@ -134,25 +159,18 @@ class MemoryFactory:
 class Memory(MemoryBase):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
+    def __init__(self, memory_store: MemoryStore, **kwargs):
         self.memory_store = memory_store
-        self.config = config
         self._llm_instance = None
         self._embedder_model = None
 
         # Initialize long-term memory components
-        if self.config.enable_long_term:
-            self.longterm_config = config.long_term_config or LongTermConfig.create_simple_config()
-            self.memory_orchestrator = DefaultMemoryOrchestrator(
-                self.default_llm_instance,
-                self.longterm_config,
-                embedding_model=self._embedder_model,
-                long_term_memory_store=self.memory_store
-            )
-            logger.info(f"🧠 [MEMORY:long-term] Initialized with config: "
-                        f"threshold={self.longterm_config.trigger.message_count_threshold}, "
-                        f"user_profiles={self.longterm_config.extraction.enable_user_profile_extraction}, "
-                        f"agent_experiences={self.longterm_config.extraction.enable_agent_experience_extraction}")
+        self.memory_orchestrator = DefaultMemoryOrchestrator(
+            self.default_llm_instance,
+            embedding_model=self._embedder_model,
+            memory=self
+        )
+        logger.info(f"🧠 [MEMORY:long-term] Initialized with config: ")
 
 
 
@@ -279,77 +297,124 @@ class Memory(MemoryBase):
     def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
         pass
 
-    def add(self, memory_item: MemoryItem, filters: dict = None):
-        self._add(memory_item, filters)
-        self.post_add(memory_item, filters)
+    def add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+        self._add(memory_item, filters, memory_config)
+        # self.post_add(memory_item, filters, memory_config)
 
     @abc.abstractmethod
-    def _add(self, memory_item: MemoryItem, filters: dict = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         pass
 
-    def post_add(self, memory_item: MemoryItem, filters: dict = None):
+    async def post_add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         try:
-            # TODO: add a background task to process long-term memory
-            self.post_process_long_terms(memory_item, filters)
+            await self.post_process_long_terms(memory_item, filters, memory_config)
         except Exception as err:
             logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exc()}")
 
-    def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None):
+    async def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         """Post process long-term memory."""
+        # check if memory_item is "message"
+        if memory_item.memory_type != 'message':
+            return
+
+        if not memory_config:
+            return
 
         # check if long-term memory is enabled
-        if not self.config.enable_long_term:
+        if not memory_config.enable_long_term:
             return
 
         # check if long-term memory config is valid
-        long_term_config = self.config.long_term_config
+        long_term_config = memory_config.long_term_config
         if not long_term_config:
             return
 
-        # check if memory_item is "message"
-        if memory_item.memory_type != 'message':
+        await self.trigger_short_term_memory_to_long_term(LongTermMemoryTriggerParams(
+            agent_id=memory_item.agent_id,
+            session_id=memory_item.session_id,
+            task_id=memory_item.task_id,
+            user_id=memory_item.user_id,
+            application_id=memory_item.application_id
+        ), memory_config)
+
+    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig = None):
+        logger.info(f"🧠 [MEMORY:long-term] Trigger short-term memory to long-term memory, params is {params}, long term config is {memory_config.long_term_config}")
+        if not memory_config:
+            return
+
+        # check if long-term memory is enabled
+        if not memory_config.enable_long_term:
+            return
+
+        # check if long-term memory config is valid
+        long_term_config = memory_config.long_term_config
+        if not long_term_config:
             return
 
         # get all memories of current task
         task_memory_items = self.memory_store.get_all({
             'memory_type': 'message',
-            'application_id': memory_item.application_id,
-            'session_id': memory_item.session_id,
-            'task_id': memory_item.task_id
+            'agent_id': params.agent_id,
+            'application_id': params.application_id,
+            'session_id': params.session_id,
+            'task_id': params.task_id
         })
 
         task_params = []
 
         # Check if user profile extraction is enabled
         if long_term_config.extraction.enable_user_profile_extraction:
-            if memory_item.user_id:
+            if params.user_id:
                 user_profile_task_params = UserProfileExtractParams(
-                    user_id=memory_item.user_id,
-                    session_id=memory_item.session_id,
-                    task_id=memory_item.task_id,
-                    application_id=memory_item.application_id,
+                    user_id=params.user_id,
+                    session_id=params.session_id,
+                    task_id=params.task_id,
+                    application_id=params.application_id,
                     memories=task_memory_items
                 )
                 task_params.append(user_profile_task_params)
+                logger.info(f"🧠 [MEMORY:long-term] add user profile extraction task params is {user_profile_task_params}")
             else:
                 logger.warning(f"🧠 [MEMORY:long-term] memory_item.user_id is None, skip user profile extraction")
 
         # Check if agent experience extraction is enabled
         if long_term_config.extraction.enable_agent_experience_extraction:
-            if memory_item.agent_id:
+            if params.agent_id:
                 agent_experience_task_params = AgentExperienceExtractParams(
-                    agent_id=memory_item.agent_id,
-                    session_id=memory_item.session_id,
-                    task_id=memory_item.task_id,
-                    application_id=memory_item.application_id,
+                    agent_id=params.agent_id,
+                    session_id=params.session_id,
+                    task_id=params.task_id,
+                    application_id=params.application_id,
                     memories=task_memory_items
                 )
                 task_params.append(agent_experience_task_params)
+                logger.debug(f"🧠 [MEMORY:long-term] add agent experience extraction task params is {agent_experience_task_params}")
             else:
                 logger.warning(
                     f"🧠 [MEMORY:long-term] memory_item.agent_id is None, skip agent experience extraction")
 
-        self.memory_orchestrator.create_longterm_processing_tasks(task_params)
+        await self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config, params.force)
+
+    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[UserProfile]]:
+        # TODO user_input is not used
+        return self.get_last_n(limit, filters={
+            'memory_type': 'user_profile',
+            'user_id': user_id,
+            'application_id': application_id
+        })
+        
+
+    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[AgentExperience]]:
+        # TODO user_input is not used
+        return self.get_last_n(limit, filters={
+            'memory_type': 'agent_experience',
+            'agent_id': agent_id,
+            'application_id': application_id
+        })
+
+    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, application_id: str = "default") -> Optional[list[MemoryItem]]:
+        return []
+    
 
     def delete(self, memory_id):
         pass
@@ -359,19 +424,17 @@ class Memory(MemoryBase):
 
 
 class InMemoryStorageMemory(Memory):
-    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, enable_summary: bool = True, **kwargs):
-        super().__init__(memory_store=memory_store, config=config, longterm_config=config.long_term_config)
+    def __init__(self, memory_store: MemoryStore, **kwargs):
+        super().__init__(memory_store=memory_store)
         self.summary = {}
-        self.summary_rounds = self.config.summary_rounds
-        self.enable_summary = self.config.enable_summary
 
-    def _add(self, memory_item: MemoryItem, filters: dict = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
         self.memory_store.add(memory_item)
 
         # Check if we need to create or update summary
-        if self.enable_summary:
+        if memory_config and memory_config.enable_summary:
             total_rounds = len(self.memory_store.get_all())
-            if total_rounds > self.summary_rounds:
+            if total_rounds > memory_config.summary_rounds:
                 self._create_or_update_summary(total_rounds)
 
 
@@ -444,7 +507,7 @@ class InMemoryStorageMemory(Memory):
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
         return self.memory_store.get_all()
 
-    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None, memory_config: MemoryConfig = None) -> list[MemoryItem]:
         """Get last n memories.
 
         Args:
@@ -461,7 +524,7 @@ class InMemoryStorageMemory(Memory):
             memory_items = self.memory_store.get_last_n(last_rounds, filters=filters)
 
         # If summary is disabled or no summaries exist, return just the last_n_items
-        if not self.enable_summary or not self.summary:
+        if not memory_config or not memory_config.enable_summary or not self.summary:
             return memory_items
 
         # Calculate the range for relevant summaries

@@ -3,72 +3,10 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Literal, Union, List, Dict
 
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfile, MemoryItem
 from pydantic import BaseModel, Field, ConfigDict
 
 from aworld.models.llm import LLMModel
-
-
-class MemoryItem(BaseModel):
-    id: str = Field(description="id")
-    content: Any = Field(description="content")
-    created_at: Optional[str] = Field(None, description="created at")
-    updated_at: Optional[str] = Field(None, description="updated at")
-    metadata: dict = Field(
-        description="metadata, use to store additional information, such as user_id, agent_id, run_id, task_id, etc.")
-    tags: list[str] = Field(description="tags")
-    histories: list["MemoryItem"] = Field(default_factory=list)
-    deleted: bool = Field(default=False)
-    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile"] = Field(default="message")
-    version: int = Field(description="version")
-
-    def __init__(self, **data):
-        # Set default values for optional fields
-        if "id" not in data:
-            data["id"] = str(uuid.uuid4())
-        if "created_at" not in data:
-            data["created_at"] = datetime.datetime.now().isoformat()
-        if "updated_at" not in data:
-            data["updated_at"] = data["created_at"]
-        if "metadata" not in data:
-            data["metadata"] = {}
-        if "tags" not in data:
-            data["tags"] = []
-        if "version" not in data:
-            data["version"] = 1
-
-        super().__init__(**data)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "MemoryItem":
-        """Create a MemoryItem instance from a dictionary.
-
-        Args:
-            data (dict): A dictionary containing the memory item data.
-
-        Returns:
-            MemoryItem: An instance of MemoryItem.
-        """
-        return cls(**data)
-
-    @property
-    def user_id(self) -> str:
-        return self.metadata.get('user_id')
-
-    @property
-    def session_id(self) -> str:
-        return self.metadata.get('session_id')
-
-    @property
-    def task_id(self) -> str:
-        return self.metadata.get('task_id')
-
-    @property
-    def agent_id(self) -> str:
-        return self.metadata.get('agent_id')
-
-    @property
-    def application_id(self) -> str:
-        return self.metadata.get('application_id', 'default')
 
 class MemoryStore(ABC):
     """
@@ -110,148 +48,6 @@ class MemoryStore(ABC):
     @abstractmethod
     def history(self, memory_id) -> list[MemoryItem] | None:
         pass
-
-
-class MemoryBase(ABC):
-
-    @abstractmethod
-    def get(self, memory_id) -> Optional[MemoryItem]:
-        """Get item in memory by ID.
-
-        Args:
-            memory_id (str): ID of the memory to retrieve.
-
-        Returns:
-            dict: Retrieved memory.
-        """
-
-    @abstractmethod
-    def get_all(self, filters: dict = None) -> Optional[list[MemoryItem]]:
-        """List all items in memory store.
-
-        Args:
-            filters (dict, optional): Filters to apply to the search. Defaults to None.
-            - user_id (str, optional): ID of the user to search for. Defaults to None.
-            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
-            - session_id (str, optional): ID of the session to search for. Defaults to None.
-
-        Returns:
-            list: List of all memories.
-        """
-
-    @abstractmethod
-    def get_last_n(self, last_rounds, filters: dict = None) -> Optional[list[MemoryItem]]:
-        """get last_rounds memories.
-
-        Args:
-            last_rounds (int): Number of last rounds to retrieve.
-            filters (dict, optional): Filters to apply to the search. Defaults to None.
-            - user_id (str, optional): ID of the user to search for. Defaults to None.
-            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
-            - session_id (str, optional): ID of the session to search for. Defaults to None.
-        Returns:
-            list: List of latest memories.
-        """
-
-    @abstractmethod
-    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
-        """
-        Search for memories.
-        Hybrid search: Retrieve memories from vector store and memory store.
-
-
-        Args:
-            query (str): Query to search for.
-            limit (int, optional): Limit the number of results. Defaults to 100.
-            filters (dict, optional): Filters to apply to the search. Defaults to None.
-            - user_id (str, optional): ID of the user to search for. Defaults to None.
-            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
-            - session_id (str, optional): ID of the session to search for. Defaults to None.
-
-        Returns:
-            list: List of search results.
-        """
-
-    @abstractmethod
-    def add(self, memory_item: MemoryItem, filters: dict = None):
-        """Add memory in the memory store.
-
-        Step 1: Add memory to memory store
-        Step 2: Add memory to vector store
-
-        Args:
-            memory_item (MemoryItem): memory item.
-            metadata (dict, optional): metadata to add.
-             - user_id (str, optional): ID of the user to search for. Defaults to None.
-             - agent_id (str, optional): ID of the agent to search for. Defaults to None.
-             - session_id (str, optional): ID of the session to search for. Defaults to None.
-            tags (list, optional): tags to add.
-            memory_type (str, optional): memory type.
-            version (int, optional): version of the memory.
-        """
-
-    @abstractmethod
-    def update(self, memory_item: MemoryItem):
-        """Update a memory by ID.
-
-        Args:
-            memory_item (MemoryItem): memory item.
-
-        Returns:
-            dict: Updated memory.
-        """
-
-    @abstractmethod
-    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
-        """A tool for reducing the context length of the current round.
-
-        Step 1: Retrieve historical conversation content based on filters and last_rounds
-        Step 2: Extract current round content and most relevant historical content  
-        Step 3: Generate corresponding summary for the current round
-
-        Args:
-            to_be_summary (MemoryItem): msg to summary.
-            filters (dict): filters to get memory list.
-            last_rounds (int): last rounds of memory list.
-
-        Returns:
-            str: summary memory.
-        """
-
-    @abstractmethod
-    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
-        """A tool for summarizing the list of memory item.
-
-        Args:
-            to_be_summary (list[MemoryItem]): the list of memory item.
-        """
-
-    @abstractmethod
-    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
-        """A tool for summarizing the conversation history.
-
-        Step 1: Retrieve historical conversation content based on filters and last_rounds
-        Step 2: Generate corresponding summary for conversation history
-
-        Args:
-            filters (dict): filters to get memory list.
-            last_rounds (int): last rounds of memory list.
-        """
-
-    @abstractmethod
-    def delete(self, memory_id):
-        """Delete a memory by ID.
-
-        Args:
-            memory_id (str): ID of the memory to delete.
-        """
-    def delete_items(self, message_type: str, session_id: str, task_id: str, filters: dict = None):
-        """Delete a memory by ID.
-        Args:
-            memory_id (str): ID of the memory to delete.
-        """
-        pass
-
 
 SUMMARY_PROMPT = """
 You are a helpful assistant that summarizes the conversation history.
@@ -430,7 +226,7 @@ class LongTermConfig(BaseModel):
     @classmethod
     def create_simple_config(
             cls,
-            application_id: str = "SYSTEM",
+            application_id: str = "default",
             message_threshold: int = 10,
             enable_user_profiles: bool = True,
             enable_agent_experiences: bool = True,
@@ -597,3 +393,207 @@ class MemoryConfig(BaseModel):
             'llm': self.llm_config_dict,
             'vector_store': self.vector_store_config_dict,
         }
+
+
+class MemoryBase(ABC):
+
+    @abstractmethod
+    def get(self, memory_id) -> Optional[MemoryItem]:
+        """Get item in memory by ID.
+
+        Args:
+            memory_id (str): ID of the memory to retrieve.
+
+        Returns:
+            dict: Retrieved memory.
+        """
+
+    @abstractmethod
+    def get_all(self, filters: dict = None) -> Optional[list[MemoryItem]]:
+        """List all items in memory store.
+
+        Args:
+            filters (dict, optional): Filters to apply to the search. Defaults to None.
+            - user_id (str, optional): ID of the user to search for. Defaults to None.
+            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
+            - session_id (str, optional): ID of the session to search for. Defaults to None.
+
+        Returns:
+            list: List of all memories.
+        """
+
+    @abstractmethod
+    def get_last_n(self, last_rounds, filters: dict = None, memory_config: MemoryConfig= None) -> Optional[list[MemoryItem]]:
+        """get last_rounds memories.
+
+        Args:
+            last_rounds (int): Number of last rounds to retrieve.
+            filters (dict, optional): Filters to apply to the search. Defaults to None.
+            - user_id (str, optional): ID of the user to search for. Defaults to None.
+            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
+            - session_id (str, optional): ID of the session to search for. Defaults to None.
+        Returns:
+            list: List of latest memories.
+        """
+
+    @abstractmethod
+    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig):
+        """
+        Trigger short-term memory to long-term.
+
+        Args:
+            params (TaskMemoryTriggerLongTermParams): Parameters for triggering task memory to long-term.
+            memory_config (MemoryConfig): Memory configuration.
+
+        Returns:
+            None
+        """
+        pass
+    
+    @abstractmethod
+    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[UserProfile]]:
+        """
+        Retrival user profile by user_id.
+
+        Args:
+            user_id (str): ID of the user to search for.
+            user_input (str): User input to search for.
+            threshold (float, optional): Threshold for similarity. Defaults to 0.5.
+            limit (int, optional): Limit the number of results. Defaults to 3.
+            application_id (str, optional): Application ID. Defaults to "default".
+        Returns:
+            list[UserProfile]: List of user profiles.
+        """
+        pass
+
+    @abstractmethod
+    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[AgentExperience]]:
+        """
+        Retrival agent experience by agent_id.
+
+        Args:
+            agent_id (str): ID of the agent to search for.
+            user_input (str): User input to search for.
+            threshold (float, optional): Threshold for similarity. Defaults to 0.5.
+            limit (int, optional): Limit the number of results. Defaults to 3.
+            application_id (str, optional): Application ID. Defaults to "default".
+        Returns:
+            list[AgentExperience]: List of agent experiences.
+        """
+        pass
+
+
+    @abstractmethod
+    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, application_id: str = "default") -> Optional[list[MemoryItem]]:
+        """
+        Retrival similar user messages history by user_id.  
+
+        Args:
+            user_id (str): ID of the user to search for.
+            user_input (str): User input to search for.
+            threshold (float, optional): Threshold for similarity. Defaults to 0.5.
+            limit (int, optional): Limit the number of results. Defaults to 10.
+            application_id (str, optional): Application ID. Defaults to "default".  
+        Returns:
+            list[MemoryItem]: List of memory items.
+        """
+        pass
+
+    @abstractmethod
+    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+        """
+        Search for memories.
+        Hybrid search: Retrieve memories from vector store and memory store.
+
+
+        Args:
+            query (str): Query to search for.
+            limit (int, optional): Limit the number of results. Defaults to 100.
+            filters (dict, optional): Filters to apply to the search. Defaults to None.
+            - user_id (str, optional): ID of the user to search for. Defaults to None.
+            - agent_id (str, optional): ID of the agent to search for. Defaults to None.
+            - session_id (str, optional): ID of the session to search for. Defaults to None.
+
+        Returns:
+            list: List of search results.
+        """
+
+    @abstractmethod
+    def add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+        """Add memory in the memory store.
+
+        Step 1: Add memory to memory store
+        Step 2: Add memory to vector store
+
+        Args:
+            memory_item (MemoryItem): memory item.
+            metadata (dict, optional): metadata to add.
+             - user_id (str, optional): ID of the user to search for. Defaults to None.
+             - agent_id (str, optional): ID of the agent to search for. Defaults to None.
+             - session_id (str, optional): ID of the session to search for. Defaults to None.
+            tags (list, optional): tags to add.
+            memory_type (str, optional): memory type.
+            version (int, optional): version of the memory.
+        """
+
+    @abstractmethod
+    def update(self, memory_item: MemoryItem):
+        """Update a memory by ID.
+
+        Args:
+            memory_item (MemoryItem): memory item.
+
+        Returns:
+            dict: Updated memory.
+        """
+
+    @abstractmethod
+    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+        """A tool for reducing the context length of the current round.
+
+        Step 1: Retrieve historical conversation content based on filters and last_rounds
+        Step 2: Extract current round content and most relevant historical content
+        Step 3: Generate corresponding summary for the current round
+
+        Args:
+            to_be_summary (MemoryItem): msg to summary.
+            filters (dict): filters to get memory list.
+            last_rounds (int): last rounds of memory list.
+
+        Returns:
+            str: summary memory.
+        """
+
+    @abstractmethod
+    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
+        """A tool for summarizing the list of memory item.
+
+        Args:
+            to_be_summary (list[MemoryItem]): the list of memory item.
+        """
+
+    @abstractmethod
+    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
+        """A tool for summarizing the conversation history.
+
+        Step 1: Retrieve historical conversation content based on filters and last_rounds
+        Step 2: Generate corresponding summary for conversation history
+
+        Args:
+            filters (dict): filters to get memory list.
+            last_rounds (int): last rounds of memory list.
+        """
+
+    @abstractmethod
+    def delete(self, memory_id):
+        """Delete a memory by ID.
+
+        Args:
+            memory_id (str): ID of the memory to delete.
+        """
+    def delete_items(self, message_type: str, session_id: str, task_id: str, filters: dict = None):
+        """Delete a memory by ID.
+        Args:
+            memory_id (str): ID of the memory to delete.
+        """
+        pass

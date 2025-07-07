@@ -48,10 +48,10 @@ class EmbeddingFactory:
     @staticmethod
     def get_embedder(config: EmbeddingsConfig) -> Embeddings:
         if config.provider == "openai":
-            from aworld.memory.utils.embeddings.openai_compatible import OpenAICompatibleEmbeddings
+            from aworld.memory.embeddings.openai_compatible import OpenAICompatibleEmbeddings
             return OpenAICompatibleEmbeddings(config)
         elif config.provider == "ollama":
-            from aworld.memory.utils.embeddings.ollama import OllamaEmbeddings
+            from aworld.memory.embeddings.ollama import OllamaEmbeddings
             return OllamaEmbeddings(config)
         else:
             raise ValueError(f"Unsupported embedding provider: {config.provider}")
