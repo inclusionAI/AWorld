@@ -92,6 +92,11 @@ class InMemoryMemoryStore(MemoryStore):
         if exists:
             exists.deleted = True
 
+    def delete_items(self, message_types: list[str], session_id: str, task_id: str, filters: dict = None):
+        for item in self.memory_items:
+            if item.memory_type in message_types and item.session_id == session_id and item.task_id == task_id:
+                item.deleted = True
+
     def history(self, memory_id) -> list[MemoryItem] | None:
         exists = self.get(memory_id)
         if exists:
@@ -102,11 +107,13 @@ MEMORY_HOLDER = {}
 class MemoryFactory:
 
     @classmethod
-    def init(cls, custom_memory: MemoryBase = None):
-        if custom_memory:
-            MEMORY_HOLDER["instance"] = custom_memory
+    def init(cls, custom_memory_store: MemoryStore = None):
+        if custom_memory_store:
+            MEMORY_HOLDER["instance"] = AworldMemory(
+                memory_store=custom_memory_store
+            )
         else:
-            MEMORY_HOLDER["instance"] = InMemoryStorageMemory(
+            MEMORY_HOLDER["instance"] = AworldMemory(
                 memory_store=InMemoryMemoryStore()
             )
         logger.info(f"Memory init success")
@@ -122,7 +129,7 @@ class MemoryFactory:
         if MEMORY_HOLDER.get("instance"):
             logger.info(f"instance use cached memory instance")
             return MEMORY_HOLDER["instance"]
-        MEMORY_HOLDER["instance"] =  InMemoryStorageMemory(
+        MEMORY_HOLDER["instance"] =  AworldMemory(
            memory_store=InMemoryMemoryStore()
         )
         logger.info(f"instance use new memory instance")
@@ -141,7 +148,7 @@ class MemoryFactory:
         """
         if config.provider == "inmemory":
             logger.info("🧠 [MEMORY]setup memory store: inmemory")
-            return InMemoryStorageMemory(
+            return AworldMemory(
                 memory_store=memory_store or InMemoryMemoryStore(),
                 config=config
             )
@@ -338,7 +345,7 @@ class Memory(MemoryBase):
         ), memory_config)
 
     async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig = None):
-        logger.info(f"🧠 [MEMORY:long-term] Trigger short-term memory to long-term memory, params is {params}, long term config is {memory_config.long_term_config}")
+        logger.info(f"🧠 [MEMORY:long-term] Trigger short-term memory to long-term memory, params is {params}")
         if not memory_config:
             return
 
@@ -423,7 +430,7 @@ class Memory(MemoryBase):
         pass
 
 
-class InMemoryStorageMemory(Memory):
+class AworldMemory(Memory):
     def __init__(self, memory_store: MemoryStore, **kwargs):
         super().__init__(memory_store=memory_store)
         self.summary = {}
@@ -500,6 +507,9 @@ class InMemoryStorageMemory(Memory):
 
     def delete(self, memory_id):
         self.memory_store.delete(memory_id)
+
+    def delete_items(self, message_types: list[str], session_id: str, task_id: str, filters: dict = None):
+        self.memory_store.delete_items(message_types, session_id, task_id, filters)
 
     def get(self, memory_id) -> Optional[MemoryItem]:
         return self.memory_store.get(memory_id)
