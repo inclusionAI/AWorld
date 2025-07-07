@@ -4,6 +4,7 @@ import asyncio
 import time
 import traceback
 import aworld.trace as trace
+import aworld.trace.constants as trace_constants
 from typing import List, Callable, Any
 
 from aworld.core.common import TaskItem
@@ -191,7 +192,7 @@ class TaskEventRunner(TaskRunner):
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
-        async with trace.span(handler.__name__):
+        async with trace.handler_span(message=message, handler_name=handler.__name__):
             try:
                 logger.info(
                     f"[TaskEventRunner] {self.task.id} _handle_task start, message: {message.id}")
@@ -316,7 +317,7 @@ class TaskEventRunner(TaskRunner):
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
             raise RuntimeError("swarm needs to use `reset` to init first.")
-        async with trace.span("Task_" + self.init_message.session_id):
+        async with trace.span(trace_constants.SPAN_NAME_PREFIX_TASK + self.init_message.session_id):
             await self.event_mng.emit_message(self.init_message)
             await self._do_run()
             return self._task_response

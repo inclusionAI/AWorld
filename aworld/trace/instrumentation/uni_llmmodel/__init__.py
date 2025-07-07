@@ -1,6 +1,5 @@
 import wrapt
 import time
-import inspect
 import traceback
 import aworld.trace.instrumentation.semconv as semconv
 from typing import Collection, Any
@@ -10,7 +9,7 @@ from aworld.trace.base import (
     SpanType,
     get_tracer_provider_silent
 )
-from aworld.trace.constants import ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType
+from aworld.trace.constants import ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType, SPAN_NAME_PREFIX_LLM
 from aworld.trace.instrumentation.llm_metrics import (
     record_exception_metric,
     record_chat_response_metric,
@@ -42,7 +41,7 @@ def _completion_class_wrapper(tracer: Tracer):
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
         span = tracer.start_span(
-            name=model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
+            name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
         run_async(handle_request(span, kwargs, instance))
         start_time = time.time()
@@ -88,7 +87,7 @@ def _stream_completion_class_wrapper(tracer: Tracer):
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
         span = tracer.start_span(
-            name=model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
+            name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
         run_async(handle_request(span, kwargs, instance))
         start_time = time.time()
@@ -130,7 +129,7 @@ def _acompletion_class_wrapper(tracer: Tracer):
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
         span = tracer.start_span(
-            name=model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
+            name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
         await handle_request(span, kwargs, instance)
         start_time = time.time()

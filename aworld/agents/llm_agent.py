@@ -8,6 +8,8 @@ from collections import OrderedDict
 from typing import Dict, Any, List, Union, Callable
 
 import aworld.trace as trace
+from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
+from aworld.trace.instrumentation import semconv
 from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, OptimizationConfig, \
     LlmCompressionConfig
@@ -623,7 +625,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return obj
 
     async def llm_and_tool_execution(self, observation: Observation, messages: List[Dict[str, str]] = [],
-                                     info: Dict[str, Any] = {},message: Message = None, **kwargs) -> List[ActionModel]:
+                                     info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[ActionModel]:
         """Perform combined LLM call and tool execution operations.
 
         Args:
@@ -650,7 +652,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
             return agent_result.actions
         else:
-            result = await self._execute_tool(agent_result.actions, context_message = message)
+            result = await self._execute_tool(agent_result.actions, context_message=message)
             return result
 
     async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
@@ -675,8 +677,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                           context: Context = None) -> Message:
         origin_messages = messages
         st = time.time()
-        with trace.span(f"llm_context_process", attributes={
-            "start_time": st
+        with trace.span(f"{SPAN_NAME_PREFIX_AGENT}llm_context_process", attributes={
+            "start_time": st,
+            semconv.AGENT_ID: self.id()
         }) as compress_span:
             if agent_context.context_rule is None:
                 logger.debug(
