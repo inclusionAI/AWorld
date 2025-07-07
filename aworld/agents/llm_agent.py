@@ -21,7 +21,7 @@ from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
-from aworld.core.memory import MemoryConfig, MemoryBase
+from aworld.core.memory import MemoryConfig
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message
@@ -183,7 +183,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # append sys_prompt to memory
         sys_prompt = self.system_prompt
         if sys_prompt:
-            await self._add_system_message_to_memory(message.context, content)
+            await self._add_system_message_to_memory(context=message.context, content=observation.content)
 
         # append observation to memory
         if observation.is_tool_result:
@@ -952,38 +952,38 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(
                 f"Failed to execute hooks for {hook_point}: {traceback.format_exc()}")
 
-    def _add_system_message_to_memory(self, context: Context, content: str):
-        session_id =  context.get_task().session_id
-        task_id =  context.get_task().id
-        user_id =  context.get_task().user_id
+    async def _add_system_message_to_memory(self, context: Context, content: str):
+         session_id =  context.get_task().session_id
+         task_id =  context.get_task().id
+         user_id =  context.get_task().user_id
 
-        histories = self.memory.get_last_n(self.history_messages, filters={
-            "agent_id": self.id(),
-            "session_id": session_id,
-            "task_id": task_id,
-            "message_type": "message"
-        }, memory_config=self.memory_config)
-        if histories and len(histories) > 0:
-            logger.debug(
-                f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
-            return
-        if not self.system_prompt:
-            return
-        content = await self.custom_system_prompt(context=context, content=content)
-        logger.info(f'system prompt content: {content}')
+         histories = self.memory.get_last_n(self.history_messages, filters={
+             "agent_id": self.id(),
+             "session_id": session_id,
+             "task_id": task_id,
+             "message_type": "message"
+         }, memory_config=self.memory_config)
+         if histories and len(histories) > 0:
+             logger.debug(
+                 f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
+             return
+         if not self.system_prompt:
+             return
+         content = await self.custom_system_prompt(context=context, content=content)
+         logger.info(f'system prompt content: {content}')
 
-        self.memory.add(MemorySystemMessage(
-            content=content,
-            metadata=MessageMetadata(
-                session_id=session_id,
-                user_id=user_id,
-                task_id=task_id,
-                agent_id=self.id(),
-                agent_name=self.name(),
-            )
-        ), memory_config=self.memory_config)
-        logger.info(
-            f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
+         self.memory.add(MemorySystemMessage(
+             content=content,
+             metadata=MessageMetadata(
+                 session_id=session_id,
+                 user_id=user_id,
+                 task_id=task_id,
+                 agent_id=self.id(),
+                 agent_name=self.name(),
+             )
+         ), memory_config=self.memory_config)
+         logger.info(
+             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
     async def custom_system_prompt(self, context: Context, content: str):
         if self.system_prompt_template is not None:
@@ -999,7 +999,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         session_id = context.get_task().session_id
         user_id = context.get_task().user_id
         task_id = context.get_task().id
-
+    
         self.memory.add(MemoryHumanMessage(
             content=content,
             metadata=MessageMetadata(

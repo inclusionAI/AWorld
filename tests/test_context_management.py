@@ -47,7 +47,7 @@ class TestContextManagement(BaseTest):
             conf=conf,
             name="my_agent" + str(random.randint(0, 1000000)),
             system_prompt="You are a helpful assistant.",
-            agent_prompt="You are a helpful assistant.",
+            agent_prompt="make a joke.",
             context_rule=context_rule
         )
 
