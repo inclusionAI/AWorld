@@ -8,6 +8,8 @@ from collections import OrderedDict
 from typing import Dict, Any, List, Union, Callable
 
 import aworld.trace as trace
+from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
+from aworld.trace.instrumentation import semconv
 from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, OptimizationConfig, \
     LlmCompressionConfig
@@ -61,7 +63,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self.memory = memory
         else:
             self.memory = MemoryFactory.from_config(MemoryConfig(provider="inmemory"))
-        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else (conf.system_prompt if conf.system_prompt else Prompt().get_prompt())
+        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else (
+            conf.system_prompt if conf.system_prompt else Prompt().get_prompt())
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
 
         self.event_driven = kwargs.pop(
@@ -629,7 +632,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return obj
 
     async def llm_and_tool_execution(self, observation: Observation, messages: List[Dict[str, str]] = [],
-                                     info: Dict[str, Any] = {},message: Message = None, **kwargs) -> List[ActionModel]:
+                                     info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[ActionModel]:
         """Perform combined LLM call and tool execution operations.
 
         Args:
@@ -656,7 +659,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
             return agent_result.actions
         else:
-            result = await self._execute_tool(agent_result.actions, context_message = message)
+            result = await self._execute_tool(agent_result.actions, context_message=message)
             return result
 
     async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
@@ -682,8 +685,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                           context: Context = None) -> Message:
         origin_messages = messages
         st = time.time()
-        with trace.span(f"llm_context_process", attributes={
-            "start_time": st
+        with trace.span(f"{SPAN_NAME_PREFIX_AGENT}llm_context_process", attributes={
+            "start_time": st,
+            semconv.AGENT_ID: self.id()
         }) as compress_span:
             if agent_context.context_rule is None:
                 logger.debug(
@@ -897,7 +901,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 f"{tool_name} observation: {log_ob}", color=Color.green)
 
             for action_result_item in observation.action_result:
-                self._add_tool_result_to_memory(action_result_item.tool_call_id, action_result_item.content,context=context_message.context)
+                self._add_tool_result_to_memory(action_result_item.tool_call_id, action_result_item.content, context=context_message.context)
 
         return [ActionModel(agent_name=self.id(), policy_info=observation.content)]
 
@@ -992,9 +996,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return self.agent_context
 
     def _add_system_message_to_memory(self, context: Context):
-        session_id =  context.get_task().session_id
-        task_id =  context.get_task().id
-        user_id =  context.get_task().user_id
+        session_id = context.get_task().session_id
+        task_id = context.get_task().id
+        user_id = context.get_task().user_id
 
         histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self.id(),

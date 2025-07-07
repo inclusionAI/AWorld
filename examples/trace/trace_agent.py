@@ -5,6 +5,7 @@ from aworld.core.common import Observation, ActionModel
 from typing import Dict, Any, List, Union, Callable
 from aworld.core.tool.base import ToolFactory
 from aworld.models.llm import call_llm_model, acall_llm_model
+from aworld.trace.config import ObservabilityConfig
 from aworld.utils.common import sync_exec
 from aworld.logs.util import logger
 from examples.tools.common import Tools
@@ -16,7 +17,7 @@ from aworld.runners.state_manager import RuntimeStateManager, RunNode
 import aworld.trace as trace
 
 
-trace.configure()
+trace.configure(ObservabilityConfig(trace_server_enabled=True))
 
 
 class TraceAgent(Agent):
@@ -193,13 +194,13 @@ def _print_tree(graph, node_id, prefix, is_last):
         children = graph[node_id]
         for i, child in enumerate(children):
             _print_tree(graph, child, prefix +
-                        ("    " if is_last else "│   "), i == len(children)-1)
+                        ("    " if is_last else "│   "), i == len(children) - 1)
 
 
 if __name__ == "__main__":
     agent_config = AgentConfig(
         llm_provider="openai",
-        llm_model_name="gpt-4o",
+        llm_model_name="DeepSeek-V3-Function-Call",
         llm_temperature=0.3,
 
         llm_base_url="http://localhost:34567",

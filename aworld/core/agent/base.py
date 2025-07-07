@@ -4,8 +4,6 @@
 import abc
 import uuid
 
-import aworld.trace as trace
-
 from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union
 
 from pydantic import BaseModel
@@ -158,11 +156,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
         observation = message.payload
-        with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
-            self.pre_run()
-            result = self.policy(observation, message=message, **kwargs)
-            final_result = self.post_run(result, observation)
-            return final_result
+        self.pre_run()
+        result = self.policy(observation, message=message, **kwargs)
+        final_result = self.post_run(result, observation)
+        return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
@@ -176,11 +173,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 session_id=self.context.session_id,
                 headers={"context": self.context}
             ))
-        with trace.span(self._name, run_type=trace.RunType.AGNET) as agent_span:
-            await self.async_pre_run()
-            result = await self.async_policy(observation, message=message, **kwargs)
-            final_result = await self.async_post_run(result, observation)
-            return final_result
+        await self.async_pre_run()
+        result = await self.async_policy(observation, message=message, **kwargs)
+        final_result = await self.async_post_run(result, observation)
+        return final_result
 
     @abc.abstractmethod
     def policy(self, observation: INPUT, info: Dict[str, Any] = None, **kwargs) -> OUTPUT:
