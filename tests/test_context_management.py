@@ -1,11 +1,4 @@
-from tests.base_test import BaseTest
-from aworld.runners.hook.hook_factory import HookFactory
-from aworld.core.context.base import Context
-from aworld.config.conf import AgentConfig, ContextRuleConfig, ModelConfig, OptimizationConfig, LlmCompressionConfig
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
-from aworld.core.agent.swarm import Swarm
-from aworld.core.task import Task
+
 import os
 import random
 import sys
@@ -15,6 +8,14 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from tests.base_test import BaseTest
+from aworld.runners.hook.hook_factory import HookFactory
+from aworld.core.context.base import Context
+from aworld.config.conf import AgentConfig, ContextRuleConfig, ModelConfig, OptimizationConfig, LlmCompressionConfig
+from aworld.agents.llm_agent import Agent
+from aworld.runner import Runners
+from aworld.core.agent.swarm import Swarm
+from aworld.core.task import Task
 
 class TestContextManagement(BaseTest):
     """Test cases for Context Management system based on README examples"""
