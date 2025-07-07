@@ -128,17 +128,6 @@ class GaiaAgentRunner:
                         requirements_file,
                     ]
                 )
-                subprocess.check_call(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "-U",
-                        "--no-deps",
-                        "marker-pdf==1.7.5",
-                    ]
-                )
                 logger.info("Dependencies installed successfully")
             else:
                 logger.warning(f"Requirements file not found at {requirements_file}")
