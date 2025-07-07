@@ -359,10 +359,10 @@ def configure_otlp_provider(
         elif backend == "memory":
             logger.info("Using in-memory storage for traces.")
             storage = kwargs.get(
-                "storage", InMemoryStorage())
+                "storage", InMemoryStorage()) or InMemoryStorage()
             processor.add_span_processor(
                 SimpleSpanProcessor(InMemorySpanExporter(storage=storage)))
-            server_enabled = kwargs.get("server_enabled") or os.getenv(
+            server_enabled = str(kwargs.get("server_enabled")) or os.getenv(
                 "START_TRACE_SERVER") or "true"
             server_port = kwargs.get("server_port") or 7079
             if (server_enabled.lower() == "true"):
@@ -403,7 +403,7 @@ def _configure_logfire_exporter(write_token: str, base_url: str = None) -> None:
     )
 
 
-def _configure_otlp_exporter(base_url: str = None,  **kwargs) -> None:
+def _configure_otlp_exporter(base_url: str = None, **kwargs) -> None:
     """Configure the OTLP exporter.
     Args:
         write_token: The write token to use.

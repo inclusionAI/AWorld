@@ -5,7 +5,7 @@ from aworld.trace.server.util import build_trace_tree
 import aworld.trace.instrumentation.semconv as semconv
 from aworld.trace.server import get_trace_server
 from aworld.trace.server.util import build_trace_tree
-from aworld.core.tool.base import Tool, AgentInput, ToolFactory
+from aworld.core.tool.base import AsyncTool, AgentInput, ToolFactory
 from examples.tools.tool_action import GetTraceAction
 from aworld.tools.utils import build_observation
 from aworld.config.conf import ToolConfig
@@ -18,7 +18,7 @@ from aworld.logs.util import logger
                       desc="Get the trace of the current execution.",
                       supported_action=GetTraceAction,
                       conf_file_name=f'trace_tool.yaml')
-class TraceTool(Tool):
+class TraceTool(AsyncTool):
     def __init__(self,
                  conf: ToolConfig,
                  **kwargs) -> None:
@@ -34,7 +34,7 @@ class TraceTool(Tool):
         self.type = "function"
         self.get_trace_url = self.conf.get('get_trace_url')
 
-    def reset(self,
+    async def reset(self,
               *,
               seed: int | None = None,
               options: Dict[str, str] | None = None) -> Tuple[AgentInput, dict[str, Any]]:
@@ -50,7 +50,7 @@ class TraceTool(Tool):
         return build_observation(observer=self.name(),
                                  ability=GetTraceAction.GET_TRACE.value.name), {}
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """
         Close the executor
         Returns:
@@ -58,7 +58,7 @@ class TraceTool(Tool):
         """
         self._finished = True
 
-    def do_step(self,
+    async def do_step(self,
                 actions: List[ActionModel],
                 **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
         reward = 0

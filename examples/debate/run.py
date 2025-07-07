@@ -32,7 +32,8 @@ if __name__ == '__main__':
         conf=AgentConfig.model_validate(base_config | {
             "name": "moderator_agent",
             "agent_prompt": generate_opinions_prompt
-        })
+        }),
+        name="moderator_agent"
     )
 
     debate_arena = DebateArena(affirmative_speaker=agent1, negative_speaker=agent2, moderator=moderator_agent,

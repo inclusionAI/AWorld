@@ -17,7 +17,6 @@ interface ItemInterface {
 }
 
 const cardLinkList: React.FC<Props> = ({ sessionId, data, onOpenWorkspace }) => {
-  console.log('data', data);
   const items = data?.card_data?.search_items || [];
   const cardItems = items;
 

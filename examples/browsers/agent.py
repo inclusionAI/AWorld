@@ -20,6 +20,7 @@ from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.common import Observation, ActionModel, ToolActionInfo, ActionResult
 from aworld.logs.util import logger
 from examples.browsers.prompts import AgentMessagePrompt
+from examples.tools.common import Tools
 from examples.tools.tool_action import BrowserAction
 
 
@@ -51,8 +52,8 @@ class Trajectory:
 
 @AgentFactory.register(name='browser_agent', desc="browser agent")
 class BrowserAgent(Agent):
-    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
-        super(BrowserAgent, self).__init__(conf, **kwargs)
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
+        super(BrowserAgent, self).__init__(conf, name, **kwargs)
         self.state = AgentState()
         self.settings = self.conf
         provider = self.conf.llm_config.llm_provider if self.conf.llm_config.llm_provider else self.conf.llm_provider
