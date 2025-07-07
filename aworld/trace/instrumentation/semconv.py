@@ -32,4 +32,7 @@ GEN_AI_SERVER_ADDRESS = "gen_ai.server.address"
 
 ATTRIBUTE_NAME_SPACE = os.getenv("ATTRIBUTE_NAME_SPACE", "aworld.")
 AGENT_ID = ATTRIBUTE_NAME_SPACE + "agent.id"
+AGENT_NAME = ATTRIBUTE_NAME_SPACE + "agent.name"
+AGENT_RUN_SUCCESS = ATTRIBUTE_NAME_SPACE + "agent.run.success"
+AGENT_USAGE_TYPE = ATTRIBUTE_NAME_SPACE + "agent.usage_type"
 TOOL_NAME = ATTRIBUTE_NAME_SPACE + "tool.name"
