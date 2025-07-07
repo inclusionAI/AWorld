@@ -15,62 +15,11 @@ from aworld.memory.models import LongTermMemoryTriggerParams, MemoryAIMessage, M
     MemoryHumanMessage
 from aworld.memory.utils import build_history_context
 from aworld.output import PrinterAworldUI, AworldUI
+from aworld.prompt import Prompt
 from aworld.runner import Runners
 from aworld.utils.common import load_mcp_config
-
-self_evolving_agent_prompt = """
-        You are a highly capable and intelligent AI assistant with the following key traits:
-        1. Adaptability - You learn from past interactions and experiences to continuously improve
-        2. Helpfulness - You aim to provide useful and actionable assistance to users
-        3. Professionalism - You maintain a polite and professional tone while being friendly
-        4. Knowledge - You leverage your broad knowledge base to provide accurate information
-        5. Problem-solving - You break down complex problems and find effective solutions
-        6. Memory - You remember context from conversations to provide personalized help
-        7. Clarity - You communicate clearly and ensure users understand your responses
-       
-         <tips>
-        1. Use filesystem tool to generate files
-        2. When user query cannot be answered directly, use search tool to retrieve relevant information
-        3. agent_experiences contains steps of your historical task handling, structured as:
-           - skill: skill name
-           - actions: list of specific actions executed
-        4. user_profiles contains user characteristics, structured as:
-           - key: user attributes (like needs, preferences, behaviors etc.)
-           - value: corresponding attribute value
-        5. history contains interaction history between user and agent
-        6. cur_time is current timestamp
-        7. similar_messages_history contains historical conversations similar to current user input
-        8. knowledge_base contains relevant information retrieved from knowledge base based on current user input
-        </tips>
-
-        <agent_experiences>
-        {agent_experiences}
-        </agent_experiences>
-
-        <history>
-        {history}
-        </history>
-        
-        <cur_time>
-        {cur_time}
-        </cur_time>
-"""
-
-self_evolving_user_input_rewrite_prompt = """
-
-<user_profiles>
-{user_profiles}
-</user_profiles>
-
-<similar_messages_history>
-{similar_messages_history}
-</similar_messages_history>
-
-<knowledge_base>
-</knowledge_base>
-
-{user_input}
-"""
+from examples.memory.prompts import SELF_EVOLVING_USER_INPUT_REWRITE_PROMPT, SELF_EVOLVING_AGENT_PROMPT, \
+    USER_PROFILE_EXTRACTION_PROMPT
 
 
 class SuperAgent:
@@ -84,6 +33,7 @@ class SuperAgent:
             enable_long_term=True,
             long_term_config=LongTermConfig.create_simple_config(
                 enable_user_profiles=True,
+                user_profile_extraction_prompt=USER_PROFILE_EXTRACTION_PROMPT,
                 enable_agent_experiences=False,
                 message_threshold=6
             )
@@ -99,13 +49,14 @@ class SuperAgent:
         self.sub_agent = SelfEvolvingAgent(
             conf=agent_config,
             name="self_evolving_agent",
-            system_prompt=self_evolving_agent_prompt,
+            system_prompt=SELF_EVOLVING_AGENT_PROMPT,
             mcp_servers=["aworldsearch-server", "filesystem"],
+            # mcp_servers=["filesystem"],
             history_messages=100,
             mcp_config=load_mcp_config(),
             memory_config=MemoryConfig(
                 provider="inmemory",
-                enable_long_term=True,
+                enable_long_term=False,
                 long_term_config=LongTermConfig.create_simple_config(
                     enable_user_profiles=False,
                     enable_agent_experiences=True
@@ -181,7 +132,7 @@ class SuperAgent:
         logging.info(f"[SuperAgent] rewrite_user_input user_profiles = {user_profiles}")
         similar_messages_history = await self.retrival_similar_messages_history(user_id, user_input)
         logging.info(f"[SuperAgent] rewrite_user_input similar_messages_history = {similar_messages_history}")
-        return self_evolving_user_input_rewrite_prompt.format(user_input=user_input, user_profiles=user_profiles,
+        return SELF_EVOLVING_USER_INPUT_REWRITE_PROMPT.format(user_input=user_input, user_profiles=user_profiles,
                                                               similar_messages_history=similar_messages_history)
 
     async def get_history_context(self, user_id, session_id, task_id, user_input):
@@ -280,6 +231,9 @@ class SelfEvolvingAgent(Agent):
         """
         agent_experiences = await self.memory.retrival_agent_experience(self.id(), context.get_task().input)
         logging.info(f"[SelfEvolvingAgent] custom_system_prompt agent_experiences = {agent_experiences}")
-        return self.system_prompt.format(history=context.context_info.get("history", ""),
-                                         agent_experiences=agent_experiences,
-                                         cur_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        return Prompt(SELF_EVOLVING_AGENT_PROMPT).get_prompt(variables={
+            "history": context.context_info.get("history", ""),
+            "agent_experiences": agent_experiences,
+            "cur_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
