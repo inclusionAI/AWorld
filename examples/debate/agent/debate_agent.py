@@ -29,9 +29,9 @@ class DebateAgent(StreamOutputAgent, ABC):
 
     stance: Literal["affirmative", "negative"]
 
-    def __init__(self, name: str, stance: Literal["affirmative", "negative"], conf: AgentConfig, search_engine: Optional[SearchEngine] = TavilySearchEngine()):
+    def __init__(self, conf: AgentConfig, name: str, stance: Literal["affirmative", "negative"], search_engine: Optional[SearchEngine] = TavilySearchEngine()):
         conf.name = name
-        super().__init__(conf)
+        super().__init__(conf, name)
         self.steps = 0
         self.stance = stance
         self.search_engine = search_engine

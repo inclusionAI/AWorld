@@ -5,9 +5,8 @@ from aworld.output import MessageOutput
 
 
 class StreamOutputAgent(Agent):
-    def __init__(self, conf: AgentConfig, **kwargs
-                 ):
-        super().__init__(conf)
+    def __init__(self, conf: AgentConfig, name: str, **kwargs):
+        super().__init__(conf, name)
 
     async def async_call_llm(self, messages, json_parse=False) -> MessageOutput:
         # Async streaming with acall_llm_model

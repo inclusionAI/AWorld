@@ -1,12 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-from datetime import datetime
 import json
 import traceback
+from datetime import datetime
 from typing import Any, List, Literal, Optional, Tuple
-
-from pydantic import BaseModel, Field
 
 from aworld.core.memory import MemoryItem, LongTermConfig, MemoryStore
 from aworld.models.llm import LLMModel, acall_llm_model
@@ -14,21 +12,21 @@ from .base import MemoryGungnir, MemoryOrchestrator, MemoryProcessingTask, Memor
 from ..models import AgentExperience, LongTermExtractParams, UserProfile
 from ...logs.util import logger
 
+
 class DefaultMemoryGungnir(MemoryGungnir):
     """
     Default implementation of MemoryGungnir.
     """
 
-    def __init__(self, llm_instance: LLMModel, longterm_config: LongTermConfig):
+    def __init__(self, llm_instance: LLMModel):
         super().__init__(llm_instance)
-        self._longterm_config = longterm_config
-
 
     async def process_memory_task(self, task: MemoryProcessingTask) -> MemoryProcessingResult:
         try:
             return await self._process_memory_task(task)
         except Exception as e:
-            logger.error(f"🧠 [MEMORY:long-term] Error processing memory task:{task.memory_task_id} failed: {e}" + traceback.format_exc())
+            logger.error(
+                f"🧠 [MEMORY:long-term] Error processing memory task:{task.memory_task_id} failed: {e}" + traceback.format_exc())
             return MemoryProcessingResult(
                 success=False,
                 error_message=str(e)
@@ -36,7 +34,8 @@ class DefaultMemoryGungnir(MemoryGungnir):
 
     async def _process_memory_task(self, task: MemoryProcessingTask) -> MemoryProcessingResult:
 
-        logger.debug(f"🧠 [MEMORY:long-term] Processing memory task start:{task.memory_task_id} with task_type:{task.task_type}")
+        logger.debug(
+            f"🧠 [MEMORY:long-term] Processing memory task start:{task.memory_task_id} with task_type:{task.task_type}")
         # 1. extract long-term memories
         user_profiles = []
         agent_experiences = []
@@ -46,7 +45,7 @@ class DefaultMemoryGungnir(MemoryGungnir):
             user_profiles = await self._extract_user_profile(task)
         else:
             raise ValueError(f"Invalid task type: {task.task_type}")
-        
+
         # 2. return the result
         result = MemoryProcessingResult(
             success=True,
@@ -54,12 +53,14 @@ class DefaultMemoryGungnir(MemoryGungnir):
             agent_experiences=agent_experiences,
             finished_at=datetime.now().isoformat(),
         )
-        logger.debug(f"🧠 [MEMORY:long-term] Processing memory task end:{task.memory_task_id} with task_type:{task.task_type}")
+        logger.debug(
+            f"🧠 [MEMORY:long-term] Processing memory task end:{task.memory_task_id} with task_type:{task.task_type}")
         return result
-        
+
     async def _extract_agent_experience(self, task: MemoryProcessingTask) -> Optional[List[AgentExperience]]:
         to_be_extracted_messages = task.extract_params.to_openai_messages()
-        agent_experiences_prompt = self._longterm_config.get_agent_experience_prompt(messages=to_be_extracted_messages)
+        agent_experiences_prompt = task.longterm_config.get_agent_experience_prompt(
+            messages=str(to_be_extracted_messages))
         messages = []
         messages.append({
             "role": "user",
@@ -67,7 +68,8 @@ class DefaultMemoryGungnir(MemoryGungnir):
         })
         try:
             llm_response = await acall_llm_model(self._llm_instance, messages=messages)
-            logger.info(f"🧠 [MEMORY:long-term] Extracted agent experience:{task.memory_task_id} with result:{llm_response}")
+            logger.info(
+                f"🧠 [MEMORY:long-term] Extracted agent experience:{task.memory_task_id} with result:{llm_response}")
             result = json.loads(llm_response.content.replace("```json", "").replace("```", ""))
             agent_experiences = []
             agent_experiences.append(AgentExperience(
@@ -75,10 +77,12 @@ class DefaultMemoryGungnir(MemoryGungnir):
                 skill=result['skill'],
                 actions=result['actions']
             ))
-            logger.info(f"🧠 [MEMORY:long-term] Extracted agent experience:{task.memory_task_id} with result:{agent_experiences}")
+            logger.info(
+                f"🧠 [MEMORY:long-term] Extracted agent experience:{task.memory_task_id} with result:{agent_experiences}")
             return agent_experiences
         except Exception as e:
-            logger.error(f"🧠 [MEMORY:long-term] Error extracting agent experience:{task.memory_task_id} failed: {e}" + traceback.format_exc())
+            logger.error(
+                f"🧠 [MEMORY:long-term] Error extracting agent experience:{task.memory_task_id} failed: {e}" + traceback.format_exc())
             return None
 
     async def _extract_user_profile(self, task: MemoryProcessingTask) -> Optional[List[UserProfile]]:
@@ -90,27 +94,32 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
     Simple implementation of MemoryOrchestrator that provides basic memory processing decisions.
     This orchestrator evaluates trigger conditions and creates processing tasks based on configuration.
     """
-    def __init__(self, llm_instance: LLMModel,
-                  longterm_config: LongTermConfig,
+
+    def __init__(self,
+                 llm_instance: LLMModel,
                  embedding_model: Optional[Any] = None,
-                 long_term_memory_store: MemoryStore = None) -> None:
+                 memory: "MemoryBase" = None
+                 ) -> None:
         """
         Initialize the simple memory orchestrator.
         
         Args:
             llm_instance: LLM model instance for processing
         """
-        super().__init__(llm_instance, longterm_config, embedding_model, long_term_memory_store)
-        self.memory_gungnir = DefaultMemoryGungnir(llm_instance, longterm_config)
+        super().__init__(llm_instance, embedding_model)
+        self.memory_gungnir = DefaultMemoryGungnir(llm_instance)
         self.memory_tasks: List[MemoryProcessingTask] = []
-    
-    def create_longterm_processing_tasks(self, task_params: list[LongTermExtractParams]) -> None:
-        for task_param in task_params:
-            asyncio.create_task(self._create_longterm_processing_task(task_param, self._longterm_config))
+        self.memory = memory
 
-    
-    async def _create_longterm_processing_task(self, extract_param: LongTermExtractParams, 
-                                               longterm_config: LongTermConfig) -> None:
+    async def create_longterm_processing_tasks(self, task_params: list[LongTermExtractParams],
+                                               longterm_config: LongTermConfig,
+                                               force: bool = False) -> None:
+        for task_param in task_params:
+            await self._create_longterm_processing_task(task_param, longterm_config, force)
+
+    async def _create_longterm_processing_task(self, extract_param: LongTermExtractParams,
+                                               longterm_config: LongTermConfig
+                                               , force: bool = False) -> None:
         """
         Check if long-term memory processing should be triggered and process if necessary.
 
@@ -122,7 +131,8 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
             # Get all current memory items
             memory_task = self._create_memory_task(
                 extract_param,
-                longterm_config=longterm_config
+                longterm_config=longterm_config,
+                force=force
             )
 
             if memory_task:
@@ -134,30 +144,31 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
                 else:
                     asyncio.run(self._process_longterm_memory_task(memory_task))
         except Exception as e:
-            logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing check: {e}" + traceback.format_exc())
-
+            logger.warning(
+                f"🧠 [MEMORY:long-term] Error during long-term memory processing check: {e}" + traceback.format_exc())
 
     def _should_process_memory(
-        self, 
-        extract_param: LongTermExtractParams,
-        longterm_config: LongTermConfig
+            self,
+            extract_param: LongTermExtractParams,
+            longterm_config: LongTermConfig
     ) -> Tuple[bool, str]:
 
         # 1.Check message count threshold
         if self._check_message_count_threshold(extract_param.memories, longterm_config):
-            return True,"message_count"
-            
+            return True, "message_count"
+
         # 2.Check content importance if enabled
         if longterm_config.trigger.enable_importance_trigger:
             if self._check_content_importance(extract_param.memories, longterm_config):
-                return True,"content_importance"
-        
-        return False,"not_trigger"
-    
+                return True, "content_importance"
+
+        return False, "not_trigger"
+
     def _create_memory_task(
-        self, 
-        extract_param: LongTermExtractParams,
-        longterm_config: LongTermConfig
+            self,
+            extract_param: LongTermExtractParams,
+            longterm_config: LongTermConfig,
+            force: bool = False
     ) -> Optional[MemoryProcessingTask]:
         """
         Create a memory processing task from the given memory items.
@@ -169,22 +180,27 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
         Returns:
             Memory processing task
         """
+        if not force:
+            # Check if processing should be triggered
+            should_process, reason = self._should_process_memory(
+                extract_param,
+                longterm_config=longterm_config
+            )
+            logger.debug(
+                f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] flag of should_process: {should_process}, reason: {reason}")
 
-        # Check if processing should be triggered
-        should_process,reason = self._should_process_memory(
-            extract_param,
-            longterm_config=longterm_config
-        )
-        logger.debug(f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] flag of should_process: {should_process}, reason: {reason}")
-
-        if not should_process:
-            logger.debug(f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] not trigger memory task#{extract_param.extract_type}[{extract_param.session_id}:{extract_param.task_id}]")
-            return None
+            if not should_process:
+                logger.debug(
+                    f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] not trigger memory task#{extract_param.extract_type}[{extract_param.session_id}:{extract_param.task_id}]")
+                return None
+        else:
+            reason = "force"
 
         # create long-term memory task
         memory_task = MemoryProcessingTask(
             task_type=extract_param.extract_type,
-            extract_params=extract_param
+            extract_params=extract_param,
+            longterm_config=longterm_config
         )
 
         # Add metadata based on configuration
@@ -197,9 +213,10 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
             }
         })
 
-        logger.info(f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] created memory task#{extract_param.extract_type}[{extract_param.session_id}:{extract_param.task_id}]: {memory_task.memory_task_id}, reason: {reason}")
+        logger.info(
+            f"🧠 [MEMORY:long-term] [DefaultMemoryOrchestrator] created memory task#{extract_param.extract_type}[{extract_param.session_id}:{extract_param.task_id}]: {memory_task.memory_task_id}, reason: {reason}")
         return memory_task
-    
+
     def _check_message_count_threshold(self, memory_items: List[MemoryItem], longterm_config: LongTermConfig) -> bool:
         """
         Check if the message count threshold is reached.
@@ -212,7 +229,7 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
             True if threshold is reached, False otherwise
         """
         return len(memory_items) >= longterm_config.trigger.message_count_threshold
-    
+
     def _check_content_importance(self, memory_items: List[MemoryItem], longterm_config: LongTermConfig) -> bool:
         """
         Check if the content importance threshold is reached.
@@ -226,17 +243,17 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
         """
         if not longterm_config.trigger.enable_importance_trigger:
             return False
-            
+
         # Check for importance keywords in recent messages
         recent_items = memory_items[-1:] if len(memory_items) > 1 else memory_items
         importance_keywords = longterm_config.trigger.importance_keywords
-        
+
         for item in recent_items:
             content = item.content.lower()
             for keyword in importance_keywords:
                 if keyword.lower() in content:
                     return True
-        
+
         return False
 
     async def _process_longterm_memory_task(self, task: MemoryProcessingTask) -> None:
@@ -247,17 +264,18 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
             task: MemoryProcessingTask to process
         """
         try:
-            logger.info(f"🧠 [MEMORY:long-term] Processing task {task.memory_task_id} started")
+            logger.info(f"🧠 [MEMORY:long-term] Processing long-term task {task.memory_task_id} started")
             # 1. process memory task
             result = await self.memory_gungnir.process_memory_task(task)
 
             # 2. store the result
             await self._store_longterm_memories(result, task)
 
-            logger.info(f"🧠 [MEMORY:long-term] Processing task {task.memory_task_id} completed")
+            logger.info(f"🧠 [MEMORY:long-term] Processing long-term task {task.memory_task_id} completed")
 
         except Exception as e:
-            logger.error(f"🧠 [MEMORY:long-term] Error processing task#{task.memory_task_id}: {e}" + traceback.format_exc())
+            logger.error(
+                f"🧠 [MEMORY:long-term] Error processing task#{task.memory_task_id}: {e}" + traceback.format_exc())
             task.status = "failed"
             await self._update_task_status(task)
 
@@ -283,21 +301,23 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
             task.status = "failed"
             await self._update_task_status(task)
 
-    async def _handle_store_longterm_memories(self, memories: List[MemoryItem], memory_type: Literal["user_profile", "agent_experience"]) -> None:
+    async def _handle_store_longterm_memories(self, memory_items: List[MemoryItem],
+                                              memory_type: Literal["user_profile", "agent_experience"]) -> None:
         """
-        Store the long-term memories.
+        Store the long-term memory_items.
 
         1. retrieve the long-term memories from the long-term memory store
         2. compare the memories with the new memories
         3. if the memories are not in the long-term memory store, store the memories
         4. if the memories are in the long-term memory store, update the memories
         """
-        if not memories:
-            logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memories: {memories}")
+        if not memory_items:
+            logger.debug(f"🧠 [MEMORY:long-term] Storing {memory_type} memories: {memory_items}")
             return
 
-        for memory in memories:
-            logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memory: {memory.content}")
+        for memory_item in memory_items:
+            logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memory: {memory_item.content}")
+            self.memory.add(memory_item)
 
     async def _add_memory_task(self, task: MemoryProcessingTask) -> None:
         """
@@ -322,4 +342,3 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
     async def retrieve_user_profile(self, query: str, user_id: Optional[str] = None,
                                     application_id: Optional[str] = "default") -> List[UserProfile]:
         pass
-

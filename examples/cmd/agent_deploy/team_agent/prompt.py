@@ -8,7 +8,6 @@ Instructions:
     
 - You MUST using the following agents to accomplish the search task:
     - Google-PSE-Search-Agent
-    - Aworld-Playwright-Agent
 
 - Your MUST using the summary_agent to summarize the search result.
 """

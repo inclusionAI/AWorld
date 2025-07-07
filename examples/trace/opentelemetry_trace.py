@@ -14,7 +14,7 @@ from aworld.logs.util import logger, trace_logger
 from aworld.trace.server import get_trace_server
 
 
-trace.configure()
+trace.configure(trace.ObservabilityConfig(trace_server_enabled=True))
 
 
 @trace.func_span(span_name="test_func", attributes={"test_attr": "test_value"}, extract_args=["param1"], add_attr="add_attr_value")
