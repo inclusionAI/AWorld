@@ -10,10 +10,6 @@ logger = logging.getLogger(__name__)
 class AWorldAgent(BaseAWorldAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        path_cwd = os.path.dirname(os.path.abspath(__file__))
-        mcp_path = os.path.join(path_cwd, "mcp.json")
-        with open(mcp_path, "r") as f:
-            self.mcp_config = json.load(f)
         os.makedirs(os.path.join(os.getcwd(), "static"), exist_ok=True)
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
@@ -34,7 +30,6 @@ class AWorldAgent(BaseAWorldAgent):
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key,
             llm_temperature=llm_temperature,
-            mcp_config=self.mcp_config,
             session_id=request.session_id,
         )
 

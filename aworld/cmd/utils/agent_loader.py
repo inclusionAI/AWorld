@@ -62,7 +62,7 @@ def _list_agents() -> List[AgentModel]:
                 requirements_file = os.path.join(agent_path, "requirements.txt")
                 if os.path.exists(requirements_file):
                     p = subprocess.Popen(
-                        ["pip", "install", "-r", requirements_file],
+                        ["pip", "install", "-U", "-r", requirements_file],
                         cwd=agent_path,
                     )
                     p.wait()

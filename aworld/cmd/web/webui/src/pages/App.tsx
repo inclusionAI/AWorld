@@ -367,12 +367,13 @@ const App: React.FC = () => {
       const { originMessage, chunk } = info || {};
       let currentContent = '';
       let currentThink = '';
+      let currentTraceId = '';
       try {
         if (chunk?.data && !chunk?.data.includes('DONE')) {
           const message = JSON.parse(chunk?.data);
           const traceId = message?.choices?.[0]?.delta?.trace_id;
           if (traceId) {
-            setTraceId(traceId);
+            currentTraceId = traceId;
           }
           currentThink = message?.choices?.[0]?.delta?.reasoning_content || '';
           currentContent = message?.choices?.[0]?.delta?.content || '';
@@ -394,9 +395,13 @@ const App: React.FC = () => {
       } else {
         content = `${originMessage?.content || ''}${currentThink}${currentContent}`;
       }
+      if(!chunk && originMessage?.trace_id) {
+        currentTraceId = originMessage?.trace_id
+      }
       return {
         content: content,
         role: 'assistant',
+        trace_id: currentTraceId
       };
     },
     resolveAbortController: (controller) => {
@@ -764,7 +769,7 @@ const App: React.FC = () => {
       >
         {/* {drawerContent === 'Trace' ? (
           <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
-        ) : 
+        ) :
         ( */}
           <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} traceQuery={traceQuery} drawerVisible={drawerVisible} />
         {/* )} */}
