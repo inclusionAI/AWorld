@@ -47,7 +47,7 @@ class TestContextManagement(BaseTest):
             conf=conf,
             name="my_agent" + str(random.randint(0, 1000000)),
             system_prompt="You are a helpful assistant.",
-            agent_prompt="You are a helpful assistant.",
+            agent_prompt="make a joke.",
             context_rule=context_rule
         )
 
@@ -112,12 +112,12 @@ class TestContextManagement(BaseTest):
 
         self.assertIsNotNone(response.answer)
         self.assertEqual(
-            mock_agent.agent_context.model_config.llm_model_name, self.mock_model_name)
+            mock_agent.conf.llm_config.llm_model_name, self.mock_model_name)
 
         # Test default context rule behavior
-        self.assertIsNotNone(mock_agent.agent_context.context_rule)
+        self.assertIsNotNone(mock_agent.context_rule)
         self.assertIsNotNone(
-            mock_agent.agent_context.context_rule.optimization_config)
+            mock_agent.context_rule.optimization_config)
 
     def test_custom_context_configuration(self):
         """Test custom context configuration (README Configuration example)"""
@@ -144,21 +144,21 @@ class TestContextManagement(BaseTest):
 
         # Test configuration values
         self.assertTrue(
-            mock_agent.agent_context.context_rule.optimization_config.enabled)
+            mock_agent.context_rule.optimization_config.enabled)
         self.assertTrue(
-            mock_agent.agent_context.context_rule.llm_compression_config.enabled)
+            mock_agent.context_rule.llm_compression_config.enabled)
 
-    def test_state_management_and_recovery(self):
+    def test_multi_agent_state_trace(self):
         class StateModifyAgent(Agent):
             async def async_policy(self, observation, info=None, **kwargs):
                 result = await super().async_policy(observation, info, **kwargs)
-                self.context.state['policy_executed'] = True
+                self.context.context_info.set('policy_executed', True)
                 return result
 
         class StateTrackingAgent(Agent):
             async def async_policy(self, observation, info=None, **kwargs):
                 result = await super().async_policy(observation, info, **kwargs)
-                assert self.context.state['policy_executed'] == True
+                assert self.context.context_info.get('policy_executed', True)
                 return result
 
         # Create custom agent instance
@@ -193,10 +193,18 @@ class TestContextManagement(BaseTest):
         self.assertIsNotNone(response.answer)
 
         # Verify state changes after execution
-        self.assertTrue(custom_agent.context.state.get(
-            'policy_executed', True))
-        self.assertTrue(second_agent.agent_context.state.get(
-            'policy_executed', True))
+        self.assertTrue(custom_agent.context.context_info.get('policy_executed', True))
+
+    def test_multi_task_state_trace(self):
+        context = Context()
+        task = Task(input="What is an agent.", context=context)
+        new_context = task.context.deep_copy()
+        new_context.context_info.update({"hello": "world"})
+        self.run_task(context=new_context, agent=self.init_agent("1"))
+        self.assertEqual(new_context.context_info.get("hello"), "world")
+        
+        task.context.merge_context(new_context)
+        self.assertEqual(task.context.context_info.get("hello"), "world")
 
 
 class TestHookSystem(TestContextManagement):
@@ -230,7 +238,7 @@ class TestHookSystem(TestContextManagement):
 
         mock_agent = self.init_agent("1")
         context = Context()
-        context.state.update({"task": "What is an agent."})
+        context.context_info.update({"task": "What is an agent."})
         self.run_task(context=context, agent=mock_agent)
 
 
@@ -238,7 +246,8 @@ if __name__ == '__main__':
     testContextManagement = TestContextManagement()
     testContextManagement.test_default_context_configuration()
     testContextManagement.test_custom_context_configuration()
-    testContextManagement.test_state_management_and_recovery()
+    testContextManagement.test_multi_agent_state_trace()
+    testContextManagement.test_multi_task_state_trace()
     testHookSystem = TestHookSystem()
     testHookSystem.test_hook_registration()
     testHookSystem = TestHookSystem()

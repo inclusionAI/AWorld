@@ -2,7 +2,11 @@
 # Copyright (c) 2025 inclusionAI.
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Optional, TYPE_CHECKING, Union
+from pydantic import BaseModel, Field
+import copy
+from datetime import datetime
+import logging
 
 from aworld.config import ConfigDict
 from aworld.config.conf import ContextRuleConfig, ModelConfig
@@ -14,6 +18,11 @@ from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
     from aworld.core.task import Task
+    from aworld.core.swarm import Swarm
+    from aworld.core.event_manager import EventManager
+    from aworld.core.agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -27,10 +36,62 @@ class ContextUsage:
 
 
 class Context():
-    """Single instance, can use construction or `instance` static method to create or get `Context` instance.
+    """Context is the core context management class in the AWorld architecture, used to store and manage
+    the complete state information of an Agent, including configuration data and runtime state.
+
+    Context serves as both a session-level context manager and agent-level context manager, providing:
+
+    1. **State Restoration**: Save all state information during Agent execution, supporting Agent state restoration and recovery
+    2. **Configuration Management**: Store Agent's immutable configuration information (such as agent_id, system_prompt, etc.)
+    3. **Runtime State Tracking**: Manage Agent's mutable state during execution (such as messages, step, tools, etc.)
+    4. **LLM Prompt Management**: Manage and maintain the complete prompt context required for LLM calls, including system prompts, historical messages, etc.
+    5. **LLM Call Intervention**: Provide complete control over the LLM call process through Hook and ContextProcessor
+    6. **Multi-task State Management**: Support fork_new_task and context merging for complex multi-task scenarios
+
+    ## Lifecycle
+    The lifecycle of Context is completely consistent with the Agent instance:
+    - **Creation**: Created during Agent initialization, containing initial configuration
+    - **Runtime**: Continuously update runtime state during Agent execution
+    - **Destruction**: Destroyed along with Agent instance destruction
+    ```
+    ┌─────────────────────── AWorld Runner ─────────────────────────┐
+    |  ┌──────────────────── Agent Execution ────────────────────┐  │
+    │  │  ┌────────────── Step 1 ─────────────┐ ┌── Step 2 ──┐   │  │
+    │  │  │  [LLM Call]     [Tool Call(s)]    │
+    │  │  │  [       Context Update      ]    │
+    ```
+
+    ## Field Classification
+    - **Immutable Configuration Fields**: agent_id, agent_name, agent_desc, system_prompt, 
+      agent_prompt, tool_names, context_rule
+    - **Mutable Runtime Fields**: tools, step, messages, context_usage, llm_output, trajectories
+
+    ## LLM Call Intervention Mechanism
+    Context implements complete control over LLM calls through the following mechanisms:
+
+    1. **Hook System**:
+       - pre_llm_call_hook: Context preprocessing before LLM call
+       - post_llm_call_hook: Result post-processing after LLM call
+       - pre_tool_call_hook: Context adjustment before tool call
+       - post_tool_call_hook: State update after tool call
+
+    2. **PromptProcessor**:
+       - Prompt Optimization: Optimize prompt content based on context length limitations
+       - Message Compression: Intelligently compress historical messages to fit model context window
+       - Context Rules: Apply context_rule for customized context processing
+
+    ## Usage Scenarios
+    1. **Agent Initialization**: Create Context containing configuration information
+    2. **LLM Call Control**: Pass as info parameter in policy(), async_policy() methods to control LLM behavior
+    3. **Hook Callbacks**: Access and modify LLM call context in various Hooks, use PromptProcessor for prompt optimization and context processing
+    4. **State Recovery**: Recover Agent's complete state from persistent storage
+    5. **Multi-task Management**: Use fork_new_task to create child contexts and merge_context to consolidate results
 
     Examples:
         >>> context = Context()
+        >>> context.set_state("key", "value")
+        >>> child_context = context.deep_copy()
+        >>> context.merge_context(child_context)
     """
 
     def __init__(self,
@@ -52,7 +113,7 @@ class Context():
         self._engine = engine
         self._trace_id = trace_id
         self._session: Session = session
-        self.context_info = ConfigDict()
+        self.context_info = ContextState()
         self.agent_info = ConfigDict()
         self.trajectories = OrderedDict()
         self._token_usage = {
@@ -60,10 +121,7 @@ class Context():
             "prompt_tokens": 0,
             "total_tokens": 0,
         }
-        self.state = ContextState()
-        # TODO swarm topology
         # TODO workspace
-
         self._swarm = None
         self._event_manager = None
 
@@ -148,6 +206,73 @@ class Context():
     def event_manager(self, event_manager: 'EventManager'):
         self._event_manager = event_manager
 
+    def deep_copy(self) -> 'Context':
+        """Create a deep copy of this Context instance with all attributes copied.
+        
+        Returns:
+            Context: A new Context instance with deeply copied attributes
+        """
+        # Create a new Context instance without calling __init__ to avoid singleton issues
+        new_context = object.__new__(Context)
+
+        # Manually copy all important instance attributes
+        # Basic attributes
+        new_context._user = self._user
+        new_context._task_id = self._task_id
+        new_context._engine = self._engine
+        new_context._trace_id = self._trace_id
+
+        # Session - shallow copy to maintain reference
+        new_context._session = self._session
+
+        # Task - set to None to avoid circular references
+        new_context._task = None
+
+        # Deep copy complex state objects
+        try:
+            new_context.context_info = copy.deepcopy(self.context_info)
+        except Exception:
+            new_context.context_info = copy.copy(self.context_info)
+
+        try:
+            # Use standard deep copy and then convert to ConfigDict if needed
+            new_context.agent_info = copy.deepcopy(self.agent_info)
+            # If the result is not ConfigDict but original was, convert it
+            if isinstance(self.agent_info, ConfigDict) and not isinstance(new_context.agent_info, ConfigDict):
+                new_context.agent_info = ConfigDict(new_context.agent_info)
+        except Exception:
+            # Fallback: manual deep copy for ConfigDict
+            if isinstance(self.agent_info, ConfigDict):
+                import json
+                # Use JSON serialization for deep copy (if data is JSON-serializable)
+                try:
+                    serialized = json.dumps(dict(self.agent_info))
+                    deserialized = json.loads(serialized)
+                    new_context.agent_info = ConfigDict(deserialized)
+                except Exception:
+                    # Final fallback to shallow copy
+                    new_context.agent_info = copy.copy(self.agent_info)
+            else:
+                new_context.agent_info = copy.copy(self.agent_info)
+
+        try:
+            new_context.trajectories = copy.deepcopy(self.trajectories)
+        except Exception:
+            new_context.trajectories = copy.copy(self.trajectories)
+
+        try:
+            new_context._token_usage = copy.deepcopy(self._token_usage)
+        except Exception:
+            new_context._token_usage = copy.copy(self._token_usage)
+
+        # Copy other attributes if they exist
+        if hasattr(self, '_swarm'):
+            new_context._swarm = self._swarm  # Shallow copy for complex objects
+        if hasattr(self, '_event_manager'):
+            new_context._event_manager = self._event_manager  # Shallow copy for complex objects
+
+        return new_context
+
     @property
     def record_path(self):
         return "."
@@ -169,180 +294,103 @@ class Context():
         return False
 
     def get_state(self, key: str, default: Any = None) -> Any:
-        return self.state.get(key, default)
+        return self.context_info.get(key, default)
 
     def set_state(self, key: str, value: Any):
-        self.state[key] = value
+        self.context_info[key] = value
 
-
-@dataclass
-class AgentContext:
-    """Agent context containing both configuration and runtime state.
-
-    AgentContext is the core context management class in the AWorld architecture, used to store and manage
-    the complete state information of an Agent, including configuration data and runtime state. Its main functions are:
-
-    1. **State Restoration**: Save all state information during Agent execution, supporting Agent state restoration and recovery
-    2. **Configuration Management**: Store Agent's immutable configuration information (such as agent_id, system_prompt, etc.)
-    3. **Runtime State Tracking**: Manage Agent's mutable state during execution (such as messages, step, tools, etc.)
-    4. **LLM Prompt Management**: Manage and maintain the complete prompt context required for LLM calls, including system prompts, historical messages, etc.
-    5. **LLM Call Intervention**: Provide complete control over the LLM call process through Hook and ContextProcessor
-
-    ## Lifecycle
-    The lifecycle of AgentContext is completely consistent with the Agent instance:
-    - **Creation**: Created during Agent initialization, containing initial configuration
-    - **Runtime**: Continuously update runtime state during Agent execution
-    - **Destruction**: Destroyed along with Agent instance destruction
-    ```
-    ┌─────────────────────── AWorld Runner ─────────────────────────┐
-    |  ┌──────────────────── Agent Execution ────────────────────┐  │
-    │  │  ┌────────────── Step 1 ─────────────┐ ┌── Step 2 ──┐   │  │
-    │  │  │  [LLM Call]     [Tool Call(s)]    │
-    │  │  │  [       Context Update      ]    │
-    ```
-
-    ## Field Classification
-    - **Immutable Configuration Fields**: agent_id, agent_name, agent_desc, system_prompt, 
-      agent_prompt, tool_names, context_rule
-    - **Mutable Runtime Fields**: tools, step, messages, context_usage, llm_output
-
-    ## LLM Call Intervention Mechanism
-    AgentContext implements complete control over LLM calls through the following mechanisms:
-
-    1. **Hook System**:
-       - pre_llm_call_hook: Context preprocessing before LLM call
-       - post_llm_call_hook: Result post-processing after LLM call
-       - pre_tool_call_hook: Context adjustment before tool call
-       - post_tool_call_hook: State update after tool call
-
-    2. **PromptProcessor**:
-       - Prompt Optimization: Optimize prompt content based on context length limitations
-       - Message Compression: Intelligently compress historical messages to fit model context window
-       - Context Rules: Apply context_rule for customized context processing
-
-    ## Usage Scenarios
-    1. **Agent Initialization**: Create AgentContext containing configuration information
-    2. **LLM Call Control**: Pass as info parameter in policy(), async_policy() methods to control LLM behavior
-    3. **Hook Callbacks**: Access and modify LLM call context in various Hooks, use PromptProcessor for prompt optimization and context processing
-    4. **State Recovery**: Recover Agent's complete state from persistent storage
-    """
-
-    # ===== Immutable Configuration Fields =====
-    agent_id: str = None
-    agent_name: str = None
-    agent_desc: str = None
-    system_prompt: str = None
-    agent_prompt: str = None
-    tool_names: List[str] = None
-    model_config: ModelConfig = None
-    context_rule: ContextRuleConfig = None
-    _context: Context = None
-    state: ContextState = None
-
-    # ===== Mutable Configuration Fields =====
-    tools: List[str] = None
-    step: int = 0
-    messages: List[Dict[str, Any]] = None
-    context_usage: ContextUsage = None
-    llm_output: ModelResponse = None
-
-    def __init__(self,
-                 agent_id: str = None,
-                 agent_name: str = None,
-                 agent_desc: str = None,
-                 system_prompt: str = None,
-                 agent_prompt: str = None,
-                 tool_names: List[str] = None,
-                 model_config: ModelConfig = None,
-                 context_rule: ContextRuleConfig = None,
-                 tools: List[str] = None,
-                 step: int = 0,
-                 messages: List[Dict[str, Any]] = None,
-                 context_usage: ContextUsage = None,
-                 llm_output: ModelResponse = None,
-                 context: Context = None,
-                 parent_state: ContextState = None,
-                 **kwargs):
-        # Configuration fields
-        self.agent_id = agent_id
-        self.agent_name = agent_name
-        self.agent_desc = agent_desc
-        self.system_prompt = system_prompt
-        self.agent_prompt = agent_prompt
-        self.tool_names = tool_names if tool_names is not None else []
-        self.model_config = model_config
-        self.context_rule = context_rule
-
-        # Runtime state fields
-        self.tools = tools if tools is not None else []
-        self.step = step
-        self.messages = messages if messages is not None else []
-        self.context_usage = context_usage if context_usage is not None else ContextUsage()
-        self.llm_output = llm_output
-
-        # Initialize Context with runner(session) level context
-        self._context = context
-        # Initialize ContextState with parent state (Context's state)
-        # If context_state is provided, use it as parent; otherwise will be set later
-        self.state = ContextState(parent_state=parent_state)
-
-        # Additional fields for backward compatibility
-        self._init(**kwargs)
-
-    def _init(self, **kwargs):
-        self._task_id = kwargs.get('task_id')
-
-    def set_model_config(self, model_config: ModelConfig):
-        self.model_config = model_config
-
-    def set_messages(self, messages: List[Dict[str, Any]]):
-        self.messages = messages
-
-    def set_tools(self, tools: List[str]):
-        self.tools = tools
-
-    def set_llm_output(self, llm_output: ModelResponse):
-        self.llm_output = llm_output
-
-    def increment_step(self) -> int:
-        self.step += 1
-        return self.step
-
-    def set_step(self, step: int):
-        self.step = step
-
-    def get_step(self) -> int:
-        return self.step
-
-    def update_context_usage(self, used_context_length: int = None, total_context_length: int = None):
-        if used_context_length is not None:
-            self.context_usage.used_context_length = used_context_length
-        if total_context_length is not None:
-            self.context_usage.total_context_length = total_context_length
-
-    def get_context_usage_ratio(self) -> float:
-        """Get context usage ratio"""
-        if self.context_usage.total_context_length <= 0:
-            return 0.0
-        return self.context_usage.used_context_length / self.context_usage.total_context_length
-
-    def set_parent_state(self, parent_state: ContextState):
-        self.state._parent_state = parent_state
-
-    def get_state(self, key: str, default: Any = None) -> Any:
-        return self.state.get(key, default)
-
-    def set_state(self, key: str, value: Any):
-        self.state[key] = value
-
-    def get_task(self) -> 'Task':
-        return self._context.get_task()
-
-    def get_session(self) -> Session:
-        return self._context.session
-
-    def get_engine(self) -> str:
-        return self._context.engine
-
-    def get_user(self) -> str:
-        return self._context.user
+    def merge_context(self, other_context: 'Context') -> None:
+        """Merge the state of another Context instance into the current Context
+        
+        This method is used to merge the state of a child Context (such as one created by fork_new_task) 
+        back into the parent Context. The merge operation includes:
+        1. Merge context_info state
+        2. Merge trajectories
+        3. Merge token usage statistics
+        4. Merge agent_info configuration (if there are new configurations)
+        
+        Args:
+            other_context: The other Context instance to merge
+        """
+        if not other_context or not isinstance(other_context, Context):
+            return
+            
+        # 1. Merge context_info state
+        if hasattr(other_context, 'context_info') and other_context.context_info:
+            try:
+                # Get local state from child context (excluding inherited parent state)
+                if hasattr(other_context.context_info, 'local_dict'):
+                    local_state = other_context.context_info.local_dict()
+                    if local_state:
+                        self.context_info.update(local_state)
+                else:
+                    # If no local_dict method, directly update all states
+                    self.context_info.update(other_context.context_info)
+            except Exception as e:
+                logger.warning(f"Failed to merge context_info: {e}")
+        
+        # 2. Merge trajectories
+        if hasattr(other_context, 'trajectories') and other_context.trajectories:
+            try:
+                # Use timestamp or step number to avoid key conflicts
+                for key, value in other_context.trajectories.items():
+                    # If key already exists, add suffix to avoid overwriting
+                    merge_key = key
+                    counter = 1
+                    while merge_key in self.trajectories:
+                        merge_key = f"{key}_merged_{counter}"
+                        counter += 1
+                    self.trajectories[merge_key] = value
+            except Exception as e:
+                logger.warning(f"Failed to merge trajectories: {e}")
+        
+        # 3. Merge token usage statistics
+        if hasattr(other_context, '_token_usage') and other_context._token_usage:
+            try:
+                # Calculate net token usage increment from child context (avoid double counting tokens inherited from parent context)
+                # If child context was created through deep_copy, it already contains parent context's tokens
+                # We need to calculate the net increment
+                parent_tokens = self._token_usage.copy()
+                child_tokens = other_context._token_usage.copy()
+                
+                # Calculate net increment: child context tokens - parent context tokens
+                net_tokens = {}
+                for key in child_tokens:
+                    child_value = child_tokens.get(key, 0)
+                    parent_value = parent_tokens.get(key, 0)
+                    net_value = child_value - parent_value
+                    if net_value > 0:  # Only merge net increment
+                        net_tokens[key] = net_value
+                
+                # Add net increment to parent context
+                if net_tokens:
+                    self.add_token(net_tokens)
+            except Exception as e:
+                logger.warning(f"Failed to merge token usage: {e}")
+                # If calculating net increment fails, directly add child context's tokens (may result in double counting)
+                try:
+                    self.add_token(other_context._token_usage)
+                except Exception:
+                    pass
+        
+        # 4. Merge agent_info configuration (only merge new configuration items)
+        if hasattr(other_context, 'agent_info') and other_context.agent_info:
+            try:
+                # Only merge configuration items that don't exist in parent context
+                for key, value in other_context.agent_info.items():
+                    if key not in self.agent_info:
+                        self.agent_info[key] = value
+            except Exception as e:
+                logger.warning(f"Failed to merge agent_info: {e}")
+        
+        # Record merge operation
+        try:
+            merge_info = {
+                "merged_at": datetime.now().isoformat(),
+                "merged_from_task_id": getattr(other_context, '_task_id', 'unknown'),
+                "merged_trajectories_count": len(other_context.trajectories) if hasattr(other_context, 'trajectories') else 0,
+                "merged_token_usage": other_context._token_usage if hasattr(other_context, '_token_usage') else {},
+            }
+            self.context_info.set('last_merge_info', merge_info)
+        except Exception as e:
+            logger.warning(f"Failed to record merge info: {e}")

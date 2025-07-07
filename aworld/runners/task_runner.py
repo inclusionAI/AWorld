@@ -70,7 +70,6 @@ class TaskRunner(Runner):
         self.step_agent_counter = {}
 
     async def pre_run(self):
-        logger.info("[TaskRunner]pre_run start")
         task = self.task
         self.swarm = task.swarm
         self.input = task.input
@@ -112,8 +111,7 @@ class TaskRunner(Runner):
                 elif isinstance(tool, AsyncTool):
                     observation, info = await tool.reset()
                 else:
-                    logger.warning(
-                        f"Unsupported tool type: {tool}, will ignored.")
+                    logger.warning(f"Unsupported tool type: {tool}, will ignored.")
 
         if observation:
             if not observation.content:
@@ -126,14 +124,10 @@ class TaskRunner(Runner):
             self.swarm.event_driven = task.event_driven
             self.swarm.reset(observation.content,
                              context=self.context, tools=self.tool_names)
-        logger.info("[TaskRunner]pre_run finish")
-
-        logger.info(
-            f'{"sub task:" if self.task.is_sub_task else "task:"}{self.task.id} started...')
+        logger.info(f'{"sub task: " if self.task.is_sub_task else "main task: "}{self.task.id} started...')
 
     async def post_run(self):
-        logger.info(f'Context reset #{id(self.context)}')
-        self.context.reset()
+        pass
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:
