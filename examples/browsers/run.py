@@ -42,7 +42,7 @@ if __name__ == '__main__':
         input="""step1: first go to https://www.dangdang.com/ and search for 'the little prince' and rank by sales from high to low, get the first 5 results and put the products info in memory.
         step 2: write each product's title, price, discount, and publisher information to a fully structured HTML document with write_to_file, ensuring that the data is presented in a table with visible grid lines.
         step3: open the html file in browser by go_to_url""",
-        agent=BrowserAgent(conf=agent_config, tool_names=[Tools.BROWSER.name]),
+        agent=BrowserAgent(conf=agent_config, name=Agents.BROWSER.value, tool_names=[Tools.BROWSER.name]),
         tools_conf={Tools.BROWSER.value: browser_tool_config},
         conf=task_config
     )
