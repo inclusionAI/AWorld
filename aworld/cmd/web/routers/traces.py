@@ -74,6 +74,8 @@ def _get_agent_show_name(span: dict):
     name = span.get("name")
     if name and name.startswith(agent_name_prefix):
         name = name[len(agent_name_prefix):]
+    if name and '---' in name:
+        name = name.split('---', 1)[0]
     return name
 
 

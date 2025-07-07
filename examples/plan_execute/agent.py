@@ -17,8 +17,8 @@ from examples.plan_execute.utils import extract_pattern
 
 
 class ExecuteAgent(Agent):
-    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
-        super(ExecuteAgent, self).__init__(conf, **kwargs)
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
+        super(ExecuteAgent, self).__init__(conf, name, **kwargs)
 
     def id(self) -> str:
         return Agents.EXECUTE.value
@@ -167,8 +167,8 @@ class ExecuteAgent(Agent):
 
 
 class PlanAgent(Agent):
-    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
-        super(PlanAgent, self).__init__(conf, **kwargs)
+    def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
+        super(PlanAgent, self).__init__(conf, name, **kwargs)
 
     def id(self) -> str:
         return Agents.PLAN.value

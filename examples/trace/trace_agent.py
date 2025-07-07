@@ -23,9 +23,9 @@ class TraceAgent(Agent):
 
     def __init__(self,
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
-                 resp_parse_func: Callable[..., Any] = None,
+                 name: str,
                  **kwargs):
-        super().__init__(conf, **kwargs)
+        super().__init__(conf, name, **kwargs)
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
         """use trace tool to get trace data, and call llm to summary

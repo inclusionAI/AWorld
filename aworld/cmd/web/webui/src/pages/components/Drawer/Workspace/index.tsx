@@ -1,10 +1,12 @@
-import { getWorkspaceArtifacts } from '@/api/workspace';
-import { Tabs } from 'antd';
 import React, { useEffect, useState } from 'react';
-import './index.less';
+import { Typography, Image } from 'antd';
+import { getWorkspaceArtifacts } from '@/api/workspace';
 import type { ToolCardData } from '../../BubbleItem/utils';
+import './index.less';
 
 interface ArtifactItem {
+  snippet: string;
+  link: string;
   key: string;
   title: string;
   content: string;
@@ -17,48 +19,71 @@ interface WorkspaceProps {
 
 const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
-  // console.log(artifacts);
+  const [imgUrl, setImgUrl] = useState<string | undefined>();
+  const isLinkListCard = toolCardData?.card_type === 'tool_call_card_link_list';
+
   useEffect(() => {
-    console.log('Workspace中的toolCardData:', toolCardData);
+    if (!toolCardData) return; // 如果没有 toolCardData，直接退出
+
     const fetchWorkspaceArtifacts = async () => {
       try {
+        const artifactType = toolCardData.artifacts?.[0]?.artifact_type;
+        const artifactId = toolCardData.artifacts?.[0]?.artifact_id;
+
+        if (!artifactType || !artifactId) {
+          console.warn('Invalid artifact data');
+          return;
+        }
+
         const data = await getWorkspaceArtifacts(sessionId, {
-          artifact_types: [toolCardData?.artifacts[0]?.artifact_type],
-          artifact_ids: [toolCardData?.artifacts[0]?.artifact_id]
+          artifact_types: [artifactType],
+          artifact_ids: [artifactId]
         });
-        setArtifacts(Array.isArray(data) ? data : []);
-        console.log('工作空间数据: ', data);
+
+        const content = data?.data?.[0]?.content;
+
+        if (isLinkListCard) {
+          setArtifacts(Array.isArray(content) ? content : []);
+        } else {
+          setImgUrl(content);
+        }
       } catch (error) {
-        console.error('获取工作空间树失败:', error);
+        console.error('Failed to fetch workspace artifacts:', error);
       }
     };
 
     fetchWorkspaceArtifacts();
-  }, [sessionId, toolCardData]);
+  }, [sessionId, toolCardData, isLinkListCard]);
+
+  const renderArtifactsList = () => (
+    <div className="listbox">
+      {artifacts.map((item, index) => (
+        <div className="list" key={index}>
+          <Typography.Link href={item.link} target="_blank">
+            <Typography.Paragraph className="name" ellipsis={{ rows: 1 }}>
+              {item.title}
+            </Typography.Paragraph>
+            <Typography.Paragraph className="desc" ellipsis={{ rows: 3 }}>
+              {item.snippet}
+            </Typography.Paragraph>
+            <Typography.Paragraph className="link" ellipsis={{ rows: 1 }}>
+              {item.link}
+            </Typography.Paragraph>
+          </Typography.Link>
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderImage = () => <Image src={imgUrl} alt="Workspace Artifact" />;
 
   return (
-    <>
-      <div className="border workspacebox">
-        <Tabs defaultActiveKey="1" type="card">
-          <Tabs.TabPane tab="Web Pages" key="WEB_PAGES">
-            <div className="border listwrap">
-              <div className="title">Google Search</div>
-              <div className="listbox">
-                {artifacts.map((item) => (
-                  <div className="list" key={item.key}>
-                    <div className="name">{item.title}</div>
-                    <div>{item.content}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </Tabs.TabPane>
-          <Tabs.TabPane tab="Images" key="IMAGES">
-
-          </Tabs.TabPane>
-        </Tabs>
+    <div className="workspacebox">
+      <div className="border listwrap">
+        <div className="title">Search Results</div>
+        {isLinkListCard ? renderArtifactsList() : renderImage()}
       </div>
-    </>
+    </div>
   );
 };
 

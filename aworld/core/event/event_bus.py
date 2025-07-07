@@ -87,6 +87,7 @@ class InMemoryEventbus(Eventbus):
         return self._message_queue.get(id, Queue()).qsize()
 
     async def publish(self, message: Message, **kwargs):
+        logger.info(f"publish taskid: {message.task_id}, message: {message}")
         queue = self._message_queue.get(message.task_id)
         if not queue:
             queue = PriorityQueue()
@@ -143,8 +144,7 @@ class InMemoryEventbus(Eventbus):
                 logger.warning(f"{task_id} transform not subscribe.")
                 return
 
-
-            self._transformer[task_id].pop(task_id, None)
+            self._transformer[task_id].pop(event_type, None)
             return
 
         if task_id not in self._subscribers:

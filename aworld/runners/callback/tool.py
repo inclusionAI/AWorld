@@ -75,7 +75,8 @@ class ToolCallbackHandler(DefaultHandler):
                 category=Constants.OUTPUT,
                 payload=None,
                 sender=self.name(),
-                session_id=message.session_id
+                session_id=message.session_id,
+                headers={"context": self.context}
             )
 
         return

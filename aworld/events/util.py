@@ -47,7 +47,7 @@ async def _send_message(msg: Message) -> str:
     return msg.id
 
 
-async def send_message(msg: Message) -> asyncio.Task:
+async def send_message(msg: Message):
     """Utility function of send event.
 
     Args:
