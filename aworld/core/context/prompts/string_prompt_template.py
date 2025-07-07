@@ -3,7 +3,8 @@
 """String-based prompt template implementation."""
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
-from aworld.core.context.prompts import logger
+import logging
+logger = logging.getLogger("prompts")
 
 from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate, PromptValue, StringPromptValue
 from aworld.core.context.prompts.formatters import (

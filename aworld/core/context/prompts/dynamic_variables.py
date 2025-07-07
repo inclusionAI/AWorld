@@ -51,7 +51,8 @@ Generic field getter functionality:
 import os
 import platform
 import uuid
-from aworld.core.context.prompts import logger
+import logging
+logger = logging.getLogger("prompts")
 from datetime import datetime, timezone
 from typing import Callable, Any, Optional, TYPE_CHECKING
 

@@ -55,4 +55,3 @@ __all__ = [
 ] 
 
 
-logger = logging.getLogger("prompts")
