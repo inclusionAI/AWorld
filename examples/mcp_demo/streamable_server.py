@@ -8,11 +8,11 @@ from pydantic import Field
 mcp = FastMCP("streamable-server")
 
 
-@mcp.tool(description="进行加法运算")
+@mcp.tool(description="Perform addition operation")
 def add(a: int=Field(
-        description="加数",
+        description="First number",
     ), b: int=Field(
-        description="被加数",
+        description="Second number",
     )) -> int:
     """Add two numbers"""
     print(f"[debug-server] add({a}, {b})")
@@ -25,9 +25,9 @@ def add(a: int=Field(
 #     return random.choice(["apple", "banana", "cherry"])
 
 
-@mcp.tool(description="获取城市的天气")
+@mcp.tool(description="Get weather for a city")
 def get_current_weather(city: str=Field(
-        description="城市名称"
+        description="City name"
     )) -> str:
     print(f"[debug-server] get_current_weather({city})")
 
