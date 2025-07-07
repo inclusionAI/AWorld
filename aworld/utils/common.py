@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import inspect
+import json
 import os
 import pkgutil
 import re
@@ -350,3 +351,14 @@ def get_local_hostname():
     except Exception:
         # Final fallback strategy
         return "localhost"
+
+def load_mcp_config():
+    """Load MCP server configurations from config file."""
+    
+    path_cwd = os.getcwd()
+    mcp_path = os.path.join(path_cwd, "mcp.json")
+    try:
+        with open(mcp_path, "r") as f:
+            return json.load(f)
+    except Exception as err:
+        logger.error(f"Error loading MCP config[{mcp_path}] err is : {err}")

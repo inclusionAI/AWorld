@@ -36,15 +36,6 @@ class Mem0Memory(Memory):
         except ImportError:
             raise ImportError('mem0 is required when enable_memory=True. Please install it with `pip install mem0`.')
 
-        if self.config.embedder_provider == 'huggingface':
-            try:
-                # check that required package is installed if huggingface is used
-                from sentence_transformers import SentenceTransformer  # noqa: F401
-            except ImportError:
-                raise ImportError(
-                    'sentence_transformers is required when enable_memory=True and embedder_provider="huggingface". Please install it with `pip install sentence-transformers`.'
-                )
-
         # Initialize Mem0 with the configuration
         config_dict = self.config.full_config_dict
         self.mem0 = Mem0.from_config(config_dict=self.config.full_config_dict)

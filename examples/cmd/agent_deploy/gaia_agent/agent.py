@@ -35,6 +35,7 @@ class AWorldAgent(BaseAWorldAgent):
             llm_api_key=llm_api_key,
             llm_temperature=llm_temperature,
             mcp_config=self.mcp_config,
+            session_id=request.session_id,
         )
 
         if prompt is None and request is not None:

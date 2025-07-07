@@ -13,7 +13,7 @@ from aworld.core.context.prompts.formatters import (
 from aworld.core.context.prompts.dynamic_variables import ALL_DYNAMIC_VARIABLES
 
 if TYPE_CHECKING:
-    from aworld.core.context.base import AgentContext
+    from aworld.core.context.base import Context
 
 class StringPromptTemplate(BasePromptTemplate):
     """String-based prompt template."""
@@ -28,13 +28,13 @@ class StringPromptTemplate(BasePromptTemplate):
         self.template = template
         self.auto_add_dynamic_vars = auto_add_dynamic_vars
         
-        # 自动添加通用动态变量
+        # Automatically add common dynamic variables
         if auto_add_dynamic_vars:
-            # 合并时间和系统变量
+            # Merge time and system variables
             auto_partial_vars = {**ALL_DYNAMIC_VARIABLES}
             
             if partial_variables:
-                # 用户提供的变量优先，不被自动变量覆盖
+                # User-provided variables take priority and are not overridden by auto variables
                 for key, value in auto_partial_vars.items():
                     if key not in partial_variables:
                         partial_variables[key] = value
@@ -54,13 +54,13 @@ class StringPromptTemplate(BasePromptTemplate):
             **kwargs
         )
         
-    def format(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> str:
-        variables = self._merge_partial_and_user_variables(agent_context=agent_context, **kwargs)
+    def format(self, context: 'Context' = None, **kwargs: Any) -> str:
+        variables = self._merge_partial_and_user_variables(context=context, **kwargs)
         self._validate_input_variables(variables)
         return format_template(self.template, self.template_format, **variables)
     
-    def format_prompt(self, agent_context: 'AgentContext' = None, **kwargs: Any) -> PromptValue:
-        formatted_text = self.format(agent_context=agent_context, **kwargs)
+    def format_prompt(self, context: 'Context' = None, **kwargs: Any) -> PromptValue:
+        formatted_text = self.format(context=context, **kwargs)
         return StringPromptValue(formatted_text)
     
     def _get_additional_kwargs(self) -> Dict[str, Any]:
@@ -145,5 +145,5 @@ class StringPromptTemplate(BasePromptTemplate):
                 f"input_variables={self.input_variables}, "
                 f"template_format={self.template_format})")
 
-# 为了向后兼容，保留PromptTemplate别名
+# For backward compatibility, keep PromptTemplate alias
 PromptTemplate = StringPromptTemplate 

@@ -212,7 +212,7 @@ class RuntimeStateManager(InheritanceSingleton):
             if not node.results:
                 node.results = []
             node.results.extend(results)
-        logger.info(f"====== run_succeed set node {node_id} succeed: {node} =======")
+        logger.debug(f"====== run_succeed set node {node_id} succeed: {node} =======")
 
         self.storage.update(node)
 

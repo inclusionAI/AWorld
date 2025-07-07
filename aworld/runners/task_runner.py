@@ -127,7 +127,9 @@ class TaskRunner(Runner):
         logger.info(f'{"sub task: " if self.task.is_sub_task else "main task: "}{self.task.id} started...')
 
     async def post_run(self):
-        self.context.reset()
+        logger.info(f'Context reset #{id(self.context)}')
+        if self.task.reset_post_run:
+            self.context.reset()
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:

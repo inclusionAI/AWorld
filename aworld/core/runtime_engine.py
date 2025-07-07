@@ -118,6 +118,8 @@ class LocalRuntime(RuntimeEngine):
         results = {}
         for future in futures:
             future: Future = future
+            if future.exception():
+                logger.warning(f"exception: {future._exception}")
             res = future.result()
             results[res.id] = res
         return results
@@ -208,7 +210,7 @@ class RayRuntime(RuntimeEngine):
         for arg in args:
             params.append([arg] * len(funcs))
 
-        ray_map = lambda func, fn: [func.remote(x, *y) for x, *y in zip(fn, *params)]
+        def ray_map(func, fn): return [func.remote(x, *y) for x, *y in zip(fn, *params)]
         res_list = self.runtime.get(ray_map(fn_wrapper, funcs))
         return {res.id: res for res in res_list}
 

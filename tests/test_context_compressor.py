@@ -14,7 +14,7 @@ from aworld.config.conf import AgentConfig, ModelConfig, ContextRuleConfig, Opti
 from aworld.core.context.processor import CompressionResult, CompressionType
 from aworld.core.context.processor.llm_compressor import LLMCompressor
 from aworld.core.context.processor.prompt_processor import PromptProcessor
-from aworld.core.context.base import AgentContext, ContextUsage
+from aworld.core.context.base import Context, ContextUsage
 
 
 class TestPromptCompressor(BaseTest):
@@ -70,20 +70,8 @@ class TestPromptCompressor(BaseTest):
             )
         )
         
-        # Create agent context
-        agent_context = AgentContext(
-            agent_id="test_agent",
-            agent_name="test_agent",
-            agent_desc="Test agent for compression",
-            system_prompt="You are a helpful assistant.",
-            agent_prompt="You are a helpful assistant.",
-            model_config=self.mock_llm_config,
-            context_rule=context_rule,
-            context_usage=ContextUsage(total_context_length=4096)
-        )
-        
-        # Create prompt processor
-        processor = PromptProcessor(agent_context)
+        # Create prompt processor with context_rule and model_config
+        processor = PromptProcessor(context_rule=context_rule, model_config=self.mock_llm_config)
         
         # Test messages with repeated content that needs compression
         messages = [
@@ -127,7 +115,3 @@ if __name__ == '__main__':
     testPromptCompressor.test_compress_batch_basic()
     testPromptCompressor = TestPromptCompressor()
     testPromptCompressor.test_compress_messages()
-
-
-
-

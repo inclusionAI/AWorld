@@ -1,6 +1,6 @@
 # AWorld Context Management
 
-Core context management system in the AWorld architecture, providing hierarchical state management through Context and AgentContext components for complete Agent state information storage and coordination.
+Core context management system in the AWorld architecture, providing comprehensive state management through the Context component for complete Agent state information storage and coordination.
 
 ## Architecture Overview
 
@@ -10,67 +10,76 @@ The Context Management system implements intelligent context processing with mul
 
 ## Features
 
-- Hierarchical context management with global and agent-specific scopes
+- Comprehensive context management with both global and agent-specific functionality
 - Complete Agent state management with support for state restoration and recovery
 - Immutable configuration management and mutable runtime state tracking
 - Intelligent LLM Prompt management and context optimization
 - Complete LLM call intervention and control mechanisms
 - Hook system support for extensible processing workflows
 - Content compression and context window management
+- Multi-task state management with fork_new_task and context merging capabilities
 
 ## Core Components
 
-- `Context`: Global singleton context manager spanning the entire AWorld Runner lifecycle
-- `AgentContext`: Agent-specific context container for individual Agent execution periods
+- `Context`: Core context management class serving as both session-level and agent-level context manager
 - `PromptProcessor`: Intelligent context processor supporting content compression and truncate
 - `Hook System`: Extensible hook system supporting full-process LLM call intervention
+- `Prompt Template`: String-based prompt template system for dynamic prompt generation
 
-
-## Multi-Level Context
+## Context Architecture
 
 ![Context Lifecycle](../../../readme_assets/context_lifecycle.png)
 
-The AWorld framework implements a hierarchical context management system with distinct lifecycles:
+The AWorld framework implements a unified context management system with Context serving dual roles:
 
-### Context Lifecycle (Session)
-Context is a singleton object that spans the entire AWorld Runner execution lifecycle, enabling global state sharing and coordination between multiple Agents in the AWorld framework.
+### Context Lifecycle and Functionality
 
+Context is the core context management class in the AWorld architecture, used to store and manage the complete state information of an Agent, including configuration data and runtime state.
+
+Context serves as both a session-level context manager and agent-level context manager, providing:
+
+1. **State Restoration**: Save all state information during Agent execution, supporting Agent state restoration and recovery
+2. **Configuration Management**: Store Agent's immutable configuration information (such as agent_id, system_prompt, etc.)
+3. **Runtime State Tracking**: Manage Agent's mutable state during execution (such as messages, step, tools, etc.)
+4. **LLM Prompt Management**: Manage and maintain the complete prompt context required for LLM calls, including system prompts, historical messages, etc.
+5. **LLM Call Intervention**: Provide complete control over the LLM call process through Hook and ContextProcessor
+6. **Multi-task State Management**: Support fork_new_task and context merging for complex multi-task scenarios
+
+#### Session-Level Functionality
 - **Scope**: Spans the entire AWorld Runner execution period
 - **Responsibility**: Global state management, task coordination, and resource allocation
-    - **Dictionary Interface**: Supports simple key-value state storage using `context['key'] = value` syntax
-- **Function**: Manages multiple AgentContext instances and enables cross-agent data exchange
-    - **Multi-Agent Coordination**: Manages multiple AgentContext instances and enables seamless data exchange between different Agents
-    - **Session Management**: Provides (Session)Context API for cross-agent state management
-    - **Task Coordination**: Handles task management, agent coordination, and resource allocation
+- **Dictionary Interface**: Supports simple key-value state storage using `context['key'] = value` syntax
+- **Multi-Agent Coordination**: Manages multiple Agent instances and enables seamless data exchange between different Agents
+- **Session Management**: Provides Context API for cross-agent state management
+- **Task Coordination**: Handles task management, agent coordination, and resource allocation
 
-### AgentContext Lifecycle (Agent-Specific)
+#### Agent-Level Functionality
 - **Scope**: Spans individual Agent execution period
 - **Responsibility**: Agent-specific state management and runtime tracking
-- **Function**: 
-  - **Configuration Management**: Maintains immutable Agent configuration (agent_id, agent_name, agent_desc, system_prompt, agent_prompt, tool_names, context_rule)
-  - **Runtime State Tracking**: Manages mutable runtime state (tools, step, messages, context_usage)
-  - **Dynamic Prompt Management**: Supports runtime modification of system_prompt and agent_prompt based on execution context
-  - **Tool Lifecycle Management**: Handles tool object initialization, execution, and state management
-  - **Conversation History**: Maintains complete message history throughout Agent execution
-  - **Step-by-Step Execution**: Tracks current execution step and manages step transitions
-  - **Context Optimization**: Monitors context usage statistics and applies context processing rules
-  - **State Persistence**: Preserves Agent state across multiple LLM calls and tool invocations within a single execution period
+- **Configuration Management**: Maintains immutable Agent configuration (agent_id, agent_name, agent_desc, system_prompt, agent_prompt, tool_names, context_rule)
+- **Runtime State Tracking**: Manages mutable runtime state (tools, step, messages, context_usage, trajectories)
+- **Dynamic Prompt Management**: Supports runtime modification of system_prompt and agent_prompt based on execution context
+- **Tool Lifecycle Management**: Handles tool object initialization, execution, and state management
+- **Conversation History**: Maintains complete message history throughout Agent execution
+- **Step-by-Step Execution**: Tracks current execution step and manages step transitions
+- **Context Optimization**: Monitors context usage statistics and applies context processing rules
+- **State Persistence**: Preserves Agent state across multiple LLM calls and tool invocations within a single execution period
 
-### Example: State Management and Recovery
+### Example: Agent State Transfer
 
-> **📋 Test Implementation**: See complete test implementation at [`tests/test_context_management.py::TestContextManagement::test_state_management_and_recovery()`](../../../tests/test_context_management.py)
+> **📋 Test Implementation**: See complete test implementation at [`tests/test_context_management.py::TestContextManagement::test_multi_agent_state_trace()`](../../../tests/test_context_management.py)
 
 ```python
 class StateModifyAgent(Agent):
     async def async_policy(self, observation, info=None, **kwargs):
         result = await super().async_policy(observation, info, **kwargs)
-        self.context.state['policy_executed'] = True
+        self.context.context_info.set('policy_executed', True)
         return result
 
 class StateTrackingAgent(Agent):
     async def async_policy(self, observation, info=None, **kwargs):
         result = await super().async_policy(observation, info, **kwargs)
-        assert self.context.state['policy_executed'] == True
+        assert self.context.context_info.get('policy_executed', True)
         return result
 
 # Create custom agent instance
@@ -98,67 +107,50 @@ second_agent = StateTrackingAgent(
 )
 
 # Run multi-agent scenario
-response = run_multi_agent(
+response = self.run_multi_agent(
     input="What is an agent. describe within 20 words",
     agent1=custom_agent,
     agent2=second_agent
 )
 
 # Verify state changes after execution
-assert custom_agent.context.state.get('policy_executed', True)
-assert second_agent.agent_context.state.get('policy_executed', True)
+assert custom_agent.context.context_info.get('policy_executed', True)
 ```
 
-### Example: Hook System, LLM Call Intervention and Agent state sharing
+### Example: Multi-task State Management with Fork and Merge
+
+> **📋 Test Implementation**: See complete test implementation at [`tests/test_context_management.py::TestContextManagement::test_multi_task_state_trace()`](../../../tests/test_context_management.py)
+
+```python
+from aworld.core.context.base import Context
+from aworld.core.task import Task
+
+# Create parent context and task
+context = Context()
+task = Task(input="What is an agent.", context=context)
+
+# Fork child context for sub-task
+new_context = task.context.deep_copy()
+new_context.context_info.update({"hello": "world"})
+
+# Run task with child context
+self.run_task(context=new_context, agent=self.init_agent("1"))
+assert new_context.context_info.get("hello") == "world"
+
+# Merge child context back to parent
+task.context.merge_context(new_context)
+assert task.context.context_info.get("hello") == "world"
+```
+
+### Example: Hook System and LLM Call Intervention
 
 > **📋 Test Implementation**: See complete Hook system test implementations at:
 > - [`tests/test_context_management.py::TestHookSystem::test_hook_registration()`](../../../tests/test_context_management.py) - Hook registration test
 > - [`tests/test_context_management.py::TestHookSystem::test_hook_execution()`](../../../tests/test_context_management.py) - Hook execution test
 
 ```python
-from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
+from tests.test_llm_hook import TestPreLLMHook, TestPostLLMHook
 from aworld.runners.hook.hook_factory import HookFactory
-from aworld.utils.common import convert_to_snake
-from aworld.core.event.base import Message
-from aworld.core.context.base import Context
-
-# Test Hook System functionality
-@HookFactory.register(name="TestPreLLMHook", desc="Test pre-LLM hook")
-class TestPreLLMHook(PreLLMCallHook):
-    """Test hook for pre-LLM processing"""
-    
-    def name(self):
-        return convert_to_snake("TestPreLLMHook")
-    
-    async def exec(self, message: Message, context: Context = None) -> Message:
-        """Test hook execution"""
-        agent_context = context.get_agent_context(message.sender)
-        if agent_context is not None:
-            agent_context.step = 1 
-        
-        assert agent_context.step == 1 or agent_context.step == 2
-        return message
-
-
-@HookFactory.register(name="TestPostLLMHook", desc="Test post-LLM hook")
-class TestPostLLMHook(PostLLMCallHook):
-    """Test hook for post-LLM processing"""
-    
-    def name(self):
-        return convert_to_snake("TestPostLLMHook")
-    
-    async def exec(self, message: Message, context: Context = None) -> Message:
-        """Test hook execution with llm_output processing"""
-        agent_context = context.get_agent_context(message.sender)
-        if agent_context is not None and agent_context.llm_output is not None:
-            # Test dynamic prompt adjustment based on LLM output
-            if hasattr(agent_context.llm_output, 'content'):
-                content = agent_context.llm_output.content.lower()
-                if content is not None:
-                    agent_context.agent_prompt = "Success mode activated"
-
-        assert agent_context.agent_prompt == "Success mode activated"
-        return message
 
 # Test hook registration and retrieval
 assert "TestPreLLMHook" in HookFactory._cls
@@ -172,8 +164,18 @@ assert isinstance(pre_hook, TestPreLLMHook)
 assert isinstance(post_hook, TestPostLLMHook)
 
 # Test hook execution
-response = agent.run("What is an agent. describe within 20 words")
+mock_agent = self.init_agent("1")
+response = self.run_agent(
+    input="What is an agent. describe within 20 words", 
+    agent=mock_agent
+)
 assert response.answer is not None
+
+# Test task context transfer
+from tests.test_context_hook import CheckContextPreLLMHook
+context = Context()
+context.context_info.update({"task": "What is an agent."})
+self.run_task(context=context, agent=mock_agent)
 ```
 
 ## Context Rule Configuration
@@ -198,7 +200,6 @@ Controls intelligent context compression:
 - `trigger_mapreduce_compress_token_length`: Token threshold to trigger map-reduce compression (default: `100000`)
 - `compress_model`: ModelConfig for compression LLM calls (optional)
 
-
 ### Example: Using Default Context Configuration (Recommended)
 
 > **📋 Test Implementation**: See default configuration test at [`tests/test_context_management.py::TestContextManagement::test_default_context_configuration()`](../../../tests/test_context_management.py)
@@ -218,14 +219,18 @@ from aworld.config.conf import AgentConfig
 #         enabled=False  # Compression disabled by default
 #     )
 # )
-response = agent.run("What is an agent. describe within 20 words")
+mock_agent = self.init_agent("1")
+response = self.run_agent(
+    input="What is an agent. describe within 20 words", 
+    agent=mock_agent
+)
 
 assert response.answer is not None
-assert agent.agent_context.model_config.llm_model_name == "llama-2-7b-chat-hf-function-calling-v2"
+assert mock_agent.conf.llm_config.llm_model_name == self.mock_model_name
 
 # Test default context rule behavior
-assert agent.agent_context.context_rule is not None
-assert agent.agent_context.context_rule.optimization_config is not None
+assert mock_agent.context_rule is not None
+assert mock_agent.context_rule.optimization_config is not None
 ```
 
 ### Example: Custom Context Configuration
@@ -236,46 +241,134 @@ assert agent.agent_context.context_rule.optimization_config is not None
 from aworld.config.conf import AgentConfig, ContextRuleConfig, OptimizationConfig, LlmCompressionConfig, ModelConfig
 
 # Create custom context rules
-context_rule = ContextRuleConfig(
+mock_agent = self.init_agent(context_rule=ContextRuleConfig(
     optimization_config=OptimizationConfig(
         enabled=True,
-        max_token_budget_ratio=0.8  # Use 80% of context window
+        max_token_budget_ratio=0.00015
     ),
     llm_compression_config=LlmCompressionConfig(
-        enabled=True,  # Enable beta compression feature
+        enabled=True,
         trigger_compress_token_length=100,
-        trigger_mapreduce_compress_token_length=1000,
         compress_model=ModelConfig(
-            llm_model_name="llama-2-7b-chat-hf-function-calling-v2",
-            llm_base_url="http://localhost:1234/v1",
-            llm_api_key="lm-studio",
+            llm_model_name=self.mock_model_name,
+            llm_base_url=self.mock_base_url,
+            llm_api_key=self.mock_api_key,
         )
     )
+))
+
+response = self.run_agent(
+    input="describe What is an agent in details", 
+    agent=mock_agent
 )
-
-# Save original rule for restoration
-origin_rule = agent.agent_context.context_rule
-agent.update_context_rule(context_rule)
-
-# Test the agent with custom configuration
-response = agent.run("What is an agent. describe within 20 words")
 assert response.answer is not None
 
 # Test configuration values
-assert agent.agent_context.context_rule.optimization_config.enabled == True
-assert agent.agent_context.context_rule.llm_compression_config.enabled == True
-
-# Restore original rule
-agent.update_context_rule(origin_rule)
+assert mock_agent.context_rule.optimization_config.enabled
+assert mock_agent.context_rule.llm_compression_config.enabled
 ```
+
+
+## Prompt Template
+
+The AWorld framework provides a powerful prompt template system for dynamic prompt generation and management. The `StringPromptTemplate` class offers flexible string-based templating with variable substitution, partial variables, and Context integration.
+
+### Features
+
+- **Dynamic Variable Substitution**: Support for f-string and Jinja2 template formats
+- **Context Integration**: Seamless integration with AWorld Context objects
+- **Partial Variables**: Pre-fill common template variables for reusability
+- **Template Combination**: Combine multiple templates using the `+` operator
+- **Backward Compatibility**: `PromptTemplate` alias for `StringPromptTemplate`
+
+### Example: StringPromptTemplate Usage
+
+> **📋 Test Implementation**: See complete test implementation at [`tests/test_prompt_template.py::test_string_prompt_template()`](../../../tests/test_prompt_template.py)
+
+```python
+from aworld.core.context.base import Context
+from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate, PromptTemplate
+
+# 1. Basic functionality test
+template = StringPromptTemplate.from_template("Hello {name}, welcome to {place}!")
+assert "name" in template.input_variables
+assert "place" in template.input_variables
+
+result = template.format(name="Alice", place="AWorld")
+assert result == "Hello Alice, welcome to AWorld!"
+
+# 2. Context integration
+context = Context()
+context.context_info.update({"task": "chat"})
+
+context_template = StringPromptTemplate.from_template("Task: {task}\nUser: {user_input}")
+result = context_template.format(context=context, task="chat", user_input="Hello!")
+assert "Task: chat" in result
+assert "User: Hello!" in result
+
+# 3. Partial variables functionality
+partial_template = StringPromptTemplate.from_template(
+    "System: {system_prompt}\nUser: {user_input}",
+    partial_variables={"system_prompt": "You are helpful."}
+)
+assert "user_input" in partial_template.input_variables
+assert "system_prompt" not in partial_template.input_variables
+
+result = partial_template.format(user_input="Hi!")
+assert "System: You are helpful." in result
+
+# 4. Template combination
+template1 = StringPromptTemplate.from_template("Hello {name}!")
+template2 = StringPromptTemplate.from_template(" Welcome to {place}.")
+combined = template1 + template2
+
+result = combined.format(name="Bob", place="AWorld")
+assert result == "Hello Bob! Welcome to AWorld."
+
+# 5. PromptTemplate alias
+alias_template = PromptTemplate.from_template("Test {value}")
+assert isinstance(alias_template, StringPromptTemplate)
+result = alias_template.format(value="success")
+assert result == "Test success"
+```
+
+### Example: Dynamic Variables
+
+> **📋 Test Implementation**: See complete test implementation at [`tests/test_prompt_template.py::test_dynamic_variables()`](../../../tests/test_prompt_template.py)
+
+```python
+from aworld.core.context.base import Context
+from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter
+
+# Create context with trajectory data
+context = Context()
+value = {"steps": [1, 2, 3]}
+context.trajectories.update(value)
+
+# Create dynamic field getter
+getter = create_simple_field_getter("trajectories", context)
+formatted_value = getter(context=context)
+assert str(value) in formatted_value
+```
+
+### Key Features
+
+1. **Variable Recognition**: Automatically identifies template variables from the template string
+2. **Flexible Formatting**: Supports multiple template formats (f-string, Jinja2)
+3. **Context Awareness**: Integrates seamlessly with AWorld Context objects
+4. **Reusability**: Partial variables allow for template reuse with pre-filled values
+5. **Composability**: Templates can be combined and extended using operators
+6. **Dynamic Content**: Support for dynamic variables that resolve at runtime
+
 
 ## Notes
 
-1. **Hierarchical Lifecycle**: Context spans the entire AWorld Runner execution while AgentContext spans individual Agent executions, as illustrated in the context lifecycle diagram.
+1. **Unified Architecture**: Context serves as both session-level and agent-level context manager, providing comprehensive state management across the entire AWorld framework.
 2. **Beta Features**: The `llm_compression_config` is currently in beta. Use with caution in production environments.
 3. **Performance Trade-offs**: Enabling compression can save token usage but increases processing time. Adjust configuration based on actual needs.
 4. **Model Compatibility**: Different models have different context length limitations. The system automatically adapts to model capabilities.
 5. **Default Configuration**: The system provides reasonable default configuration. Manual configuration is unnecessary for most scenarios.
-6. **State Management**: Context and AgentContext support state sharing between multiple Agents and ensures state consistency. State persistence functionality is currently under development.
+6. **State Management**: Context supports state sharing between multiple Agents and ensures state consistency. State persistence functionality is currently under development.
+7. **Multi-task Support**: Context provides fork_new_task and merge_context capabilities for complex multi-task scenarios with proper state isolation and consolidation.
 
-Through proper configuration of Context and AgentContext with context processors, you can significantly improve Agent performance in long conversations and complex tasks while optimizing token usage efficiency.
+Through proper configuration of Context with context processors, you can significantly improve Agent performance in long conversations and complex tasks while optimizing token usage efficiency.

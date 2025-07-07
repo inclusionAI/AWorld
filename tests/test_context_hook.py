@@ -27,6 +27,6 @@ class CheckContextPreLLMHook(PreLLMCallHook):
     def name(self):
         return convert_to_snake("CheckContextPreLLMHook")
     async def exec(self, message: Message, context: Context = None) -> Message:
-        assert context.state.get("task") == "What is an agent."
-        color_log(f"CheckContextPreLLMHook test state: {context.state}", color=Color.green)
+        assert context.context_info.get("task") == "What is an agent."
+        color_log(f"CheckContextPreLLMHook test state: {context.context_info}", color=Color.green)
         return message

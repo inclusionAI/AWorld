@@ -27,7 +27,7 @@ import { useSessionId } from '../hooks/useSessionId';
 import Prompts from '../pages/components/Prompts';
 import Welcome from '../pages/components/Welcome';
 import BubbleItem from './components/BubbleItem';
-import Trace from './components/Drawer/TraceThoughtChain';
+// import Trace from './components/Drawer/TraceThoughtChain';
 import TraceXY from './components/Drawer/TraceXY';
 import './index.less';
 
@@ -204,7 +204,7 @@ const useStyle = createStyles(({ token, css }) => {
 
 const App: React.FC = () => {
   const { styles } = useStyle();
-  const abortController = useRef<AbortController>(null);
+  const abortController = useRef<AbortController | null>(null);
   const { sessionId, generateNewSessionId, updateURLSessionId, setSessionId } = useSessionId();
   const { agentId, setAgentIdAndUpdateURL } = useAgentId();
 
@@ -228,11 +228,21 @@ const App: React.FC = () => {
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Workspace');
   const [traceId, setTraceId] = useState<string>('');
+  const [traceQuery, setTraceQuery] = useState<string>('');
   const openDrawer = (content: DrawerContentType, id?: string) => {
     setDrawerVisible(true);
     setDrawerContent(content);
     if (id) {
       setTraceId(id);
+      const session = sessionData[sessionId];
+      if (session && session.messages) {
+        const userItem = session.messages.find(msg =>
+          msg.trace_id === id && msg.role === 'user'
+        );
+        if (userItem) {
+          setTraceQuery(userItem.content);
+        }
+      }
     }
   }
   const closeDrawer = () => {
@@ -390,6 +400,9 @@ const App: React.FC = () => {
       };
     },
     resolveAbortController: (controller) => {
+      if (abortController.current) {
+        abortController.current.abort();
+      }
       abortController.current = controller;
     },
   });
@@ -405,11 +418,10 @@ const App: React.FC = () => {
 
     onRequest({
       stream: true,
+      session_id: sessionId,
       message: { role: 'user', content: val },
-      headers: {
-        'X-Session-ID': sessionId,
-      },
     });
+    setTraceQuery(val)
   };
 
   // 复制消息内容到剪贴板
@@ -447,14 +459,18 @@ const App: React.FC = () => {
   const chatSider = (
     <div className={styles.sider}>
       {/* 🌟 Logo */}
-      <div className={styles.logo}>
+      <a href="https://github.com/inclusionAI/AWorld" className={styles.logo} target="_blank">
         <img src={logo} alt="AWorld Logo" width="24" height="24" />
         <span>AWorld</span>
-      </div>
-
+      </a>
       {/* 🌟 添加会话 */}
       <Button
         onClick={() => {
+          if (conversations.some(conv => conv.label === 'New Conversation')) {
+            message.warning('New session already exists, please ask a question.');
+            return;
+          }
+
           if (agent.isRequesting()) {
             message.error(
               'Message is Requesting, you can create a new conversation after request done or abort it right now...',
@@ -490,25 +506,27 @@ const App: React.FC = () => {
         onActiveChange={async (val) => {
           console.log('active change: session_id', val);
           setCurConversation(val);
-
           setSessionId(val);
           updateURLSessionId(val);
 
-          const session = sessionData[val];
-          if (session && session.messages.length > 0) {
-            const chatMessages = session.messages.map((msg, index) => ({
-              id: `${val}-${index}`,
-              message: {
-                role: msg.role,
-                trace_id: msg.trace_id,
-                content: msg.content
-              },
-              status: 'success' as const
-            }));
-            setMessages(chatMessages);
-          } else {
-            setMessages(messageHistory?.[val] || []);
-          }
+          fetchSessions().then(() => {
+            console.log('fetchSessions: sessionData', sessionData);
+            const session = sessionData[val];
+            if (session && session.messages.length > 0) {
+              const chatMessages = session.messages.map((msg, index) => ({
+                id: `${val}-${index}`,
+                message: {
+                  role: msg.role,
+                  trace_id: msg.trace_id,
+                  content: msg.content
+                },
+                status: 'success' as const
+              }));
+              setMessages(chatMessages);
+            } else {
+              setMessages(messageHistory?.[val] || []);
+            }
+          });
         }}
         groupable={false}
         styles={{ item: { padding: '0 8px' } }}
@@ -581,12 +599,12 @@ const App: React.FC = () => {
                     icon={<CopyOutlined />}
                     onClick={() => copyMessageContent(messageItem.content || '')}
                   />
-                  <Button
+                  {/* <Button
                     type="text"
                     size="small"
                     icon={<BoxPlotOutlined />}
                     onClick={() => openDrawer('Trace', messageItem.props?.trace_id)}
-                  />
+                  /> */}
                   <Button
                     type="text"
                     size="small"
@@ -723,7 +741,7 @@ const App: React.FC = () => {
       {chatSider}
       <div className={styles.chat}>
         {chatList}
-        {(messages?.length > 0 || curConversation) && chatSender}
+        {messages?.length > 0 && chatSender}
       </div>
       <Drawer
         placement="right"
@@ -744,11 +762,12 @@ const App: React.FC = () => {
         maskClosable={true}
         open={drawerVisible}
       >
-        {drawerContent === 'Trace' ? (
+        {/* {drawerContent === 'Trace' ? (
           <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
-        ) : (
-          <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} drawerVisible={drawerVisible} />
-        )}
+        ) : 
+        ( */}
+          <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} traceQuery={traceQuery} drawerVisible={drawerVisible} />
+        {/* )} */}
       </Drawer>
     </div>
   );

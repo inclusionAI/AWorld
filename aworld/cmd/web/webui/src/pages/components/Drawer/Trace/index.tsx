@@ -32,7 +32,7 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
       setMermaidCode(mermaidData);
     } catch (error) {
       console.error('Trace processing error:', error);
-      setMermaidCode(renderError(error instanceof Error ? error.message : '数据处理错误'));
+      setMermaidCode(renderError(error instanceof Error ? error.message : 'Data Processing Error'));
     } finally {
       isFetching.current = false;
     }
@@ -66,7 +66,7 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
         }
       } catch (error) {
         console.error('Mermaid error:', error);
-        setMermaidCode(renderError(error instanceof Error ? error.message : '图表渲染错误'));
+        setMermaidCode(renderError(error instanceof Error ? error.message : 'Rendering Error'));
       }
     };
 
@@ -78,7 +78,7 @@ const Trace: React.FC<TraceProps> = ({ traceId, drawerVisible }) => {
       <div ref={diagramRef} className="mermaid">
         {mermaidCode ||
           `graph TD
-          A[加载中...]`}
+          A[loading...]`}
       </div>
       <p className='trace-id'>traceId: {traceId}</p>
     </div>
