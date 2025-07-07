@@ -17,9 +17,9 @@ interface ItemInterface {
 }
 
 const cardLinkList: React.FC<Props> = ({ sessionId, data, onOpenWorkspace }) => {
-  const items = data?.card_data?.search_items || [];
-  const cardItems = items;
+  const items = data?.card_data?.search_items;
 
+  const cardItems = Array.isArray(items) ? items : [];
   // 打开workspace
   const handleOpenWorkspace = useCallback(() => {
     if (onOpenWorkspace) {
