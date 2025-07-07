@@ -135,6 +135,7 @@ class GaiaAgentRunner:
                         "pip",
                         "install",
                         "-U",
+                        "--no-deps",
                         "marker-pdf==1.7.5",
                     ]
                 )
