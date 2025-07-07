@@ -50,7 +50,7 @@ const TraceXY: React.FC<TraceXYProps> = ({ traceId, traceQuery, drawerVisible })
         let formattedData = [];
         if (result?.data) {
           const { data } = result;
-          formattedData = Array.isArray(data) ? [{ show_name: traceQuery, children: data }] : data;
+          formattedData = Array.isArray(data) && data.length >= 1 ? [{ show_name: traceQuery, children: data }] : data;
         }
         setElements(buildFlowElements(formattedData));
       } catch (error) {

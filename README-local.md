@@ -6,7 +6,7 @@
    - Ensure Conda is installed and configured on your machine
    - Create a Conda environment:
      ```bash
-     conda create -n aworld python=3.11
+     conda create -n aworld python=3.11 -y
      conda activate aworld
      ```
 
@@ -28,7 +28,7 @@
 4. **API Configuration**
    - Set up your environment variables:
      ```bash
-     cp .env.template .env
+     cp examples/cmd/agent_deploy/${agent_name}/.env.template examples/cmd/agent_deploy/${agent_name}/.env
      ```
    - Edit the `.env` file and replace all `{YOUR_CONFIG}` placeholders with your actual values
 
@@ -37,7 +37,7 @@
 1. **Start the Web Server**
    - Build and run the AWorld Agent:
      ```bash
-     sh run-server.sh
+     sh run-web.sh
      ```
    - Wait for the installation to complete
 

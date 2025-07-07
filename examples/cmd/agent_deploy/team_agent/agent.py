@@ -77,10 +77,10 @@ class AWorldAgent(BaseAWorldAgent):
 
         # default is sequence swarm mode
         swarm = Swarm(
+            plan_agent,
             google_pse_search_agent,
-            aworld_playwright_agent,
+            # aworld_playwright_agent,
             summary_agent,
-            root_agent=plan_agent,
             build_type=GraphBuildType.TEAM,
             max_steps=10,
         )
