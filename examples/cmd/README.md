@@ -1,6 +1,6 @@
 
 
-## Run Agent via `aworld run`
+## 2 Step run your own Agent
 
 
 ### Directory Structure
