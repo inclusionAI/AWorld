@@ -15,7 +15,6 @@ import time
 import traceback
 
 from browser_use import Agent, AgentHistoryList, BrowserProfile
-from browser_use.agent.memory.views import MemoryConfig
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
@@ -111,7 +110,6 @@ class BrowserActionCollection(ActionCollection):
             extend_system_message=self.extended_browser_system_prompt,
             use_vision=True,
             enable_memory=True,
-            memory_config=MemoryConfig(llm_instance=self.llm_config),
             browser_profile=self.browser_profile,
             save_conversation_path=f"{self.trace_log_dir}/browser_log/trace.log",
         )

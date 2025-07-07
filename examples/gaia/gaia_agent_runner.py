@@ -94,7 +94,7 @@ class GaiaSearchToolResultParser(BaseToolResultParser):
 
 class CustomToolResultParserFactory(ToolResultParserFactory):
     def get_parser(self, tool_type: str, tool_name: str):
-        if "search" == tool_name:
+        if tool_name in ("search_server", "search"):
             return GaiaSearchToolResultParser()
         return super().get_parser(tool_type, tool_name)
 
@@ -114,7 +114,7 @@ class GaiaAgentRunner:
         mcp_config: dict = {},
         session_id: str = None,
     ):
-        self.session_id = session_id
+        self.session_id = session_id or str(uuid.uuid4())
         self.agent_config = AgentConfig(
             llm_provider=llm_provider,
             llm_model_name=llm_model_name,

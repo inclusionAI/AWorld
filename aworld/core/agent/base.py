@@ -76,7 +76,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                  agent_names: List[str] = None,
                  mcp_servers: List[str] = None,
                  mcp_config: Dict[str, Any] = None,
-                 feedback_tool_result: bool = False,
+                 feedback_tool_result: bool = True,
                  sandbox: Sandbox = None,
                  **kwargs):
         """Base agent init.
