@@ -38,7 +38,6 @@ waybackpy
 markdown
 browser-use
 # marker-pdf==1.7.5
-marker-pdf
 pathvalidate
 pdfminer.six
 puremagic
@@ -47,3 +46,5 @@ SpeechRecognition
 html2text
 pre_commit
 smolagents
+
+ffmpeg-python

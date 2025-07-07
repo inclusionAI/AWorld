@@ -6,30 +6,13 @@ import json
 import sys
 import uuid
 import time
-import subprocess
 
 logger = logging.getLogger(__name__)
 
 
 class GaiaAgentServer:
     def __init__(self):
-        self._install_dependencies()
-
-    def _install_dependencies(self):
-        try:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            requirements_file = os.path.join(current_dir, "requirements.txt")
-
-            if os.path.exists(requirements_file):
-                logger.info(f"Installing dependencies from {requirements_file}")
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", "-r", requirements_file]
-                )
-                logger.info("Dependencies installed successfully")
-            else:
-                logger.warning(f"Requirements file not found at {requirements_file}")
-        except Exception as e:
-            logger.error(f"Failed to install dependencies: {e}")
+        pass
 
     def _get_model_config(self):
         try:

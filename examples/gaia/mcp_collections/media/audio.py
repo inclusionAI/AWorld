@@ -87,7 +87,10 @@ class AudioCollection(ActionCollection):
                 self._color_log("FFmpeg not found in system PATH", Color.red)
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            self._color_log("FFmpeg not available or timeout", Color.red)
+            self._color_log(
+                "FFmpeg not available or timeout, Please refer to https://github.com/inclusionAI/AWorld/blob/main/examples/gaia/README.md#system-tools-setup for more details",
+                Color.red,
+            )
             return False
 
     def _prepare_audio_for_transcription(self, file_path: Path) -> Path:
