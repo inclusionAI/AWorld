@@ -180,7 +180,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """
         agent_prompt = self.agent_prompt
         messages = []
-        print("agent_prompt: ", agent_prompt)
         # append sys_prompt to memory
         sys_prompt = self.system_prompt
         sys_prompt = Prompt(self.system_prompt,context=self.context).get_prompt()

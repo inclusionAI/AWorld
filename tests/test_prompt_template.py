@@ -6,11 +6,11 @@ from pathlib import Path
 import random
 import sys
 
-from aworld.core.agent.swarm import Swarm
-from aworld.runner import Runners
-
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+from aworld.core.agent.swarm import Swarm
+from aworld.runner import Runners
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ContextRuleConfig, ModelConfig
@@ -136,7 +136,8 @@ class TestPromptTemplate(BaseTest):
     
     def check_messages(self, messages):
         assert len(messages) == 2
-        print(messages)
+        assert messages[0]['content'] == "You are a helpful assistant."
+        # print(messages)
         assert messages[1]['content'] == "hello world"
 
     def test_agent_prompt_is_none(self):
@@ -148,7 +149,8 @@ class TestPromptTemplate(BaseTest):
 
     def check_messages_2(self, messages):
         assert len(messages) == 2
-        print(messages)
+        assert messages[0]['content'] == "You are a helpful assistant."
+        # print(messages)
         assert messages[1]['content'] == "Mike {age}"
 
     def test_agent_prompt_not_defined(self):
