@@ -7,7 +7,7 @@
                 "examples.gaia.mcp_collections.media.audio"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "browser": {
@@ -20,7 +20,7 @@
                 "LLM_MODEL_NAME": "${LLM_MODEL_NAME}",
                 "LLM_API_KEY": "${LLM_API_KEY}",
                 "LLM_BASE_URL": "${LLM_BASE_URL}",
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "chess": {
@@ -30,7 +30,7 @@
                 "examples.gaia.mcp_collections.tools.playchess"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "code": {
@@ -50,7 +50,7 @@
                 "examples.gaia.mcp_collections.documents.mscsv"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "docx": {
@@ -60,7 +60,7 @@
                 "examples.gaia.mcp_collections.documents.msdocx"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "download": {
@@ -70,7 +70,7 @@
                 "examples.gaia.mcp_collections.tools.download"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "xlsx": {
@@ -80,7 +80,7 @@
                 "examples.gaia.mcp_collections.documents.msxlsx"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "image": {
@@ -90,7 +90,7 @@
                 "examples.gaia.mcp_collections.media.image"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "pdf": {
@@ -100,7 +100,7 @@
                 "examples.gaia.mcp_collections.documents.pdf"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "pptx": {
@@ -110,7 +110,7 @@
                 "examples.gaia.mcp_collections.documents.mspptx"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "pubchem": {
@@ -120,7 +120,7 @@
                 "examples.gaia.mcp_collections.tools.pubchem"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "reasoning": {
@@ -130,7 +130,7 @@
                 "examples.gaia.mcp_collections.intelligence.think"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "search": {
@@ -142,7 +142,7 @@
             "env": {
                 "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
                 "GOOGLE_CSE_ID": "${GOOGLE_CSE_ID}",
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "terminal": {
@@ -159,7 +159,7 @@
                 "examples.gaia.mcp_collections.media.video"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "wayback": {
@@ -169,7 +169,7 @@
                 "examples.gaia.mcp_collections.tools.wayback"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "wikipedia": {
@@ -179,7 +179,7 @@
                 "examples.gaia.mcp_collections.tools.wiki"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "youtube": {
@@ -189,7 +189,7 @@
                 "examples.gaia.mcp_collections.tools.youtube"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         },
         "txt": {
@@ -199,7 +199,7 @@
                 "examples.gaia.mcp_collections.documents.txt"
             ],
             "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 120
             }
         }
     }

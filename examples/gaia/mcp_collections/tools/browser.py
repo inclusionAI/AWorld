@@ -22,7 +22,7 @@ try:
     from pydantic import BaseModel, Field
 
     from aworld.logs.util import Color
-    from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
+    from ..base import ActionArguments, ActionCollection, ActionResponse
 except Exception as e:
     print(f"Failed to import browser tool: {traceback.format_exc()}")
     raise e
