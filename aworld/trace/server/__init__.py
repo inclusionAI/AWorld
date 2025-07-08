@@ -3,6 +3,7 @@
 import threading
 from .routes import setup_routes
 from aworld.logs.util import logger
+from aworld.utils.import_package import import_package
 
 GLOBAL_TRACE_SERVER = None
 
@@ -33,9 +34,12 @@ class TraceServer:
         return self._started
 
     def _start_app(self):
+        import_package('uvicorn')  # noqa
+        import uvicorn
         app = setup_routes(self._storage)
         self.app = app
-        app.run(port=self._port)
+        # app.run(port=self._port)
+        uvicorn.run(app, host="0.0.0.0", port=self._port)
 
 
 def set_trace_server(storage, port: int = 7079, start_server=False):

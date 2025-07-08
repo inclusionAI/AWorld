@@ -1,11 +1,18 @@
+import os
 from aworld.trace.opentelemetry.memory_storage import TraceStorage
 from aworld.utils.import_package import import_package
 from aworld.trace.server.util import build_trace_tree
 
-import_package('flask')  # noqa
-from flask import Flask, render_template, jsonify  # noqa
+import_package('fastapi')  # noqa
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
-app = Flask(__name__, template_folder='../../web/templates')
+app = FastAPI()
+webui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../cmd/web/webui")
+static_path = os.path.join(webui_path, "dist")
+app.mount("/static", StaticFiles(directory=static_path), name="static")
 current_storage = None
 routes_setup = False
 
@@ -19,12 +26,12 @@ def setup_routes(storage: TraceStorage):
     if routes_setup:
         return app
 
-    @app.route('/')
-    def index():
-        return render_template('trace_ui.html')
+    @app.get("/")
+    async def root():
+        return RedirectResponse("/static/trace_ui.html")
 
-    @app.route('/api/traces')
-    def traces():
+    @app.get('/api/trace/list')
+    async def traces():
         trace_data = []
         for trace_id in current_storage.get_all_traces():
             spans = current_storage.get_all_spans(trace_id)
@@ -34,14 +41,17 @@ def setup_routes(storage: TraceStorage):
                 'trace_id': trace_id,
                 'root_span': trace_tree,
             })
-        return jsonify(trace_data)
+            response = {
+                "data": trace_data
+            }
+        return JSONResponse(content=response)
 
-    @app.route('/api/traces/<trace_id>')
-    def get_trace(trace_id):
+    @app.get('/api/traces/{trace_id}')
+    async def get_trace(trace_id):
         spans = current_storage.get_all_spans(trace_id)
         spans_sorted = sorted(spans, key=lambda x: x.start_time)
         trace_tree = build_trace_tree(spans_sorted)
-        return jsonify({
+        return JSONResponse(content={
             'trace_id': trace_id,
             'root_span': trace_tree,
         })
