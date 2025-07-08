@@ -1,20 +1,44 @@
 import asyncio
+import logging
 import os
 
 from dotenv import load_dotenv
 
-from aworld.core.memory import LongTermConfig, MemoryConfig, AgentMemoryConfig
+from aworld.core.memory import LongTermConfig, MemoryConfig, AgentMemoryConfig, EmbeddingsConfig, VectorDBConfig, \
+    MemoryLLMConfig
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import LongTermMemoryTriggerParams, MessageMetadata
-from aworld.memory.db.postgres import PostgresMemoryStore
 from examples.memory.short_term.utils import add_mock_messages
 
+async def init():
+    load_dotenv()
+
+    MemoryFactory.init(
+        config=MemoryConfig(
+            provider="aworld",
+            llm_config=MemoryLLMConfig(
+                provider="openai",
+                model_name=os.environ["LLM_MODEL_NAME"],
+                api_key=os.environ["LLM_API_KEY"],
+                base_url=os.environ["LLM_BASE_URL"]
+            ),
+            embedding_config=EmbeddingsConfig(
+                provider="ollama",
+                base_url="http://localhost:11434",
+                model_name="nomic-embed-text"
+            ),
+            vector_store_config=VectorDBConfig(
+                provider="chroma",
+                config=
+                {
+                    "chroma_data_path": "./chroma_db",
+                    "collection_name": "aworld",
+                }
+            )
+        ))
 
 async def trigger_long_term_memory_agent_experience():
-    load_dotenv()
-    postgres_memory_store = PostgresMemoryStore(db_url=os.getenv("MEMORY_STORE_POSTGRES_DSN"))
-    MemoryFactory.init(custom_memory_store=postgres_memory_store)
-
+    await init()
     memory = MemoryFactory.instance()
     metadata = MessageMetadata(
         user_id="zues",
@@ -47,10 +71,7 @@ async def trigger_long_term_memory_agent_experience():
     await asyncio.sleep(10)
 
 async def query_agent_experience():
-    load_dotenv()
-    postgres_memory_store = PostgresMemoryStore(db_url=os.getenv("MEMORY_STORE_POSTGRES_DSN"))
-    MemoryFactory.init(custom_memory_store=postgres_memory_store)
-
+    # await init()
     memory = MemoryFactory.instance()
     metadata = MessageMetadata(
         user_id="zues",
@@ -64,11 +85,11 @@ async def query_agent_experience():
         user_input="what is my advantage skills?"
     )
     for agent_experience in agent_experiences:
-        print(agent_experience)
+        logging.info(f"Search->{agent_experience}")
 
 
 
 if __name__ == '__main__':
-    # asyncio.run(trigger_long_term_memory_agent_experience())
+    asyncio.run(trigger_long_term_memory_agent_experience())
     asyncio.run(query_agent_experience())
 
