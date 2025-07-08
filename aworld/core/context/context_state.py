@@ -6,7 +6,10 @@ Context State Management System
 Provides hierarchical state management with parent-child state inheritance
 """
 
+import logging
 from typing import Any, Dict, List, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 
 class ContextState:
@@ -37,7 +40,8 @@ class ContextState:
         elif self._parent_state is not None:
             return self._parent_state[key]
         else:
-            raise KeyError(f"Key '{key}' not found in state")
+            logger.error(f"Key '{key}' not found in state")
+            return None
     
     def __setitem__(self, key: str, value: Any) -> None:
         """Set state value, only writes to local state"""
@@ -48,7 +52,7 @@ class ContextState:
         if key in self._data:
             del self._data[key]
         else:
-            raise KeyError(f"Key '{key}' not found in local state")
+            logger.error(f"Key '{key}' not found in local state")
     
     def __contains__(self, key: str) -> bool:
         """Check if contains specified key, including parent state"""
@@ -79,9 +83,11 @@ class ContextState:
         Returns:
             Value corresponding to key or default value
         """
-        try:
-            return self[key]
-        except KeyError:
+        if key in self._data:
+            return self._data[key]
+        elif self._parent_state is not None:
+            return self._parent_state.get(key, default)
+        else:
             return default
     
     def set(self, key: str, value: Any) -> None:
@@ -94,19 +100,44 @@ class ContextState:
         """
         self._data[key] = value
     
-    def update(self, other: Union[Dict[str, Any], 'ContextState']) -> None:
+    def update(self, other: Union[Dict[str, Any], 'ContextState'] = None, **kwargs) -> None:
         """
         Batch update state
         
         Args:
             other: Data to update, can be dict or another ContextState
+            **kwargs: Keyword arguments to update
+            
+        Examples:
+            # Traditional dict update
+            state.update({"key1": "value1", "key2": "value2"})
+            
+            # ContextState update
+            state.update(other_state)
+            
+            # Keyword arguments update
+            state.update(task_list=plan_result.task_list, status="completed")
+            
+            # Mixed update
+            state.update({"key1": "value1"}, key2="value2", key3="value3")
         """
-        if isinstance(other, dict):
-            self._data.update(other)
-        elif isinstance(other, ContextState):
-            self._data.update(other._data)
-        else:
-            raise TypeError("update() argument must be dict or ContextState")
+        try:
+            # Handle positional argument
+            if other is not None:
+                if isinstance(other, dict):
+                    self._data.update(other)
+                elif isinstance(other, ContextState):
+                    self._data.update(other._data)
+                else:
+                    logger.error(f"update() first argument must be dict or ContextState, got {type(other)}")
+                    return
+            
+            # Handle keyword arguments
+            if kwargs:
+                self._data.update(kwargs)
+                
+        except Exception as e:
+            logger.error(f"Error updating state: {e}")
     
     def pop(self, key: str, default: Any = None) -> Any:
         """
