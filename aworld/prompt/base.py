@@ -2,6 +2,10 @@ import logging
 import re
 from typing import Dict, Any, Optional, Callable, List
 
+from aworld.core.context.base import Context
+from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter, create_multiple_field_getters, \
+    get_field_values_from_list
+
 # Import system_prompt directly from the module
 try:
     from aworld.prompt.templates.prompt import system_prompt as default_system_prompt
@@ -13,7 +17,7 @@ class Prompt:
     Prompt processing class, responsible for loading templates and rendering variables
     """
     
-    def __init__(self, template: str = None):
+    def __init__(self, template: str = None, context: Context = None) -> None:
         """
         Initialize Prompt class
         
@@ -27,6 +31,7 @@ class Prompt:
             
         # Extract variables from the template
         self.variables = self._extract_variables(self.template_content)
+        self.context = context
     
     def _extract_variables(self, template_content: str) -> List[str]:
         """
@@ -63,25 +68,15 @@ class Prompt:
         """
         # This is a mock implementation, should be replaced with actual API calls in real use
         result = {}
-        
-        for var_name in variables:
-            # Mock values for some specific variables
-            if var_name == "task_description":
-                result[var_name] = "This is a default task description"
-            elif var_name == "available_tools":
-                result[var_name] = "- Search tool\n- Analysis tool\n- Visualization tool"
-            elif var_name == "topic":
-                result[var_name] = "The future of artificial intelligence"
-            elif var_name == "opinion":
-                result[var_name] = "Artificial intelligence will bring positive impacts"
-            elif var_name == "oppose_opinion":
-                result[var_name] = "Artificial intelligence will bring negative impacts"
-            elif var_name == "search_results_content":
-                result[var_name] = "- Research shows that AI can improve productivity\n- Experts believe that AI needs strict regulation"
-            else:
-                # For other variables, generate a placeholder
-                result[var_name] = f"[Value of {var_name}]"
-                
+        context = self.context
+        #getter = create_multiple_field_getters(variables, context)
+        if context and variables:
+            field_paths = variables
+            try:
+                result = get_field_values_from_list(context=context, field_paths=field_paths)
+            except Exception as e:
+                logging.warning(f"Error getting variable values from API: {str(e)}")
+                return None
         return result
     
     def get_prompt(self, variables: Dict[str, Any] = None, variable_resolver: Optional[Callable[[List[str]], Dict[str, Any]]] = None) -> str:
@@ -116,8 +111,9 @@ class Prompt:
         
         # Replace variables
         for var_name, var_value in resolved_variables.items():
-            placeholder = f"{{{{{var_name}}}}}"
-            rendered_content = rendered_content.replace(placeholder, str(var_value))
+            if  var_value:
+                placeholder = f"{{{{{var_name}}}}}"
+                rendered_content = rendered_content.replace(placeholder, str(var_value))
             
         return rendered_content
 
