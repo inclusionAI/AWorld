@@ -87,11 +87,10 @@ class GaiaSearchToolResultParser(BaseToolResultParser):
         )
 
         return f"""
-\n**🔎 Gaia Search**\n\n
+\n\n**🔎 Gaia Search**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
-\n
-```
+```\n
 """
 
 
