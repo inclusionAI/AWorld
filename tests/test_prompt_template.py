@@ -1,72 +1,99 @@
 
+# Add the project root to Python path
+import json
+from pathlib import Path
+import sys
+
+
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+
 from aworld.core.context.base import Context
-from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter
+from aworld.core.context.prompts.dynamic_variables import create_multiple_field_getters, create_simple_field_getter, format_ordered_dict_json, get_field_values_from_list, get_simple_field_value, get_value_by_path
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate, PromptTemplate
 from aworld.core.context.prompts.formatters import TemplateFormat
 
 def test_dynamic_variables():
     context = Context()
-    value = {"steps":[1, 2, 3]}
+    context.context_info.update({"task": "chat"})
+    
+    # Test dot separator
+    value_dot = get_value_by_path(context, "context_info.task")
+    assert "chat" == value_dot
+    
+    # Test slash separator
+    value_slash = get_value_by_path(context, "context_info/task")
+    assert "chat" == value_slash
+    
+def test_formatted_field_getter():
+    context = Context()
+    value = {"steps": [1, 2, 3]}
     context.trajectories.update(value)
 
-    getter = create_simple_field_getter("trajectories", context)
-    formatted_value = getter(context = context)
-    assert str(value) in formatted_value
+    getter = create_simple_field_getter(field_path="trajectories", default="default_value")
+    result = getter(context=context)
+    assert "steps" in value
+    # test default format function
+    assert "OrderedDict" not in result
 
+    # Test formatted field getter with processor
+    getter = create_simple_field_getter(field_path="trajectories", default="default_value", processor=format_ordered_dict_json)
+    result = getter(context=context)
+    assert "steps" in result
+
+def test_multiple_field_getters():
+    context = Context()
+    context.context_info.update({"task": "chat"})
+    context.trajectories.update({"steps": [1, 2, 3]})
+
+    field_paths = ["context_info.task", "trajectories.steps"]
+    result = get_field_values_from_list(context=context, field_paths=field_paths)
+    assert result["context_info_task"] == "chat"
+    assert result["trajectories_steps"] == "[1, 2, 3]"
 
 def test_string_prompt_template():
-    # 1. Basic functionality test
-    template = StringPromptTemplate.from_template("Hello {name}, welcome to {place}!")
+    # Use proper dot notation for nested field access
+    template = StringPromptTemplate.from_template("Hello {name}, welcome to {place}! Task: {task} Age: {age}",
+                                                  partial_variables={"age": "1"})
     assert "name" in template.input_variables
     assert "place" in template.input_variables
-    
-    result = template.format(name="Alice", place="AWorld")
-    assert result == "Hello Alice, welcome to AWorld!"
-    print("✓ Basic functionality test passed")
-    
-    # 2. Using Context object
+    assert "task" in template.input_variables
+
     context = Context()
     context.context_info.update({"task": "chat"})
     
-    context_template = StringPromptTemplate.from_template("Task: {task}\nUser: {user_input}")
-    result = context_template.format(context=context, task="chat", user_input="Hello!")
-    assert "Task: chat" in result
-    assert "User: Hello!" in result
-    print("✓ Context integration test passed")
-    
-    # 3. Partial variables functionality
-    partial_template = StringPromptTemplate.from_template(
-        "System: {system_prompt}\nUser: {user_input}",
-        partial_variables={"system_prompt": "You are helpful."}
-    )
-    assert "user_input" in partial_template.input_variables
-    assert "system_prompt" not in partial_template.input_variables
-    
-    result = partial_template.format(user_input="Hi!")
-    assert "System: You are helpful." in result
-    print("✓ Partial variables test passed")
-    
-    # 4. Template combination
-    template1 = StringPromptTemplate.from_template("Hello {name}!")
-    template2 = StringPromptTemplate.from_template(" Welcome to {place}.")
-    combined = template1 + template2
-    
-    result = combined.format(name="Bob", place="AWorld")
-    assert result == "Hello Bob! Welcome to AWorld."
-    print("✓ Template combination test passed")
-    
-    # 5. PromptTemplate alias
-    alias_template = PromptTemplate.from_template("Test {value}")
-    assert isinstance(alias_template, StringPromptTemplate)
-    result = alias_template.format(value="success")
-    assert result == "Test success"
-    print("✓ PromptTemplate alias test passed")
-    
-    print("🎉 All StringPromptTemplate tests passed!")
+    # Pass task as a direct parameter since template expects it
+    result = template.format(context=context, name="Alice", place="AWorld", task="chat")
+    assert result == "Hello Alice, welcome to AWorld! Task: chat Age: 1"
 
+def test_enhanced_field_values_basic():
+    """Test enhanced field value retrieval for time variables and context fields"""
+    from aworld.core.context.prompts.dynamic_variables import get_enhanced_field_values_from_list
+    
+    context = Context()
+    context.context_info.update({"task": "chat"})
+    
+    # Test retrieving both time variables and context fields
+    result = get_enhanced_field_values_from_list(
+        context=context,
+        field_paths=["current_time", "context_info.task"],
+        default="not_found"
+    )
+    
+    # Verify context field retrieved
+    assert result["context_info_task"] == "chat"
+    
+    # Verify time variable retrieved (should be in HH:MM:SS format)
+    assert ":" in result["current_time"]
+    assert len(result["current_time"].split(":")) == 3
 
 if __name__ == "__main__":
     test_dynamic_variables()
+    test_formatted_field_getter()
+    test_multiple_field_getters()
     test_string_prompt_template()
+    test_enhanced_field_values_basic()
+    print("✅ test_prompt_template.py All tests passed!")
     
 

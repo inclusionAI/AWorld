@@ -243,4 +243,5 @@ dependencies:
       - youtube-transcript-api==1.1.0
       - zopfli==0.2.3.post1
       - zstandard==0.23.0
+      - httpx[socks]
 prefix: /opt/homebrew/Caskroom/miniconda/base/envs/aworld-gaia

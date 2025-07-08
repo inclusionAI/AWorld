@@ -1,12 +1,5 @@
 {
     "mcpServers": {
-        "arxiv": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_collections.tools.mcparxiv"
-            ]
-        },
         "audio": {
             "command": "python",
             "args": [
@@ -106,7 +99,11 @@
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.tools.search"
-            ]
+            ],
+            "env": {
+                "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+                "GOOGLE_CSE_ID": "${GOOGLE_CSE_ID}"
+            }
         },
         "terminal": {
             "command": "python",
