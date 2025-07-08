@@ -1,4 +1,5 @@
-import datetime
+from datetime import datetime
+
 import uuid
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Literal, Union, List, Dict
@@ -423,6 +424,11 @@ class EmbeddingsConfig(BaseModel):
     batch_size: int = 100
     timeout: int = 60
 
+
+class VectorDBConfig(BaseModel):
+    provider: str = "chroma"
+    config: dict[str, Any] = {}
+
 class MemoryConfig(BaseModel):
     """Configuration for procedural memory."""
 
@@ -433,30 +439,29 @@ class MemoryConfig(BaseModel):
 
     # Memory Config
     provider: Literal['inmemory', 'mem0'] = 'inmemory'
-    enable_summary: bool = Field(default=False, description="enable_summary use llm to create summary memory")
+    enable_summary: bool = Field(default=False, description="enable_summary use llm to create summary short-term memory")
     summary_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
-    summary_single_context_length: int = Field(default=4000, description=" when the content length is greater than the summary_single_context_length, the summary will be created")
+    summary_context_length: int = Field(default=4000, description=" when the content length is greater than the summary_context_length, the summary will be created")
+    summary_single_context_length: int = Field(default=4000, description=" when the single round content length is greater than the summary_single_context_length, the summary will be created")
     summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
 
     # Long-term memory config
     enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
     long_term_config: Optional[LongTermConfig] = Field(default=None, description="long_term_config")
 
-    # Embedder settings
-    embedding_config: Optional[EmbeddingsConfig] = Field(default=None, description="embedding_config")
 
     # LLM settings - the LLM instance can be passed separately
     llm_provider: Literal['openai', 'langchain'] = 'langchain'
     llm_instance: Optional[Union[LLMModel]] = None
 
-    # Vector store settings
-    vector_store_provider: Literal['faiss'] = 'faiss'
-    vector_store_base_path: str = Field(default='/tmp/mem0_aworld')
-
-    @property
-    def vector_store_path(self) -> str:
-        """Returns the full vector store path for the current configuration. e.g. /tmp/mem0_384_faiss"""
-        return f'{self.vector_store_base_path}_{self.embedder_dims}_{self.vector_store_provider}'
+    # semantic search settings
+    enable_semantic_search: bool = Field(default=False, description="enable_semantic_search use to search memory")
+    embedding_config: Optional[EmbeddingsConfig] = Field(default=None, description="embedding_config")
+    vector_store_config: VectorDBConfig= VectorDBConfig(provider="chroma", config={
+        "chroma_data_path": "./chroma_db",
+        "chroma_tenant": "aworld",
+        "chroma_database": "aworld"
+    })
 
     @property
     def embedder_config_dict(self) -> dict[str, Any]:
@@ -477,11 +482,8 @@ class MemoryConfig(BaseModel):
     def vector_store_config_dict(self) -> dict[str, Any]:
         """Returns the vector store configuration dictionary."""
         return {
-            'provider': self.vector_store_provider,
-            'config': {
-                'embedding_model_dims': self.embedder_dims,
-                'path': self.vector_store_path,
-            },
+            'provider': self.vector_store_config.provider,
+            'config': self.vector_store_config.config
         }
 
     @property

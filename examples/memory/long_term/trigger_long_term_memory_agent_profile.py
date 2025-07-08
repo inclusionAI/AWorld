@@ -6,8 +6,7 @@ from dotenv import load_dotenv
 from aworld.core.memory import LongTermConfig, MemoryConfig
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import LongTermMemoryTriggerParams, MessageMetadata
-from examples.memory import prompts
-from examples.memory.short_term.postgres import PostgresMemoryStore
+from aworld.memory.db.postgres import PostgresMemoryStore
 from examples.memory.short_term.utils import add_mock_messages
 
 
