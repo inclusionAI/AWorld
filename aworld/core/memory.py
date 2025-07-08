@@ -580,7 +580,7 @@ class MemoryBase(ABC):
         pass
     
     @abstractmethod
-    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[UserProfile]]:
+    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[UserProfile]]:
         """
         Retrival user profile by user_id.
 
@@ -589,14 +589,13 @@ class MemoryBase(ABC):
             user_input (str): User input to search for.
             threshold (float, optional): Threshold for similarity. Defaults to 0.5.
             limit (int, optional): Limit the number of results. Defaults to 3.
-            application_id (str, optional): Application ID. Defaults to "default".
         Returns:
             list[UserProfile]: List of user profiles.
         """
         pass
 
     @abstractmethod
-    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[AgentExperience]]:
+    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[AgentExperience]]:
         """
         Retrival agent experience by agent_id.
 
@@ -605,7 +604,6 @@ class MemoryBase(ABC):
             user_input (str): User input to search for.
             threshold (float, optional): Threshold for similarity. Defaults to 0.5.
             limit (int, optional): Limit the number of results. Defaults to 3.
-            application_id (str, optional): Application ID. Defaults to "default".
         Returns:
             list[AgentExperience]: List of agent experiences.
         """
@@ -613,7 +611,7 @@ class MemoryBase(ABC):
 
 
     @abstractmethod
-    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, application_id: str = "default") -> Optional[list[MemoryItem]]:
+    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, filters: dict = None) -> Optional[list[MemoryItem]]:
         """
         Retrival similar user messages history by user_id.  
 
@@ -629,7 +627,7 @@ class MemoryBase(ABC):
         pass
 
     @abstractmethod
-    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+    def search(self, query, limit=100, memory_type="message",threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:
         """
         Search for memories.
         Hybrid search: Retrieve memories from vector store and memory store.
@@ -638,6 +636,7 @@ class MemoryBase(ABC):
         Args:
             query (str): Query to search for.
             limit (int, optional): Limit the number of results. Defaults to 100.
+            memory_type: memory type. [message, user_profile, agent_experience]
             filters (dict, optional): Filters to apply to the search. Defaults to None.
             - user_id (str, optional): ID of the user to search for. Defaults to None.
             - agent_id (str, optional): ID of the agent to search for. Defaults to None.

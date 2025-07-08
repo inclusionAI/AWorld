@@ -300,7 +300,7 @@ class Memory(MemoryBase):
 
         return await self._call_llm_summary(summary_messages)
 
-    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+    def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:
         pass
 
     def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
@@ -401,25 +401,32 @@ class Memory(MemoryBase):
 
         await self.memory_orchestrator.create_longterm_processing_tasks(task_params, agent_memory_config.long_term_config, params.force)
 
-    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[UserProfile]]:
-        # TODO user_input is not used
-        return self.get_last_n(limit, filters={
-            'memory_type': 'user_profile',
+    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[UserProfile]]:
+        if not filters:
+            filters = {}
+
+        return self.search(user_input, limit=limit,memory_type='user_profile',threshold=threshold, filters={
             'user_id': user_id,
-            'application_id': application_id
+            **filters
         })
         
 
-    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[AgentExperience]]:
-        # TODO user_input is not used
-        return self.get_last_n(limit, filters={
-            'memory_type': 'agent_experience',
+    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[AgentExperience]]:
+        if not filters:
+            filters = {}
+        return self.search(user_input, limit=limit, memory_type='agent_experience',threshold=threshold, filters={
             'agent_id': agent_id,
-            'application_id': application_id
+            **filters
         })
 
-    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, application_id: str = "default") -> Optional[list[MemoryItem]]:
-        return []
+    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, filters: dict = None) -> Optional[list[MemoryItem]]:
+        if not filters:
+            filters = {}
+        return self.search(user_input, limit=limit, memory_type='message', threshold=threshold, filters={
+            'role': 'user',
+            'user_id': user_id,
+            **filters
+        })
     
 
     def delete(self, memory_id):
@@ -604,10 +611,13 @@ class AworldMemory(Memory):
 
         return result
 
-    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+    def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:
         if self._vector_db:
+            if not filters:
+                filters = {}
+            filters['memory_type'] = memory_type
             embedding = self._embedder.embed_query(query)
-            results = self._vector_db.search(self.config.vector_store_config.config['collection_name'], [embedding], filters, 0.5, limit)
+            results = self._vector_db.search(self.config.vector_store_config.config['collection_name'], [embedding], filters, threshold, limit)
             memory_items = []
             if results and results.docs:
                 for result in results.docs:
