@@ -146,8 +146,8 @@ class MemoryFactory:
         Returns:
             MemoryBase: Memory instance.
         """
-        if config.provider == "inmemory":
-            logger.info("🧠 [MEMORY]setup memory store: inmemory")
+        if config.provider == "aworld":
+            logger.info("🧠 [MEMORY]setup memory store: aworld")
             return AworldMemory(
                 memory_store=memory_store or InMemoryMemoryStore(),
                 config=config
