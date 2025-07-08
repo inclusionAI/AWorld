@@ -46,6 +46,10 @@ class MemoryStore(ABC):
         pass
 
     @abstractmethod
+    def delete_items(self, message_types: list[str], session_id: str, task_id: str, filters: dict = None):
+        pass
+
+    @abstractmethod
     def history(self, memory_id) -> list[MemoryItem] | None:
         pass
 
@@ -58,6 +62,34 @@ Here are the content:
 {context}
 """
 
+USER_PROFILE_EXTRACTION_PROMPT="""Analyze the following conversation and extract user profile information.
+Focus on:
+1. Personal information (age, occupation, location, etc.)
+2. Preferences and habits
+3. Skills and interests
+4. Communication style
+
+Format your response as JSON with key-value pairs:
+{{"personal_info": {{"age": "25", "occupation": "developer"}}, "preferences": {{"coding_style": "clean code"}}}}
+
+Conversation:
+{messages}
+"""
+
+AGENT_EXPERIENCE_EXTRACTION_PROMPT="""Analyze the following conversation and extract the MOST IMPORTANT agent experience pattern.
+Focus on the SINGLE MOST SIGNIFICANT:
+1. Primary skill demonstrated
+2. Key action sequence that led to success
+3. Main problem-solving approach used
+
+Format your response as a SINGLE JSON object with ONE skill and its actions:
+{{"skill": "data_presentation", "actions": ["gather_data", "organize_info", "format_output"]}}
+
+Note: Keep it simple - just ONE skill and 2-4 actions that best represent the interaction.
+
+Conversation:
+{messages}
+"""
 
 class TriggerConfig(BaseModel):
     """Configuration for memory processing triggers."""
@@ -99,35 +131,12 @@ class ExtractionConfig(BaseModel):
 
     # LLM prompts for extraction
     user_profile_extraction_prompt: str = Field(
-        default="""Analyze the following conversation and extract user profile information.
-Focus on:
-1. Personal information (age, occupation, location, etc.)
-2. Preferences and habits
-3. Skills and interests
-4. Communication style
-
-Format your response as JSON with key-value pairs:
-{{"personal_info": {{"age": "25", "occupation": "developer"}}, "preferences": {{"coding_style": "clean code"}}}}
-
-Conversation:
-{messages}""",
+        default=USER_PROFILE_EXTRACTION_PROMPT,
         description="Prompt template for user profile extraction"
     )
 
     agent_experience_extraction_prompt: str = Field(
-        default="""Analyze the following conversation and extract the MOST IMPORTANT agent experience pattern.
-Focus on the SINGLE MOST SIGNIFICANT:
-1. Primary skill demonstrated
-2. Key action sequence that led to success
-3. Main problem-solving approach used
-
-Format your response as a SINGLE JSON object with ONE skill and its actions:
-{{"skill": "data_presentation", "actions": ["gather_data", "organize_info", "format_output"]}}
-
-Note: Keep it simple - just ONE skill and 2-4 actions that best represent the interaction.
-
-Conversation:
-{messages}""",
+        default=AGENT_EXPERIENCE_EXTRACTION_PROMPT,
         description="Prompt template for agent experience extraction"
     )
 
@@ -229,7 +238,9 @@ class LongTermConfig(BaseModel):
             application_id: str = "default",
             message_threshold: int = 10,
             enable_user_profiles: bool = True,
+            user_profile_extraction_prompt: str = None,
             enable_agent_experiences: bool = True,
+            agent_experience_extraction_prompt: str = None,
             enable_background: bool = True
     ) -> "LongTermConfig":
         """
@@ -244,74 +255,17 @@ class LongTermConfig(BaseModel):
         Returns:
             LongTermConfig instance with simple settings
         """
+        extraction = ExtractionConfig(
+            enable_user_profile_extraction=enable_user_profiles,
+            user_profile_extraction_prompt=user_profile_extraction_prompt if user_profile_extraction_prompt else USER_PROFILE_EXTRACTION_PROMPT,
+            enable_agent_experience_extraction=enable_agent_experiences,
+            agent_experience_extraction_prompt=agent_experience_extraction_prompt if agent_experience_extraction_prompt else AGENT_EXPERIENCE_EXTRACTION_PROMPT
+        )
         return cls(
             application_id=application_id,
             trigger=TriggerConfig(message_count_threshold=message_threshold),
-            extraction=ExtractionConfig(
-                enable_user_profile_extraction=enable_user_profiles,
-                enable_agent_experience_extraction=enable_agent_experiences
-            ),
+            extraction=extraction,
             processing=ProcessingConfig(enable_background_processing=enable_background)
-        )
-
-    @classmethod
-    def create_lightweight_config(cls) -> "LongTermConfig":
-        """
-        Create a lightweight configuration for minimal resource usage.
-
-        Returns:
-            LongTermConfig instance optimized for lightweight usage
-        """
-        return cls(
-            trigger=TriggerConfig(
-                message_count_threshold=20,
-                enable_time_based_trigger=False,
-                enable_importance_trigger=False
-            ),
-            extraction=ExtractionConfig(
-                user_profile_max_items=2,
-                agent_experience_max_items=1
-            ),
-            storage=StorageConfig(
-                max_user_profiles_per_user=20,
-                max_agent_experiences_per_agent=30
-            ),
-            processing=ProcessingConfig(
-                max_concurrent_tasks=1,
-                enable_context_retrieval=False
-            )
-        )
-
-    @classmethod
-    def create_comprehensive_config(cls) -> "LongTermConfig":
-        """
-        Create a comprehensive configuration with all features enabled.
-
-        Returns:
-            LongTermConfig instance with comprehensive settings
-        """
-        return cls(
-            trigger=TriggerConfig(
-                message_count_threshold=5,
-                enable_time_based_trigger=True,
-                time_interval_minutes=30,
-                enable_importance_trigger=True
-            ),
-            extraction=ExtractionConfig(
-                user_profile_max_items=10,
-                agent_experience_max_items=5,
-                user_profile_confidence_threshold=0.6,
-                agent_experience_confidence_threshold=0.7
-            ),
-            storage=StorageConfig(
-                max_user_profiles_per_user=100,
-                max_agent_experiences_per_agent=200
-            ),
-            processing=ProcessingConfig(
-                max_concurrent_tasks=5,
-                enable_real_time_processing=True,
-                max_context_items=10
-            )
         )
 
 class EmbeddingsConfig(BaseModel):
@@ -591,7 +545,7 @@ class MemoryBase(ABC):
         Args:
             memory_id (str): ID of the memory to delete.
         """
-    def delete_items(self, message_type: str, session_id: str, task_id: str, filters: dict = None):
+    def delete_items(self, message_types: list[str], session_id: str, task_id: str, filters: dict = None):
         """Delete a memory by ID.
         Args:
             memory_id (str): ID of the memory to delete.
