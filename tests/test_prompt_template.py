@@ -30,27 +30,21 @@ class TestPromptTemplate(BaseTest):
         os.environ["LLM_BASE_URL"] = self.mock_base_url
         os.environ["LLM_MODEL_NAME"] = self.mock_model_name
 
-    def init_agent(self, config_type: str = "1", context_rule: ContextRuleConfig = None):
-        if config_type == "1":
-            conf = AgentConfig(
+    def init_agent(self, system_prompt: str, agent_prompt: str,
+                   agent_prompt_template: StringPromptTemplate = None):
+        conf = AgentConfig(
+            llm_config=ModelConfig(
                 llm_model_name=self.mock_model_name,
                 llm_base_url=self.mock_base_url,
                 llm_api_key=self.mock_api_key
             )
-        else:
-            conf = AgentConfig(
-                llm_config=ModelConfig(
-                    llm_model_name=self.mock_model_name,
-                    llm_base_url=self.mock_base_url,
-                    llm_api_key=self.mock_api_key
-                )
-            )
+        )
         return Agent(
             conf=conf,
             name="my_agent" + str(random.randint(0, 1000000)),
-            system_prompt="You are a helpful assistant.",
-            agent_prompt="You are a helpful assistant.",
-            context_rule=context_rule
+            system_prompt=system_prompt,
+            agent_prompt=agent_prompt,
+            agent_prompt_template=agent_prompt_template,
         )
 
     def run_agent(self, input, agent: Agent):
@@ -100,7 +94,7 @@ class TestPromptTemplate(BaseTest):
     
     def test_string_prompt_template(self):
         # Use proper dot notation for nested field access
-        template = StringPromptTemplate.from_template("Hello {name}, welcome to {place}! Task: {task} Age: {age}",
+        template = StringPromptTemplate.from_template("Hello {{name}}, welcome to {{place}}! Task: {{task}} Age: {{age}}",
                                                       partial_variables={"age": "1"})
         assert "name" in template.input_variables
         assert "place" in template.input_variables
@@ -133,34 +127,46 @@ class TestPromptTemplate(BaseTest):
         # Verify time variable retrieved (should be in HH:MM:SS format)
         assert ":" in result["current_time"]
         assert len(result["current_time"].split(":")) == 3
-    
-    def check_messages(self, messages):
+
+    def check_messages_0(self, messages):
         assert len(messages) == 2
+        print("messages: ", messages)
+        assert messages[0]['content'] == "You are a helpful assistant."
+        # print(messages)
+        assert "<system_instruction>" in messages[1]['content']
+
+    def check_messages_1(self, messages):
+        assert len(messages) == 2
+        print("messages: ", messages)
         assert messages[0]['content'] == "You are a helpful assistant."
         # print(messages)
         assert messages[1]['content'] == "hello world"
 
-    def test_agent_prompt_is_none(self):
-        # agent prompt default to None
-        agent = self.init_agent()
-        agent.agent_prompt = None
-        agent._log_messages = self.check_messages
-        self.run_agent("hello world", agent)
-
     def check_messages_2(self, messages):
         assert len(messages) == 2
         assert messages[0]['content'] == "You are a helpful assistant."
-        # print(messages)
-        assert messages[1]['content'] == "Mike {age}"
+        print(messages)
+        assert messages[1]['content'] == "Mike {{age}} play"
+
+    def test_agent_prompt_is_none(self):
+        # agent prompt default to None
+        agent = self.init_agent(system_prompt="You are a helpful assistant.", agent_prompt=None)
+        agent._log_messages = self.check_messages_0
+        self.run_agent("hello world", agent)
+
+    def test_agent_prompt_default(self):
+        # agent prompt default to None
+        agent = self.init_agent(system_prompt="You are a helpful assistant.", agent_prompt="hello {{task}}")
+        agent._log_messages = self.check_messages_1
+        self.run_agent("world", agent)
 
     def test_agent_prompt_not_defined(self):
         # agent prompt not defined
-        agent = self.init_agent()
-        agent.agent_prompt = "hello world"
-        agent.agent_prompt_template = StringPromptTemplate.from_template("{name} {age}",
-                                                      partial_variables={"name": "Mike"})
+        agent = self.init_agent(system_prompt="You are a helpful assistant.", agent_prompt="{{name}} {{age}} {{task}}",
+                                agent_prompt_template=StringPromptTemplate.from_template("{{name}} {{age}} {{task}}",
+                                                      partial_variables={"name": "Mike"}))
         agent._log_messages = self.check_messages_2
-        self.run_agent("hello world", agent)
+        self.run_agent("play", agent)
 
 
 if __name__ == "__main__":
@@ -171,6 +177,7 @@ if __name__ == "__main__":
     test.test_string_prompt_template()
     test.test_enhanced_field_values_basic()
     test.test_agent_prompt_is_none()
+    test.test_agent_prompt_default()
     test.test_agent_prompt_not_defined()
     print("✅ test_prompt_template.py All tests passed!")
     

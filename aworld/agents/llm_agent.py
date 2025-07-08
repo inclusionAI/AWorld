@@ -194,6 +194,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
         else:
             content = observation.content
+            logger.debug(f"agent_prompt: {agent_prompt} {self.agent_prompt_template}")
             if self.agent_prompt_template is not None and agent_prompt is not None:
                 content = self.agent_prompt_template.format(context=self.context, task=content, tool_list=self.tools)
             elif agent_prompt:
