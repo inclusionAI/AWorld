@@ -1,8 +1,10 @@
 #!/bin/bash
-cd "$(dirname "$0")"
+BASE_DIR=$(dirname "$(readlink -f "$0")")
 
-pip install -e . && \
+cd $BASE_DIR/aworld/cmd/web/webui && npm run build
 
-pip install -r mcp_servers/requirements.txt && \
+cd $BASE_DIR && python setup.py install
+
+pip install -r mcp_servers/requirements.txt
 
 cd examples/cmd && aworld web

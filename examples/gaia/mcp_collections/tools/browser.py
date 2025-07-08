@@ -13,14 +13,22 @@ import os
 import re
 import time
 import traceback
+import sys
+try:
+    from browser_use import Agent, AgentHistoryList, BrowserProfile
+    from browser_use.agent.memory.views import MemoryConfig
+    from dotenv import load_dotenv
+    from langchain_openai import ChatOpenAI
+    from pydantic import BaseModel, Field
 
-from browser_use import Agent, AgentHistoryList, BrowserProfile
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
+    from aworld.logs.util import Color
+    from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
+except Exception as e:
+    print(f"Failed to import browser tool: {traceback.format_exc()}")
+    raise e
 
-from aworld.logs.util import Color
-from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
+
+print(f"Browser tool sys.path: {sys.path}")
 
 
 class BrowserMetadata(BaseModel):
@@ -77,6 +85,7 @@ class BrowserActionCollection(ActionCollection):
             base_url=os.getenv("LLM_BASE_URL"),
             temperature=1.0,
         )
+        self._color_log(f"Browser llm_config: {self.llm_config}", Color.green)
 
         # Browser profile configuration
         self.browser_profile = BrowserProfile(
@@ -86,14 +95,15 @@ class BrowserActionCollection(ActionCollection):
             save_recording_path=str(self.workspace),
             save_downloads_path=str(self.workspace),
         )
+        self._color_log(f"Browser browser_profile: {self.browser_profile}", Color.green)
 
         # Log configuration
         self.trace_log_dir = str(self.workspace / "logs")
         os.makedirs(f"{self.trace_log_dir}/browser_log", exist_ok=True)
 
-        self._color_log("Browser automation service initialized", Color.green, "debug")
-        self._color_log(f"Downloads directory: {self.browser_profile.downloads_path}", Color.blue, "debug")
-        self._color_log(f"Trace logs directory: {self.trace_log_dir}/browser_log", Color.blue, "debug")
+        self._color_log("Browser automation service initialized", Color.green)
+        self._color_log(f"Downloads directory: {self.browser_profile.downloads_path}", Color.blue)
+        self._color_log(f"Trace logs directory: {self.trace_log_dir}/browser_log", Color.blue)
 
     def _create_browser_agent(self, task: str) -> Agent:
         """Create a browser agent instance with configured settings.
