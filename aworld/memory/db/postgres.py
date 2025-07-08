@@ -1,22 +1,23 @@
-import json
-from typing import Optional, List
 from datetime import datetime
-from pydantic import BaseModel
-import pytz  # Add pytz for timezone handling
+from typing import Optional
+from typing import Optional
 
-from sqlalchemy import create_engine, Column, String, JSON, DateTime, Boolean, Integer, ForeignKey, Index, Table
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+import pytz  # Add pytz for timezone handling
+from pydantic import BaseModel
 
 from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
     MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySystemMessage, MemoryToolMessage, MessageMetadata,
-    UserProfile, UserProfileItem, AgentExperience
+    UserProfile, AgentExperience
 )
 from aworld.models.model_response import ToolCall
 
-Base = declarative_base()
+try:
+    from sqlalchemy.orm import declarative_base
 
+    Base = declarative_base()
+except ImportError:
+    print("SQLAlchemy is not installed. Please install it to use PostgresMemoryStore.")
 # Get local timezone
 LOCAL_TZ = pytz.timezone('Asia/Shanghai')  # Default to China timezone
 
@@ -41,6 +42,9 @@ def from_iso_time(iso_str: str) -> datetime:
         return datetime.now(pytz.utc)
 
 class MemoryItemModel(Base):
+    from sqlalchemy import Column, String, DateTime, Boolean, Integer, Index
+    from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+
     """SQLAlchemy model for memory items."""
     __tablename__ = 'aworld_memory_items'
 
@@ -65,6 +69,7 @@ class MemoryItemModel(Base):
 class MemoryHistoryModel(Base):
     """SQLAlchemy model for memory history."""
     __tablename__ = 'aworld_memory_histories'
+    from sqlalchemy import Column, String, DateTime, ForeignKey
 
     memory_id = Column(String, ForeignKey('aworld_memory_items.id'), primary_key=True)
     history_id = Column(String, ForeignKey('aworld_memory_items.id'), primary_key=True)
@@ -184,6 +189,9 @@ class PostgresMemoryStore(MemoryStore):
             db_url (str): SQLAlchemy database URL
                 Format: postgresql+psycopg2://user:password@host:port/dbname
         """
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
         self.engine = create_engine(db_url, echo=False, future=True)
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
