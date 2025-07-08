@@ -45,5 +45,12 @@ When using tools:
 
 ## Task Description:
 {{task_description}}
+
+##Test Context variables:
+{{current_time}}
+{{session_id}}
+{{is_task}}
+{{trajectories}}
+
 </system_instruction> 
 """
