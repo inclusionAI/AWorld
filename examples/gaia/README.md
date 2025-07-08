@@ -1,4 +1,10 @@
-# Prerequisites
+# Gaia Agent Setup Instructions
+
+## Pre-Requirements
+- OS: MacOS / Linux is ok, Windows not full tested.
+- Conda Environment
+- NodeJS 22 LTS, with npm
+- Other software: libmagic1 libreoffice ffmpeg
 
 ## Clone Repository
 - Clone the repository and switch to the main branch:
@@ -17,19 +23,30 @@
   conda activate aworld-gaia
   ```
 
-  > https://www.anaconda.com/docs/getting-started/miniconda/install
+  > Install miniconda: https://www.anaconda.com/docs/getting-started/miniconda/install
 
-## Python Dependencies
-- Install Python dependencies:
+## Install AWorld Framework
+### Install AWorld Framework:
 
   ```bash
   pip install "marker-pdf[full]" --no-deps
+  BASE_DIR=$(dirname "$(readlink -f "$0")")
+  cd aworld/cmd/web/webui && npm install &&npm run build
+  cd $BASE_DIR
   python setup.py install
   ```
 
-## System Tools Setup
-### MacOS
-- Install additional dependencies for MacOS:
+### Install MCP Tool Dependencies:
+- Install playwright:
+
+  ```bash
+  playwright install chromium --with-deps --no-shell
+  ```
+
+
+- Install additional dependencies 
+
+  **for MacOS:**
 
   ```bash
   brew install libmagic
@@ -39,14 +56,13 @@
 
   > Install Home Brew: https://brew.sh/
 
-### Linux64
-- Install additional dependencies for Linux64:
+  **for Linux64:**
 
   ```bash
   apt-get install -y --no-install-recommends libmagic1 libreoffice ffmpeg
   ```
 
-## Dataset Preparation
+## Gaia Dataset Preparation
 - Download the GAIA dataset from Hugging Face.
 - Place it in the correct directory:
 
@@ -61,25 +77,26 @@
 - Create the `.env` file from the template:
 
   ```bash
-  cp .env.template .env
+  cp examples/gaia/cmd/agent_deploy/gaia_agent/.env.template examples/gaia/cmd/agent_deploy/gaia_agent/.env
   ```
 - Set up your environment variables:
 - Edit the `.env` file and replace all `{YOUR_CONFIG}` placeholders with your actual values.
 
-# Running the GAIA Web UI
+## Running the GAIA Agent
+### Run GAIA Agent Web UI
 - You can run gaia web ui by following command:
 
   ```bash
-  sh run-web-gaia.sh
+  cd examples/gaia/cmd && aworld web
   ```
 
-# Running the GAIA Task
+### Running the GAIA Task
 - Then you'll be able to taste the appetizer running the following line:
   ```bash
   python examples/gaia/run.py --split validation --q c61d22de-5f6c-4958-a7f6-5e9707bd3466
   ```
 
-## Required Arguments (default 0:165 for validation set)
+#### Required Arguments (default 0:165 for validation set)
 - `--split` (str)
   - **Description**: Split of the dataset, e.g., `validation`, `test`.
   - **Choices**: `validation`, `test`
@@ -96,7 +113,7 @@
   - **Default**: `165`
   - **Example**: `--end 100`
 
-## Optional Arguments
+#### Optional Arguments
 
 - `--q` (str)
   - **Description**: Question Index, e.g., `0-0-0-0-0`. If provided, this argument overrides the `--start` and `--end` arguments.
@@ -110,37 +127,37 @@
   - **Description**: Path to the blacklist file, e.g., `blacklist.txt`.
   - **Example**: `--blacklist_file_path blacklist.txt`
 
-## Example Commands
+#### Example Commands
 
-### Basic Usage
+#### Basic Usage
 Process the dataset from index 10 to 50 in the validation split:
 
 ```bash
 python script_name.py --start 10 --end 50 --split validation
 ```
 
-### Using Question Index
+#### Using Question Index
 Process a specific question identified by `0-0-0-0-0`:
 
 ```bash
 python script_name.py --q 0-0-0-0-0
 ```
 
-### Skipping Previously Processed Questions
+#### Skipping Previously Processed Questions
 Process the dataset from index 10 to 50, skipping any questions that have already been processed:
 
 ```bash
 python script_name.py --start 10 --end 50 --skip
 ```
 
-### Using a Blacklist File
+#### Using a Blacklist File
 Process the dataset from index 10 to 50, using a blacklist file named `blacklist.txt`:
 
 ```bash
 python script_name.py --start 10 --end 50 --blacklist_file_path blacklist.txt
 ```
 
-### Notes
+#### Notes
 - If using the `--q` argument, ensure the question index format is correct.
 - The `--blacklist_file_path` file should contain a list of question indices or dataset indices to be skipped, one per line.
 
@@ -154,6 +171,6 @@ python script_name.py --start 10 --end 50 --blacklist_file_path blacklist.txt
   YYYY-MM-DD HH:MM:SS - root - INFO - Question 0 Correct!
   ```
 
-# Troubleshooting
+## Troubleshooting
 - For dataset access problems, verify that your Hugging Face SSH keys are correctly configured.
 - Set up a pip mirror if necessary.
