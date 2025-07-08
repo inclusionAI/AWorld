@@ -77,7 +77,7 @@ def parser_request_params(kwargs, instance):
         attributes.update({"llm.base_url": str(client.base_url)})
 
     filterd_attri = {k: v for k, v in attributes.items()
-                     if (v and v is not "")}
+                     if (v and v != "")}
     return filterd_attri
 
 
