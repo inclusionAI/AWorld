@@ -1,6 +1,7 @@
 import json
 from typing import Optional, List
 from datetime import datetime
+from pydantic import BaseModel
 import pytz  # Add pytz for timezone handling
 
 from sqlalchemy import create_engine, Column, String, JSON, DateTime, Boolean, Integer, ForeignKey, Index, Table
@@ -9,7 +10,8 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
-    MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySystemMessage, MemoryToolMessage, MessageMetadata
+    MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySystemMessage, MemoryToolMessage, MessageMetadata,
+    UserProfile, UserProfileItem, AgentExperience
 )
 from aworld.models.model_response import ToolCall
 
@@ -69,13 +71,14 @@ class MemoryHistoryModel(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
 
-def orm_to_memory_item(orm_item: MemoryItemModel) -> MemoryItem:
+def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
     """Convert ORM model to MemoryItem."""
     if not orm_item:
         return None
 
     memory_meta = orm_item.memory_meta or {}
     role = memory_meta.get('role')
+    message_type = orm_item.memory_type
 
     base_data = {
         'id': orm_item.id,
@@ -117,15 +120,44 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> MemoryItem:
             status=memory_meta.get('status', 'success'),
             metadata=MessageMetadata(**memory_meta),
         )
+    elif message_type == 'user_profile':
+        if not orm_item.content:
+            return None
+        if not isinstance(orm_item.content, dict):
+            return None
+
+
+        return UserProfile(
+            key=orm_item.content.get('key'),
+            value=orm_item.content.get('value'),
+            user_id=orm_item.memory_meta.get('user_id'),
+            metadata=memory_meta
+        )
+    elif message_type == 'agent_experience':
+        if not orm_item.content:
+            return None
+        if not isinstance(orm_item.content, dict):
+            return None
+        return AgentExperience(
+            skill=orm_item.content.get('skill'),
+            actions=orm_item.content.get('actions'),
+            agent_id=orm_item.memory_meta.get('agent_id'),
+            metadata=memory_meta
+        )
     else:
         return MemoryItem(**base_data)
 
 
 def memory_item_to_orm(item: MemoryItem) -> MemoryItemModel:
     """Convert MemoryItem to ORM model."""
+    # Handle content serialization
+    content = item.content
+    if isinstance(content, BaseModel):
+        content = content.model_dump()  # Use model_dump() instead of model_dump_json() for dict conversion
+    
     return MemoryItemModel(
         id=item.id,
-        content=item.content,
+        content=content,  # Use serialized content
         created_at=from_iso_time(item.created_at),  # Convert to UTC
         updated_at=from_iso_time(item.updated_at),  # Convert to UTC
         memory_meta=item.metadata,  # Map from metadata to memory_meta

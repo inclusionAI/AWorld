@@ -72,7 +72,7 @@ async def add_mock_messages(memory: MemoryBase, metadata: MessageMetadata):
     <knowledge_base>
     </knowledge_base>
 
-    please recommend some outdoor sports, save it use markdown
+    I like play outdoor sports(basketball, tennis, golf, etc.), please recommend some outdoor sports, save it use markdown
     """
     memory.add(MemoryHumanMessage(content=user_content, metadata=metadata))
 
