@@ -130,14 +130,14 @@ class TestPromptTemplate(BaseTest):
 
     def check_messages_0(self, messages):
         assert len(messages) == 2
-        print("messages: ", messages)
+        # print("messages: ", messages)
         assert messages[0]['content'] == "You are a helpful assistant."
         # print(messages)
         assert "<system_instruction>" in messages[1]['content']
 
     def check_messages_1(self, messages):
         assert len(messages) == 2
-        print("messages: ", messages)
+        # print("messages: ", messages)
         assert messages[0]['content'] == "You are a helpful assistant."
         # print(messages)
         assert messages[1]['content'] == "hello world"
