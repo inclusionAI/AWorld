@@ -23,7 +23,7 @@ from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
-from aworld.core.memory import MemoryConfig
+from aworld.core.memory import MemoryConfig, AgentMemoryConfig
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message
@@ -49,7 +49,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
                  name: str,
                  resp_parse_func: Callable[..., Any] = None,
-                 memory_config: MemoryConfig = None,
+                 agent_memory_config: AgentMemoryConfig = None,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -61,8 +61,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
         self._llm = None
-        self.memory_config = memory_config if memory_config else MemoryConfig(provider="inmemory")
         self.memory = MemoryFactory.instance()
+        self.memory_config = agent_memory_config if agent_memory_config else AgentMemoryConfig()
         self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else (conf.system_prompt if conf.system_prompt else Prompt().get_prompt())
         self.system_prompt_template: BasePromptTemplate = kwargs.pop("system_prompt_template") if kwargs.get("system_prompt_template") else StringPromptTemplate(self.system_prompt)
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
@@ -216,7 +216,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "session_id": session_id,
             "task_id": task_id,
             "message_type": "message"
-        }, memory_config=self.memory_config)
+        }, agent_memory_config=self.memory_config)
         if histories:
             # default use the first tool call
             for history in histories:
@@ -965,7 +965,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
              "session_id": session_id,
              "task_id": task_id,
              "message_type": "message"
-         }, memory_config=self.memory_config)
+         }, agent_memory_config=self.memory_config)
          if histories and len(histories) > 0:
              logger.debug(
                  f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
@@ -984,7 +984,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  agent_id=self.id(),
                  agent_name=self.name(),
              )
-         ), memory_config=self.memory_config)
+         ), agent_memory_config=self.memory_config)
          logger.info(
              f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
@@ -1012,7 +1012,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
-        ), memory_config=self.memory_config)
+        ), agent_memory_config=self.memory_config)
         logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: "
                     f"User#{user_id}, "
                     f"Session#{session_id}, "
@@ -1040,7 +1040,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_id=self.id(),
                 agent_name=self.name()
             )
-        ), memory_config=self.memory_config)
+        ), agent_memory_config=self.memory_config)
         logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: "
                     f"User#{user_id}, "
                     f"Session#{session_id}, "
@@ -1067,7 +1067,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
-        ), memory_config=self.memory_config)
+        ), agent_memory_config=self.memory_config)
         logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory:"
                     f" User#{user_id}, "
                     f"Session#{session_id}, "

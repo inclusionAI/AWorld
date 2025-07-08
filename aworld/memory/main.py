@@ -8,7 +8,7 @@ import traceback
 from typing import Optional
 
 from aworld.config import ConfigDict
-from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
+from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
 from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
@@ -304,35 +304,35 @@ class Memory(MemoryBase):
     def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
         pass
 
-    def add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
-        self._add(memory_item, filters, memory_config)
+    def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
+        self._add(memory_item, filters, agent_memory_config)
         # self.post_add(memory_item, filters, memory_config)
 
     @abc.abstractmethod
-    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         pass
 
-    async def post_add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    async def post_add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         try:
-            await self.post_process_long_terms(memory_item, filters, memory_config)
+            await self.post_process_long_terms(memory_item, filters, agent_memory_config)
         except Exception as err:
             logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exc()}")
 
-    async def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    async def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         """Post process long-term memory."""
         # check if memory_item is "message"
         if memory_item.memory_type != 'message':
             return
 
-        if not memory_config:
+        if not agent_memory_config:
             return
 
         # check if long-term memory is enabled
-        if not memory_config.enable_long_term:
+        if not agent_memory_config.enable_long_term:
             return
 
         # check if long-term memory config is valid
-        long_term_config = memory_config.long_term_config
+        long_term_config = agent_memory_config.long_term_config
         if not long_term_config:
             return
 
@@ -342,19 +342,19 @@ class Memory(MemoryBase):
             task_id=memory_item.task_id,
             user_id=memory_item.user_id,
             application_id=memory_item.application_id
-        ), memory_config)
+        ), agent_memory_config)
 
-    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig = None):
+    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, agent_memory_config: AgentMemoryConfig = None):
         logger.info(f"🧠 [MEMORY:long-term] Trigger short-term memory to long-term memory, params is {params}")
-        if not memory_config:
+        if not agent_memory_config:
             return
 
         # check if long-term memory is enabled
-        if not memory_config.enable_long_term:
+        if not agent_memory_config.enable_long_term:
             return
 
         # check if long-term memory config is valid
-        long_term_config = memory_config.long_term_config
+        long_term_config = agent_memory_config.long_term_config
         if not long_term_config:
             return
 

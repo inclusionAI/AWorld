@@ -438,17 +438,7 @@ class MemoryConfig(BaseModel):
     )
 
     # Memory Config
-    provider: Literal['inmemory', 'mem0'] = 'inmemory'
-    enable_summary: bool = Field(default=False, description="enable_summary use llm to create summary short-term memory")
-    summary_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
-    summary_context_length: int = Field(default=4000, description=" when the content length is greater than the summary_context_length, the summary will be created")
-    summary_single_context_length: int = Field(default=4000, description=" when the single round content length is greater than the summary_single_context_length, the summary will be created")
-    summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
-
-    # Long-term memory config
-    enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
-    long_term_config: Optional[LongTermConfig] = Field(default=None, description="long_term_config")
-
+    provider: Literal['aworld', 'mem0'] = 'aworld'
 
     # LLM settings - the LLM instance can be passed separately
     llm_provider: Literal['openai', 'langchain'] = 'langchain'
@@ -496,6 +486,27 @@ class MemoryConfig(BaseModel):
         }
 
 
+class AgentMemoryConfig(BaseModel):
+    """Configuration for procedural memory."""
+
+    model_config = ConfigDict(
+        from_attributes=True, validate_default=True, revalidate_instances='always', validate_assignment=True,
+        arbitrary_types_allowed=True
+    )
+
+    # short-term Config
+    enable_summary: bool = Field(default=False, description="enable_summary use llm to create summary short-term memory")
+    summary_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
+    summary_context_length: int = Field(default=4000, description=" when the content length is greater than the summary_context_length, the summary will be created")
+    summary_single_context_length: int = Field(default=4000, description=" when the single round content length is greater than the summary_single_context_length, the summary will be created")
+    summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
+    trim_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the trim_rounds, the memory will be trimmed")
+
+    # Long-term memory config
+    enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
+    long_term_config: Optional[LongTermConfig] = Field(default=None, description="long_term_config")
+
+
 class MemoryBase(ABC):
 
     @abstractmethod
@@ -524,7 +535,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    def get_last_n(self, last_rounds, filters: dict = None, memory_config: MemoryConfig= None) -> Optional[list[MemoryItem]]:
+    def get_last_n(self, last_rounds, filters: dict = None, agent_memory_config: AgentMemoryConfig= None) -> Optional[list[MemoryItem]]:
         """get last_rounds memories.
 
         Args:
@@ -538,7 +549,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig):
+    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, agent_memory_config: AgentMemoryConfig= None):
         """
         Trigger short-term memory to long-term.
 
@@ -620,7 +631,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    def add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         """Add memory in the memory store.
 
         Step 1: Add memory to memory store
