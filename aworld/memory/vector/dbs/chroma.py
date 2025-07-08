@@ -17,27 +17,29 @@ class ChromaVectorDB(VectorDB):
             "allow_reset": True,
             "anonymized_telemetry": False,
         }
-        if config['chroma_client_auth_provider'] is not None:
-            settings_dict["chroma_client_auth_provider"] = config['chroma_client_auth_provider']
-        if config['chroma_client_auth_credentials'] is not None:
-            settings_dict["chroma_client_auth_credentials"] = config['chroma_client_auth_credentials']
+        if config.get('chroma_client_auth_provider') is not None:
+            settings_dict["chroma_client_auth_provider"] = config.get('chroma_client_auth_provider')
+        if config.get('chroma_client_auth_credentials') is not None:
+            settings_dict["chroma_client_auth_credentials"] = config.get('chroma_client_auth_credentials')
 
-        if config['chroma_http_host'] != "":
+        if config.get('chroma_http_host') is not None:
             self.client = chromadb.HttpClient(
-                host=config['chroma_http_host'],
-                port=config['chroma_http_port'],
-                headers=config['chroma_http_headers'],
-                ssl=config['chroma_http_ssl'],
-                tenant=config['chroma_tenant'],
-                database=config['chroma_database'],
+                host=config.get('chroma_http_host'),
+                port=config.get('chroma_http_port'),
+                headers=config.get('chroma_http_headers'),
+                ssl=config.get('chroma_http_ssl'),
+                tenant=config.get('chroma_tenant'),
+                database=config.get('chroma_database'),
                 settings=Settings(**settings_dict),
             )
         else:
+            from chromadb import DEFAULT_TENANT
+            from chromadb import DEFAULT_DATABASE
             self.client = chromadb.PersistentClient(
-                path=config['chroma_data_path'],
+                path=config.get('chroma_data_path'),
                 settings=Settings(**settings_dict),
-                tenant=config['chroma_tenant'],
-                database=config['chroma_database'],
+                tenant=config.get('chroma_tenant', DEFAULT_TENANT),
+                database=config.get('chroma_database', DEFAULT_DATABASE),
             )
 
     def has_collection(self, collection_name: str) -> bool:

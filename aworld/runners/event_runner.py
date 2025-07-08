@@ -187,7 +187,7 @@ class TaskEventRunner(TaskRunner):
                 t.add_done_callback(self.background_tasks.discard)
                 # wait until it is complete
                 await t
-            self.state_manager.end_message_node(message)
+                self.state_manager.end_message_node(message)
             logger.debug(
                 f"[TaskEventRunner] _common_process return results {self.task.id}, message_id = {message.id},  ")
             return results
