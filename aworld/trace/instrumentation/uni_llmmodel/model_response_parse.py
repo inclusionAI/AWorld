@@ -48,7 +48,7 @@ async def handle_request(span: Span, kwargs, instance):
                 })
 
         filterd_attri = {k: v for k, v in attributes.items()
-                         if (v and v is not "")}
+                         if (v and v != "")}
 
         span.set_attributes(filterd_attri)
     except Exception as e:

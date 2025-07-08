@@ -228,7 +228,7 @@ setup(
             "config/*.yaml",
             "config/*.json",
             "config/*.tiktoken",
-            "web/templates/*.html",
+            "cmd/web/webui/public/trace_ui.html",
             "cmd/web/webui/dist/**",
         ],
         "examples": [
