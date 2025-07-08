@@ -44,6 +44,7 @@ class EventManager:
             receiver=receiver,
             topic=topic,
             category=event_type,
+            headers={"context": self.context}
         )
         return await self.emit_message(event)
 

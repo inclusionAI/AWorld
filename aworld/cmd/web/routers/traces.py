@@ -2,7 +2,7 @@ import json
 import logging
 from fastapi import APIRouter
 from aworld.trace.server import get_trace_server
-from aworld.trace.constants import RunType
+from aworld.trace.constants import RunType, SPAN_NAME_PREFIX_EVENT_AGENT
 from aworld.trace.server.util import build_trace_tree
 from aworld.cmd.utils.trace_summarize import get_summarize_trace
 
@@ -70,7 +70,7 @@ async def get_agent_trace(trace_id: str):
 
 
 def _get_agent_show_name(span: dict):
-    agent_name_prefix = "agent_event_"
+    agent_name_prefix = SPAN_NAME_PREFIX_EVENT_AGENT
     name = span.get("name")
     if name and name.startswith(agent_name_prefix):
         name = name[len(agent_name_prefix):]

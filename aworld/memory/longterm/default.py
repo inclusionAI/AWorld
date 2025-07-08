@@ -86,7 +86,47 @@ class DefaultMemoryGungnir(MemoryGungnir):
             return None
 
     async def _extract_user_profile(self, task: MemoryProcessingTask) -> Optional[List[UserProfile]]:
-        pass
+        to_be_extracted_messages = task.extract_params.to_openai_messages()
+        user_profile_prompt = task.longterm_config.get_user_profile_prompt(
+            messages=str(to_be_extracted_messages))
+        messages = []
+        messages.append({
+            "role": "user",
+            "content": user_profile_prompt
+        })
+        try:
+            llm_response = await acall_llm_model(self._llm_instance, messages=messages)
+            logger.debug(
+                f"🧠 [MEMORY:long-term] Extracted user profile:{task.memory_task_id} llm_response is :{llm_response.content}")
+            result = json.loads(llm_response.content.replace("```json", "").replace("```", ""))
+            user_profiles = []
+
+            # Handle both array and single object responses
+            if isinstance(result, list):
+                # Handle array of profile entries
+                profile_entries = result
+            else:
+                # Handle single profile entry
+                profile_entries = [result]
+
+            for profile_entry in profile_entries:
+                if not isinstance(profile_entry, dict) or 'key' not in profile_entry or 'value' not in profile_entry:
+                    logger.warning(f"🧠 [MEMORY:long-term] Invalid profile entry format: {profile_entry}")
+                    continue
+
+                user_profiles.append(UserProfile(
+                    user_id=task.extract_params.user_id,
+                    key=profile_entry['key'],
+                    value=profile_entry['value']
+                ))
+
+            logger.info(
+                f"🧠 [MEMORY:long-term] Extracted user profile:{task.memory_task_id} with result:{user_profiles}")
+            return user_profiles
+        except Exception as e:
+            logger.error(
+                f"🧠 [MEMORY:long-term] Error extracting user profile:{task.memory_task_id} failed: {e}" + traceback.format_exc())
+            return None
 
 
 class DefaultMemoryOrchestrator(MemoryOrchestrator):

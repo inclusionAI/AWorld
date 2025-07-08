@@ -1,4 +1,6 @@
 # GenAI semconv attribute names
+import os
+
 GEN_AI_SYSTEM = "gen_ai.system"
 GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
 GEN_AI_REQUEST_FREQUENCY_PENALTY = "gen_ai.request.frequency_penalty"
@@ -27,3 +29,14 @@ GEN_AI_USAGE_TOTAL_TOKENS = "gen_ai.usage.total_tokens"
 GEN_AI_OPERATION_NAME = "gen_ai.operation.name"
 GEN_AI_METHOD_NAME = "gen_ai.method.name"
 GEN_AI_SERVER_ADDRESS = "gen_ai.server.address"
+
+ATTRIBUTE_NAME_SPACE = os.getenv("ATTRIBUTE_NAME_SPACE", "aworld.")
+AGENT_ID = ATTRIBUTE_NAME_SPACE + "agent.id"
+AGENT_NAME = ATTRIBUTE_NAME_SPACE + "agent.name"
+AGENT_RUN_SUCCESS = ATTRIBUTE_NAME_SPACE + "agent.run.success"
+AGENT_USAGE_TYPE = ATTRIBUTE_NAME_SPACE + "agent.usage_type"
+TOOL_NAME = ATTRIBUTE_NAME_SPACE + "tool.name"
+TOOL_STEP_SUCCESS = ATTRIBUTE_NAME_SPACE + "tool.step.success"
+TASK_ID = ATTRIBUTE_NAME_SPACE + "task.id"
+SESSION_ID = ATTRIBUTE_NAME_SPACE + "session.id"
+USER_ID = ATTRIBUTE_NAME_SPACE + "user.id"

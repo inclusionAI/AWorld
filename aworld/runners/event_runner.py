@@ -4,6 +4,7 @@ import asyncio
 import time
 import traceback
 import aworld.trace as trace
+import aworld.trace.constants as trace_constants
 from typing import List, Callable, Any
 
 from aworld.core.common import TaskItem
@@ -33,6 +34,7 @@ class TaskEventRunner(TaskRunner):
         super().__init__(task, *args, **kwargs)
         self._task_response = None
         self.event_mng = EventManager(self.context)
+        self.context.event_manager = self.event_mng
         self.hooks = {}
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
@@ -50,6 +52,7 @@ class TaskEventRunner(TaskRunner):
         self._build_first_message()
 
         if self.swarm:
+            logger.debug(f"swarm: {self.swarm}")
             # register agent handler
             for _, agent in self.swarm.agents.items():
                 agent.set_tools_instances(self.tools, self.tools_conf)
@@ -184,15 +187,16 @@ class TaskEventRunner(TaskRunner):
                 t.add_done_callback(self.background_tasks.discard)
                 # wait until it is complete
                 await t
-                self.state_manager.end_message_node(message)
+            self.state_manager.end_message_node(message)
             logger.debug(
                 f"[TaskEventRunner] _common_process return results {self.task.id}, message_id = {message.id},  ")
             return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
-        async with trace.span(handler.__name__):
+        async with trace.handler_span(message=message, handler=handler):
             try:
+                logger.debug(f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
                 logger.info(
                     f"[TaskEventRunner] {self.task.id} _handle_task start, message: {message.id}")
                 if asyncio.iscoroutinefunction(handler):
@@ -201,7 +205,7 @@ class TaskEventRunner(TaskRunner):
                     con = handler(con)
 
                 logger.info(
-                    f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message}, session_id = {self.task.session_id}, con = {con}")
+                    f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message.id}, session_id = {self.task.session_id}")
                 if isinstance(con, Message):
                     # process in framework
                     self.state_manager.save_message_handle_result(name=handler.__name__,
@@ -276,8 +280,7 @@ class TaskEventRunner(TaskRunner):
                 # consume message
                 message: Message = await self.event_mng.consume()
                 logger.debug(
-                    f"[TaskEventRunner] next consume finished {self.task.id}: message = {message}")
-
+                    f"[TaskEventRunner] next consume finished {self.task.id}, event_bus: {self.event_mng.event_bus},: message = {message}")
                 # use registered handler to process message
                 await self._common_process(message)
                 logger.debug(
@@ -316,7 +319,7 @@ class TaskEventRunner(TaskRunner):
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
             raise RuntimeError("swarm needs to use `reset` to init first.")
-        async with trace.span("Task_" + self.init_message.session_id):
+        async with trace.span(trace_constants.SPAN_NAME_PREFIX_TASK + self.init_message.session_id):
             await self.event_mng.emit_message(self.init_message)
             await self._do_run()
             return self._task_response
