@@ -10,8 +10,10 @@ from typing import Optional
 from aworld.config import ConfigDict
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
+from aworld.memory.embeddings.factory import EmbedderFactory
 from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
 from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
+from aworld.memory.vector.factory import VectorDBFactory
 from aworld.models.llm import get_llm_model, acall_llm_model
 
 
@@ -163,37 +165,32 @@ class MemoryFactory:
             raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
 
 
+
 class Memory(MemoryBase):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, memory_store: MemoryStore, **kwargs):
+    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
         self.memory_store = memory_store
-        self._llm_instance = None
-        self._embedder_model = None
+        self.config = config
+
+        # Initialize llm_model components
+        self._llm_instance = config.get_llm_instance()
+
+        # Initialize embedding and vector database components
+        self._embedder = EmbedderFactory.get_embedder(config.embedding_config)
+        self._vector_db = VectorDBFactory.get_vector_db(config.vector_db_config)
 
         # Initialize long-term memory components
         self.memory_orchestrator = DefaultMemoryOrchestrator(
-            self.default_llm_instance,
-            embedding_model=self._embedder_model,
+            self._llm_instance,
+            embedding_model=self._embedder,
             memory=self
         )
-        logger.info(f"🧠 [MEMORY:long-term] Initialized with config: ")
-
-
 
     @property
     def default_llm_instance(self):
-        def get_env(key: str, default_key: str, default_val: object=None):
-            return os.getenv(key) if os.getenv(key) else os.getenv(default_key, default_val)
-
         if not self._llm_instance:
-            self._llm_instance = get_llm_model(conf=ConfigDict({
-                "llm_model_name": get_env("MEM_LLM_MODEL_NAME", "LLM_MODEL_NAME"),
-                "llm_api_key": get_env("MEM_LLM_API_KEY", "LLM_API_KEY") ,
-                "llm_base_url": get_env("MEM_LLM_BASE_URL", 'LLM_BASE_URL'),
-                "temperature": get_env("MEM_LLM_TEMPERATURE", "MEM_LLM_TEMPERATURE", 1.0),
-                "streaming": 'False'
-            }))
+            raise ValueError("LLM instance is not initialized")
         return self._llm_instance
 
 
@@ -245,7 +242,7 @@ class Memory(MemoryBase):
             for message in history_items]
         return parsed_messages
 
-    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
+    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem], agent_memory_config: AgentMemoryConfig) -> str:
         logger.info(
             f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages")
         if len(to_be_summary) == 0:
@@ -254,12 +251,12 @@ class Memory(MemoryBase):
         history_context = self._build_history_context(parsed_messages)
 
         summary_messages = [
-            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+            {"role": "user", "content": agent_memory_config.summary_prompt.format(context=history_context)}
         ]
 
         return await self._call_llm_summary(summary_messages)
 
-    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
+    async def async_gen_summary(self, filters: dict, last_rounds: int, agent_memory_config: AgentMemoryConfig) -> str:
         """A tool for summarizing the conversation history."""
 
         logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages [filters -> {filters}, "
@@ -271,13 +268,13 @@ class Memory(MemoryBase):
         history_context = self._build_history_context(parsed_messages)
 
         summary_messages = [
-            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+            {"role": "user", "content": agent_memory_config.summary_prompt.format(context=history_context)}
         ]
 
         return await self._call_llm_summary(summary_messages)
 
-    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
-        if self.config.enable_summary and len(to_be_summary.content) < self.config.summary_single_context_length:
+    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int, agent_memory_config: AgentMemoryConfig) -> str:
+        if not agent_memory_config.enable_summary or len(to_be_summary.content) < agent_memory_config.summary_single_context_length:
             return to_be_summary.content
 
         logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages [filters -> {filters}, "
@@ -296,7 +293,7 @@ class Memory(MemoryBase):
         history_context = self._build_history_context(parsed_messages)
 
         summary_messages = [
-            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+            {"role": "user", "content": agent_memory_config.summary_prompt.format(context=history_context)}
         ]
 
         return await self._call_llm_summary(summary_messages)
@@ -431,29 +428,28 @@ class Memory(MemoryBase):
 
 
 class AworldMemory(Memory):
-    def __init__(self, memory_store: MemoryStore, **kwargs):
-        super().__init__(memory_store=memory_store)
+    def __init__(self, memory_store: MemoryStore, config: MemoryConfig,  **kwargs):
+        super().__init__(memory_store=memory_store, config=config, **kwargs)
         self.summary = {}
 
-    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         self.memory_store.add(memory_item)
 
         # Check if we need to create or update summary
-        if memory_config and memory_config.enable_summary:
+        if agent_memory_config and agent_memory_config.enable_summary:
             total_rounds = len(self.memory_store.get_all())
-            if total_rounds > memory_config.summary_rounds:
+            if total_rounds > agent_memory_config.summary_rounds:
                 self._create_or_update_summary(total_rounds)
 
-
-    def _create_or_update_summary(self, total_rounds: int):
+    def _create_or_update_summary(self, total_rounds: int, agent_memory_config: AgentMemoryConfig):
         """Create or update summary based on current total rounds.
 
         Args:
             total_rounds (int): Total number of rounds.
         """
-        summary_index = int(total_rounds / self.summary_rounds)
-        start = (summary_index - 1) * self.summary_rounds
-        end = total_rounds - self.summary_rounds
+        summary_index = int(total_rounds / agent_memory_config.summary_rounds)
+        start = (summary_index - 1) * agent_memory_config.summary_rounds
+        end = total_rounds - agent_memory_config.summary_rounds
 
         # Ensure we have valid start and end indices
         start = max(0, start)
@@ -464,7 +460,7 @@ class AworldMemory(Memory):
         print(f"{total_rounds}start: {start}, end: {end},")
 
         # Create summary content
-        summary_content = self._summarize_items(items_to_summarize, summary_index)
+        summary_content = self._summarize_items(items_to_summarize, summary_index, agent_memory_config)
 
         # Create the range key
         range_key = f"{start}_{end}"
@@ -488,7 +484,7 @@ class AworldMemory(Memory):
             )
             self.summary[range_key] = summary_item
 
-    def _summarize_items(self, items: list[MemoryItem], summary_index: int) -> str:
+    def _summarize_items(self, items: list[MemoryItem], summary_index: int, agent_memory_config: AgentMemoryConfig) -> str:
         """Summarize a list of memory items.
 
         Args:
@@ -500,7 +496,7 @@ class AworldMemory(Memory):
         """
         # This is a placeholder. In a real implementation, you might use an LLM or other method
         # to create a meaningful summary of the content
-        return asyncio.run(self.async_gen_multi_rounds_summary(items))
+        return asyncio.run(self.async_gen_multi_rounds_summary(items,agent_memory_config))
 
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)

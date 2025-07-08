@@ -1,13 +1,13 @@
-from datetime import datetime
-
-import uuid
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Optional, Any, Literal, Union, List, Dict
 
-from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfile, MemoryItem
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 
-from aworld.models.llm import LLMModel
+from aworld.config import ConfigDict
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfile, MemoryItem
+from aworld.models.llm import LLMModel, get_llm_model
+
 
 class MemoryStore(ABC):
     """
@@ -420,10 +420,19 @@ class EmbeddingsConfig(BaseModel):
     model_name: str = "text-embedding-3-small"
     base_url: str = "https://api.openai.com/v1"
     context_length: int = 8191
-    dimensions: int = 1536
-    batch_size: int = 100
+    dimensions: int = 512
     timeout: int = 60
 
+class MemoryLLMConfig(BaseModel):
+    provider: str = "openai"
+    api_key: str
+    base_url: str
+    model_name: str
+    temperature: float = 1.0
+
+    model_config = ConfigDict(
+        extra='allow'
+    )
 
 class VectorDBConfig(BaseModel):
     provider: str = "chroma"
@@ -440,9 +449,8 @@ class MemoryConfig(BaseModel):
     # Memory Config
     provider: Literal['aworld', 'mem0'] = 'aworld'
 
-    # LLM settings - the LLM instance can be passed separately
-    llm_provider: Literal['openai', 'langchain'] = 'langchain'
-    llm_instance: Optional[Union[LLMModel]] = None
+    # LLM settings
+    llm_config: MemoryLLMConfig = Field(default=None, description="LLM config")
 
     # semantic search settings
     enable_semantic_search: bool = Field(default=False, description="enable_semantic_search use to search memory")
@@ -463,10 +471,20 @@ class MemoryConfig(BaseModel):
             'config': {'model': self.embedding_config.model_name, 'embedding_dims': self.embedding_config.dimensions},
         }
 
+    def get_llm_instance(self) -> Union[LLMModel, 'ChatOpenAI']:
+        if self.llm_config:
+            return get_llm_model(conf=ConfigDict({
+                "llm_model_name": self.llm_config.model_name,
+                "llm_api_key": self.llm_config.api_key,
+                "llm_base_url": self.llm_config.base_url,
+                "temperature": self.llm_config.temperature,
+            }))
+        return None
+
     @property
     def llm_config_dict(self) -> dict[str, Any]:
         """Returns the LLM configuration dictionary."""
-        return {'provider': self.llm_provider, 'config': {'model': self.llm_instance}}
+        return {'provider': self.llm_config.provider, 'config': {'model': self.get_llm_instance()}}
 
     @property
     def vector_store_config_dict(self) -> dict[str, Any]:
@@ -660,7 +678,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
+    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int, , agent_memory_config: AgentMemoryConfig) -> str:
         """A tool for reducing the context length of the current round.
 
         Step 1: Retrieve historical conversation content based on filters and last_rounds
@@ -677,7 +695,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
+    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem], agent_memory_config: AgentMemoryConfig) -> str:
         """A tool for summarizing the list of memory item.
 
         Args:
@@ -685,7 +703,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
+    async def async_gen_summary(self, filters: dict, last_rounds: int, agent_memory_config: AgentMemoryConfig) -> str:
         """A tool for summarizing the conversation history.
 
         Step 1: Retrieve historical conversation content based on filters and last_rounds
