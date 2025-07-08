@@ -17,7 +17,7 @@ class AWorldAgent(BaseAWorldAgent):
         llm_model_name = os.getenv("LLM_MODEL_NAME_GAIA")
         llm_api_key = os.getenv("LLM_API_KEY_GAIA")
         llm_base_url = os.getenv("LLM_BASE_URL_GAIA")
-        llm_temperature = os.getenv("LLM_TEMPERATURE_GAIA", 0.0)
+        llm_temperature = int(os.getenv("LLM_TEMPERATURE_GAIA", 0.0))
 
         if not llm_model_name or not llm_api_key or not llm_base_url:
             raise ValueError(

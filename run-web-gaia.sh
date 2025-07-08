@@ -14,7 +14,9 @@ fi
 
 pip install "marker-pdf[full]" --no-deps
 
-cd aworld/cmd/web/webui && npm run build
+cd aworld/cmd/web/webui && npm install &&npm run build
+
+playwright install chromium --with-deps --no-shell
 
 cd $BASE_DIR && python setup.py install
 

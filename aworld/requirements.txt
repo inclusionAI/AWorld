@@ -14,3 +14,4 @@ opentelemetry-sdk~=1.32.1
 opentelemetry-exporter-otlp~=1.32.1
 tiktoken~=0.9.0
 fastapi
+ffmpeg-python>=0.2.0

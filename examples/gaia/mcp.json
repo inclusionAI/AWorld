@@ -5,21 +5,30 @@
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.media.audio"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "browser": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.tools.browser"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "chess": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.tools.playchess"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "code": {
             "command": "npx",
@@ -36,63 +45,90 @@
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.documents.mscsv"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "docx": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.documents.msdocx"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "download": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.tools.download"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "xlsx": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.documents.msxlsx"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "image": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.media.image"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "pdf": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.documents.pdf"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "pptx": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.documents.mspptx"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "pubchem": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.tools.pubchem"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "reasoning": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.intelligence.think"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "search": {
             "command": "python",
@@ -102,7 +138,8 @@
             ],
             "env": {
                 "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
-                "GOOGLE_CSE_ID": "${GOOGLE_CSE_ID}"
+                "GOOGLE_CSE_ID": "${GOOGLE_CSE_ID}",
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
             }
         },
         "terminal": {
@@ -117,35 +154,50 @@
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.media.video"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "wayback": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.tools.wayback"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "wikipedia": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.tools.wiki"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "youtube": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.tools.youtube"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         },
         "txt": {
             "command": "python",
             "args": [
                 "-m",
                 "examples.gaia.mcp_collections.documents.txt"
-            ]
+            ],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": 300
+            }
         }
     }
 }

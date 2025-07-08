@@ -17,6 +17,8 @@
   conda activate aworld-gaia
   ```
 
+  > https://www.anaconda.com/docs/getting-started/miniconda/install
+
 ## Python Dependencies
 - Install Python dependencies:
 
@@ -34,6 +36,8 @@
   brew install ffmpeg
   brew install --cask libreoffice
   ```
+
+  > Install Home Brew: https://brew.sh/
 
 ### Linux64
 - Install additional dependencies for Linux64:

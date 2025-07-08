@@ -252,10 +252,12 @@ class GaiaAgentRunner:
                     if isinstance(item, AsyncGenerator):
                         async for sub_item in item:
                             yield sub_item
+                            if sub_item and str(sub_item).strip():
+                                last_output = sub_item
                     else:
                         yield item
-                    if item and str(item).strip():
-                        last_output = item
+                        if item and str(item).strip():
+                            last_output = item
 
             logger.info(f"Gaia Agent Last Output: {last_output}")
 
