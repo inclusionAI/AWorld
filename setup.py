@@ -216,9 +216,7 @@ setup(
     packages=find_packages(
         where=".",
         exclude=["tests", "tests.*", "*.tests", "*.tests.*",
-                 "test", "*.test", "*.test.*", "test.*",
-                 "examples", "*.examples", "examples.*", "*.examples.*",
-                 "mcp_servers", "*.mcp_servers", "mcp_servers.*", "*.mcp_servers.*"],
+                 "test", "*.test", "*.test.*", "test.*"],
     ),
     package_data={
         "aworld": [
