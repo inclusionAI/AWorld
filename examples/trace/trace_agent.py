@@ -16,8 +16,10 @@ from aworld.trace.server import get_trace_server
 from aworld.runners.state_manager import RuntimeStateManager, RunNode
 import aworld.trace as trace
 
-
-trace.configure(ObservabilityConfig(trace_server_enabled=True))
+trace.configure(ObservabilityConfig(trace_server_enabled=True,
+                                    metrics_provider="otlp",
+                                    metrics_backend="antmonitor",
+                                    metrics_base_url="https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"))
 
 
 class TraceAgent(Agent):
