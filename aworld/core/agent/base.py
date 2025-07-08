@@ -3,22 +3,20 @@
 
 import abc
 import uuid
-
 from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union
 
 from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, load_config, ConfigDict
-from aworld.core.common import Observation, ActionModel
-from aworld.core.context.base import AgentContext, Context
+from aworld.core.common import ActionModel
+from aworld.core.context.base import Context
 from aworld.core.event import eventbus
-from aworld.events.util import send_message
 from aworld.core.event.base import Message, Constants
 from aworld.core.factory import Factory
+from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
-
 from aworld.utils.common import convert_to_snake, replace_env_variables
 
 INPUT = TypeVar('INPUT')
@@ -125,7 +123,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # all tools that the agent can use. note: string name/id only
         self.tools = []
         self.context = None
-        self.agent_context = None
         self.state = AgentStatus.START
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
@@ -135,14 +132,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def _init_context(self, context: Context):
         self.context = context
-        self.agent_context = AgentContext(
-            agent_id=self.id(),
-            agent_name=self.name(),
-            agent_desc=self.desc(),
-            tool_names=self.tool_names,
-            context=self.context,
-            parent_state=self.context.state  # Pass Context's state as parent state
-        )
 
     def id(self) -> str:
         return self._id
@@ -172,6 +161,18 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 sender=self.id(),
                 session_id=self.context.session_id,
                 headers={"context": self.context}
+            ))
+        self._init_context(message.context)
+        observation = message.payload
+        if eventbus is not None:
+            await send_message(Message(
+                category=Constants.OUTPUT,
+                payload=StepOutput.build_start_output(name=f"{self.id()}",
+                                                      alias_name=self.name(),
+                                                      step_num=0),
+                sender=self.id(),
+                session_id=self.context.session_id,
+                headers={'context': self.context}
             ))
         await self.async_pre_run()
         result = await self.async_policy(observation, message=message, **kwargs)

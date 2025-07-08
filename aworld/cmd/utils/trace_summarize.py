@@ -12,12 +12,11 @@ from typing import Dict, Union
 
 from aworld.core.context.base import Context
 from aworld.utils.exec_util import exec_tasks
-from examples.tools.trace.trace_tool import TraceTool
 
 logger = logging.getLogger(__name__)
 
 
-class SimpleSummaryCache():
+class SimpleSummaryCache:
     def __init__(self) -> None:
         self._cache_file = os.path.join(os.curdir, "data", "trace_summary_cache.pkl")
         self._cache: Dict[str, str] = {}
@@ -26,7 +25,7 @@ class SimpleSummaryCache():
     def _load_cache(self):
         if os.path.exists(self._cache_file):
             try:
-                with open(self._cache_file, 'rb') as f:
+                with open(self._cache_file, "rb") as f:
                     self._cache = pickle.load(f)
             except (pickle.PickleError, EOFError):
                 logger.warning("Cache file is corrupted, creating new cache")
@@ -34,9 +33,11 @@ class SimpleSummaryCache():
                     self._cache_file.unlink()
 
     def _save_cache(self):
-        serializable_cache = {k: v for k, v in self._cache.items() if not isinstance(v, Task)}
+        serializable_cache = {
+            k: v for k, v in self._cache.items() if not isinstance(v, Task)
+        }
         try:
-            with open(self._cache_file, 'wb') as f:
+            with open(self._cache_file, "wb") as f:
                 pickle.dump(serializable_cache, f)
         except pickle.PickleError:
             logger.error("Failed to save cache")
@@ -83,12 +84,13 @@ async def _do_summarize_trace(trace_id: str):
         system_prompt=trace_sys_prompt,
         agent_prompt=trace_prompt,
         tool_names=["trace"],
-        feedback_tool_result=True
+        feedback_tool_result=True,
     )
 
     if trace_agent.conf.llm_api_key is None:
         logger.warning(
-            "LLM_API_KEY_TRACE is not set, trace summarize will not be executed.")
+            "LLM_API_KEY_TRACE is not set, trace summarize will not be executed."
+        )
         return ""
     try:
         res = await exec_tasks(trace_id, [trace_agent], Context())
@@ -103,6 +105,22 @@ async def _do_summarize_trace(trace_id: str):
 def summarize_trace(trace_id: str):
     global agent_config
     if agent_config is None:
+        llm_provider = os.getenv("LLM_PROVIDER_TRACE", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_TRACE", None)
+        llm_base_url = os.getenv("LLM_BASE_URL_TRACE", None)
+        llm_api_key = os.getenv("LLM_API_KEY_TRACE", None)
+
+        if (
+            not llm_provider
+            or not llm_model_name
+            or not llm_base_url
+            or not llm_api_key
+        ):
+            logger.warning(
+                "LLM_MODEL_NAME_TRACE, LLM_BASE_URL_TRACE, LLM_API_KEY_TRACE is not set, trace summarize will not be executed."
+            )
+            return
+
         agent_config = AgentConfig(
             llm_provider=os.getenv("LLM_PROVIDER_TRACE", "openai"),
             llm_model_name=os.getenv("LLM_MODEL_NAME_TRACE", None),
@@ -110,9 +128,14 @@ def summarize_trace(trace_id: str):
             llm_api_key=os.getenv("LLM_API_KEY_TRACE", None),
         )
     if not _trace_summary_cache.trace_exists(trace_id):
-        if agent_config.llm_api_key is None or not agent_config.llm_base_url or not agent_config.llm_model_name:
+        if (
+            agent_config.llm_api_key is None
+            or not agent_config.llm_base_url
+            or not agent_config.llm_model_name
+        ):
             logger.warning(
-                "LLM_MODEL_NAME_TRACE, LLM_BASE_URL_TRACE, LLM_API_KEY_TRACE is not set, trace summarize will not be executed.")
+                "LLM_MODEL_NAME_TRACE, LLM_BASE_URL_TRACE, LLM_API_KEY_TRACE is not set, trace summarize will not be executed."
+            )
             return
 
         task = asyncio.create_task(_do_summarize_trace(trace_id))
@@ -136,13 +159,12 @@ async def get_summarize_trace(trace_id: str):
 
 
 def _fetch_json_from_result(input_str):
-    json_match = re.search(r'\[.*\]', input_str, re.DOTALL)
+    json_match = re.search(r"\[.*\]", input_str, re.DOTALL)
     if json_match:
         json_str = json_match.group(0)
         try:
             json.loads(json_str)
             return json_str
         except json.JSONDecodeError as e:
-            logger.warning(
-                f"_fetch_json_from_result json_str: {json_str} error: {e}")
+            logger.warning(f"_fetch_json_from_result json_str: {json_str} error: {e}")
     return ""

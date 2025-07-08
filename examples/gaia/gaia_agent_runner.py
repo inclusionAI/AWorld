@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
 import traceback
 from typing import AsyncGenerator
 import uuid
@@ -84,10 +86,11 @@ class GaiaSearchToolResultParser(BaseToolResultParser):
             }
         )
 
-        return f"""\
-**🔎 Gaia Search**\n\n
+        return f"""
+\n**🔎 Gaia Search**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
+\n
 ```
 """
 
@@ -99,10 +102,50 @@ class CustomToolResultParserFactory(ToolResultParserFactory):
         return super().get_parser(tool_type, tool_name)
 
 
+# Module-level flag to ensure dependencies are installed only once per program run
+_install_dependencies_flag = False
+
+
 class GaiaAgentRunner:
     """
     Gaia Agent Runner
     """
+
+    def _install_dependencies(self):
+        try:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            requirements_file = os.path.join(current_dir, "requirements.txt")
+
+            if os.path.exists(requirements_file):
+                logger.info(f"Installing dependencies from {requirements_file}")
+                subprocess.check_call(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "-U",
+                        "-r",
+                        requirements_file,
+                    ]
+                )
+                subprocess.check_call(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--no-deps",
+                        "-U",
+                        "marker-pdf",
+                        "anthropic==0.46.0",
+                    ]
+                )
+                logger.info("Dependencies installed successfully")
+            else:
+                logger.warning(f"Requirements file not found at {requirements_file}")
+        except Exception as e:
+            logger.error(f"Failed to install dependencies: {e}")
 
     def __init__(
         self,
@@ -111,9 +154,14 @@ class GaiaAgentRunner:
         llm_base_url: str,
         llm_api_key: str,
         llm_temperature: float = 0.0,
-        mcp_config: dict = {},
+        mcp_config: dict = None,
         session_id: str = None,
     ):
+        global _install_dependencies_flag
+        if not _install_dependencies_flag:
+            self._install_dependencies()
+            _install_dependencies_flag = True
+
         self.session_id = session_id or str(uuid.uuid4())
         self.agent_config = AgentConfig(
             llm_provider=llm_provider,
@@ -122,6 +170,14 @@ class GaiaAgentRunner:
             llm_base_url=llm_base_url,
             llm_temperature=llm_temperature,
         )
+
+        if mcp_config is None:
+            mcp_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "mcp.json"
+            )
+            with open(mcp_path, "r") as f:
+                mcp_config = json.load(f)
+                logger.info(f"Gaia Agent Runner mcp_config: {mcp_config}")
 
         self.super_agent = Agent(
             conf=self.agent_config,
@@ -161,7 +217,9 @@ class GaiaAgentRunner:
             question = add_file_path(data_item, file_path=self.gaia_dataset_path)[
                 "Question"
             ]
-            yield (f"\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```\n")
+            yield (
+                f"\n### Gaia Question\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```\n"
+            )
         except Exception as e:
             pass
 
@@ -197,7 +255,8 @@ class GaiaAgentRunner:
                             yield sub_item
                     else:
                         yield item
-                    last_output = item
+                    if item and str(item).strip():
+                        last_output = item
 
             logger.info(f"Gaia Agent Last Output: {last_output}")
 
