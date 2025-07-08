@@ -3,18 +3,17 @@
 import abc
 import asyncio
 import json
-import os
 import traceback
 from typing import Optional
 
-from aworld.config import ConfigDict
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.embeddings.factory import EmbedderFactory
-from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
-from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
+from aworld.memory.longterm import DefaultMemoryOrchestrator
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, \
+    AgentExperienceExtractParams, UserProfile
 from aworld.memory.vector.factory import VectorDBFactory
-from aworld.models.llm import get_llm_model, acall_llm_model
+from aworld.models.llm import acall_llm_model
 
 
 class InMemoryMemoryStore(MemoryStore):
@@ -109,14 +108,16 @@ MEMORY_HOLDER = {}
 class MemoryFactory:
 
     @classmethod
-    def init(cls, custom_memory_store: MemoryStore = None):
+    def init(cls, custom_memory_store: MemoryStore = None, config: MemoryConfig = MemoryConfig(provider="aworld")):
         if custom_memory_store:
             MEMORY_HOLDER["instance"] = AworldMemory(
-                memory_store=custom_memory_store
+                memory_store=custom_memory_store,
+                config=config
             )
         else:
             MEMORY_HOLDER["instance"] = AworldMemory(
-                memory_store=InMemoryMemoryStore()
+                memory_store=InMemoryMemoryStore(),
+                config=config
             )
         logger.info(f"Memory init success")
 
@@ -131,8 +132,9 @@ class MemoryFactory:
         if MEMORY_HOLDER.get("instance"):
             logger.info(f"instance use cached memory instance")
             return MEMORY_HOLDER["instance"]
-        MEMORY_HOLDER["instance"] =  AworldMemory(
-           memory_store=InMemoryMemoryStore()
+        MEMORY_HOLDER["instance"] =  MemoryFactory.from_config(
+            config=MemoryConfig(provider="aworld"),
+            memory_store=InMemoryMemoryStore()
         )
         logger.info(f"instance use new memory instance")
         return MEMORY_HOLDER["instance"]
@@ -163,7 +165,6 @@ class MemoryFactory:
             )
         else:
             raise ValueError(f"Invalid memory store type: {config.get('memory_store')}")
-
 
 
 class Memory(MemoryBase):
@@ -439,7 +440,7 @@ class AworldMemory(Memory):
         if agent_memory_config and agent_memory_config.enable_summary:
             total_rounds = len(self.memory_store.get_all())
             if total_rounds > agent_memory_config.summary_rounds:
-                self._create_or_update_summary(total_rounds)
+                self._create_or_update_summary(total_rounds, agent_memory_config = agent_memory_config)
 
     def _create_or_update_summary(self, total_rounds: int, agent_memory_config: AgentMemoryConfig):
         """Create or update summary based on current total rounds.

@@ -69,6 +69,10 @@ class MemoryItem(BaseModel):
     def application_id(self) -> str:
         return self.metadata.get('application_id', 'default')
 
+    @property
+    def embedding_text(self) -> str:
+        return self.content
+
 
 class MessageMetadata(BaseModel):
     """
@@ -96,16 +100,8 @@ class AgentExperienceItem(BaseModel):
     skill: str = Field(description="The skill demonstrated in the experience")
     actions: List[str] = Field(description="The actions taken by the agent")
 
-class LongTermEmbedding(ABC):
-    """
-    Abstract class for long-term embedding.
-    """
 
-    @abstractmethod
-    def get_embedding_text(self):
-        pass
-
-class AgentExperience(MemoryItem, LongTermEmbedding):
+class AgentExperience(MemoryItem):
     """
     Represents an agent's experience, including skills and actions.
     All custom attributes are stored in content and metadata.
@@ -133,14 +129,15 @@ class AgentExperience(MemoryItem, LongTermEmbedding):
     def actions(self) -> List[str]:
         return self.content.actions
 
-    def get_embedding_text(self):
-        return f"agent_id:{self.agent_id} skill:{self.skill} actions:{self.actions}"
+    @property
+    def embedding_text(self):
+        return f"skill:{self.skill}, actions:{self.actions}"
 
 class UserProfileItem(BaseModel):
     key: str = Field(description="The key of the profile")
     value: Any = Field(description="The value of the profile")
 
-class UserProfile(MemoryItem, LongTermEmbedding):
+class UserProfile(MemoryItem):
     """
     Represents a user profile key-value pair.
     All custom attributes are stored in content and metadata.
@@ -168,8 +165,9 @@ class UserProfile(MemoryItem, LongTermEmbedding):
     def value(self) -> Any:
         return self.content.value
 
-    def get_embedding_text(self):
-        return f"user_id:{self.user_id} key:{self.key} value:{self.value}"
+    @property
+    def embedding_text(self):
+        return f"key:{self.key} value:{self.value}"
 
 
 class MemoryMessage(MemoryItem):

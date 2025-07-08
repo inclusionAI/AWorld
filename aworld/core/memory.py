@@ -678,7 +678,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int, , agent_memory_config: AgentMemoryConfig) -> str:
+    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int, agent_memory_config: AgentMemoryConfig) -> str:
         """A tool for reducing the context length of the current round.
 
         Step 1: Retrieve historical conversation content based on filters and last_rounds
