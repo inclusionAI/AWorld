@@ -8,6 +8,7 @@ from typing import Optional
 
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
+from aworld.memory.embeddings.base import EmbeddingsResult, EmbeddingsMetadata
 from aworld.memory.embeddings.factory import EmbedderFactory
 from aworld.memory.longterm import DefaultMemoryOrchestrator
 from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, \
@@ -179,7 +180,7 @@ class Memory(MemoryBase):
 
         # Initialize embedding and vector database components
         self._embedder = EmbedderFactory.get_embedder(config.embedding_config)
-        self._vector_db = VectorDBFactory.get_vector_db(config.vector_db_config)
+        self._vector_db = VectorDBFactory.get_vector_db(config.vector_store_config)
 
         # Initialize long-term memory components
         self.memory_orchestrator = DefaultMemoryOrchestrator(
@@ -436,11 +437,39 @@ class AworldMemory(Memory):
     def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         self.memory_store.add(memory_item)
 
+        # save to vector store
+        self._save_to_vector_db(memory_item)
+
         # Check if we need to create or update summary
         if agent_memory_config and agent_memory_config.enable_summary:
             total_rounds = len(self.memory_store.get_all())
             if total_rounds > agent_memory_config.summary_rounds:
                 self._create_or_update_summary(total_rounds, agent_memory_config = agent_memory_config)
+
+    def _save_to_vector_db(self, memory_item: MemoryItem):
+        if not memory_item.embedding_text:
+            logger.debug(f"memory_item.embedding_text is None, skip save to vector store")
+            return
+        if self._vector_db and self._embedder:
+            embedding = self._embedder.embed_query(memory_item.embedding_text)
+            # save to vector store
+            embedding_meta = EmbeddingsMetadata(
+                memory_id=memory_item.id,
+                agent_id = memory_item.agent_id,
+                session_id = memory_item.session_id,
+                task_id = memory_item.task_id,
+                user_id = memory_item.user_id,
+                application_id = memory_item.application_id,
+                memory_type=memory_item.memory_type,
+                created_at=memory_item.created_at,
+                updated_at=memory_item.updated_at,
+                embedding_model=self.config.embedding_config.model_name,
+            )
+            embedding_item= EmbeddingsResult(embedding = embedding, content=memory_item.embedding_text, metadata=embedding_meta)
+
+            self._vector_db.insert(self.config.vector_store_config.config['collection_name'], [embedding_item])
+        else:
+            logger.warning(f"memory_store or embedder is None, skip save to vector store")
 
     def _create_or_update_summary(self, total_rounds: int, agent_memory_config: AgentMemoryConfig):
         """Create or update summary based on current total rounds.
@@ -574,3 +603,20 @@ class AworldMemory(Memory):
                 memory_items.insert(0, agent_memory_items[0])
 
         return result
+
+    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+        if self._vector_db:
+            embedding = self._embedder.embed_query(query)
+            results = self._vector_db.search(self.config.vector_store_config.config['collection_name'], [embedding], filters, 0.5, limit)
+            memory_items = []
+            if results and results.docs:
+                for result in results.docs:
+                    memory_item = self.memory_store.get(result.metadata.memory_id)
+                    if memory_item:
+                        memory_item.metadata['score'] = result.score
+                        memory_items.append(memory_item)
+                return memory_items
+        else:
+            logger.warning(f"vector_db is None, skip search")
+        return []
+

@@ -1,4 +1,7 @@
+from typing import Optional
+
 from aworld.core.memory import EmbeddingsConfig
+from aworld.memory.embeddings.base import Embeddings
 from aworld.memory.embeddings.ollama import OllamaEmbeddings
 from aworld.memory.embeddings.openai_compatible import OpenAICompatibleEmbeddings
 
@@ -6,7 +9,7 @@ from aworld.memory.embeddings.openai_compatible import OpenAICompatibleEmbedding
 class EmbedderFactory:
 
     @staticmethod
-    def get_embedder(config: EmbeddingsConfig):
+    def get_embedder(config: EmbeddingsConfig) -> Optional[Embeddings]:
         if not config:
             return None
         if config.provider == "openai":

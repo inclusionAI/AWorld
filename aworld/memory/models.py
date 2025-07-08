@@ -70,7 +70,7 @@ class MemoryItem(BaseModel):
         return self.metadata.get('application_id', 'default')
 
     @property
-    def embedding_text(self) -> str:
+    def embedding_text(self) -> Optional[str]:
         return self.content
 
 
@@ -223,6 +223,11 @@ class MemorySystemMessage(MemoryMessage):
             "content": self.content
         }
 
+    @property
+    def embedding_text(self) -> Optional[str]:
+        return None
+
+
 class MemoryHumanMessage(MemoryMessage):
     """
     Represents a human message with role and content.
@@ -287,7 +292,10 @@ class MemoryToolMessage(MemoryMessage):
     def status(self) -> str:
         return self.metadata['status']
 
-    
+    @property
+    def embedding_text(self) -> Optional[str]:
+        return None
+
     def to_openai_message(self) -> dict:
         return {
             "role": self.role,

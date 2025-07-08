@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Optional, Any, Literal, Union, List, Dict
 
+from nipype.info import description
 from pydantic import BaseModel, Field
 
 from aworld.config import ConfigDict
@@ -416,7 +417,7 @@ class LongTermConfig(BaseModel):
 
 class EmbeddingsConfig(BaseModel):
     provider: str = "openai"
-    api_key: str
+    api_key: str = ""
     model_name: str = "text-embedding-3-small"
     base_url: str = "https://api.openai.com/v1"
     context_length: int = 8191
@@ -450,16 +451,14 @@ class MemoryConfig(BaseModel):
     provider: Literal['aworld', 'mem0'] = 'aworld'
 
     # LLM settings
-    llm_config: MemoryLLMConfig = Field(default=None, description="LLM config")
+    llm_config: Optional[MemoryLLMConfig] = Field(default=None, description="LLM config")
 
     # semantic search settings
-    enable_semantic_search: bool = Field(default=False, description="enable_semantic_search use to search memory")
     embedding_config: Optional[EmbeddingsConfig] = Field(default=None, description="embedding_config")
-    vector_store_config: VectorDBConfig= VectorDBConfig(provider="chroma", config={
+    vector_store_config: Optional[VectorDBConfig]= Field(default=VectorDBConfig(provider="chroma", config={
         "chroma_data_path": "./chroma_db",
-        "chroma_tenant": "aworld",
-        "chroma_database": "aworld"
-    })
+        "collection_name": "aworld",
+    }), description ="vector_store_config")
 
     @property
     def embedder_config_dict(self) -> dict[str, Any]:
