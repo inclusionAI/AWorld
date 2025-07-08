@@ -17,7 +17,6 @@ import sys
 
 try:
     from browser_use import Agent, AgentHistoryList, BrowserProfile
-    from browser_use.agent.memory.views import MemoryConfig
     from dotenv import load_dotenv
     from langchain_openai import ChatOpenAI
     from pydantic import BaseModel, Field
@@ -125,7 +124,6 @@ class BrowserActionCollection(ActionCollection):
             llm=self.llm_config,
             extend_system_message=self.extended_browser_system_prompt,
             use_vision=True,
-            enable_memory=True,
             browser_profile=self.browser_profile,
             save_conversation_path=f"{self.trace_log_dir}/browser_log/trace.log",
         )
@@ -328,7 +326,6 @@ class BrowserActionCollection(ActionCollection):
                 "cookies_enabled": bool(os.getenv("COOKIES_FILE_PATH")),
                 "trace_logging": True,
                 "vision_enabled": True,
-                "memory_enabled": True,
             },
         }
 
