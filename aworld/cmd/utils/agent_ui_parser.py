@@ -82,10 +82,10 @@ class DefaultToolResultParser(BaseToolResultParser):
                 )
 
         return f"""\
-**🔧 Tool: {tool_card.tool_name}#{tool_card.function_name}**\n\n
+\n**🔧 Tool: {tool_card.tool_name}#{tool_card.function_name}**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
-```
+```\n
 """
 
 
@@ -143,10 +143,10 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
         )
 
         return f"""\
-**🔎 Google Search**\n\n
+\n**🔎 Google Search**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
-```
+```\n
 """
 
 
@@ -162,16 +162,26 @@ class ToolResultParserFactory:
 class AWorldWebAgentUI(AworldUI):
     session_id: str = Field(default="", description="session id")
     workspace: WorkSpace = Field(default=None, description="workspace")
-    tool_result_parser_factory: ToolResultParserFactory = Field(default=ToolResultParserFactory, description="tool result parser factory")
+    tool_result_parser_factory: ToolResultParserFactory = Field(
+        default=ToolResultParserFactory, description="tool result parser factory"
+    )
 
-    def __init__(self, session_id: str = None, workspace: WorkSpace = None, tool_result_parser_factory: ToolResultParserFactory = None, **kwargs):
+    def __init__(
+        self,
+        session_id: str = None,
+        workspace: WorkSpace = None,
+        tool_result_parser_factory: ToolResultParserFactory = None,
+        **kwargs,
+    ):
         """
         Initialize MarkdownAworldUI
         Args:"""
         super().__init__(**kwargs)
         self.session_id = session_id
         self.workspace = workspace
-        self.tool_result_parser_factory = tool_result_parser_factory or ToolResultParserFactory()
+        self.tool_result_parser_factory = (
+            tool_result_parser_factory or ToolResultParserFactory()
+        )
 
     @override
     async def message_output(self, __output__: MessageOutput):
@@ -221,7 +231,9 @@ class AWorldWebAgentUI(AworldUI):
         """
         tool_result
         """
-        parser = self.tool_result_parser_factory.get_parser(output.tool_type, output.tool_name)
+        parser = self.tool_result_parser_factory.get_parser(
+            output.tool_type, output.tool_name
+        )
         return await parser.parse(output, workspace=self.workspace)
 
     @override

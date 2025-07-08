@@ -3,7 +3,7 @@ BASE_DIR=$(dirname "$(readlink -f "$0")")
 
 cd $BASE_DIR/aworld/cmd/web/webui && npm run build
 
-cd $BASE_DIR && python setup.py install && pip install -e .
+cd $BASE_DIR && python setup.py install
 
 pip install -r mcp_servers/requirements.txt
 

@@ -62,7 +62,14 @@
 - Set up your environment variables:
 - Edit the `.env` file and replace all `{YOUR_CONFIG}` placeholders with your actual values.
 
-# Running the GAIA
+# Running the GAIA Web UI
+- You can run gaia web ui by following command:
+
+  ```bash
+  sh run-web-gaia.sh
+  ```
+
+# Running the GAIA Task
 - Then you'll be able to taste the appetizer running the following line:
   ```bash
   python examples/gaia/run.py --split validation --q c61d22de-5f6c-4958-a7f6-5e9707bd3466

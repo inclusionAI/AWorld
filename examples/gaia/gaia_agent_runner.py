@@ -87,9 +87,10 @@ class GaiaSearchToolResultParser(BaseToolResultParser):
         )
 
         return f"""
-**🔎 Gaia Search**\n\n
+\n**🔎 Gaia Search**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
+\n
 ```
 """
 
@@ -216,7 +217,9 @@ class GaiaAgentRunner:
             question = add_file_path(data_item, file_path=self.gaia_dataset_path)[
                 "Question"
             ]
-            yield (f"\n### Gaia Question\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```\n")
+            yield (
+                f"\n### Gaia Question\n```gaia_question\n{json.dumps(data_item, indent=2)}\n```\n"
+            )
         except Exception as e:
             pass
 
@@ -252,7 +255,8 @@ class GaiaAgentRunner:
                             yield sub_item
                     else:
                         yield item
-                    last_output = item
+                    if item and str(item).strip():
+                        last_output = item
 
             logger.info(f"Gaia Agent Last Output: {last_output}")
 

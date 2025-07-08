@@ -227,7 +227,11 @@ setup(
             "config/*.tiktoken",
             "web/templates/*.html",
             "cmd/web/webui/dist/**",
-        ]
+        ],
+        "examples": [
+            "**/mcp.json",
+            "gaia/GAIA/**",
+        ],
     },
     license="MIT",
     platforms=["any"],
