@@ -23,7 +23,7 @@ class StringPromptTemplate(BasePromptTemplate):
     def __init__(self, 
                  template: str,
                  input_variables: Optional[List[str]] = None,
-                 template_format: TemplateFormat = TemplateFormat.F_STRING,
+                 template_format: TemplateFormat = TemplateFormat.DOUBLE_BRACE,
                  partial_variables: Optional[Dict[str, Any]] = None,
                  auto_add_dynamic_vars: bool = True,
                  **kwargs):
@@ -68,6 +68,7 @@ class StringPromptTemplate(BasePromptTemplate):
         try:
             variables = self._merge_partial_and_user_variables(context=context, **kwargs)
             self._validate_input_variables(variables)
+            logger.debug(f"variables: {variables} {self.template} {self.template_format}")
             return format_template(self.template, self.template_format, **variables)
         except Exception as e:
             # If any error during formatting, return original template
@@ -92,7 +93,7 @@ class StringPromptTemplate(BasePromptTemplate):
     @classmethod
     def from_template(cls,
                      template: str,
-                     template_format: TemplateFormat = TemplateFormat.F_STRING,
+                     template_format: TemplateFormat = TemplateFormat.DOUBLE_BRACE,
                      partial_variables: Optional[Dict[str, Any]] = None,
                      auto_add_dynamic_vars: bool = True,
                      **kwargs: Any) -> 'StringPromptTemplate':

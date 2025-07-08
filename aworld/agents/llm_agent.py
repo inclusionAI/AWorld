@@ -63,11 +63,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self._llm = None
         self.memory = MemoryFactory.instance()
         self.memory_config = agent_memory_config if agent_memory_config else AgentMemoryConfig()
-        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else conf.system_prompt
-        self.system_prompt_template:str = kwargs.pop("system_prompt_template") if kwargs.get("system_prompt_template") else conf.system_prompt_template
-        if self.system_prompt_template:
-            self.system_prompt=Prompt(self.system_prompt_template).get_prompt()
-        self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
+        self.system_prompt: str = kwargs.pop("system_prompt") if kwargs.get("system_prompt") else (conf.system_prompt if conf.system_prompt else Prompt().get_prompt())
+        self.system_prompt_template: BasePromptTemplate = kwargs.pop("system_prompt_template") if kwargs.get("system_prompt_template") else StringPromptTemplate(self.system_prompt)
+        self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else (conf.agent_prompt if conf.agent_prompt else Prompt().get_prompt())
+        self.agent_prompt_template: BasePromptTemplate = kwargs.pop("agent_prompt_template") if kwargs.get("agent_prompt_template") else StringPromptTemplate(self.agent_prompt)
         self.event_driven = kwargs.pop(
             'event_driven', conf.get('event_driven', False))
         self.handler: Callable[..., Any] = kwargs.get('handler')
@@ -181,11 +180,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """
         agent_prompt = self.agent_prompt
         messages = []
-
         # append sys_prompt to memory
         sys_prompt = self.system_prompt
-        if self.system_prompt_template:
-            sys_prompt = Prompt(self.system_prompt_template,context=self.context).get_prompt()
+        sys_prompt = Prompt(self.system_prompt,context=self.context).get_prompt()
         if sys_prompt:
             await self._add_system_message_to_memory(context=message.context, content=observation.content)
 
@@ -197,7 +194,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
         else:
             content = observation.content
-            if agent_prompt:
+            logger.debug(f"agent_prompt: {agent_prompt} {self.agent_prompt_template}")
+            if self.agent_prompt_template is not None and agent_prompt is not None:
+                content = self.agent_prompt_template.format(context=self.context, task=content, tool_list=self.tools)
+            elif agent_prompt:
                 content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
             if image_urls:
                 urls = [{'type': 'text', 'text': content}]
