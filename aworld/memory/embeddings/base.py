@@ -4,7 +4,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
+from aworld.core.memory import EmbeddingsConfig
 
 
 class EmbeddingsMetadata(BaseModel):
@@ -42,6 +42,41 @@ class Embeddings(ABC):
         raise NotImplementedError
 
 
+class EmbeddingsBase(Embeddings):
+    """
+    Base class for embedding implementations that contains common functionality.
+    """
+
+    def __init__(self, config: EmbeddingsConfig):
+        """
+        Initialize EmbeddingsBase with configuration.
+        Args:
+            config (EmbeddingsConfig): Configuration for embedding model and API.
+        """
+        self.config = config
+
+
+    @abstractmethod
+    def embed_query(self, text: str) -> List[float]:
+        """
+        Abstract method to embed a query string.
+        Args:
+            text (str): Text to embed.
+        Returns:
+            List[float]: Embedding vector.
+        """
+        pass
+
+    @abstractmethod
+    async def async_embed_query(self, text: str) -> List[float]:
+        """
+        Abstract method to asynchronously embed a query string.
+        Args:
+            text (str): Text to embed.
+        Returns:
+            List[float]: Embedding vector.
+        """
+        pass
 
 class EmbeddingFactory:
 
