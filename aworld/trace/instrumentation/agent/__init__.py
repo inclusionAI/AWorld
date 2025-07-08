@@ -1,5 +1,6 @@
 import wrapt
 import time
+import traceback
 import aworld.trace.constants as trace_constants
 from typing import Collection, Any
 from aworld.trace.instrumentation import Instrumentor
@@ -34,6 +35,17 @@ agent_usage_histogram = MetricTemplate(
     unit="token",
     description="Agent token usage"
 )
+
+
+def get_agent_span_attributes(instance, message):
+    return {
+        semconv.AGENT_ID: instance.id(),
+        semconv.AGENT_NAME: instance.name(),
+        semconv.TASK_ID: message.context.task_id if (message.context and message.context.task_id) else "",
+        semconv.SESSION_ID: message.context.session_id if (message.context and message.context.session_id) else message.session_id,
+        semconv.USER_ID: message.context.user if (message.context and message.context.user) else "",
+        trace_constants.ATTRIBUTES_MESSAGE_RUN_TYPE_KEY: trace_constants.RunType.AGNET.value
+    }
 
 
 def _end_span(span):
@@ -93,12 +105,10 @@ def _record_response(instance,
 
 
 def _async_run_class_wrapper(tracer: Tracer):
-    async def _async_run_class_wrapper(wrapped, instance, args, kwargs):
+    async def _async_run_wrapper(wrapped, instance, args, kwargs):
         span = None
-        attributes = {
-            semconv.AGENT_ID: instance.id(),
-            semconv.AGENT_NAME: instance.name()
-        }
+        message = args[0] or kwargs.get("message")
+        attributes = get_agent_span_attributes(instance, message)
         if tracer:
             span = tracer.start_span(
                 name=trace_constants.SPAN_NAME_PREFIX_AGENT + "async_run",
@@ -119,7 +129,17 @@ def _async_run_class_wrapper(tracer: Tracer):
             raise e
         _end_span(span)
         return response
-    return _async_run_class_wrapper
+    return _async_run_wrapper
+
+
+async def _async_run_instance_wrapper(tracer: Tracer):
+
+    @wrapt.decorator
+    async def _awrapper(wrapped, instance, args, kwargs):
+        wrapper_func = _async_run_class_wrapper(tracer=tracer)
+        return await wrapper_func(wrapped, instance, args, kwargs)
+
+    return _awrapper
 
 
 class AgentInstrumentor(Instrumentor):
@@ -128,7 +148,7 @@ class AgentInstrumentor(Instrumentor):
         return ()
 
     def _instrument(self, **kwargs):
-        agent_trace_enabled = kwargs.get("agent_trace_enabled", False)
+        agent_trace_enabled = kwargs.get("trace_enabled", False)
         tracer_provider = get_tracer_provider_silent()
         tracer = None
         if tracer_provider and agent_trace_enabled:
@@ -143,3 +163,19 @@ class AgentInstrumentor(Instrumentor):
 
     def _uninstrument(self, **kwargs: Any):
         pass
+
+
+def wrap_agent(agent: 'aworld.core.agent.base.BaseAgent'):
+    try:
+        tracer_provider = get_tracer_provider_silent()
+        if not tracer_provider:
+            return agent
+        tracer = tracer_provider.get_tracer(
+            "aworld.trace.instrumentation.agent")
+
+        wrapper = _async_run_instance_wrapper(tracer)
+        agent.async_run = wrapper(agent.async_run)
+    except Exception:
+        logger.warning(traceback.format_exc())
+
+    return agent
