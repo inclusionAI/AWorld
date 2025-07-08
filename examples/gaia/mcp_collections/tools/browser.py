@@ -95,6 +95,7 @@ class BrowserActionCollection(ActionCollection):
             save_recording_path=str(self.workspace),
             save_downloads_path=str(self.workspace),
             chromium_sandbox=False,
+            headless=True,
         )
         self._color_log(f"Browser browser_profile: {self.browser_profile}", Color.green)
 
@@ -326,6 +327,7 @@ class BrowserActionCollection(ActionCollection):
                 "cookies_enabled": bool(os.getenv("COOKIES_FILE_PATH")),
                 "trace_logging": True,
                 "vision_enabled": True,
+                "headless": True,
             },
         }
 
