@@ -187,14 +187,14 @@ class TaskEventRunner(TaskRunner):
                 t.add_done_callback(self.background_tasks.discard)
                 # wait until it is complete
                 await t
-            self.state_manager.end_message_node(message)
+                self.state_manager.end_message_node(message)
             logger.debug(
                 f"[TaskEventRunner] _common_process return results {self.task.id}, message_id = {message.id},  ")
             return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
-        async with trace.handler_span(message=message, handler_name=handler.__name__):
+        async with trace.handler_span(message=message, handler=handler):
             try:
                 logger.debug(f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
                 logger.info(

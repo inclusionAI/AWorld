@@ -1,7 +1,5 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import traceback
-from typing import Sequence, Union
 from aworld.trace.context_manager import TraceManager
 from aworld.trace.constants import (
     SPAN_NAME_PREFIX_EVENT_AGENT,
@@ -11,25 +9,13 @@ from aworld.trace.constants import (
     SPAN_NAME_PREFIX_EVENT_OTHER,
     SPAN_NAME_PREFIX_AGENT,
     SPAN_NAME_PREFIX_TOOL,
+    ATTRIBUTES_MESSAGE_RUN_TYPE_KEY,
     RunType
 )
-from aworld.trace.instrumentation import semconv
-from aworld.logs.util import logger
+from aworld.trace.instrumentation.agent import get_agent_span_attributes
+from aworld.trace.instrumentation.tool import get_tool_name, get_tool_span_attributes
 from aworld.trace.config import configure, ObservabilityConfig
-
-
-def get_tool_name(tool_name: str,
-                  action: Union['ActionModel', Sequence['ActionModel']]) -> tuple[str, RunType]:
-    if tool_name == "mcp" and action:
-        try:
-            if isinstance(action, (list, tuple)):
-                action = action[0]
-            mcp_name = action.action_name.split("__")[0]
-            return (mcp_name, RunType.MCP)
-        except ValueError:
-            logger.warning(traceback.format_exc())
-            return (tool_name, RunType.MCP)
-    return (tool_name, RunType.TOOL)
+from typing import Callable, Any
 
 
 def get_span_name_from_message(message: 'aworld.core.event.base.Message') -> tuple[str, RunType]:
@@ -47,7 +33,7 @@ def get_span_name_from_message(message: 'aworld.core.event.base.Message') -> tup
         return (SPAN_NAME_PREFIX_EVENT_TOOL + span_name, RunType.TOOL)
     if message.category == Constants.TASK:
         if message.topic:
-            return (SPAN_NAME_PREFIX_EVENT_TASK + message.topic  + "_" + span_name, RunType.OTHER)
+            return (SPAN_NAME_PREFIX_EVENT_TASK + message.topic + "_" + span_name, RunType.OTHER)
         else:
             return (SPAN_NAME_PREFIX_EVENT_TASK + span_name, RunType.OTHER)
     if message.category == Constants.OUTPUT:
@@ -77,25 +63,22 @@ def message_span(message: 'aworld.core.event.base.Message' = None, attributes: d
         raise ValueError("message_span message is None")
 
 
-def handler_span(message: 'aworld.core.event.base.Message' = None, handler_name: str = None, attributes: dict = None):
+def handler_span(message: 'aworld.core.event.base.Message' = None, handler: Callable[..., Any] = None, attributes: dict = None):
     from aworld.core.event.base import Constants
     attributes = attributes or {}
-    span_name = handler_name
+    span_name = handler.__name__
     if message:
         run_type = RunType.OTHER
         if message.category == Constants.AGENT:
-            span_name = SPAN_NAME_PREFIX_AGENT + handler_name
+            span_name = SPAN_NAME_PREFIX_AGENT + span_name
             run_type = RunType.AGNET
-            attributes[semconv.AGENT_ID] = message.receiver or ""
+            attributes.update(get_agent_span_attributes(handler.__self__, message))
         if message.category == Constants.TOOL:
-            span_name = SPAN_NAME_PREFIX_TOOL + handler_name
-            run_type = RunType.AGNET
-            action = message.payload
-            if isinstance(action, (list, tuple)):
-                action = action[0]
-            if action:
-                tool_name, run_type = get_tool_name(action.tool_name, action)
-                attributes[semconv.TOOL_NAME] = tool_name
+            span_name = SPAN_NAME_PREFIX_TOOL + span_name
+            run_type = RunType.TOOL
+            attributes.update(get_tool_span_attributes(handler.__self__, message))
+            if attributes.get(ATTRIBUTES_MESSAGE_RUN_TYPE_KEY):
+                run_type = RunType[attributes.get(ATTRIBUTES_MESSAGE_RUN_TYPE_KEY)]
         return GLOBAL_TRACE_MANAGER.span(
             span_name=span_name,
             attributes=attributes,

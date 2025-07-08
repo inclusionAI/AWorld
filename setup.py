@@ -215,7 +215,10 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages(
         where=".",
-        exclude=["tests", "tests.*", "*.tests", "*.tests.*", "*.test", "*.test.*"],
+        exclude=["tests", "tests.*", "*.tests", "*.tests.*",
+                 "test", "*.test", "*.test.*", "test.*",
+                 "examples", "*.examples", "examples.*", "*.examples.*",
+                 "mcp_servers", "*.mcp_servers", "mcp_servers.*", "*.mcp_servers.*"],
     ),
     package_data={
         "aworld": [
@@ -226,7 +229,12 @@ setup(
             "config/*.json",
             "config/*.tiktoken",
             "web/templates/*.html",
-        ]
+            "cmd/web/webui/dist/**",
+        ],
+        "examples": [
+            "**/mcp.json",
+            "gaia/GAIA/**",
+        ],
     },
     license="MIT",
     platforms=["any"],

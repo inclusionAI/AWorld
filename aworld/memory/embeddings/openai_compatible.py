@@ -2,11 +2,11 @@ import asyncio
 import time
 import logging
 from typing import Any, List
-from workspacex.artifact import Artifact
-from workspacex.embedding.base import Embeddings, EmbeddingsConfig, EmbeddingsResult, EmbeddingsMetadata
-from workspacex.utils.timeit import timeit
+
 from openai import OpenAI
-from workspacex.embedding.embeddings_base import EmbeddingsBase
+
+from aworld.core.memory import EmbeddingsConfig
+from aworld.memory.embeddings.base import EmbeddingsBase
 
 
 class OpenAICompatibleEmbeddings(EmbeddingsBase):
@@ -29,8 +29,6 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
         self.client = OpenAI(api_key=config.api_key, base_url=config.base_url)
 
 
-    @timeit(logging.info,
-            "OpenAI embedding query completed in {elapsed_time:.3f} seconds")
     def embed_query(self, text: str) -> List[float]:
         """
         Embed a query string using OpenAI-compatible HTTP API.
@@ -51,11 +49,7 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"OpenAI embedding API error: {e}")
-        
 
-    @timeit(
-        logging.info,
-        "OpenAI async embedding query completed in {elapsed_time:.3f} seconds")
     async def async_embed_query(self, text: str) -> List[float]:
         """
         Asynchronously embed a query string using OpenAI-compatible HTTP API.

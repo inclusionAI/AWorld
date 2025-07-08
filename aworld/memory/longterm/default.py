@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime
 from typing import Any, List, Literal, Optional, Tuple
 
-from aworld.core.memory import MemoryItem, LongTermConfig, MemoryStore
+from aworld.core.memory import MemoryItem, LongTermConfig, MemoryStore, MemoryBase
 from aworld.models.llm import LLMModel, acall_llm_model
 from .base import MemoryGungnir, MemoryOrchestrator, MemoryProcessingTask, MemoryProcessingResult
 from ..models import AgentExperience, LongTermExtractParams, UserProfile
@@ -96,8 +96,8 @@ class DefaultMemoryGungnir(MemoryGungnir):
         })
         try:
             llm_response = await acall_llm_model(self._llm_instance, messages=messages)
-            logger.info(
-                f"🧠 [MEMORY:long-term] Extracted user profile:{task.memory_task_id} with result:{llm_response.content}")
+            logger.debug(
+                f"🧠 [MEMORY:long-term] Extracted user profile:{task.memory_task_id} llm_response is :{llm_response.content}")
             result = json.loads(llm_response.content.replace("```json", "").replace("```", ""))
             user_profiles = []
 

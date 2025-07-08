@@ -4,7 +4,7 @@ import os
 
 from dotenv import load_dotenv
 
-from examples.memory.short_term.postgres import PostgresMemoryStore
+from aworld.memory.db.postgres import PostgresMemoryStore
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MessageMetadata
 from examples.memory.short_term.utils import add_mock_messages

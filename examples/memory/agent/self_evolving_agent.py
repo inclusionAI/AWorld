@@ -8,7 +8,7 @@ from aworld.config import AgentConfig, TaskConfig
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
-from aworld.core.memory import MemoryConfig, LongTermConfig, MemoryItem
+from aworld.core.memory import LongTermConfig, MemoryItem, AgentMemoryConfig
 from aworld.core.task import Task
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import LongTermMemoryTriggerParams, MemoryAIMessage, MessageMetadata, UserProfile, \
@@ -18,8 +18,7 @@ from aworld.output import PrinterAworldUI, AworldUI
 from aworld.prompt import Prompt
 from aworld.runner import Runners
 from aworld.utils.common import load_mcp_config
-from examples.memory.prompts import SELF_EVOLVING_USER_INPUT_REWRITE_PROMPT, SELF_EVOLVING_AGENT_PROMPT, \
-    USER_PROFILE_EXTRACTION_PROMPT
+from examples.memory.prompts import SELF_EVOLVING_USER_INPUT_REWRITE_PROMPT, SELF_EVOLVING_AGENT_PROMPT
 
 
 class SuperAgent:
@@ -28,14 +27,10 @@ class SuperAgent:
     """
 
     def __init__(self, id: str, name: str, **kwargs):
-        self.memory_config = MemoryConfig(
-            provider="inmemory",
+        self.memory_config = AgentMemoryConfig(
             enable_long_term=True,
             long_term_config=LongTermConfig.create_simple_config(
-                enable_user_profiles=True,
-                user_profile_extraction_prompt=USER_PROFILE_EXTRACTION_PROMPT,
-                enable_agent_experiences=False,
-                message_threshold=6
+                enable_user_profiles=True
             )
         )
         self.memory = MemoryFactory.instance()
@@ -54,11 +49,9 @@ class SuperAgent:
             # mcp_servers=["filesystem"],
             history_messages=100,
             mcp_config=load_mcp_config(),
-            memory_config=MemoryConfig(
-                provider="inmemory",
-                enable_long_term=False,
+            memory_config=AgentMemoryConfig(
+                enable_long_term=True,
                 long_term_config=LongTermConfig.create_simple_config(
-                    enable_user_profiles=False,
                     enable_agent_experiences=True
                 )
             )
@@ -90,7 +83,7 @@ class SuperAgent:
                 agent_id=self.id,
                 agent_name=self.name
             )
-        ), memory_config=self.memory_config)
+        ), agent_memory_config=self.memory_config)
 
     async def add_human_input(self, user_id, session_id, task_id, user_input):
         self.memory.add(MemoryHumanMessage(
@@ -102,7 +95,7 @@ class SuperAgent:
                 agent_id=self.id,
                 agent_name=self.name
             )
-        ), memory_config=self.memory_config)
+        ), agent_memory_config=self.memory_config)
 
     async def run_task(self, user_id, session_id, task_id, user_input, task_context):
         user_input = await self.rewrite_user_input(user_id, user_input, task_context)
@@ -225,7 +218,7 @@ class SelfEvolvingAgent(Agent):
             force=True
         ), self.memory_config)
 
-    async def custom_system_prompt(self, context: Context):
+    async def custom_system_prompt(self, context: Context, content: str):
         """
         custom it
         """
