@@ -8,7 +8,7 @@ import traceback
 from typing import Optional
 
 from aworld.config import ConfigDict
-from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig
+from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
 from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
@@ -146,8 +146,8 @@ class MemoryFactory:
         Returns:
             MemoryBase: Memory instance.
         """
-        if config.provider == "inmemory":
-            logger.info("🧠 [MEMORY]setup memory store: inmemory")
+        if config.provider == "aworld":
+            logger.info("🧠 [MEMORY]setup memory store: aworld")
             return AworldMemory(
                 memory_store=memory_store or InMemoryMemoryStore(),
                 config=config
@@ -304,35 +304,35 @@ class Memory(MemoryBase):
     def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
         pass
 
-    def add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
-        self._add(memory_item, filters, memory_config)
+    def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
+        self._add(memory_item, filters, agent_memory_config)
         # self.post_add(memory_item, filters, memory_config)
 
     @abc.abstractmethod
-    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         pass
 
-    async def post_add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    async def post_add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         try:
-            await self.post_process_long_terms(memory_item, filters, memory_config)
+            await self.post_process_long_terms(memory_item, filters, agent_memory_config)
         except Exception as err:
             logger.warning(f"🧠 [MEMORY:long-term] Error during long-term memory processing: {err}, traceback is {traceback.format_exc()}")
 
-    async def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    async def post_process_long_terms(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         """Post process long-term memory."""
         # check if memory_item is "message"
         if memory_item.memory_type != 'message':
             return
 
-        if not memory_config:
+        if not agent_memory_config:
             return
 
         # check if long-term memory is enabled
-        if not memory_config.enable_long_term:
+        if not agent_memory_config.enable_long_term:
             return
 
         # check if long-term memory config is valid
-        long_term_config = memory_config.long_term_config
+        long_term_config = agent_memory_config.long_term_config
         if not long_term_config:
             return
 
@@ -342,19 +342,19 @@ class Memory(MemoryBase):
             task_id=memory_item.task_id,
             user_id=memory_item.user_id,
             application_id=memory_item.application_id
-        ), memory_config)
+        ), agent_memory_config)
 
-    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, memory_config: MemoryConfig = None):
+    async def trigger_short_term_memory_to_long_term(self, params: LongTermMemoryTriggerParams, agent_memory_config: AgentMemoryConfig = None):
         logger.info(f"🧠 [MEMORY:long-term] Trigger short-term memory to long-term memory, params is {params}")
-        if not memory_config:
+        if not agent_memory_config:
             return
 
         # check if long-term memory is enabled
-        if not memory_config.enable_long_term:
+        if not agent_memory_config.enable_long_term:
             return
 
         # check if long-term memory config is valid
-        long_term_config = memory_config.long_term_config
+        long_term_config = agent_memory_config.long_term_config
         if not long_term_config:
             return
 
@@ -400,7 +400,7 @@ class Memory(MemoryBase):
                 logger.warning(
                     f"🧠 [MEMORY:long-term] memory_item.agent_id is None, skip agent experience extraction")
 
-        await self.memory_orchestrator.create_longterm_processing_tasks(task_params, memory_config.long_term_config, params.force)
+        await self.memory_orchestrator.create_longterm_processing_tasks(task_params, agent_memory_config.long_term_config, params.force)
 
     async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[UserProfile]]:
         # TODO user_input is not used
@@ -517,7 +517,7 @@ class AworldMemory(Memory):
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
         return self.memory_store.get_all()
 
-    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None, memory_config: MemoryConfig = None) -> list[MemoryItem]:
+    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None, agent_memory_config: AgentMemoryConfig = None) -> list[MemoryItem]:
         """Get last n memories.
 
         Args:
@@ -534,7 +534,7 @@ class AworldMemory(Memory):
             memory_items = self.memory_store.get_last_n(last_rounds, filters=filters)
 
         # If summary is disabled or no summaries exist, return just the last_n_items
-        if not memory_config or not memory_config.enable_summary or not self.summary:
+        if not agent_memory_config or not agent_memory_config.enable_summary or not self.summary:
             return memory_items
 
         # Calculate the range for relevant summaries
@@ -544,18 +544,18 @@ class AworldMemory(Memory):
 
         # Get complete summaries
         result = []
-        complete_summary_count = end_index // self.summary_rounds
+        complete_summary_count = end_index // agent_memory_config.summary_rounds
 
         # Get complete summaries
         for i in range(complete_summary_count):
-            range_key = f"{i * self.summary_rounds}_{(i + 1) * self.summary_rounds - 1}"
+            range_key = f"{i * agent_memory_config.summary_rounds}_{(i + 1) * agent_memory_config.summary_rounds - 1}"
             if range_key in self.summary:
                 result.append(self.summary[range_key])
 
         # Get the last incomplete summary if exists
-        remaining_items = end_index % self.summary_rounds
+        remaining_items = end_index % agent_memory_config.summary_rounds
         if remaining_items > 0:
-            start = complete_summary_count * self.summary_rounds
+            start = complete_summary_count * agent_memory_config.summary_rounds
             range_key = f"{start}_{end_index - 1}"
             if range_key in self.summary:
                 result.append(self.summary[range_key])
