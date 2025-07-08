@@ -96,8 +96,8 @@ class DefaultMemoryGungnir(MemoryGungnir):
         })
         try:
             llm_response = await acall_llm_model(self._llm_instance, messages=messages)
-            logger.info(
-                f"🧠 [MEMORY:long-term] Extracted user profile:{task.memory_task_id} with result:{llm_response.content}")
+            logger.debug(
+                f"🧠 [MEMORY:long-term] Extracted user profile:{task.memory_task_id} llm_response is :{llm_response.content}")
             result = json.loads(llm_response.content.replace("```json", "").replace("```", ""))
             user_profiles = []
 
