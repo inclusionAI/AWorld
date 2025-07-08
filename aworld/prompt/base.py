@@ -30,7 +30,7 @@ class Prompt:
             self.template_content = template
             
         # Extract variables from the template
-        self.variables = self._extract_variables(self.template_content)
+        self.prompt_variables = self._extract_variables(self.template_content)
         self.context = context
     
     def _extract_variables(self, template_content: str) -> List[str]:
@@ -96,10 +96,10 @@ class Prompt:
         # Get variable values
         if variable_resolver:
             # If custom variable resolver is provided, use it
-            resolved_variables = variable_resolver(self.variables)
+            resolved_variables = variable_resolver(self.prompt_variables)
         else:
             # Otherwise use the built-in API method
-            resolved_variables = self._get_variable_values_from_api(self.variables)
+            resolved_variables = self._get_variable_values_from_api(self.prompt_variables)
         
         # Override API values with provided variables
         for var_name, var_value in variables.items():
