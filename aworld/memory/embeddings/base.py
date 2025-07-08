@@ -9,11 +9,11 @@ from aworld.core.memory import EmbeddingsConfig
 
 class EmbeddingsMetadata(BaseModel):
     memory_id: str = Field(..., description="memory_id")
-    agent_id: str = Field(..., description="agent_id")
-    session_id: str = Field(..., description="session_id")
-    task_id: str = Field(..., description="task_id")
-    user_id: str = Field(..., description="user_id")
-    application_id: str = Field(..., description="application_id")
+    agent_id: Optional[str] = Field(..., description="agent_id")
+    session_id: Optional[str] = Field(..., description="session_id")
+    task_id: Optional[str] = Field(..., description="task_id")
+    user_id: Optional[str] = Field(..., description="user_id")
+    application_id: Optional[str] = Field(..., description="application_id")
     memory_type: str = Field(..., description="memory_type")
     embedding_model: str = Field(..., description="Embedding model")
     created_at: str = Field(..., description="Created at")

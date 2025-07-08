@@ -59,6 +59,8 @@ class ChromaVectorDB(VectorDB):
         Args:
             collection_name (str): Name of the collection
             vectors (list[list[float | int]]): Query vectors
+            filter (dict): Filter conditions using ChromaDB operators ($eq, $and, etc.)
+            threshold (float): Similarity threshold
             limit (int): Maximum number of results to return
             
         Returns:
@@ -67,9 +69,18 @@ class ChromaVectorDB(VectorDB):
         try:
             collection = self.client.get_collection(name=collection_name)
             if collection:
+                # Convert simple key-value filters to ChromaDB operator format
+                where_conditions = []
+                if filter:
+                    for key, value in filter.items():
+                        where_conditions.append({key: {"$eq": value}})
+                    where_filter = {"$and": where_conditions} if len(where_conditions) > 1 else where_conditions[0]
+                else:
+                    where_filter = None
+
                 result = collection.query(
                     query_embeddings=vectors,
-                    # where=filter,
+                    where=where_filter,
                     n_results=limit,
                 )
 
@@ -241,8 +252,16 @@ class ChromaVectorDB(VectorDB):
         ids = [item.id for item in items]
         documents = [item.content for item in items]
         embeddings = [item.embedding for item in items]
-        # Convert metadata to dict instead of JSON string
-        metadatas = [item.metadata.model_dump() for item in items]
+        # Convert metadata to dict and remove None values
+        metadatas = []
+        for item in items:
+            metadata_dict = item.metadata.model_dump()
+            # Remove None values and convert all values to strings to ensure compatibility
+            cleaned_metadata = {
+                k: str(v) if v is not None else "" 
+                for k, v in metadata_dict.items()
+            }
+            metadatas.append(cleaned_metadata)
 
         from chromadb.utils.batch_utils import create_batches
         for batch in create_batches(

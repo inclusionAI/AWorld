@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Optional, Any, Literal, Union, List, Dict
 
-from nipype.info import description
 from pydantic import BaseModel, Field
 
 from aworld.config import ConfigDict
@@ -455,10 +454,7 @@ class MemoryConfig(BaseModel):
 
     # semantic search settings
     embedding_config: Optional[EmbeddingsConfig] = Field(default=None, description="embedding_config")
-    vector_store_config: Optional[VectorDBConfig]= Field(default=VectorDBConfig(provider="chroma", config={
-        "chroma_data_path": "./chroma_db",
-        "collection_name": "aworld",
-    }), description ="vector_store_config")
+    vector_store_config: Optional[VectorDBConfig]= Field(default=None, description ="vector_store_config")
 
     @property
     def embedder_config_dict(self) -> dict[str, Any]:
