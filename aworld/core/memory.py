@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Optional, Any, Literal, Union, List, Dict
 
-from nipype.info import description
 from pydantic import BaseModel, Field
 
 from aworld.config import ConfigDict
