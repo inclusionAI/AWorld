@@ -146,7 +146,7 @@ class SearchCollection(ActionCollection):
         safe_search: bool = Field(default=True, description="Whether to enable safe search filtering"),
         language: str = Field(default="en", description="Language code for search results (e.g., 'en', 'es', 'fr')"),
         country: str = Field(default="us", description="Country code for search results (e.g., 'us', 'uk', 'ca')"),
-        output_format: str = Field(default="markdown", description="Output format: 'markdown', 'json', or 'text'"),
+        output_format: str = Field(default="json", description="Output format: 'markdown', 'json', or 'text'"),
     ) -> ActionResponse:
         """Search the web using Google Custom Search API.
 
