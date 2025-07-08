@@ -267,7 +267,7 @@ def create_context_field_getter(
             if value is None:
                 return default_value
             
-            # Apply processing function
+            # Apply processing function if provided
             if processor:
                 try:
                     return processor(value)
@@ -275,8 +275,23 @@ def create_context_field_getter(
                     logger.warning(f"Processor failed for field '{field_path}': {e}")
                     return default_value
             
-            # Direct conversion to string
-            return str(value)
+            # Auto-format based on type when no processor provided
+            try:
+                if isinstance(value, dict):
+                    # Use JSON formatter for dictionaries
+                    return format_ordered_dict_json(value)
+                elif isinstance(value, (list, tuple)):
+                    # Use list formatter for lists/tuples
+                    return format_list_items(value)
+                elif hasattr(value, '__dict__'):
+                    # Use object summary formatter for objects with attributes
+                    return format_object_summary(value)
+                else:
+                    # Use string conversion for simple types
+                    return str(value)
+            except Exception as e:
+                logger.warning(f"Auto-formatting failed for field '{field_path}': {e}")
+                return str(value)
             
         except Exception as e:
             logger.warning(f"Error getting field '{field_path}': {e}")
@@ -385,29 +400,52 @@ def format_dict_keys(d) -> str:
 
 
 def format_object_summary(obj) -> str:
-    """Format object summary information"""
+    """Format object as JSON-like string"""
+    import json
+    
     if obj is None:
-        return "None"
+        return "null"
     
-    obj_type = type(obj).__name__
+    # Try to format as JSON first
+    try:
+        # Handle common JSON-serializable types
+        if isinstance(obj, (dict, list, tuple, str, int, float, bool)):
+            return json.dumps(obj, ensure_ascii=False, indent=None)
+    except Exception:
+        pass
     
-    if hasattr(obj, '__len__'):
+    # Handle objects with __dict__ - convert to dict and format as JSON
+    if hasattr(obj, '__dict__'):
         try:
-            length = len(obj)
-            return f"{obj_type}(length={length})"
-        except:
+            obj_dict = {}
+            for key, value in vars(obj).items():
+                # Skip private attributes
+                if not key.startswith('_'):
+                    try:
+                        # Try to make value JSON serializable
+                        if isinstance(value, (str, int, float, bool, type(None))):
+                            obj_dict[key] = value
+                        elif isinstance(value, (list, tuple)):
+                            obj_dict[key] = list(value)
+                        elif isinstance(value, dict):
+                            obj_dict[key] = dict(value)
+                        else:
+                            obj_dict[key] = str(value)
+                    except Exception:
+                        obj_dict[key] = str(value)
+            
+            return json.dumps(obj_dict, ensure_ascii=False, indent=None)
+        except Exception:
             pass
     
-    if hasattr(obj, '__dict__'):
-        attrs = len(vars(obj))
-        return f"{obj_type}(attributes={attrs})"
-    
-    return f"{obj_type}: {str(obj)[:50]}..."
+    # Fallback to string representation
+    return json.dumps(str(obj), ensure_ascii=False)
 
 # ==================== Predefined Dynamic Variable Collections ====================
 
-# Common time variables
-TIME_VARIABLES = {
+# All variable collections - includes time, system and Context variables
+ALL_PREDEFINED_DYNAMIC_VARIABLES = {
+    # time
     "current_time": get_current_time,
     "current_date": get_current_date,
     "current_datetime": get_current_datetime,
@@ -415,10 +453,7 @@ TIME_VARIABLES = {
     "current_weekday": get_current_weekday,
     "current_month": get_current_month,
     "current_year": get_current_year,
-}
-
-# System information variables
-SYSTEM_VARIABLES = {
+    # system
     "system_platform": get_system_platform,
     "system_os": get_system_os,
     "python_version": get_python_version,
@@ -429,14 +464,50 @@ SYSTEM_VARIABLES = {
     "short_uuid": get_short_uuid,
 }
 
-# Context-related variables - support runtime Context passing
-CONTEXT_VARIABLES = {
-    "trajectories": create_simple_field_getter("trajectories"),
-}
 
-# All variable collections - includes time, system and Context variables
-ALL_DYNAMIC_VARIABLES = {
-    **TIME_VARIABLES,
-    **SYSTEM_VARIABLES,
-    **CONTEXT_VARIABLES,
-}
+# ==================== Enhanced Field Value Retrieval ====================
+
+def get_enhanced_field_values_from_list(
+    context: "Context", 
+    field_paths: list[str], 
+    default: str = "",
+    processor: Optional[Callable[[Any], str]] = None
+) -> dict[str, str]:
+    result = {}
+    
+    for field_path in field_paths:
+        safe_key = field_path.replace('.', '_').replace('/', '_')
+        value = None
+        source = "default"
+        
+        try:
+            # 1. First try to get from context using get_simple_field_value with default=None
+            value = get_simple_field_value(context, field_path, default=None, processor=processor)
+            if value is not None:
+                source = "context"
+            else:
+                # 2. Try predefined dynamic variables if context field is None
+                if field_path in ALL_PREDEFINED_DYNAMIC_VARIABLES:
+                    try:
+                        func = ALL_PREDEFINED_DYNAMIC_VARIABLES[field_path]
+                        value = func()
+                        source = "predefined_variable"
+                    except Exception as e:
+                        logger.warning(f"Predefined variable '{field_path}' failed: {e}")
+                
+                # 3. Use default value if still no value
+                if value is None:
+                    value = default
+                    source = "default"
+            
+            result[safe_key] = str(value) if value is not None else default
+            
+            # Debug logging
+            logger.debug(f"Enhanced field retrieval: '{field_path}' -> '{result[safe_key]}' (source: {source})")
+            
+        except Exception as e:
+            logger.warning(f"Error retrieving enhanced field '{field_path}': {e}")
+            result[safe_key] = default
+    
+    return result
+
