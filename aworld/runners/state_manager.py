@@ -63,7 +63,9 @@ class RunNode(BaseModel):
     create_time: Optional[float] = None
     execute_time: Optional[float] = None
     end_time: Optional[float] = None
-
+    group_id: Optional[str] = None
+    sub_task_root_id: Optional[str] = None
+    sub_task_finished: Optional[str] = None
 
 class StateStorage(ABC):
     @abstractmethod
@@ -242,6 +244,14 @@ class RuntimeStateManager(InheritanceSingleton):
         node = self._node_exist(node_id)
         node.status = RunNodeStatus.TIMEOUT
         node.result_msg = result_msg
+        self.storage.update(node)
+
+    def finish_sub_task(self, node_id: str):
+        '''
+            finish sub task with node_id as the root node
+        '''
+        node = self._node_exist(node_id)
+        node.sub_task_finished = True
         self.storage.update(node)
 
     def get_node(self, node_id: str) -> RunNode:
