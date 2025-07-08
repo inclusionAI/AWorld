@@ -10,6 +10,7 @@ import uuid
 from aworld.cmd.utils.agent_ui_parser import (
     AWorldWebAgentUI,
     BaseToolResultParser,
+    DefaultToolResultParser,
     ToolCard,
     ToolResultParserFactory,
 )
@@ -97,7 +98,7 @@ class GaiaSearchToolResultParser(BaseToolResultParser):
 class CustomToolResultParserFactory(ToolResultParserFactory):
     def get_parser(self, tool_type: str, tool_name: str):
         if tool_name in ("search_server", "search"):
-            return GaiaSearchToolResultParser()
+            return DefaultToolResultParser()
         return super().get_parser(tool_type, tool_name)
 
 
