@@ -4,8 +4,6 @@ Core context management system in the AWorld architecture, providing comprehensi
 
 ## Architecture Overview
 
-![Context Management](../../../readme_assets/context_management.png)
-
 The Context Management system implements intelligent context processing with multiple optimization strategies based on context length analysis and configuration parameters.
 
 ## Features
@@ -28,7 +26,7 @@ The Context Management system implements intelligent context processing with mul
 
 ## Context Architecture
 
-![Context Lifecycle](../../../readme_assets/context_lifecycle.png)
+![Context Lifecycle](../../../readme_assets/context_lifecycle.svg)
 
 The AWorld framework implements a unified context management system with Context serving dual roles:
 
@@ -180,11 +178,13 @@ self.run_task(context=context, agent=mock_agent)
 
 ## Context Rule Configuration
 
-`ContextRuleConfig` provides comprehensive context management through two main configuration components:
+![Context Rule](../../../readme_assets/context_rule.svg)
+
+AWorld's `ContextRuleConfig` provides system-level guidance for context management, inspired by [Cline's rules system](https://docs.cline.bot/features/cline-rules). It offers comprehensive context processing through configuration-based rules that control optimization and compression behavior.
 
 ### OptimizationConfig
 
-Controls context optimization behavior:
+Controls context optimization behavior for dynamic context loading, reranking, truncation, and compression:
 
 - `enabled`: Whether to enable context optimization (default: `False`)
 - `max_token_budget_ratio`: Maximum token budget ratio for context window usage (default: `0.5`, range: 0.0-1.0)
@@ -193,7 +193,7 @@ Controls context optimization behavior:
 
 **⚠️ Beta Feature**: This configuration is currently in beta and may undergo changes in future versions.
 
-Controls intelligent context compression:
+Controls intelligent context compression within the context rule pipeline:
 
 - `enabled`: Whether to enable LLM-based compression (default: `False`)
 - `trigger_compress_token_length`: Token threshold to trigger basic compression (default: `10000`)
@@ -337,19 +337,260 @@ assert result == "Test success"
 > **📋 Test Implementation**: See complete test implementation at [`tests/test_prompt_template.py::test_dynamic_variables()`](../../../tests/test_prompt_template.py)
 
 ```python
+# Example 1: Basic path access with separators support
 from aworld.core.context.base import Context
-from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter
+from aworld.core.context.prompts.dynamic_variables import get_value_by_path
 
-# Create context with trajectory data
-context = Context()
-value = {"steps": [1, 2, 3]}
-context.trajectories.update(value)
-
-# Create dynamic field getter
-getter = create_simple_field_getter("trajectories", context)
-formatted_value = getter(context=context)
-assert str(value) in formatted_value
+def test_dynamic_variables():
+    context = Context()
+    context.context_info.update({"task": "chat"})
+    
+    # Test dot separator
+    value_dot = get_value_by_path(context, "context_info.task")
+    assert "chat" == value_dot
+    
+    # Test slash separator
+    value_slash = get_value_by_path(context, "context_info/task")
+    assert "chat" == value_slash
 ```
+
+### Example: Field Getter with Processor
+
+> **📋 Test Implementation**: See complete test implementation at [`tests/test_prompt_template.py::test_formatted_field_getter()`](../../../tests/test_prompt_template.py)
+
+```python
+# Example 2: Field getter with processor function
+from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter, format_ordered_dict_json
+import json
+
+def test_formatted_field_getter():
+    context = Context()
+    value = {"steps": [1, 2, 3]}
+    context.trajectories.update(value)
+
+    # Basic field getter
+    getter = create_simple_field_getter(field_path="trajectories", default="default_value")
+    result = getter(context=context)
+    assert "steps" in value
+
+    # Field getter with JSON processor
+    getter = create_simple_field_getter(
+        field_path="trajectories", 
+        default="default_value", 
+        processor=format_ordered_dict_json
+    )
+    result = getter(context=context)
+    assert json.dumps(value, ensure_ascii=False, indent=None) == result
+```
+
+### Example: Batch Field Processing
+
+> **📋 Test Implementation**: See complete test implementation at [`tests/test_prompt_template.py::test_multiple_field_getters()`](../../../tests/test_prompt_template.py)
+
+```python
+# Example 3: Batch field processing from string list
+from aworld.core.context.prompts.dynamic_variables import get_field_values_from_list
+
+def test_multiple_field_getters():
+    context = Context()
+    context.context_info.update({"task": "chat"})
+    context.trajectories.update({"steps": [1, 2, 3]})
+
+    # Process multiple fields from string list
+    field_paths = ["context_info.task", "trajectories.steps"]
+    result = get_field_values_from_list(context=context, field_paths=field_paths)
+    
+    # Result keys are automatically normalized
+    assert result["context_info_task"] == "chat"
+    assert result["trajectories_steps"] == "[1, 2, 3]"
+```
+
+### Enhanced Field Retrieval
+
+> **📋 Test Implementation**: See complete test implementations at:
+> - [`tests/test_prompt_template.py::test_enhanced_field_values()`](../../../tests/test_prompt_template.py) - Multi-source field retrieval
+> - [`tests/test_prompt_template.py::test_enhanced_field_value_single()`](../../../tests/test_prompt_template.py) - Single field retrieval
+> - [`tests/test_prompt_template.py::test_enhanced_field_getter_creation()`](../../../tests/test_prompt_template.py) - Enhanced getter creation
+
+The Enhanced Field Retrieval system provides a comprehensive approach to field value retrieval that automatically tries multiple data sources in priority order. This system is built on top of `get_field_values_from_list` but extends it with intelligent fallback mechanisms for time variables and system variables.
+
+#### Data Source Priority Order
+
+1. **Context Fields** (Highest Priority): Fields from the Context object using path resolution
+2. **Time Variables**: Dynamic time-based variables like `current_time`, `current_date`
+3. **System Variables**: System information like `hostname`, `username`, `system_platform`
+4. **Default Value** (Lowest Priority): Fallback value when no source provides the field
+
+#### Available Dynamic Variables
+
+The system provides two main categories of dynamic variables:
+
+**Time Variables**:
+- `current_time`: Current time in HH:MM:SS format
+- `current_date`: Current date in YYYY-MM-DD format
+- `current_datetime`: Current datetime in YYYY-MM-DD HH:MM:SS format
+- `current_timestamp`: Current Unix timestamp
+- `current_weekday`: Current weekday name
+- `current_month`: Current month name
+- `current_year`: Current year
+
+**System Variables**:
+- `system_platform`: System platform (Windows/Linux/Darwin)
+- `system_os`: Operating system name
+- `python_version`: Python version
+- `hostname`: System hostname
+- `username`: Current username
+- `working_directory`: Current working directory
+- `random_uuid`: Random UUID string
+- `short_uuid`: Short UUID (8 characters)
+
+### Example: Enhanced Multi-Source Field Retrieval
+
+```python
+from aworld.core.context.base import Context
+from aworld.core.context.prompts.dynamic_variables import get_enhanced_field_values_from_list
+
+# Create context with some data
+context = Context()
+context.context_info.update({"task": "chat", "user_id": "12345"})
+context.agent_info.update({"name": "Assistant"})
+
+# Retrieve fields from multiple sources automatically
+result = get_enhanced_field_values_from_list(
+    context=context,
+    field_paths=[
+        "context_info.task",    # From context
+        "current_time",         # From time variables
+        "hostname",            # From system variables
+        "missing_field"        # Will use default
+    ],
+    default="not_found"
+)
+
+# Results:
+# result["context_info_task"] == "chat"        # Retrieved from context
+# result["current_time"] == "14:30:25"        # Retrieved from time variables
+# result["hostname"] == "my-computer"         # Retrieved from system variables
+# result["missing_field"] == "not_found"     # Used default value
+```
+
+### Example: Enhanced Single Field Retrieval
+
+```python
+from aworld.core.context.prompts.dynamic_variables import get_enhanced_field_value
+
+context = Context()
+context.agent_info.update({"name": "Assistant"})
+
+# Get field with automatic fallback
+name = get_enhanced_field_value(context, "agent_info.name", "Unknown")
+# name == "Assistant" (from context)
+
+current_time = get_enhanced_field_value(context, "current_time", "N/A")
+# current_time == "14:30:25" (from time variables)
+
+hostname = get_enhanced_field_value(context, "hostname", "localhost")
+# hostname == "my-computer" (from system variables)
+
+# With custom processor
+name_upper = get_enhanced_field_value(
+    context, "agent_info.name", "Unknown",
+    processor=lambda x: x.upper()
+)
+# name_upper == "ASSISTANT"
+```
+
+### Example: Enhanced Field Getter Creation
+
+```python
+from aworld.core.context.prompts.dynamic_variables import create_enhanced_field_getter
+
+# Create enhanced getter with fallback to time variables
+get_task_or_time = create_enhanced_field_getter(
+    "context_info.task",
+    default="No task available",
+    enable_time_variables=True,
+    processor=lambda x: f"Current: {x.upper()}"
+)
+
+context = Context()
+# If task exists in context: "Current: CHAT"
+# If task doesn't exist: will try time variables or use default
+
+# Create system info getter
+get_system_info = create_enhanced_field_getter(
+    "hostname",
+    default="unknown-host",
+    enable_system_variables=True
+)
+
+hostname = get_system_info(context)  # Returns actual system hostname
+```
+
+### Example: Fallback Control and Priority
+
+```python
+# Test priority order - context takes priority over dynamic variables
+context = Context()
+context.current_time = "context_override_time"
+
+result = get_enhanced_field_value(context, "current_time", "default")
+# result == "context_override_time" (context takes priority)
+
+# Remove from context, will fallback to time variable
+del context.current_time
+result = get_enhanced_field_value(context, "current_time", "default")
+# result == "14:30:25" (actual current time from time variables)
+
+# Disable fallbacks
+result = get_enhanced_field_values_from_list(
+    context=context,
+    field_paths=["current_time", "hostname"],
+    enable_time_variables=False,
+    enable_system_variables=False,
+    default="disabled"
+)
+# Both fields will return "disabled" since fallbacks are disabled
+```
+
+### Example: List Available Dynamic Variables
+
+```python
+from aworld.core.context.prompts.dynamic_variables import (
+    get_available_dynamic_variables,
+    list_available_dynamic_variables
+)
+
+# Get variables dictionary
+variables = get_available_dynamic_variables()
+print(variables["current_time"])  # "Current time in HH:MM:SS format"
+
+# Get formatted list
+formatted_list = list_available_dynamic_variables()
+print(formatted_list)
+# Output:
+# Available Dynamic Variables:
+# 
+# Time Variables:
+#   - current_time: Current time in HH:MM:SS format
+#   - current_date: Current date in YYYY-MM-DD format
+#   ...
+# 
+# System Variables:
+#   - hostname: System hostname
+#   - username: Current username
+#   ...
+```
+
+#### Key Benefits
+
+1. **Intelligent Fallback**: Automatically tries multiple data sources in priority order
+2. **Zero Configuration**: Works out-of-the-box with sensible defaults
+3. **Flexible Control**: Enable/disable specific fallback sources as needed
+4. **Error Resilience**: Graceful handling of missing fields and processor errors
+5. **Consistent API**: Same interface as existing field getter functions
+6. **Performance Optimized**: Only tries fallback sources when primary source fails
+7. **Debug Friendly**: Comprehensive logging and function naming for troubleshooting
 
 ### Key Features
 

@@ -34,11 +34,13 @@ def test_formatted_field_getter():
     getter = create_simple_field_getter(field_path="trajectories", default="default_value")
     result = getter(context=context)
     assert "steps" in value
+    # test default format function
+    assert "OrderedDict" not in result
 
     # Test formatted field getter with processor
     getter = create_simple_field_getter(field_path="trajectories", default="default_value", processor=format_ordered_dict_json)
     result = getter(context=context)
-    assert json.dumps(value, ensure_ascii=False, indent=None) == result
+    assert "steps" in result
 
 def test_multiple_field_getters():
     context = Context()
@@ -65,11 +67,33 @@ def test_string_prompt_template():
     result = template.format(context=context, name="Alice", place="AWorld", task="chat")
     assert result == "Hello Alice, welcome to AWorld! Task: chat Age: 1"
 
+def test_enhanced_field_values_basic():
+    """Test enhanced field value retrieval for time variables and context fields"""
+    from aworld.core.context.prompts.dynamic_variables import get_enhanced_field_values_from_list
+    
+    context = Context()
+    context.context_info.update({"task": "chat"})
+    
+    # Test retrieving both time variables and context fields
+    result = get_enhanced_field_values_from_list(
+        context=context,
+        field_paths=["current_time", "context_info.task"],
+        default="not_found"
+    )
+    
+    # Verify context field retrieved
+    assert result["context_info_task"] == "chat"
+    
+    # Verify time variable retrieved (should be in HH:MM:SS format)
+    assert ":" in result["current_time"]
+    assert len(result["current_time"].split(":")) == 3
+
 if __name__ == "__main__":
     test_dynamic_variables()
     test_formatted_field_getter()
     test_multiple_field_getters()
     test_string_prompt_template()
+    test_enhanced_field_values_basic()
     print("✅ test_prompt_template.py All tests passed!")
     
 

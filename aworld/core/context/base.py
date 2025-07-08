@@ -18,8 +18,8 @@ from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
     from aworld.core.task import Task
-    from aworld.core.swarm import Swarm
-    from aworld.core.event_manager import EventManager
+    from aworld.core.agent.swarm import Swarm
+    from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
 
 logger = logging.getLogger(__name__)

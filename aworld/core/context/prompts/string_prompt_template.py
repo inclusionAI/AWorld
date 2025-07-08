@@ -12,7 +12,7 @@ from aworld.core.context.prompts.formatters import (
     format_template, 
     get_template_variables
 )
-from aworld.core.context.prompts.dynamic_variables import ALL_DYNAMIC_VARIABLES
+from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES
 
 if TYPE_CHECKING:
     from aworld.core.context.base import Context
@@ -34,7 +34,7 @@ class StringPromptTemplate(BasePromptTemplate):
             # Automatically add common dynamic variables
             if auto_add_dynamic_vars:
                 # Merge time and system variables
-                auto_partial_vars = {**ALL_DYNAMIC_VARIABLES}
+                auto_partial_vars = {**ALL_PREDEFINED_DYNAMIC_VARIABLES}
                 
                 if partial_variables:
                     # User-provided variables take priority and are not overridden by auto variables
