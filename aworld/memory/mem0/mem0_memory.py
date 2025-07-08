@@ -6,7 +6,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from aworld.config import ConfigDict
-from aworld.core.memory import MemoryStore, MemoryConfig, MemoryItem
+from aworld.core.memory import MemoryStore, MemoryConfig, MemoryItem, AgentMemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.main import Memory
 from aworld.models.llm import get_llm_model
@@ -41,7 +41,7 @@ class Mem0Memory(Memory):
         self.mem0 = Mem0.from_config(config_dict=self.config.full_config_dict)
         self.memory_store = memory_store
 
-    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         # generate summary memory if needed
         message_filters = {
             "memory_type": "message"

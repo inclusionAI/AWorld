@@ -3,7 +3,7 @@ import os
 
 from dotenv import load_dotenv
 
-from aworld.core.memory import LongTermConfig, MemoryConfig
+from aworld.core.memory import LongTermConfig, MemoryConfig, AgentMemoryConfig
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import LongTermMemoryTriggerParams, MessageMetadata
 from aworld.memory.db.postgres import PostgresMemoryStore
@@ -25,7 +25,7 @@ async def trigger_long_term_memory_user_profile():
     )
 
     await add_mock_messages(memory, metadata)
-    memory_config = MemoryConfig(
+    memory_config = AgentMemoryConfig(
             enable_long_term=True,
             long_term_config=LongTermConfig.create_simple_config(
                 enable_user_profiles=True

@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime
 from typing import Any, List, Literal, Optional, Tuple
 
-from aworld.core.memory import MemoryItem, LongTermConfig, MemoryStore
+from aworld.core.memory import MemoryItem, LongTermConfig, MemoryStore, MemoryBase
 from aworld.models.llm import LLMModel, acall_llm_model
 from .base import MemoryGungnir, MemoryOrchestrator, MemoryProcessingTask, MemoryProcessingResult
 from ..models import AgentExperience, LongTermExtractParams, UserProfile
