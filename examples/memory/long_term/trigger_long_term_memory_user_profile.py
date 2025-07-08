@@ -8,8 +8,8 @@ from aworld.core.memory import LongTermConfig, MemoryConfig, AgentMemoryConfig, 
     VectorDBConfig
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import LongTermMemoryTriggerParams, MessageMetadata
-from aworld.memory.db.postgres import PostgresMemoryStore
 from examples.memory.short_term.utils import add_mock_messages
+
 
 async def init():
     load_dotenv()
