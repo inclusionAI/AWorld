@@ -1,18 +1,12 @@
-import os
 from aworld.trace.opentelemetry.memory_storage import TraceStorage
 from aworld.utils.import_package import import_package
 from aworld.trace.server.util import build_trace_tree
 
 import_package('fastapi')  # noqa
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, RedirectResponse
 
 app = FastAPI()
-webui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../cmd/web/webui")
-static_path = os.path.join(webui_path, "dist")
-app.mount("/static", StaticFiles(directory=static_path), name="static")
 current_storage = None
 routes_setup = False
 

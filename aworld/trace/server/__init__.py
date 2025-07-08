@@ -1,6 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import threading
+import os
+from fastapi.staticfiles import StaticFiles
 from .routes import setup_routes
 from aworld.logs.util import logger
 from aworld.utils.import_package import import_package
@@ -37,6 +39,11 @@ class TraceServer:
         import_package('uvicorn')  # noqa
         import uvicorn
         app = setup_routes(self._storage)
+
+        webui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../cmd/web/webui")
+        static_path = os.path.join(webui_path, "public")
+        app.mount("/static", StaticFiles(directory=static_path), name="static")
+
         self.app = app
         # app.run(port=self._port)
         uvicorn.run(app, host="0.0.0.0", port=self._port)
