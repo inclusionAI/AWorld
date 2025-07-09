@@ -106,7 +106,7 @@ class DefaultAgentHandler(AgentHandler):
                         sender=agent.id(),
                         session_id=session_id,
                         receiver=self.swarm.communicate_agent.id(),
-                        headers=headers
+                        headers=message.headers
                     )
                     logger.info(f"agent handler send agent message: {msg}")
                     yield msg
@@ -167,7 +167,7 @@ class DefaultAgentHandler(AgentHandler):
                 sender=self.name(),
                 session_id=session_id,
                 receiver=DefaultToolHandler.name(),
-                headers=headers
+                headers=message.headers
             )
             logger.info(f"agent handler send tool message: {msg}")
             yield msg
@@ -241,10 +241,23 @@ class DefaultAgentHandler(AgentHandler):
             sender=action.agent_name,
             session_id=session_id,
             receiver=action.tool_name,
-            headers=headers
+            headers=message.headers
         )
 
     async def _stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
+        if GraphBuildType.TEAM.value == self.swarm.build_type:
+            agent = self.swarm.agents.get(action.agent_name)
+            caller = self.swarm.agent_graph.root_agent.id() or message.caller
+            if agent.id != self.swarm.agent_graph.root_agent.id():
+                yield Message(
+                    category=Constants.AGENT,
+                    payload=Observation(content=action.policy_info),
+                    sender=agent.id(),
+                    session_id=message.session_id,
+                    receiver=caller,
+                    headers=message.headers
+                )
+                return
         if GraphBuildType.WORKFLOW.value != self.swarm.build_type:
             async for event in self._social_stop_check(action, message):
                 yield event
@@ -289,7 +302,7 @@ class DefaultAgentHandler(AgentHandler):
                     sender=agent.id(),
                     session_id=session_id,
                     receiver=receiver,
-                    headers=headers
+                    headers=message.headers
                 )
             else:
                 logger.debug(f"_sequence_stop_check execute loop {self.swarm.cur_step}. message: {message}. session_id: {session_id}.")
@@ -319,7 +332,7 @@ class DefaultAgentHandler(AgentHandler):
             sender=agent.id(),
             session_id=session_id,
             receiver=receiver,
-            headers=headers
+            headers=message.headers
         )
 
     async def _loop_sequence_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
@@ -355,7 +368,7 @@ class DefaultAgentHandler(AgentHandler):
                         sender=agent.id(),
                         session_id=session_id,
                         receiver=receiver,
-                        headers=headers
+                        headers=message.headers
                     )
                 else:
                     # means the task finished
@@ -395,7 +408,7 @@ class DefaultAgentHandler(AgentHandler):
             sender=agent.name(),
             session_id=session_id,
             receiver=receiver,
-            headers=headers
+            headers=message.headers
         )
 
     async def _social_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
@@ -435,7 +448,7 @@ class DefaultAgentHandler(AgentHandler):
                     sender=agent.id(),
                     session_id=session_id,
                     receiver=self.swarm.communicate_agent.id(),
-                    headers=headers
+                    headers=message.headers
                 )
         else:
             idx = 0
@@ -452,5 +465,5 @@ class DefaultAgentHandler(AgentHandler):
                 sender=agent.id(),
                 session_id=session_id,
                 receiver=caller,
-                headers=headers
+                headers=message.headers
             )
