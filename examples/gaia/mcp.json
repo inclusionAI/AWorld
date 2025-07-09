@@ -17,9 +17,9 @@
                 "examples.gaia.mcp_collections.tools.browser"
             ],
             "env": {
-                "LLM_MODEL_NAME": "${LLM_MODEL_NAME_GAIA}",
-                "LLM_API_KEY": "${LLM_API_KEY_GAIA}",
-                "LLM_BASE_URL": "${LLM_BASE_URL_GAIA}",
+                "LLM_MODEL_NAME": "${LLM_MODEL_NAME}",
+                "LLM_API_KEY": "${LLM_API_KEY}",
+                "LLM_BASE_URL": "${LLM_BASE_URL}",
                 "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
             }
         },
