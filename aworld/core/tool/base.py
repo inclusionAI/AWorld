@@ -335,6 +335,11 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, **kwargs)
         await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
+        if message.group_id and message.headers.get('level', 0) == 0:
+            from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
+            state_mng = RuntimeStateManager.instance()
+            state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
+            final_res.headers['_tool_finished'] = True
         return final_res
 
     async def post_step(self,

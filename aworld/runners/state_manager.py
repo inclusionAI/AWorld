@@ -216,7 +216,7 @@ class InMemoryStateStorage(StateStorage, InheritanceSingleton, metaclass=StateSt
         return session_nodes
 
 
-class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton):
+class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
     '''
     In memory node group storage
     '''
@@ -234,7 +234,7 @@ class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton):
         self.node_groups[node_group.group_id] = node_group
 
 
-class InMemorySubGroupStorage(SubGroupStorage, InheritanceSingleton):
+class InMemorySubGroupStorage(SubGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
     '''
     In memory sub task storage
     '''
@@ -260,7 +260,13 @@ class RuntimeStateManager(InheritanceSingleton):
     def __init__(self,
                  storage: StateStorage = InMemoryStateStorage.instance()):
         self.storage = storage
-        self.node_group_manager = NodeGroupManager(node_state_manager=self)
+        self._node_group_manager = None
+
+    @property
+    def node_group_manager(self):
+        if not self._node_group_manager:
+            self._node_group_manager = NodeGroupManager(node_state_manager=self)
+        return self._node_group_manager
 
     def create_node(self,
                     busi_type: RunNodeBusiType,
@@ -469,17 +475,25 @@ class RuntimeStateManager(InheritanceSingleton):
         '''
         create node group
         '''
-        return self.node_group_manager.create_group(group_id, session_id, root_node_ids, parent_group_id, metadata)
+        return await self.node_group_manager.create_group(group_id, session_id, root_node_ids, parent_group_id, metadata)
 
     async def finish_sub_group(self,
                                group_id: str,
                                root_node_id: str,
-                               results: List[HandleResult] = None,
+                               results: List[Message] = None,
                                result_msg: str = None):
         '''
         finish sub group
         '''
-        await self.node_group_manager.finish_sub_group(group_id, root_node_id, results, result_msg)
+        handle_results = []
+        for msg in results:
+            handle_result = HandleResult(
+                status=RunNodeStatus.SUCCESS,
+                result=msg,
+                name=msg.sender
+            )
+            handle_results.append(handle_result)
+        await self.node_group_manager.finish_sub_group(group_id, root_node_id, handle_results, result_msg)
 
     def get_group(self, group_id: str) -> NodeGroup:
         '''
