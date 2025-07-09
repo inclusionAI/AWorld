@@ -35,7 +35,11 @@ class ParallelizableAgent(Agent):
             for agent in self.agents:
                 tasks.append(asyncio.create_task(exec_agent(observation.content, agent, self.context, sub_task=True)))
 
-        return await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks)
+        res = []
+        for idx, result in enumerate(results):
+            res.append(ActionModel(agent_name=self.agents[idx].id(), policy_info=result))
+        return res
 
     def finished(self) -> bool:
         return all([agent.finished for agent in self.agents])
