@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+from aworld.agents.plan_agent import PlanAgent
 from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
@@ -47,7 +48,7 @@ class AWorldAgent(BaseAWorldAgent):
         with open(mcp_path, "r") as f:
             mcp_config = json.load(f)
 
-        plan_agent = Agent(
+        plan_agent = PlanAgent(
             conf=agent_config,
             name="Team-Plan-Agent",
             system_prompt=plan_agent_sys_prompt,
