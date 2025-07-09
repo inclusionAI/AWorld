@@ -80,10 +80,6 @@ class BasePromptTemplate(ABC):
         self.input_variables = input_variables or []
         self.template_format = template_format
         self.partial_variables = partial_variables or {}
-        
-        overlap = set(self.input_variables) & set(self.partial_variables.keys())
-        if overlap:
-            raise ValueError(f"Found overlapping input and partial variables: {overlap}")
     
     @abstractmethod
     def format(self, context: 'Context' = None, **kwargs: Any) -> str:
@@ -141,10 +137,6 @@ class BasePromptTemplate(ABC):
     
     def partial(self, **kwargs: Any) -> 'BasePromptTemplate':
         """Create a new prompt template with some variables pre-filled."""
-        conflicts = set(kwargs.keys()) & set(self.partial_variables.keys())
-        if conflicts:
-            raise ValueError(f"Cannot partial already partialed variables: {conflicts}")
-        
         conflicts = set(kwargs.keys()) & set(self.input_variables)
         if conflicts:
             new_input_variables = [v for v in self.input_variables if v not in kwargs]

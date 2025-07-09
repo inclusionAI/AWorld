@@ -108,14 +108,11 @@ class TestPromptTemplate(BaseTest):
         assert result == "Hello Alice, welcome to AWorld! Task: chat Age: 1"
     
     def test_enhanced_field_values_basic(self):
-        """Test enhanced field value retrieval for time variables and context fields"""
-        from aworld.core.context.prompts.dynamic_variables import get_enhanced_field_values_from_list
-        
         context = Context()
         context.context_info.update({"task": "chat"})
         
         # Test retrieving both time variables and context fields
-        result = get_enhanced_field_values_from_list(
+        result = get_field_values_from_list(
             context=context,
             field_paths=["current_time", "context_info.task"],
             default="not_found"

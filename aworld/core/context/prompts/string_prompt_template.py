@@ -12,7 +12,7 @@ from aworld.core.context.prompts.formatters import (
     format_template, 
     get_template_variables
 )
-from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES
+from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES, create_context_field_getter
 
 if TYPE_CHECKING:
     from aworld.core.context.base import Context
@@ -27,38 +27,57 @@ class StringPromptTemplate(BasePromptTemplate):
                  partial_variables: Optional[Dict[str, Any]] = None,
                  auto_add_dynamic_vars: bool = True,
                  **kwargs):
+        """Initialize a string-based prompt template.
+        
+        Args:
+            template: The template string containing variables to be filled
+            input_variables: List of user-specified input variables
+            template_format: Format specification for the template
+            partial_variables: Dictionary of pre-defined variable values or getters
+            auto_add_dynamic_vars: Whether to automatically add predefined dynamic variables
+        """
         self.template = template
         self.auto_add_dynamic_vars = auto_add_dynamic_vars
         
         try:
-            # Automatically add common dynamic variables
-            if auto_add_dynamic_vars:
-                # Merge time and system variables
-                auto_partial_vars = {**ALL_PREDEFINED_DYNAMIC_VARIABLES}
+            # 1. Extract all variables from the template
+            template_vars = set(get_template_variables(template, template_format))
+            
+            # 2. Initialize partial variables dictionary
+            if partial_variables is None:
+                partial_variables = {}
                 
-                if partial_variables:
-                    # User-provided variables take priority and are not overridden by auto variables
-                    for key, value in auto_partial_vars.items():
-                        if key not in partial_variables:
-                            partial_variables[key] = value
-                else:
-                    partial_variables = auto_partial_vars
+            # 3. Add predefined dynamic variables if enabled
+            if auto_add_dynamic_vars:
+                for key, value in ALL_PREDEFINED_DYNAMIC_VARIABLES.items():
+                    if key not in partial_variables:
+                        partial_variables[key] = value
             
-            if input_variables is None:
-                input_variables = get_template_variables(template, template_format)
-            
-            if partial_variables:
-                input_variables = [var for var in input_variables if var not in partial_variables]
-        except Exception as e:
-            # If any error during initialization, use defaults
-            logger.warning(f"Error during StringPromptTemplate initialization: {e}, using defaults")
+            # 4. Merge user-specified input variables with template variables
             if input_variables is None:
                 input_variables = []
+            all_input_vars = set(input_variables) | template_vars
+            
+            # 5. Process template variables
+            for var in template_vars:
+                if var not in partial_variables:
+                    # Create context getter as fallback
+                    partial_variables[var] = create_context_field_getter(var)
+            
+            # 7. Log variable processing information
+            logger.debug(f"Template variables: {template_vars}")
+            logger.debug(f"User input variables: {input_variables}")
+            logger.debug(f"Final input variables: {all_input_vars}")
+            logger.debug(f"Partial variables: {list(partial_variables.keys())}")
+            
+        except Exception as e:
+            logger.warning(f"Error during StringPromptTemplate initialization: {e}, using defaults")
+            all_input_vars = input_variables or []
             if partial_variables is None:
                 partial_variables = {}
         
         super().__init__(
-            input_variables=input_variables,
+            input_variables=all_input_vars,
             template_format=template_format,
             partial_variables=partial_variables,
             **kwargs

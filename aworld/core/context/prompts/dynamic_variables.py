@@ -82,7 +82,6 @@ def get_current_year() -> str:
         logger.warning(f"Error getting current year: {e}")
         return "unknown year"
 
-
 # ==================== System Information Functions ====================
 
 def get_system_platform() -> str:
@@ -156,6 +155,28 @@ def get_short_uuid() -> str:
         logger.warning(f"Error generating short UUID: {e}")
         return "unknown uuid"
 
+# ==================== Predefined Dynamic Variable Collections ====================
+
+# All variable collections - includes time, system and Context variables
+ALL_PREDEFINED_DYNAMIC_VARIABLES = {
+    # time
+    "current_time": get_current_time,
+    "current_date": get_current_date,
+    "current_datetime": get_current_datetime,
+    "current_timestamp": get_current_timestamp,
+    "current_weekday": get_current_weekday,
+    "current_month": get_current_month,
+    "current_year": get_current_year,
+    # system
+    "system_platform": get_system_platform,
+    "system_os": get_system_os,
+    "python_version": get_python_version,
+    "hostname": get_hostname,
+    "username": get_username,
+    "working_directory": get_working_directory,
+    "random_uuid": get_random_uuid,
+    "short_uuid": get_short_uuid,
+}
 
 # ==================== Context Field Getter Function Factory ====================
 
@@ -210,7 +231,7 @@ def create_context_field_getter(
     processor: Optional[Callable[[Any], str]] = None,
     fallback_getter: Optional[Callable[["Context"], Any]] = None
 ) -> Callable[["Context"], str]:
-    """Create generic dynamic function to get specified Context field
+    """Create generic dynamic function to get specified Context field with enhanced retrieval
     
     Args:
         field_path: Field path, supports nested access with both '.' and '/' separators
@@ -252,53 +273,76 @@ def create_context_field_getter(
             return default_value
             
         try:
-            # First try to get value from context
-            value = get_value_by_path(context, field_path)
+            value = None
+            source = "default"
             
-            # If field path fails, try using fallback getter function
+            # 1. First try to get value from context
+            value = get_value_by_path(context, field_path)
+            if value is not None:
+                source = "context"
+            
+            # 2. If context access fails, try fallback getter
             if value is None and fallback_getter:
                 try:
                     value = fallback_getter(context)
+                    if value is not None:
+                        source = "fallback_getter"
                 except Exception as e:
                     logger.warning(f"Fallback getter failed for field '{field_path}': {e}")
-                    value = None
             
-            # If still no value, return default value
-            if value is None:
-                return default_value
-            
-            # Apply processing function if provided
-            if processor:
+            # 3. If still no value, try predefined dynamic variables
+            if value is None and field_path in ALL_PREDEFINED_DYNAMIC_VARIABLES:
                 try:
-                    return processor(value)
+                    func = ALL_PREDEFINED_DYNAMIC_VARIABLES[field_path]
+                    value = func()
+                    if value is not None:
+                        source = "predefined_variable"
+                except Exception as e:
+                    logger.warning(f"Predefined variable '{field_path}' failed: {e}")
+            
+            # 4. If still no value, use default
+            if value is None:
+                value = default_value
+                source = "default"
+            
+            # 5. Apply processing function if provided
+            if processor and value is not None:
+                try:
+                    value = processor(value)
+                    source += "_processed"
                 except Exception as e:
                     logger.warning(f"Processor failed for field '{field_path}': {e}")
-                    return default_value
+                    value = default_value
+                    source = "default_after_processor_fail"
             
-            # Auto-format based on type when no processor provided
-            try:
-                if isinstance(value, dict):
-                    # Use JSON formatter for dictionaries
-                    return format_ordered_dict_json(value)
-                elif isinstance(value, (list, tuple)):
-                    # Use list formatter for lists/tuples
-                    return format_list_items(value)
-                elif hasattr(value, '__dict__'):
-                    # Use object summary formatter for objects with attributes
-                    return format_object_summary(value)
-                else:
-                    # Use string conversion for simple types
-                    return str(value)
-            except Exception as e:
-                logger.warning(f"Auto-formatting failed for field '{field_path}': {e}")
-                return str(value)
+            # 6. Auto-format based on type when no processor provided
+            if not processor and value is not None:
+                try:
+                    if isinstance(value, dict):
+                        value = format_ordered_dict_json(value)
+                    elif isinstance(value, (list, tuple)):
+                        value = format_list_items(value)
+                    elif hasattr(value, '__dict__'):
+                        value = format_object_summary(value)
+                    else:
+                        value = str(value)
+                except Exception as e:
+                    logger.warning(f"Auto-formatting failed for field '{field_path}': {e}")
+                    value = str(value)
+            
+            result = str(value) if value is not None else default_value
+            
+            # Debug logging
+            logger.debug(f"Field retrieval: '{field_path}' -> '{result}' (source: {source})")
+            
+            return result
             
         except Exception as e:
             logger.warning(f"Error getting field '{field_path}': {e}")
             return default_value
     
     # Set function attributes for better debugging
-    safe_field_name = field_path.replace('.', '_')
+    safe_field_name = field_path.replace('.', '_').replace('/', '_')
     field_getter.__name__ = f"get_context_{safe_field_name}"
     field_getter.__doc__ = f"Get Context's {field_path} field"
     
@@ -440,74 +484,4 @@ def format_object_summary(obj) -> str:
     
     # Fallback to string representation
     return json.dumps(str(obj), ensure_ascii=False)
-
-# ==================== Predefined Dynamic Variable Collections ====================
-
-# All variable collections - includes time, system and Context variables
-ALL_PREDEFINED_DYNAMIC_VARIABLES = {
-    # time
-    "current_time": get_current_time,
-    "current_date": get_current_date,
-    "current_datetime": get_current_datetime,
-    "current_timestamp": get_current_timestamp,
-    "current_weekday": get_current_weekday,
-    "current_month": get_current_month,
-    "current_year": get_current_year,
-    # system
-    "system_platform": get_system_platform,
-    "system_os": get_system_os,
-    "python_version": get_python_version,
-    "hostname": get_hostname,
-    "username": get_username,
-    "working_directory": get_working_directory,
-    "random_uuid": get_random_uuid,
-    "short_uuid": get_short_uuid,
-}
-
-
-# ==================== Enhanced Field Value Retrieval ====================
-
-def get_enhanced_field_values_from_list(
-    context: "Context", 
-    field_paths: list[str], 
-    default: str = "",
-    processor: Optional[Callable[[Any], str]] = None
-) -> dict[str, str]:
-    result = {}
-    
-    for field_path in field_paths:
-        safe_key = field_path.replace('.', '_').replace('/', '_')
-        value = None
-        source = "default"
-        
-        try:
-            # 1. First try to get from context using get_simple_field_value with default=None
-            value = get_simple_field_value(context, field_path, default=None, processor=processor)
-            if value is not None:
-                source = "context"
-            else:
-                # 2. Try predefined dynamic variables if context field is None
-                if field_path in ALL_PREDEFINED_DYNAMIC_VARIABLES:
-                    try:
-                        func = ALL_PREDEFINED_DYNAMIC_VARIABLES[field_path]
-                        value = func()
-                        source = "predefined_variable"
-                    except Exception as e:
-                        logger.warning(f"Predefined variable '{field_path}' failed: {e}")
-                
-                # 3. Use default value if still no value
-                if value is None:
-                    value = default
-                    source = "default"
-            
-            result[safe_key] = str(value) if value is not None else default
-            
-            # Debug logging
-            logger.debug(f"Enhanced field retrieval: '{field_path}' -> '{result[safe_key]}' (source: {source})")
-            
-        except Exception as e:
-            logger.warning(f"Error retrieving enhanced field '{field_path}': {e}")
-            result[safe_key] = default
-    
-    return result
 

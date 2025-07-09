@@ -136,7 +136,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # Agents as tool
         self.tools.extend(self._handoffs_agent_as_tool())
         # MCP servers are tools
-        self.tools.extend(self._mcp_is_tool())
+        mcp_is_tools = self._mcp_is_tool()
+        if mcp_is_tools:
+            self.tools.extend(mcp_is_tools)
         return self.tools
 
     async def async_desc_transform(self):
@@ -161,7 +163,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                            observation: Observation = None,
                            message: Message = None,
                            **kwargs):
-        return sync_exec(self.async_desc_transform, content=content, image_urls=image_urls, observation=observation,
+        return sync_exec(self.async_messages_transform, content=content, image_urls=image_urls, observation=observation,
                   message=message, **kwargs)
 
     async def async_messages_transform(self,
@@ -657,6 +659,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             info: Extended information to assist the agent in decision-making
             **kwargs: Other parameters
         """
+        print("prepare_llm_input")
         await self.async_desc_transform()
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
@@ -971,6 +974,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
              return
          if not self.system_prompt:
              return
+         print("self.tools", self.tools)
          content = await self.custom_system_prompt(context=context, content=content)
          logger.info(f'system prompt content: {content}')
 
