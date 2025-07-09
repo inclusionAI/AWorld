@@ -458,7 +458,7 @@ class RuntimeStateManager(InheritanceSingleton):
                            session_id: str,
                            root_node_ids: List[str] = None,
                            parent_group_id: Optional[str] = None,
-                           metadata: Optional[dict] = None) -> NodeGroup:   
+                           metadata: Optional[dict] = None) -> NodeGroup:
         '''
         create node group
         '''
@@ -631,6 +631,11 @@ class NodeGroupManager(InheritanceSingleton):
             if not metadata:
                 metadata = subgroup.metadata
 
+        metadata = metadata or {}
+        if group.parent_group_id:
+            metadata.update({
+                "parent_group_id": group.parent_group_id
+            })
         message = Message(
             category="group",
             payload=group_results,
