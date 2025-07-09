@@ -371,13 +371,13 @@ class VideoCollection(ActionCollection):
                 get_llm_model(
                     conf=AgentConfig(
                         llm_provider="openai",
-                        llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-                        llm_api_key=os.getenv("LLM_API_KEY"),
-                        llm_base_url=os.getenv("LLM_BASE_URL"),
+                        llm_model_name=os.getenv("VIDEO_LLM_MODEL_NAME"),
+                        llm_api_key=os.getenv("VIDEO_LLM_API_KEY"),
+                        llm_base_url=os.getenv("VIDEO_LLM_BASE_URL"),
                     )
                 ),
                 inputs,
-                temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
+                temperature=float(os.getenv("VIDEO_LLM_TEMPERATURE", "1.0")),
             )
             analysis_result = response.content
             self._color_log(f"✅ Completed analysis for chunk {chunk_index + 1}", Color.green)
@@ -579,13 +579,13 @@ class VideoCollection(ActionCollection):
                         get_llm_model(
                             conf=AgentConfig(
                                 llm_provider="openai",
-                                llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-                                llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-                                llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+                                llm_model_name=os.getenv("VIDEO_LLM_MODEL_NAME", "gpt-4o"),
+                                llm_api_key=os.getenv("VIDEO_LLM_API_KEY"),
+                                llm_base_url=os.getenv("VIDEO_LLM_BASE_URL"),
                             )
                         ),
                         inputs,
-                        temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
+                        temperature=float(os.getenv("VIDEO_LLM_TEMPERATURE", "1.0")),
                     )
                     cur_summary = response.content
                 except Exception as e:
