@@ -235,14 +235,14 @@ class SearchCollection(ActionCollection):
                     search_results.append(result)
 
             # Format results based on requested format
-            if output_format.lower() == "json":
+            if "json" == "json":
                 formatted_content = {
                     "query": validated_query,
                     "results": [result.model_dump() for result in search_results],
                     "count": len(search_results),
                 }
 
-                message_content = json.dumps(formatted_content, indent=2)
+                message_content = formatted_content
             elif output_format.lower() == "text":
                 if search_results:
                     result_lines = []

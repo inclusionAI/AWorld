@@ -125,6 +125,7 @@ class BrowserActionCollection(ActionCollection):
             llm=self.llm_config,
             extend_system_message=self.extended_browser_system_prompt,
             use_vision=True,
+            enable_memory=False,
             browser_profile=self.browser_profile,
             save_conversation_path=f"{self.trace_log_dir}/browser_log/trace.log",
         )

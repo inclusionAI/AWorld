@@ -120,6 +120,7 @@ examples/gaia/gaia_dataset/
 *.ppt
 *.pdf
 *.wav
+*.bak
 
 # Node Modules
 node_modules/
