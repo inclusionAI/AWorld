@@ -1,3 +1,4 @@
+import abc
 import time
 import asyncio
 from pydantic import BaseModel
@@ -120,7 +121,9 @@ class NodeGroupDetail(NodeGroup):
     sub_groups: Optional[List[SubGroup]] = None
 
 
-class StateStorage(ABC):
+class StateStorage:
+    __metaclass__ = abc.ABCMeta
+
     @abstractmethod
     def get(self, node_id: str) -> RunNode:
         pass
@@ -138,7 +141,9 @@ class StateStorage(ABC):
         pass
 
 
-class NodeGroupStorage(ABC):
+class NodeGroupStorage:
+    __metaclass__ = abc.ABCMeta
+
     @abstractmethod
     def get(self, group_id: str) -> NodeGroup:
         pass
@@ -152,7 +157,9 @@ class NodeGroupStorage(ABC):
         pass
 
 
-class SubGroupStorage(ABC):
+class SubGroupStorage:
+    __metaclass__ = abc.ABCMeta
+
     @abstractmethod
     def get(self, node_id: str) -> SubGroup:
         pass
@@ -209,7 +216,7 @@ class InMemoryStateStorage(StateStorage, InheritanceSingleton, metaclass=StateSt
         return session_nodes
 
 
-class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton):
+class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
     '''
     In memory node group storage
     '''
@@ -227,7 +234,7 @@ class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton):
         self.node_groups[node_group.group_id] = node_group
 
 
-class InMemorySubGroupStorage(SubGroupStorage, InheritanceSingleton):
+class InMemorySubGroupStorage(SubGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
     '''
     In memory sub task storage
     '''

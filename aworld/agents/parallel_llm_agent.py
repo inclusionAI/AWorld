@@ -1,9 +1,11 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import asyncio
 from typing import List, Dict, Any, Callable
 
+from aworld.utils.exec_util import exec_agent
+
 from aworld.agents.llm_agent import Agent
-from aworld.config import RunConfig
 from aworld.core.common import Observation, ActionModel, Config
 
 
@@ -28,27 +30,12 @@ class ParallelizableAgent(Agent):
         self.aggregate_func = aggregate_func
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
-        from aworld.core.task import Task
-        from aworld.runners.utils import choose_runners, execute_runner
-
         tasks = []
         if self.agents:
             for agent in self.agents:
-                tasks.append(Task(is_sub_task=True, input=observation, agent=agent, context=self.context))
+                tasks.append(asyncio.create_task(exec_agent(observation.content, agent, self.context, sub_task=True)))
 
-        if not tasks:
-            raise RuntimeError("no task need to run in parallelizable agent.")
-
-        runners = await choose_runners(tasks)
-        res = await execute_runner(runners, RunConfig(reuse_process=False))
-
-        if self.aggregate_func:
-            return self.aggregate_func(self, res)
-
-        results = []
-        for k, v in res.items():
-            results.append(ActionModel(agent_name=self.id(), policy_info=v.answer))
-        return results
+        return await asyncio.gather(*tasks)
 
     def finished(self) -> bool:
         return all([agent.finished for agent in self.agents])
