@@ -47,11 +47,8 @@ class GaiaSearchToolResultParser(BaseToolResultParser):
 
         result_items = []
         try:
-            result_items = (
-                json.loads(tool_card.results.results)
-                if tool_card and tool_card.results and tool_card.results.results
-                else []
-            )
+            results = json.loads(tool_card.results)
+            result_items = results.get("message", {}).get("results", [])
             # aworld search server return url, not link
             if result_items and isinstance(result_items, list):
                 for item in result_items:
@@ -183,7 +180,10 @@ class GaiaAgentRunner:
             name="gaia_super_agent",
             system_prompt=system_prompt,
             mcp_config=mcp_config,
-            mcp_servers=mcp_config.get("mcpServers", {}).keys(),
+            mcp_servers=(
+                os.getenv("GAIA_MCP_SERVERS", "").split(",")
+                or mcp_config.get("mcpServers", {}).keys()
+            ),
         )
 
         self.gaia_dataset_path = os.path.abspath(
@@ -202,8 +202,8 @@ class GaiaAgentRunner:
     async def run(self, prompt: str):
         yield (f"\n### GAIA Agent Start!")
 
-        mcp_servers = "\n- ".join(self.super_agent.mcp_servers)
-        yield (f"\n```gaia_agent_status\n- {mcp_servers}\n```\n")
+        mcp_servers = "\n- ✅ ".join(self.super_agent.mcp_servers)
+        yield (f"\n```gaia_agent_status\n- ✅ {mcp_servers}\n```\n")
 
         question = None
         data_item = None

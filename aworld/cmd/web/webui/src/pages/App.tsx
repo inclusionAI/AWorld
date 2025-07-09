@@ -395,7 +395,7 @@ const App: React.FC = () => {
       } else {
         content = `${originMessage?.content || ''}${currentThink}${currentContent}`;
       }
-      if(!chunk && originMessage?.trace_id) {
+      if (!chunk && originMessage?.trace_id) {
         currentTraceId = originMessage?.trace_id
       }
       return {
@@ -527,8 +527,10 @@ const App: React.FC = () => {
                 },
                 status: 'success' as const
               }));
+              console.log('chatMessages', chatMessages);
               setMessages(chatMessages);
             } else {
+              console.log('messageHistory', messageHistory);
               setMessages(messageHistory?.[val] || []);
             }
           });
@@ -771,7 +773,7 @@ const App: React.FC = () => {
           <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
         ) :
         ( */}
-          <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} traceQuery={traceQuery} drawerVisible={drawerVisible} />
+        <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} traceQuery={traceQuery} drawerVisible={drawerVisible} />
         {/* )} */}
       </Drawer>
     </div>

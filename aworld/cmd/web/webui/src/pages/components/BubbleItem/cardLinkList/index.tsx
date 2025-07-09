@@ -32,15 +32,13 @@ const cardLinkList: React.FC<Props> = ({ sessionId, data, onOpenWorkspace }) => 
       <Button type="link" className="btn-workspace" icon={<MenuUnfoldOutlined />} onClick={handleOpenWorkspace}>
         View Workspace
       </Button>
-      {items.length > 0 && (
-        <Flex justify="space-between" align="center" className="card-length">
-          <Tag icon={<SearchOutlined />}>{`search keywords: ${data?.card_data?.query || ''}`}</Tag>
-          <Flex align="center">
-            <CheckOutlined className="check-icon" />
-            {items.length} results
-          </Flex>
+      <Flex justify="space-between" align="center" className="card-length">
+        <Tag icon={<SearchOutlined />}>{`search keywords: ${data?.card_data?.query || ''}`}</Tag>
+        <Flex align="center">
+          <CheckOutlined className="check-icon" />
+          {cardItems.length} results
         </Flex>
-      )}
+      </Flex>
       <div className="border-box">
         <Flex className="cardbox">
           {cardItems?.map((item: ItemInterface, index: number) => (
