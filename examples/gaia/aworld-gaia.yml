@@ -2,22 +2,22 @@ name: aworld-gaia
 channels:
   - defaults
 dependencies:
-  - bzip2=1.0.8=h80987f9_6
-  - ca-certificates=2025.2.25=hca03da5_0
-  - expat=2.7.1=h313beb8_0
-  - libcxx=17.0.6=he5c5206_3
-  - libffi=3.4.4=hca03da5_1
-  - ncurses=6.4=h313beb8_0
-  - openssl=3.0.16=h02f6b3c_0
-  - pip=25.1=pyhc872135_2
-  - python=3.12.11=h421de30_0
-  - readline=8.2=h1a28f6b_0
-  - setuptools=78.1.1=py312hca03da5_0
-  - sqlite=3.45.3=h80987f9_0
-  - tk=8.6.14=h6ba3021_1
-  - wheel=0.45.1=py312hca03da5_0
-  - xz=5.6.4=h80987f9_1
-  - zlib=1.2.13=h18a0788_1
+  - bzip2=1.0.8
+  - ca-certificates=2025.2.25
+  - expat=2.7.1
+  - libcxx=17.0.6
+  - libffi=3.4.4
+  - ncurses=6.4
+  - openssl=3.0.16
+  - pip=25.1
+  - python=3.12.11
+  - readline=8.2
+  - setuptools=78.1.1
+  - sqlite=3.45.3
+  - tk=8.6.14
+  - wheel=0.45.1
+  - xz=5.6.4
+  - zlib=1.2.13
   - pip:
       - aiofiles==24.1.0
       - altair==5.5.0

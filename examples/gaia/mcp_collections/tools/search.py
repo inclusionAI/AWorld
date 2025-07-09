@@ -146,7 +146,7 @@ class SearchCollection(ActionCollection):
         safe_search: bool = Field(default=True, description="Whether to enable safe search filtering"),
         language: str = Field(default="en", description="Language code for search results (e.g., 'en', 'es', 'fr')"),
         country: str = Field(default="us", description="Country code for search results (e.g., 'us', 'uk', 'ca')"),
-        output_format: str = Field(default="markdown", description="Output format: 'markdown', 'json', or 'text'"),
+        output_format: str = Field(default="json", description="Output format: 'markdown', 'json', or 'text'"),
     ) -> ActionResponse:
         """Search the web using Google Custom Search API.
 
@@ -235,14 +235,14 @@ class SearchCollection(ActionCollection):
                     search_results.append(result)
 
             # Format results based on requested format
-            if output_format.lower() == "json":
+            if "json" == "json":
                 formatted_content = {
                     "query": validated_query,
                     "results": [result.model_dump() for result in search_results],
                     "count": len(search_results),
                 }
 
-                message_content = json.dumps(formatted_content, indent=2)
+                message_content = formatted_content
             elif output_format.lower() == "text":
                 if search_results:
                     result_lines = []

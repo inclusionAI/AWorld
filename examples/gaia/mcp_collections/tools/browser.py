@@ -14,15 +14,15 @@ import re
 import time
 import traceback
 import sys
+
 try:
     from browser_use import Agent, AgentHistoryList, BrowserProfile
-    from browser_use.agent.memory.views import MemoryConfig
     from dotenv import load_dotenv
     from langchain_openai import ChatOpenAI
     from pydantic import BaseModel, Field
 
     from aworld.logs.util import Color
-    from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
+    from ..base import ActionArguments, ActionCollection, ActionResponse
 except Exception as e:
     print(f"Failed to import browser tool: {traceback.format_exc()}")
     raise e
@@ -94,6 +94,8 @@ class BrowserActionCollection(ActionCollection):
             downloads_path=str(self.workspace),
             save_recording_path=str(self.workspace),
             save_downloads_path=str(self.workspace),
+            chromium_sandbox=False,
+            headless=True,
         )
         self._color_log(f"Browser browser_profile: {self.browser_profile}", Color.green)
 
@@ -102,8 +104,12 @@ class BrowserActionCollection(ActionCollection):
         os.makedirs(f"{self.trace_log_dir}/browser_log", exist_ok=True)
 
         self._color_log("Browser automation service initialized", Color.green)
-        self._color_log(f"Downloads directory: {self.browser_profile.downloads_path}", Color.blue)
-        self._color_log(f"Trace logs directory: {self.trace_log_dir}/browser_log", Color.blue)
+        self._color_log(
+            f"Downloads directory: {self.browser_profile.downloads_path}", Color.blue
+        )
+        self._color_log(
+            f"Trace logs directory: {self.trace_log_dir}/browser_log", Color.blue
+        )
 
     def _create_browser_agent(self, task: str) -> Agent:
         """Create a browser agent instance with configured settings.
@@ -119,7 +125,7 @@ class BrowserActionCollection(ActionCollection):
             llm=self.llm_config,
             extend_system_message=self.extended_browser_system_prompt,
             use_vision=True,
-            enable_memory=True,
+            enable_memory=False,
             browser_profile=self.browser_profile,
             save_conversation_path=f"{self.trace_log_dir}/browser_log/trace.log",
         )
@@ -174,10 +180,15 @@ class BrowserActionCollection(ActionCollection):
 
     async def mcp_browser_use(
         self,
-        task: str = Field(description="The task to perform using the browser automation agent"),
-        max_steps: int = Field(default=50, description="Maximum number of steps for browser execution"),
+        task: str = Field(
+            description="The task to perform using the browser automation agent"
+        ),
+        max_steps: int = Field(
+            default=50, description="Maximum number of steps for browser execution"
+        ),
         extract_format: str = Field(
-            default="markdown", description="Format for extracted content: 'markdown', 'json', or 'text'"
+            default="markdown",
+            description="Format for extracted content: 'markdown', 'json', or 'text'",
         ),
     ) -> ActionResponse:
         """Perform browser automation tasks using the browser-use package.
@@ -209,7 +220,11 @@ class BrowserActionCollection(ActionCollection):
 
             execution_time = time.time() - start_time
 
-            if browser_execution is not None and browser_execution.is_done() and browser_execution.is_successful():
+            if (
+                browser_execution is not None
+                and browser_execution.is_done()
+                and browser_execution.is_successful()
+            ):
                 # Extract and format content
                 extracted_content = browser_execution.extracted_content()
                 final_result = browser_execution.final_result()
@@ -217,7 +232,8 @@ class BrowserActionCollection(ActionCollection):
                 # Format content based on requested format
                 if extract_format.lower() == "json":
                     formatted_content = json.dumps(
-                        {"summary": final_result, "extracted_data": extracted_content}, indent=2
+                        {"summary": final_result, "extracted_data": extracted_content},
+                        indent=2,
                     )
                 elif extract_format.lower() == "text":
                     formatted_content = f"{final_result}\n\n{self._format_extracted_content(extracted_content)}"
@@ -231,7 +247,11 @@ class BrowserActionCollection(ActionCollection):
                 metadata = BrowserMetadata(
                     task=task,
                     execution_successful=True,
-                    steps_taken=len(browser_execution.history) if hasattr(browser_execution, "history") else None,
+                    steps_taken=(
+                        len(browser_execution.history)
+                        if hasattr(browser_execution, "history")
+                        else None
+                    ),
                     downloaded_files=[],
                     visited_urls=self._extract_visited_urls(extracted_content),
                     execution_time=execution_time,
@@ -241,7 +261,11 @@ class BrowserActionCollection(ActionCollection):
                 self._color_log(f"🗒️ Detail: {extracted_content}", Color.lightgrey)
                 self._color_log(f"🌏 Result: {final_result}", Color.green)
 
-                return ActionResponse(success=True, message=formatted_content, metadata=metadata.model_dump())
+                return ActionResponse(
+                    success=True,
+                    message=formatted_content,
+                    metadata=metadata.model_dump(),
+                )
 
             else:
                 # Handle execution failure
@@ -257,7 +281,9 @@ class BrowserActionCollection(ActionCollection):
 
                 self._color_log(f"❌ {error_msg}", Color.red)
 
-                return ActionResponse(success=False, message=error_msg, metadata=metadata.model_dump())
+                return ActionResponse(
+                    success=False, message=error_msg, metadata=metadata.model_dump()
+                )
 
         except Exception as e:
             error_msg = f"Browser automation failed: {str(e)}"
@@ -275,7 +301,9 @@ class BrowserActionCollection(ActionCollection):
             self._color_log(f"❌ {error_msg}", Color.red)
 
             return ActionResponse(
-                success=False, message=f"{error_msg}\n\nError details: {error_trace}", metadata=metadata.model_dump()
+                success=False,
+                message=f"{error_msg}\n\nError details: {error_trace}",
+                metadata=metadata.model_dump(),
             )
 
     def mcp_get_browser_capabilities(self) -> ActionResponse:
@@ -300,7 +328,7 @@ class BrowserActionCollection(ActionCollection):
                 "cookies_enabled": bool(os.getenv("COOKIES_FILE_PATH")),
                 "trace_logging": True,
                 "vision_enabled": True,
-                "memory_enabled": True,
+                "headless": True,
             },
         }
 
@@ -321,7 +349,9 @@ class BrowserActionCollection(ActionCollection):
         - **Trace Logging:** {capabilities["configuration"]["trace_logging"]}
         """
 
-        return ActionResponse(success=True, message=formatted_info, metadata=capabilities)
+        return ActionResponse(
+            success=True, message=formatted_info, metadata=capabilities
+        )
 
 
 # Example usage and entry point

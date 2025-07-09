@@ -120,6 +120,7 @@ examples/gaia/gaia_dataset/
 *.ppt
 *.pdf
 *.wav
+*.bak
 
 # Node Modules
 node_modules/
@@ -134,4 +135,4 @@ examples/gaia/output
 examples/**/workspaces
 examples/**/data
 examples/**/*.bak
-aworld/cmd/web/webui/dist
+=**

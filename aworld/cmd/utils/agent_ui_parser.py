@@ -82,7 +82,7 @@ class DefaultToolResultParser(BaseToolResultParser):
                 )
 
         return f"""\
-\n**🔧 Tool: {tool_card.tool_name}#{tool_card.function_name}**\n\n
+\n\n**🔧 Tool: {tool_card.tool_name}#{tool_card.function_name}**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
 ```\n
@@ -143,7 +143,7 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
         )
 
         return f"""\
-\n**🔎 Google Search**\n\n
+\n\n**🔎 Google Search**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
 ```\n
