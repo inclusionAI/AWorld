@@ -260,7 +260,13 @@ class RuntimeStateManager(InheritanceSingleton):
     def __init__(self,
                  storage: StateStorage = InMemoryStateStorage.instance()):
         self.storage = storage
-        self.node_group_manager = NodeGroupManager(node_state_manager=self)
+        self._node_group_manager = None
+
+    @property
+    def node_group_manager(self):
+        if not self._node_group_manager:
+            self._node_group_manager = NodeGroupManager(node_state_manager=self)
+        return self._node_group_manager
 
     def create_node(self,
                     busi_type: RunNodeBusiType,
