@@ -216,7 +216,7 @@ class InMemoryStateStorage(StateStorage, InheritanceSingleton, metaclass=StateSt
         return session_nodes
 
 
-class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton):
+class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
     '''
     In memory node group storage
     '''
@@ -234,7 +234,7 @@ class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton):
         self.node_groups[node_group.group_id] = node_group
 
 
-class InMemorySubGroupStorage(SubGroupStorage, InheritanceSingleton):
+class InMemorySubGroupStorage(SubGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
     '''
     In memory sub task storage
     '''
