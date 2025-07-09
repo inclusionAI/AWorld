@@ -454,6 +454,16 @@ class RuntimeStateManager(InheritanceSingleton):
             # Wait for the specified interval before polling again
             await asyncio.sleep(interval)
 
+    async def create_group(self, group_id: str,
+                           session_id: str,
+                           root_node_ids: List[str] = None,
+                           parent_group_id: Optional[str] = None,
+                           metadata: Optional[dict] = None) -> NodeGroup:   
+        '''
+        create node group
+        '''
+        return self.node_group_manager.create_group(group_id, session_id, root_node_ids, parent_group_id, metadata)
+
     async def finish_sub_group(self,
                                group_id: str,
                                root_node_id: str,
