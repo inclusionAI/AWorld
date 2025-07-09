@@ -409,6 +409,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # complex processing
         if _group_name:
+            print("input_message", input_message)
             return GroupMessage(payload=actions,
                                 caller=caller,
                                 sender=self.id(),
@@ -526,11 +527,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 raise e
             finally:
                 if llm_response:
-                    # update usage
-                    self.update_context_usage(
-                        used_context_length=llm_response.usage['total_tokens'])
-                    # update current step output
-                    self.update_llm_output(llm_response)
                     if llm_response.error:
                         logger.info(f"llm result error: {llm_response.error}")
                     else:
