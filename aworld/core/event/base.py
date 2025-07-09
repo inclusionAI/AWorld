@@ -107,7 +107,7 @@ class Message(Generic[DataType]):
 
     @property
     def group_id(self) -> str:
-        return self.group_id if hasattr(self, 'group_id') else self.headers.get('group_id')
+        return self.headers.get('group_id')
 
     @group_id.setter
     def group_id(self, group_id: str):
