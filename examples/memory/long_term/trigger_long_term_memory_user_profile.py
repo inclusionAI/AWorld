@@ -1,20 +1,45 @@
 import asyncio
+import logging
 import os
 
 from dotenv import load_dotenv
 
-from aworld.core.memory import LongTermConfig, MemoryConfig
+from aworld.core.memory import LongTermConfig, MemoryConfig, AgentMemoryConfig, MemoryLLMConfig, EmbeddingsConfig, \
+    VectorDBConfig
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import LongTermMemoryTriggerParams, MessageMetadata
-from aworld.memory.db.postgres import PostgresMemoryStore
 from examples.memory.short_term.utils import add_mock_messages
 
 
-async def trigger_long_term_memory_user_profile():
+async def init():
     load_dotenv()
-    postgres_memory_store = PostgresMemoryStore(db_url=os.getenv("MEMORY_STORE_POSTGRES_DSN"))
-    MemoryFactory.init(custom_memory_store=postgres_memory_store)
 
+    MemoryFactory.init(
+        config=MemoryConfig(
+            provider="aworld",
+            llm_config=MemoryLLMConfig(
+                provider="openai",
+                model_name=os.environ["LLM_MODEL_NAME"],
+                api_key=os.environ["LLM_API_KEY"],
+                base_url=os.environ["LLM_BASE_URL"]
+            ),
+            embedding_config=EmbeddingsConfig(
+                provider="ollama",
+                base_url="http://localhost:11434",
+                model_name="nomic-embed-text"
+            ),
+            vector_store_config=VectorDBConfig(
+                provider="chroma",
+                config=
+                {
+                    "chroma_data_path": "./chroma_db",
+                    "collection_name": "aworld",
+                }
+            )
+        ))
+
+async def trigger_long_term_memory_user_profile():
+    await init()
     memory = MemoryFactory.instance()
     metadata = MessageMetadata(
         user_id="zues",
@@ -25,7 +50,7 @@ async def trigger_long_term_memory_user_profile():
     )
 
     await add_mock_messages(memory, metadata)
-    memory_config = MemoryConfig(
+    memory_config = AgentMemoryConfig(
             enable_long_term=True,
             long_term_config=LongTermConfig.create_simple_config(
                 enable_user_profiles=True
@@ -60,10 +85,6 @@ async def trigger_long_term_memory_user_profile():
     await asyncio.sleep(10)
 
 async def query_user_profile():
-    load_dotenv()
-    postgres_memory_store = PostgresMemoryStore(db_url=os.getenv("MEMORY_STORE_POSTGRES_DSN"))
-    MemoryFactory.init(custom_memory_store=postgres_memory_store)
-
     memory = MemoryFactory.instance()
     metadata = MessageMetadata(
         user_id="zues",
@@ -77,7 +98,7 @@ async def query_user_profile():
         user_input="what is my advantage skills?"
     )
     for user_profile in user_profiles:
-        print(user_profile)
+        logging.info(f"Search->{user_profile}")
 
 
 

@@ -8,13 +8,17 @@ from aworld.core.memory import EmbeddingsConfig
 
 
 class EmbeddingsMetadata(BaseModel):
-    artifact_id: str = Field(..., description="Artifact ID")
+    memory_id: str = Field(..., description="memory_id")
+    agent_id: Optional[str] = Field(..., description="agent_id")
+    session_id: Optional[str] = Field(..., description="session_id")
+    task_id: Optional[str] = Field(..., description="task_id")
+    user_id: Optional[str] = Field(..., description="user_id")
+    application_id: Optional[str] = Field(..., description="application_id")
+    memory_type: str = Field(..., description="memory_type")
     embedding_model: str = Field(..., description="Embedding model")
-    created_at: int = Field(..., description="Created at")
-    updated_at: int = Field(..., description="Updated at")
-    artifact_type: str = Field(..., description="Artifact type")
-    parent_id: str = Field(default="", description="Parent ID")
-    
+    created_at: str = Field(..., description="Created at")
+    updated_at: str = Field(..., description="Updated at")
+
     model_config = ConfigDict(extra="allow")
 
 class EmbeddingsResult(BaseModel):

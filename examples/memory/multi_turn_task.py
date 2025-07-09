@@ -1,9 +1,11 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import os
 
 from dotenv import load_dotenv
 
+from aworld.memory.db.postgres import PostgresMemoryStore
 from aworld.memory.main import MemoryFactory
 from examples.memory.agent.self_evolving_agent import SuperAgent
 
@@ -28,8 +30,9 @@ async def _run_single_session_examples() -> None:
 
 if __name__ == '__main__':
     load_dotenv()
-
-    MemoryFactory.init()
+    postgres_memory_store = PostgresMemoryStore(db_url=os.getenv("MEMORY_STORE_POSTGRES_DSN"))
+    MemoryFactory.init(custom_memory_store=postgres_memory_store)
+    # MemoryFactory.init()
 
     # Run the multi-session example with concrete learning tasks
     asyncio.run(_run_single_session_examples())

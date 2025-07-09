@@ -3,16 +3,18 @@
 import abc
 import asyncio
 import json
-import os
 import traceback
 from typing import Optional
 
-from aworld.config import ConfigDict
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
-from aworld.memory.longterm import DefaultMemoryOrchestrator, LongTermConfig
-from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, AgentExperienceExtractParams, UserProfile
-from aworld.models.llm import get_llm_model, acall_llm_model
+from aworld.memory.embeddings.base import EmbeddingsResult, EmbeddingsMetadata
+from aworld.memory.embeddings.factory import EmbedderFactory
+from aworld.memory.longterm import DefaultMemoryOrchestrator
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, \
+    AgentExperienceExtractParams, UserProfile
+from aworld.memory.vector.factory import VectorDBFactory
+from aworld.models.llm import acall_llm_model
 
 
 class InMemoryMemoryStore(MemoryStore):
@@ -107,14 +109,16 @@ MEMORY_HOLDER = {}
 class MemoryFactory:
 
     @classmethod
-    def init(cls, custom_memory_store: MemoryStore = None):
+    def init(cls, custom_memory_store: MemoryStore = None, config: MemoryConfig = MemoryConfig(provider="aworld")):
         if custom_memory_store:
             MEMORY_HOLDER["instance"] = AworldMemory(
-                memory_store=custom_memory_store
+                memory_store=custom_memory_store,
+                config=config
             )
         else:
             MEMORY_HOLDER["instance"] = AworldMemory(
-                memory_store=InMemoryMemoryStore()
+                memory_store=InMemoryMemoryStore(),
+                config=config
             )
         logger.info(f"Memory init success")
 
@@ -129,8 +133,9 @@ class MemoryFactory:
         if MEMORY_HOLDER.get("instance"):
             logger.info(f"instance use cached memory instance")
             return MEMORY_HOLDER["instance"]
-        MEMORY_HOLDER["instance"] =  AworldMemory(
-           memory_store=InMemoryMemoryStore()
+        MEMORY_HOLDER["instance"] =  MemoryFactory.from_config(
+            config=MemoryConfig(provider="aworld"),
+            memory_store=InMemoryMemoryStore()
         )
         logger.info(f"instance use new memory instance")
         return MEMORY_HOLDER["instance"]
@@ -166,34 +171,28 @@ class MemoryFactory:
 class Memory(MemoryBase):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, memory_store: MemoryStore, **kwargs):
+    def __init__(self, memory_store: MemoryStore, config: MemoryConfig, **kwargs):
         self.memory_store = memory_store
-        self._llm_instance = None
-        self._embedder_model = None
+        self.config = config
+
+        # Initialize llm_model components
+        self._llm_instance = config.get_llm_instance()
+
+        # Initialize embedding and vector database components
+        self._embedder = EmbedderFactory.get_embedder(config.embedding_config)
+        self._vector_db = VectorDBFactory.get_vector_db(config.vector_store_config)
 
         # Initialize long-term memory components
         self.memory_orchestrator = DefaultMemoryOrchestrator(
-            self.default_llm_instance,
-            embedding_model=self._embedder_model,
+            self._llm_instance,
+            embedding_model=self._embedder,
             memory=self
         )
-        logger.info(f"🧠 [MEMORY:long-term] Initialized with config: ")
-
-
 
     @property
     def default_llm_instance(self):
-        def get_env(key: str, default_key: str, default_val: object=None):
-            return os.getenv(key) if os.getenv(key) else os.getenv(default_key, default_val)
-
         if not self._llm_instance:
-            self._llm_instance = get_llm_model(conf=ConfigDict({
-                "llm_model_name": get_env("MEM_LLM_MODEL_NAME", "LLM_MODEL_NAME"),
-                "llm_api_key": get_env("MEM_LLM_API_KEY", "LLM_API_KEY") ,
-                "llm_base_url": get_env("MEM_LLM_BASE_URL", 'LLM_BASE_URL'),
-                "temperature": get_env("MEM_LLM_TEMPERATURE", "MEM_LLM_TEMPERATURE", 1.0),
-                "streaming": 'False'
-            }))
+            raise ValueError("LLM instance is not initialized")
         return self._llm_instance
 
 
@@ -245,7 +244,7 @@ class Memory(MemoryBase):
             for message in history_items]
         return parsed_messages
 
-    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem]) -> str:
+    async def async_gen_multi_rounds_summary(self, to_be_summary: list[MemoryItem], agent_memory_config: AgentMemoryConfig) -> str:
         logger.info(
             f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages")
         if len(to_be_summary) == 0:
@@ -254,12 +253,12 @@ class Memory(MemoryBase):
         history_context = self._build_history_context(parsed_messages)
 
         summary_messages = [
-            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+            {"role": "user", "content": agent_memory_config.summary_prompt.format(context=history_context)}
         ]
 
         return await self._call_llm_summary(summary_messages)
 
-    async def async_gen_summary(self, filters: dict, last_rounds: int) -> str:
+    async def async_gen_summary(self, filters: dict, last_rounds: int, agent_memory_config: AgentMemoryConfig) -> str:
         """A tool for summarizing the conversation history."""
 
         logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages [filters -> {filters}, "
@@ -271,13 +270,13 @@ class Memory(MemoryBase):
         history_context = self._build_history_context(parsed_messages)
 
         summary_messages = [
-            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+            {"role": "user", "content": agent_memory_config.summary_prompt.format(context=history_context)}
         ]
 
         return await self._call_llm_summary(summary_messages)
 
-    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int) -> str:
-        if self.config.enable_summary and len(to_be_summary.content) < self.config.summary_single_context_length:
+    async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int, agent_memory_config: AgentMemoryConfig) -> str:
+        if not agent_memory_config.enable_summary or len(to_be_summary.content) < agent_memory_config.summary_single_context_length:
             return to_be_summary.content
 
         logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages [filters -> {filters}, "
@@ -296,12 +295,12 @@ class Memory(MemoryBase):
         history_context = self._build_history_context(parsed_messages)
 
         summary_messages = [
-            {"role": "user", "content": self.config.summary_prompt.format(context=history_context)}
+            {"role": "user", "content": agent_memory_config.summary_prompt.format(context=history_context)}
         ]
 
         return await self._call_llm_summary(summary_messages)
 
-    def search(self, query, limit=100, filters=None) -> Optional[list[MemoryItem]]:
+    def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:
         pass
 
     def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
@@ -402,25 +401,32 @@ class Memory(MemoryBase):
 
         await self.memory_orchestrator.create_longterm_processing_tasks(task_params, agent_memory_config.long_term_config, params.force)
 
-    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[UserProfile]]:
-        # TODO user_input is not used
-        return self.get_last_n(limit, filters={
-            'memory_type': 'user_profile',
+    async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[UserProfile]]:
+        if not filters:
+            filters = {}
+
+        return self.search(user_input, limit=limit,memory_type='user_profile',threshold=threshold, filters={
             'user_id': user_id,
-            'application_id': application_id
+            **filters
         })
         
 
-    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, application_id: str = "default") -> Optional[list[AgentExperience]]:
-        # TODO user_input is not used
-        return self.get_last_n(limit, filters={
-            'memory_type': 'agent_experience',
+    async def retrival_agent_experience(self, agent_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[AgentExperience]]:
+        if not filters:
+            filters = {}
+        return self.search(user_input, limit=limit, memory_type='agent_experience',threshold=threshold, filters={
             'agent_id': agent_id,
-            'application_id': application_id
+            **filters
         })
 
-    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, application_id: str = "default") -> Optional[list[MemoryItem]]:
-        return []
+    async def retrival_similar_user_messages_history(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 10, filters: dict = None) -> Optional[list[MemoryItem]]:
+        if not filters:
+            filters = {}
+        return self.search(user_input, limit=limit, memory_type='message', threshold=threshold, filters={
+            'role': 'user',
+            'user_id': user_id,
+            **filters
+        })
     
 
     def delete(self, memory_id):
@@ -431,29 +437,56 @@ class Memory(MemoryBase):
 
 
 class AworldMemory(Memory):
-    def __init__(self, memory_store: MemoryStore, **kwargs):
-        super().__init__(memory_store=memory_store)
+    def __init__(self, memory_store: MemoryStore, config: MemoryConfig,  **kwargs):
+        super().__init__(memory_store=memory_store, config=config, **kwargs)
         self.summary = {}
 
-    def _add(self, memory_item: MemoryItem, filters: dict = None, memory_config: MemoryConfig = None):
+    def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         self.memory_store.add(memory_item)
 
+        # save to vector store
+        self._save_to_vector_db(memory_item)
+
         # Check if we need to create or update summary
-        if memory_config and memory_config.enable_summary:
+        if agent_memory_config and agent_memory_config.enable_summary:
             total_rounds = len(self.memory_store.get_all())
-            if total_rounds > memory_config.summary_rounds:
-                self._create_or_update_summary(total_rounds)
+            if total_rounds > agent_memory_config.summary_rounds:
+                self._create_or_update_summary(total_rounds, agent_memory_config = agent_memory_config)
 
+    def _save_to_vector_db(self, memory_item: MemoryItem):
+        if not memory_item.embedding_text:
+            logger.debug(f"memory_item.embedding_text is None, skip save to vector store")
+            return
+        if self._vector_db and self._embedder:
+            embedding = self._embedder.embed_query(memory_item.embedding_text)
+            # save to vector store
+            embedding_meta = EmbeddingsMetadata(
+                memory_id=memory_item.id,
+                agent_id = memory_item.agent_id,
+                session_id = memory_item.session_id,
+                task_id = memory_item.task_id,
+                user_id = memory_item.user_id,
+                application_id = memory_item.application_id,
+                memory_type=memory_item.memory_type,
+                created_at=memory_item.created_at,
+                updated_at=memory_item.updated_at,
+                embedding_model=self.config.embedding_config.model_name,
+            )
+            embedding_item= EmbeddingsResult(embedding = embedding, content=memory_item.embedding_text, metadata=embedding_meta)
 
-    def _create_or_update_summary(self, total_rounds: int):
+            self._vector_db.insert(self.config.vector_store_config.config['collection_name'], [embedding_item])
+        else:
+            logger.warning(f"memory_store or embedder is None, skip save to vector store")
+
+    def _create_or_update_summary(self, total_rounds: int, agent_memory_config: AgentMemoryConfig):
         """Create or update summary based on current total rounds.
 
         Args:
             total_rounds (int): Total number of rounds.
         """
-        summary_index = int(total_rounds / self.summary_rounds)
-        start = (summary_index - 1) * self.summary_rounds
-        end = total_rounds - self.summary_rounds
+        summary_index = int(total_rounds / agent_memory_config.summary_rounds)
+        start = (summary_index - 1) * agent_memory_config.summary_rounds
+        end = total_rounds - agent_memory_config.summary_rounds
 
         # Ensure we have valid start and end indices
         start = max(0, start)
@@ -464,7 +497,7 @@ class AworldMemory(Memory):
         print(f"{total_rounds}start: {start}, end: {end},")
 
         # Create summary content
-        summary_content = self._summarize_items(items_to_summarize, summary_index)
+        summary_content = self._summarize_items(items_to_summarize, summary_index, agent_memory_config)
 
         # Create the range key
         range_key = f"{start}_{end}"
@@ -488,7 +521,7 @@ class AworldMemory(Memory):
             )
             self.summary[range_key] = summary_item
 
-    def _summarize_items(self, items: list[MemoryItem], summary_index: int) -> str:
+    def _summarize_items(self, items: list[MemoryItem], summary_index: int, agent_memory_config: AgentMemoryConfig) -> str:
         """Summarize a list of memory items.
 
         Args:
@@ -500,7 +533,7 @@ class AworldMemory(Memory):
         """
         # This is a placeholder. In a real implementation, you might use an LLM or other method
         # to create a meaningful summary of the content
-        return asyncio.run(self.async_gen_multi_rounds_summary(items))
+        return asyncio.run(self.async_gen_multi_rounds_summary(items,agent_memory_config))
 
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)
@@ -577,3 +610,23 @@ class AworldMemory(Memory):
                 memory_items.insert(0, agent_memory_items[0])
 
         return result
+
+    def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:
+        if self._vector_db:
+            if not filters:
+                filters = {}
+            filters['memory_type'] = memory_type
+            embedding = self._embedder.embed_query(query)
+            results = self._vector_db.search(self.config.vector_store_config.config['collection_name'], [embedding], filters, threshold, limit)
+            memory_items = []
+            if results and results.docs:
+                for result in results.docs:
+                    memory_item = self.memory_store.get(result.metadata.memory_id)
+                    if memory_item:
+                        memory_item.metadata['score'] = result.score
+                        memory_items.append(memory_item)
+                return memory_items
+        else:
+            logger.warning(f"vector_db is None, skip search")
+        return []
+
