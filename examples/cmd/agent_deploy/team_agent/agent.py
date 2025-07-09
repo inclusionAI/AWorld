@@ -48,7 +48,7 @@ class AWorldAgent(BaseAWorldAgent):
         with open(mcp_path, "r") as f:
             mcp_config = json.load(f)
 
-        plan_agent = PlanAgent(
+        plan_agent = Agent(
             conf=agent_config,
             name="Team-Plan-Agent",
             system_prompt=plan_agent_sys_prompt,
@@ -82,7 +82,6 @@ class AWorldAgent(BaseAWorldAgent):
             google_pse_search_agent,
             # aworld_playwright_agent,
             summary_agent,
-            build_type=GraphBuildType.TEAM,
             max_steps=10,
         )
 
