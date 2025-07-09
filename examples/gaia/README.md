@@ -1,176 +1,197 @@
-# Gaia Agent Setup Instructions
+# GAIA Agent Setup Guide
 
-## Pre-Requirements
-- OS: MacOS / Linux is ok, Windows not full tested.
-- Conda Environment
-- NodeJS 22 LTS, with npm
-- Other software: libmagic1 libreoffice ffmpeg
+## 1. Overview
 
-## Clone Repository
-- Clone the repository and switch to the main branch:
+This guide will help you set up and run the GAIA agent for the AWorld framework. GAIA is a benchmark dataset for evaluating AI agents' capabilities.
 
-  ```bash
-  git clone https://github.com/inclusionAI/AWorld.git
-  cd AWorld
-  ```
+## 2. Prerequisites
 
-## Conda Environment
-- Ensure Conda is installed and configured on your machine.
-- Create a Conda environment specifically for GAIA:
+### 1. System Requirements
+- **Operating System**: macOS or Linux (Windows not fully tested)
+- **Node.js**: Version 22 LTS with npm
+- **Conda**: For environment management
 
-  ```bash
-  conda env create -f examples/gaia/aworld-gaia.yml
-  conda activate aworld-gaia
-  ```
+### 2. Required Software
+- `libmagic1` - File type detection
+- `libreoffice` - Document processing
+- `ffmpeg` - Media processing
 
-  > Install miniconda: https://www.anaconda.com/docs/getting-started/miniconda/install
+## 3. Installation Steps
 
-## Install AWorld Framework
-### Install AWorld Framework:
-
-  ```bash
-  pip install "marker-pdf[full]" --no-deps
-  BASE_DIR=$(dirname "$(readlink -f "$0")")
-  cd aworld/cmd/web/webui && npm install &&npm run build
-  cd $BASE_DIR
-  python setup.py install
-  ```
-
-### Install MCP Tool Dependencies:
-- Install playwright:
-
-  ```bash
-  playwright install chromium --with-deps --no-shell
-  ```
-
-
-- Install additional dependencies 
-
-  **for MacOS:**
-
-  ```bash
-  brew install libmagic
-  brew install ffmpeg
-  brew install --cask libreoffice
-  ```
-
-  > Install Home Brew: https://brew.sh/
-
-  **for Linux64:**
-
-  ```bash
-  apt-get install -y --no-install-recommends libmagic1 libreoffice ffmpeg
-  ```
-
-## Gaia Dataset Preparation
-- Download the GAIA dataset from Hugging Face.
-- Place it in the correct directory:
-
-  ```bash
-  git clone git@hf.co:datasets/gaia-benchmark/GAIA examples/gaia/GAIA
-  ```
-
-  ⚠️ **Note**: You need to configure Hugging Face SSH Keys to access the GAIA repository.
-  ⚠️ **Note**: This will be the absolute path for `GAIA_DATASET_PATH` variable in the .env file.
-
-## Environment Variable Configuration
-- Create the `.env` file from the template:
-
-  ```bash
-  cp examples/gaia/cmd/agent_deploy/gaia_agent/.env.template examples/gaia/cmd/agent_deploy/gaia_agent/.env
-  ```
-- Set up your environment variables:
-- Edit the `.env` file and replace all `{YOUR_CONFIG}` placeholders with your actual values.
-
-## Running the GAIA Agent
-### Run GAIA Agent Web UI
-- You can run gaia web ui by following command:
-
-  ```bash
-  cd examples/gaia/cmd && aworld web
-  ```
-
-### Running the GAIA Task
-- Then you'll be able to taste the appetizer running the following line:
-  ```bash
-  python examples/gaia/run.py --split validation --q c61d22de-5f6c-4958-a7f6-5e9707bd3466
-  ```
-
-#### Required Arguments (default 0:165 for validation set)
-- `--split` (str)
-  - **Description**: Split of the dataset, e.g., `validation`, `test`.
-  - **Choices**: `validation`, `test`
-  - **Default**: `validation`
-  - **Example**: `--split test`
-  
-- `--start` (int)
-  - **Description**: Start index of the dataset.
-  - **Default**: `0`
-  - **Example**: `--start 10`
-
-- `--end` (int)
-  - **Description**: End index of the dataset.
-  - **Default**: `165`
-  - **Example**: `--end 100`
-
-#### Optional Arguments
-
-- `--q` (str)
-  - **Description**: Question Index, e.g., `0-0-0-0-0`. If provided, this argument overrides the `--start` and `--end` arguments.
-  - **Example**: `--q 0-0-0-0-0`
-
-- `--skip` (flag)
-  - **Description**: Skip the question if it has been processed before.
-  - **Example**: `--skip`
-
-- `--blacklist_file_path` (str)
-  - **Description**: Path to the blacklist file, e.g., `blacklist.txt`.
-  - **Example**: `--blacklist_file_path blacklist.txt`
-
-#### Example Commands
-
-#### Basic Usage
-Process the dataset from index 10 to 50 in the validation split:
+### 1. Clone the Repository
 
 ```bash
-python script_name.py --start 10 --end 50 --split validation
+git clone https://github.com/inclusionAI/AWorld.git
+cd AWorld
 ```
 
-#### Using Question Index
-Process a specific question identified by `0-0-0-0-0`:
+### 2. Set Up Conda Environment
+
+Create and activate a dedicated Conda environment for GAIA:
 
 ```bash
-python script_name.py --q 0-0-0-0-0
+conda env create -f examples/gaia/aworld-gaia.yml
+conda activate aworld-gaia
 ```
 
-#### Skipping Previously Processed Questions
-Process the dataset from index 10 to 50, skipping any questions that have already been processed:
+> **Note**: If you don't have Conda installed, download Miniconda from [here](https://www.anaconda.com/docs/getting-started/miniconda/install).
+
+### 3. Install AWorld Framework
+
+Install the AWorld framework and build the web UI:
 
 ```bash
-python script_name.py --start 10 --end 50 --skip
+# Install PDF processing dependencies
+pip install "marker-pdf[full]" --no-deps
+
+# Build web UI
+sh -c "aworld/cmd/web/webui && npm install && npm run build"
+
+# Install AWorld
+python setup.py install
 ```
 
-#### Using a Blacklist File
-Process the dataset from index 10 to 50, using a blacklist file named `blacklist.txt`:
+### 4. Install MCP Tool Dependencies
+
+#### Install Playwright
+```bash
+playwright install chromium --with-deps --no-shell
+```
+
+#### Install System Dependencies
+
+**For macOS:**
+```bash
+brew install libmagic
+brew install ffmpeg
+brew install --cask libreoffice
+```
+
+> **Note**: Install Homebrew from [brew.sh](https://brew.sh/) if not already installed.
+
+**For Linux:**
+```bash
+apt-get install -y --no-install-recommends libmagic1 libreoffice ffmpeg
+```
+
+### 5. Prepare GAIA Dataset
+
+Download the GAIA dataset from Hugging Face:
 
 ```bash
-python script_name.py --start 10 --end 50 --blacklist_file_path blacklist.txt
+git clone git@hf.co:datasets/gaia-benchmark/GAIA examples/gaia/GAIA
 ```
 
-#### Notes
-- If using the `--q` argument, ensure the question index format is correct.
-- The `--blacklist_file_path` file should contain a list of question indices or dataset indices to be skipped, one per line.
+> **⚠️ Important**: 
+> - You need to configure Hugging Face SSH keys to access the GAIA repository
+> - The dataset path will be used as the `GAIA_DATASET_PATH` variable in your `.env` file
 
+### 6. Configure Environment Variables
 
-## Example Logs
-- You should see logs similar to the following:
-  ```
-  YYYY-MM-DD HH:MM:SS - root - INFO - Agent answer: egalitarian
-  YYYY-MM-DD HH:MM:SS - root - INFO - Correct answer: egalitarian
-  YYYY-MM-DD HH:MM:SS - examples.gaia.utils - INFO - Evaluating egalitarian as a string.
-  YYYY-MM-DD HH:MM:SS - root - INFO - Question 0 Correct!
-  ```
+Create the environment configuration file:
 
-## Troubleshooting
-- For dataset access problems, verify that your Hugging Face SSH keys are correctly configured.
-- Set up a pip mirror if necessary.
+```bash
+cp examples/gaia/cmd/agent_deploy/gaia_agent/.env.template examples/gaia/cmd/agent_deploy/gaia_agent/.env
+```
+
+Edit the `.env` file and replace all `{YOUR_CONFIG}` placeholders with your actual configuration values.
+
+## 3. Running the GAIA Agent
+
+### 1. Web UI Interface
+
+Start the GAIA agent web interface:
+
+```bash
+cd examples/gaia/cmd && aworld web
+```
+
+### 2. Command Line Interface
+
+Run GAIA tasks using the command line interface:
+
+```bash
+python examples/gaia/run.py --split validation --q c61d22de-5f6c-4958-a7f6-5e9707bd3466
+```
+
+## 4. Command Line Arguments
+
+### 1. Required Arguments
+
+| Argument | Type | Description | Default | Example |
+|----------|------|-------------|---------|---------|
+| `--split` | str | Dataset split to use | `validation` | `--split test` |
+| `--start` | int | Start index of the dataset | `0` | `--start 10` |
+| `--end` | int | End index of the dataset | `165` | `--end 100` |
+
+### 2. Optional Arguments
+
+| Argument | Type | Description | Example |
+|----------|------|-------------|---------|
+| `--q` | str | Specific question index (overrides start/end) | `--q 0-0-0-0-0` |
+| `--skip` | flag | Skip previously processed questions | `--skip` |
+| `--blacklist_file_path` | str | Path to blacklist file | `--blacklist_file_path blacklist.txt` |
+
+## 5. Usage Examples
+
+### 1. Basic Usage
+Process a range of questions in the validation split:
+
+```bash
+python examples/gaia/run.py --start 10 --end 50 --split validation
+```
+
+### 2. Process Specific Question
+Run a single question by its index:
+
+```bash
+python examples/gaia/run.py --q 0-0-0-0-0
+```
+
+### 3. Skip Processed Questions
+Process questions while skipping previously completed ones:
+
+```bash
+python examples/gaia/run.py --start 10 --end 50 --skip
+```
+
+### 4. Use Blacklist
+Skip questions listed in a blacklist file:
+
+```bash
+python examples/gaia/run.py --start 10 --end 50 --blacklist_file_path blacklist.txt
+```
+
+## 6. Expected Output
+
+When running successfully, you should see logs similar to:
+
+```
+YYYY-MM-DD HH:MM:SS - root - INFO - Agent answer: egalitarian
+YYYY-MM-DD HH:MM:SS - root - INFO - Correct answer: egalitarian
+YYYY-MM-DD HH:MM:SS - examples.gaia.utils - INFO - Evaluating egalitarian as a string.
+YYYY-MM-DD HH:MM:SS - root - INFO - Question 0 Correct!
+```
+
+## 7. Troubleshooting
+
+### 1. Common Issues
+
+1. **Dataset Access Problems**
+   - Verify your Hugging Face SSH keys are correctly configured
+   - Ensure you have access to the GAIA repository
+
+2. **Installation Issues**
+   - Set up a pip mirror if necessary for faster downloads
+   - Ensure all system dependencies are properly installed
+
+3. **Environment Issues**
+   - Make sure you're using the correct Conda environment (`aworld-gaia`)
+   - Verify Node.js version is 22 LTS
+
+### 2. Getting Help
+
+If you encounter issues not covered in this guide:
+- Check the project's main documentation
+- Review the error logs for specific error messages
+- Ensure all prerequisites are properly installed

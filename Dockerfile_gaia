@@ -28,10 +28,6 @@ COPY ./aworld aworld
 COPY ./setup.py setup.py
 RUN python setup.py install
 
-# Install mcp servers requirements
-COPY ./mcp_servers mcp_servers
-RUN pip install -r mcp_servers/requirements.txt
-
 # Copy examples
 COPY ./examples/ examples
 
