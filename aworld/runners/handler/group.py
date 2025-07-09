@@ -56,14 +56,10 @@ class DefaultGroupHandler(GroupHandler):
                     tools.append(action)
 
             for action in agents:
-                msg = None
-                if is_agent(action):
-                    msg = await self._build_agent_message(action, message)
-                    if msg.category != Constants.AGENT:
-                        yield msg
-                        return
-                else:
-                    msg = await self._build_tool_message(action, message)
+                msg = await self._build_agent_message(action, message)
+                if msg.category != Constants.AGENT:
+                    yield msg
+                    return
                 self._update_headers(msg, message)
                 action_messages.append(msg)
                 node_ids.append(msg.id)
@@ -82,7 +78,7 @@ class DefaultGroupHandler(GroupHandler):
                     node_ids.append(msg.id)
 
             # create group
-            state_manager.create_group(group_id, node_ids, message.headers.get('parent_group_id'))
+            await state_manager.create_group(group_id, message.session_id, node_ids, message.headers.get('parent_group_id'))
             for msg in action_messages:
                 yield msg
 
@@ -140,7 +136,7 @@ class DefaultGroupHandler(GroupHandler):
     async def _build_agent_message(self, action: ActionModel, message: Message) -> Message:
         session_id = message.session_id
         headers = {
-            "context": copy.deepcopy(message.context),
+            "context": message.context,
             "root_tool_call_id": action.tool_call_id
         }
         agent = self.swarm.agents.get(action.agent_name)

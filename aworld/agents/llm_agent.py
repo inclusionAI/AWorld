@@ -1094,4 +1094,5 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         headers['level'] = headers['level'] + 1
         if input_message.group_id:
             headers['parent_group_id'] = input_message.group_id
+        return headers
 
