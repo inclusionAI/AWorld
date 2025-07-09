@@ -18,6 +18,7 @@ from aworld.logs.util import logger
 from aworld.runners.callback.tool import ToolCallbackHandler
 from aworld.runners.handler.agent import DefaultAgentHandler, AgentHandler
 from aworld.runners.handler.base import DefaultHandler
+from aworld.runners.handler.group import DefaultGroupHandler
 from aworld.runners.handler.output import DefaultOutputHandler
 from aworld.runners.handler.task import DefaultTaskHandler, TaskHandler
 from aworld.runners.handler.tool import DefaultToolHandler, ToolHandler
@@ -89,7 +90,8 @@ class TaskEventRunner(TaskRunner):
                              DefaultToolHandler(runner=self),
                              DefaultTaskHandler(runner=self),
                              DefaultOutputHandler(runner=self),
-                             ToolCallbackHandler(runner=self)
+                             ToolCallbackHandler(runner=self),
+                             DefaultGroupHandler(runner=self)
                              ]
         logger.debug(f"[TaskEventRunner] pre_run finish {self.task.id}")
 
@@ -215,7 +217,12 @@ class TaskEventRunner(TaskRunner):
                             results=[con],
                             handlers=self.handlers
                     ):
-                        await self.event_mng.emit_message(event)
+                        if self.is_group_finish(event):
+                            from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
+                            state_mng = RuntimeStateManager.instance()
+                            state_mng.finish_sub_group(event.group_id, event.headers.get('root_message_id'), [event])
+                        else:
+                            await self.event_mng.emit_message(event)
                 else:
                     self.state_manager.save_message_handle_result(name=handler.__name__,
                                                                   message=message)
@@ -332,3 +339,37 @@ class TaskEventRunner(TaskRunner):
 
     def response(self):
         return self._task_response
+
+    def is_group_finish(self, event: Message) -> bool:
+        """Determine if an event triggers group completion
+        
+        Logic:
+        1. Event must be a Message type with a group_id
+        2. If event.category=Constants.AGENT, check if the agent instance that sent the message is finished
+        3. If event.category=Constants.TOOL, check if the tool execution message level is 0
+        
+        Args:
+            event: The event to check
+            
+        Returns:
+            bool: Whether the event triggers group completion
+        """
+        if not isinstance(event, Message) or not event.group_id:
+            return False
+
+        if event.category == Constants.AGENT:
+            agent_id = event.sender
+            if not agent_id:
+                return False
+
+            agent = self.swarm.agents.get(agent_id)
+            if not agent:
+                return False
+
+            return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
+
+        elif event.category == Constants.TOOL:
+            return event.headers.get("_tool_finished", False)
+
+        return False
+

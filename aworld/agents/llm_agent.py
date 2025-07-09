@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Union, Callable
 
 import aworld.trace as trace
+from aworld.runners.state_manager import RuntimeStateManager
 from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
 from aworld.trace.instrumentation import semconv
 from aworld.config import ToolConfig
@@ -22,7 +23,7 @@ from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
-from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
+from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType
 from aworld.core.memory import MemoryConfig, AgentMemoryConfig
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.tool.tool_desc import get_tool_desc
@@ -387,7 +388,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         args = str(tool_call.function.arguments)[:1000]
                         logger.info(f"[agent] Tool args: {args}...")
 
-    def _agent_result(self, actions: List[ActionModel], caller: str):
+    def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
             raise Exception(f'{self.id()} no action decision has been made.')
 
@@ -408,20 +409,32 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # complex processing
         if _group_name:
-            logger.warning(
-                f"more than one agent an tool causing confusion, will choose the first one. {agents}")
-            agents = [agents[0]] if agents else []
-            for _, v in tools.items():
-                actions = v
-                break
+            return GroupMessage(payload=actions,
+                                caller=caller,
+                                sender=self.id(),
+                                receiver=actions[0].tool_name,
+                                session_id=self.context.session_id if self.context else "",
+                                group_id=_group_name,
+                                topic=TopicType.GROUP_ACTIONS,
+                                headers=self._update_headers(input_message))
+            # logger.warning(
+            #     f"more than one agent an tool causing confusion, will choose the first one. {agents}")
+            # agents = [agents[0]] if agents else []
+            # for _, v in tools.items():
+            #     actions = v
+            #     break
 
-        if agents:
-            return AgentMessage(payload=actions,
+        elif agents:
+            result = AgentMessage(payload=actions,
                                 caller=caller,
                                 sender=self.id(),
                                 receiver=actions[0].tool_name,
                                 session_id=self.context.session_id if self.context else "",
                                 headers={"context": self.context})
+            # if self._finished and self.id() == input_message.headers.get('root_agent_id', ''):
+            #     state_mng = RuntimeStateManager.instance()
+            #     state_mng.finish_sub_group(input_message.group_id, input_message.headers.get('root_message_id'), [result])
+
         else:
             return ToolMessage(payload=actions,
                                caller=caller,
@@ -430,16 +443,18 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                session_id=self.context.session_id if self.context else "",
                                headers={"context": self.context})
 
-    def post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
+    def post_run(self, policy_result: List[ActionModel], policy_input: Observation, message: Message = None) -> Message:
         return self._agent_result(
             policy_result,
-            policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer
+            policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
+            message
         )
 
-    async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
+    async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation, message: Message = None) -> Message:
         return self._agent_result(
             policy_result,
-            policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer
+            policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
+            message
         )
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[ActionModel]:
@@ -1076,4 +1091,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     f"Session#{session_id}, "
                     f"Task#{task_id}, "
                     f"Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
+
+    def _update_headers(self, input_message: Message) -> Dict[str, Any]:
+        headers = input_message.headers.copy()
+        headers['context'] = self.context
+        headers['level'] = headers['level'] + 1
+        if input_message.group_id:
+            headers['parent_group_id'] = input_message.group_id
 
