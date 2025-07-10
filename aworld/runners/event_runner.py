@@ -199,7 +199,8 @@ class TaskEventRunner(TaskRunner):
         con = message
         async with trace.handler_span(message=message, handler=handler):
             try:
-                logger.debug(f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
+                logger.debug(
+                    f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
                 logger.info(
                     f"[TaskEventRunner] {self.task.id} _handle_task start, message: {message.id}")
                 if asyncio.iscoroutinefunction(handler):
@@ -328,7 +329,7 @@ class TaskEventRunner(TaskRunner):
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
             raise RuntimeError("swarm needs to use `reset` to init first.")
-        async with trace.span(trace_constants.SPAN_NAME_PREFIX_TASK + self.init_message.session_id):
+        async with trace.task_span(self.init_message.session_id, self.task):
             await self.event_mng.emit_message(self.init_message)
             await self._do_run()
             return self._task_response
@@ -344,15 +345,15 @@ class TaskEventRunner(TaskRunner):
 
     def is_group_finish(self, event: Message) -> bool:
         """Determine if an event triggers group completion
-        
+
         Logic:
         1. Event must be a Message type with a group_id
         2. If event.category=Constants.AGENT, check if the agent instance that sent the message is finished
         3. If event.category=Constants.TOOL, check if the tool execution message level is 0
-        
+
         Args:
             event: The event to check
-            
+
         Returns:
             bool: Whether the event triggers group completion
         """
@@ -374,4 +375,3 @@ class TaskEventRunner(TaskRunner):
             return event.headers.get("_tool_finished", False)
 
         return False
-
