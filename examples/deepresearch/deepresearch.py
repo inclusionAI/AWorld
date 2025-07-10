@@ -6,7 +6,6 @@ import sys
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-
 from aworld.planner.plan import DefaultPlanner
 
 from aworld.core.agent.swarm import TeamSwarm
@@ -24,7 +23,7 @@ os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
 os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
 os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
 
-def test_deepresearch():
+def deepresearch():
     user_input = "7天北京旅游计划"
 
     agent_config = AgentConfig(
@@ -89,4 +88,4 @@ def test_deepresearch():
     print(result)
 
 if __name__ == "__main__":
-    test_deepresearch()
+    deepresearch()
