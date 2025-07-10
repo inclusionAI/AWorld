@@ -9,6 +9,7 @@ from aworld.agents.loop_llm_agent import LoopableAgent
 from aworld.core.agent.base import is_agent, AgentFactory
 from aworld.core.agent.swarm import GraphBuildType
 from aworld.core.common import ActionModel, Observation, TaskItem
+from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
 from aworld.core.exceptions import AworldException
 from aworld.logs.util import logger
@@ -516,6 +517,7 @@ class DefaultTeamHandler(AgentHandler):
         if not steps or not dag:
             raise AworldException("no steps")
 
+        contexts = []
         res = ''
         for node in dag:
             if isinstance(node, list):
@@ -523,15 +525,23 @@ class DefaultTeamHandler(AgentHandler):
                 for n in node:
                     step_info: StepInfo = steps.get(n)
                     agent = self.swarm.agents.get(step_info.id)
-                    tasks.append(exec_agent(step_info.input, agent, message.context, sub_task=True))
+                    new_context = message.context.deep_copy()
+                    contexts.append(new_context)
+                    tasks.append(exec_agent(step_info.input, agent, new_context, sub_task=True))
 
                 res = await asyncio.gather(*tasks)
             else:
                 step_info: StepInfo = steps.get(node)
                 agent = self.swarm.agents.get(step_info.id)
-                res = await exec_agent(step_info.input, agent, message.context, sub_task=True)
+                new_context = message.context.deep_copy()
+                contexts.append(new_context)
+                res = await exec_agent(step_info.input, agent, new_context, sub_task=True)
 
+        merge_context = message.context
+        for new_context in contexts:
+            merge_context.merge_context(new_context)
         yield AgentMessage(session_id=session_id,
                            payload=res,
                            sender=self.name(),
-                           receiver=self.swarm.communicate_agent.id())
+                           receiver=self.swarm.communicate_agent.id(),
+                           headers={'context': merge_context})
