@@ -6,8 +6,11 @@ import random
 import sys
 import unittest
 
-from examples.tools.common import Tools
+# Add the project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
+from examples.tools.common import Tools
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))

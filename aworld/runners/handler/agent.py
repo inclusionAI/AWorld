@@ -511,6 +511,7 @@ class DefaultTeamHandler(AgentHandler):
                 return
 
         plan = parse_plan(content[0].policy_info)
+        logger.info(f"DefaultTeamHandler|plan|{plan}")
         steps = plan.steps
         dag = plan.dag
         if not steps or not dag:
@@ -534,6 +535,7 @@ class DefaultTeamHandler(AgentHandler):
                     merge_context.merge_context(t.context)
                     merge_context.save_action_trajectory(step_info.id, agent, t.context, sub_task=True)
             else:
+                logger.info(f"DefaultTeamHandler|node|start|{node}")
                 step_info: StepInfo = steps.get(node)
                 agent = self.swarm.agents.get(step_info.id)
                 new_context = merge_context.deep_copy()
@@ -541,6 +543,8 @@ class DefaultTeamHandler(AgentHandler):
                 res = await exec_agent(step_info.input, agent, new_context, sub_task=True)
                 merge_context.merge_context(new_context)
                 merge_context.save_action_trajectory(step_info.id, agent, new_context, sub_task=True)
+                logger.info(f"DefaultTeamHandler|node|end|{res}")
+
         
         yield AgentMessage(session_id=session_id,
                            payload=res,

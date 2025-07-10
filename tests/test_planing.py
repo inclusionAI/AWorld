@@ -20,6 +20,7 @@ sys.path.insert(0, str(project_root))
 LLM_BASE_URL = "http://localhost:1234/v1"
 LLM_API_KEY = "123"
 LLM_MODEL_NAME = "qwen/qwen3-1.7b"
+LLM_BASE_URL = "https://agi.alipay.com/api"
 #"DeepSeek-V3-Function-Call"
 # "qwen/qwen3-8b"
 # "claude-3-7-sonnet-20250219"
