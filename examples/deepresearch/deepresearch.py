@@ -42,15 +42,11 @@ def test_deepresearch():
         use_vision=False
     )
 
-    agent_id = "id"
-    planner = BuiltInPlanner()
     plan_agent = Agent(
-        agent_id=agent_id,
         name="planner_agent",
         desc="planner_agent",
         conf=agent_config,
-        planner=planner,
-        resp_parse_func=BuiltInPlannerOutputParser(agent_id).parse,
+        use_planner=True
     )
 
     web_search_agent = Agent(
@@ -87,7 +83,6 @@ def test_deepresearch():
         conf=agent_config,
         system_prompt=reporting_sys_prompt,
     )
-
 
     swarm = TeamSwarm(plan_agent, web_search_agent, reporting_agent, max_steps=1)
     result = Runners.sync_run(
