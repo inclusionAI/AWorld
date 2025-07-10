@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import uuid
 from typing import Any, List, Union
 
 from aworld.agents.llm_agent import Agent
@@ -116,5 +117,10 @@ async def exec_process_agents(question: List[Any],
 
 
 async def exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()):
-    runners = await choose_runners(tasks)
+    final_tasks = []
+    for task in tasks:
+        if not task.group_id:
+            task.group_id = uuid.uuid4().hex
+        final_tasks.append(task)
+    runners = await choose_runners(final_tasks)
     return await execute_runner(runners, run_conf)

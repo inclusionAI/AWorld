@@ -25,6 +25,7 @@ class AgentHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
+        self.runner = runner
         self.swarm = runner.swarm
         self.endless_threshold = runner.endless_threshold
         self.task_id = runner.task.id
@@ -527,7 +528,8 @@ class DefaultTeamHandler(AgentHandler):
             else:
                 raise AworldException("no steps and answer.")
 
-        group_id = uuid.uuid4().hex
+        group_id = self.runner.task.group_id if self.runner.task.group_id else uuid.uuid4().hex
+        self.runner.task.group_id = group_id
         merge_context = message.context
         for node in dag:
             if isinstance(node, list):
@@ -568,6 +570,9 @@ class DefaultTeamHandler(AgentHandler):
                 merge_context.merge_context(res.context)
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"DefaultTeamHandler|single_node|end|{res}")
+
+        # Next time is a new group
+        self.runner.task.group_id = None
         new_plan_input = Observation(content=merge_context.task_input, ensure_ascii=False)
         yield AgentMessage(session_id=message.session_id,
                            payload=new_plan_input,
