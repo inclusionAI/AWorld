@@ -2,7 +2,6 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import asyncio
-import json
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
@@ -12,7 +11,8 @@ from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
 from aworld.core.exceptions import AworldException
 from aworld.logs.util import logger
-from aworld.planner.models import StepInfo, parse_plan
+from aworld.planner.models import StepInfo
+from aworld.planner.parse import parse_plan
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.utils import endless_detect
@@ -565,7 +565,7 @@ class DefaultTeamHandler(AgentHandler):
                 merge_context.merge_context(res.context)
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"DefaultTeamHandler|single_node|end|{res}")
-        new_plan_input = Observation(content=merge_context.content, ensure_ascii=False)
+        new_plan_input = Observation(content=merge_context.task_input, ensure_ascii=False)
         yield AgentMessage(session_id=message.session_id,
                            payload=new_plan_input,
                            sender=self.name(),

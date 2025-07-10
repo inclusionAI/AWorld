@@ -207,7 +207,7 @@ class Context:
         self._event_manager = event_manager
 
     @property
-    def content(self):
+    def task_input(self):
         return self._task.input
 
     def get_state(self, key: str, default: Any = None) -> Any:
