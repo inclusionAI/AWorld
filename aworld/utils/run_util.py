@@ -1,55 +1,97 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import List, Any
+import asyncio
+from typing import Any, List, Union
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
-from aworld.core.common import ActionModel
+from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
-from aworld.core.exceptions import AworldException
-from aworld.core.task import Task
+from aworld.core.task import Task, TaskResponse
 from aworld.runners.utils import choose_runners, execute_runner
 
 
-async def run_task(question: Any, agents: List[Agent], context: Context):
-    """Run agents in sequence use an input."""
-    for idx, agent in enumerate(agents):
-        task = Task(is_sub_task=True, input=question, agent=agent, context=context)
-        runners = await choose_runners([task])
-        res = await execute_runner(runners, RunConfig(reuse_process=False))
-        if res:
-            v = res.get(task.id)
-            action = ActionModel(agent_name=agent.id(), policy_info=v.answer)
-            question = action.policy_info
-        else:
-            raise Exception(f"{agent.id()} execute fail.")
+async def exec_tool(tool_name: str, params: dict, context: Context, sub_task: bool = False):
+    """Utility method for executing a tool in a task-oriented manner.
+
+    Args:
+        tool_name: Name of tool.
+        params: Tool params.
+        context: Context in the runtime.
+        sub_task: Is it a subtask with the main task set to False.
+    """
+    actions = [ActionModel(tool_name=tool_name, params=params)]
+    task = Task(input=Observation(content=actions), context=context, is_sub_task=sub_task)
+    runners = await choose_runners([task], agent_oriented=False)
+    res = await execute_runner(runners, RunConfig(reuse_process=True))
+    resp: TaskResponse = res.get(task.id)
+    return resp
 
 
-async def run_same_tasks(question: str, agents: List[Agent], context: Context):
-    """All agents run the same question, and return answers."""
-    questions = [question] * len(agents)
-    return await run_tasks(questions, agents, context)
+async def exec_agent(question: Any, agent: Agent, context: Context, sub_task: bool = False):
+    """Utility method for executing an agent in a task-oriented manner.
+
+    Args:
+        question: Problems handled by agents.
+        agent: Defined intelligent agents that solve specific problems.
+        context: Context in the runtime.
+        sub_task: Is it a subtask with the main task set to False.
+    """
+    task = Task(input=question, agent=agent, context=context, is_sub_task=sub_task)
+    runners = await choose_runners([task])
+    res = await execute_runner(runners, RunConfig(reuse_process=True))
+    resp: TaskResponse = res.get(task.id)
+    return resp
 
 
-async def run_tasks(questions: List[Any], agents: List[Agent], context: Context):
+async def exec_agents(questions: List[Any], agents: List[Agent], context, sub_task: bool = False):
+    """Execute the agent list with the questions, using asyncio.
+
+    Args:
+        questions: Problems handled by agents.
+        agents: Defined intelligent agents that solve specific problem.
+        context: Context in the runtime.
+        sub_task: Is it a subtask with the main task set to False.
+    """
     tasks = []
-    if not agents:
-        raise AworldException(f"no agents to exec {questions}")
-    if len(questions) != len(agents):
-        raise Exception(f"{questions} question size unequals agents size {agents}")
+    if agents:
+        for idx, agent in enumerate(agents):
+            tasks.append(asyncio.create_task(exec_agent(questions[idx], agent, context, sub_task=sub_task)))
 
-    agent_task = {}
-    for idx, agent in enumerate(agents):
-        task = Task(input=questions[idx], agent=agent, context=context, is_sub_task=True)
-        tasks.append(task)
-        agent_task[task.id] = agent.id()
+    results = await asyncio.gather(*tasks)
+    res = []
+    for idx, result in enumerate(results):
+        if result.success:
+            con = result.answer
+        else:
+            con = result.msg
+        res.append(ActionModel(agent_name=agents[idx].id(), policy_info=con))
+    return res
+
+
+async def exec_process_agents(question: List[Any], agents: List[Agent], context, sub_task: bool = False):
+    """Execute the agent list with the same question, using new process.
+
+    NOTE: Mixing coroutines and processes may lead to unknown issues.
+
+    Args:
+        question: Problems handled by agents.
+        agents: Defined intelligent agents that solve specific problem.
+        context: Context in the runtime.
+        sub_task: Is it a subtask with the main task set to False.
+    """
+    tasks = []
+    if agents:
+        for agent in agents:
+            tasks.append(Task(input=question, agent=agent, context=context, is_sub_task=sub_task))
 
     if not tasks:
-        raise RuntimeError("no task need to run in parallel.")
+        raise RuntimeError("no task need to run.")
 
     runners = await choose_runners(tasks)
-    res = await execute_runner(runners, RunConfig())
-    results = []
-    for k, v in res.items():
-        results.append(ActionModel(agent_name=agent_task[k], policy_info=v.answer))
-    return results
+    results = await execute_runner(runners, RunConfig(reuse_process=False))
+
+    res = []
+    for idx, result in enumerate(results):
+        res.append(ActionModel(agent_name=agents[idx].id(), policy_info=result))
+    return res

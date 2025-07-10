@@ -9,7 +9,6 @@ from aworld.agents.loop_llm_agent import LoopableAgent
 from aworld.core.agent.base import is_agent, AgentFactory
 from aworld.core.agent.swarm import GraphBuildType
 from aworld.core.common import ActionModel, Observation, TaskItem
-from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
 from aworld.core.exceptions import AworldException
 from aworld.logs.util import logger
@@ -18,7 +17,7 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.utils import endless_detect
 from aworld.output.base import StepOutput
-from aworld.utils.exec_util import exec_agents, exec_agent, exec_tool
+from aworld.utils.run_util import exec_agent, exec_tool
 
 
 class AgentHandler(DefaultHandler):
