@@ -488,7 +488,7 @@ class RuntimeStateManager(InheritanceSingleton):
         handle_results = []
         for msg in results:
             handle_result = HandleResult(
-                status=RunNodeStatus.SUCCESS,
+                status=RunNodeStatus.FAILED if msg.is_error() else RunNodeStatus.SUCCESS,
                 result=msg,
                 name=msg.sender
             )
