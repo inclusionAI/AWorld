@@ -3,10 +3,11 @@ import os
 from pathlib import Path
 import sys
 
-from aworld.planner.plan import DefaultPlanner
-
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
+
+
+from aworld.planner.plan import DefaultPlanner
 
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.runner import Runners
