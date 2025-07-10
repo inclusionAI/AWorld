@@ -1,18 +1,23 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
+import json
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
 from aworld.core.agent.base import is_agent, AgentFactory
 from aworld.core.agent.swarm import GraphBuildType
 from aworld.core.common import ActionModel, Observation, TaskItem
-from aworld.core.event.base import Message, Constants, TopicType
+from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
+from aworld.core.exceptions import AworldException
 from aworld.logs.util import logger
+from aworld.planner.plan import Plan, StepInfo
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.utils import endless_detect
 from aworld.output.base import StepOutput
+from aworld.utils.exec_util import exec_agents, exec_agent
 
 
 class AgentHandler(DefaultHandler):
@@ -305,7 +310,8 @@ class DefaultAgentHandler(AgentHandler):
                     headers=message.headers
                 )
             else:
-                logger.debug(f"_sequence_stop_check execute loop {self.swarm.cur_step}. message: {message}. session_id: {session_id}.")
+                logger.debug(f"_sequence_stop_check execute loop {self.swarm.cur_step}. "
+                             f"message: {message}. session_id: {session_id}.")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
@@ -467,3 +473,63 @@ class DefaultAgentHandler(AgentHandler):
                 receiver=caller,
                 headers=message.headers
             )
+
+
+class DefaultTeamHandler(AgentHandler):
+    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+        if message.category != Constants.MULTI_AGENT_TEAM:
+            return
+
+        session_id = message.session_id
+        headers = message.headers
+        content = message.payload
+        # data is List[ActionModel]
+        for action in content:
+            if not isinstance(action, ActionModel):
+                # error message, p2p
+                yield Message(
+                    category=Constants.OUTPUT,
+                    payload=StepOutput.build_failed_output(name=f"{message.caller or self.name()}",
+                                                           step_num=0,
+                                                           data="action not a ActionModel.",
+                                                           task_id=self.task_id),
+                    sender=self.name(),
+                    session_id=session_id,
+                    headers=headers
+                )
+                msg = Message(
+                    category=Constants.TASK,
+                    payload=TaskItem(msg="action not a ActionModel.", data=content, stop=True),
+                    sender=self.name(),
+                    session_id=session_id,
+                    topic=TopicType.ERROR,
+                    headers=headers
+                )
+                logger.info(f"agent handler send task message: {msg}")
+                yield msg
+                return
+
+        j = json.loads(content[0])
+        plan = Plan(**j)
+        steps = plan.steps
+        dag = plan.dag
+        if not steps or not dag:
+            raise AworldException("no steps")
+
+        res = ''
+        for node in dag:
+            if isinstance(node, list):
+                tasks = []
+                for n in node:
+                    exec_agent(step_info.input, agent, message.context, sub_task=True)
+
+                await asyncio.gather()
+            else:
+                step_info: StepInfo = steps.get(node)
+                agent = self.swarm.agents.get(step_info.id)
+                await exec_agent(step_info.input, agent, message.context, sub_task=True)
+
+        yield AgentMessage(session_id=session_id,
+                           payload=res,
+                           sender=self.name(),
+                           receiver=self.swarm.communicate_agent.id())

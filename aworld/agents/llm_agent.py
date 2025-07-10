@@ -395,6 +395,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         if isinstance(self.context.swarm, TeamSwarm):
             if self.id() == self.context.swarm.communicate_agent.id():
+                logger.info(f"{self.id()} is lead agent in TeamSwarm, will send message to TeamHandler.")
                 return Message(payload=actions,
                                caller=caller,
                                sender=self.id(),
@@ -437,7 +438,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             #     break
 
         elif agents:
-            result = AgentMessage(payload=actions,
+            return AgentMessage(payload=actions,
                                 caller=caller,
                                 sender=self.id(),
                                 receiver=actions[0].tool_name,
