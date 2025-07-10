@@ -1,17 +1,34 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-from typing import Any, List
+from typing import Any, List, Union
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
-from aworld.core.common import ActionModel
+from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.task import Task, TaskResponse
 from aworld.runners.utils import choose_runners, execute_runner
 
 
-async def exec_agent(question: Any, agent: Agent, context: Context, sub_task: bool = False):
+async def exec_tool(tool_name: str, params: dict, context: Context, sub_task: bool = False):
+    """Utility method for executing a tool in a task-oriented manner.
+
+    Args:
+        tool_name: Name of tool.
+        params: Tool params.
+        context: Context in the runtime.
+        sub_task: Is it a subtask with the main task set to False.
+    """
+    actions = [ActionModel(tool_name=tool_name, params=params)]
+    task = Task(input=Observation(content=actions), context=context, is_sub_task=sub_task)
+    runners = await choose_runners([task], agent_oriented=False)
+    res = await execute_runner(runners, RunConfig(reuse_process=True))
+    resp: TaskResponse = res.get(task.id)
+    return resp
+
+
+async def exec_agent(question: Any, agent: Agent, context: Context, level: int = 0):
     """Utility method for executing an agent in a task-oriented manner.
 
     Args:
@@ -20,7 +37,7 @@ async def exec_agent(question: Any, agent: Agent, context: Context, sub_task: bo
         context: Context in the runtime.
         sub_task: Is it a subtask with the main task set to False.
     """
-    task = Task(input=question, agent=agent, context=context, is_sub_task=sub_task)
+    task = Task(input=question, agent=agent, context=context, level=level+1)
     runners = await choose_runners([task])
     res = await execute_runner(runners, RunConfig(reuse_process=True))
     resp: TaskResponse = res.get(task.id)

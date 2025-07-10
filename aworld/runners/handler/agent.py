@@ -18,7 +18,7 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.utils import endless_detect
 from aworld.output.base import StepOutput
-from aworld.utils.exec_util import exec_agents, exec_agent
+from aworld.utils.exec_util import exec_agents, exec_agent, exec_tool
 
 
 class AgentHandler(DefaultHandler):
@@ -481,8 +481,6 @@ class DefaultTeamHandler(AgentHandler):
         if message.category != Constants.MULTI_AGENT_TEAM:
             return
 
-        session_id = message.session_id
-        headers = message.headers
         content = message.payload
         # data is List[ActionModel]
         for action in content:
@@ -495,16 +493,16 @@ class DefaultTeamHandler(AgentHandler):
                                                            data="action not a ActionModel.",
                                                            task_id=self.task_id),
                     sender=self.name(),
-                    session_id=session_id,
-                    headers=headers
+                    session_id=message.session_id,
+                    headers=message.headers
                 )
                 msg = Message(
                     category=Constants.TASK,
                     payload=TaskItem(msg="action not a ActionModel.", data=content, stop=True),
                     sender=self.name(),
-                    session_id=session_id,
+                    session_id=message.session_id,
                     topic=TopicType.ERROR,
-                    headers=headers
+                    headers=message.headers
                 )
                 logger.info(f"agent handler send task message: {msg}")
                 yield msg
@@ -513,41 +511,60 @@ class DefaultTeamHandler(AgentHandler):
         logger.info(f"DefaultTeamHandler|content|{content}")
         plan = parse_plan(content[0].policy_info)
         logger.info(f"DefaultTeamHandler|plan|{plan}")
-        steps = plan.steps
-        dag = plan.dag
+        step_infos = plan.step_infos
+        steps = step_infos.steps
+        dag = step_infos.dag
         if not steps or not dag:
-            raise AworldException("no steps")
+            if plan.answer:
+                yield Message(
+                    category=Constants.TASK,
+                    payload=plan.answer,
+                    sender=self.name(),
+                    session_id=message.session_id,
+                    topic=TopicType.FINISHED,
+                    headers=message.headers
+                )
+            else:
+                raise AworldException("no steps and answer.")
 
         merge_context = message.context
-        contexts = []
         res = ''
         for node in dag:
             if isinstance(node, list):
+                # can parallel
                 tasks = []
+
                 for n in node:
+                    new_context = merge_context.deep_copy()
                     step_info: StepInfo = steps.get(n)
                     agent = self.swarm.agents.get(step_info.id)
-                    new_context = merge_context.deep_copy()
-                    contexts.append(new_context)
-                    tasks.append(exec_agent(step_info.input, agent, new_context, sub_task=True))
-                    
+                    if agent:
+                        tasks.append(exec_agent(step_info.input, agent, new_context))
+                    else:
+                        tasks.append(exec_tool(tool_name=step_info.id,
+                                               params=step_info.parameters,
+                                               context=new_context))
+
                 res = await asyncio.gather(*tasks)
-                for t in tasks:
+                for idx, t in enumerate(res):
                     merge_context.merge_context(t.context)
-                    merge_context.save_action_trajectory(step_info.id, agent, t.context, sub_task=True)
+                    merge_context.save_action_trajectory(steps.get(node[idx]).id, t.answer)
             else:
                 logger.info(f"DefaultTeamHandler|node|start|{node}")
                 step_info: StepInfo = steps.get(node)
                 agent = self.swarm.agents.get(step_info.id)
                 new_context = merge_context.deep_copy()
-                contexts.append(new_context)
-                res = await exec_agent(step_info.input, agent, new_context, sub_task=True)
-                merge_context.merge_context(new_context)
-                merge_context.save_action_trajectory(step_info.id, agent, new_context, sub_task=True)
+                if agent:
+                    res = await exec_agent(step_info.input, agent, new_context)
+                else:
+                    res = await exec_tool(tool_name=step_info.id,
+                                          params=step_info.parameters,
+                                          context=new_context)
+                merge_context.merge_context(res.context)
+                merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"DefaultTeamHandler|node|end|{res}")
 
-        
-        yield AgentMessage(session_id=session_id,
+        yield AgentMessage(session_id=message.session_id,
                            payload=res,
                            sender=self.name(),
                            receiver=self.swarm.communicate_agent.id(),
