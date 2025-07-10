@@ -2,26 +2,12 @@
 from dataclasses import Field
 import json
 import logging
-import re
-from typing import Dict, List, Optional, Union
-from aworld.core.tool.base import BaseTool
-from aworld.models.model_response import ModelResponse
-
-from aworld.agents.llm_agent import Agent
-from aworld.config.conf import AgentConfig, ConfigDict
-from aworld.core.agent.base import AgentResult
-from aworld.core.common import ActionModel, Observation
-from aworld.core.event.base import Message
-from aworld.models.model_response import ModelResponse
-from aworld.planner.built_in_planner import PlanningOutputParser, BuiltInPlanner
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
+from typing import Dict, List, Union
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-
-
-
-class StepInfo(BaseTool):
+class StepInfo(BaseModel):
     """单个步骤的详细信息"""
     
     input: str = Field(..., description="步骤的描述")

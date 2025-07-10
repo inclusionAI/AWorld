@@ -10,12 +10,10 @@ import logging
 import json
 import traceback
 from typing import Any, Dict, Optional, List, TYPE_CHECKING
-from pydantic import ConfigDict, BaseModel
 
 from aworld.core.context.base import Context
-from aworld.config.conf import ModelConfig
-from aworld.models.llm import LLMModel, call_llm_model
-from aworld.planner.base import BasePlanner, Plan, Step
+from aworld.models.llm import call_llm_model
+from aworld.planner.base import BasePlanner
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 
 if TYPE_CHECKING:

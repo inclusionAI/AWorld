@@ -10,8 +10,6 @@ from aworld.core.agent.base import AgentResult
 from aworld.core.common import ActionModel, Observation
 from aworld.core.event.base import Message
 from aworld.models.model_response import ModelResponse
-from aworld.planner.built_in_planner import PlanningOutputParser, BuiltInPlanner
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +22,7 @@ class BuiltInPlannerOutputParser:
         self.agent_name = agent_name
     
     def parse(self, resp: ModelResponse) -> AgentResult:
+        print("resp", resp)
         if not resp or not resp.content:
             logger.warning("No valid response content!")
             return AgentResult(actions=[], current_state=None)

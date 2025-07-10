@@ -9,10 +9,9 @@ import re
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.base import AgentResult
-from aworld.core.common import ActionModel, Observation
-from aworld.core.event.base import Message
 from aworld.models.model_response import ModelResponse
-from aworld.planner.built_in_planner import PlanningOutputParser, BuiltInPlanner
+from aworld.planner.built_in_output_parser import BuiltInPlannerOutputParser
+from aworld.planner.built_in_planner import BuiltInPlanner
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 
 logger = logging.getLogger(__name__)
@@ -34,11 +33,11 @@ class PlanAgent(Agent):
         )
         
         # Initialize planner
-        self.planner = BuiltInPlanner(llm_model=self.llm)
-        self.planner.output_parser = PlanningOutputParser()
+        self.planner = BuiltInPlanner()
         
         # Set default system prompt if not provided
         self.system_prompt = self.planner.system_prompt
         self.system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
+
     def plan_response_parse(self, resp: ModelResponse) -> AgentResult:
-        return BuiltInOutputParser(self.id()).parse(resp)
+        return BuiltInPlannerOutputParser(self.id()).parse(resp)
