@@ -20,7 +20,7 @@ from examples.deepresearch.prompts import *
 # os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
 os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
 os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
-os.environ["LLM_API_KEY"] = "123"
+os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
 
 def test_deepresearch():
     user_input = "7天北京旅游计划"

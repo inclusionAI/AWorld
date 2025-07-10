@@ -3,10 +3,9 @@
 import asyncio
 from typing import List, Dict, Any, Callable
 
-from aworld.utils.exec_util import exec_agent
-
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel, Config
+from aworld.utils.run_util import exec_agent
 
 
 class ParallelizableAgent(Agent):

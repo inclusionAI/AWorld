@@ -10,7 +10,7 @@ from aworld.core.context.base import Context
 from aworld.core.context.prompts.string_prompt_formatter import StringPromptFormatter
 from aworld.logs.util import logger
 from aworld.models.model_response import ModelResponse
-from aworld.planner.base import BasePlanner, Plan, parse_step_json
+from aworld.planner.base import BasePlanner
 
 # Tags for response structure
 PLANNING_TAG = "<PLANNING_TAG>"

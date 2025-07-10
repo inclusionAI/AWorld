@@ -7,9 +7,7 @@ adapted for AWorld's Context and ModelResponse systems with StringPromptTemplate
 """
 
 from .base import BasePlanner
-from .built_in_planner import BuiltInPlanner
 
 __all__ = [
     'BasePlanner',
-    'BuiltInPlanner',
-] 
+]
