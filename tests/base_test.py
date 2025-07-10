@@ -20,10 +20,6 @@ from aworld.core.task import Task
 
 class BaseTest(unittest.TestCase):
 
-    mock_api_key = "lm-studio"
-    mock_base_url = "http://localhost:1234/v1"
-    mock_model_name = "qwen/qwen3-1.7b"
-
     def setUp(self):
         """Load test configuration from JSON file"""
         config_path = Path(__file__).parent / "test_config.json"

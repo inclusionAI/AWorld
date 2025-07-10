@@ -8,6 +8,7 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, Any, List, Union, Callable
 
+from aworld.core.context.prompts.string_prompt_formatter import StringPromptFormatter
 import aworld.trace as trace
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.runners.state_manager import RuntimeStateManager
@@ -69,6 +70,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.system_prompt_template: str = kwargs.pop("system_prompt_template") if kwargs.get("system_prompt_template") else conf.system_prompt_template
         if self.system_prompt_template:
             self.system_prompt = Prompt(self.system_prompt_template).get_prompt()
+        self.planner = kwargs.get("planner") if kwargs.get("planner") else None
+        if self.planner:
+            self.system_prompt = self.planner.system_prompt
+            self.system_prompt_template = self.planner.system_prompt
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
         self.event_driven = kwargs.pop(
             'event_driven', conf.get('event_driven', False))
@@ -188,9 +193,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # append sys_prompt to memory
         sys_prompt = self.system_prompt
         if self.system_prompt_template:
-            sys_prompt = Prompt(self.system_prompt_template, context=self.context).get_prompt()
+            sys_prompt = Prompt(self.system_prompt_template, context=self.context).get_prompt(variables={"task": observation.content, "tool_list": self.tools})
         if sys_prompt:
-            await self._add_system_message_to_memory(context=message.context, content=observation.content)
+            await self._add_system_message_to_memory(context=message.context, content=sys_prompt)
 
         # append observation to memory
         if observation.is_tool_result:
@@ -989,7 +994,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
              "agent_id": self.id(),
              "session_id": session_id,
              "task_id": task_id,
-             "message_type": "message"
+             "message_type": "init"
          }, agent_memory_config=self.memory_config)
          if histories and len(histories) > 0:
              logger.debug(
@@ -997,7 +1002,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
              return
          if not self.system_prompt:
              return
-         print("self.tools", self.tools)
          content = await self.custom_system_prompt(context=context, content=content)
          logger.info(f'system prompt content: {content}')
 
@@ -1015,10 +1019,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
              f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
     async def custom_system_prompt(self, context: Context, content: str):
-        if self.system_prompt_template is not None:
-            content = self.system_prompt_template.format(context=context, task=content, tool_list=self.tools)
-        else:
-            content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(tool_list=self.tools)
         return content
 
     async def _add_human_input_to_memory(self, content: str, context: Context):

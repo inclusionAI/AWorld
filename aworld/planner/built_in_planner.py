@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, List, TYPE_CHECKING
 
 from aworld.core.context.base import Context
 from aworld.planner.base import BasePlanner
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
+from aworld.core.context.prompts.string_prompt_formatter import StringPromptFormatter
 
 if TYPE_CHECKING:
     from aworld.core.context.base import Context
@@ -60,7 +60,7 @@ class BuiltInPlanner(BasePlanner):
 
     def build_plan_instruction(self, context: "Context", input: str) -> str:
         """Build the plan instruction."""
-        return StringPromptTemplate.from_template(self.system_prompt).format(
+        return StringPromptFormatter.from_template(self.system_prompt).format(
             context=context,
             input=input
         )

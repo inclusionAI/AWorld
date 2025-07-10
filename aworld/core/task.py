@@ -48,14 +48,23 @@ class Task:
     is_sub_task: bool = field(default=False)
     max_retry_count: int = 0
 
-class TaskResponse(BaseModel):
+class TaskResponse:
     id: str
     answer: str | None
-    context: Optional[Context] = None
+    context: 'Context' = field(default=None)
     usage: Dict[str, Any] | None = None
     time_cost: float | None = None
     success: bool = False
     msg: str | None = None
+
+    def __init__(self, **kwargs):
+        self.context = kwargs.get('context')
+        self.id = kwargs.get('id')
+        self.answer = kwargs.get('answer')
+        self.usage = kwargs.get('usage')
+        self.time_cost = kwargs.get('time_cost')
+        self.success = kwargs.get('success')
+        self.msg = kwargs.get('msg')
 
 
 class Runner(object):

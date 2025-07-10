@@ -17,6 +17,7 @@ from aworld.planner.built_in_planner import BuiltInPlanner
 from aworld.core.context.base import Context
 from aworld.models.llm import LLMModel
 from tests.base_test import BaseTest
+from aworld.planner.built_in_output_parser import BuiltInPlannerOutputParser
 
 class TestPlanner(BaseTest):
 
@@ -42,13 +43,18 @@ class TestPlanner(BaseTest):
     #     self.assertTrue(len(plan.steps) > 0)
 
     def test_planner_agent(self):
-        agent = PlanAgent(
+        agent_id = "id"
+        planner = BuiltInPlanner()
+        agent = Agent(
+            agent_id=agent_id,
             conf=AgentConfig(
                 llm_model_name=self.mock_model_name,
                 llm_base_url=self.mock_base_url,
                 llm_api_key=self.mock_api_key
             ),
-            name="planner_agent"
+            name="planner_agent",
+            planner=planner,
+            resp_parse_func=BuiltInPlannerOutputParser(agent_id).parse,
         )
 
         agent2 = Agent(

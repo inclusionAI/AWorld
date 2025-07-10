@@ -17,7 +17,7 @@ from aworld.config.conf import AgentConfig, ContextRuleConfig, ModelConfig
 from tests.base_test import BaseTest
 from aworld.core.context.base import Context
 from aworld.core.context.prompts.dynamic_variables import create_multiple_field_getters, create_simple_field_getter, format_ordered_dict_json, get_field_values_from_list, get_simple_field_value, get_value_by_path
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate, PromptTemplate
+from aworld.core.context.prompts.string_prompt_formatter import StringPromptFormatter, PromptTemplate
 from aworld.core.context.prompts.formatters import TemplateFormat
 
 class TestPromptTemplate(BaseTest):
@@ -31,7 +31,7 @@ class TestPromptTemplate(BaseTest):
         os.environ["LLM_MODEL_NAME"] = self.mock_model_name
 
     def init_agent(self, system_prompt: str, agent_prompt: str,
-                   agent_prompt_template: StringPromptTemplate = None):
+                   agent_prompt_template: StringPromptFormatter = None):
         conf = AgentConfig(
             llm_config=ModelConfig(
                 llm_model_name=self.mock_model_name,
@@ -94,7 +94,7 @@ class TestPromptTemplate(BaseTest):
     
     def test_string_prompt_template(self):
         # Use proper dot notation for nested field access
-        template = StringPromptTemplate.from_template("Hello {{name}}, welcome to {{place}}! Task: {{task}} Age: {{age}}",
+        template = StringPromptFormatter.from_template("Hello {{name}}, welcome to {{place}}! Task: {{task}} Age: {{age}}",
                                                       partial_variables={"age": "1"})
         assert "name" in template.input_variables
         assert "place" in template.input_variables
@@ -160,7 +160,7 @@ class TestPromptTemplate(BaseTest):
     def test_agent_prompt_not_defined(self):
         # agent prompt not defined
         agent = self.init_agent(system_prompt="You are a helpful assistant.", agent_prompt="{{name}} {{age}} {{task}}",
-                                agent_prompt_template=StringPromptTemplate.from_template("{{name}} {{age}} {{task}}",
+                                agent_prompt_template=StringPromptFormatter.from_template("{{name}} {{age}} {{task}}",
                                                       partial_variables={"name": "Mike"}))
         agent._log_messages = self.check_messages_2
         self.run_agent("play", agent)
