@@ -1,8 +1,7 @@
 import json
 import logging
 from typing import Any, Dict, List, Union
-from pydantic import BaseModel, Field, ValidationError
-from dataclasses import Field
+from pydantic import BaseModel, ValidationError
 from typing import Dict, List, Union
 logger = logging.getLogger(__name__)
 
