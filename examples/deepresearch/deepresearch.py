@@ -24,8 +24,7 @@ os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
 os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
 os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
 
-def test_deepresearch():
-    user_input = "7天北京旅游计划"
+def get_deepresearch_swarm(user_input):
 
     agent_config = AgentConfig(
         llm_config=ModelConfig(
@@ -81,12 +80,14 @@ def test_deepresearch():
         system_prompt_template=reporting_sys_prompt,
     )
 
-    swarm = TeamSwarm(plan_agent, web_search_agent, reporting_agent, max_steps=1)
+    return TeamSwarm(plan_agent, web_search_agent, reporting_agent, max_steps=1)
+    
+
+if __name__ == "__main__":
+    user_input = "7天北京旅游计划"
+    swarm = get_deepresearch_swarm(user_input)
     result = Runners.sync_run(
         input=user_input,
         swarm=swarm
     )
-    print(result)
-
-if __name__ == "__main__":
-    test_deepresearch()
+    print("deepresearch result: ", result)

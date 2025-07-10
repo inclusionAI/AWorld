@@ -64,15 +64,10 @@ class DefaultPlanner(BasePlanner):
 
     def plan(self, context: "Context") -> str:
         """Build the plan instruction."""
-        return StringPromptFormatter.from_template(self.system_prompt).format(
-            context=context
-        )
-
+        return self.plan_system_prompt
     def replan(self, context: "Context") -> str:
         """Build the plan instruction."""
-        return StringPromptFormatter.from_template(self.system_prompt).format(
-            context=context
-        )
+        return self.replan_system_prompt
 
 
 class PlannerOutputParser(AgentOutputParser):

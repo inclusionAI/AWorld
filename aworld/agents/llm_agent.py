@@ -1005,6 +1005,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if histories and len(histories) > 0:
             logger.debug(
                 f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
+            # replan
+            if self.use_planner and self.planner:
+                system_items = [history for history in histories if history.role == "system"]
+                if system_items:
+                    for item in system_items:
+                        prompt = Prompt(self.planner.replan_system_prompt, context=self.context).get_prompt(
+                                variables={"task": context.task_input, "tool_list": self.tools})
+                        item.content = prompt
+                        self.memory.update(item)
             return
         if not self.system_prompt:
             return

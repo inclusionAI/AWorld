@@ -120,7 +120,7 @@ class Plan(BaseModel):
             data = json.loads(json_str)
             return cls.from_dict(data)
         except Exception as e:
-            logger.warning(f"Failed to parse JSON: {traceback.format_exc()}")
+            logger.warning(f"Failed to parse Plan and default to origin answer: {traceback.format_exc()}")
             return Plan(step_infos=StepInfos(steps={}, dag=[]), answer=json_str)
 
     class Config:
