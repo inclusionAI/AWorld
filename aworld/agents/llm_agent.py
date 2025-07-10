@@ -21,11 +21,9 @@ from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agen
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
-from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType
-from aworld.core.memory import MemoryConfig, AgentMemoryConfig
+from aworld.core.memory import AgentMemoryConfig
 from aworld.core.tool.base import ToolFactory, AsyncTool, Tool
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message
@@ -41,6 +39,8 @@ from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput
 from aworld.prompt import Prompt
 from aworld.runners.hook.hooks import HookPoint
+from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
+from aworld.trace.instrumentation import semconv
 from aworld.utils.common import sync_exec, nest_dict_counter
 
 
