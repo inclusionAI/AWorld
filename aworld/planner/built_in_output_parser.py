@@ -4,8 +4,6 @@ import logging
 import re
 from aworld.models.model_response import ModelResponse
 
-from aworld.agents.llm_agent import Agent
-from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.agent.base import AgentResult
 from aworld.core.common import ActionModel, Observation
 from aworld.core.event.base import Message
@@ -22,13 +20,11 @@ class BuiltInPlannerOutputParser:
         self.agent_name = agent_name
     
     def parse(self, resp: ModelResponse) -> AgentResult:
-        print("resp", resp)
         if not resp or not resp.content:
             logger.warning("No valid response content!")
             return AgentResult(actions=[], current_state=None)
             
         content = resp.content.strip()
-        print("content", content)
         
         # Extract planning section
         planning_match = re.search(r'<PLANNING_TAG>(.*?)</PLANNING_TAG>', content, re.DOTALL)
@@ -45,8 +41,6 @@ class BuiltInPlannerOutputParser:
                     agent_name=self.agent_name,
                     policy_info=plan_text
                 ))
-                print("actions", actions)
-                return AgentResult(actions=actions, current_state=None, is_call_tool=is_call_tool)
                 
             except json.JSONDecodeError:
                 logger.warning("Failed to parse planning JSON")
@@ -65,6 +59,6 @@ class BuiltInPlannerOutputParser:
                 agent_name=self.agent_name,
                 policy_info=content
             ))
-        print("actions", actions)
-            
+        
+        logger.info(f"BuiltInPlannerOutputParser|actions|{actions}")
         return AgentResult(actions=actions, current_state=None, is_call_tool=is_call_tool)
