@@ -1,150 +1,120 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
 import json
-import logging
-from typing import Any, Dict, List, Union, Optional
-from pydantic import BaseModel, Field, ValidationError
+import re
 
-logger = logging.getLogger(__name__)
+from aworld.core.agent.base import AgentResult
+from aworld.core.agent.output_parser import AgentOutputParser
+from aworld.core.common import ActionModel
+from aworld.core.context.base import Context
+from aworld.core.context.prompts.string_prompt_formatter import StringPromptFormatter
+from aworld.logs.util import logger
+from aworld.models.model_response import ModelResponse
+from aworld.planner.base import BasePlanner
+from aworld.planner.models import Plan, parse_step_json
+
+# Tags for response structure
+PLANNING_TAG = "<PLANNING_TAG>"
+PLANNING_END_TAG = "</PLANNING_TAG>"
+FINAL_ANSWER_TAG = "<FINAL_ANSWER_TAG>"
+FINAL_ANSWER_END_TAG = "</FINAL_ANSWER_TAG>"
+
+# Default system prompt
+DEFAULT_SYSTEM_PROMPT = f"""When answering questions, please follow these two steps:
+
+1. First, output an execution plan in JSON format between {PLANNING_TAG} and {PLANNING_END_TAG}:
+{{
+  "steps": {{
+    "agent_step_1": {{"input": "step description", "id": "tool_name"}},
+    "agent_step_2": {{"input": "step description", "id": "tool_name"}},
+    "agent_step_3": {{"input": "step description", "id": "tool_name"}}
+  }},
+  "dag": [["agent_step_1","agent_step_2"],"agent_step_3"]
+}}
+
+Where:
+- steps: Contains each step's description and executor ID
+  * "id" MUST be a valid tool name from the available tools list below
+  * "input" describes what this step should accomplish
+- dag: Defines the execution order and dependencies between steps in "steps"
+  * Each element in dag refers to step keys in "steps"
+  * Arrays like ["step1","step2"] mean parallel execution
+  * Sequential steps are separated by commas
+
+2. Then, provide the final answer between {FINAL_ANSWER_TAG} and {FINAL_ANSWER_END_TAG}:
+- The answer should be accurate and meet the query requirements
+- If unable to answer using existing tools and information, explain why and request more information
+- Prioritize using information already available in the context to avoid redundant tool calls
+
+Available Tools:
+{{{{tool_list}}}}
+
+User Input: {{{{task}}}}"""
 
 
-class StepInfo(BaseModel):
-    """Step information details"""
-    
-    # input for agent
-    input: Optional[str] = Field(..., description="Step description")
-    # parameters for tools
-    parameters: Optional[Dict[str, Any]] = Field(..., description="Tool or agent parameters")
-    # id of tool or agent
-    id: str = Field(..., description="Tool or agent ID for execution")
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format"""
-        return {
-            "input": self.input,
-            "parameters": self.parameters or {},
-            "id": self.id
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StepInfo":
-        """Create from dictionary"""
-        return cls(
-            input=data.get("input"),
-            parameters=data.get("parameters", {}),
-            id=data["id"]
+class DefaultPlanner(BasePlanner):
+    """The LLM model for planning."""
+    plan_system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    replan_system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    def plan(self, context: "Context") -> str:
+        """Build the plan instruction."""
+        return StringPromptFormatter.from_template(self.system_prompt).format(
+            context=context
         )
 
-    class Config:
-        json_encoders = {
-            # Add custom encoders if needed
-        }
-
-
-class StepInfos(BaseModel):
-    """Defined plan structure, including steps and their sequence."""
-
-    steps: Dict[str, StepInfo] = Field(
-        default_factory=dict,
-        description="step id with it info"
-    )
-
-    dag: List[Union[str, List[str]]] = Field(
-        default_factory=list,
-        description="dag"
-    )
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format"""
-        return {
-            "steps": {
-                step_id: step.to_dict() 
-                for step_id, step in self.steps.items()
-            },
-            "dag": self.dag
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StepInfos":
-        """Create from dictionary"""
-        return cls(
-            steps={
-                step_id: StepInfo.from_dict(step_info)
-                for step_id, step_info in data.get("steps", {}).items()
-            },
-            dag=data.get("dag", [])
+    def replan(self, context: "Context") -> str:
+        """Build the plan instruction."""
+        return StringPromptFormatter.from_template(self.system_prompt).format(
+            context=context
         )
 
-    class Config:
-        json_encoders = {
-            # Add custom encoders if needed
-        }
 
+class PlannerOutputParser(AgentOutputParser):
+    """Parser for responses that include thinking process and planning."""
 
-class Plan(BaseModel):
-    """Plan structure with step information and final answer"""
-    
-    step_infos: StepInfos = Field(
-        default_factory=lambda: StepInfos(steps={}, dag=[]),
-        description="Step information and execution sequence"
-    )
-    answer: str = Field(
-        default="",
-        description="Final answer or result"
-    )
+    def __init__(self, agent_name: str):
+        self.agent_name = agent_name
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format"""
-        return {
-            "step_infos": self.step_infos.to_dict(),
-            "answer": self.answer
-        }
+    def parse(self, resp: ModelResponse) -> AgentResult:
+        if not resp or not resp.content:
+            logger.warning("No valid response content!")
+            return AgentResult(actions=[], current_state=None)
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Plan":
-        """Create from dictionary"""
-        return cls(
-            step_infos=StepInfos.from_dict(data.get("step_infos", {"steps": {}, "dag": []})),
-            answer=data.get("answer", "")
-        )
+        content = resp.content.strip()
 
-    def json(self, **kwargs) -> str:
-        """Convert to JSON string"""
-        return json.dumps(self.to_dict(), **kwargs)
+        # Extract planning section
+        planning_match = re.search(r'<PLANNING_TAG>(.*?)</PLANNING_TAG>', content, re.DOTALL)
+        final_answer_match = re.search(r'<FINAL_ANSWER_TAG>(.*?)</FINAL_ANSWER_TAG>', content, re.DOTALL)
+        step_json = ""
+        if planning_match:
+            step_json = planning_match.group(1).strip()
+        final_answer = ""
+        if final_answer_match:
+            final_answer = final_answer_match.group(1).strip()
 
-    @classmethod
-    def parse_raw(cls, json_str: str) -> "Plan":
-        """Create from JSON string"""
-        try:
-            data = json.loads(json_str)
-            return cls.from_dict(data)
-        except Exception as e:
-            logger.error(f"Failed to parse JSON: {e}")
-            return cls()
+        actions = []
+        is_call_tool = False
 
-    class Config:
-        json_encoders = {
-            # Add custom encoders if needed
-        }
+        # Parse planning section if exists
+        if step_json or final_answer:
+            try:
+                step_infos = parse_step_json(step_json)
+                plan = Plan(step_infos=step_infos, answer=final_answer)
+                logger.info(f"BuiltInPlannerOutputParser|plan|{plan.json()}")
+                actions.append(ActionModel(
+                    agent_name=self.agent_name,
+                    policy_info=plan.json()
+                ))
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse planning JSON")
 
+        # If neither planning nor final answer found, use entire content
+        if not actions:
+            actions.append(ActionModel(
+                agent_name=self.agent_name,
+                policy_info=content
+            ))
 
-def parse_step_infos(step_infos: dict) -> StepInfos:
-    """Parse step information dictionary into StepInfos object"""
-    try:
-        return StepInfos.from_dict(step_infos)
-    except Exception as e:
-        logger.error(f"Error parsing step infos: {e}")
-        return StepInfos(steps={}, dag=[])
+        logger.info(f"BuiltInPlannerOutputParser|actions|{actions}")
 
-
-def parse_step_json(step_json: str) -> StepInfos:
-    """Parse JSON string into StepInfos object"""
-    try:
-        data = json.loads(step_json)
-        return parse_step_infos(data)
-    except Exception as e:
-        logger.error(f"Failed to parse step JSON: {e}")
-        return StepInfos(steps={}, dag=[])
-
-
-def parse_plan(plan_text: str) -> Plan:
-    """Parse JSON string into Plan object"""
-    return Plan.parse_raw(plan_text)
+        return AgentResult(actions=actions, current_state=None, is_call_tool=is_call_tool)

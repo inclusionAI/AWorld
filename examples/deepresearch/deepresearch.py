@@ -1,10 +1,7 @@
 
-import json
 import os
 from pathlib import Path
-import random
 import sys
-import unittest
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -12,23 +9,18 @@ sys.path.insert(0, str(project_root))
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.runner import Runners
 from examples.tools.common import Tools
-
+from aworld.planner.built_in_planner import BuiltInPlanner
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
 
-from aworld.agents.plan_agent import PlanAgent
-from aworld.planner.built_in_planner import BuiltInPlanner
-from aworld.core.context.base import Context
-from aworld.models.llm import LLMModel
-from aworld.planner.built_in_output_parser import BuiltInPlannerOutputParser
 from examples.deepresearch.prompts import *
 
 # os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
 # os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
 os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
 os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
-os.environ["LLM_API_KEY"] = "123"
+os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
 
 def test_deepresearch():
     user_input = "7天北京旅游计划"
@@ -48,7 +40,7 @@ def test_deepresearch():
         conf=agent_config,
         use_planner=True,
         planner=BuiltInPlanner(plan_sys_prompt, replan_sys_prompt),
-        # use_tools_in_prompt=True
+        use_tools_in_prompt=True
     )
 
     web_search_agent = Agent(

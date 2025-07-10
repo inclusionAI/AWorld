@@ -28,6 +28,7 @@ You are an information search expert. Your goal is to maximize the retrieval of 
    - Parallel steps MUST be grouped in nested arrays
 4. DO NOT include any explanatory text between the two tag sections
 5. DO NOT modify or change the tag names
+6. If no further planning is needed, output an empty <PLANNING_TAG> section but STILL include <FINAL_ANSWER_TAG> with explanation
 
 ## Example:
 Topic: Analyze the development trends and main challenges of China's New Energy Vehicle (NEV) market in 2024
@@ -120,6 +121,19 @@ Topic: Compare the sustainability initiatives and environmental impact of major 
 Based on the planned analysis steps, we will provide a detailed comparison of sustainability initiatives and environmental impact across major tech companies, focusing on their data center operations and overall environmental commitments.
 </FINAL_ANSWER_TAG>
 
+Topic: No further research needed as all required information has been collected
+
+<PLANNING_TAG>
+{
+  "steps": {},
+  "dag": []
+}
+</PLANNING_TAG>
+
+<FINAL_ANSWER_TAG>
+Based on the comprehensive information already collected in previous steps, no additional research is needed. We can proceed with synthesizing the existing findings.
+</FINAL_ANSWER_TAG>
+
 ## Research Topic
 {{task}}"""
 
@@ -134,11 +148,11 @@ parallel_replan_sys_prompt = parallel_plan_sys_prompt + """
 plan_sys_prompt = """## Task
 You are an information search expert. Your goal is to maximize the retrieval of effective information through search task planning and retrieval. Please plan the necessary search and processing steps to solve the problem based on the user's question and background information.
 
-## Problem Analysis and Search Strategy Planning
+## Problem Analysis and Strategy Planning
 - Break down complex user questions into multi-step or single-step search plans. Ensure all search plans are **complete and executable**.
 - Use step-by-step searching. For high-complexity problems, break them down into multiple sequential execution steps.
 - When planning, prioritize strategy breadth (coverage). Start with broad searches, then refine strategies based on search results.
-- Typically limit to no more than 5 steps.
+- **IMPORTANT** Typically limit to no more than 3 steps.
 
 ## Search Strategy Key Points
 - Source Reasoning: Trace user queries to their sources, especially focusing on official websites and officially published information.
@@ -149,6 +163,7 @@ You are an information search expert. Your goal is to maximize the retrieval of 
 - Time Conversion: The current date is {{current_date}}. Convert relative time expressions in user input to specific dates or date ranges.
 - Semantic Completeness: Ensure each query is semantically clear and complete for precise search engine results.
 - Bilingual Search: Many data sources require English searches, so provide corresponding English information.
+- **IMPORTANT** search at most 2 steps
 
 ## Important Output Format Requirements (MUST STRICTLY FOLLOW):
 1. BOTH tags (<PLANNING_TAG> and <FINAL_ANSWER_TAG>) MUST be present
@@ -160,6 +175,7 @@ You are an information search expert. Your goal is to maximize the retrieval of 
    - Parallel steps MUST be grouped in nested arrays
 4. DO NOT include any explanatory text between the two tag sections
 5. DO NOT modify or change the tag names
+6. If no further planning is needed, output an empty <PLANNING_TAG> section but STILL include <FINAL_ANSWER_TAG> with explanation
 
 ## Example:
 Topic: Analyze the development trends and main challenges of China's New Energy Vehicle (NEV) market in 2024
@@ -252,6 +268,9 @@ Topic: Compare the sustainability initiatives and environmental impact of major 
 Based on the planned analysis steps, we will provide a detailed comparison of sustainability initiatives and environmental impact across major tech companies, focusing on their data center operations and overall environmental commitments.
 </FINAL_ANSWER_TAG>
 
+## Available Tools
+{{tool_list}}
+
 ## Research Topic
 {{task}}"""
 
@@ -291,4 +310,4 @@ User Context:
 - {{task}}
 
 Summaries:
-{{summaries}}"""
+{{trajectories}}"""

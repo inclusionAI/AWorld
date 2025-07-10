@@ -1,32 +1,21 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-"""Base planner classes for AWorld."""
-
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Dict, List, Optional, Union
-from aworld.models.model_response import ModelResponse
-from aworld.planner.plan import Plan
+import abc
+import json
+from typing import Any, Dict, List, Union, Optional
 from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:
-    from aworld.core.context.base import Context
-
-
-
-class PlanOutputParser(ABC):
-    @abstractmethod
-    def parse(self, ModelResponse: ModelResponse) -> Plan:
-        """Parse text into a Plan object."""
-        pass
+from aworld.logs.util import logger
 
 
 class BasePlanner:
-    @abstractmethod
-    def plan(self, context: "Context", input: str) -> str:
-        """Get the name of the planner."""
-        pass
+    """Base planner classes."""
+    __metaclass__ = abc.ABCMeta
 
-    @abstractmethod
-    def replan(self, context: "Context", input: str) -> str:
-        """Get the name of the planner."""
-        pass
+    @abc.abstractmethod
+    def plan(self, context: "Context") -> str:
+        """Plan subsequent execution steps based on context."""
+
+    @abc.abstractmethod
+    def replan(self, context: "Context") -> str:
+        """Replan subsequent execution steps based on context."""

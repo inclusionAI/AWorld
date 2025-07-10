@@ -16,7 +16,7 @@ from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners.callback.tool import ToolCallbackHandler
-from aworld.runners.handler.agent import DefaultAgentHandler, AgentHandler, DefaultTeamHandler
+from aworld.runners.handler.agent import DefaultAgentHandler, DefaultTeamHandler
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.group import DefaultGroupHandler
 from aworld.runners.handler.output import DefaultOutputHandler
