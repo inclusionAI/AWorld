@@ -11,11 +11,11 @@ class StepInfo(BaseModel):
     """单个步骤的详细信息"""
     
     # input for agent
-    input: str = Field(..., description="步骤的描述")
+    input: str = None
     # parameters for tools
-    parameters: Dict[str, Any] = Field(..., description="工具或代理的参数")
+    parameters: Dict[str, Any] = None
     # id of tool or agent
-    id: str = Field(..., description="执行该步骤的工具或代理ID")
+    id: str = None
 
 
 class Plan(BaseModel):
@@ -31,15 +31,9 @@ class Plan(BaseModel):
         }
     """
 
-    steps: Dict[str, StepInfo] = Field(
-        default_factory=dict,
-        description="step id with it info"
-    )
+    steps: Dict[str, StepInfo] = None
 
-    dag: List[Union[str, List[str]]] = Field(
-        default_factory=list,
-        description="dag"
-    )
+    dag: List[Union[str, List[str]]] = None
 
 
 def parse_plan(plan_text: str) -> Plan:
