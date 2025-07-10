@@ -6,19 +6,28 @@ import pytest
 
 from tests.base_test import BaseTest
 from aworld.runners.state_manager import EventRuntimeStateManager, RunNodeStatus
-from aworld.core.event.base import Message
+from aworld.core.event.base import Constants, Message
 
 
 @pytest.mark.asyncio
-async def test_create():
-    print(f"start test_create")
+async def test_node_group_create():
+    state_manager: EventRuntimeStateManager = EventRuntimeStateManager.instance()
+    await state_manager.create_group(
+        group_id="test_group0",
+        session_id="session1",
+        root_node_ids=["root_message_id1", "root_message_id2", "root_message_id3"],
+        parent_group_id="test_parant_group"
+    )
+    group = state_manager.get_group("test_group0")
+    assert group is not None
+    assert group.status == RunNodeStatus.INIT
 
-    try:
-        state_manager: EventRuntimeStateManager = EventRuntimeStateManager.instance()
-    except Exception as e:
-        traceback.print_exc()
 
-    print(f"========create message")
+@pytest.mark.asyncio
+async def test_all_proccess():
+
+    state_manager: EventRuntimeStateManager = EventRuntimeStateManager.instance()
+
     root_message_id1 = uuid.uuid4().hex
     root_message_id2 = uuid.uuid4().hex
     root_message_id3 = uuid.uuid4().hex
@@ -36,17 +45,20 @@ async def test_create():
 
     sub_node_message1 = Message(
         id=root_message_id1,
+        category=Constants.AGENT,
         session_id="session1",
         topic="test_topic",
         headers=get_headers(root_message_id1)
     )
     sub_node_message2 = Message(
         id=root_message_id2,
+        category=Constants.AGENT,
         session_id="session1",
         topic="test_topic",
         headers=get_headers(root_message_id2)
     )
     sub_node_message3 = Message(
+        category=Constants.AGENT,
         session_id="session1",
         topic="test_topic",
         headers=get_headers(root_message_id3)
@@ -61,26 +73,28 @@ async def test_create():
         result_message = Message(
             session_id="session1",
             topic="test_topic",
-            headers=headers
+            headers=message.headers
         )
         state_manager.save_message_handle_result("sub_node_message1", message, result_message)
         state_manager.end_message_node(message)
-
-    print(f"start create sub group")
 
     sub_tasks.append(asyncio.create_task(sub_group_task(sub_node_message1)))
     sub_tasks.append(asyncio.create_task(sub_group_task(sub_node_message2)))
     sub_tasks.append(asyncio.create_task(sub_group_task(sub_node_message3)))
 
-    state_manager.create_group(
+    await state_manager.create_group(
         group_id=headers["group_id"],
         session_id=headers["session_id"],
         root_node_ids=[root_message_id1, root_message_id2, root_message_id3],
         parent_group_id="test_parant_group"
     )
-    print(f"create group complete")
+    print(f"create group complete, group_id: {headers['group_id']}")
+    group = state_manager.get_group(headers["group_id"])
+    assert group is not None
+
     await asyncio.gather(*sub_tasks)
 
+    print(f"sub group complete, group_id: {headers['group_id']}")
     group = state_manager.get_group(headers["group_id"])
     assert group is not None
     assert group.status == RunNodeStatus.SUCCESS

@@ -9,6 +9,10 @@ from datetime import datetime
 from typing import Dict, Any, List, Union, Callable
 
 import aworld.trace as trace
+from aworld.core.agent.swarm import TeamSwarm
+from aworld.runners.state_manager import RuntimeStateManager
+from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
+from aworld.trace.instrumentation import semconv
 from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, OptimizationConfig, \
     LlmCompressionConfig
@@ -388,6 +392,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
             raise Exception(f'{self.id()} no action decision has been made.')
+
+        if isinstance(self.context.swarm, TeamSwarm):
+            if self.id() == self.context.swarm.communicate_agent.id():
+                return Message(payload=actions,
+                               caller=caller,
+                               sender=self.id(),
+                               receiver=actions[0].tool_name,
+                               category=Constants.MULTI_AGENT_TEAM,
+                               session_id=self.context.session_id if self.context else "",
+                               headers=self._update_headers(input_message))
 
         tools = OrderedDict()
         agents = []
@@ -1088,7 +1102,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def _update_headers(self, input_message: Message) -> Dict[str, Any]:
         headers = input_message.headers.copy()
         headers['context'] = self.context
-        headers['level'] = headers['level'] + 1
+        headers['level'] = headers.get('level', 0) + 1
         if input_message.group_id:
             headers['parent_group_id'] = input_message.group_id
         return headers
