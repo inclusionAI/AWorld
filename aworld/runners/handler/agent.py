@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import asyncio
+import uuid
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
@@ -526,8 +527,8 @@ class DefaultTeamHandler(AgentHandler):
             else:
                 raise AworldException("no steps and answer.")
 
+        group_id = uuid.uuid4().hex
         merge_context = message.context
-        res = ''
         for node in dag:
             if isinstance(node, list):
                 logger.info(f"DefaultTeamHandler|parallel_node|start|{node}")
@@ -539,11 +540,12 @@ class DefaultTeamHandler(AgentHandler):
                     step_info: StepInfo = steps.get(n)
                     agent = self.swarm.agents.get(step_info.id)
                     if agent:
-                        tasks.append(exec_agent(step_info.input, agent, new_context))
+                        tasks.append(exec_agent(step_info.input, agent, new_context, task_group_id=group_id))
                     else:
                         tasks.append(exec_tool(tool_name=step_info.id,
                                                params=step_info.parameters,
-                                               context=new_context))
+                                               context=new_context,
+                                               task_group_id=group_id))
 
                 res = await asyncio.gather(*tasks)
                 for idx, t in enumerate(res):
@@ -557,11 +559,12 @@ class DefaultTeamHandler(AgentHandler):
                 agent = self.swarm.agents.get(step_info.id)
                 new_context = merge_context.deep_copy()
                 if agent:
-                    res = await exec_agent(step_info.input, agent, new_context)
+                    res = await exec_agent(step_info.input, agent, new_context, task_group_id=group_id)
                 else:
                     res = await exec_tool(tool_name=step_info.id,
                                           params=step_info.parameters,
-                                          context=new_context)
+                                          context=new_context,
+                                          task_group_id=group_id)
                 merge_context.merge_context(res.context)
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"DefaultTeamHandler|single_node|end|{res}")

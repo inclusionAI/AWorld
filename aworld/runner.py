@@ -12,8 +12,8 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.output import StreamingOutputs
-from aworld.runners.utils import choose_runners, execute_runner
 from aworld.utils.common import sync_exec
+from aworld.utils.run_util import exec_tasks
 
 
 class Runners:
@@ -52,8 +52,7 @@ class Runners:
             task = [task]
 
         logging.debug(f"[Runners]run_task start task_id={task[0].id} start")
-        runners: List[Runner] = await choose_runners(task)
-        result =  await execute_runner(runners, run_conf)
+        result = await exec_tasks(task, run_conf)
         logging.debug(f"[Runners]run_task end task_id={task[0].id} end")
         return result
 
