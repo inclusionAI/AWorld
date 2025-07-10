@@ -521,13 +521,15 @@ class DefaultTeamHandler(AgentHandler):
             if isinstance(node, list):
                 tasks = []
                 for n in node:
-                    exec_agent(step_info.input, agent, message.context, sub_task=True)
+                    step_info: StepInfo = steps.get(n)
+                    agent = self.swarm.agents.get(step_info.id)
+                    tasks.append(exec_agent(step_info.input, agent, message.context, sub_task=True))
 
-                await asyncio.gather()
+                res = await asyncio.gather(*tasks)
             else:
                 step_info: StepInfo = steps.get(node)
                 agent = self.swarm.agents.get(step_info.id)
-                await exec_agent(step_info.input, agent, message.context, sub_task=True)
+                res = await exec_agent(step_info.input, agent, message.context, sub_task=True)
 
         yield AgentMessage(session_id=session_id,
                            payload=res,
