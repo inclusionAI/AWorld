@@ -43,7 +43,8 @@ from aworld.runners.hook.hooks import HookPoint
 from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
 from aworld.trace.instrumentation import semconv
 from aworld.utils.common import sync_exec, nest_dict_counter
-
+from aworld.planner.built_in_planner import BuiltInPlanner
+from aworld.planner.built_in_output_parser import BuiltInPlannerOutputParser
 
 class Agent(BaseAgent[Observation, List[ActionModel]]):
     """Basic agent for unified protocol within the framework."""
@@ -70,10 +71,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.system_prompt_template: str = kwargs.pop("system_prompt_template") if kwargs.get("system_prompt_template") else conf.system_prompt_template
         if self.system_prompt_template:
             self.system_prompt = Prompt(self.system_prompt_template).get_prompt()
-        self.planner = kwargs.get("planner") if kwargs.get("planner") else None
-        if self.planner:
-            self.system_prompt = self.planner.system_prompt
-            self.system_prompt_template = self.planner.system_prompt
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
         self.event_driven = kwargs.pop(
             'event_driven', conf.get('event_driven', False))
@@ -96,6 +93,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "context_rule") else conf.context_rule
         self.tools_instances = {}
         self.tools_conf = {}
+        self.use_planner = kwargs.get("use_planner") if kwargs.get("use_planner") else False
+        self.planner = kwargs.get("planner") if kwargs.get("planner") else BuiltInPlanner()
+        if self.use_planner:
+            self.system_prompt = self.planner.system_prompt
+            self.system_prompt_template = self.planner.system_prompt
+            self.resp_parse_func = BuiltInPlannerOutputParser(self.id()).parse
+
 
     def reset(self, options: Dict[str, Any]):
         logger.info("[LLM_AGENT] reset start")
