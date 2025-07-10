@@ -19,7 +19,7 @@ class BuiltInPlannerOutputParser:
             return AgentResult(actions=[], current_state=None)
 
         content = resp.content.strip()
-
+        
         # Extract planning section
         planning_match = re.search(r'<PLANNING_TAG>(.*?)</PLANNING_TAG>', content, re.DOTALL)
         final_answer_match = re.search(r'<FINAL_ANSWER_TAG>(.*?)</FINAL_ANSWER_TAG>', content, re.DOTALL)
@@ -35,8 +35,6 @@ class BuiltInPlannerOutputParser:
                     agent_name=self.agent_name,
                     policy_info=plan_text
                 ))
-                return AgentResult(actions=actions, current_state=None, is_call_tool=is_call_tool)
-
             except json.JSONDecodeError:
                 logger.warning("Failed to parse planning JSON")
 
@@ -54,5 +52,7 @@ class BuiltInPlannerOutputParser:
                 agent_name=self.agent_name,
                 policy_info=content
             ))
+        
+        logger.info(f"BuiltInPlannerOutputParser|actions|{actions}")
 
         return AgentResult(actions=actions, current_state=None, is_call_tool=is_call_tool)
