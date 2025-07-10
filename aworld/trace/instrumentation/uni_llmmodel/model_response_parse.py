@@ -175,7 +175,11 @@ def response_to_dic(response: ModelResponse) -> dict:
 
 
 def covert_to_jsonstr(obj):
-    return json.dumps(_to_serializable(obj), ensure_ascii=False)
+    try:
+        return json.dumps(_to_serializable(obj), ensure_ascii=False)
+    except:
+        logger.warning(f"covert_to_jsonstr error: {obj.__class__.__name__}")
+        return str(obj)
 
 
 def _to_serializable(obj, _memo=None):
@@ -186,10 +190,13 @@ def _to_serializable(obj, _memo=None):
         return str(obj)
     _memo.add(obj_id)
 
-    if isinstance(obj, dict):
-        return {k: _to_serializable(v, _memo) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_to_serializable(i, _memo) for i in obj]
+    if isinstance(obj, (dict, list, set)):
+        if isinstance(obj, set):
+            return [_to_serializable(i, _memo) for i in obj]
+        elif isinstance(obj, dict):
+            return {k: _to_serializable(v, _memo) for k, v in obj.items()}
+        else:
+            return [_to_serializable(i, _memo) for i in obj]
     elif hasattr(obj, "to_dict"):
         return obj.to_dict()
     elif hasattr(obj, "model_dump"):
@@ -203,4 +210,8 @@ def _to_serializable(obj, _memo=None):
         return {k: _to_serializable(v, _memo) for k, v in obj.__dict__.items()
                 if not k.startswith('_') and not callable(v)}
     else:
-        return obj
+        try:
+            json.dumps(obj)
+            return obj
+        except TypeError:
+            return "[Unserializable Object]"
