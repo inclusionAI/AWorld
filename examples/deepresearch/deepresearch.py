@@ -3,13 +3,14 @@ import os
 from pathlib import Path
 import sys
 
+from aworld.planner.plan import DefaultPlanner
+
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.runner import Runners
 from examples.tools.common import Tools
-from aworld.planner.built_in_planner import BuiltInPlanner
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
@@ -39,7 +40,7 @@ def test_deepresearch():
         desc="planner_agent",
         conf=agent_config,
         use_planner=True,
-        planner=BuiltInPlanner(plan_sys_prompt, replan_sys_prompt),
+        planner=DefaultPlanner(plan_sys_prompt, replan_sys_prompt),
         use_tools_in_prompt=True
     )
 
