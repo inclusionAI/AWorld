@@ -6,19 +6,19 @@ import pytest
 
 from tests.base_test import BaseTest
 from aworld.runners.state_manager import EventRuntimeStateManager, RunNodeStatus
-from aworld.core.event.base import Message
+from aworld.core.event.base import Constants, Message
 
 
 @pytest.mark.asyncio
 async def test_node_group_create():
     state_manager: EventRuntimeStateManager = EventRuntimeStateManager.instance()
     await state_manager.create_group(
-        group_id="test_group",
+        group_id="test_group0",
         session_id="session1",
         root_node_ids=["root_message_id1", "root_message_id2", "root_message_id3"],
         parent_group_id="test_parant_group"
     )
-    group = state_manager.get_group("test_group")
+    group = state_manager.get_group("test_group0")
     assert group is not None
     assert group.status == RunNodeStatus.INIT
 
@@ -45,17 +45,20 @@ async def test_all_proccess():
 
     sub_node_message1 = Message(
         id=root_message_id1,
+        category=Constants.AGENT,
         session_id="session1",
         topic="test_topic",
         headers=get_headers(root_message_id1)
     )
     sub_node_message2 = Message(
         id=root_message_id2,
+        category=Constants.AGENT,
         session_id="session1",
         topic="test_topic",
         headers=get_headers(root_message_id2)
     )
     sub_node_message3 = Message(
+        category=Constants.AGENT,
         session_id="session1",
         topic="test_topic",
         headers=get_headers(root_message_id3)

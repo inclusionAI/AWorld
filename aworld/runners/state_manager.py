@@ -583,7 +583,7 @@ class NodeGroupManager(InheritanceSingleton):
 
         subgroup.execute_time = time.time()
         subgroup.status = RunNodeStatus.RUNNING
-        self.node_state_manager.run_node(root_node_id)
+        self.sub_group_storage.update(subgroup)
 
     async def finish_sub_group(self,
                                group_id: str,
