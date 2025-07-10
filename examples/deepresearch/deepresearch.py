@@ -24,8 +24,8 @@ from aworld.models.llm import LLMModel
 from aworld.planner.built_in_output_parser import BuiltInPlannerOutputParser
 from examples.deepresearch.prompts import *
 
-# os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-1.7b"
-# os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
+# os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
+# os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
 os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
 os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
 os.environ["LLM_API_KEY"] = "123"
@@ -46,14 +46,16 @@ def test_deepresearch():
         name="planner_agent",
         desc="planner_agent",
         conf=agent_config,
-        use_planner=True
+        use_planner=True,
+        planner=BuiltInPlanner(plan_sys_prompt, replan_sys_prompt),
+        # use_tools_in_prompt=True
     )
 
     web_search_agent = Agent(
         name="web_search_agent",
         desc="web_search_agent",
         conf=agent_config,
-        system_prompt=search_sys_prompt,
+        system_prompt_template=search_sys_prompt,
         tool_names=[Tools.SEARCH_API.value]
         # mcp_servers=["aworldsearch_server"],
         # mcp_config={
@@ -82,7 +84,7 @@ def test_deepresearch():
         name="reporting_agent",
         desc="reporting_agent",
         conf=agent_config,
-        system_prompt=reporting_sys_prompt,
+        system_prompt_template=reporting_sys_prompt,
     )
 
     swarm = TeamSwarm(plan_agent, web_search_agent, reporting_agent, max_steps=1)

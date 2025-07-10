@@ -36,7 +36,7 @@ class PlanAgent(Agent):
         self.planner = BuiltInPlanner()
         
         # Set default system prompt if not provided
-        self.system_prompt = self.planner.system_prompt
+        self.system_prompt = self.planner.plan_system_prompt
         self.system_prompt_template = StringPromptFormatter.from_template(self.system_prompt)
 
     def plan_response_parse(self, resp: ModelResponse) -> AgentResult:

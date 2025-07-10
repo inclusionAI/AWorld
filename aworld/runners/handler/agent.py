@@ -530,6 +530,7 @@ class DefaultTeamHandler(AgentHandler):
         res = ''
         for node in dag:
             if isinstance(node, list):
+                logger.info(f"DefaultTeamHandler|parallel_node|start|{node}")
                 # can parallel
                 tasks = []
 
@@ -548,8 +549,9 @@ class DefaultTeamHandler(AgentHandler):
                 for idx, t in enumerate(res):
                     merge_context.merge_context(t.context)
                     merge_context.save_action_trajectory(steps.get(node[idx]).id, t.answer)
+                logger.info(f"DefaultTeamHandler|parallel_node|end|{res}")
             else:
-                logger.info(f"DefaultTeamHandler|node|start|{node}")
+                logger.info(f"DefaultTeamHandler|single_node|start|{node}")
                 step_info: StepInfo = steps.get(node)
                 agent = self.swarm.agents.get(step_info.id)
                 new_context = merge_context.deep_copy()
@@ -561,10 +563,10 @@ class DefaultTeamHandler(AgentHandler):
                                           context=new_context)
                 merge_context.merge_context(res.context)
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
-                logger.info(f"DefaultTeamHandler|node|end|{res}")
-
+                logger.info(f"DefaultTeamHandler|single_node|end|{res}")
+        new_plan_input = Observation(content=merge_context.content, ensure_ascii=False)
         yield AgentMessage(session_id=message.session_id,
-                           payload=res,
+                           payload=new_plan_input,
                            sender=self.name(),
                            receiver=self.swarm.communicate_agent.id(),
                            headers={'context': merge_context})

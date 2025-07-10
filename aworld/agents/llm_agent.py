@@ -98,8 +98,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.use_planner = kwargs.get("use_planner") if kwargs.get("use_planner") else False
         self.planner = kwargs.get("planner") if kwargs.get("planner") else BuiltInPlanner()
         if self.use_planner:
-            self.system_prompt = self.planner.system_prompt
-            self.system_prompt_template = self.planner.system_prompt
+            self.system_prompt = self.planner.plan_system_prompt
+            self.system_prompt_template = self.planner.plan_system_prompt
             self.resp_parse_func = BuiltInPlannerOutputParser(self.id()).parse
 
 
@@ -195,6 +195,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             Message list for LLM.
         """
         agent_prompt = self.agent_prompt
+        context = self.context
         messages = []
         # append sys_prompt to memory
         sys_prompt = self.system_prompt

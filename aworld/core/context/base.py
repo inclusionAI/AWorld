@@ -207,24 +207,8 @@ class Context:
         self._event_manager = event_manager
 
     @property
-    def record_path(self):
-        return "."
-
-    @property
-    def is_task(self):
-        return True
-
-    @property
-    def enable_visible(self):
-        return False
-
-    @property
-    def enable_failover(self):
-        return False
-
-    @property
-    def enable_cluster(self):
-        return False
+    def content(self):
+        return self._task.input
 
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.context_info.get(key, default)
