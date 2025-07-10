@@ -109,7 +109,7 @@ class NodeGroup(BaseModel):
     end_time: Optional[float] = None
     status: RunNodeStatus = None
     # failed subtask root node id list
-    failed_root_node_ids: List[str] = None
+    failed_root_node_ids: Optional[List[str]] = None
     parent_group_id: Optional[str] = None
     metadata: Optional[dict] = None
 
@@ -488,7 +488,7 @@ class RuntimeStateManager(InheritanceSingleton):
         handle_results = []
         for msg in results:
             handle_result = HandleResult(
-                status=RunNodeStatus.SUCCESS,
+                status=RunNodeStatus.FAILED if msg.is_error() else RunNodeStatus.SUCCESS,
                 result=msg,
                 name=msg.sender
             )
@@ -584,6 +584,14 @@ class NodeGroupManager(InheritanceSingleton):
         subgroup.execute_time = time.time()
         subgroup.status = RunNodeStatus.RUNNING
         self.sub_group_storage.update(subgroup)
+        self.run_group(subgroup.group_id)
+
+    def run_group(self, group_id):
+        group = self.node_group_storage.get(group_id)
+        if group.status == RunNodeStatus.INIT:
+            group.status = RunNodeStatus.RUNNING
+            group.execute_time = time.time()
+            self.node_group_storage.update(group)
 
     async def finish_sub_group(self,
                                group_id: str,

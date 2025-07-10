@@ -1,5 +1,5 @@
 from typing import Sequence
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
 
 
@@ -14,7 +14,7 @@ class MetricTemplate(BaseModel):
     labels: Optional[list[str]] = None
     buckets: Optional[Sequence[float]] = None
 
-    @root_validator(pre=True)
+    @model_validator(mode='before')
     def set_default_description(cls, values):
         """
         Set the default description if it is not set.

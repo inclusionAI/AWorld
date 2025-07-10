@@ -58,6 +58,7 @@ async def test_all_proccess():
         headers=get_headers(root_message_id2)
     )
     sub_node_message3 = Message(
+        id=root_message_id3,
         category=Constants.AGENT,
         session_id="session1",
         topic="test_topic",
@@ -77,6 +78,7 @@ async def test_all_proccess():
         )
         state_manager.save_message_handle_result("sub_node_message1", message, result_message)
         state_manager.end_message_node(message)
+        await state_manager.finish_sub_group(message.headers["group_id"], message.headers["root_message_id"], [result_message])
 
     sub_tasks.append(asyncio.create_task(sub_group_task(sub_node_message1)))
     sub_tasks.append(asyncio.create_task(sub_group_task(sub_node_message2)))
