@@ -278,6 +278,7 @@ class TaskEventRunner(TaskRunner):
                         # send msg to output
                         self._task_response = TaskResponse(msg=msg,
                                                            answer=answer,
+                                                           context=message.context,
                                                            success=True if not msg else False,
                                                            id=self.task.id,
                                                            time_cost=(

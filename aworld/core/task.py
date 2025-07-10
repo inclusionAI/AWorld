@@ -51,6 +51,7 @@ class Task:
 class TaskResponse(BaseModel):
     id: str
     answer: str | None
+    context: Optional[Context] = None
     usage: Dict[str, Any] | None = None
     time_cost: float | None = None
     success: bool = False

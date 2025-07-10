@@ -65,6 +65,7 @@ class DefaultTaskHandler(TaskHandler):
             logger.warning(f"task {self.runner.task.id} stop, cause: {task_item.msg}")
             self.runner._task_response = TaskResponse(msg=task_item.msg,
                                                       answer='',
+                                                      context=message.context,
                                                       success=False,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
@@ -77,6 +78,7 @@ class DefaultTaskHandler(TaskHandler):
 
             self.runner._task_response = TaskResponse(answer=str(message.payload),
                                                       success=True,
+                                                      context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
@@ -101,6 +103,7 @@ class DefaultTaskHandler(TaskHandler):
                 await self.runner.task.outputs.add_output(Output(data=message.payload))
             self.runner._task_response = TaskResponse(answer=str(message.payload),
                                                       success=True,
+                                                      context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
