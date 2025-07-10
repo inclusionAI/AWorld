@@ -10,9 +10,9 @@ class BasePlanner:
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def plan(self, context: "Context") -> str:
+    def plan(self, context: Context) -> str:
         """Plan subsequent execution steps based on context."""
 
     @abc.abstractmethod
-    def replan(self, context: "Context") -> str:
+    def replan(self, context: Context) -> str:
         """Replan subsequent execution steps based on context."""
