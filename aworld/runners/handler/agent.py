@@ -516,6 +516,7 @@ class DefaultTeamHandler(AgentHandler):
         if not steps or not dag:
             raise AworldException("no steps")
 
+        merge_context = message.context
         contexts = []
         res = ''
         for node in dag:
@@ -524,21 +525,23 @@ class DefaultTeamHandler(AgentHandler):
                 for n in node:
                     step_info: StepInfo = steps.get(n)
                     agent = self.swarm.agents.get(step_info.id)
-                    new_context = message.context.deep_copy()
+                    new_context = merge_context.deep_copy()
                     contexts.append(new_context)
                     tasks.append(exec_agent(step_info.input, agent, new_context, sub_task=True))
-
+                    
                 res = await asyncio.gather(*tasks)
+                for t in tasks:
+                    merge_context.merge_context(t.context)
+                    merge_context.save_action_trajectory(step_info.id, agent, t.context, sub_task=True)
             else:
                 step_info: StepInfo = steps.get(node)
                 agent = self.swarm.agents.get(step_info.id)
-                new_context = message.context.deep_copy()
+                new_context = merge_context.deep_copy()
                 contexts.append(new_context)
                 res = await exec_agent(step_info.input, agent, new_context, sub_task=True)
-
-        merge_context = message.context
-        for new_context in contexts:
-            merge_context.merge_context(new_context)
+                merge_context.merge_context(new_context)
+                merge_context.save_action_trajectory(step_info.id, agent, new_context, sub_task=True)
+        
         yield AgentMessage(session_id=session_id,
                            payload=res,
                            sender=self.name(),

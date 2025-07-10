@@ -1,7 +1,8 @@
 import json
 import logging
-from typing import Any, Dict, List, Union
-from pydantic import BaseModel, ValidationError
+from typing import Any, Dict, List, Union, Optional
+from pydantic import BaseModel, Field, ValidationError
+from pydantic import Field
 from typing import Dict, List, Union
 logger = logging.getLogger(__name__)
 
@@ -10,11 +11,11 @@ class StepInfo(BaseModel):
     """单个步骤的详细信息"""
     
     # input for agent
-    input: str = None
+    input: Optional[str] = Field(..., description="步骤的描述")
     # parameters for tools
-    parameters: Dict[str, Any] = None
+    parameters: Optional[Dict[str, Any]] = Field(..., description="工具或代理的参数")
     # id of tool or agent
-    id: str = None
+    id: str = Field(..., description="执行该步骤的工具或代理ID")
 
 
 class Plan(BaseModel):
@@ -30,9 +31,15 @@ class Plan(BaseModel):
         }
     """
 
-    steps: Dict[str, StepInfo] = None
+    steps: Dict[str, StepInfo] = Field(
+        default_factory=dict,
+        description="step id with it info"
+    )
 
-    dag: List[Union[str, List[str]]] = None
+    dag: List[Union[str, List[str]]] = Field(
+        default_factory=list,
+        description="dag"
+    )
 
 
 def parse_plan(plan_text: str) -> Plan:
