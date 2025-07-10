@@ -48,16 +48,14 @@ class Task:
     is_sub_task: bool = field(default=False)
     max_retry_count: int = 0
 
-
-@dataclass
-class TaskResponse:
-    id: str = field(default=None)
-    answer: str | None = field(default=None)
-    context: Context | None =  field(default_factory=Context)
-    usage: Dict[str, Any] | None = field(default_factory=dict)
-    time_cost: float | None = field(default=0.0)
-    success: bool = field(default=False)
-    msg: str | None = field(default=None)
+class TaskResponse(BaseModel):
+    id: str
+    answer: str | None
+    context: Optional[Context] = None
+    usage: Dict[str, Any] | None = None
+    time_cost: float | None = None
+    success: bool = False
+    msg: str | None = None
 
 
 class Runner(object):

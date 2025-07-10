@@ -17,7 +17,7 @@ from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC
 if TYPE_CHECKING:
     from aworld.core.context.base import Context
 
-class StringPromptTemplate(BasePromptFormatter):
+class StringPromptFormatter(BasePromptFormatter):
     """String-based prompt template."""
     
     def __init__(self, 
@@ -115,7 +115,7 @@ class StringPromptTemplate(BasePromptFormatter):
                      template_format: TemplateFormat = TemplateFormat.DOUBLE_BRACE,
                      partial_variables: Optional[Dict[str, Any]] = None,
                      auto_add_dynamic_vars: bool = True,
-                     **kwargs: Any) -> 'StringPromptTemplate':
+                     **kwargs: Any) -> 'StringPromptFormatter':
         """Create a StringPromptTemplate from a template string."""
         return cls(
             template=template,
@@ -126,20 +126,20 @@ class StringPromptTemplate(BasePromptFormatter):
             **kwargs
         )
     
-    def __add__(self, other: Any) -> 'StringPromptTemplate':
+    def __add__(self, other: Any) -> 'StringPromptFormatter':
         """Combine two string prompt templates."""
         try:
-            if isinstance(other, StringPromptTemplate):
+            if isinstance(other, StringPromptFormatter):
                 if self.template_format != TemplateFormat.F_STRING:
                     # If format doesn't match, just concatenate templates as strings
                     combined_template = self.template + other.template
                     logger.warning(f"Combining StringPromptTemplates with different formats, concatenating templates as strings. Original: {self.template_format}, Other: {other.template_format}")
-                    return StringPromptTemplate.from_template(combined_template)
+                    return StringPromptFormatter.from_template(combined_template)
                 if other.template_format != TemplateFormat.F_STRING:
                     # If format doesn't match, just concatenate templates as strings
                     combined_template = self.template + other.template
                     logger.warning(f"Combining StringPromptTemplates with different formats, concatenating templates as strings. Original: {self.template_format}, Other: {other.template_format}")
-                    return StringPromptTemplate.from_template(combined_template)
+                    return StringPromptFormatter.from_template(combined_template)
                 
                 combined_template = self.template + other.template
                 combined_input_vars = list(set(self.input_variables + other.input_variables))
@@ -153,7 +153,7 @@ class StringPromptTemplate(BasePromptFormatter):
                     combined_partial_vars[key] = value
                 
                 logger.info(f"Successfully combined StringPromptTemplates. New template: {combined_template}, New input_variables: {combined_input_vars}, New partial_variables: {combined_partial_vars}")
-                return StringPromptTemplate(
+                return StringPromptFormatter(
                     template=combined_template,
                     input_variables=combined_input_vars,
                     template_format=TemplateFormat.F_STRING,
@@ -161,7 +161,7 @@ class StringPromptTemplate(BasePromptFormatter):
                 )
             
             elif isinstance(other, str):
-                other_prompt = StringPromptTemplate.from_template(other)
+                other_prompt = StringPromptFormatter.from_template(other)
                 logger.warning(f"Combining StringPromptTemplate with string, treating string as a template. Original: {self.template_format}, Other: {other_prompt.template_format}")
                 return self + other_prompt
             
@@ -169,16 +169,16 @@ class StringPromptTemplate(BasePromptFormatter):
                 # If cannot combine, just concatenate as strings
                 combined_template = self.template + str(other)
                 logger.warning(f"Combining StringPromptTemplate with non-StringPromptTemplate, concatenating as strings. Original: {self.template_format}, Other: {type(other)}")
-                return StringPromptTemplate.from_template(combined_template)
+                return StringPromptFormatter.from_template(combined_template)
         except Exception as e:
             # If any error during combination, just concatenate templates as strings
             logger.warning(f"Error during StringPromptTemplate combination: {e}, falling back to string concatenation")
             try:
-                if isinstance(other, StringPromptTemplate):
+                if isinstance(other, StringPromptFormatter):
                     combined_template = self.template + other.template
                 else:
                     combined_template = self.template + str(other)
-                return StringPromptTemplate.from_template(combined_template)
+                return StringPromptFormatter.from_template(combined_template)
             except Exception as e2:
                 # If even string concatenation fails, return self
                 logger.error(f"Even string concatenation failed during StringPromptTemplate combination: {e2}, returning self")
@@ -198,4 +198,4 @@ class StringPromptTemplate(BasePromptFormatter):
                 f"template_format={self.template_format})")
 
 # For backward compatibility, keep PromptTemplate alias
-PromptTemplate = StringPromptTemplate 
+PromptTemplate = StringPromptFormatter 
