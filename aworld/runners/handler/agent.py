@@ -548,6 +548,7 @@ class DefaultTeamHandler(AgentHandler):
                 for idx, t in enumerate(res):
                     merge_context.merge_context(t.context)
                     merge_context.save_action_trajectory(steps.get(node[idx]).id, t.answer)
+                res = res[-1]
             else:
                 logger.info(f"DefaultTeamHandler|node|start|{node}")
                 step_info: StepInfo = steps.get(node)
@@ -564,7 +565,7 @@ class DefaultTeamHandler(AgentHandler):
                 logger.info(f"DefaultTeamHandler|node|end|{res}")
 
         yield AgentMessage(session_id=message.session_id,
-                           payload=res,
+                           payload=res.answer,
                            sender=self.name(),
                            receiver=self.swarm.communicate_agent.id(),
                            headers={'context': merge_context})
