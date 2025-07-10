@@ -153,9 +153,9 @@ class StreamingOutputs(AsyncOutputs):
             if output == RUN_FINISHED_SIGNAL:
                 self._output_queue.task_done()
                 return
-            if self.task_id != output.task_id:
-                logger.warning(f"{self.task_id} unequals {output.task_id}")
-                return
+            # if self.task_id != output.task_id:
+            #     logger.warning(f"{self.task_id} unequals {output.task_id}")
+            #     return
             yield output
 
         # Main streaming loop
