@@ -24,10 +24,7 @@ async def exec_agent(question: Any, agent: Agent, context: Context, sub_task: bo
     runners = await choose_runners([task])
     res = await execute_runner(runners, RunConfig(reuse_process=True))
     resp: TaskResponse = res.get(task.id)
-    if resp.success:
-        return resp.answer
-    else:
-        return resp.msg
+    return resp
 
 
 async def exec_agents(questions: List[Any], agents: List[Agent], context, sub_task: bool = False):
@@ -47,7 +44,11 @@ async def exec_agents(questions: List[Any], agents: List[Agent], context, sub_ta
     results = await asyncio.gather(*tasks)
     res = []
     for idx, result in enumerate(results):
-        res.append(ActionModel(agent_name=agents[idx].id(), policy_info=result))
+        if result.success:
+            con = result.answer
+        else:
+            con = result.msg
+        res.append(ActionModel(agent_name=agents[idx].id(), policy_info=con))
     return res
 
 
