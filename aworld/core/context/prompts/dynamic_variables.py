@@ -66,7 +66,6 @@ def get_current_weekday() -> str:
 
 
 def get_current_month() -> str:
-    """Get current month name."""
     try:
         return datetime.now().strftime("%B")
     except Exception as e:
@@ -75,7 +74,6 @@ def get_current_month() -> str:
 
 
 def get_current_year() -> str:
-    """Get current year."""
     try:
         return str(datetime.now().year)
     except Exception as e:
@@ -85,7 +83,6 @@ def get_current_year() -> str:
 # ==================== System Information Functions ====================
 
 def get_system_platform() -> str:
-    """Get system platform information."""
     try:
         return platform.platform()
     except Exception as e:
