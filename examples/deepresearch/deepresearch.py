@@ -54,27 +54,28 @@ def test_deepresearch():
         desc="web_search_agent",
         conf=agent_config,
         system_prompt=search_sys_prompt,
-        mcp_servers=["aworldsearch_server"],
-        mcp_config={
-            "mcpServers": {
-                "aworldsearch_server": {
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "mcp_servers.aworldsearch_server"
-                    ],
-                    "env": {
-                        "AWORLD_SEARCH_URL": "https://antragflowInside.alipay.com/v1/rpc/ragLlmSearch",
-                        "AWORLD_SEARCH_TOTAL_NUM": "10",
-                        "AWORLD_SEARCH_SLICE_NUM": "3",
-                        "AWORLD_SEARCH_DOMAIN": "google",
-                        "AWORLD_SEARCH_SEARCHMODE": "RAG_LLM",
-                        "AWORLD_SEARCH_SOURCE": "lingxi_agent",
-                        "AWORLD_SEARCH_UID": "2088802724428205"
-                    }
-                }
-            }
-        }
+        tool_names=[Tools.SEARCH_API.value]
+        # mcp_servers=["aworldsearch_server"],
+        # mcp_config={
+        #     "mcpServers": {
+        #         "aworldsearch_server": {
+        #             "command": "python",
+        #             "args": [
+        #                 "-m",
+        #                 "mcp_servers.aworldsearch_server"
+        #             ],
+        #             "env": {
+        #                 "AWORLD_SEARCH_URL": "https://antragflowInside.alipay.com/v1/rpc/ragLlmSearch",
+        #                 "AWORLD_SEARCH_TOTAL_NUM": "10",
+        #                 "AWORLD_SEARCH_SLICE_NUM": "3",
+        #                 "AWORLD_SEARCH_DOMAIN": "google",
+        #                 "AWORLD_SEARCH_SEARCHMODE": "RAG_LLM",
+        #                 "AWORLD_SEARCH_SOURCE": "lingxi_agent",
+        #                 "AWORLD_SEARCH_UID": "2088802724428205"
+        #             }
+        #         }
+        #     }
+        # }
     )
     
     reporting_agent = Agent(
