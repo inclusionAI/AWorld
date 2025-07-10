@@ -1,0 +1,5 @@
+{
+    "MODEL_NAME": "qwen/qwen3-8b",
+    "BASE_URL": "http://localhost:1234/v1",
+    "API_KEY": "lm-studio"
+}

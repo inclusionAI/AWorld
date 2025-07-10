@@ -6,6 +6,8 @@ import random
 import sys
 import unittest
 
+from examples.tools.common import Tools
+
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -63,7 +65,9 @@ class TestPlanner(BaseTest):
                 llm_base_url=self.mock_base_url,
                 llm_api_key=self.mock_api_key
             ),
-            name="agent2"
+            name="agent2",
+            system_prompt="you are a search agent",
+            tool_names=[Tools.SEARCH_API.value]
         )
         self.run_multi_agent(input="分析苹果公司的发展历程", agent1=agent, agent2=agent2)
         
