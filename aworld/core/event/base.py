@@ -73,10 +73,6 @@ class Message(Generic[DataType]):
         context = self.headers.get("context")
         if not context:
             self.headers['context'] = Context()
-        self.headers['group_id'] = ''
-        self.headers['root_message_id'] = ''
-        self.headers['root_agent_id'] = ''
-        self.headers['level'] = 0
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, Message):
