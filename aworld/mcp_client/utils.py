@@ -448,6 +448,9 @@ async def sandbox_mcp_tool_desc_transform(
                         "params": {
                             "url": server_config["url"],
                             "headers": server_config.get("headers"),
+                            "timeout": server_config.get("timeout"),
+                            "sse_read_timeout": server_config.get("sse_read_timeout"),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
                         },
                     }
                 )
@@ -460,6 +463,9 @@ async def sandbox_mcp_tool_desc_transform(
                         "params": {
                             "url": server_config["url"],
                             "headers": server_config.get("headers"),
+                            "timeout": server_config.get("timeout"),
+                            "sse_read_timeout": server_config.get("sse_read_timeout"),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
                         },
                     }
                 )
@@ -479,6 +485,7 @@ async def sandbox_mcp_tool_desc_transform(
                             "encoding_error_handler": server_config.get(
                                 "encoding_error_handler", "strict"
                             ),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
                         },
                     }
                 )
@@ -675,6 +682,7 @@ async def get_server_instance(
                     "headers": server_config.get("headers"),
                     "timeout": server_config.get("timeout", 5.0),
                     "sse_read_timeout": server_config.get("sse_read_timeout", 300.0),
+                    "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds", 300.0),
                 },
             )
             await server.connect()
@@ -703,6 +711,7 @@ async def get_server_instance(
                 "encoding_error_handler": server_config.get(
                     "encoding_error_handler", "strict"
                 ),
+                "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds", 300.0),
             }
             server = MCPServerStdio(name=server_name, params=params)
             await server.connect()
