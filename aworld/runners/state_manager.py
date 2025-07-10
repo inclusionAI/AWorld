@@ -617,7 +617,6 @@ class NodeGroupManager(InheritanceSingleton):
                 subgroup.status = RunNodeStatus.FAILED
         self.sub_group_storage.update(subgroup)
         # check all subgroup status and update group status
-        print(f"finish sub group, group_id: {group_id}, root_node_id: {root_node_id}, status: {subgroup.status}")
         await self._check_subgroup_status(group_id, group.root_node_ids)
 
     async def _check_subgroup_status(self, group_id, root_node_ids: List[str]):
@@ -634,8 +633,6 @@ class NodeGroupManager(InheritanceSingleton):
             if subgroup.status == RunNodeStatus.FAILED or subgroup.status == RunNodeStatus.TIMEOUT:
                 failed_subgroups.append(subgroup)
 
-        print(
-            f"check sub group status, group_id: {group_id}, root_node_ids: {root_node_ids}, all_subgroups_finished: {all_subgroups_finished}, failed_subgroups: {failed_subgroups}")
         if all_subgroups_finished:
             group = self._group_exist(group_id)
             if failed_subgroups:
