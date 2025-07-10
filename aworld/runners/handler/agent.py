@@ -557,7 +557,7 @@ class DefaultTeamHandler(AgentHandler):
                 agent = self.swarm.agents.get(step_info.id)
                 new_context = merge_context.deep_copy()
                 if agent:
-                    res = await exec_agent(step_info.input, agent, new_context)
+                    res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs)
                 else:
                     res = await exec_tool(tool_name=step_info.id,
                                           params=step_info.parameters,

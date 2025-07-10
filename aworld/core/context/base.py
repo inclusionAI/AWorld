@@ -209,6 +209,10 @@ class Context:
     @property
     def task_input(self):
         return self._task.input
+    
+    @property
+    def outputs(self):
+        return self._task.outputs
 
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.context_info.get(key, default)
