@@ -1,8 +1,8 @@
 import json
 import logging
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Optional
 from pydantic import BaseModel, Field, ValidationError
-from dataclasses import Field
+from pydantic import Field
 from typing import Dict, List, Union
 logger = logging.getLogger(__name__)
 
@@ -11,9 +11,9 @@ class StepInfo(BaseModel):
     """单个步骤的详细信息"""
     
     # input for agent
-    input: str = Field(..., description="步骤的描述")
+    input: Optional[str] = Field(..., description="步骤的描述")
     # parameters for tools
-    parameters: Dict[str, Any] = Field(..., description="工具或代理的参数")
+    parameters: Optional[Dict[str, Any]] = Field(..., description="工具或代理的参数")
     # id of tool or agent
     id: str = Field(..., description="执行该步骤的工具或代理ID")
 
