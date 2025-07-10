@@ -58,9 +58,14 @@ class BuiltInPlanner(BasePlanner):
     """The LLM model for planning."""
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
-    def build_plan_instruction(self, context: "Context", input: str) -> str:
+    def plan(self, context: "Context") -> str:
         """Build the plan instruction."""
         return StringPromptFormatter.from_template(self.system_prompt).format(
-            context=context,
-            input=input
+            context=context
+        )
+
+    def replan(self, context: "Context") -> str:
+        """Build the plan instruction."""
+        return StringPromptFormatter.from_template(self.system_prompt).format(
+            context=context
         )

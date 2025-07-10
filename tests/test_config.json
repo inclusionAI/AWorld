@@ -1,5 +1,5 @@
 {
-    "MODEL_NAME": "qwen/qwen3-8b",
-    "BASE_URL": "http://localhost:1234/v1",
-    "API_KEY": "lm-studio"
+    "MODEL_NAME": "DeepSeek-V3",
+    "BASE_URL": "https://agi.alipay.com/api",
+    "API_KEY": "123"
 }

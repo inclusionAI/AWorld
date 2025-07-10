@@ -510,6 +510,7 @@ class DefaultTeamHandler(AgentHandler):
                 yield msg
                 return
 
+        logger.info(f"DefaultTeamHandler|content|{content}")
         plan = parse_plan(content[0].policy_info)
         logger.info(f"DefaultTeamHandler|plan|{plan}")
         steps = plan.steps

@@ -22,6 +22,11 @@ class PlanOutputParser(ABC):
 
 class BasePlanner:
     @abstractmethod
-    def build_plan_instruction(self, context: "Context", input: str) -> str:
+    def plan(self, context: "Context", input: str) -> str:
+        """Get the name of the planner."""
+        pass
+
+    @abstractmethod
+    def replan(self, context: "Context", input: str) -> str:
         """Get the name of the planner."""
         pass

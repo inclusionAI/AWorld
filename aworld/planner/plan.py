@@ -2,33 +2,45 @@ import json
 import logging
 from typing import Any, Dict, List, Union, Optional
 from pydantic import BaseModel, Field, ValidationError
-from typing import Dict, List, Union
+
 logger = logging.getLogger(__name__)
 
 
 class StepInfo(BaseModel):
-    """单个步骤的详细信息"""
+    """Step information details"""
     
     # input for agent
-    input: Optional[str] = Field(..., description="步骤的描述")
+    input: Optional[str] = Field(..., description="Step description")
     # parameters for tools
-    parameters: Optional[Dict[str, Any]] = Field(..., description="工具或代理的参数")
+    parameters: Optional[Dict[str, Any]] = Field(..., description="Tool or agent parameters")
     # id of tool or agent
-    id: str = Field(..., description="执行该步骤的工具或代理ID")
+    id: str = Field(..., description="Tool or agent ID for execution")
 
-
-class Plan(BaseModel):
-    """Defined plan structure, including steps and their sequence.
-
-    Example:
-        {
-            "steps": {
-                "agent_step_1": {"input": "analysis input", "id": "requirement_analyzer"},
-                "agent_step_2": {"input": "generate code", "id": "code_generator"}
-            },
-            "dag": [["agent_step_1"], "agent_step_2"]
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format"""
+        return {
+            "input": self.input,
+            "parameters": self.parameters or {},
+            "id": self.id
         }
-    """
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StepInfo":
+        """Create from dictionary"""
+        return cls(
+            input=data.get("input"),
+            parameters=data.get("parameters", {}),
+            id=data["id"]
+        )
+
+    class Config:
+        json_encoders = {
+            # Add custom encoders if needed
+        }
+
+
+class StepInfos(BaseModel):
+    """Defined plan structure, including steps and their sequence."""
 
     steps: Dict[str, StepInfo] = Field(
         default_factory=dict,
@@ -40,96 +52,99 @@ class Plan(BaseModel):
         description="dag"
     )
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format"""
+        return {
+            "steps": {
+                step_id: step.to_dict() 
+                for step_id, step in self.steps.items()
+            },
+            "dag": self.dag
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StepInfos":
+        """Create from dictionary"""
+        return cls(
+            steps={
+                step_id: StepInfo.from_dict(step_info)
+                for step_id, step_info in data.get("steps", {}).items()
+            },
+            dag=data.get("dag", [])
+        )
+
+    class Config:
+        json_encoders = {
+            # Add custom encoders if needed
+        }
+
+
+class Plan(BaseModel):
+    """Plan structure with step information and final answer"""
+    
+    step_infos: StepInfos = Field(
+        default_factory=lambda: StepInfos(steps={}, dag=[]),
+        description="Step information and execution sequence"
+    )
+    answer: str = Field(
+        default="",
+        description="Final answer or result"
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format"""
+        return {
+            "step_infos": self.step_infos.to_dict(),
+            "answer": self.answer
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Plan":
+        """Create from dictionary"""
+        return cls(
+            step_infos=StepInfos.from_dict(data.get("step_infos", {"steps": {}, "dag": []})),
+            answer=data.get("answer", "")
+        )
+
+    def json(self, **kwargs) -> str:
+        """Convert to JSON string"""
+        return json.dumps(self.to_dict(), **kwargs)
+
+    @classmethod
+    def parse_raw(cls, json_str: str) -> "Plan":
+        """Create from JSON string"""
+        try:
+            data = json.loads(json_str)
+            return cls.from_dict(data)
+        except Exception as e:
+            logger.error(f"Failed to parse JSON: {e}")
+            return cls()
+
+    class Config:
+        json_encoders = {
+            # Add custom encoders if needed
+        }
+
+
+def parse_step_infos(step_infos: dict) -> StepInfos:
+    """Parse step information dictionary into StepInfos object"""
+    try:
+        return StepInfos.from_dict(step_infos)
+    except Exception as e:
+        logger.error(f"Error parsing step infos: {e}")
+        return StepInfos(steps={}, dag=[])
+
+
+def parse_step_json(step_json: str) -> StepInfos:
+    """Parse JSON string into StepInfos object"""
+    try:
+        data = json.loads(step_json)
+        return parse_step_infos(data)
+    except Exception as e:
+        logger.error(f"Failed to parse step JSON: {e}")
+        return StepInfos(steps={}, dag=[])
+
 
 def parse_plan(plan_text: str) -> Plan:
-    """解析JSON格式的计划文本为Plan对象
-    
-    Args:
-        plan_text: JSON格式的计划文本
-        
-    Returns:
-        Plan对象
-        
-    Raises:
-        ValueError: 当JSON格式错误或缺少必要字段时
-        ValidationError: 当数据结构不符合Plan模型定义时
-    
-    Example:
-        plan_text = '''
-        {
-            "steps": {
-                "agent_step_1": {
-                    "input": "Initialize agent2 with content='Apple Inc. development history'",
-                    "id": "agent2---uuid5bf563uuid",
-                    "parameters": {}
-                }
-            },
-            "dag": [["agent_step_1"]]
-        }
-        '''
-        plan = parse_plan(plan_text)
-    """
-    try:
-        # 解析JSON
-        plan_data = json.loads(plan_text)
-        
-        # 验证必要字段
-        if "steps" not in plan_data:
-            raise ValueError("计划数据缺少'steps'字段")
-        if "dag" not in plan_data:
-            raise ValueError("计划数据缺少'dag'字段")
-            
-        # 处理步骤信息
-        processed_steps: Dict[str, StepInfo] = {}
-        for step_id, step_info in plan_data["steps"].items():
-            # 确保必要字段存在
-            if "input" not in step_info:
-                raise ValueError(f"步骤 '{step_id}' 缺少'input'字段")
-            if "id" not in step_info:
-                raise ValueError(f"步骤 '{step_id}' 缺少'id'字段")
-                
-            # 添加默认的parameters字段如果不存在
-            if "parameters" not in step_info:
-                step_info["parameters"] = {}
-                
-            # 创建StepInfo对象
-            processed_steps[step_id] = StepInfo(
-                input=step_info["input"],
-                id=step_info["id"],
-                parameters=step_info["parameters"]
-            )
-            
-        # 验证DAG结构
-        dag = plan_data["dag"]
-        if not isinstance(dag, list):
-            raise ValueError("'dag'字段必须是列表类型")
-            
-        # 验证DAG中的步骤ID是否都存在于steps中
-        all_step_ids = set()
-        def collect_step_ids(items: List[Union[str, List[str]]]):
-            for item in items:
-                if isinstance(item, list):
-                    collect_step_ids(item)
-                else:
-                    all_step_ids.add(item)
-                    
-        collect_step_ids(dag)
-        unknown_steps = all_step_ids - set(processed_steps.keys())
-        if unknown_steps:
-            raise ValueError(f"DAG中包含未定义的步骤ID: {unknown_steps}")
-            
-        # 创建Plan对象
-        return Plan(
-            steps=processed_steps,
-            dag=dag
-        )
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON解析错误: {e}")
-        raise ValueError(f"无效的JSON格式: {e}")
-    except ValidationError as e:
-        logger.error(f"数据验证错误: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"解析计划时发生错误: {e}")
-        raise ValueError(f"解析计划失败: {e}")
+    """Parse JSON string into Plan object"""
+    return Plan.parse_raw(plan_text)
