@@ -1,10 +1,7 @@
 
-import json
 import os
 from pathlib import Path
-import random
 import sys
-import unittest
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -17,11 +14,6 @@ from examples.tools.common import Tools
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
 
-from aworld.agents.plan_agent import PlanAgent
-from aworld.planner.built_in_planner import BuiltInPlanner
-from aworld.core.context.base import Context
-from aworld.models.llm import LLMModel
-from aworld.planner.built_in_output_parser import BuiltInPlannerOutputParser
 from examples.deepresearch.prompts import *
 
 # os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-1.7b"
