@@ -13,7 +13,7 @@ from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
 from aworld.core.exceptions import AworldException
 from aworld.logs.util import logger
-from aworld.planner.plan import Plan, StepInfo
+from aworld.planner.plan import Plan, StepInfo, parse_plan
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.utils import endless_detect
@@ -510,8 +510,7 @@ class DefaultTeamHandler(AgentHandler):
                 yield msg
                 return
 
-        j = json.loads(content[0])
-        plan = Plan(**j)
+        plan = parse_plan(content[0].policy_info)
         steps = plan.steps
         dag = plan.dag
         if not steps or not dag:
