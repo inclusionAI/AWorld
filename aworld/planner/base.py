@@ -5,6 +5,7 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 from aworld.models.model_response import ModelResponse
+from aworld.planner.plan import Plan
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:

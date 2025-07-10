@@ -1,8 +1,7 @@
 import json
 from dataclasses import Field
 from typing import Dict, List, Union
-
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StepInfo(BaseModel):

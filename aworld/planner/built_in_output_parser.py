@@ -4,6 +4,7 @@ from aworld.core.agent.base import AgentResult
 from aworld.core.common import ActionModel, Observation
 from aworld.logs.util import logger
 from aworld.models.model_response import ModelResponse
+from aworld.planner.plan import Plan
 
 
 class BuiltInPlannerOutputParser:
@@ -18,7 +19,6 @@ class BuiltInPlannerOutputParser:
             return AgentResult(actions=[], current_state=None)
 
         content = resp.content.strip()
-        print("content", content)
 
         # Extract planning section
         planning_match = re.search(r'<PLANNING_TAG>(.*?)</PLANNING_TAG>', content, re.DOTALL)
