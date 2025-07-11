@@ -1,20 +1,104 @@
-import React from 'react';
-import { Handle, Position } from '@xyflow/react';
-import type { NodeProps } from '@xyflow/react';
+import React, { useState } from 'react';
+import { Handle, Position, useNodes, useReactFlow } from '@xyflow/react';
+import type { Node, NodeProps } from '@xyflow/react';
+import { deleteNode } from '@/pages/xyflow/utils/nodeUtils';
+import { Tag, Drawer, Dropdown } from 'antd';
+import { EllipsisOutlined, DeleteOutlined, CopyOutlined } from '@ant-design/icons';
 
-interface CustomNodeData extends Record<string, unknown> {
+interface NodeIOItem {
   label: string;
-  content?: React.ReactNode;
+  type: string;
 }
 
-export const CustomNode = ({ data }: NodeProps) => {
-  const nodeData = data as CustomNodeData;
+interface CustomNodeData
+  extends Node<{
+    id: string;
+    label: string;
+    content?: React.ReactNode;
+    input?: NodeIOItem[];
+    output?: NodeIOItem[];
+    nodeType?: 'start' | 'end' | 'default';
+  }> {}
+
+interface CustomNodeProps extends NodeProps<CustomNodeData> {}
+
+export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
+  const { label, content, input, output } = data;
+  const nodes = useNodes();
+  const reactFlowInstance = useReactFlow();
+  const { setNodes } = reactFlowInstance;
+
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+
+  const handleNodeClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsDrawerOpen(true);
+  };
+  const handleDrawerClose = (e: React.MouseEvent | React.KeyboardEvent) => {
+    if ('stopPropagation' in e) {
+      e.stopPropagation();
+    }
+    setIsDrawerOpen(false);
+  };
+  const renderIO = (title: string, items?: NodeIOItem[]) => {
+    return (
+      <div className="custom-node-io">
+        <span>{title}：</span>
+        {items?.map((item) => (
+          <Tag key={item.label}>{item.label}</Tag>
+        ))}
+      </div>
+    );
+  };
+
   return (
-    <div className="custom-node">
-      <div className="custom-node-header">{nodeData.label}</div>
-      <div className="custom-node-content">{nodeData.content ?? 'Custom Node Content'}</div>
+    <div className="custom-node" onClick={handleNodeClick}>
+      <div className="custom-node-header">
+        <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+          <span>{label}</span>
+          {data.nodeType !== 'start' && data.nodeType !== 'end' && (
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: 'delete',
+                    label: '删除',
+                    icon: <DeleteOutlined />,
+                    onClick: (e) => {
+                      e.domEvent.stopPropagation();
+                      deleteNode(nodes, setNodes, id);
+                    }
+                  },
+                  {
+                    key: 'duplicate',
+                    label: '创建副本',
+                    icon: <CopyOutlined />,
+                    onClick: (e) => {
+                      e.domEvent.stopPropagation();
+                      alert('暂不支持');
+                    }
+                  }
+                ]
+              }}
+              trigger={['click']}
+            >
+              <EllipsisOutlined style={{ cursor: 'pointer' }} onClick={(e) => e.stopPropagation()} />
+            </Dropdown>
+          )}
+        </div>
+      </div>
+      <div className="custom-node-body">
+        <div className="custom-node-content">
+          <div>{content ?? 'Custom Node Content'}</div>
+          {data.nodeType !== 'end' && renderIO('输入', input)}
+          {data.nodeType !== 'start' && renderIO('输出', output)}
+        </div>
+      </div>
       <Handle type="target" position={Position.Left} />
       <Handle type="source" position={Position.Right} />
+      <Drawer title={label} placement="right" closable={true} maskClosable={true} onClose={handleDrawerClose} open={isDrawerOpen} width={500} keyboard={true}>
+        {content ?? '节点详情内容'}
+      </Drawer>
     </div>
   );
 };

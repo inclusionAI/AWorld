@@ -9,8 +9,8 @@ import dagre from 'dagre';
 export const autoLayout = (nodes: Node[], edges: Edge[], setNodes: (nodes: Node[]) => void, reactFlowInstance: ReturnType<typeof useReactFlow>): void => {
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
-  const nodeWidth = 150;
-  const nodeHeight = 50;
+  const nodeWidth = 200;
+  const nodeHeight = 100;
 
   dagreGraph.setGraph({
     rankdir: 'LR',

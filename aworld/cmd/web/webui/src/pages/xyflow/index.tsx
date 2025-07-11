@@ -12,6 +12,7 @@ import { autoLayout } from './utils/layoutUtils';
 import '@xyflow/react/dist/style.css';
 import './index.less';
 
+
 const nodeTypes = {
   customNode: CustomNode
 };
@@ -67,7 +68,19 @@ function FlowChart() {
   }));
   return (
     <div style={{ width: '100%', height: '100vh' }}>
-      <ReactFlow nodes={nodes} edges={updatedEdges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={handleConnect} fitView nodesDraggable edgesFocusable panOnScroll nodeTypes={nodeTypes}>
+        <ReactFlow 
+          nodes={nodes} 
+          edges={updatedEdges} 
+          onNodesChange={onNodesChange} 
+          onEdgesChange={onEdgesChange} 
+          onConnect={handleConnect} 
+          fitView 
+          nodesDraggable 
+          edgesFocusable 
+          panOnScroll 
+          nodeTypes={nodeTypes}
+          nodeExtent={[[0, 0], [1000, 1000]]}
+        >
         <Background />
         {showMinimap && <MiniMap />}
         <FlowControls
