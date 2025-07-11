@@ -56,7 +56,7 @@ def setup_routes(storage: TraceStorage):
         trace_tree = get_agent_flow(trace_id)
         return JSONResponse(content={
             'trace_id': trace_id,
-            'root_span': trace_tree
+            'data': trace_tree
         })
 
     routes_setup = True

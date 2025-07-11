@@ -102,6 +102,7 @@ def task_span(session_id: str, task: 'aworld.core.task.Task' = None, attributes:
             semconv.TASK_ID: task.id,
             semconv.TASK_INPUT: task.input,
             semconv.TASK_IS_SUB_TASK: task.is_sub_task,
+            semconv.TASK_GROUP_ID: task.group_id,
             semconv.TASK: covert_to_jsonstr(task)
         }
         message_span_attribute.update(attributes)
