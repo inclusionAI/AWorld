@@ -571,7 +571,7 @@ class DefaultTeamHandler(AgentHandler):
                 merge_context.merge_context(res.context)
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"DefaultTeamHandler|single_node|end|{res}")
-        new_plan_input = Observation(content=merge_context.task_input, ensure_ascii=False)
+        new_plan_input = Observation(content=merge_context.task_input)
         yield AgentMessage(session_id=message.session_id,
                            payload=new_plan_input,
                            sender=self.name(),
