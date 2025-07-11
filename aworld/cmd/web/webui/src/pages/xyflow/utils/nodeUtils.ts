@@ -29,15 +29,14 @@ export const addNode = (
 
   const newNode = {
     id: Date.now().toString(),
-    data: { label: `Node ${nodes.length + 1}` },
+    type: 'customNode',
+    data: { 
+      label: `Custom Node ${nodes.length + 1}`,
+      content: `This is custom node #${nodes.length + 1}`
+    },
     position: {
       x: newXPosition,
       y: newYPosition
-    },
-    style: {
-      background: '#FADDDB',
-      border: '2px solid #E6A5AD',
-      color: '#d58690'
     },
     sourcePosition: Position.Right,
     targetPosition: Position.Left

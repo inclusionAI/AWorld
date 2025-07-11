@@ -6,12 +6,7 @@ import type { Node, Edge } from '@xyflow/react';
 import type { useReactFlow } from '@xyflow/react';
 import dagre from 'dagre';
 
-export const autoLayout = (
-  nodes: Node[],
-  edges: Edge[],
-  setNodes: (nodes: Node[]) => void,
-  reactFlowInstance: ReturnType<typeof useReactFlow>
-): void => {
+export const autoLayout = (nodes: Node[], edges: Edge[], setNodes: (nodes: Node[]) => void, reactFlowInstance: ReturnType<typeof useReactFlow>): void => {
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
   const nodeWidth = 150;
@@ -46,10 +41,10 @@ export const autoLayout = (
       }
     };
   });
-
   setNodes(updatedNodes);
-
+  console.log('auto：', updatedNodes);
+  console.log('edges:', edges);
   setTimeout(() => {
     reactFlowInstance.fitView();
   }, 0);
-}
+};
