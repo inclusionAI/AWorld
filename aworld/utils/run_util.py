@@ -12,7 +12,7 @@ from aworld.output.outputs import Outputs
 from aworld.runners.utils import choose_runners, execute_runner
 
 
-async def exec_tool(tool_name: str, params: dict, context: Context, sub_task: bool = False):
+async def exec_tool(tool_name: str, params: dict, context: Context, sub_task: bool = False, outputs: Outputs = None):
     """Utility method for executing a tool in a task-oriented manner.
 
     Args:
@@ -23,6 +23,8 @@ async def exec_tool(tool_name: str, params: dict, context: Context, sub_task: bo
     """
     actions = [ActionModel(tool_name=tool_name, params=params)]
     task = Task(input=Observation(content=actions), context=context, is_sub_task=sub_task)
+    if outputs:
+        task.outputs = outputs
     runners = await choose_runners([task], agent_oriented=False)
     res = await execute_runner(runners, RunConfig(reuse_process=True))
     resp: TaskResponse = res.get(task.id)

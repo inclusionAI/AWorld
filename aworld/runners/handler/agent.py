@@ -539,11 +539,15 @@ class DefaultTeamHandler(AgentHandler):
                     step_info: StepInfo = steps.get(n)
                     agent = self.swarm.agents.get(step_info.id)
                     if agent:
-                        tasks.append(exec_agent(step_info.input, agent, new_context))
+                        tasks.append(exec_agent(step_info.input, agent, new_context,
+                                                outputs=merge_context.outputs,
+                                                sub_task=True))
                     else:
                         tasks.append(exec_tool(tool_name=step_info.id,
                                                params=step_info.parameters,
-                                               context=new_context))
+                                               context=new_context,
+                                               sub_task=True,
+                                               outputs=merge_context.outputs))
 
                 res = await asyncio.gather(*tasks)
                 for idx, t in enumerate(res):
@@ -557,11 +561,13 @@ class DefaultTeamHandler(AgentHandler):
                 agent = self.swarm.agents.get(step_info.id)
                 new_context = merge_context.deep_copy()
                 if agent:
-                    res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs)
+                    res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs, sub_task=True)
                 else:
                     res = await exec_tool(tool_name=step_info.id,
                                           params=step_info.parameters,
-                                          context=new_context)
+                                          context=new_context,
+                                          outputs=merge_context.outputs,
+                                          sub_task=True)
                 merge_context.merge_context(res.context)
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"DefaultTeamHandler|single_node|end|{res}")
