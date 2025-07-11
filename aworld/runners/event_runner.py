@@ -313,7 +313,7 @@ class TaskEventRunner(TaskRunner):
             logger.debug(
                 f"[TaskEventRunner] _do_run finished  await_is_stopped {self.task.id}")
             if await self.is_stopped():
-                logger.debug(
+                logger.info(
                     f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
                 await self.task.outputs.mark_completed()
                 # todo sandbox cleanup

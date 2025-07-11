@@ -134,6 +134,7 @@ class StreamingOutputs(AsyncOutputs):
         Args:
             output (Output): The output to be added to the queue
         """
+        logger.info(f"StreamingOutputs|add_output|{self.task_id}|{output}")
         if self.task_id != output.task_id:
             logger.warning(f"{self.task_id} unequals {output.task_id}, add ignored.")
         self._output_queue.put_nowait(output)
@@ -167,6 +168,7 @@ class StreamingOutputs(AsyncOutputs):
                 break
 
             if self.is_complete and self._output_queue.empty():
+                logger.info(f"StreamingOutputs|stream_events|finished|{self.task_id}")
                 break
 
             try:
@@ -175,9 +177,11 @@ class StreamingOutputs(AsyncOutputs):
                 self._visited_outputs.append(output)
 
             except asyncio.CancelledError as err:
-                 break
+                logger.info(f"StreamingOutputs|stream_events|CancelledError|{self.task_id}|{err}")
+                break
 
             if output == RUN_FINISHED_SIGNAL:
+                logger.info(f"StreamingOutputs|stream_events|RUN_FINISHED_SIGNAL|{self.task_id}|{output}")
                 self._output_queue.task_done()
                 self._check_errors()
                 break
@@ -188,6 +192,7 @@ class StreamingOutputs(AsyncOutputs):
         self._cleanup_tasks()
 
         if self._stored_exception:
+            logger.info(f"StreamingOutputs|stream_events|stored_exception|{self.task_id}|{self._stored_exception}")
             raise self._stored_exception
 
     def _check_errors(self):
