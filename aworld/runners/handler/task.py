@@ -84,7 +84,8 @@ class DefaultTaskHandler(TaskHandler):
                                                       usage=self.runner.context.token_usage)
 
             logger.info(f"{self.runner.task.id} finished.")
-            await self.runner.task.outputs.mark_completed()
+            if not self.runner.task.is_sub_task:
+                await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
         elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):
