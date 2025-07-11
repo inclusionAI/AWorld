@@ -84,7 +84,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       usage=self.runner.context.token_usage)
 
             logger.info(f"FINISHED|task|{self.runner.task.id} finished. {self.runner.task.is_sub_task}")
-            if self.runner.task.is_sub_task is not True:
+            if not self.runner.task.is_sub_task:
                 logger.info(f"FINISHED|outputs|{self.runner.task.id} {self.runner.task.is_sub_task}")
                 await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
