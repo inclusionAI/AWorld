@@ -85,7 +85,7 @@ class DefaultAgentHandler(AgentHandler):
                     topic=TopicType.FINISHED,
                     headers=headers
                 )
-                logger.info(f"agent handler send finished message: {msg}")
+                logger.info(f"FINISHED|agent handler send finished message: {msg}")
                 yield msg
                 return
 
@@ -102,7 +102,7 @@ class DefaultAgentHandler(AgentHandler):
                         topic=TopicType.FINISHED,
                         headers=headers
                     )
-                    logger.info(f"agent handler send finished message: {msg}")
+                    logger.info(f"FINISHED|agent handler send finished message: {msg}")
                     yield msg
                 else:
                     msg = Message(
@@ -292,6 +292,7 @@ class DefaultAgentHandler(AgentHandler):
             return
 
         # The last agent
+        logger.info(f"_sequence_stop_check idx|{idx}|{len(self.swarm.ordered_agents)}")
         if idx == len(self.swarm.ordered_agents) - 1:
             receiver = None
             # agent loop
@@ -310,7 +311,7 @@ class DefaultAgentHandler(AgentHandler):
                     headers=message.headers
                 )
             else:
-                logger.debug(f"_sequence_stop_check execute loop {self.swarm.cur_step}. "
+                logger.info(f"FINISHED|_sequence_stop_check execute loop {self.swarm.cur_step}. "
                              f"message: {message}. session_id: {session_id}.")
                 yield Message(
                     category=Constants.TASK,
@@ -378,6 +379,7 @@ class DefaultAgentHandler(AgentHandler):
                     )
                 else:
                     # means the task finished
+                    logger.info(f"FINISHED|_loop_sequence_stop_check execute loop {self.swarm.cur_step}. ")
                     yield Message(
                         category=Constants.TASK,
                         payload=action.policy_info,
@@ -425,6 +427,7 @@ class DefaultAgentHandler(AgentHandler):
         if endless_detect(self.agent_calls,
                           endless_threshold=self.endless_threshold,
                           root_agent_name=self.swarm.communicate_agent.id()):
+            logger.info(f"FINISHED|_social_stop_check endless_detect|{self.agent_calls}|{self.endless_threshold}|{self.swarm.communicate_agent.id()}")
             yield Message(
                 category=Constants.TASK,
                 payload=action.policy_info,
@@ -437,6 +440,7 @@ class DefaultAgentHandler(AgentHandler):
 
         if not caller or caller == self.swarm.communicate_agent.id():
             if self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished:
+                logger.info(f"FINISHED|_social_stop_check finished|{self.swarm.cur_step}|{self.swarm.max_steps}|{self.swarm.finished}")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
@@ -479,7 +483,7 @@ class DefaultTeamHandler(AgentHandler):
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
         if message.category != Constants.MULTI_AGENT_TEAM:
             return
-
+        logger.info(f"DefaultTeamHandler|handle|taskid={self.task_id}|is_sub_task={message.context._task.is_sub_task}")
         content = message.payload
         # data is List[ActionModel]
         for action in content:
@@ -515,6 +519,7 @@ class DefaultTeamHandler(AgentHandler):
         dag = step_infos.dag
         if not steps or not dag:
             if plan.answer:
+                logger.info(f"FINISHED|DefaultTeamHandler|plan|finished|{plan.answer}")
                 yield Message(
                     category=Constants.TASK,
                     payload=plan.answer,
@@ -539,11 +544,12 @@ class DefaultTeamHandler(AgentHandler):
                     step_info: StepInfo = steps.get(n)
                     agent = self.swarm.agents.get(step_info.id)
                     if agent:
-                        tasks.append(exec_agent(step_info.input, agent, new_context))
+                        tasks.append(exec_agent(step_info.input, agent, new_context, sub_task=True))
                     else:
                         tasks.append(exec_tool(tool_name=step_info.id,
                                                params=step_info.parameters,
-                                               context=new_context))
+                                               context=new_context,
+                                               sub_task=True))
 
                 res = await asyncio.gather(*tasks)
                 for idx, t in enumerate(res):
@@ -557,11 +563,12 @@ class DefaultTeamHandler(AgentHandler):
                 agent = self.swarm.agents.get(step_info.id)
                 new_context = merge_context.deep_copy()
                 if agent:
-                    res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs)
+                    res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs, sub_task=True)
                 else:
                     res = await exec_tool(tool_name=step_info.id,
                                           params=step_info.parameters,
-                                          context=new_context)
+                                          context=new_context,
+                                          sub_task=True)
                 merge_context.merge_context(res.context)
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"DefaultTeamHandler|single_node|end|{res}")
