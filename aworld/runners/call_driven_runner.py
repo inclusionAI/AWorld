@@ -76,7 +76,9 @@ class WorkflowRunner(TaskRunner):
             except Exception as err:
                 logger.error(f"Runner run failed, err is {traceback.format_exc()}")
             finally:
-                await self.outputs.mark_completed()
+                if not self.task.is_sub_task:
+                    logger.info(f"FINISHED|call_driven_runner|mark_completed|{self.task.id}")
+                    await self.outputs.mark_completed()
                 color_log(f"task token usage: {self.context.token_usage}",
                           color=Color.pink,
                           logger_=trace_logger)
@@ -174,7 +176,8 @@ class WorkflowRunner(TaskRunner):
                                                            data=f"current agent {cur_agent.id()} no policy to use.",
                                                            task_id=self.context.task_id)
                         )
-                        await self.outputs.mark_completed()
+                        if not self.task.is_sub_task:
+                            await self.outputs.mark_completed()
                         task_span.set_attributes({
                             "end_time": time.time(),
                             "duration": time.time() - start,
@@ -233,7 +236,9 @@ class WorkflowRunner(TaskRunner):
                                 task_id=self.context.task_id
                             )
                         )
-                        await self.outputs.mark_completed()
+                        if not self.task.is_sub_task:
+                            logger.info(f"FINISHED|WorkflowRunner|outputs|{self.task.id} {self.task.is_sub_task}")
+                            await self.outputs.mark_completed()
                         task_span.set_attributes({
                             "end_time": time.time(),
                             "duration": time.time() - start,
@@ -407,7 +412,9 @@ class LoopWorkflowRunner(WorkflowRunner):
             except Exception as err:
                 logger.error(f"Runner run failed, err is {traceback.format_exc()}")
             finally:
-                await self.outputs.mark_completed()
+                if not self.task.is_sub_task:
+                    logger.info(f"FINISHED|LoopWorkflowRunner|outputs|{self.task.id} {self.task.is_sub_task}")
+                    await self.outputs.mark_completed()
                 color_log(f"task token usage: {self.context.token_usage}",
                           color=Color.pink,
                           logger_=trace_logger)
