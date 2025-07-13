@@ -4,10 +4,13 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { deleteNode } from '@/pages/xyflow/utils/nodeUtils';
 import { Tag, Drawer, Dropdown } from 'antd';
 import { EllipsisOutlined, DeleteOutlined, CopyOutlined } from '@ant-design/icons';
+import { NodeEditor } from './NodeEditor';
 
 interface NodeIOItem {
+  id: string;
   label: string;
-  type: string;
+  type: 'string' | 'number' | 'boolean';
+  defaultValue?: string;
 }
 
 interface CustomNodeData
@@ -29,6 +32,15 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
   const { setNodes } = reactFlowInstance;
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [editingContent, setEditingContent] = useState(
+    typeof content === 'string' ? content : ''
+  );
+  const [editingInputs, setEditingInputs] = useState<NodeIOItem[]>(input || []);
+
+  React.useEffect(() => {
+    setEditingContent(typeof content === 'string' ? content : '');
+    setEditingInputs(input || []);
+  }, [content, input]);
 
   const handleNodeClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -45,7 +57,7 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
       <div className="custom-node-io">
         <span>{title}：</span>
         {items?.map((item) => (
-          <Tag key={item.label}>{item.label}</Tag>
+          <Tag key={item.label}>{item.type}.<strong>{item.label}</strong></Tag>
         ))}
       </div>
     );
@@ -89,15 +101,44 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
       </div>
       <div className="custom-node-body">
         <div className="custom-node-content">
-          <div>{content ?? 'Custom Node Content'}</div>
+          <div>{editingContent || 'Custom Node Content'}</div>
           {data.nodeType !== 'end' && renderIO('输入', input)}
           {data.nodeType !== 'start' && renderIO('输出', output)}
         </div>
       </div>
-      <Handle type="target" position={Position.Left} />
-      <Handle type="source" position={Position.Right} />
-      <Drawer title={label} placement="right" closable={true} maskClosable={true} onClose={handleDrawerClose} open={isDrawerOpen} width={500} keyboard={true}>
-        {content ?? '节点详情内容'}
+      {data.nodeType !== 'start' && <Handle type="target" position={Position.Left} />}
+      {data.nodeType !== 'end' && <Handle type="source" position={Position.Right} />}
+      <Drawer 
+        title={label} 
+        placement="right" 
+        closable={true} 
+        maskClosable={true} 
+        onClose={handleDrawerClose} 
+        open={isDrawerOpen} 
+        width={500} 
+        keyboard={true}
+      >
+        <NodeEditor 
+          node={{ 
+            id, 
+            position: { x: 0, y: 0 }, // 临时值，实际由xyflow管理
+            data: { ...data, content: editingContent, input: editingInputs } 
+          }}
+          onUpdate={(updatedNode) => {
+            setNodes((nds) =>
+              nds.map((node) => {
+                if (node.id === id) {
+                  return {
+                    ...node,
+                    data: updatedNode.data
+                  };
+                }
+                return node;
+              })
+            );
+          }}
+          onClose={() => handleDrawerClose({} as React.MouseEvent)}
+        />
       </Drawer>
     </div>
   );

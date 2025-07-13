@@ -85,12 +85,12 @@ function FlowChart() {
     [setEdges]
   );
 
-  const deleteEdge = useCallback(
-    (edgeId: string) => {
-      setEdges((eds) => eds.filter((edge) => edge.id !== edgeId));
-    },
-    [setEdges]
-  );
+  // const deleteEdge = useCallback(
+  //   (edgeId: string) => {
+  //     setEdges((eds) => eds.filter((edge) => edge.id !== edgeId));
+  //   },
+  //   [setEdges]
+  // );
 
   const autoLayout = useCallback(() => {
     const dagreGraph = new dagre.graphlib.Graph();

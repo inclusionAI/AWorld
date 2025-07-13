@@ -9,8 +9,8 @@ export const initialNodes = [
       nodeType: 'start',
       content: '开始节点，用于设定工作流启动变量',
       input: [
-        { label: 'name', type: 'int' },
-        { label: 'age', type: 'Boolean' }
+        // { label: 'name', type: 'int' },
+        // { label: 'age', type: 'Boolean' }
       ]
     },
     position: { x: 0, y: 0 },
@@ -26,8 +26,8 @@ export const initialNodes = [
       nodeType: 'end',
       content: '结束节点，用于返回工作流运行结果',
       output: [
-        { label: 'name', type: 'int' },
-        { label: 'age', type: 'Boolean' }
+        // { label: 'name', type: 'int' },
+        // { label: 'age', type: 'Boolean' }
       ]
     },
     position: { x: 400, y: 0 },
