@@ -70,7 +70,9 @@ class DefaultTaskHandler(TaskHandler):
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
-            await self.runner.task.outputs.mark_completed()
+            if not self.runner.task.is_sub_task:
+                logger.info(f"FINISHED|DefaultTaskHandler|outputs|{self.runner.task.id} {self.runner.task.is_sub_task}")
+                await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
         elif topic == TopicType.FINISHED:
             async for event in self.run_hooks(message, HookPoint.FINISHED):
@@ -83,8 +85,10 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
 
-            logger.info(f"{self.runner.task.id} finished.")
-            await self.runner.task.outputs.mark_completed()
+            logger.info(f"FINISHED|task|{self.runner.task.id} finished. {self.runner.task.is_sub_task}")
+            if not self.runner.task.is_sub_task:
+                logger.info(f"FINISHED|DefaultTaskHandler|outputs|{self.runner.task.id} {self.runner.task.is_sub_task}")
+                await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
         elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):

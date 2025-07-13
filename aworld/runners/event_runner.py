@@ -315,7 +315,9 @@ class TaskEventRunner(TaskRunner):
             if await self.is_stopped():
                 logger.debug(
                     f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
-                await self.task.outputs.mark_completed()
+                if not self.task.is_sub_task:
+                    logger.info(f"FINISHED|TaskEventRunner|outputs|{self.task.id} {self.task.is_sub_task}")
+                    await self.task.outputs.mark_completed()
                 # todo sandbox cleanup
                 if self.swarm and hasattr(self.swarm, 'agents') and self.swarm.agents:
                     for agent_name, agent in self.swarm.agents.items():

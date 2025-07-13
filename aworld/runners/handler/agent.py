@@ -87,7 +87,7 @@ class DefaultAgentHandler(AgentHandler):
                     topic=TopicType.FINISHED,
                     headers=headers
                 )
-                logger.info(f"agent handler send finished message: {msg}")
+                logger.info(f"FINISHED|agent handler send finished message: {msg}")
                 yield msg
                 return
 
@@ -104,7 +104,7 @@ class DefaultAgentHandler(AgentHandler):
                         topic=TopicType.FINISHED,
                         headers=headers
                     )
-                    logger.info(f"agent handler send finished message: {msg}")
+                    logger.info(f"FINISHED|agent handler send finished message: {msg}")
                     yield msg
                 else:
                     msg = Message(
