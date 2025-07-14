@@ -134,18 +134,37 @@ AWorld is designed to achieve two primary objectives: (1) provide an efficient f
 ![](readme_assets/runtime.jpg)
 
 ### Backward
-> During training, an action-state rollout demonstration using AWorld's distributed environments.
+
+> During training, an action-state rollout demonstration using **AWorld's distributed environments**.
 
 ![](readme_assets/agent_training2.jpg)
 
-<!-- > An illustration of training code that seamlessly integrates the learning framework (Swift, in this example) with AWorld as the environment.
+> An illustration of training code that seamlessly integrates the RL learning framework (Swift, in this example) with AWorld as the environment is shown below. This integration enables scalable and efficient agent training through distributed environment execution. (To run high-concurrency rollouts, you need to deploy an online distributed environment. Please contact [chenyi.zcy@antgroup.com](mailto:chenyi.zcy@antgroup.com) if assistance is needed.)
 
-```python
-# git clone **
-# git apply diff_patch
-# run the code
+#### Usage
 
-``` -->
+To apply and use this integration:
+
+1. Clone AWorld's `agent_training_server` branch:
+```bash
+git clone -b agent_training_server --single-branch https://github.com/inclusionAI/AWorld.git AWorld
+```
+
+2. Clone ms-swift's v3.5.2 branch (shallow clone):
+```bash
+git clone -b v3.5.2 --depth=1 https://github.com/modelscope/ms-swift.git ms-swift
+```
+
+3. Copy patch files from AWorld to ms-swift:
+```bash
+cp -r AWorld/patches ms-swift/
+```
+
+4. Enter the patches directory and apply the patch:
+```bash
+cd ms-swift/patches
+git apply 0001-feat-add-agent-training-support-with-aworld-server.patch
+```
 
 ## Demo
 > Running Pre-defined Agents (e.g., see [demo code](examples/browsers/run.py)). Below are demonstration videos showcasing AWorld's capabilities across various agent configurations and environments.
