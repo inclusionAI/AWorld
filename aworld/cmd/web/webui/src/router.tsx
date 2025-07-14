@@ -2,6 +2,7 @@ import React, { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 
 const App = lazy(() => import('./pages/App'));
+const XyFlowPage = lazy(() => import('./pages/xyflow'));
 
 const routes = [
   {
@@ -14,7 +15,7 @@ const routes = [
   },
   {
     path: '/xyflow',
-    element: <App />
+    element: <XyFlowPage />
   }
 ];
 
