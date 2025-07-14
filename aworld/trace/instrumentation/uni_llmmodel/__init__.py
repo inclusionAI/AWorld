@@ -32,7 +32,6 @@ from aworld.logs.util import logger
 
 def _completion_class_wrapper(tracer: Tracer):
 
-    @wrapt.decorator
     def wrapper(wrapped, instance, args, kwargs):
         model_name = instance.provider.model_name
         if not model_name:
