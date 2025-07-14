@@ -34,7 +34,7 @@ from aworld.models.llm import get_llm_model, call_llm_model, acall_llm_model, ac
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
-from aworld.output.base import StepOutput, MessageOutput
+from aworld.output.base import StepOutput, MessageOutput, Output
 from aworld.planner.plan import DefaultPlanner, PlannerOutputParser
 from aworld.prompt import Prompt
 from aworld.runners.hook.hooks import HookPoint
@@ -652,6 +652,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 is_use_tool_prompt = len(use_tools) > 0
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
+                    if eventbus is not None:
+                        output_message = Message(
+                            category=Constants.OUTPUT,
+                            payload=Output(
+                                data=f"llm result error: {llm_response.error}"
+                            ),
+                            sender=self.id(),
+                            session_id=self.context.session_id if self.context else "",
+                            headers={"context": self.context}
+                        )
+                        await send_message(output_message)
                 else:
                     await self._add_llm_response_to_memory(llm_response, message.context)
             else:
@@ -874,6 +885,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         except Exception as e:
             logger.warn(traceback.format_exc())
+            if eventbus is not None:
+                output_message = Message(
+                    category=Constants.OUTPUT,
+                    payload=Output(
+                        data=f"Failed to call llm model: {e}"
+                    ),
+                    sender=self.id(),
+                    session_id=self.context.session_id if self.context else "",
+                    headers={"context": self.context}
+                )
+                await send_message(output_message)
             raise e
         finally:
             return llm_response
