@@ -34,10 +34,11 @@ os.environ["LLM_MODEL_NAME"] = "openrouter.openai/gpt-4o"
 os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
 os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
 os.environ["LLM_MODEL_NAME"] = "gpt-4o-2024-08-06"
+os.environ["LLM_MODEL_NAME"] = "claude-3-7-sonnet-20250219"
 os.environ["LLM_BASE_URL"] = "https://matrixllm.alipay.com/v1"
 os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
 
-class PlanAgent(Agent):
+class BaseDynamicPromptAgent(Agent):
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
                        **kwargs) -> List[ActionModel]:
         return await super().async_policy(observation, info, message, **kwargs)
@@ -66,6 +67,12 @@ class PlanAgent(Agent):
         logger.info(
             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
+class PlanAgent(BaseDynamicPromptAgent):
+    pass
+
+class ReportingAgent(BaseDynamicPromptAgent):
+    pass
+    
 
 def get_deepresearch_swarm(user_input):
 

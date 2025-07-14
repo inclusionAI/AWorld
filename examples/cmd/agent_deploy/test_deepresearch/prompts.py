@@ -270,13 +270,10 @@ Based on the planned analysis steps, we will provide a detailed comparison of su
 {{tool_list}}
 
 ## Research Topic
-{{task}}"""
-
-replan_sys_prompt = plan_sys_prompt + """
+{{task}}
 
 ## Trajectories
-{{trajectories}}
-"""
+{{trajectories}}"""
 
 
 search_sys_prompt = """Conduct targeted aworld_search tools to gather the most recent, credible information on "{{task}}" and synthesize it into a verifiable text artifact.
