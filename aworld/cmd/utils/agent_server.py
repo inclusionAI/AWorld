@@ -1,7 +1,10 @@
 from abc import abstractmethod
 import asyncio
+from pathlib import Path
 from typing import Dict, List
 import os
+
+from dotenv import load_dotenv
 from aworld import trace
 from aworld.cmd import AgentModel, ChatCompletionMessage, ChatCompletionRequest
 from aworld.session.base_session_service import BaseSessionService
@@ -78,7 +81,9 @@ class AgentServer:
         self.server_name = server_name
         self.server_dir = server_dir
         self.session_service = session_service
-
+        # Load server global env
+        load_dotenv(Path(self.server_dir) / ".env", override=True, verbose=True)
+        # Load agent instances
         self.agent_instances = agent_loader.list_agents(self.server_dir)
 
     def list_agents(self) -> Dict[str, AgentModel]:
