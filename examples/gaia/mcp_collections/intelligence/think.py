@@ -31,9 +31,9 @@ class ThinkCollection(ActionCollection):
         self._llm_config = AgentConfig(
             llm_provider="openai",
             # llm_model_name="google/gemini-2.5-flash-preview-05-20:thinking",
-            llm_model_name="deepseek/deepseek-r1-0528:free",
-            llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-            llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+            llm_model_name=os.getenv("THINK_LLM_MODEL_NAME", "deepseek/deepseek-r1-0528:free"),
+            llm_api_key=os.getenv("THINK_LLM_API_KEY"),
+            llm_base_url=os.getenv("THINK_LLM_BASE_URL"),
         )
 
         self._color_log("Intelligence Reasoning Service initialized", Color.green, "debug")

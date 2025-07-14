@@ -1,19 +1,27 @@
 import React from 'react';
 import { Tooltip, Typography } from 'antd';
-import { Position, Handle } from 'reactflow';
-import type { NodeData } from './TraceXY.types';
+import { Position, Handle } from '@xyflow/react';
+import type { CustomNodeData } from './TraceXY.types';
 
 interface CustomNodeProps {
-  data: NodeData;
+  data: {
+    data: CustomNodeData;
+  };
+  isFirst?: boolean;
+  isLast?: boolean;
 }
 
-const CustomNode: React.FC<CustomNodeProps> = ({ data }) => {
-  const summary = data.summary ? JSON.parse(data.summary).summary : '';
-  const tooltipContent = data.event_id ? (
+const CustomNode: React.FC<CustomNodeProps> = ({ data, isFirst, isLast }) => {
+  const nodeData: CustomNodeData = data || {};
+  const summary = nodeData.summary
+    ? (typeof nodeData.summary === 'string'
+        ? JSON.parse(nodeData.summary).summary
+        : nodeData.summary?.summary) || ''
+    : '';
+  const tooltipContent = nodeData.event_id ? (
     <div className="Tooltipbox">
-      {/* {data.summary ? <pre>{JSON.parse(data.summary).summary}</pre> :''} */}
-      {summary.length > 120 ? summary : ''}
-      <div>{data.event_id}</div>
+      {summary.length > 100 ? summary : ''}
+      <div>{nodeData.event_id}</div>
     </div>
   ) : null;
   return (
@@ -22,9 +30,13 @@ const CustomNode: React.FC<CustomNodeProps> = ({ data }) => {
         <Typography.Paragraph className="summary" ellipsis={{ rows: 4 }}>
           {summary}
         </Typography.Paragraph>
-        <div className="name">{data.show_name}</div>
-        <Handle type="target" position={Position.Top} style={{ background: '#555' }} />
-        <Handle type="source" position={Position.Bottom} style={{ background: '#555' }} />
+        <div className="name">{nodeData.show_name || 'Unnamed Node'}</div>
+        {!isFirst && (
+          <Handle type="target" position={Position.Top} style={{ background: '#555' }} />
+        )}
+        {!isLast && (
+          <Handle type="source" position={Position.Bottom} style={{ background: '#555' }} />
+        )}
       </div>
     </Tooltip>
   );

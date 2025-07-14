@@ -12,38 +12,21 @@ logger = logging.getLogger(__name__)
 _agent_cache: Dict[str, AgentModel] = {}
 
 
-def list_agents() -> List[AgentModel]:
+def list_agents(server_dir: str) -> Dict[str, AgentModel]:
     """
     List all cached agents
 
     Returns:
-        List[AgentModel]: The list of agent models
+        Dict[str, AgentModel]: The map of agent models
     """
     if len(_agent_cache) == 0:
-        for m in _list_agents():
+        for m in _list_agents(server_dir):
             _agent_cache[m.id] = m
     return _agent_cache
 
 
-def get_agent(agent_id) -> AgentModel:
-    """
-    Get the agent model by agent name
-
-    Args:
-        agent_id: The name of the agent
-
-    Returns:
-        AgentModel: The agent model
-    """
-    if len(_agent_cache) == 0:
-        list_agents()
-    if agent_id not in _agent_cache:
-        raise Exception(f"Agent {agent_id} not found")
-    return _agent_cache[agent_id]
-
-
-def _list_agents() -> List[AgentModel]:
-    agents_dir = os.path.join(os.getcwd(), "agent_deploy")
+def _list_agents(server_dir: str) -> List[AgentModel]:
+    agents_dir = os.path.join(server_dir, "agent_deploy")
 
     if not os.path.exists(agents_dir):
         logger.warning(f"Agents directory {agents_dir} does not exist")

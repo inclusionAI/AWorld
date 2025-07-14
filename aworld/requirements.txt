@@ -3,16 +3,14 @@
 pydantic>=2.9.2
 pyyaml~=6.0.2
 openai~=1.66.3
-mcp[cli]~=1.8.0
+mcp[cli]~=1.10.1
 python-dotenv>=1.0.1
 executing~=2.2.0
 kubernetes~=32.0.1
-streamlit>=1.32.0
 pyvis>=0.3.2
 opentelemetry-api~=1.32.1
 opentelemetry-sdk~=1.32.1
 opentelemetry-exporter-otlp~=1.32.1
 tiktoken~=0.9.0
 fastapi
-ffmpeg-python>=0.2.0
 aiohttp~=3.9.5

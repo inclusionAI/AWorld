@@ -70,8 +70,8 @@ class ImageCollection(ActionCollection):
         self._llm_config = AgentConfig(
             llm_provider="openai",
             llm_model_name=os.getenv("IMAGE_LLM_MODEL_NAME", "gpt-4o"),
-            llm_api_key=os.getenv("IMAGE_LLM_API_KEY", "your_openai_api_key"),
-            llm_base_url=os.getenv("IMAGE_LLM_BASE_URL", "your_openai_base_url"),
+            llm_api_key=os.getenv("IMAGE_LLM_API_KEY"),
+            llm_base_url=os.getenv("IMAGE_LLM_BASE_URL"),
         )
 
         self._color_log("Image Processing Service initialized", Color.green, "debug")
