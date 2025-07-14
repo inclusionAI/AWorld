@@ -1,0 +1,20 @@
+{
+    "mcpServers": {
+        "aworldsearch_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.mcp_servers.aworldsearch_server"
+            ],
+            "env": {
+                "AWORLD_SEARCH_URL": "${AWORLD_SEARCH_URL}",
+                "AWORLD_SEARCH_TOTAL_NUM": "${AWORLD_SEARCH_TOTAL_NUM}",
+                "AWORLD_SEARCH_SLICE_NUM": "${AWORLD_SEARCH_SLICE_NUM}",
+                "AWORLD_SEARCH_DOMAIN": "${AWORLD_SEARCH_DOMAIN}",
+                "AWORLD_SEARCH_SEARCHMODE": "${AWORLD_SEARCH_SEARCHMODE}",
+                "AWORLD_SEARCH_SOURCE": "${AWORLD_SEARCH_SOURCE}",
+                "AWORLD_SEARCH_UID": "${AWORLD_SEARCH_UID}"
+            }
+        }
+    }
+}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import ReactFlow, { Background, Controls } from 'reactflow';
+import { ReactFlow, Background, Controls } from '@xyflow/react';
 import CustomNode from './CustomNode';
-import 'reactflow/dist/style.css';
+import '@xyflow/react/dist/style.css';
 import { fetchTraceData } from '@/api/trace';
 import './index.less';
 import type { NodeData, FlowElements, TraceXYProps } from './TraceXY.types';

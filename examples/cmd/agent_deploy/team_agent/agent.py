@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+from aworld.agents.plan_agent import PlanAgent
 from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
@@ -81,7 +82,6 @@ class AWorldAgent(BaseAWorldAgent):
             google_pse_search_agent,
             # aworld_playwright_agent,
             summary_agent,
-            build_type=GraphBuildType.TEAM,
             max_steps=10,
         )
 
