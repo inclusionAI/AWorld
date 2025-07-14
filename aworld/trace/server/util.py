@@ -147,13 +147,13 @@ def get_agent_flow(trace_id):
         while parent_id and parent_id not in filtered_spans:
             parent_span = spans_dict.get(parent_id)
             if parent_span and parent_span.get('run_type') == RunType.TASK.value:
-                if str(parent_span['attributes'].get(semconv.TASK_IS_SUB_TASK)).lower() == 'true':
-                    sub_task_spans.append(span)
-                    skip_this_span = True
-                    break
-                else:
-                    print(f"parent_span_name: {parent_span['name']}")
-                    span['task_group_id'] = parent_span['attributes'].get(semconv.TASK_GROUP_ID)
+                # if str(parent_span['attributes'].get(semconv.TASK_IS_SUB_TASK)).lower() == 'true':
+                #     sub_task_spans.append(span)
+                #     skip_this_span = True
+                #     break
+                # else:
+                # print(f"parent_span_name: {parent_span['name']}")
+                span['task_group_id'] = parent_span['attributes'].get(semconv.TASK_GROUP_ID)
             parent_id = parent_span['parent_id'] if parent_span and parent_span['parent_id'] else None
 
         if skip_this_span:

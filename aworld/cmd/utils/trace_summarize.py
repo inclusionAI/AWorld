@@ -67,10 +67,11 @@ trace_prompt = """
     3 Tool span: The prefix for 'name' is 'event.tool.'
 
     requirement:
-    1. Please summarize and output separately for agents with different event.id, ensuring that each agent has its own summary.
-    2. Even if the name is the same, different agent spans for event.id are also different agents
-    3. There may be a parent-child relationship between agents. Please select the LLM span and Tool span from the nearest child span to the current agent for summarizing
-    4. Please output in the following standard JSON format without any additional explanatory text:
+    1. Please summarize and output separately for agents with different event.id.
+    2. Agent Span with the same name but different event.id are also considered as different agents.
+    3. There may be a parent-child relationship between agents. Please select the LLM span and Tool span from the nearest child span to the current agent for summarizing.
+    4. Please ensure that the output includes all agents that meet the above definition, regardless of which layer the agent is at.
+    5. Please output in the following standard JSON format without any additional explanatory text:
     [{{"agent":"947cc4c1b7ed406ab7fbf38b9d2b1f5a",,"summary":"xxx","token_usage":"xxx","input_tokens":"xxx","output_tokens":"xxx","use_tools":["xxx"]}},{{}}]
     Here are the trace_id: {task}
     """
