@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { Button, Input, Table, Select, Collapse } from 'antd';
 import type { ColumnType } from 'antd/es/table';
-import './NodeEditor.less';
+import './index.less';
 import { PlusOutlined } from '@ant-design/icons';
 import type { Node } from '@xyflow/react';
 

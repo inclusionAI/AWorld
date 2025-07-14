@@ -4,7 +4,7 @@ import type { Node, NodeProps } from '@xyflow/react';
 import { deleteNode } from '@/pages/xyflow/utils/nodeUtils';
 import { Tag, Drawer, Dropdown } from 'antd';
 import { EllipsisOutlined, DeleteOutlined, CopyOutlined } from '@ant-design/icons';
-import { NodeEditor } from './NodeEditor';
+import { NodeEditor } from '../NodeEditor';
 
 interface NodeIOItem {
   id: string;
@@ -32,14 +32,17 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
   const { setNodes } = reactFlowInstance;
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [editingContent, setEditingContent] = useState(
-    typeof content === 'string' ? content : ''
-  );
-  const [editingInputs, setEditingInputs] = useState<NodeIOItem[]>(input || []);
+  const [pendingData, setPendingData] = useState<Partial<CustomNodeData['data']>>({});
+  const [editingData, setEditingData] = useState({
+    content: typeof content === 'string' ? content : '',
+    input: input || []
+  });
 
   React.useEffect(() => {
-    setEditingContent(typeof content === 'string' ? content : '');
-    setEditingInputs(input || []);
+    setEditingData({
+      content: typeof content === 'string' ? content : '',
+      input: input || []
+    });
   }, [content, input]);
 
   const handleNodeClick = (e: React.MouseEvent) => {
@@ -49,6 +52,22 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
   const handleDrawerClose = (e: React.MouseEvent | React.KeyboardEvent) => {
     if ('stopPropagation' in e) {
       e.stopPropagation();
+    }
+    if (Object.keys(pendingData).length > 0) {
+      setNodes((nds) =>
+        nds.map((node) => {
+          if (node.id === id) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                ...pendingData
+              }
+            };
+          }
+          return node;
+        })
+      );
     }
     setIsDrawerOpen(false);
   };
@@ -101,7 +120,7 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
       </div>
       <div className="custom-node-body">
         <div className="custom-node-content">
-          <div>{editingContent || 'Custom Node Content'}</div>
+          <div>{editingData.content || 'Custom Node Content'}</div>
           {data.nodeType !== 'end' && renderIO('输入', input)}
           {data.nodeType !== 'start' && renderIO('输出', output)}
         </div>
@@ -121,23 +140,16 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
         <NodeEditor 
           node={{ 
             id, 
-            position: { x: 0, y: 0 }, // 临时值，实际由xyflow管理
-            data: { ...data, content: editingContent, input: editingInputs } 
+            position: { x: 0, y: 0 },
+            data: { ...data, ...editingData }
           }}
           onUpdate={(updatedNode) => {
-            setNodes((nds) =>
-              nds.map((node) => {
-                if (node.id === id) {
-                  return {
-                    ...node,
-                    data: updatedNode.data
-                  };
-                }
-                return node;
-              })
-            );
+            setPendingData(prev => ({
+              ...prev,
+              ...updatedNode.data
+            }));
           }}
-          onClose={() => handleDrawerClose({} as React.MouseEvent)}
+          onClose={() => handleDrawerClose({ stopPropagation: () => {} } as React.MouseEvent)}
         />
       </Drawer>
     </div>
