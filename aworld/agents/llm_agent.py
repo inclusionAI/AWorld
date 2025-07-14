@@ -226,7 +226,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             sys_prompt = Prompt(self.system_prompt_template, context=self.context).get_prompt(
                 variables={"task": observation.content, "tool_list": self.tools})
         if sys_prompt:
-            await self._add_system_message_to_memory(context=message.context, content=sys_prompt, message=message)
+            await self._add_system_message_to_memory(context=message.context, content=sys_prompt)
 
         # append observation to memory
         if observation.is_tool_result:
@@ -1038,11 +1038,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(
                 f"Failed to execute hooks for {hook_point}: {traceback.format_exc()}")
 
-    async def _add_system_message_to_memory(self, context: Context, content: str, message: Message):
+    async def _add_system_message_to_memory(self, context: Context, content: str):
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
-        root_message_id = message.headers.get('root_message_id')
 
         histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self.id(),
