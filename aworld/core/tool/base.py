@@ -335,6 +335,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         res = await self.do_step(action, **kwargs)
         final_res = await self.post_step(res, action, **kwargs)
         await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
+        if isinstance(final_res, Message):
+            self._update_headers(final_res, message)
         if message.group_id and message.headers.get('level', 0) == 0:
             from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
             state_mng = RuntimeStateManager.instance()
@@ -415,6 +417,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             logger.warn(
                 f"tool {self.name()} callback failed with node: {res_node}.")
             return
+
+    def _update_headers(self, message:Message, input_message: Message) -> Dict[str, Any]:
+        headers = input_message.headers.copy()
+        headers['context'] = message.context
+        headers['level'] = headers.get('level', 0) + 1
+        message.headers = headers
 
 
 class ToolsManager(Factory):

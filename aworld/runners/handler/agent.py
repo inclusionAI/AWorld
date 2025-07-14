@@ -285,7 +285,9 @@ class DefaultAgentHandler(AgentHandler):
         if idx == -1:
             yield Message(
                 category=Constants.TASK,
-                payload=action,
+                payload=TaskItem(msg=f"Can not find {action.agent_name} agent in ordered_agents: {self.swarm.ordered_agents}.",
+                                 data=action,
+                                 stop=True),
                 sender=self.name(),
                 session_id=session_id,
                 topic=TopicType.ERROR,

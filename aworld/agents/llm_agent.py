@@ -4,6 +4,7 @@ import json
 import time
 import traceback
 import uuid
+import copy
 from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, Any, List, Union, Callable
@@ -14,7 +15,7 @@ from aworld.config import ToolConfig
 from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, OptimizationConfig, \
     LlmCompressionConfig
 from aworld.core.agent.agent_desc import get_agent_desc
-from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent
+from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentStatus
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
@@ -96,6 +97,40 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self.system_prompt = self.planner.plan_system_prompt
             self.system_prompt_template = self.planner.plan_system_prompt
             self.resp_parse_func = PlannerOutputParser(self.id()).parse
+
+    def deep_copy(self):
+        """Create a deep copy of the current Agent instance.
+
+        Returns:
+            Agent: A deep copy of the current Agent instance
+        """
+        new_agent = Agent(self.conf, self.name(), self.resp_parse_func, self.memory_config)
+        new_agent._llm = None
+        new_agent.system_prompt = self.system_prompt
+        new_agent.system_prompt_template = self.system_prompt_template
+        new_agent.agent_prompt = self.agent_prompt
+        new_agent.planner = self.planner
+        new_agent.event_driven = self.event_driven
+        new_agent.handler = self.handler
+        new_agent.need_reset = self.need_reset
+        new_agent.step_reset = self.step_reset
+        new_agent.black_tool_actions = copy.deepcopy(self.black_tool_actions)
+        if self.resp_parse_func == self.response_parse:
+            # If default response_parse method, use the new instance's method
+            new_agent.resp_parse_func = new_agent.response_parse
+        else:
+            # If using a custom function, assign it directly
+            new_agent.resp_parse_func = self.resp_parse_func
+        new_agent.history_messages = self.history_messages
+        new_agent.use_tools_in_prompt = self.use_tools_in_prompt
+        new_agent.context_rule = self.context_rule
+        new_agent.tool_names = self.tool_names
+        new_agent.handoffs = copy.deepcopy(self.handoffs)
+        new_agent.mcp_servers = copy.deepcopy(self.mcp_servers)
+        new_agent.mcp_config = copy.deepcopy(self.mcp_config)
+        new_agent.sandbox = self.sandbox
+
+        return new_agent
 
     def reset(self, options: Dict[str, Any]):
         logger.info("[LLM_AGENT] reset start")
@@ -197,7 +232,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             sys_prompt = Prompt(self.system_prompt_template, context=self.context).get_prompt(
                 variables={"task": observation.content, "tool_list": self.tools})
         if sys_prompt:
-            await self._add_system_message_to_memory(context=message.context, content=sys_prompt)
+            await self._add_system_message_to_memory(context=message.context, content=sys_prompt, message=message)
 
         # append observation to memory
         if observation.is_tool_result:
@@ -356,7 +391,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
         """Log the sequence of messages for debugging purposes"""
-        logger.info(f"[agent] Invoking LLM with {messages} messages:")
+        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
         for i, msg in enumerate(messages):
             prefix = msg.get('role')
             logger.info(
@@ -451,10 +486,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 sender=self.id(),
                                 receiver=actions[0].tool_name,
                                 session_id=self.context.session_id if self.context else "",
-                                headers={"context": self.context})
-            # if self._finished and self.id() == input_message.headers.get('root_agent_id', ''):
-            #     state_mng = RuntimeStateManager.instance()
-            #     state_mng.finish_sub_group(input_message.group_id, input_message.headers.get('root_message_id'), [result])
+                                headers=self._update_headers(input_message))
 
         else:
             return ToolMessage(payload=actions,
@@ -462,7 +494,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                sender=self.id(),
                                receiver=actions[0].tool_name,
                                session_id=self.context.session_id if self.context else "",
-                               headers={"context": self.context})
+                               headers=self._update_headers(input_message))
 
     def post_run(self, policy_result: List[ActionModel], policy_input: Observation, message: Message = None) -> Message:
         return self._agent_result(
@@ -479,8 +511,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message
         )
 
-    def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
-        ActionModel]:
+    def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -991,10 +1022,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(
                 f"Failed to execute hooks for {hook_point}: {traceback.format_exc()}")
 
-    async def _add_system_message_to_memory(self, context: Context, content: str):
+    async def _add_system_message_to_memory(self, context: Context, content: str, message: Message):
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
+        root_message_id = message.headers.get('root_message_id')
 
         histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self.id(),

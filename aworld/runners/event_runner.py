@@ -222,7 +222,7 @@ class TaskEventRunner(TaskRunner):
                         if self.is_group_finish(event):
                             from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
                             state_mng = RuntimeStateManager.instance()
-                            state_mng.finish_sub_group(event.group_id, event.headers.get('root_message_id'), [event])
+                            await state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [event])
                         else:
                             await self.event_mng.emit_message(event)
                 else:
@@ -372,8 +372,5 @@ class TaskEventRunner(TaskRunner):
                 return False
 
             return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
-
-        elif event.category == Constants.TOOL:
-            return event.headers.get("_tool_finished", False)
 
         return False
