@@ -2,8 +2,11 @@ import logging
 import os
 from pathlib import Path
 import sys
+from typing import Any, Dict, List
 
+from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from aworld.planner.plan import DefaultPlanner, PlannerOutputParser
 
@@ -25,16 +28,19 @@ logger = logging.getLogger(__name__)
 
 
 
-# os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
-# os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
-os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
-os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
+os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
+os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
+# os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
+# os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
 os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
 
 class PlanAgent(Agent):
+    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
+                       **kwargs) -> List[ActionModel]:
+        return await super().async_policy(observation, info, message, **kwargs)
 
     # multi turn system prompt generation
-    async def _add_system_message_to_memory(self, context: Context, content: str):
+    async def _add_system_message_to_memory(self, context: Context, content: str, message: Message):
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
