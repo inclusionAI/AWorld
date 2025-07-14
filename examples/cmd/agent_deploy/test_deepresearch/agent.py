@@ -1,10 +1,7 @@
 import logging
 import os
-from typing import Any, Dict, List
 
-from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from aworld.planner.plan import PlannerOutputParser
 
@@ -26,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 class PlanAgent(Agent):
-    async def async_policy(
-        self,
-        observation: Observation,
-        info: Dict[str, Any] = {},
-        message: Message = None,
-        **kwargs,
-    ) -> List[ActionModel]:
-        return await super().async_policy(observation, info, message, **kwargs)
+    # async def async_policy(
+    #     self,
+    #     observation: Observation,
+    #     info: Dict[str, Any] = {},
+    #     message: Message = None,
+    #     **kwargs,
+    # ) -> List[ActionModel]:
+    #     return await super().async_policy(observation, info, message, **kwargs)
 
     # multi turn system prompt generation
     async def _add_system_message_to_memory(self, context: Context, content: str):
