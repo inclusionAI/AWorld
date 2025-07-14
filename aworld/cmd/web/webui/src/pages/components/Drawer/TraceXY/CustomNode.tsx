@@ -1,6 +1,6 @@
 import React from 'react';
 import { Tooltip, Typography } from 'antd';
-import { Position, Handle } from 'reactflow';
+import { Position, Handle } from '@xyflow/react';
 import type { NodeData } from './TraceXY.types';
 
 interface CustomNodeProps {

@@ -7,6 +7,7 @@ import os
 import subprocess
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+from aworld.cmd.utils.agent_server import AgentServer
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +20,15 @@ async def root():
 
 
 def get_user_id_from_jwt(request: Request) -> str:
-    return "test_user_1"
+    return f"default_user_{request.client.host}"
 
+
+agent_server = AgentServer(
+    server_id="default_server",
+    server_name="default_server",
+)
+
+app.state.agent_server = agent_server
 
 from .routers import chats, workspaces, sessions, traces  # noqa
 
