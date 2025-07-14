@@ -79,7 +79,6 @@ function FlowChart() {
           edgesFocusable 
           panOnScroll 
           nodeTypes={nodeTypes}
-          nodeExtent={[[0, 0], [1000, 1000]]}
         >
         <Background />
         {showMinimap && <MiniMap />}
