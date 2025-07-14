@@ -11,7 +11,7 @@ from aworld.agents.llm_agent import Agent
 from typing import Dict, Union
 
 from aworld.core.context.base import Context
-from aworld.utils.exec_util import exec_tasks
+from aworld.utils.run_util import exec_agent
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ async def _do_summarize_trace(trace_id: str):
         )
         return ""
     try:
-        res = await exec_tasks(trace_id, [trace_agent], Context())
+        res = await exec_agent(trace_id, trace_agent, Context())
         res = res[0]
         summary = _fetch_json_from_result(res.answer)
         _trace_summary_cache.add_to_cache(trace_id, summary)
