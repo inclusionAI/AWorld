@@ -66,7 +66,7 @@ trace_prompt = """
         run_type=LLM and is_event=False represents the large model call.
         run_type=TOOL and is_event=True represents the tool call.
     The tool call and large model call of agent are manifested as the nearest child span of AGENT Span.
-    Please summarize and output separately for agents with different event.ids.
+    Please summarize and output separately for agents with different event.ids, ensure that each agent has their own summary.
     Please output in the following standard JSON format without any additional explanatory text:
     [{{"agent":"947cc4c1b7ed406ab7fbf38b9d2b1f5a",,"summary":"xxx","token_usage":"xxx","input_tokens":"xxx","output_tokens":"xxx","use_tools":["xxx"]}},{{}}]
     Here are the trace_id: {task}
