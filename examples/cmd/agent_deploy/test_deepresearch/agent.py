@@ -28,10 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 
-os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
-os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
-# os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
-# os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
+# os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
+# os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
+os.environ["LLM_MODEL_NAME"] = "openrouter.openai/gpt-4o"
+os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
+os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
+os.environ["LLM_MODEL_NAME"] = "gpt-4o-2024-08-06"
+os.environ["LLM_BASE_URL"] = "https://matrixllm.alipay.com/v1"
 os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
 
 class PlanAgent(Agent):
@@ -40,7 +43,7 @@ class PlanAgent(Agent):
         return await super().async_policy(observation, info, message, **kwargs)
 
     # multi turn system prompt generation
-    async def _add_system_message_to_memory(self, context: Context, content: str, message: Message):
+    async def _add_system_message_to_memory(self, context: Context, content: str):
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
