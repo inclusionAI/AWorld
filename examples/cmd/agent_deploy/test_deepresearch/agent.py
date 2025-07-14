@@ -3,7 +3,9 @@ import os
 from pathlib import Path
 import sys
 
-from aworld.planner.plan import DefaultPlanner
+from aworld.core.context.base import Context
+from aworld.memory.models import MemorySystemMessage, MessageMetadata
+from aworld.planner.plan import DefaultPlanner, PlannerOutputParser
 
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.runner import Runners
@@ -21,13 +23,38 @@ from .prompts import *
 
 logger = logging.getLogger(__name__)
 
-
-
 # os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
 # os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
 os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
 os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
 os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
+
+class PlanAgent(Agent):
+
+    # multi turn system prompt generation
+    async def _add_system_message_to_memory(self, context: Context, content: str):
+        session_id = context.get_task().session_id
+        task_id = context.get_task().id
+        user_id = context.get_task().user_id
+
+        if not self.system_prompt:
+            return
+        content = await self.custom_system_prompt(context=context, content=content)
+        logger.info(f'system prompt content: {content}')
+
+        self.memory.add(MemorySystemMessage(
+            content=content,
+            metadata=MessageMetadata(
+                session_id=session_id,
+                user_id=user_id,
+                task_id=task_id,
+                agent_id=self.id(),
+                agent_name=self.name(),
+            )
+        ), agent_memory_config=self.memory_config)
+        logger.info(
+            f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
+
 
 def get_deepresearch_swarm(user_input):
 
@@ -40,13 +67,15 @@ def get_deepresearch_swarm(user_input):
         use_vision=False
     )
 
-    plan_agent = Agent(
+    agent_id = "test_deepresearch_agent"
+    plan_agent = PlanAgent(
+        agent_id=agent_id,
         name="planner_agent",
         desc="planner_agent",
         conf=agent_config,
-        use_planner=True,
-        planner=DefaultPlanner(plan_sys_prompt, replan_sys_prompt),
-        use_tools_in_prompt=True
+        use_tools_in_prompt=True,
+        resp_parse_func=PlannerOutputParser(agent_id).parse,
+        system_prompt_template=plan_sys_prompt,
     )
 
     web_search_agent = Agent(
@@ -55,27 +84,6 @@ def get_deepresearch_swarm(user_input):
         conf=agent_config,
         system_prompt_template=search_sys_prompt,
         tool_names=[Tools.SEARCH_API.value]
-        # mcp_servers=["aworldsearch_server"],
-        # mcp_config={
-        #     "mcpServers": {
-        #         "aworldsearch_server": {
-        #             "command": "python",
-        #             "args": [
-        #                 "-m",
-        #                 "mcp_servers.aworldsearch_server"
-        #             ],
-        #             "env": {
-        #                 "AWORLD_SEARCH_URL": "https://antragflowInside.alipay.com/v1/rpc/ragLlmSearch",
-        #                 "AWORLD_SEARCH_TOTAL_NUM": "10",
-        #                 "AWORLD_SEARCH_SLICE_NUM": "3",
-        #                 "AWORLD_SEARCH_DOMAIN": "google",
-        #                 "AWORLD_SEARCH_SEARCHMODE": "RAG_LLM",
-        #                 "AWORLD_SEARCH_SOURCE": "lingxi_agent",
-        #                 "AWORLD_SEARCH_UID": "2088802724428205"
-        #             }
-        #         }
-        #     }
-        # }
     )
     
     reporting_agent = Agent(

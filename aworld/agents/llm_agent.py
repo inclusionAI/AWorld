@@ -90,12 +90,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "context_rule") else conf.context_rule
         self.tools_instances = {}
         self.tools_conf = {}
-        self.use_planner = kwargs.get("use_planner") if kwargs.get("use_planner") else False
-        self.planner = kwargs.get("planner") if kwargs.get("planner") else DefaultPlanner()
-        if self.use_planner:
-            self.system_prompt = self.planner.plan_system_prompt
-            self.system_prompt_template = self.planner.plan_system_prompt
-            self.resp_parse_func = PlannerOutputParser(self.id()).parse
 
     def reset(self, options: Dict[str, Any]):
         logger.info("[LLM_AGENT] reset start")
@@ -1005,15 +999,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if histories and len(histories) > 0:
             logger.debug(
                 f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
-            # replan
-            if self.use_planner and self.planner:
-                system_items = [history for history in histories if history.role == "system"]
-                if system_items:
-                    for item in system_items:
-                        prompt = Prompt(self.planner.replan_system_prompt, context=self.context).get_prompt(
-                                variables={"task": context.task_input, "tool_list": self.tools})
-                        item.content = prompt
-                        self.memory.update(item)
             return
         if not self.system_prompt:
             return
