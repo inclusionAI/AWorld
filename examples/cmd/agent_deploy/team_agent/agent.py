@@ -81,7 +81,6 @@ class AWorldAgent(BaseAWorldAgent):
             google_pse_search_agent,
             # aworld_playwright_agent,
             summary_agent,
-            build_type=GraphBuildType.TEAM,
             max_steps=10,
         )
 

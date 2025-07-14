@@ -48,9 +48,9 @@ class CodeCollection(ActionCollection):
         # Initialize code generation model configuration
         self._llm_config = AgentConfig(
             llm_provider="openai",
-            llm_model_name="anthropic/claude-sonnet-4",
-            llm_api_key=os.getenv("LLM_API_KEY", "your_openai_api_key"),
-            llm_base_url=os.getenv("LLM_BASE_URL", "your_openai_base_url"),
+            llm_model_name=os.getenv("CODE_LLM_MODEL_NAME", "anthropic/claude-sonnet-4"),
+            llm_api_key=os.getenv("CODE_LLM_API_KEY"),
+            llm_base_url=os.getenv("CODE_LLM_BASE_URL"),
         )
 
         self._color_log("Code Generation Service initialized", Color.green, "debug")

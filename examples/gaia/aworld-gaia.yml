@@ -244,4 +244,5 @@ dependencies:
       - zopfli==0.2.3.post1
       - zstandard==0.23.0
       - httpx[socks]
+      - ffmpeg-python==0.2.0
 prefix: /opt/homebrew/Caskroom/miniconda/base/envs/aworld-gaia

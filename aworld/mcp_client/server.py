@@ -220,6 +220,8 @@ class MCPServerStdioParams(TypedDict):
     explanations of possible values.
     """
 
+    client_session_timeout_seconds: NotRequired[float]
+
 
 class MCPServerStdio(_MCPServerWithClientSession):
     """MCP server implementation that uses the stdio transport. See the [spec]
@@ -252,6 +254,8 @@ class MCPServerStdio(_MCPServerWithClientSession):
              client_session_timeout_seconds: the read timeout passed to the MCP ClientSession.
         """
        # super().__init__(cache_tools_list, int(params.get("env").get("SESSION_REQUEST_CONNECT_TIMEOUT", "60")))
+        if params and params.get("client_session_timeout_seconds"):
+            client_session_timeout_seconds = params.get("client_session_timeout_seconds")
         super().__init__(cache_tools_list, client_session_timeout_seconds)
 
         self.params = StdioServerParameters(
@@ -298,6 +302,8 @@ class MCPServerSseParams(TypedDict):
     sse_read_timeout: NotRequired[float]
     """The timeout for the SSE connection, in seconds. Defaults to 5 minutes."""
 
+    client_session_timeout_seconds: NotRequired[float]
+
 
 class MCPServerSse(_MCPServerWithClientSession):
     """MCP server implementation that uses the HTTP with SSE transport. See the [spec]
@@ -331,6 +337,8 @@ class MCPServerSse(_MCPServerWithClientSession):
              client_session_timeout_seconds: the read timeout passed to the MCP ClientSession.
         """
         #super().__init__(cache_tools_list)
+        if params and params.get("client_session_timeout_seconds"):
+            client_session_timeout_seconds = params.get("client_session_timeout_seconds")
         super().__init__(cache_tools_list, client_session_timeout_seconds)
 
         self.params = params
@@ -377,6 +385,8 @@ class MCPServerStreamableHttpParams(TypedDict):
     terminate_on_close: NotRequired[bool]
     """Terminate on close"""
 
+    client_session_timeout_seconds: NotRequired[float]
+
 class MCPServerStreamableHttp(_MCPServerWithClientSession):
     """MCP server implementation that uses the Streamable HTTP transport. See the [spec]
     (https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http)
@@ -410,6 +420,8 @@ class MCPServerStreamableHttp(_MCPServerWithClientSession):
 
             client_session_timeout_seconds: the read timeout passed to the MCP ClientSession.
         """
+        if params and params.get("client_session_timeout_seconds"):
+            client_session_timeout_seconds = params.get("client_session_timeout_seconds")
         super().__init__(cache_tools_list, client_session_timeout_seconds)
 
         self.params = params
