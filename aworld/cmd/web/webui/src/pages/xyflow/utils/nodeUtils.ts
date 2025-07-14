@@ -48,10 +48,14 @@ export const addNode = (nodes: Node[], setNodes: (nodes: Node[]) => void): void 
 
 /**
  * deleteNode
- * @param nodes 
- * @param setNodes 
- * @param nodeId 
+ * @param nodes
+ * @param setNodes
+ * @param nodeId
  */
-export const deleteNode = (nodes: Node[], setNodes: (nodes: Node[]) => void, nodeId: string): void => {
-  setNodes(nodes.filter(node => node.id !== nodeId));
+export const deleteNode = (
+  nodes: Node[],
+  setNodes: (nodes: Node[]) => void,
+  nodeId: string
+): void => {
+  setNodes(nodes.filter((node) => node.id !== nodeId));
 };

@@ -76,7 +76,9 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
       <div className="custom-node-io">
         <span>{title}：</span>
         {items?.map((item) => (
-          <Tag key={item.label}>{item.type}.<strong>{item.label}</strong></Tag>
+          <Tag key={item.label}>
+            {item.type}.<strong>{item.label}</strong>
+          </Tag>
         ))}
       </div>
     );
@@ -113,7 +115,10 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
               }}
               trigger={['click']}
             >
-              <EllipsisOutlined style={{ cursor: 'pointer' }} onClick={(e) => e.stopPropagation()} />
+              <EllipsisOutlined
+                style={{ cursor: 'pointer' }}
+                onClick={(e) => e.stopPropagation()}
+              />
             </Dropdown>
           )}
         </div>
@@ -127,24 +132,24 @@ export const CustomNode: React.FC<CustomNodeProps> = ({ id, data }) => {
       </div>
       {data.nodeType !== 'start' && <Handle type="target" position={Position.Left} />}
       {data.nodeType !== 'end' && <Handle type="source" position={Position.Right} />}
-      <Drawer 
-        title={label} 
-        placement="right" 
-        closable={true} 
-        maskClosable={true} 
-        onClose={handleDrawerClose} 
-        open={isDrawerOpen} 
-        width={500} 
+      <Drawer
+        title={label}
+        placement="right"
+        closable={true}
+        maskClosable={true}
+        onClose={handleDrawerClose}
+        open={isDrawerOpen}
+        width={500}
         keyboard={true}
       >
-        <NodeEditor 
-          node={{ 
-            id, 
+        <NodeEditor
+          node={{
+            id,
             position: { x: 0, y: 0 },
             data: { ...data, ...editingData }
           }}
           onUpdate={(updatedNode) => {
-            setPendingData(prev => ({
+            setPendingData((prev) => ({
               ...prev,
               ...updatedNode.data
             }));

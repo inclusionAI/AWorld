@@ -27,7 +27,9 @@ interface NodeEditorProps {
 }
 
 export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate }) => {
-  const [editingContent, setEditingContent] = React.useState(typeof node.data.content === 'string' ? node.data.content : '');
+  const [editingContent, setEditingContent] = React.useState(
+    typeof node.data.content === 'string' ? node.data.content : ''
+  );
   const [editingInputs, setEditingInputs] = React.useState<NodeIOItem[]>(node.data.input || []);
 
   React.useEffect(() => {
@@ -96,13 +98,26 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate }) => {
                 {
                   title: '变量名',
                   dataIndex: 'label',
-                  render: (text: string, _: NodeIOItem, index: number) => <Input key={index} value={text as 'string' | 'number' | 'boolean'} onChange={(e) => handleInputChange(index, 'label', e.target.value)} placeholder="Variable name" />
+                  render: (text: string, _: NodeIOItem, index: number) => (
+                    <Input
+                      key={index}
+                      value={text as 'string' | 'number' | 'boolean'}
+                      onChange={(e) => handleInputChange(index, 'label', e.target.value)}
+                      placeholder="Variable name"
+                    />
+                  )
                 },
                 {
                   title: '变量值',
                   dataIndex: 'type',
                   render: (text: string, _: NodeIOItem, index: number) => (
-                    <Select value={text as 'string' | 'number' | 'boolean'} style={{ width: '100%' }} onChange={(value: 'string' | 'number' | 'boolean') => handleInputChange(index, 'type', value)}>
+                    <Select
+                      value={text as 'string' | 'number' | 'boolean'}
+                      style={{ width: '100%' }}
+                      onChange={(value: 'string' | 'number' | 'boolean') =>
+                        handleInputChange(index, 'type', value)
+                      }
+                    >
                       <Option value="string">String</Option>
                       <Option value="number">Number</Option>
                       <Option value="boolean">Boolean</Option>
@@ -112,7 +127,13 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate }) => {
                 {
                   title: '',
                   dataIndex: 'defaultValue',
-                  render: (text: string | undefined, _record: NodeIOItem, index: number) => <Input value={text} onChange={(e) => handleInputChange(index, 'defaultValue', e.target.value)} placeholder="Default value" />
+                  render: (text: string | undefined, _record: NodeIOItem, index: number) => (
+                    <Input
+                      value={text}
+                      onChange={(e) => handleInputChange(index, 'defaultValue', e.target.value)}
+                      placeholder="Default value"
+                    />
+                  )
                 },
                 {
                   title: '',
