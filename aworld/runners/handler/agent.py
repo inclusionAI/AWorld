@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import asyncio
+import uuid
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
@@ -24,6 +25,7 @@ class AgentHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
+        self.runner = runner
         self.swarm = runner.swarm
         self.endless_threshold = runner.endless_threshold
         self.task_id = runner.task.id
@@ -283,7 +285,9 @@ class DefaultAgentHandler(AgentHandler):
         if idx == -1:
             yield Message(
                 category=Constants.TASK,
-                payload=action,
+                payload=TaskItem(msg=f"Can not find {action.agent_name} agent in ordered_agents: {self.swarm.ordered_agents}.",
+                                 data=action,
+                                 stop=True),
                 sender=self.name(),
                 session_id=session_id,
                 topic=TopicType.ERROR,
@@ -531,8 +535,9 @@ class DefaultTeamHandler(AgentHandler):
             else:
                 raise AworldException("no steps and answer.")
 
+        group_id = self.runner.task.group_id if self.runner.task.group_id else uuid.uuid4().hex
+        self.runner.task.group_id = group_id
         merge_context = message.context
-        res = ''
         for node in dag:
             if isinstance(node, list):
                 logger.info(f"DefaultTeamHandler|parallel_node|start|{node}")
@@ -546,13 +551,15 @@ class DefaultTeamHandler(AgentHandler):
                     if agent:
                         tasks.append(exec_agent(step_info.input, agent, new_context,
                                                 outputs=merge_context.outputs,
-                                                sub_task=True))
+                                                sub_task=True,
+                                                task_group_id=group_id))
                     else:
                         tasks.append(exec_tool(tool_name=step_info.id,
                                                params=step_info.parameters,
                                                context=new_context,
                                                sub_task=True,
-                                               outputs=merge_context.outputs))
+                                               outputs=merge_context.outputs,
+                                               task_group_id=group_id))
 
                 res = await asyncio.gather(*tasks)
                 for idx, t in enumerate(res):
@@ -566,13 +573,14 @@ class DefaultTeamHandler(AgentHandler):
                 agent = self.swarm.agents.get(step_info.id)
                 new_context = merge_context.deep_copy()
                 if agent:
-                    res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs, sub_task=True)
+                    res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs, sub_task=True, task_group_id=group_id)
                 else:
                     res = await exec_tool(tool_name=step_info.id,
                                           params=step_info.parameters,
                                           context=new_context,
                                           outputs=merge_context.outputs,
-                                          sub_task=True)
+                                          sub_task=True,
+                                          task_group_id=group_id)
                 merge_context.merge_context(res.context)
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"DefaultTeamHandler|single_node|end|{res}")

@@ -46,6 +46,7 @@ class Task:
     # task specified context
     context: 'Context' = field(default=None)
     is_sub_task: bool = field(default=False)
+    group_id: str = field(default=None)
     max_retry_count: int = 0
 
 
