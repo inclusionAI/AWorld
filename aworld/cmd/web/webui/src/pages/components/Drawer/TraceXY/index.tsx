@@ -1,72 +1,105 @@
-import React, { useState, useEffect } from 'react';
-import ReactFlow, { Background, Controls } from 'reactflow';
+import React, { useState, useEffect, useCallback } from 'react';
+import { ReactFlow, Background, Controls } from '@xyflow/react';
 import CustomNode from './CustomNode';
-import 'reactflow/dist/style.css';
+import '@xyflow/react/dist/style.css';
 import { fetchTraceData } from '@/api/trace';
+import { getLayoutedElements } from './layoutUtils';
 import './index.less';
-import type { NodeData, FlowElements, TraceXYProps } from './TraceXY.types';
+import type { TraceXYProps, NodeData, EdgeData } from './TraceXY.types';
 
 const nodeTypes = {
   customNode: CustomNode
 };
+const TraceXY: React.FC<TraceXYProps> = ({ traceId, drawerVisible }) => {
+  const [nodes, setNodes] = useState<NodeData[]>([]);
+  const [edges, setEdges] = useState<EdgeData[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-const buildFlowElements = (data: NodeData[], horizontalSpacing = 200, verticalSpacing = 150): FlowElements => {
-  const nodes: any[] = [];
-  const edges: any[] = [];
-  let nodeId = 1;
-  const processNode = (node: NodeData, depth = 0, offsetX = 0, parentId?: string) => {
-    const id = `node-${nodeId++}`;
-    nodes.push({
-      id,
+  const processNodes = useCallback((rawNodes: any[]): NodeData[] => {
+    return rawNodes.map((node) => ({
+      ...node,
+      id: node.span_id || node.id || '',
       type: 'customNode',
-      data: node,
-      position: { x: offsetX, y: depth * verticalSpacing }
-    });
-    if (parentId) edges.push({ id: `edge-${parentId}-${id}`, source: parentId, target: id, style: { background: 'red' } });
+      position: node.position || { x: 0, y: 0 },
+      data: {
+        ...node.data,
+        label: node.show_name,
+        summary: node.summary || '',
+        show_name: node.show_name,
+        event_id: node.event_id
+      }
+    }));
+  }, []);
 
-    if (node.children?.length) {
-      const totalWidth = (node.children.length - 1) * horizontalSpacing;
-      node.children.forEach((child, index) => processNode(child, depth + 1, offsetX - totalWidth / 2 + index * horizontalSpacing, id));
-    }
-  };
-
-  if (data[0]) {
-    processNode(data[0]);
-  }
-
-  return { nodes, edges };
-};
-const TraceXY: React.FC<TraceXYProps> = ({ traceId, traceQuery, drawerVisible }) => {
-  const [elements, setElements] = useState<FlowElements>({ nodes: [], edges: [] });
+  const processEdges = useCallback((rawEdges: any[]): EdgeData[] => {
+    return rawEdges.map((edge) => ({
+      ...edge,
+      id: `${edge.source}-${edge.target}`
+    }));
+  }, []);
 
   useEffect(() => {
     if (!traceId || !drawerVisible) return;
 
     const fetchAndBuildElements = async () => {
+      setLoading(true);
+      setError(null);
+
       try {
         const result = await fetchTraceData(traceId);
+        const nodesWithPosition = processNodes(result.nodes);
+        const edgesWithId = processEdges(result.edges);
 
-        // Always wrap as root node data
-        let formattedData = [];
-        if (result?.data) {
-          const { data } = result;
-          formattedData = Array.isArray(data) && data.length >= 1 ? [{ show_name: traceQuery, children: data }] : data;
-        }
-        setElements(buildFlowElements(formattedData));
-      } catch (error) {
-        console.error('Failed to fetch and build trace elements:', error);
+        const { nodes: layoutedNodes } = getLayoutedElements(nodesWithPosition, edgesWithId);
+        setNodes(layoutedNodes);
+        setEdges(edgesWithId);
+      } catch (err) {
+        setError('Failed to load trace data, please try again later');
+        console.error('Failed to fetch and build trace elements:', err);
+      } finally {
+        setLoading(false);
       }
     };
 
     fetchAndBuildElements();
-  }, [traceId, drawerVisible]);
+  }, [traceId, drawerVisible, processNodes, processEdges]);
 
   return (
     <div className="traceXYbox" style={{ height: '100%', width: '100%' }}>
-      <ReactFlow nodes={elements.nodes} edges={elements.edges} nodeTypes={nodeTypes} fitView>
-        <Background gap={16} />
-        <Controls />
-      </ReactFlow>
+      {loading && <div className="loading-indicator">Loading...</div>}
+      {error && <div className="error-message">{error}</div>}
+      {!loading && !error && nodes.length === 0 && (
+        <div
+          className="empty-state"
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            height: '100%',
+            color: '#888'
+          }}
+        >
+          No trace data available
+        </div>
+      )}
+      {nodes.length > 0 ? (
+        <ReactFlow
+          nodes={nodes.map((node, index) => ({
+            ...node,
+            isFirst: index === 0,
+            isLast: index === nodes.length - 1
+          }))}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          fitView
+          minZoom={0.1}
+          maxZoom={2}
+        >
+          <Background gap={16} />
+          <Controls />
+        </ReactFlow>
+      ) : null}
     </div>
   );
 };

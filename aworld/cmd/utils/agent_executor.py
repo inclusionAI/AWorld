@@ -1,4 +1,5 @@
 from typing import AsyncGenerator
+from aworld.cmd.utils.agent_server import AgentServer
 from aworld.output.ui.base import AworldUI
 from aworld.output.workspace import WorkSpace
 from .. import (
@@ -8,25 +9,17 @@ from .. import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
-from . import agent_loader
 from .agent_ui_parser import AWorldWebAgentUI
 import logging
-import aworld.trace as trace
-from aworld.trace.config import ObservabilityConfig
-from aworld.trace.opentelemetry.memory_storage import InMemoryWithPersistStorage
 import os
 import uuid
 from dotenv import load_dotenv
-from .agent_server import CURRENT_SERVER
 import traceback
 
 logger = logging.getLogger(__name__)
 
-# bugfix for tracer exception
-trace.configure(ObservabilityConfig(trace_storage=(InMemoryWithPersistStorage())))
 
-
-async def stream_run(request: ChatCompletionRequest):
+async def stream_run(request: ChatCompletionRequest, agent_server: AgentServer):
     if not request.session_id:
         request.session_id = str(uuid.uuid4())
     if not request.query_id:
@@ -35,7 +28,7 @@ async def stream_run(request: ChatCompletionRequest):
         request.messages[-1].trace_id = request.trace_id
 
     logger.info(f"Stream run agent: request={request.model_dump_json()}")
-    agent = agent_loader.get_agent(request.model)
+    agent = agent_server.get_agent(request.model)
     instance: BaseAWorldAgent = agent.instance
     env_file = os.path.join(agent.path, ".env")
     if os.path.exists(env_file):
@@ -68,7 +61,7 @@ async def stream_run(request: ChatCompletionRequest):
         ),
     )
 
-    await CURRENT_SERVER.on_chat_completion_request(request)
+    await agent_server.on_chat_completion_request(request)
     try:
         async for output in instance.run(request=request):
             logger.info(f"Agent {agent.name} output: {output}")
@@ -86,4 +79,4 @@ async def stream_run(request: ChatCompletionRequest):
     except:
         logger.error(f"Agent {agent.name} error: {traceback.format_exc()}")
     finally:
-        await CURRENT_SERVER.on_chat_completion_end(request, final_response)
+        await agent_server.on_chat_completion_end(request, final_response)

@@ -1,9 +1,8 @@
 import logging
 from typing import List
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from aworld.cmd import SessionModel
-from aworld.cmd.utils.agent_server import CURRENT_SERVER
 from aworld.cmd.web.web_server import get_user_id_from_jwt
 
 logger = logging.getLogger(__name__)
@@ -15,9 +14,12 @@ prefix = "/api/session"
 
 @router.get("/list")
 async def list_sessions(
+    request: Request,
     user_id: str = Depends(get_user_id_from_jwt),
 ) -> List[SessionModel]:
-    return await CURRENT_SERVER.get_session_service().list_sessions(user_id)
+    return await request.app.state.agent_server.get_session_service().list_sessions(
+        user_id
+    )
 
 
 class CommonResponse(BaseModel):
@@ -42,7 +44,7 @@ async def delete_session(
     request: DeleteSessionRequest, user_id: str = Depends(get_user_id_from_jwt)
 ) -> CommonResponse:
     try:
-        await CURRENT_SERVER.get_session_service().delete_session(
+        await request.app.state.agent_server.get_session_service().delete_session(
             user_id, request.session_id
         )
         return CommonResponse.success()

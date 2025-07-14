@@ -45,7 +45,7 @@ Install the AWorld framework and build the web UI:
 pip install "marker-pdf[full]" --no-deps
 
 # Build web UI
-sh -c "aworld/cmd/web/webui && npm install && npm run build"
+sh -c "cd aworld/cmd/web/webui && npm install && npm run build"
 
 # Install AWorld
 python setup.py install

@@ -1,14 +1,12 @@
 import logging
 import os
-from pathlib import Path
-import sys
 from typing import Any, Dict, List
 
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
-from aworld.planner.plan import DefaultPlanner, PlannerOutputParser
+from aworld.planner.plan import PlannerOutputParser
 
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.runner import Runners
@@ -27,19 +25,14 @@ from .prompts import *
 logger = logging.getLogger(__name__)
 
 
-
-# os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
-# os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
-os.environ["LLM_MODEL_NAME"] = "openrouter.openai/gpt-4o"
-os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
-os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
-os.environ["LLM_MODEL_NAME"] = "gpt-4o-2024-08-06"
-os.environ["LLM_BASE_URL"] = "https://matrixllm.alipay.com/v1"
-os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
-
 class PlanAgent(Agent):
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
-                       **kwargs) -> List[ActionModel]:
+    async def async_policy(
+        self,
+        observation: Observation,
+        info: Dict[str, Any] = {},
+        message: Message = None,
+        **kwargs,
+    ) -> List[ActionModel]:
         return await super().async_policy(observation, info, message, **kwargs)
 
     # multi turn system prompt generation
@@ -51,31 +44,36 @@ class PlanAgent(Agent):
         if not self.system_prompt:
             return
         content = await self.custom_system_prompt(context=context, content=content)
-        logger.info(f'system prompt content: {content}')
+        logger.info(f"system prompt content: {content}")
 
-        self.memory.add(MemorySystemMessage(
-            content=content,
-            metadata=MessageMetadata(
-                session_id=session_id,
-                user_id=user_id,
-                task_id=task_id,
-                agent_id=self.id(),
-                agent_name=self.name(),
-            )
-        ), agent_memory_config=self.memory_config)
+        self.memory.add(
+            MemorySystemMessage(
+                content=content,
+                metadata=MessageMetadata(
+                    session_id=session_id,
+                    user_id=user_id,
+                    task_id=task_id,
+                    agent_id=self.id(),
+                    agent_name=self.name(),
+                ),
+            ),
+            agent_memory_config=self.memory_config,
+        )
         logger.info(
-            f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
+            f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}..."
+        )
 
 
 def get_deepresearch_swarm(user_input):
 
     agent_config = AgentConfig(
         llm_config=ModelConfig(
-            llm_model_name=os.getenv("LLM_MODEL_NAME"),
-            llm_base_url=os.getenv("LLM_BASE_URL"),
-            llm_api_key=os.getenv("LLM_API_KEY")
+            llm_provider=os.getenv("LLM_MODEL_PROVIDER_DEEPRESEARCH", "openai"),
+            llm_model_name=os.getenv("LLM_MODEL_NAME_DEEPRESEARCH"),
+            llm_base_url=os.getenv("LLM_BASE_URL_DEEPRESEARCH"),
+            llm_api_key=os.getenv("LLM_API_KEY_DEEPRESEARCH"),
         ),
-        use_vision=False
+        use_vision=False,
     )
 
     agent_id = "test_deepresearch_agent"
@@ -94,9 +92,9 @@ def get_deepresearch_swarm(user_input):
         desc="web_search_agent",
         conf=agent_config,
         system_prompt_template=search_sys_prompt,
-        tool_names=[Tools.SEARCH_API.value]
+        tool_names=[Tools.SEARCH_API.value],
     )
-    
+
     reporting_agent = Agent(
         name="reporting_agent",
         desc="reporting_agent",
@@ -105,7 +103,7 @@ def get_deepresearch_swarm(user_input):
     )
 
     return TeamSwarm(plan_agent, web_search_agent, reporting_agent, max_steps=1)
-    
+
 
 class AWorldAgent(BaseAWorldAgent):
     def __init__(self, *args, **kwargs):
@@ -121,7 +119,7 @@ class AWorldAgent(BaseAWorldAgent):
 
         if prompt is None and request is not None:
             prompt = request.messages[-1].content
-        
+
         swarm = get_deepresearch_swarm(prompt)
 
         task = Task(
