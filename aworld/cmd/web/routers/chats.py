@@ -8,7 +8,6 @@ from aworld.cmd.utils import agent_executor
 from aworld.cmd.utils.trace_summarize import summarize_trace
 from aworld.cmd.web.web_server import get_user_id_from_jwt
 import aworld.trace as trace
-from aworld.cmd.utils.trace_summarize import summarize_trace
 
 logger = logging.getLogger(__name__)
 

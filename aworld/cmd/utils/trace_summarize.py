@@ -70,9 +70,10 @@ trace_prompt = """
     1. Please summarize and output separately for agents with different event.id.
     2. Agent Span with the same name but different event.id are also considered as different agents.
     3. There may be a parent-child relationship between agents. Please select the LLM span and Tool span from the nearest child span to the current agent for summarizing.
-    4. Please ensure that the output includes all agents that meet the above definition, regardless of which layer the agent is at.
+    4. Ensure that all agent spans have their own independent summaries, and the number of summaries is exactly the same as the number of agent spans. For example: {{"name":"event.agent.a","attributes":{{"event.id":"111"}},"children":[{{"name":"llm.gpt-4o"}},{{"name":"event.tool.1","children":[{{"name":"event.agent.a","attributes":{{"event.id":"222"}},"children":[{{"name":"llm.gpt-4o"}}]}}]}}]}}, both of the above two agent names are event.agent.a, but event.id is different and needs to be summarized separately for 111 and 222.
     5. Please output in the following standard JSON format without any additional explanatory text:
-    [{{"agent":"947cc4c1b7ed406ab7fbf38b9d2b1f5a",,"summary":"xxx","token_usage":"xxx","input_tokens":"xxx","output_tokens":"xxx","use_tools":["xxx"]}},{{}}]
+    [{{"agent":"947cc4c1b7ed406ab7fbf38b9d2b1f5a",,"summary":"xxx"}},{{}}]
+    6. Pay attention to controlling the length of the summary, so that the overall output does not exceed your output length limit.
     Here are the trace_id: {task}
     """
 

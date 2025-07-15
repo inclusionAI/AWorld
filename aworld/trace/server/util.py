@@ -1,3 +1,4 @@
+import uuid
 from aworld.logs.util import logger
 from aworld.trace.opentelemetry.memory_storage import SpanModel
 from aworld.trace.constants import RunType, SPAN_NAME_PREFIX_EVENT_AGENT
@@ -52,6 +53,42 @@ def _remove_span_detail(root_spans: list):
             span.pop(key, None)
         if 'children' in span:
             _remove_span_detail(span['children'])
+
+
+def _get_top_task_nodes(spans_dict):
+    task_nodes = [
+        span for span in spans_dict.values()
+        if span.get('name', '').startswith('task.')
+    ]
+    top_task_nodes = []
+    for task_node in task_nodes:
+        parent_id = task_node.get('parent_id')
+        is_top = True
+
+        while parent_id:
+            parent_span = spans_dict.get(parent_id)
+            if not parent_span:
+                break
+
+            if parent_span.get('name', '').startswith('task.'):
+                is_top = False
+                break
+
+            parent_id = parent_span.get('parent_id')
+
+        if is_top:
+            top_task_nodes.append(task_node)
+
+    return top_task_nodes
+
+
+def _get_root_nodes(edges):
+    sources = set()
+    targets = set()
+    for edge in edges:
+        sources.add(edge['source'])
+        targets.add(edge['target'])
+    return sources - targets
 
 
 def _build_graph(root_spans: list):
@@ -131,6 +168,7 @@ def get_agent_flow(trace_id):
     spans = storage.get_all_spans(trace_id)
     spans_dict = {span.span_id: span.dict() for span in spans}
     children_spans = []
+    top_task_nodes = _get_top_task_nodes(spans_dict)
 
     filtered_spans = {}
     for span_id, span in spans_dict.items():
@@ -174,4 +212,19 @@ def get_agent_flow(trace_id):
 
     data = _build_graph(root_spans)
     _remove_span_detail(data["nodes"])
+
+    # add query start node
+    top_task_node = top_task_nodes[0] if top_task_nodes else None
+    if top_task_node:
+        start_node_span_id = f'{uuid.uuid4().hex[:16]}'
+        data['nodes'].append({
+            'span_id': start_node_span_id,
+            'show_name': top_task_node['attributes'].get(semconv.TASK_INPUT),
+        })
+        root_nodes = _get_root_nodes(data['edges'])
+        for root_node in root_nodes:
+            data['edges'].append({
+                'source': start_node_span_id,
+                'target': root_node,
+            })
     return data
