@@ -4,7 +4,7 @@ import abc
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, TypeVar, List, Optional
+from typing import Any, Dict, Generic, TypeVar, List, Optional, Union
 
 from pydantic import BaseModel
 
@@ -20,6 +20,8 @@ class Constants:
     OUTPUT = "output"
     TOOL_CALLBACK = "tool_callback"
     AGENT_CALLBACK = "agent_callback"
+    GROUP = "group"
+    MULTI_AGENT_TEAM = "multi_agent_team"
 
 
 class TopicType:
@@ -33,6 +35,8 @@ class TopicType:
     # for dynamic subscribe
     SUBSCRIBE_TOOL = "__subscribe_tool"
     SUBSCRIBE_AGENT = "__subscribe_agent"
+    GROUP_ACTIONS = "__group_actions"
+    GROUP_RESULTS = "__group_results"
 
 
 DataType = TypeVar('DataType')
@@ -98,6 +102,14 @@ class Message(Generic[DataType]):
     def context(self, context: Context):
         self.headers['context'] = context
 
+    @property
+    def group_id(self) -> str:
+        return self.headers.get('group_id')
+
+    @group_id.setter
+    def group_id(self, group_id: str):
+        self.headers['group_id'] = group_id
+
 
 @dataclass
 class TaskEvent(Message[TaskItem]):
@@ -129,6 +141,15 @@ class CancelMessage(Message[TaskItem]):
     category: str = 'task'
     priority: int = -1
     topic: str = TopicType.CANCEL
+
+@dataclass
+class GroupMessage(Message[Union[Dict[str, Any], List[ActionModel]]]):
+    category: str = 'group'
+    group_id: str = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.headers['group_id'] = self.group_id
 
 
 class Messageable(object):

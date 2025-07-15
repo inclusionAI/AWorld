@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, Callable, List
 
 from aworld.core.context.base import Context
 from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter, create_multiple_field_getters, \
-    get_field_values_from_list, get_enhanced_field_values_from_list
+    get_field_values_from_list
 
 # Import system_prompt directly from the module
 try:
@@ -73,7 +73,7 @@ class Prompt:
         if context and variables:
             field_paths = variables
             try:
-                result = get_enhanced_field_values_from_list(context=context, field_paths=field_paths,default="")
+                result = get_field_values_from_list(context=context, field_paths=field_paths,default="")
             except Exception as e:
                 logging.warning(f"Error getting variable values from API: {str(e)}")
                 return None

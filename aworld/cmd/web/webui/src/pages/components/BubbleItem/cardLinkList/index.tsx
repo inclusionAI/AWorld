@@ -19,7 +19,7 @@ interface ItemInterface {
 const cardLinkList: React.FC<Props> = ({ sessionId, data, onOpenWorkspace }) => {
   const items = data?.card_data?.search_items;
 
-  const cardItems = Array.isArray(items) ? items : [];
+  const cardItems = Array.isArray(items) ? items.filter((item) => item?.title && item?.link) : [];
   // 打开workspace
   const handleOpenWorkspace = useCallback(() => {
     if (onOpenWorkspace) {
@@ -42,11 +42,11 @@ const cardLinkList: React.FC<Props> = ({ sessionId, data, onOpenWorkspace }) => 
       <div className="border-box">
         <Flex className="cardbox">
           {cardItems?.map((item: ItemInterface, index: number) => (
-            <Card title={item.title} key={index} className="card-item" onClick={() => item.link && window.open(item.link, '_blank', 'noopener,noreferrer')}>
-              <Typography.Paragraph className="desc" ellipsis={{ rows: 3, tooltip: item.snippet }}>
-                {item.snippet}
+            <Card title={item?.title} key={index} className="card-item" onClick={() => item?.link && window.open(item?.link, '_blank', 'noopener,noreferrer')}>
+              <Typography.Paragraph className="desc" ellipsis={{ rows: 3, tooltip: typeof item?.snippet === 'string' ? item?.snippet : '' }}>
+                {item?.snippet}
               </Typography.Paragraph>
-              <Typography.Text ellipsis={{ tooltip: item.link }}>{item.link}</Typography.Text>
+              <Typography.Text ellipsis={{ tooltip: typeof item?.link === 'string' ? item?.link : '' }}>{item?.link}</Typography.Text>
             </Card>
           ))}
         </Flex>

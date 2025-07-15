@@ -35,7 +35,7 @@ class ContextUsage:
         self.used_context_length = used_context_length
 
 
-class Context():
+class Context:
     """Context is the core context management class in the AWorld architecture, used to store and manage
     the complete state information of an Agent, including configuration data and runtime state.
 
@@ -206,6 +206,24 @@ class Context():
     def event_manager(self, event_manager: 'EventManager'):
         self._event_manager = event_manager
 
+    @property
+    def task_input(self):
+        return self._task.input
+    
+    @property
+    def outputs(self):
+        return self._task.outputs
+
+    @property
+    def outputs(self):
+        return self._task.outputs
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        return self.context_info.get(key, default)
+
+    def set_state(self, key: str, value: Any):
+        self.context_info[key] = value
+
     def deep_copy(self) -> 'Context':
         """Create a deep copy of this Context instance with all attributes copied.
         
@@ -273,32 +291,6 @@ class Context():
 
         return new_context
 
-    @property
-    def record_path(self):
-        return "."
-
-    @property
-    def is_task(self):
-        return True
-
-    @property
-    def enable_visible(self):
-        return False
-
-    @property
-    def enable_failover(self):
-        return False
-
-    @property
-    def enable_cluster(self):
-        return False
-
-    def get_state(self, key: str, default: Any = None) -> Any:
-        return self.context_info.get(key, default)
-
-    def set_state(self, key: str, value: Any):
-        self.context_info[key] = value
-
     def merge_context(self, other_context: 'Context') -> None:
         """Merge the state of another Context instance into the current Context
         
@@ -314,7 +306,7 @@ class Context():
         """
         if not other_context or not isinstance(other_context, Context):
             return
-            
+
         # 1. Merge context_info state
         if hasattr(other_context, 'context_info') and other_context.context_info:
             try:
@@ -328,7 +320,7 @@ class Context():
                     self.context_info.update(other_context.context_info)
             except Exception as e:
                 logger.warning(f"Failed to merge context_info: {e}")
-        
+
         # 2. Merge trajectories
         if hasattr(other_context, 'trajectories') and other_context.trajectories:
             try:
@@ -343,7 +335,7 @@ class Context():
                     self.trajectories[merge_key] = value
             except Exception as e:
                 logger.warning(f"Failed to merge trajectories: {e}")
-        
+
         # 3. Merge token usage statistics
         if hasattr(other_context, '_token_usage') and other_context._token_usage:
             try:
@@ -352,7 +344,7 @@ class Context():
                 # We need to calculate the net increment
                 parent_tokens = self._token_usage.copy()
                 child_tokens = other_context._token_usage.copy()
-                
+
                 # Calculate net increment: child context tokens - parent context tokens
                 net_tokens = {}
                 for key in child_tokens:
@@ -361,7 +353,7 @@ class Context():
                     net_value = child_value - parent_value
                     if net_value > 0:  # Only merge net increment
                         net_tokens[key] = net_value
-                
+
                 # Add net increment to parent context
                 if net_tokens:
                     self.add_token(net_tokens)
@@ -372,7 +364,7 @@ class Context():
                     self.add_token(other_context._token_usage)
                 except Exception:
                     pass
-        
+
         # 4. Merge agent_info configuration (only merge new configuration items)
         if hasattr(other_context, 'agent_info') and other_context.agent_info:
             try:
@@ -382,15 +374,34 @@ class Context():
                         self.agent_info[key] = value
             except Exception as e:
                 logger.warning(f"Failed to merge agent_info: {e}")
-        
+
         # Record merge operation
         try:
             merge_info = {
                 "merged_at": datetime.now().isoformat(),
                 "merged_from_task_id": getattr(other_context, '_task_id', 'unknown'),
-                "merged_trajectories_count": len(other_context.trajectories) if hasattr(other_context, 'trajectories') else 0,
+                "merged_trajectories_count": len(other_context.trajectories) if hasattr(other_context,
+                                                                                        'trajectories') else 0,
                 "merged_token_usage": other_context._token_usage if hasattr(other_context, '_token_usage') else {},
             }
             self.context_info.set('last_merge_info', merge_info)
         except Exception as e:
             logger.warning(f"Failed to record merge info: {e}")
+
+    def save_action_trajectory(self,
+                               step,
+                               result: str,
+                               agent_name: str = None,
+                               tool_name: str = None,
+                               params: str = None):
+        # 将agent_results和tool_results保存到trajectories中
+        step_key = f"step_{step}"
+        step_data = {
+            "step": step,
+            "params": params,
+            "result": result,
+            "timestamp": datetime.now().isoformat(),
+            "agent_name": agent_name,
+            "tool_name": tool_name
+        }
+        self.trajectories[step_key] = step_data

@@ -154,7 +154,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         ))
         self.pre_run()
         result = self.policy(observation, message=message, **kwargs)
-        final_result = self.post_run(result, observation)
+        final_result = self.post_run(result, observation, message)
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
@@ -172,7 +172,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             ))
         await self.async_pre_run()
         result = await self.async_policy(observation, message=message, **kwargs)
-        final_result = await self.async_post_run(result, observation)
+        final_result = await self.async_post_run(result, observation, message)
         return final_result
 
     @abc.abstractmethod
@@ -217,13 +217,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def pre_run(self):
         pass
 
-    def post_run(self, policy_result: OUTPUT, input: INPUT) -> Message:
+    def post_run(self, policy_result: OUTPUT, input: INPUT, message: Message = None) -> Message:
         return policy_result
 
     async def async_pre_run(self):
         pass
 
-    async def async_post_run(self, policy_result: OUTPUT, input: INPUT) -> Message:
+    async def async_post_run(self, policy_result: OUTPUT, input: INPUT, message: Message = None) -> Message:
         return policy_result
 
 

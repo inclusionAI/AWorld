@@ -1,3 +1,4 @@
+import abc
 import time
 import asyncio
 from pydantic import BaseModel
@@ -10,6 +11,7 @@ from aworld.core.tool.tool_desc import is_tool_by_name
 from aworld.core.singleton import InheritanceSingleton, SingletonMeta
 from aworld.core.event.base import Constants
 from aworld.logs.util import logger
+from aworld.events.util import send_message
 
 
 class RunNodeBusiType(Enum):
@@ -63,9 +65,65 @@ class RunNode(BaseModel):
     create_time: Optional[float] = None
     execute_time: Optional[float] = None
     end_time: Optional[float] = None
+    group_id: Optional[str] = None
+    # sub_group_root_id required when group_id is not None
+    sub_group_root_id: Optional[str] = None
+    # metadata is used to store the context of the sub task when group_id is not None
+    metadata: Optional[dict] = None
+
+    def has_finished(self):
+        return self.status in [RunNodeStatus.SUCCESS, RunNodeStatus.FAILED, RunNodeStatus.TIMEOUT]
 
 
-class StateStorage(ABC):
+class SubGroup(BaseModel):
+    '''
+    SubGroup represents an execution chain pointing to the root node 
+    '''
+    root_node_id: Optional[str] = None
+    session_id: Optional[str] = None
+    group_id: Optional[str] = None
+    create_time: Optional[float] = None
+    execute_time: Optional[float] = None
+    end_time: Optional[float] = None
+    status: RunNodeStatus = None
+    result_msg: Optional[str] = None
+    results: Optional[List[HandleResult]] = None
+    metadata: Optional[dict] = None
+
+    def has_finished(self):
+        return self.status in [RunNodeStatus.SUCCESS, RunNodeStatus.FAILED, RunNodeStatus.TIMEOUT]
+
+
+class NodeGroup(BaseModel):
+    '''
+    Node group, used to manage sub group
+    '''
+    group_id: str = None
+    session_id: str = None
+    # subtask root node id list
+    root_node_ids: List[str] = None
+    finished: Optional[bool] = False
+    finish_notified: Optional[bool] = False
+    create_time: Optional[float] = None
+    execute_time: Optional[float] = None
+    end_time: Optional[float] = None
+    status: RunNodeStatus = None
+    # failed subtask root node id list
+    failed_root_node_ids: Optional[List[str]] = None
+    parent_group_id: Optional[str] = None
+    metadata: Optional[dict] = None
+
+    def has_finished(self):
+        return self.status in [RunNodeStatus.SUCCESS, RunNodeStatus.FAILED, RunNodeStatus.TIMEOUT]
+
+
+class NodeGroupDetail(NodeGroup):
+    sub_groups: Optional[List[SubGroup]] = None
+
+
+class StateStorage:
+    __metaclass__ = abc.ABCMeta
+
     @abstractmethod
     def get(self, node_id: str) -> RunNode:
         pass
@@ -80,6 +138,38 @@ class StateStorage(ABC):
 
     @abstractmethod
     def query(self, session_id: str) -> List[RunNode]:
+        pass
+
+
+class NodeGroupStorage:
+    __metaclass__ = abc.ABCMeta
+
+    @abstractmethod
+    def get(self, group_id: str) -> NodeGroup:
+        pass
+
+    @abstractmethod
+    def insert(self, node_group: NodeGroup):
+        pass
+
+    @abstractmethod
+    def update(self, node_group: NodeGroup):
+        pass
+
+
+class SubGroupStorage:
+    __metaclass__ = abc.ABCMeta
+
+    @abstractmethod
+    def get(self, node_id: str) -> SubGroup:
+        pass
+
+    @abstractmethod
+    def insert(self, sub_group: SubGroup):
+        pass
+
+    @abstractmethod
+    def update(self, sub_group: SubGroup):
         pass
 
 
@@ -126,13 +216,57 @@ class InMemoryStateStorage(StateStorage, InheritanceSingleton, metaclass=StateSt
         return session_nodes
 
 
+class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
+    '''
+    In memory node group storage
+    '''
+
+    def __init__(self):
+        self.node_groups = {}
+
+    def get(self, group_id: str) -> NodeGroup:
+        return self.node_groups.get(group_id)
+
+    def insert(self, node_group: NodeGroup):
+        self.node_groups[node_group.group_id] = node_group
+
+    def update(self, node_group: NodeGroup):
+        self.node_groups[node_group.group_id] = node_group
+
+
+class InMemorySubGroupStorage(SubGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
+    '''
+    In memory sub task storage
+    '''
+
+    def __init__(self):
+        self.sub_groups = {}
+
+    def get(self, node_id: str) -> SubGroup:
+        return self.sub_groups.get(node_id)
+
+    def insert(self, sub_group: SubGroup):
+        self.sub_groups[sub_group.root_node_id] = sub_group
+
+    def update(self, sub_group: SubGroup):
+        self.sub_groups[sub_group.root_node_id] = sub_group
+
+
 class RuntimeStateManager(InheritanceSingleton):
     '''
     Runtime state manager
     '''
 
-    def __init__(self, storage: StateStorage = InMemoryStateStorage.instance()):
+    def __init__(self,
+                 storage: StateStorage = InMemoryStateStorage.instance()):
         self.storage = storage
+        self._node_group_manager = None
+
+    @property
+    def node_group_manager(self):
+        if not self._node_group_manager:
+            self._node_group_manager = NodeGroupManager(node_state_manager=self)
+        return self._node_group_manager
 
     def create_node(self,
                     busi_type: RunNodeBusiType,
@@ -141,7 +275,10 @@ class RuntimeStateManager(InheritanceSingleton):
                     node_id: str = None,
                     parent_node_id: str = None,
                     msg_id: str = None,
-                    msg_from: str = None) -> RunNode:
+                    msg_from: str = None,
+                    group_id: str = None,
+                    sub_group_root_id: str = None,
+                    metadata: Optional[dict] = None) -> RunNode:
         '''
             create node and insert to storage
         '''
@@ -163,8 +300,14 @@ class RuntimeStateManager(InheritanceSingleton):
                        msg_from=msg_from,
                        parent_node_id=parent_node_id,
                        status=RunNodeStatus.INIT,
-                       create_time=time.time())
+                       create_time=time.time(),
+                       group_id=group_id,
+                       sub_group_root_id=sub_group_root_id,
+                       metadata=metadata)
         self.storage.insert(node)
+        # create sub group if node is the root node of sub group
+        if group_id and sub_group_root_id and node_id == sub_group_root_id:
+            self.node_group_manager.create_sub_group(group_id, session_id, sub_group_root_id, metadata)
         return node
 
     def run_node(self, node_id: str):
@@ -176,6 +319,9 @@ class RuntimeStateManager(InheritanceSingleton):
         node.status = RunNodeStatus.RUNNING
         node.execute_time = time.time()
         self.storage.update(node)
+        # update sub group status if node is the root node
+        if node.group_id and node.sub_group_root_id and node.node_id == node.sub_group_root_id:
+            self.node_group_manager.run_sub_group(node_id)
 
     def save_result(self,
                     node_id: str,
@@ -242,6 +388,14 @@ class RuntimeStateManager(InheritanceSingleton):
         node = self._node_exist(node_id)
         node.status = RunNodeStatus.TIMEOUT
         node.result_msg = result_msg
+        self.storage.update(node)
+
+    def finish_sub_task(self, node_id: str):
+        '''
+            finish sub task with node_id as the root node
+        '''
+        node = self._node_exist(node_id)
+        node.sub_task_finished = True
         self.storage.update(node)
 
     def get_node(self, node_id: str) -> RunNode:
@@ -313,6 +467,265 @@ class RuntimeStateManager(InheritanceSingleton):
             # Wait for the specified interval before polling again
             await asyncio.sleep(interval)
 
+    async def create_group(self, group_id: str,
+                           session_id: str,
+                           root_node_ids: List[str] = None,
+                           parent_group_id: Optional[str] = None,
+                           metadata: Optional[dict] = None) -> NodeGroup:
+        '''
+        create node group
+        '''
+        return await self.node_group_manager.create_group(group_id, session_id, root_node_ids, parent_group_id, metadata)
+
+    async def finish_sub_group(self,
+                               group_id: str,
+                               root_node_id: str,
+                               results: List[Message] = None,
+                               result_msg: str = None):
+        '''
+        finish sub group
+        '''
+        handle_results = []
+        for msg in results:
+            handle_result = HandleResult(
+                status=RunNodeStatus.FAILED if msg.is_error() else RunNodeStatus.SUCCESS,
+                result=msg,
+                name=msg.sender
+            )
+            handle_results.append(handle_result)
+        await self.node_group_manager.finish_sub_group(group_id, root_node_id, handle_results, result_msg)
+
+    def get_group(self, group_id: str) -> NodeGroup:
+        '''
+        get group basic info
+        '''
+        return self.node_group_manager.get_group(group_id)
+
+    def query_group_detail(self, group_id: str) -> NodeGroupDetail:
+        '''
+        query group detail info with all sub group info
+        '''
+        return self.node_group_manager.query_group_detail(group_id)
+
+
+class NodeGroupManager(InheritanceSingleton):
+    '''
+    Node group manager, used to manage node group
+    '''
+
+    def __init__(self,
+                 sub_group_storage: SubGroupStorage = InMemorySubGroupStorage.instance(),
+                 node_group_storage: NodeGroupStorage = InMemoryNodeGroupStorage.instance(),
+                 node_state_manager: RuntimeStateManager = None):
+        self.sub_group_storage = sub_group_storage
+        self.node_group_storage = node_group_storage
+        self.node_state_manager = node_state_manager
+
+    async def create_group(self, group_id: str,
+                           session_id: str,
+                           root_node_ids: List[str] = None,
+                           parent_group_id: Optional[str] = None,
+                           metadata: Optional[dict] = None) -> NodeGroup:
+        '''
+        create node group
+        '''
+        group = self._find_group(group_id)
+        if group:
+            raise Exception(f"group already exist, group_id: {group_id}")
+        node_group = NodeGroup(
+            session_id=session_id,
+            group_id=group_id,
+            root_node_ids=root_node_ids,
+            parent_group_id=parent_group_id,
+            metadata=metadata,
+            create_time=time.time(),
+            update_time=time.time(),
+            status=RunNodeStatus.INIT,
+        )
+        self.node_group_storage.insert(node_group)
+        await self._check_subgroup_status(group_id, root_node_ids)
+
+    def create_sub_group(self,
+                         group_id: str,
+                         session_id: str,
+                         root_node_id: str,
+                         metadata: Optional[dict] = None) -> SubGroup:
+        '''
+        create sub group
+        '''
+        subgroup = self._find_subgroup(root_node_id)
+        if subgroup:
+            raise Exception(f"subgroup already exist, group_id: {group_id}, root_node_id: {root_node_id}")
+        run_node = self.node_state_manager.get_node(root_node_id)
+        if not run_node:
+            raise Exception(f"run node not found, root_node_id: {root_node_id}")
+
+        sub_group = SubGroup(
+            session_id=session_id,
+            group_id=group_id,
+            root_node_id=root_node_id,
+            metadata=metadata,
+            create_time=time.time(),
+            update_time=time.time(),
+            status=RunNodeStatus.INIT,
+        )
+        self.sub_group_storage.insert(sub_group)
+        return sub_group
+
+    def run_sub_group(self,
+                      root_node_id: str):
+        '''
+        run sub group
+        '''
+        subgroup = self._subgroup_exist(root_node_id)
+        if not subgroup:
+            raise Exception(f"subgroup not found, root_node_id: {root_node_id}")
+
+        subgroup.execute_time = time.time()
+        subgroup.status = RunNodeStatus.RUNNING
+        self.sub_group_storage.update(subgroup)
+        self.run_group(subgroup.group_id)
+
+    def run_group(self, group_id):
+        group = self.node_group_storage.get(group_id)
+        if group.status == RunNodeStatus.INIT:
+            group.status = RunNodeStatus.RUNNING
+            group.execute_time = time.time()
+            self.node_group_storage.update(group)
+
+    async def finish_sub_group(self,
+                               group_id: str,
+                               root_node_id: str,
+                               results: List[HandleResult] = None,
+                               result_msg: str = None):
+        '''
+        finish sub task with node_id as the root node
+        '''
+        subgroup = self.sub_group_storage.get(root_node_id)
+        if not subgroup:
+            raise Exception(f"subgroup not found, group_id: {group_id}, root_node_id: {root_node_id}")
+        if subgroup.group_id != group_id:
+            raise Exception(f"subgroup group_id not match, group_id: {group_id}, root_node_id: {root_node_id}")
+
+        group = self._group_exist(group_id)
+        subgroup.end_time = time.time()
+        subgroup.results = results
+        subgroup.result_msg = result_msg
+        subgroup.status = RunNodeStatus.SUCCESS
+        for result in results:
+            if result.status == RunNodeStatus.FAILED:
+                subgroup.status = RunNodeStatus.FAILED
+        self.sub_group_storage.update(subgroup)
+        # check all subgroup status and update group status
+        await self._check_subgroup_status(group_id, group.root_node_ids)
+
+    async def _check_subgroup_status(self, group_id, root_node_ids: List[str]):
+        '''
+        check subgroups status and update group status, if group finished, send group finish message
+        '''
+        all_subgroups_finished = True
+        failed_subgroups = []
+        for root_node_id in root_node_ids:
+            subgroup = self.sub_group_storage.get(root_node_id)
+            if not subgroup or not subgroup.has_finished():
+                all_subgroups_finished = False
+                break
+            if subgroup.status == RunNodeStatus.FAILED or subgroup.status == RunNodeStatus.TIMEOUT:
+                failed_subgroups.append(subgroup)
+
+        if all_subgroups_finished:
+            group = self._group_exist(group_id)
+            if failed_subgroups:
+                group.status = RunNodeStatus.FAILED
+                group.failed_root_node_ids = [subgroup.root_node_id for subgroup in failed_subgroups]
+            else:
+                group.status = RunNodeStatus.SUCCESS
+            group.end_time = time.time()
+            self.node_group_storage.update(group)
+            await self._send_group_finish_message(group_id)
+
+    async def _send_group_finish_message(self, group_id: str):
+        '''
+            Currently, for simple implementation, concurrency control needs to be considered in a distributed environment
+        '''
+        group = self._group_exist(group_id)
+        if group.finish_notified:
+            logger.warning(f"group finish message already sent, group_id: {group_id}")
+            return
+        group_results = {}
+        metadata = None
+        for root_node_id in group.root_node_ids:
+            subgroup = self.sub_group_storage.get(root_node_id)
+            group_results[root_node_id] = subgroup.results
+            if not metadata:
+                metadata = subgroup.metadata
+
+        metadata = metadata or {}
+        if group.parent_group_id:
+            metadata.update({
+                "parent_group_id": group.parent_group_id
+            })
+        message = Message(
+            category="group",
+            payload=group_results,
+            sender="node_group_manager",
+            session_id=group.session_id,
+            topic="__group_results",
+            headers=metadata
+        )
+        await send_message(message)
+        group.finish_notified = True
+        self.node_group_storage.update(group)
+
+    def get_group(self, group_id: str) -> NodeGroup:
+        '''
+            get group basic info
+        '''
+        return self._find_group(group_id)
+
+    def query_group_detail(self, group_id: str) -> NodeGroupDetail:
+        '''
+            query group detail info with all sub group info
+        '''
+        group = self._find_group(group_id)
+        if not group:
+            return None
+        sub_groups = []
+        for root_node_id in group.root_node_ids:
+            subgroup = self._find_subgroup(root_node_id)
+            if subgroup:
+                sub_groups.append(subgroup)
+        return NodeGroupDetail(
+            group_id=group.group_id,
+            root_node_ids=group.root_node_ids,
+            parent_group_id=group.parent_group_id,
+            metadata=group.metadata,
+            create_time=group.create_time,
+            execute_time=group.execute_time,
+            end_time=group.end_time,
+            status=group.status,
+            failed_root_node_ids=group.failed_root_node_ids,
+            sub_groups=sub_groups
+        )
+
+    def _find_subgroup(self, root_node_id: str) -> SubGroup:
+        return self.sub_group_storage.get(root_node_id)
+
+    def _subgroup_exist(self, root_node_id: str) -> SubGroup:
+        subgroup = self._find_subgroup(root_node_id)
+        if not subgroup:
+            raise Exception(f"subgroup not found, root_node_id: {root_node_id}")
+        return subgroup
+
+    def _find_group(self, group_id: str) -> NodeGroup:
+        return self.node_group_storage.get(group_id)
+
+    def _group_exist(self, group_id: str) -> NodeGroup:
+        group = self._find_group(group_id)
+        if not group:
+            raise Exception(f"group not found, group_id: {group_id}")
+        return group
+
 
 class EventRuntimeStateManager(RuntimeStateManager):
 
@@ -323,6 +736,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
         '''
         create and start node while message handle started.
         '''
+        metadata = message.headers
         run_node_busi_type = RunNodeBusiType.from_message_category(
             message.category)
         logger.info(
@@ -334,7 +748,10 @@ class EventRuntimeStateManager(RuntimeStateManager):
                 busi_id=message.receiver or "",
                 session_id=message.session_id,
                 msg_id=message.id,
-                msg_from=message.sender)
+                msg_from=message.sender,
+                group_id=metadata.get("group_id") if metadata else None,
+                sub_group_root_id=metadata.get("root_message_id") if metadata else None,
+                metadata=metadata)
             self.run_node(message.id)
 
     def save_message_handle_result(self, name: str, message: Message, result: Message = None):
