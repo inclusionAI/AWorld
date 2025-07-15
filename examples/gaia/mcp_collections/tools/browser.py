@@ -11,17 +11,18 @@ Main functions:
 import json
 import os
 import re
+import sys
 import time
 import traceback
-import sys
 
 try:
     from browser_use import Agent, AgentHistoryList, BrowserProfile
+    from browser_use.llm import ChatOpenAI
     from dotenv import load_dotenv
-    from langchain_openai import ChatOpenAI
     from pydantic import BaseModel, Field
 
     from aworld.logs.util import Color
+
     from ..base import ActionArguments, ActionCollection, ActionResponse
 except Exception as e:
     print(f"Failed to import browser tool: {traceback.format_exc()}")

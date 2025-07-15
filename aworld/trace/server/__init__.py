@@ -46,7 +46,7 @@ class TraceServer:
 
         self.app = app
         # app.run(port=self._port)
-        uvicorn.run(app, host="0.0.0.0", port=self._port)
+        uvicorn.run(app, host="0.0.0.0", port=self._port, loop="asyncio")
 
 
 def set_trace_server(storage, port: int = 7079, start_server=False):
