@@ -993,7 +993,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(tool_list=self.tools)
         return content
 
-    async def _add_human_input_to_memory(self, content: str, context: Context):
+    async def _add_human_input_to_memory(self, content: Any, context: Context):
         """Add user input to memory"""
         if not context.get_task():
             logger.error(f"Task is None")
