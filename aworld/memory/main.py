@@ -11,8 +11,8 @@ from aworld.logs.util import logger
 from aworld.memory.embeddings.base import EmbeddingsResult, EmbeddingsMetadata
 from aworld.memory.embeddings.factory import EmbedderFactory
 from aworld.memory.longterm import DefaultMemoryOrchestrator
-from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfileExtractParams, \
-    AgentExperienceExtractParams, UserProfile
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, MessageMetadata, UserProfileExtractParams, \
+    AgentExperienceExtractParams, UserProfile, MemorySummary
 from aworld.memory.vector.factory import VectorDBFactory
 from aworld.models.llm import acall_llm_model
 
@@ -303,12 +303,12 @@ class Memory(MemoryBase):
     def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:
         pass
 
-    def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
-        self._add(memory_item, filters, agent_memory_config)
+    async def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
+        await self._add(memory_item, filters, agent_memory_config)
         # self.post_add(memory_item, filters, memory_config)
 
     @abc.abstractmethod
-    def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
+    async def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         pass
 
     async def post_add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
@@ -436,12 +436,15 @@ class Memory(MemoryBase):
         pass
 
 
+
+
+
 class AworldMemory(Memory):
     def __init__(self, memory_store: MemoryStore, config: MemoryConfig,  **kwargs):
         super().__init__(memory_store=memory_store, config=config, **kwargs)
         self.summary = {}
 
-    def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
+    async def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         self.memory_store.add(memory_item)
 
         # save to vector store
@@ -449,9 +452,41 @@ class AworldMemory(Memory):
 
         # Check if we need to create or update summary
         if agent_memory_config and agent_memory_config.enable_summary:
-            total_rounds = len(self.memory_store.get_all())
-            if total_rounds > agent_memory_config.summary_rounds:
-                self._create_or_update_summary(total_rounds, agent_memory_config = agent_memory_config)
+            if memory_item.memory_type == "message":
+                await self._summary(memory_item.agent_id, memory_item.agent_name, memory_item.session_id, memory_item.task_id, memory_item.user_id)
+
+    async def _summary(self, agent_id: str,agent_name:str, session_id: str, task_id: str, user_id: str):
+        # obtain assistant un summary messages
+
+        # get init messages
+        self.get_all(filters={})
+        # get un summary messages
+        un_summary_messages = self._get_unsummary_message("agent_id", "task_id", roles=["assistance"])
+
+        # generate summary
+        summary_content = await self.async_gen_multi_rounds_summary(un_summary_messages)
+        summary_metadata = MessageMetadata(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            session_id=session_id,
+            task_id=task_id,
+            user_id=user_id
+        )
+        summary_memory = MemorySummary(
+            item_ids=[item.id for item in un_summary_messages],
+            summary=summary_content,
+            metadata=summary_metadata
+        )
+
+        # add summary to memory
+        await self.add(summary_memory)
+        # mark memory item summary flag
+        for summary_item in un_summary_messages:
+            summary_item.mark_has_summary()
+            self.memory_store.update(summary_item)
+
+
+
 
     def _save_to_vector_db(self, memory_item: MemoryItem):
         if not memory_item.embedding_text:
@@ -478,62 +513,6 @@ class AworldMemory(Memory):
         else:
             logger.warning(f"memory_store or embedder is None, skip save to vector store")
 
-    def _create_or_update_summary(self, total_rounds: int, agent_memory_config: AgentMemoryConfig):
-        """Create or update summary based on current total rounds.
-
-        Args:
-            total_rounds (int): Total number of rounds.
-        """
-        summary_index = int(total_rounds / agent_memory_config.summary_rounds)
-        start = (summary_index - 1) * agent_memory_config.summary_rounds
-        end = total_rounds - agent_memory_config.summary_rounds
-
-        # Ensure we have valid start and end indices
-        start = max(0, start)
-        end = max(start, end)
-
-        # Get the memory items to summarize
-        items_to_summarize = self.memory_store.get_all()[start:end + 1]
-        print(f"{total_rounds}start: {start}, end: {end},")
-
-        # Create summary content
-        summary_content = self._summarize_items(items_to_summarize, summary_index, agent_memory_config)
-
-        # Create the range key
-        range_key = f"{start}_{end}"
-
-        # Check if summary for this range already exists
-        if range_key in self.summary:
-            # Update existing summary
-            self.summary[range_key].content = summary_content
-            self.summary[range_key].updated_at = None  # This will update the timestamp
-        else:
-            # Create new summary
-            summary_item = MemoryItem(
-                content=summary_content,
-                metadata={
-                    "summary_index": summary_index,
-                    "start_round": start,
-                    "end_round": end,
-                    "role": "system"
-                },
-                tags=["summary"]
-            )
-            self.summary[range_key] = summary_item
-
-    def _summarize_items(self, items: list[MemoryItem], summary_index: int, agent_memory_config: AgentMemoryConfig) -> str:
-        """Summarize a list of memory items.
-
-        Args:
-            items (list[MemoryItem]): List of memory items to summarize.
-            summary_index (int): Summary index.
-
-        Returns:
-            str: Summary content.
-        """
-        # This is a placeholder. In a real implementation, you might use an LLM or other method
-        # to create a meaningful summary of the content
-        return asyncio.run(self.async_gen_multi_rounds_summary(items,agent_memory_config))
 
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)
@@ -629,4 +608,7 @@ class AworldMemory(Memory):
         else:
             logger.warning(f"vector_db is None, skip search")
         return []
+
+    def _get_unsummary_message(self, agent_id, task_id, param1, roles) -> list[MemoryItem]:
+        pass
 

@@ -357,7 +357,7 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
 
         for memory_item in memory_items:
             logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memory: {memory_item.content}")
-            self.memory.add(memory_item)
+            await self.memory.add(memory_item)
 
     async def _add_memory_task(self, task: MemoryProcessingTask) -> None:
         """

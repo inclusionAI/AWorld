@@ -74,7 +74,7 @@ class SuperAgent:
         await self.post_run(user_id, session_id, task_id, task_context)
 
     async def add_ai_message(self, user_id, session_id, task_id, result):
-        self.memory.add(MemoryAIMessage(
+        await self.memory.add(MemoryAIMessage(
             content=result,
             metadata=MessageMetadata(
                 user_id=user_id,
@@ -86,7 +86,7 @@ class SuperAgent:
         ), agent_memory_config=self.memory_config)
 
     async def add_human_input(self, user_id, session_id, task_id, user_input):
-        self.memory.add(MemoryHumanMessage(
+        await self.memory.add(MemoryHumanMessage(
             content=user_input,
             metadata=MessageMetadata(
                 user_id=user_id,

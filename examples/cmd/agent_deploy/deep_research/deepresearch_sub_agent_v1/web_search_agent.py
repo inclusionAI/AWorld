@@ -74,7 +74,7 @@ class WebSearchAgent(Agent):
                 }]
 
                 self._log_messages(messages)
-                self.memory.add(MemoryItem(
+                await self.memory.add(MemoryItem(
                     content=messages[-1]['content'],
                     metadata={
                         "role": messages[-1]['role'],

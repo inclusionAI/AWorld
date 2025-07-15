@@ -66,12 +66,23 @@ class MemoryItem(BaseModel):
         return self.metadata.get('agent_id')
 
     @property
+    def agent_name(self) -> str:
+        return self.metadata.get('agent_name')
+
+    @property
     def application_id(self) -> str:
         return self.metadata.get('application_id', 'default')
 
     @property
     def embedding_text(self) -> Optional[str]:
         return self.content
+
+    def mark_has_summary(self):
+        self.metadata['summary'] = True
+
+    @property
+    def has_summary(self) -> bool:
+        return self.metadata.get('summary', False)
 
 
 class MessageMetadata(BaseModel):
@@ -84,7 +95,7 @@ class MessageMetadata(BaseModel):
         agent_id (str): The ID of the agent.
     """
     agent_id: str = Field(description="The ID of the agent")
-    agent_name: str = Field(description="The name of the agent")
+    agent_name: Optional[str] = Field(description="The name of the agent")
     session_id: Optional[str] = Field(default=None,description="The ID of the session")
     task_id: Optional[str] = Field(default=None,description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
@@ -169,6 +180,19 @@ class UserProfile(MemoryItem):
     def embedding_text(self):
         return f"key:{self.key} value:{self.value}"
 
+class MemorySummary(MemoryItem):
+    """
+    Represents a memory summary.
+    All custom attributes are stored in content and metadata.
+    Args:
+        item_ids (str): The IDS of the agent.
+        summary (str): The summary text.
+        metadata (Optional[Dict[str, Any]]): Additional metadata.
+    """
+    def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata) -> None:
+        meta = metadata.to_dict
+        meta['item_ids'] = item_ids
+        super().__init__(content=summary, metadata=meta, memory_type="summary")
 
 class MemoryMessage(MemoryItem):
     """

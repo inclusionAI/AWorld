@@ -643,7 +643,7 @@ class MemoryBase(ABC):
         """
 
     @abstractmethod
-    def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
+    async def add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         """Add memory in the memory store.
 
         Step 1: Add memory to memory store

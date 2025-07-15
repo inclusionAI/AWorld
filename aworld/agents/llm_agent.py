@@ -973,7 +973,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
          content = await self.custom_system_prompt(context=context, content=content)
          logger.info(f'system prompt content: {content}')
 
-         self.memory.add(MemorySystemMessage(
+         await self.memory.add(MemorySystemMessage(
              content=content,
              metadata=MessageMetadata(
                  session_id=session_id,
@@ -1001,7 +1001,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         user_id = context.get_task().user_id
         task_id = context.get_task().id
     
-        self.memory.add(MemoryHumanMessage(
+        await self.memory.add(MemoryHumanMessage(
             content=content,
             metadata=MessageMetadata(
                 session_id=session_id,
@@ -1028,7 +1028,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         user_id = context.get_task().user_id
         task_id = context.get_task().id
 
-        self.memory.add(MemoryAIMessage(
+        await self.memory.add(MemoryAIMessage(
             content=llm_response.content,
             tool_calls=llm_response.tool_calls if not self.use_tools_in_prompt else custom_prompt_tool_calls,
             metadata=MessageMetadata(
@@ -1076,7 +1076,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         user_id = context.get_task().user_id
         task_id = context.get_task().id
 
-        self.memory.add(MemoryToolMessage(
+        await self.memory.add(MemoryToolMessage(
             content=tool_result.content,
             tool_call_id=tool_call_id,
             status="success",
