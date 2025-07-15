@@ -120,6 +120,8 @@ class OpenAIProvider(LLMProviderBase):
             elif hasattr(response, 'msg'):
                 error_msg = response.msg
 
+            logger.warning(f"API Error: {error_msg}, response is: {response}")
+
             raise LLMResponseError(
                 error_msg if error_msg else "Unknown error",
                 self.model_name or "unknown",

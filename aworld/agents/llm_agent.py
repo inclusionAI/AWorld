@@ -16,7 +16,7 @@ from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, Optim
     LlmCompressionConfig
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent
-from aworld.core.common import Observation, ActionModel
+from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
@@ -191,9 +191,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # append observation to memory
         if observation.is_tool_result:
             for action_item in observation.action_result:
-                content = action_item.content
                 tool_call_id = action_item.tool_call_id
-                await self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
+                await self._add_tool_result_to_memory(tool_call_id, tool_result=action_item, context=message.context)
         else:
             content = observation.content
             logger.debug(f"agent_prompt: {agent_prompt}")
@@ -886,7 +885,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 f"{tool_name} observation: {log_ob}", color=Color.green)
 
             for action_result_item in observation.action_result:
-                await self._add_tool_result_to_memory(action_result_item.tool_call_id, action_result_item.content,context=context_message.context)
+                await self._add_tool_result_to_memory(action_result_item.tool_call_id, action_result_item,context=context_message.context)
 
         return [ActionModel(agent_name=self.id(), policy_info=observation.content)]
 
@@ -994,7 +993,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(tool_list=self.tools)
         return content
 
-    async def _add_human_input_to_memory(self, content: str, context: Context):
+    async def _add_human_input_to_memory(self, content: Any, context: Context):
         """Add user input to memory"""
         if not context.get_task():
             logger.error(f"Task is None")
@@ -1048,7 +1047,29 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
                     f" content: {llm_response.content[:100] if llm_response.content else ''}... ")
 
-    async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: Any, context: Context):
+    async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
+        """Add tool result to memory"""
+        if isinstance(tool_result.content, str) and tool_result.content.startswith("data:image"):
+            image_content = tool_result.content
+            tool_result.content = "this picture is below "
+            await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
+            image_content = [
+                {
+                    "type": "text",
+                    "text": f"this is file of tool_call_id:{tool_result.tool_call_id}"
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_content
+                    }
+                }
+            ]
+            await self._add_human_input_to_memory(image_content, context)
+        else:
+            await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
+
+    async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
 
         session_id = context.get_task().session_id
@@ -1056,7 +1077,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         task_id = context.get_task().id
 
         self.memory.add(MemoryToolMessage(
-            content=tool_result,
+            content=tool_result.content,
             tool_call_id=tool_call_id,
             status="success",
             metadata=MessageMetadata(
