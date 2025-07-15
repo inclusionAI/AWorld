@@ -435,10 +435,6 @@ class Memory(MemoryBase):
     def update(self, memory_item: MemoryItem):
         pass
 
-
-
-
-
 class AworldMemory(Memory):
     def __init__(self, memory_store: MemoryStore, config: MemoryConfig,  **kwargs):
         super().__init__(memory_store=memory_store, config=config, **kwargs)
@@ -453,24 +449,31 @@ class AworldMemory(Memory):
         # Check if we need to create or update summary
         if agent_memory_config and agent_memory_config.enable_summary:
             if memory_item.memory_type == "message":
-                await self._summary(memory_item.agent_id, memory_item.agent_name, memory_item.session_id, memory_item.task_id, memory_item.user_id)
+                await self._summary_agent_task_memory(memory_item, agent_memory_config)
 
-    async def _summary(self, agent_id: str,agent_name:str, session_id: str, task_id: str, user_id: str):
+    async def _summary_agent_task_memory(self, memory_item: MemoryItem, agent_memory_config: AgentMemoryConfig):
         # obtain assistant un summary messages
 
         # get init messages
-        self.get_all(filters={})
+        un_summary_messages = self.get_all(filters={
+            "agent_id": memory_item.agent_id,
+            "session_id": memory_item.session_id,
+            "task_id": memory_item.task_id,
+            "memory_type": "message"
+        }
+        )
+
         # get un summary messages
         un_summary_messages = self._get_unsummary_message("agent_id", "task_id", roles=["assistance"])
 
         # generate summary
-        summary_content = await self.async_gen_multi_rounds_summary(un_summary_messages)
+        summary_content = await self.async_gen_multi_rounds_summary(un_summary_messages, agent_memory_config)
         summary_metadata = MessageMetadata(
-            agent_id=agent_id,
-            agent_name=agent_name,
-            session_id=session_id,
-            task_id=task_id,
-            user_id=user_id
+            agent_id=memory_item.agent_id,
+            agent_name=memory_item.agent_name,
+            session_id=memory_item.session_id,
+            task_id=memory_item.task_id,
+            user_id=memory_item.user_id
         )
         summary_memory = MemorySummary(
             item_ids=[item.id for item in un_summary_messages],

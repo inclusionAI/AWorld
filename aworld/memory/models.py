@@ -259,8 +259,8 @@ class MemoryHumanMessage(MemoryMessage):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (str): The content of the message.
     """
-    def __init__(self, metadata: MessageMetadata, content: Any) -> None:
-        super().__init__(role="user", metadata=metadata, content=content)
+    def __init__(self, metadata: MessageMetadata, content: Any, memory_type = "init") -> None:
+        super().__init__(role="user", metadata=metadata, content=content, memory_type=memory_type)
     
     def to_openai_message(self) -> dict:
         return {

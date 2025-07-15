@@ -213,7 +213,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "agent_id": self.id(),
             "session_id": session_id,
             "task_id": task_id,
-            "message_type": "message"
+            "memory_types": ["init","message"]
         }, agent_memory_config=self.memory_config)
         if histories:
             # default use the first tool call
@@ -962,7 +962,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
              "agent_id": self.id(),
              "session_id": session_id,
              "task_id": task_id,
-             "message_type": "message"
+             "memory_types": ["init"]
          }, agent_memory_config=self.memory_config)
          if histories and len(histories) > 0:
              logger.debug(
@@ -993,7 +993,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             content = self.system_prompt if not self.use_tools_in_prompt else self.system_prompt.format(tool_list=self.tools)
         return content
 
-    async def _add_human_input_to_memory(self, content: Any, context: Context):
+    async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type = "init"):
         """Add user input to memory"""
         if not context.get_task():
             logger.error(f"Task is None")
@@ -1009,7 +1009,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 task_id=task_id,
                 agent_id=self.id(),
                 agent_name=self.name(),
-            )
+            ),
+            memory_type=memory_type
         ), agent_memory_config=self.memory_config)
         logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: "
                     f"User#{user_id}, "
@@ -1065,7 +1066,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     }
                 }
             ]
-            await self._add_human_input_to_memory(image_content, context)
+            await self._add_human_input_to_memory(image_content, context, "message")
         else:
             await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
 
