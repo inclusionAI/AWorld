@@ -4,7 +4,7 @@ import abc
 import asyncio
 import json
 import traceback
-from typing import Optional
+from typing import Optional, Tuple
 
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
@@ -15,7 +15,27 @@ from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, M
     AgentExperienceExtractParams, UserProfile, MemorySummary
 from aworld.memory.vector.factory import VectorDBFactory
 from aworld.models.llm import acall_llm_model
+from aworld.models.utils import num_tokens_from_messages
 
+AWORLD_MEMORY_EXTRACT_NEW_SUMMARY = """
+You are presented with a user task, a conversion that may contain the answer, and a previous conversation summary. 
+Please read the conversation carefully and extract new information from the conversation that helps to solve user task,
+ 
+<user_task> {user_task} </user_task>
+<existed_summary> {existed_summary} </existed_summary>
+<conversation> {to_be_summary} </conversation>
+
+## output new summary: 
+"""
+AWORLD_MEMORY_UPDATE_SUMMARY = """
+You are presented with a user task, a conversion that may contain the answer, and a previous conversation summary. 
+Please read the conversation carefully and extract new information from the conversation that helps to solve user task, while retaining all relevant details from the previous memory.
+<user_task> {user_task} </user_task>
+<existed_summary> {existed_summary} </existed_summary>
+<conversation> {to_be_summary} </conversation>
+
+## result summary: 
+"""
 
 class InMemoryMemoryStore(MemoryStore):
     def __init__(self):
@@ -217,7 +237,7 @@ class Memory(MemoryBase):
                                 f"{'tool_calls:' + json.dumps(item['tool_calls']) if 'tool_calls' in item and item['tool_calls'] else ''}")
         return history_context
 
-    async def _call_llm_summary(self, summary_messages: list) -> str:
+    async def _call_llm_summary(self, summary_messages: list, agent_memory_config: AgentMemoryConfig) -> str:
         """Call LLM to generate summary and log the process.
 
         Args:
@@ -225,13 +245,13 @@ class Memory(MemoryBase):
         Returns:
             Summary content string.
         """
-        logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages: {summary_messages}")
         llm_response = await acall_llm_model(
             self.default_llm_instance,
             messages=summary_messages,
-            stream=False
+            model_name=agent_memory_config.summary_model_name,
+            stream=False,
         )
-        logger.info(f'🧠 [MEMORY:short-term] [Summary] summary_content: result is {llm_response.content[:400] + "...truncated"} ')
+        logger.debug(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages: {summary_messages}")
         return llm_response.content
 
     def _get_parsed_history_messages(self, history_items: list[MemoryItem]) -> list[dict]:
@@ -470,9 +490,20 @@ class AworldMemory(Memory):
                 "memory_type": ["init","message","summary"]
             }
         )
+        to_be_summary_items = [item for item in agent_task_total_message if item.memory_type == "message" and not item.has_summary]
 
+        check_need_summary,trigger_reason = self._check_need_summary(to_be_summary_items, agent_memory_config)
+        logger.debug(f"🧠 [MEMORY:short-term] [Summary] check_need_summary: {check_need_summary}, trigger_reason: {trigger_reason}")
+
+        if not check_need_summary:
+            return
+
+        existed_summary_items = [item for item in agent_task_total_message if item.memory_type == "summary"]
+        user_task_items = [item for item in agent_task_total_message if item.memory_type == "init"]
         # generate summary
-        summary_content = await self.async_gen_multi_rounds_summary(un_summary_messages, agent_memory_config)
+        summary_content = await self._gen_multi_rounds_summary(user_task_items, existed_summary_items, to_be_summary_items, agent_memory_config)
+        logger.debug(f"🧠 [MEMORY:short-term] [Summary] summary_content: {summary_content}")
+
         summary_metadata = MessageMetadata(
             agent_id=memory_item.agent_id,
             agent_name=memory_item.agent_name,
@@ -481,17 +512,54 @@ class AworldMemory(Memory):
             user_id=memory_item.user_id
         )
         summary_memory = MemorySummary(
-            item_ids=[item.id for item in un_summary_messages],
+            item_ids=[item.id for item in to_be_summary_items],
             summary=summary_content,
             metadata=summary_metadata
         )
 
         # add summary to memory
-        await self.add(summary_memory)
+        self.memory_store.add(summary_memory)
+
         # mark memory item summary flag
-        for summary_item in un_summary_messages:
+        for summary_item in to_be_summary_items:
             summary_item.mark_has_summary()
             self.memory_store.update(summary_item)
+        logger.info(f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished: content is {summary_content[:100]}")
+
+
+    def _check_need_summary(self, to_be_summary_items: list[MemoryItem], agent_memory_config: AgentMemoryConfig) -> Tuple[bool,str]:
+        if len(to_be_summary_items) == 0:
+            return False, ""
+        if len(to_be_summary_items) > agent_memory_config.summary_rounds:
+            return True, "summary_rounds"
+        if num_tokens_from_messages([item.to_openai_message() for item in to_be_summary_items]) > agent_memory_config.summary_context_length:
+            return True, "summary_context_length"
+        return False, ""
+
+    async def _gen_multi_rounds_summary(self, user_task_items: list[MemoryItem], existed_summary_items: list[MemoryItem],
+                                        to_be_summary_items: list[MemoryItem], agent_memory_config: AgentMemoryConfig) -> str:
+        
+        if len(to_be_summary_items) == 0:
+            return ""
+
+        # get user task, existed summary, to be summary
+        user_task = [{"role": item.metadata['role'], "content": item.content} for item in user_task_items]
+        existed_summary = [{"role": item.metadata['role'], "content": item.content} for item in existed_summary_items]
+        to_be_summary = [{"role": item.metadata['role'], "content": item.content} for item in to_be_summary_items]
+
+        # generate summary
+        summary_messages = [
+            {
+                "role": "user", 
+                "content": AWORLD_MEMORY_EXTRACT_NEW_SUMMARY.format(
+                    user_task=user_task,
+                    existed_summary=existed_summary,
+                    to_be_summary=to_be_summary
+                )
+            }
+        ]
+
+        return await self._call_llm_summary(summary_messages, agent_memory_config)
 
 
 

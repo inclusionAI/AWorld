@@ -83,6 +83,14 @@ class MemoryItem(BaseModel):
     @property
     def has_summary(self) -> bool:
         return self.metadata.get('summary', False)
+    
+    @property
+    def content_length(self) -> int:
+        return len(self.content)
+
+    @abstractmethod
+    def to_openai_message(self) -> dict:
+        pass
 
 
 class MessageMetadata(BaseModel):
@@ -144,6 +152,13 @@ class AgentExperience(MemoryItem):
     def embedding_text(self):
         return f"skill:{self.skill}, actions:{self.actions}"
 
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "system",
+            "content": self.content
+        }
+
+
 class UserProfileItem(BaseModel):
     key: str = Field(description="The key of the profile")
     value: Any = Field(description="The value of the profile")
@@ -179,6 +194,12 @@ class UserProfile(MemoryItem):
     @property
     def embedding_text(self):
         return f"key:{self.key} value:{self.value}"
+    
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "system",
+            "content": self.content
+        }
 
 class MemorySummary(MemoryItem):
     """
@@ -193,6 +214,12 @@ class MemorySummary(MemoryItem):
         meta = metadata.to_dict
         meta['item_ids'] = item_ids
         super().__init__(content=summary, metadata=meta, memory_type="summary")
+
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "assistant",
+            "content": self.content
+        }
 
 class MemoryMessage(MemoryItem):
     """

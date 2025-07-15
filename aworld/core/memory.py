@@ -509,9 +509,9 @@ class AgentMemoryConfig(BaseModel):
 
     # short-term Config
     enable_summary: bool = Field(default=False, description="enable_summary use llm to create summary short-term memory")
+    summary_model: str = Field(default=None, description="summary model")
     summary_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
-    summary_context_length: int = Field(default=4000, description=" when the content length is greater than the summary_context_length, the summary will be created")
-    summary_single_context_length: int = Field(default=4000, description=" when the single round content length is greater than the summary_single_context_length, the summary will be created")
+    summary_context_length: int = Field(default=40960, description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
     trim_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the trim_rounds, the memory will be trimmed")
 
