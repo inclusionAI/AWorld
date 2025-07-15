@@ -228,12 +228,29 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if sys_prompt:
             await self._add_system_message_to_memory(context=message.context, content=sys_prompt)
 
+        session_id = message.context.get_task().session_id
+        task_id = message.context.get_task().id
+        histories = self.memory.get_last_n(self.history_messages, filters={
+            "agent_id": self.id(),
+            "session_id": session_id,
+            "task_id": task_id,
+            "message_type": "message"
+        }, agent_memory_config=self.memory_config)
+        last_history = histories[-1] if histories else None
+
         # append observation to memory
         if observation.is_tool_result:
             for action_item in observation.action_result:
                 content = action_item.content
                 tool_call_id = action_item.tool_call_id
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
+        elif not self.use_tools_in_prompt and "tool_calls" in last_history.metadata and last_history.metadata['tool_calls']:
+            for tool_call in last_history.metadata['tool_calls']:
+                tool_call_id = tool_call['id']
+                tool_name = tool_call['function']['name']
+                if tool_name and tool_name == message.sender:
+                    await self._add_tool_result_to_memory(tool_call_id, tool_result=observation.content, context=message.context)
+                    break
         else:
             content = observation.content
             logger.debug(f"agent_prompt: {agent_prompt}")
@@ -248,8 +265,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             await self._add_human_input_to_memory(content, message.context)
 
         # from memory get last n messages
-        session_id = message.context.get_task().session_id
-        task_id = message.context.get_task().id
         histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self.id(),
             "session_id": session_id,
