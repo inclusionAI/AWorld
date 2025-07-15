@@ -27,8 +27,13 @@ from aworld.config.conf import AgentConfig
 from aworld.logs.util import Color
 from aworld.models.llm import call_llm_model, get_llm_model
 from aworld.models.model_response import ModelResponse
-from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
-from mcp_servers.utils import get_file_from_source
+from examples.gaia.mcp_collections.base import (
+    ActionArguments,
+    ActionCollection,
+    ActionResponse,
+)
+
+from ..utils import get_file_from_source
 
 
 class VideoAnalysisResult(BaseModel):
@@ -143,9 +148,7 @@ class VideoCollection(ActionCollection):
             # Get file with validation (only video files allowed)
             file_path, _, _ = get_file_from_source(
                 video_source,
-                allowed_mime_prefixes=None,
                 max_size_mb=2500.0,  # 2500MB limit for videos
-                file_type="video",  # Specify type as video
             )
 
             # Open video file
@@ -201,25 +204,41 @@ class VideoCollection(ActionCollection):
             video.release()
 
             # Clean up temporary file if it was created for a URL
-            if file_path != str(Path(video_source).resolve()) and Path(file_path).exists():
+            if (
+                file_path != str(Path(video_source).resolve())
+                and Path(file_path).exists()
+            ):
                 Path(file_path).unlink()
 
             if not frames:
-                raise ValueError(f"Could not extract any frames from video: {video_source}")
+                raise ValueError(
+                    f"Could not extract any frames from video: {video_source}"
+                )
 
             return frames
 
         except Exception as e:
-            self._color_log(f"Error extracting frames from {video_source}: {str(e)}", Color.red)
+            self._color_log(
+                f"Error extracting frames from {video_source}: {str(e)}", Color.red
+            )
             raise
 
-    def _create_video_content(self, prompt: str, video_frames: list[dict[str, any]]) -> list[dict[str, any]]:
+    def _create_video_content(
+        self, prompt: str, video_frames: list[dict[str, any]]
+    ) -> list[dict[str, any]]:
         """Create uniform video format for querying LLM."""
         content = [{"type": "text", "text": prompt}]
-        content.extend([{"type": "image_url", "image_url": {"url": frame["data"]}} for frame in video_frames])
+        content.extend(
+            [
+                {"type": "image_url", "image_url": {"url": frame["data"]}}
+                for frame in video_frames
+            ]
+        )
         return content
 
-    def _format_analysis_output(self, result: VideoAnalysisResult, format_type: str = "markdown") -> str:
+    def _format_analysis_output(
+        self, result: VideoAnalysisResult, format_type: str = "markdown"
+    ) -> str:
         """Format video analysis results for LLM consumption.
 
         Args:
@@ -261,7 +280,9 @@ class VideoCollection(ActionCollection):
             ]
             return "\n".join(output_parts)
 
-    def _format_summary_output(self, result: VideoSummaryResult, format_type: str = "markdown") -> str:
+    def _format_summary_output(
+        self, result: VideoSummaryResult, format_type: str = "markdown"
+    ) -> str:
         """Format video summary results for LLM consumption.
 
         Args:
@@ -303,7 +324,9 @@ class VideoCollection(ActionCollection):
             ]
             return "\n".join(output_parts)
 
-    def _format_keyframe_output(self, result: KeyframeResult, format_type: str = "markdown") -> str:
+    def _format_keyframe_output(
+        self, result: KeyframeResult, format_type: str = "markdown"
+    ) -> str:
         """Format keyframe extraction results for LLM consumption.
 
         Args:
@@ -329,7 +352,9 @@ class VideoCollection(ActionCollection):
                 "",
                 "Frame Files:",
             ]
-            for i, (path, timestamp) in enumerate(zip(result.frame_paths, result.frame_timestamps), 1):
+            for i, (path, timestamp) in enumerate(
+                zip(result.frame_paths, result.frame_timestamps), 1
+            ):
                 output_parts.append(f"{i}. {path} (at {timestamp:.2f}s)")
 
             return "\n".join(output_parts)
@@ -347,12 +372,16 @@ class VideoCollection(ActionCollection):
                 "## Extracted Frames",
             ]
 
-            for i, (path, timestamp) in enumerate(zip(result.frame_paths, result.frame_timestamps), 1):
+            for i, (path, timestamp) in enumerate(
+                zip(result.frame_paths, result.frame_timestamps), 1
+            ):
                 output_parts.append(f"{i}. `{path}` (at {timestamp:.2f}s)")
 
             return "\n".join(output_parts)
 
-    def _analyze_frame_chunk(self, chunk_data: tuple[int, list, str]) -> tuple[int, str]:
+    def _analyze_frame_chunk(
+        self, chunk_data: tuple[int, list, str]
+    ) -> tuple[int, str]:
         """Analyze a chunk of video frames using LLM.
 
         Args:
@@ -364,7 +393,9 @@ class VideoCollection(ActionCollection):
         chunk_index, frames, question = chunk_data
 
         try:
-            content = self._create_video_content(self.video_analyze_prompt.format(task=question), frames)
+            content = self._create_video_content(
+                self.video_analyze_prompt.format(task=question), frames
+            )
             inputs = [{"role": "user", "content": content}]
 
             response: ModelResponse = call_llm_model(
@@ -380,11 +411,18 @@ class VideoCollection(ActionCollection):
                 temperature=float(os.getenv("VIDEO_LLM_TEMPERATURE", "1.0")),
             )
             analysis_result = response.content
-            self._color_log(f"✅ Completed analysis for chunk {chunk_index + 1}", Color.green)
+            self._color_log(
+                f"✅ Completed analysis for chunk {chunk_index + 1}", Color.green
+            )
 
         except Exception as e:
-            self._color_log(f"❌ LLM analysis error for chunk {chunk_index + 1}: {str(e)}", Color.yellow)
-            analysis_result = f"Analysis failed for video segment {chunk_index + 1}: {str(e)}"
+            self._color_log(
+                f"❌ LLM analysis error for chunk {chunk_index + 1}: {str(e)}",
+                Color.yellow,
+            )
+            analysis_result = (
+                f"Analysis failed for video segment {chunk_index + 1}: {str(e)}"
+            )
 
         return chunk_index, analysis_result
 
@@ -392,11 +430,20 @@ class VideoCollection(ActionCollection):
         self,
         video_url: str = Field(description="Path or URL to the video file to analyze"),
         question: str = Field(description="Question or task for video analysis"),
-        sample_rate: float = Field(default=1.0, description="Frame sampling rate (frames per second)"),
+        sample_rate: float = Field(
+            default=1.0, description="Frame sampling rate (frames per second)"
+        ),
         start_time: float = Field(default=0.0, description="Start time in seconds"),
-        end_time: float | None = Field(default=None, description="End time in seconds (None for full video)"),
-        output_format: str = Field(default="markdown", description="Output format: 'markdown', 'json', or 'text'"),
-        max_workers: int = Field(default=4, description="Maximum number of parallel workers for analysis"),
+        end_time: float | None = Field(
+            default=None, description="End time in seconds (None for full video)"
+        ),
+        output_format: str = Field(
+            default="markdown",
+            description="Output format: 'markdown', 'json', or 'text'",
+        ),
+        max_workers: int = Field(
+            default=4, description="Maximum number of parallel workers for analysis"
+        ),
     ) -> ActionResponse:
         """Analyze video content using AI with parallel processing.
 
@@ -430,7 +477,9 @@ class VideoCollection(ActionCollection):
             self._color_log(f"📋 Question: {question}", Color.blue)
 
             # Extract video frames
-            video_frames = self._get_video_frames(str(video_path), sample_rate, start_time, end_time)
+            video_frames = self._get_video_frames(
+                str(video_path), sample_rate, start_time, end_time
+            )
             self._color_log(f"📸 Extracted {len(video_frames)} frames", Color.blue)
 
             # Process frames in chunks of 64 frames for parallel analysis
@@ -442,7 +491,10 @@ class VideoCollection(ActionCollection):
                 chunk_frames = video_frames[i : i + chunk_size]
                 chunks.append((i // chunk_size, chunk_frames, question))
 
-            self._color_log(f"🔄 Processing {len(chunks)} chunks with {max_workers} parallel workers", Color.blue)
+            self._color_log(
+                f"🔄 Processing {len(chunks)} chunks with {max_workers} parallel workers",
+                Color.blue,
+            )
 
             # Process chunks in parallel
             all_results = [None] * len(chunks)  # Pre-allocate to maintain order
@@ -450,22 +502,36 @@ class VideoCollection(ActionCollection):
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit all chunk analysis tasks
                 future_to_chunk = {
-                    executor.submit(self._analyze_frame_chunk, chunk_data): chunk_data[0] for chunk_data in chunks
+                    executor.submit(self._analyze_frame_chunk, chunk_data): chunk_data[
+                        0
+                    ]
+                    for chunk_data in chunks
                 }
 
                 # Collect results as they complete
                 for future in as_completed(future_to_chunk):
                     try:
                         chunk_index, result = future.result()
-                        all_results[chunk_index] = f"Result of video part {chunk_index + 1}: {result}"
+                        all_results[chunk_index] = (
+                            f"Result of video part {chunk_index + 1}: {result}"
+                        )
                     except Exception as e:
                         chunk_index = future_to_chunk[future]
-                        self._color_log(f"❌ Error processing chunk {chunk_index + 1}: {str(e)}", Color.red)
-                        all_results[chunk_index] = f"Result of video part {chunk_index + 1}: Analysis failed - {str(e)}"
+                        self._color_log(
+                            f"❌ Error processing chunk {chunk_index + 1}: {str(e)}",
+                            Color.red,
+                        )
+                        all_results[chunk_index] = (
+                            f"Result of video part {chunk_index + 1}: Analysis failed - {str(e)}"
+                        )
 
             # Filter out None results and join
-            analysis_result = "\n".join([result for result in all_results if result is not None])
-            duration_analyzed = end_time - start_time if end_time else len(video_frames) / sample_rate
+            analysis_result = "\n".join(
+                [result for result in all_results if result is not None]
+            )
+            duration_analyzed = (
+                end_time - start_time if end_time else len(video_frames) / sample_rate
+            )
 
             # Create result
             result = VideoAnalysisResult(
@@ -524,14 +590,23 @@ class VideoCollection(ActionCollection):
 
     async def mcp_summarize_video(
         self,
-        video_url: str = Field(description="The input video filepath or URL to summarize."),
-        sample_rate: int = Field(default=1, description="Sample n frames per second (default: 1)."),
-        start_time: float = Field(default=0, description="Start time of the video segment in seconds (default: 0)."),
+        video_url: str = Field(
+            description="The input video filepath or URL to summarize."
+        ),
+        sample_rate: int = Field(
+            default=1, description="Sample n frames per second (default: 1)."
+        ),
+        start_time: float = Field(
+            default=0,
+            description="Start time of the video segment in seconds (default: 0).",
+        ),
         end_time: float | None = Field(
-            default=None, description="End time of the video segment in seconds (default: None)."
+            default=None,
+            description="End time of the video segment in seconds (default: None).",
         ),
         output_format: str = Field(
-            default="markdown", description="Output format: 'markdown', 'json', or 'text' (default: markdown)."
+            default="markdown",
+            description="Output format: 'markdown', 'json', or 'text' (default: markdown).",
         ),
     ) -> ActionResponse:
         """Summarize the main content of a video using AI analysis.
@@ -561,7 +636,9 @@ class VideoCollection(ActionCollection):
             self._color_log(f"🎬 Summarizing video: {video_url}", Color.cyan)
 
             # Extract video frames
-            video_frames = self._get_video_frames(str(video_path), sample_rate, start_time, end_time)
+            video_frames = self._get_video_frames(
+                str(video_path), sample_rate, start_time, end_time
+            )
             self._color_log(f"📸 Extracted {len(video_frames)} frames", Color.blue)
 
             # Process frames in larger chunks for summarization
@@ -571,7 +648,9 @@ class VideoCollection(ActionCollection):
 
             for i in range(0, len(video_frames), interval):
                 cur_frames = video_frames[i : i + frame_nums]
-                content = self._create_video_content(self.video_summarize_prompt, cur_frames)
+                content = self._create_video_content(
+                    self.video_summarize_prompt, cur_frames
+                )
                 inputs = [{"role": "user", "content": content}]
 
                 try:
@@ -579,7 +658,9 @@ class VideoCollection(ActionCollection):
                         get_llm_model(
                             conf=AgentConfig(
                                 llm_provider="openai",
-                                llm_model_name=os.getenv("VIDEO_LLM_MODEL_NAME", "gpt-4o"),
+                                llm_model_name=os.getenv(
+                                    "VIDEO_LLM_MODEL_NAME", "gpt-4o"
+                                ),
                                 llm_api_key=os.getenv("VIDEO_LLM_API_KEY"),
                                 llm_base_url=os.getenv("VIDEO_LLM_BASE_URL"),
                             )
@@ -589,16 +670,25 @@ class VideoCollection(ActionCollection):
                     )
                     cur_summary = response.content
                 except Exception as e:
-                    self._color_log(f"LLM summary error for chunk {i // interval + 1}: {str(e)}", Color.yellow)
-                    cur_summary = f"Summary failed for video segment {i // interval + 1}"
+                    self._color_log(
+                        f"LLM summary error for chunk {i // interval + 1}: {str(e)}",
+                        Color.yellow,
+                    )
+                    cur_summary = (
+                        f"Summary failed for video segment {i // interval + 1}"
+                    )
 
-                all_results.append(f"Summary of video part {i // interval + 1}: {cur_summary}")
+                all_results.append(
+                    f"Summary of video part {i // interval + 1}: {cur_summary}"
+                )
 
                 if i + frame_nums >= len(video_frames):
                     break
 
             summary_result = "\n".join(all_results)
-            duration_analyzed = end_time - start_time if end_time else len(video_frames) / sample_rate
+            duration_analyzed = (
+                end_time - start_time if end_time else len(video_frames) / sample_rate
+            )
 
             # Create result
             result = VideoSummaryResult(
@@ -625,12 +715,16 @@ class VideoCollection(ActionCollection):
                 execution_time=execution_time,
             ).model_dump()
 
-            self._color_log("✅ Video summarization completed successfully", Color.green)
+            self._color_log(
+                "✅ Video summarization completed successfully", Color.green
+            )
             return ActionResponse(success=True, message=message, metadata=metadata)
 
         except Exception as e:
             error_msg = str(e)
-            self._color_log(f"❌ Video summarization error: {traceback.format_exc()}", Color.red)
+            self._color_log(
+                f"❌ Video summarization error: {traceback.format_exc()}", Color.red
+            )
 
             # Format error for LLM
             message = f"Failed to summarize video: {error_msg}"
@@ -652,12 +746,17 @@ class VideoCollection(ActionCollection):
         target_time: int = Field(
             description="The specific time point for extraction (in seconds), centered within the window_size."
         ),
-        window_size: int = Field(default=5, description="The window size for extraction (in seconds, default: 5)."),
+        window_size: int = Field(
+            default=5,
+            description="The window size for extraction (in seconds, default: 5).",
+        ),
         output_dir: str = Field(
-            default=None, description="Directory where extracted frames will be saved (default: workspace/keyframes)."
+            default=None,
+            description="Directory where extracted frames will be saved (default: workspace/keyframes).",
         ),
         output_format: str = Field(
-            default="markdown", description="Output format: 'markdown', 'json', or 'text' (default: markdown)."
+            default="markdown",
+            description="Output format: 'markdown', 'json', or 'text' (default: markdown).",
         ),
     ) -> ActionResponse:
         """Extract key frames around a target time with scene detection.
@@ -686,13 +785,17 @@ class VideoCollection(ActionCollection):
             validated_path = self._validate_file_path(video_path)
 
             # Set default output directory
-            output_dir = str(self.workspace / "keyframes") if output_dir is None else output_dir
+            output_dir = (
+                str(self.workspace / "keyframes") if output_dir is None else output_dir
+            )
 
             output_path = Path(output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
 
             self._color_log(f"🎬 Extracting keyframes from: {video_path}", Color.cyan)
-            self._color_log(f"🎯 Target time: {target_time}s, Window: {window_size}s", Color.blue)
+            self._color_log(
+                f"🎯 Target time: {target_time}s, Window: {window_size}s", Color.blue
+            )
 
             # Extract keyframes with scene detection
             frames, frame_times = self._extract_keyframes_with_scene_detection(
@@ -700,7 +803,9 @@ class VideoCollection(ActionCollection):
             )
 
             # Save frames to disk
-            frame_paths, frame_timestamps = self._save_keyframes(frames, frame_times, str(output_path))
+            frame_paths, frame_timestamps = self._save_keyframes(
+                frames, frame_times, str(output_path)
+            )
 
             # Cleanup if requested
             # if cleanup and validated_path.exists():
@@ -734,12 +839,16 @@ class VideoCollection(ActionCollection):
                 execution_time=execution_time,
             ).model_dump()
 
-            self._color_log(f"✅ Extracted {len(frame_paths)} keyframes successfully", Color.green)
+            self._color_log(
+                f"✅ Extracted {len(frame_paths)} keyframes successfully", Color.green
+            )
             return ActionResponse(success=True, message=message, metadata=metadata)
 
         except Exception as e:
             error_msg = str(e)
-            self._color_log(f"❌ Keyframe extraction error: {traceback.format_exc()}", Color.red)
+            self._color_log(
+                f"❌ Keyframe extraction error: {traceback.format_exc()}", Color.red
+            )
 
             # Format error for LLM
             message = f"Failed to extract keyframes: {error_msg}"
