@@ -1,4 +1,3 @@
-
 parallel_plan_sys_prompt = """## Task
 You are an information search expert. Your goal is to maximize the retrieval of effective information through search task planning and retrieval. Please plan the necessary search and processing steps to solve the problem based on the user's question and background information.
 
@@ -137,12 +136,14 @@ Based on the comprehensive information already collected in previous steps, no a
 ## Research Topic
 {{task}}"""
 
-parallel_replan_sys_prompt = parallel_plan_sys_prompt + """
+parallel_replan_sys_prompt = (
+    parallel_plan_sys_prompt
+    + """
 
 ## Trajectories
 {{trajectories}}
 """
-
+)
 
 
 plan_sys_prompt = """## Task
@@ -171,7 +172,6 @@ You are an information search expert. Your goal is to maximize the retrieval of 
    - The "steps" object MUST contain numbered steps (agent_step_1, agent_step_2, etc.)
    - Each step MUST have both "input" and "id" fields, "id" is the name of tools from ## Available Tools
    - The "dag" array MUST define execution order using step IDs
-   - Parallel steps MUST be grouped in nested arrays
 3. DO NOT include any explanatory text between the two tag sections
 4. If no further planning is needed, output an empty <PLANNING_TAG> section but STILL include <FINAL_ANSWER_TAG> with explanation
 

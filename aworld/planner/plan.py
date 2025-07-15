@@ -7,7 +7,6 @@ from aworld.core.agent.base import AgentResult
 from aworld.core.agent.output_parser import AgentOutputParser
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
-from aworld.core.context.prompts.string_prompt_formatter import StringPromptFormatter
 from aworld.logs.util import logger
 from aworld.models.model_response import ModelResponse
 from aworld.planner.base import BasePlanner
@@ -30,7 +29,7 @@ DEFAULT_SYSTEM_PROMPT = f"""When answering questions, please follow these two st
     "agent_step_2": {{"input": "step description", "id": "tool_name"}},
     "agent_step_3": {{"input": "step description", "id": "tool_name"}}
   }},
-  "dag": [["agent_step_1","agent_step_2"],"agent_step_3"]
+  "dag": ["agent_step_1","agent_step_2","agent_step_3"]
 }}
 
 Where:
@@ -39,8 +38,7 @@ Where:
   * "input" describes what this step should accomplish
 - dag: Defines the execution order and dependencies between steps in "steps"
   * Each element in dag refers to step keys in "steps"
-  * Arrays like ["step1","step2"] mean parallel execution
-  * Sequential steps are separated by commas
+  * You MUST follow the json format in the example above
 
 2. Then, provide the final answer between {FINAL_ANSWER_TAG} and {FINAL_ANSWER_END_TAG}:
 - The answer should be accurate and meet the query requirements
