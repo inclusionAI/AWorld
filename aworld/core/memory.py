@@ -507,9 +507,9 @@ class AgentMemoryConfig(BaseModel):
         arbitrary_types_allowed=True
     )
 
-    # short-term Config
+    # short-term config
     enable_summary: bool = Field(default=False, description="enable_summary use llm to create summary short-term memory")
-    summary_model: str = Field(default=None, description="summary model")
+    summary_model: str = Field(default=None, description="short-term summary model")
     summary_rounds: int = Field(default=5, description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
     summary_context_length: int = Field(default=40960, description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
@@ -517,6 +517,7 @@ class AgentMemoryConfig(BaseModel):
 
     # Long-term memory config
     enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
+    long_term_model: str = Field(default=None, description="long-term extract model")
     long_term_config: Optional[LongTermConfig] = Field(default=None, description="long_term_config")
 
 
