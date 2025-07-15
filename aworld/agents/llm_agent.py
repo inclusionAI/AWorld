@@ -1049,6 +1049,28 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
+        if isinstance(tool_result.content, str) and tool_result.content.startswith("data:image"):
+            image_content = tool_result.content
+            tool_result.content = "this picture is below "
+            await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
+            image_content = [
+                {
+                    "type": "text",
+                    "text": f"this is file of tool_call_id:{tool_result.tool_call_id}"
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_content
+                    }
+                }
+            ]
+            await self._add_human_input_to_memory(image_content, context)
+        else:
+            await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
+
+    async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
+        """Add tool result to memory"""
 
         session_id = context.get_task().session_id
         user_id = context.get_task().user_id
