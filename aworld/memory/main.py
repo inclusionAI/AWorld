@@ -63,6 +63,11 @@ class InMemoryMemoryStore(MemoryStore):
                 return False
             if memory_item.agent_id != filters['agent_id']:
                 return False
+        if filters.get('agent_name') is not None:
+            if memory_item.agent_id is None:
+                return False
+            if memory_item.agent_id != filters['agent_id']:
+                return False
         if filters.get('task_id') is not None:
             if memory_item.task_id is None:
                 return False
@@ -76,7 +81,9 @@ class InMemoryMemoryStore(MemoryStore):
         if filters.get('memory_type') is not None:
             if memory_item.memory_type is None:
                 return False
-            if memory_item.memory_type != filters['memory_type']:
+            if isinstance(memory_item.memory_type, list) and memory_item.memory_type not in filters['memory_type']:
+                return False
+            if isinstance(memory_item.memory_type, str) and memory_item.memory_type != filters['memory_type']:
                 return False
         return True
 
@@ -455,16 +462,14 @@ class AworldMemory(Memory):
         # obtain assistant un summary messages
 
         # get init messages
-        un_summary_messages = self.get_all(filters={
-            "agent_id": memory_item.agent_id,
-            "session_id": memory_item.session_id,
-            "task_id": memory_item.task_id,
-            "memory_type": "message"
-        }
+        agent_task_total_message = self.get_all(
+            filters={
+                "agent_id": memory_item.agent_id,
+                "session_id": memory_item.session_id,
+                "task_id": memory_item.task_id,
+                "memory_type": ["init","message","summary"]
+            }
         )
-
-        # get un summary messages
-        un_summary_messages = self._get_unsummary_message("agent_id", "task_id", roles=["assistance"])
 
         # generate summary
         summary_content = await self.async_gen_multi_rounds_summary(un_summary_messages, agent_memory_config)
@@ -530,7 +535,7 @@ class AworldMemory(Memory):
         return self.memory_store.get(memory_id)
 
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
-        return self.memory_store.get_all()
+        return self.memory_store.get_all(filters=filters)
 
     def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None, agent_memory_config: AgentMemoryConfig = None) -> list[MemoryItem]:
         """Get last n memories.
