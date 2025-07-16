@@ -2,6 +2,8 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import List, Dict, Any, Callable
 
+from aworld.utils.run_util import exec_agent
+
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel, Config
 from aworld.logs.util import logger
@@ -19,21 +21,19 @@ class SerialableAgent(Agent):
         self.agents = agents
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
-        from aworld.config import RunConfig
-        from aworld.core.task import Task
-        from aworld.runners.utils import choose_runners, execute_runner
-
         action = ActionModel(agent_name=self.id(), policy_info=observation.content)
-        for agent in self.agents:
-            task = Task(is_sub_task=True, input=observation, agent=agent, context=self.context)
-            runners = await choose_runners([task])
-            res = await execute_runner(runners, RunConfig(reuse_process=False))
-            if res:
-                v = res.get(task.id)
-                action = ActionModel(agent_name=self.id(), policy_info=v.answer)
-                observation = self._action_to_observation(action, agent.name())
-            else:
-                raise Exception(f"{agent.id()} execute fail.")
+        if self.agents:
+            for agent in self.agents:
+                result = await exec_agent(observation.content, agent, self.context, sub_task=True)
+                if result:
+                    if result.success:
+                        con = result.answer
+                    else:
+                        con = result.msg
+                    action = ActionModel(agent_name=agent.id(), policy_info=con)
+                    observation = self._action_to_observation(action, agent.name())
+                else:
+                    raise Exception(f"{agent.id()} execute fail.")
         return [action]
 
     def _action_to_observation(self, policy: ActionModel, agent_name: str):

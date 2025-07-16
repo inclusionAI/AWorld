@@ -90,7 +90,7 @@ class LocalRuntime(RuntimeEngine):
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         # opt of the one task process
-        if len(funcs) == 1 and self.conf.get('reuse_process', True):
+        if self.conf.get('reuse_process', True):
             func = funcs[0]
             try:
                 if inspect.iscoroutinefunction(func):
