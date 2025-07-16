@@ -16,7 +16,7 @@ from aworld.config.conf import AgentConfig, ConfigDict, ContextRuleConfig, Optim
     LlmCompressionConfig
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentStatus
-from aworld.core.common import Observation, ActionModel
+from aworld.core.common import ActionResult, Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.event import eventbus
@@ -242,6 +242,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if observation.is_tool_result:
             for action_item in observation.action_result:
                 tool_call_id = action_item.tool_call_id
+                content = action_item.content
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
         elif not self.use_tools_in_prompt and "tool_calls" in last_history.metadata and last_history.metadata['tool_calls']:
             for tool_call in last_history.metadata['tool_calls']:
@@ -1144,7 +1145,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
-        if isinstance(tool_result.content, str) and tool_result.content.startswith("data:image"):
+        if hasattr(tool_result, 'content') and isinstance(tool_result.content, str) and tool_result.content.startswith("data:image"):
             image_content = tool_result.content
             tool_result.content = "this picture is below "
             await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
@@ -1172,7 +1173,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         task_id = context.get_task().id
 
         self.memory.add(MemoryToolMessage(
-            content=tool_result.content,
+            content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
             tool_call_id=tool_call_id,
             status="success",
             metadata=MessageMetadata(
