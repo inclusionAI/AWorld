@@ -3,7 +3,7 @@ import json
 from typing import Dict
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from aworld.cmd import AgentModel, ChatCompletionRequest
+from aworld.cmd.data_model import AgentModel, ChatCompletionRequest
 from aworld.cmd.utils import agent_executor
 from aworld.cmd.utils.trace_summarize import summarize_trace
 from aworld.cmd.web.web_server import get_user_id_from_jwt

@@ -1,8 +1,7 @@
 import abc
 from typing import List, Optional
 
-from aworld.cmd import SessionModel
-from aworld.cmd import ChatCompletionMessage
+from aworld.cmd.data_model import SessionModel, ChatCompletionMessage
 
 
 class BaseSessionService(abc.ABC):
