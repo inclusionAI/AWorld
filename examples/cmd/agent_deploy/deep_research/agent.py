@@ -143,7 +143,7 @@ class DeepResearchAgentWebUI(AWorldWebAgentUI):
             logger.error(f"Error parsing output: {traceback.format_exc()}")
 
         step_info = ""
-        try:            
+        try:
             if (
                 "<PLANNING_TAG>" in output.response
                 and "</PLANNING_TAG>" in output.response
@@ -175,11 +175,11 @@ class DeepResearchAgentWebUI(AWorldWebAgentUI):
             logger.error(f"Error parsing output: {traceback.format_exc()}")
 
         if content and step_info:
-            return f"\n{content}\n**Execution Steps:**\n{step_info}\n"
-        elif step_info :
-            return f"\n**Execution Steps:**\n{step_info}\n"
+            return f"\n\n{content}\n\n**Execution Steps:**\n{step_info}\n"
+        elif step_info:
+            return f"\n\n**Execution Steps:**\n{step_info}\n"
         elif content:
-            return f"\n{content}\n"
+            return f"\n\n{content}\n"
 
         return await super().message_output(output)
 
