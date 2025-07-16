@@ -14,3 +14,4 @@ opentelemetry-exporter-otlp~=1.32.1
 tiktoken~=0.9.0
 fastapi
 aiohttp~=3.9.5
+click
