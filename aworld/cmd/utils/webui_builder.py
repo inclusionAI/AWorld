@@ -1,15 +1,16 @@
 import os
 import subprocess
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
 def build_webui(force_rebuild: bool = False) -> str:
-    webui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui")
-    static_path = os.path.join(webui_path, "dist")
+    webui_path = Path(__file__).parent.parent / "web" / "webui"
+    static_path = webui_path / "dist"
 
-    if (not os.path.exists(static_path)) or force_rebuild:
+    if (not static_path.exists()) or force_rebuild:
         logger.warning(f"Build WebUI at {webui_path}")
 
         p = subprocess.Popen(

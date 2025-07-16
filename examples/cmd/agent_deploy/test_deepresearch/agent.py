@@ -20,7 +20,7 @@ from examples.tools.common import Tools
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
 
-from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
+from aworld.cmd.data_model import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, ModelConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
