@@ -185,7 +185,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # Agents as tool
         self.tools.extend(self._handoffs_agent_as_tool())
         # MCP servers are tools
-        # todo sandbox
         if self.sandbox:
             sand_box = self.sandbox
             mcp_tools = await sand_box.mcpservers.list_tools()
@@ -218,7 +217,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             Message list for LLM.
         """
         agent_prompt = self.agent_prompt
-        context = self.context
         messages = []
         # append sys_prompt to memory
         sys_prompt = self.system_prompt
@@ -244,12 +242,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 content = action_item.content
                 tool_call_id = action_item.tool_call_id
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
-        elif not self.use_tools_in_prompt and "tool_calls" in last_history.metadata and last_history.metadata['tool_calls']:
+        elif not self.use_tools_in_prompt and "tool_calls" in last_history.metadata and last_history.metadata[
+            'tool_calls']:
             for tool_call in last_history.metadata['tool_calls']:
                 tool_call_id = tool_call['id']
                 tool_name = tool_call['function']['name']
                 if tool_name and tool_name == message.sender:
-                    await self._add_tool_result_to_memory(tool_call_id, tool_result=observation.content, context=message.context)
+                    await self._add_tool_result_to_memory(tool_call_id, tool_result=observation.content,
+                                                          context=message.context)
                     break
         else:
             content = observation.content
@@ -473,7 +473,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # complex processing
         if _group_name:
-            print("input_message", input_message)
             return GroupMessage(payload=actions,
                                 caller=caller,
                                 sender=self.id(),
@@ -482,13 +481,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 group_id=_group_name,
                                 topic=TopicType.GROUP_ACTIONS,
                                 headers=self._update_headers(input_message))
-            # logger.warning(
-            #     f"more than one agent an tool causing confusion, will choose the first one. {agents}")
-            # agents = [agents[0]] if agents else []
-            # for _, v in tools.items():
-            #     actions = v
-            #     break
-
         elif agents:
             return AgentMessage(payload=actions,
                                 caller=caller,
@@ -520,7 +512,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message
         )
 
-    def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[ActionModel]:
+    def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
+        ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -625,10 +618,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             ActionModel sequence from agent policy
         """
-        outputs = None
-        if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
-            outputs = kwargs.get("outputs")
-
         # Get current step information for trace recording
         source_span = trace.get_current_span()
 
@@ -657,8 +646,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             raise e
         finally:
             if llm_response:
-                use_tools = self.use_tool_list(llm_response)
-                is_use_tool_prompt = len(use_tools) > 0
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
                     if eventbus is not None:
@@ -1054,6 +1041,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 f"Failed to execute hooks for {hook_point}: {traceback.format_exc()}")
 
     async def _add_system_message_to_memory(self, context: Context, content: str):
+        if not self.system_prompt:
+            return
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
@@ -1068,10 +1057,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.debug(
                 f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
             return
-        if not self.system_prompt:
-            return
-        content = await self.custom_system_prompt(context=context, content=content)
-        logger.info(f'system prompt content: {content}')
 
         self.memory.add(MemorySystemMessage(
             content=content,
@@ -1085,9 +1070,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         ), agent_memory_config=self.memory_config)
         logger.info(
             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
-
-    async def custom_system_prompt(self, context: Context, content: str):
-        return content
 
     async def _add_human_input_to_memory(self, content: str, context: Context):
         """Add user input to memory"""
@@ -1145,7 +1127,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: Any, context: Context):
         """Add tool result to memory"""
-
         session_id = context.get_task().session_id
         user_id = context.get_task().user_id
         task_id = context.get_task().id

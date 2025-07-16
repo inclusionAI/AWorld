@@ -15,10 +15,10 @@ class SerialableAgent(Agent):
     def __init__(self,
                  conf: Config,
                  resp_parse_func: Callable[..., Any] = None,
-                 agents: List[Agent] = [],
+                 agents: List[Agent] = None,
                  **kwargs):
         super().__init__(conf=conf, resp_parse_func=resp_parse_func, **kwargs)
-        self.agents = agents
+        self.agents = agents if agents else []
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
         action = ActionModel(agent_name=self.id(), policy_info=observation.content)
