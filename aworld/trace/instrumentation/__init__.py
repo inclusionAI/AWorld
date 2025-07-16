@@ -2,9 +2,11 @@
 # Copyright (c) 2025 inclusionAI.
 from abc import ABC, abstractmethod
 from typing import Any, Collection
-from packaging.requirements import Requirement, InvalidRequirement
 from importlib_metadata import version, PackageNotFoundError
 from aworld.logs.util import logger
+from aworld.utils.import_package import import_package
+import_package("packaging")  # noqa
+from packaging.requirements import Requirement, InvalidRequirement
 
 
 class Instrumentor(ABC):
