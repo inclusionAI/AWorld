@@ -57,10 +57,10 @@ class SimpleSummaryCache:
 # _trace_summary_cache: Dict[str, Union[str, Task]] = {}
 _trace_summary_cache = SimpleSummaryCache()
 
-trace_sys_prompt = "You are a helpful trace summary agent."
+trace_sys_prompt = "You are a helpful tracking summary agent."
 
 trace_prompt = """
-    You are a tracking summary agent, and you can use tracking tools to obtain tracking data and then summarize the main tasks completed by each agent and their token usage.
+    you can use tracking tools to obtain tracking data and then summarize the main tasks completed by each agent and their token usage.
     You can identify which spans are agents, which spans are tool calls, and which spans are large model calls based on the following criteria:
     1 Agent span: the prefix for 'name' is 'event.agent.'
     2 LLM span: The prefix for 'name' is 'llm.'
@@ -70,7 +70,7 @@ trace_prompt = """
     1. Please summarize and output separately for agents with different event.id.
     2. Agent Span with the same name but different event.id are also considered as different agents.
     3. There may be a parent-child relationship between agents. Please select the LLM span and Tool span from the nearest child span to the current agent for summarizing.
-    4. Ensure that all agent spans have their own independent summaries, and the number of summaries is exactly the same as the number of agent spans. For example: {{"name":"event.agent.a","attributes":{{"event.id":"111"}},"children":[{{"name":"llm.gpt-4o"}},{{"name":"event.tool.1","children":[{{"name":"event.agent.a","attributes":{{"event.id":"222"}},"children":[{{"name":"llm.gpt-4o"}}]}}]}}]}}, both of the above two agent names are event.agent.a, but event.id is different and needs to be summarized separately for 111 and 222.
+    4. Ensure that all agent spans have their own independent summaries, and the number of summaries is exactly the same as the number of agent spans. For example: {{"name":"event.agent.a","attributes":{{"event.id":"111"}},"children":[{{"name":"llm.gpt-4o"}},{{"name":"event.tool.1","children":[{{"name":"event.agent.a","attributes":{{"event.id":"222"}},"children":[{{"name":"llm.gpt-4o"}}]}}]}}]}}, both of the above two agent names are event.agent.a, but event.id is different and needs to be summarized separately for 111 and 222. So you need to identify all agent spans without any omissions, which is very important.
     5. Please output in the following standard JSON format without any additional explanatory text:
     [{{"agent":"947cc4c1b7ed406ab7fbf38b9d2b1f5a",,"summary":"xxx"}},{{}}]
     6. Pay attention to controlling the length of the summary, so that the overall output does not exceed your output length limit.
