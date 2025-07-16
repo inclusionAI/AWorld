@@ -38,7 +38,7 @@ class AgentHandler(DefaultHandler):
 
 
 class DefaultAgentHandler(AgentHandler):
-    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+    def is_valid(self, message: Message):
         if message.category != Constants.AGENT:
             if message.sender in self.swarm.agents and message.sender in AgentFactory:
                 if self.agent_calls:
@@ -46,6 +46,11 @@ class DefaultAgentHandler(AgentHandler):
                         self.agent_calls.append(message.sender)
                 else:
                     self.agent_calls.append(message.sender)
+            return False
+        return True
+
+    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+        if not self.is_valid(message):
             return
 
         headers = {"context": message.context}

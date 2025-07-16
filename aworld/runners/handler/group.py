@@ -33,9 +33,15 @@ class GroupHandler(DefaultHandler):
 
 
 class DefaultGroupHandler(GroupHandler):
-    async def handle(self, message: GroupMessage) -> AsyncGenerator[Message, None]:
+    def is_valid(self, message: Message):
         if message.category != Constants.GROUP:
+            return False
+        return True
+
+    async def handle(self, message: GroupMessage) -> AsyncGenerator[Message, None]:
+        if not self.is_valid(message):
             return
+
         self.context = message.context
         group_id = message.group_id
         headers = {'context': self.context}
@@ -71,8 +77,8 @@ class DefaultGroupHandler(GroupHandler):
                     error_msg = Message(
                         category=Constants.TASK,
                         payload=TaskItem(msg=f"Can not find {agent_name} agent in swarm.",
-                                        data=actions,
-                                        stop=True),
+                                         data=actions,
+                                         stop=True),
                         sender=self.name(),
                         session_id=message.session_id,
                         topic=TopicType.ERROR,
@@ -80,7 +86,7 @@ class DefaultGroupHandler(GroupHandler):
                     )
                     yield error_msg
                     return
-                
+
                 # Create agent copies and execute for each action
                 agent_copies = []
                 for action in actions:
@@ -115,7 +121,8 @@ class DefaultGroupHandler(GroupHandler):
                     node_ids.append(msg.id)
 
             # create group
-            await state_manager.create_group(group_id, message.session_id, node_ids, message.headers.get('parent_group_id'))
+            await state_manager.create_group(group_id, message.session_id, node_ids,
+                                             message.headers.get('parent_group_id'))
             for _, acts in agent_messages.items():
                 for act in acts:
                     self.runner.state_manager.start_message_node(act[2])
@@ -175,13 +182,13 @@ class DefaultGroupHandler(GroupHandler):
                     action_results.append(act_res)
             if action_results:
                 group_res_msg = Message(
-                    category = Constants.AGENT,
-                    payload = Observation(content="", action_result=action_results),
-                    caller = message.caller,
-                    sender = self.name(),
-                    session_id = message.session_id,
-                    receiver = group_sender,
-                    headers ={'context': agent_context}
+                    category=Constants.AGENT,
+                    payload=Observation(content="", action_result=action_results),
+                    caller=message.caller,
+                    sender=self.name(),
+                    session_id=message.session_id,
+                    receiver=group_sender,
+                    headers={'context': agent_context}
                 )
                 receiver_results[group_sender].append(group_res_msg)
 
@@ -196,8 +203,6 @@ class DefaultGroupHandler(GroupHandler):
                 result_message.headers = group_headers
                 yield result_message
 
-
-
     def copy_agent(self, agent: Agent):
         """Create a copy of the agent
         
@@ -209,7 +214,8 @@ class DefaultGroupHandler(GroupHandler):
         """
         return agent.deep_copy()
 
-    async def _parallel_exec_agents_actions(self, agent_messages: Dict[str, List[Tuple[str, Agent, Message]]], message: Message):
+    async def _parallel_exec_agents_actions(self, agent_messages: Dict[str, List[Tuple[str, Agent, Message]]],
+                                            message: Message):
         """Execute multiple agent actions in parallel
 
         Args:
@@ -260,11 +266,11 @@ class DefaultGroupHandler(GroupHandler):
                     handlers=self.runner.handlers
             ):
                 # Only AGENT and TASK messages
-                if isinstance(event, Message) and (event.category == Constants.AGENT or event.category == Constants.TASK):
+                if isinstance(event, Message) and (
+                        event.category == Constants.AGENT or event.category == Constants.TASK):
                     finish_group_messages.append(event)
                     print(f"======== event context: {event.context},.context.task: {event.context.get_task()}")
             await state_manager.finish_sub_group(node.metadata.get('group_id'), node_id, finish_group_messages)
-
 
     def _merge_result_messages(self, res_msgs: List[Message], input_message: Message, group_sender_node_id: str):
         """Merge multiple result messages
@@ -293,7 +299,6 @@ class DefaultGroupHandler(GroupHandler):
             }
         )
 
-
     async def _build_agent_message(self, action: ActionModel, message: Message) -> Message:
         session_id = message.session_id
         headers = {
@@ -315,7 +320,7 @@ class DefaultGroupHandler(GroupHandler):
                 topic=TopicType.ERROR,
                 headers=headers
             )
-        
+
         cur_agent = self.swarm.agents.get(tool_name)
         if not cur_agent:
             return Message(
@@ -397,5 +402,3 @@ class DefaultGroupHandler(GroupHandler):
             context = new_context
             return
         context.merge_context(new_context)
-
-

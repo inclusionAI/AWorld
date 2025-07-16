@@ -1,19 +1,15 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import copy
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, List, Any, Optional, TYPE_CHECKING, Union
-from pydantic import BaseModel, Field
-import copy
 from datetime import datetime
-import logging
+from typing import Dict, Any, TYPE_CHECKING
 
 from aworld.config import ConfigDict
-from aworld.config.conf import ContextRuleConfig, ModelConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
-from aworld.core.singleton import InheritanceSingleton
-from aworld.models.model_response import ModelResponse
+from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
@@ -21,8 +17,6 @@ if TYPE_CHECKING:
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -209,10 +203,6 @@ class Context:
     @property
     def task_input(self):
         return self._task.input
-    
-    @property
-    def outputs(self):
-        return self._task.outputs
 
     @property
     def outputs(self):
@@ -394,7 +384,6 @@ class Context:
                                agent_name: str = None,
                                tool_name: str = None,
                                params: str = None):
-        # 将agent_results和tool_results保存到trajectories中
         step_key = f"step_{step}"
         step_data = {
             "step": step,

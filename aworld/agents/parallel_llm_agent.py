@@ -20,11 +20,11 @@ class ParallelizableAgent(Agent):
     def __init__(self,
                  conf: Config,
                  resp_parse_func: Callable[..., Any] = None,
-                 agents: List[Agent] = [],
+                 agents: List[Agent] = None,
                  aggregate_func: Callable[..., Any] = None,
                  **kwargs):
         super().__init__(conf=conf, resp_parse_func=resp_parse_func, **kwargs)
-        self.agents = agents
+        self.agents = agents if agents else []
         # The function of aggregating the results of the parallel execution of agents.
         self.aggregate_func = aggregate_func
 
