@@ -2,6 +2,7 @@ import json
 import logging
 from mailbox import Message
 import os
+import traceback
 from typing import Any, AsyncGenerator, Dict, List, override
 
 from aworld.cmd.utils.agent_ui_parser import AWorldWebAgentUI
@@ -135,47 +136,54 @@ class DeepResearchAgentWebUI(AWorldWebAgentUI):
 
     @override
     async def message_output(self, output: MessageOutput):
-        content = ""
-        if (
-            "<FINAL_ANSWER_TAG>" in output.response
-            and "</FINAL_ANSWER_TAG>" in output.response
-        ):
-            try:
-                content = (
-                    output.response.split("<FINAL_ANSWER_TAG>")[1]
-                    .split("</FINAL_ANSWER_TAG>")[0]
-                    .strip()
-                )
-            except:
-                pass
-        step_info = ""
-        if "<PLANNING_TAG>" in output.response and "</PLANNING_TAG>" in output.response:
-            try:
-                planning = (
-                    output.response.split("<PLANNING_TAG>")[1]
-                    .split("</PLANNING_TAG>")[0]
-                    .strip()
-                )
-                plan = json.loads(planning)
-                steps = plan.get("steps")
-                dags = plan.get("dag")
-                for i, dag in enumerate(dags):
-                    if isinstance(dag, list):
-                        for sub_i, sub_dag in enumerate(dag):
-                            sub_step = steps.get(sub_dag)
-                            sub_step_id = sub_step.get("id")
-                            sub_step_input = sub_step.get("input")
-                            step_info += f"   - STEP {i+1}.{sub_i+1}: {sub_step_input} @{sub_step_id}\n"
-                    else:
-                        dag = json.loads(dag)
-                        step = steps.get(dag)
-                        step_id = step.get("id")
-                        step_input = step.get("input")
-                        step_info += f" - STEP {i+1}: {step_input} @{step_id}\n"
-            except:
-                pass
-        if content and step_info:
-            return f"{content}\n\n**Execution Steps:**\n{step_info}"
+        try:
+            content = ""
+            if (
+                hasattr(output, "response")
+                and "<FINAL_ANSWER_TAG>" in output.response
+                and "</FINAL_ANSWER_TAG>" in output.response
+            ):
+                try:
+                    content = (
+                        output.response.split("<FINAL_ANSWER_TAG>")[1]
+                        .split("</FINAL_ANSWER_TAG>")[0]
+                        .strip()
+                    )
+                except:
+                    pass
+            step_info = ""
+            if (
+                "<PLANNING_TAG>" in output.response
+                and "</PLANNING_TAG>" in output.response
+            ):
+                try:
+                    planning = (
+                        output.response.split("<PLANNING_TAG>")[1]
+                        .split("</PLANNING_TAG>")[0]
+                        .strip()
+                    )
+                    plan = json.loads(planning)
+                    steps = plan.get("steps")
+                    dags = plan.get("dag")
+                    for i, dag in enumerate(dags):
+                        if isinstance(dag, list):
+                            for sub_i, sub_dag in enumerate(dag):
+                                sub_step = steps.get(sub_dag)
+                                sub_step_id = sub_step.get("id")
+                                sub_step_input = sub_step.get("input")
+                                step_info += f"   - STEP {i+1}.{sub_i+1}: {sub_step_input} @{sub_step_id}\n"
+                        else:
+                            dag = json.loads(dag)
+                            step = steps.get(dag)
+                            step_id = step.get("id")
+                            step_input = step.get("input")
+                            step_info += f" - STEP {i+1}: {step_input} @{step_id}\n"
+                except:
+                    pass
+            if content and step_info:
+                return f"{content}\n\n**Execution Steps:**\n{step_info}"
+        except Exception as e:
+            logger.error(f"Error parsing output: {traceback.format_exc()}")
 
         return await super().message_output(output)
 
@@ -211,10 +219,15 @@ class AWorldAgent(BaseAWorldAgent):
         )
         async for output in Runners.streamed_run_task(task).stream_events():
             logger.info(f"Agent Ouput: {output}")
-            res = await AworldUI.parse_output(output, rich_ui)
-            for item in res if isinstance(res, list) else [res]:
-                if isinstance(item, AsyncGenerator):
-                    async for sub_item in item:
-                        yield sub_item
-                else:
-                    yield item
+            try:
+                res = await AworldUI.parse_output(output, rich_ui)
+                for item in res if isinstance(res, list) else [res]:
+                    if isinstance(item, AsyncGenerator):
+                        async for sub_item in item:
+                            yield sub_item
+                    else:
+                        yield item
+            except Exception as e:
+                msg = f"Error parsing output: {traceback.format_exc()}"
+                logger.error(msg)
+                yield msg

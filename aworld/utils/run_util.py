@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import uuid
-from typing import Any, List, Union
+from typing import Any, List
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
@@ -24,7 +24,7 @@ async def exec_tool(tool_name: str, params: dict, context: Context, sub_task: bo
         task_group_id: ID of group of task.
     """
     actions = [ActionModel(tool_name=tool_name, params=params)]
-    task = Task(input=Observation(content=actions), context=context, is_sub_task=sub_task, group_id=task_group_id)
+    task = Task(input=Observation(content=actions), context=context, is_sub_task=sub_task, group_id=task_group_id, session_id=context.session_id)
     if outputs:
         task.outputs = outputs
     runners = await choose_runners([task], agent_oriented=False)
@@ -43,7 +43,7 @@ async def exec_agent(question: Any, agent: Agent, context: Context, sub_task: bo
         sub_task: Is it a subtask with the main task set to False.
         task_group_id: ID of group of task.
     """
-    task = Task(input=question, agent=agent, context=context, is_sub_task=sub_task, group_id=task_group_id)
+    task = Task(input=question, agent=agent, context=context, is_sub_task=sub_task, group_id=task_group_id, session_id=context.session_id)
     if outputs:
         task.outputs = outputs
     runners = await choose_runners([task])
