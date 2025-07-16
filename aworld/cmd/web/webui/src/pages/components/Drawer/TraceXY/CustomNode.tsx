@@ -32,10 +32,18 @@ const CustomNode: React.FC<CustomNodeProps> = ({ data, isFirst, isLast }) => {
         </Typography.Paragraph>
         <div className="name">{nodeData.show_name || 'Unnamed Node'}</div>
         {!isFirst && (
-          <Handle type="target" position={Position.Top} style={{ background: '#555' }} />
+          <Handle
+            type="target"
+            position={Position.Top}
+            className={nodeData.type === 'virtual' ? 'virtual-handle-target' : ''}
+          />
         )}
         {!isLast && (
-          <Handle type="source" position={Position.Bottom} style={{ background: '#555' }} />
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            className={nodeData.type === 'virtual' ? 'virtual-handle-target' : ''}
+          />
         )}
       </div>
     </Tooltip>

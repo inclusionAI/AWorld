@@ -16,26 +16,27 @@ const TraceXY: React.FC<TraceXYProps> = ({ traceId, drawerVisible }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const processNodes = useCallback((rawNodes: any[]): NodeData[] => {
-    return rawNodes.map((node) => ({
-      ...node,
-      id: node.span_id || node.id || '',
-      type: 'customNode',
-      position: node.position || { x: 0, y: 0 },
-      data: {
-        ...node.data,
-        label: node.show_name,
-        summary: node.summary || '',
-        show_name: node.show_name,
-        event_id: node.event_id
-      }
+  const processNodes = useCallback((rawNodes: any[] = []): NodeData[] => {
+    return (rawNodes || []).map((node) => ({
+        ...node,
+        id: node.span_id || node.id || '',
+        type: 'customNode',
+        position: node.position || { x: 0, y: 0 },
+        data: {
+          ...node.data,
+          label: node.show_name,
+          summary: node.summary || '',
+          show_name: node.show_name,
+          event_id: node.event_id
+        }
     }));
   }, []);
 
-  const processEdges = useCallback((rawEdges: any[]): EdgeData[] => {
-    return rawEdges.map((edge) => ({
+  const processEdges = useCallback((rawEdges: any[] = []): EdgeData[] => {
+    return (rawEdges || []).map((edge) => ({
       ...edge,
-      id: `${edge.source}-${edge.target}`
+      id: `${edge.source}-${edge.target}`,
+      className: 'node-edge'
     }));
   }, []);
 
@@ -48,12 +49,14 @@ const TraceXY: React.FC<TraceXYProps> = ({ traceId, drawerVisible }) => {
 
       try {
         const result = await fetchTraceData(traceId);
-        const nodesWithPosition = processNodes(result.nodes);
-        const edgesWithId = processEdges(result.edges);
-
-        const { nodes: layoutedNodes } = getLayoutedElements(nodesWithPosition, edgesWithId);
+        const nodesWithPosition = processNodes(result?.nodes);
+        const edgesWithId = processEdges(result?.edges);
+        const { nodes: layoutedNodes, edges: layoutedEdges } = await getLayoutedElements(
+          nodesWithPosition,
+          edgesWithId
+        );
         setNodes(layoutedNodes);
-        setEdges(edgesWithId);
+        setEdges(layoutedEdges);
       } catch (err) {
         setError('Failed to load trace data, please try again later');
         console.error('Failed to fetch and build trace elements:', err);
