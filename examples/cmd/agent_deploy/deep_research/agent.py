@@ -101,7 +101,7 @@ def get_deepresearch_swarm(user_input):
         use_vision=False,
     )
 
-    agent_id = "test_deepresearch_agent"
+    agent_id = "DeepResearchAgent"
     plan_agent = PlanAgent(
         agent_id=agent_id,
         name="planner_agent",
