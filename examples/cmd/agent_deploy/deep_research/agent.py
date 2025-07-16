@@ -3,7 +3,7 @@ import logging
 from mailbox import Message
 import os
 import traceback
-from typing import Any, AsyncGenerator, Dict, List, override
+from typing import Any, AsyncGenerator, Dict, List
 
 from aworld.cmd.utils.agent_ui_parser import AWorldWebAgentUI
 from aworld.core.common import ActionModel, Observation
@@ -134,7 +134,6 @@ class DeepResearchAgentWebUI(AWorldWebAgentUI):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    @override
     async def message_output(self, output: MessageOutput):
         try:
             content = ""
