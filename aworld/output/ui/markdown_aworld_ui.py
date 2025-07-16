@@ -79,13 +79,15 @@ class MarkdownAworldUI(AworldUI):
         """
         tool_result
         """
-        custom_output = await self.gen_custom_output(output)
+        output = await self.pre_process_tool_output(output)
+
+        custom_md_output = await self.gen_custom_output(output)
 
         artifacts = await self.parse_tool_artifacts(output.metadata)
 
         tool_card_content = {
             "type": "mcp",
-            "custom_output": custom_output,
+            "custom_output": custom_md_output,
             "tool_name": output.tool_name,
             "function_name": output.origin_tool_call.function.name,
             "function_arguments": output.origin_tool_call.function.arguments,
@@ -152,7 +154,7 @@ class MarkdownAworldUI(AworldUI):
                 })
 
         # web_pages
-        if metadata.get("artifact_type") == "WEB_PAGES":
+        if metadata.get("artifact_type") in ["WEB_PAGES", "MARKDOWN", "TEXT"]  :
             data_dict = metadata.get("artifact_data")
             data_dict['task_id'] = self.task_id
             search_output = SearchOutput.from_dict(data_dict)
@@ -166,7 +168,11 @@ class MarkdownAworldUI(AworldUI):
                 }
             )
             result.append({
-                "artifact_type": "WEB_PAGES",
+                "artifact_type": metadata.get("artifact_type"),
                 "artifact_id": artifact_id
             })
+
         return result
+
+    async def pre_process_tool_output(self, output):
+        return output

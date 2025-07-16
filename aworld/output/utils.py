@@ -1,5 +1,5 @@
 import os
-from typing import AsyncGenerator, Generator, Callable, Any
+from typing import AsyncGenerator, Generator, Callable, Any, Optional
 
 from aworld.output.workspace import WorkSpace
 from aworld.output.base import OutputPart, MessageOutput, Output
@@ -62,7 +62,7 @@ async def consume_content(__content__, callback: Callable[..., Any]):
         await callback(__content__)
 
 
-async def load_workspace(workspace_id: str, workspace_type: str, workspace_parent_path: str):
+async def load_workspace(workspace_id: str, workspace_type: str, workspace_parent_path: str) -> Optional[WorkSpace]:
     """
     This function is used to get the workspace by its id.
     It first checks the workspace type and then creates the workspace accordingly.
