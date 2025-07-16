@@ -1,7 +1,9 @@
 tool_card_template = """
+\n\n
 ```tool_card
 {tool_card_content}
 ```
+\n\n
 """
 
 tool_call_template = """
