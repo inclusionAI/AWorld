@@ -31,17 +31,6 @@ from .prompts import *
 logger = logging.getLogger(__name__)
 
 
-# os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
-# os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
-os.environ["LLM_MODEL_NAME"] = "openrouter.openai/gpt-4o"
-os.environ["LLM_BASE_URL"] = "https://agi.alipay.com/api"
-os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
-os.environ["LLM_MODEL_NAME"] = "gpt-4o-2024-08-06"
-os.environ["LLM_MODEL_NAME"] = "claude-3-7-sonnet-20250219"
-os.environ["LLM_BASE_URL"] = "https://matrixllm.alipay.com/v1"
-os.environ["LLM_API_KEY"] = "sk-5d0c421b87724cdd883cfa8e883998da"
-
-
 class BaseDynamicPromptAgent(Agent):
     async def async_policy(
         self,
@@ -135,8 +124,8 @@ class DeepResearchAgentWebUI(AWorldWebAgentUI):
         super().__init__(*args, **kwargs)
 
     async def message_output(self, output: MessageOutput):
+        content = ""
         try:
-            content = ""
             if (
                 hasattr(output, "response")
                 and "<FINAL_ANSWER_TAG>" in output.response
@@ -150,7 +139,11 @@ class DeepResearchAgentWebUI(AWorldWebAgentUI):
                     )
                 except:
                     pass
-            step_info = ""
+        except Exception as e:
+            logger.error(f"Error parsing output: {traceback.format_exc()}")
+
+        step_info = ""
+        try:            
             if (
                 "<PLANNING_TAG>" in output.response
                 and "</PLANNING_TAG>" in output.response
@@ -170,19 +163,23 @@ class DeepResearchAgentWebUI(AWorldWebAgentUI):
                                 sub_step = steps.get(sub_dag)
                                 sub_step_id = sub_step.get("id")
                                 sub_step_input = sub_step.get("input")
-                                step_info += f"   - STEP {i+1}.{sub_i+1}: {sub_step_input} @{sub_step_id}\n"
+                                step_info += f"   - STEP {i+1}.{sub_i+1}: {sub_step_input} *@{sub_step_id}*\n"
                         else:
-                            dag = json.loads(dag)
                             step = steps.get(dag)
                             step_id = step.get("id")
                             step_input = step.get("input")
-                            step_info += f" - STEP {i+1}: {step_input} @{step_id}\n"
+                            step_info += f" - STEP {i+1}: {step_input} *@{step_id}*\n"
                 except:
                     pass
-            if content and step_info:
-                return f"{content}\n\n**Execution Steps:**\n{step_info}"
         except Exception as e:
             logger.error(f"Error parsing output: {traceback.format_exc()}")
+
+        if content and step_info:
+            return f"\n{content}\n**Execution Steps:**\n{step_info}\n"
+        elif step_info :
+            return f"\n**Execution Steps:**\n{step_info}\n"
+        elif content:
+            return f"\n{content}\n"
 
         return await super().message_output(output)
 

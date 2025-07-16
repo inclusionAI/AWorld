@@ -173,7 +173,8 @@ You are an information search expert. Your goal is to maximize the retrieval of 
    - Each step MUST have both "input" and "id" fields, "id" is the name of tools from ## Available Tools
    - The "dag" array MUST define execution order using step IDs
 3. DO NOT include any explanatory text between the two tag sections
-4. If no further planning is needed, output an empty <PLANNING_TAG> section but STILL include <FINAL_ANSWER_TAG> with explanation
+4. If the question is fully answered, output empty <PLANNING_TAG> and summarize the answer in <FINAL_ANSWER_TAG>
+5. If the answer lacks information, generate tasks for missing content in <PLANNING_TAG> and describe what's needed in <FINAL_ANSWER_TAG>
 
 ## Example:
 Topic: Analyze the development trends and main challenges of China's New Energy Vehicle (NEV) market in 2024
