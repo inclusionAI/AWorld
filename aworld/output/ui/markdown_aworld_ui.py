@@ -152,7 +152,7 @@ class MarkdownAworldUI(AworldUI):
                 })
 
         # web_pages
-        if metadata.get("artifact_type") == "WEB_PAGES":
+        if metadata.get("artifact_type") in ["WEB_PAGES", "MARKDOWN", "TEXT"]  :
             data_dict = metadata.get("artifact_data")
             data_dict['task_id'] = self.task_id
             search_output = SearchOutput.from_dict(data_dict)
@@ -166,7 +166,8 @@ class MarkdownAworldUI(AworldUI):
                 }
             )
             result.append({
-                "artifact_type": "WEB_PAGES",
+                "artifact_type": metadata.get("artifact_type"),
                 "artifact_id": artifact_id
             })
+
         return result
