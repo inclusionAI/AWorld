@@ -107,7 +107,7 @@ class AWorldInstaller(install):
         logger.info(f"{os.getcwd()}: Install AWORLD using extra: {self._extra}")
 
     def run(self):
-        from aworld.cmd.web.web_server import build_webui
+        from aworld.cmd.utils.webui_builder import build_webui
 
         # build webui
         build_webui(force_rebuild=True)
