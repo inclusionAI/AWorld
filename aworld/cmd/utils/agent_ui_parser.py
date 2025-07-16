@@ -143,7 +143,7 @@ class GooglePseSearchToolResultParser(BaseToolResultParser):
         )
 
         return f"""\
-\n\n**🔎 Google Search**\n\n
+\n\n**🔎 Search Results**\n\n
 ```tool_card
 {json.dumps(tool_card.model_dump(), ensure_ascii=False, indent=2)}
 ```\n

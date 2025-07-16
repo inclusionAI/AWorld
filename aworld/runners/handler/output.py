@@ -14,8 +14,13 @@ class DefaultOutputHandler(DefaultHandler):
     def __init__(self, runner):
         self.runner = runner
 
-    async def handle(self, message):
+    def is_valid(self, message: Message):
         if message.category != Constants.OUTPUT:
+            return False
+        return True
+
+    async def handle(self, message):
+        if not self.is_valid(message):
             return
         # 1. get outputs
         outputs = self.runner.task.outputs

@@ -38,8 +38,13 @@ class TaskHandler(DefaultHandler):
 
 
 class DefaultTaskHandler(TaskHandler):
-    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+    def is_valid(self, message: Message):
         if message.category != Constants.TASK:
+            return False
+        return True
+
+    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+        if not self.is_valid(message):
             return
 
         logger.debug(f"task handler receive message: {message}")
@@ -116,7 +121,6 @@ class DefaultTaskHandler(TaskHandler):
             # Avoid waiting to receive events and send a mock event for quick cancel
             yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock')
             await self.runner.stop()
-
 
     async def run_hooks(self, message: Message, hook_point: str) -> AsyncGenerator[Message, None]:
         hooks = self.hooks.get(hook_point, [])

@@ -73,7 +73,7 @@ def _record_metric(duration, attributes, exception=None):
 def _record_exception(span, start_time, exception, attributes):
     try:
         duration = time.time() - start_time if "start_time" in locals() else 0
-        if span.is_recording:
+        if span and span.is_recording:
             span.record_exception(exception=exception)
         _record_metric(duration, attributes, exception)
     except Exception as e:
@@ -87,19 +87,19 @@ def _record_response(instance,
     try:
         duration = time.time() - start_time if "start_time" in locals() else 0
         _record_metric(duration, attributes)
-        if instance and instance.agent_context and instance.agent_context.llm_output and MetricContext.metric_initialized():
-            usage = instance.agent_context.llm_output.usage
-            for usage_type in ["completion_tokens", "prompt_tokens", "total_tokens"]:
-                if usage and usage.get(usage_type):
-                    labels = {
-                        **attributes,
-                        semconv.AGENT_USAGE_TYPE: usage_type
-                    }
-                    MetricContext.histogram_record(
-                        agent_usage_histogram,
-                        usage.get(usage_type),
-                        labels=labels
-                    )
+        # if instance and instance.agent_context and instance.agent_context.llm_output and MetricContext.metric_initialized():
+        #     usage = instance.agent_context.llm_output.usage
+        #     for usage_type in ["completion_tokens", "prompt_tokens", "total_tokens"]:
+        #         if usage and usage.get(usage_type):
+        #             labels = {
+        #                 **attributes,
+        #                 semconv.AGENT_USAGE_TYPE: usage_type
+        #             }
+        #             MetricContext.histogram_record(
+        #                 agent_usage_histogram,
+        #                 usage.get(usage_type),
+        #                 labels=labels
+        #             )
     except Exception as e:
         logger.warning(f"agent instrument record response error.{e}")
 
@@ -142,6 +142,52 @@ async def _async_run_instance_wrapper(tracer: Tracer):
     return _awrapper
 
 
+def _call_llm_model_class_wrapper(tracer: Tracer):
+    async def _call_llm_model_wrapper(wrapped, instance, args, kwargs):
+        attributes = {
+            semconv.AGENT_ID: instance.id(),
+            semconv.AGENT_NAME: instance.name()
+        }
+        if hasattr(instance, "context") and instance.context:
+            attributes.update({
+                semconv.TASK_ID: instance.context.task_id if (instance.context and instance.context.task_id) else "",
+                semconv.SESSION_ID: instance.context.session_id if (instance.context and instance.context.session_id) else instance.session_id,
+                semconv.USER_ID: instance.context.user if (instance.context and instance.context.user) else ""
+            })
+        try:
+            response = await wrapped(*args, **kwargs)
+            try:
+                usage = response.usage if hasattr(response, "usage") else None
+                for usage_type in ["completion_tokens", "prompt_tokens", "total_tokens"]:
+                    if usage and usage.get(usage_type):
+                        labels = {
+                            **attributes,
+                            semconv.AGENT_USAGE_TYPE: usage_type
+                        }
+                        MetricContext.histogram_record(
+                            agent_usage_histogram,
+                            usage.get(usage_type),
+                            labels=labels
+                        )
+
+            except Exception as e:
+                logger.warning(f"agent instrument record response error.{e}")
+        except Exception as e:
+            raise e
+        return response
+    return _call_llm_model_wrapper
+
+
+async def _call_llm_model_instance_wrapper(tracer: Tracer):
+
+    @wrapt.decorator
+    async def _awrapper(wrapped, instance, args, kwargs):
+        wrapper_func = _call_llm_model_class_wrapper(tracer=tracer)
+        return await wrapper_func(wrapped, instance, args, kwargs)
+
+    return _awrapper
+
+
 class AgentInstrumentor(Instrumentor):
 
     def instrumentation_dependencies(self) -> Collection[str]:
@@ -160,6 +206,11 @@ class AgentInstrumentor(Instrumentor):
             "BaseAgent.async_run",
             _async_run_class_wrapper(tracer=tracer)
         )
+        wrapt.wrap_function_wrapper(
+            "aworld.agents.llm_agent",
+            "Agent._call_llm_model",
+            _call_llm_model_class_wrapper(tracer=tracer)
+        )
 
     def _uninstrument(self, **kwargs: Any):
         pass
@@ -173,8 +224,11 @@ def wrap_agent(agent: 'aworld.core.agent.base.BaseAgent'):
         tracer = tracer_provider.get_tracer(
             "aworld.trace.instrumentation.agent")
 
-        wrapper = _async_run_instance_wrapper(tracer)
-        agent.async_run = wrapper(agent.async_run)
+        async_run_wrapper = _async_run_instance_wrapper(tracer)
+        agent.async_run = async_run_wrapper(agent.async_run)
+        if hasattr(agent, "_call_llm_model"):
+            call_llm_model_wrapper = _call_llm_model_instance_wrapper(tracer)
+            agent._call_llm_model = call_llm_model_wrapper(agent._call_llm_model)
     except Exception:
         logger.warning(traceback.format_exc())
 
