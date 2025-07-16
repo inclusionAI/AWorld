@@ -1,4 +1,5 @@
 import os
+import traceback
 from typing import Any, Dict, List, Generator, AsyncGenerator
 
 from openai import OpenAI, AsyncOpenAI
@@ -416,7 +417,7 @@ class OpenAIProvider(LLMProviderBase):
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e
-            logger.warn(f"Error in acompletion: {e}")
+            logger.warn(f"Error in acompletion: {e}\n\n\n {traceback.format_exc()}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
     def get_openai_params(self,

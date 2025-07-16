@@ -105,5 +105,5 @@ class DefaultToolHandler(ToolHandler):
                 sender=actions[0].agent_name if actions else '',
                 session_id=message.session_id,
                 receiver=tool_name,
-                headers=headers
+                headers=message.headers
             )

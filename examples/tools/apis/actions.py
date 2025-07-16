@@ -15,9 +15,9 @@ from aworld.utils import import_package
 from aworld.core.tool.action import ExecutableAction
 
 
-@ActionFactory.register(name=SearchAction.WIKI.value.name,
-                        desc=SearchAction.WIKI.value.desc,
-                        tool_name='search_api')
+# @ActionFactory.register(name=SearchAction.WIKI.value.name,
+#                         desc=SearchAction.WIKI.value.desc,
+#                         tool_name='search_api')
 class SearchWiki(ExecutableAction):
     def __init__(self):
         import_package("wikipedia")
@@ -54,9 +54,9 @@ class SearchWiki(ExecutableAction):
         return ActionResult(content=result, keep=True, is_done=True), None
 
 
-@ActionFactory.register(name=SearchAction.DUCK_GO.value.name,
-                        desc=SearchAction.DUCK_GO.value.desc,
-                        tool_name="search_api")
+# @ActionFactory.register(name=SearchAction.DUCK_GO.value.name,
+#                         desc=SearchAction.DUCK_GO.value.desc,
+#                         tool_name="search_api")
 class Duckduckgo(ExecutableAction):
     def __init__(self):
         import_package("duckduckgo_search")
@@ -153,9 +153,9 @@ class Duckduckgo(ExecutableAction):
         return ActionResult(content=json.dumps(responses), keep=True, is_done=True), None
 
 
-@ActionFactory.register(name=SearchAction.GOOGLE.value.name,
-                        desc=SearchAction.GOOGLE.value.desc,
-                        tool_name="search_api")
+# @ActionFactory.register(name=SearchAction.GOOGLE.value.name,
+#                         desc=SearchAction.GOOGLE.value.desc,
+#                         tool_name="search_api")
 class SearchGoogle(ExecutableAction):
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         query = action.params.get("query")

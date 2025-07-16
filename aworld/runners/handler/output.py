@@ -40,7 +40,7 @@ class DefaultOutputHandler(DefaultHandler):
                 output.task_id = self.runner.task.id
             elif isinstance(payload, TaskResponse):
                 logger.info(
-                    f"output get task_response with usage: {json.dumps(payload.usage)}")
+                    f"FINISHED|output get task_response with usage: {json.dumps(payload.usage)}")
                 if message.topic == TopicType.FINISHED or message.topic == TopicType.ERROR:
                     mark_complete = True
             elif isinstance(payload, ModelResponse) or isinstance(payload, AsyncGenerator):

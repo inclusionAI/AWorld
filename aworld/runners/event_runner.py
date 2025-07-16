@@ -16,8 +16,9 @@ from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners.callback.tool import ToolCallbackHandler
-from aworld.runners.handler.agent import DefaultAgentHandler, AgentHandler
+from aworld.runners.handler.agent import DefaultAgentHandler, DefaultTeamHandler
 from aworld.runners.handler.base import DefaultHandler
+from aworld.runners.handler.group import DefaultGroupHandler
 from aworld.runners.handler.output import DefaultOutputHandler
 from aworld.runners.handler.task import DefaultTaskHandler, TaskHandler
 from aworld.runners.handler.tool import DefaultToolHandler, ToolHandler
@@ -89,7 +90,9 @@ class TaskEventRunner(TaskRunner):
                              DefaultToolHandler(runner=self),
                              DefaultTaskHandler(runner=self),
                              DefaultOutputHandler(runner=self),
-                             ToolCallbackHandler(runner=self)
+                             ToolCallbackHandler(runner=self),
+                             DefaultGroupHandler(runner=self),
+                             DefaultTeamHandler(runner=self)
                              ]
         logger.debug(f"[TaskEventRunner] pre_run finish {self.task.id}")
 
@@ -196,7 +199,8 @@ class TaskEventRunner(TaskRunner):
         con = message
         async with trace.handler_span(message=message, handler=handler):
             try:
-                logger.debug(f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
+                logger.debug(
+                    f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
                 logger.info(
                     f"[TaskEventRunner] {self.task.id} _handle_task start, message: {message.id}")
                 if asyncio.iscoroutinefunction(handler):
@@ -215,7 +219,12 @@ class TaskEventRunner(TaskRunner):
                             results=[con],
                             handlers=self.handlers
                     ):
-                        await self.event_mng.emit_message(event)
+                        if self.is_group_finish(event):
+                            from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
+                            state_mng = RuntimeStateManager.instance()
+                            await state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [event])
+                        else:
+                            await self.event_mng.emit_message(event)
                 else:
                     self.state_manager.save_message_handle_result(name=handler.__name__,
                                                                   message=message)
@@ -270,6 +279,7 @@ class TaskEventRunner(TaskRunner):
                         # send msg to output
                         self._task_response = TaskResponse(msg=msg,
                                                            answer=answer,
+                                                           context=message.context,
                                                            success=True if not msg else False,
                                                            id=self.task.id,
                                                            time_cost=(
@@ -303,9 +313,11 @@ class TaskEventRunner(TaskRunner):
             logger.debug(
                 f"[TaskEventRunner] _do_run finished  await_is_stopped {self.task.id}")
             if await self.is_stopped():
-                logger.debug(
+                logger.info(
                     f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
-                await self.task.outputs.mark_completed()
+                if not self.task.is_sub_task:
+                    logger.info(f"FINISHED|TaskEventRunner|outputs|{self.task.id} {self.task.is_sub_task}")
+                    await self.task.outputs.mark_completed()
                 # todo sandbox cleanup
                 if self.swarm and hasattr(self.swarm, 'agents') and self.swarm.agents:
                     for agent_name, agent in self.swarm.agents.items():
@@ -319,7 +331,7 @@ class TaskEventRunner(TaskRunner):
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
             raise RuntimeError("swarm needs to use `reset` to init first.")
-        async with trace.span(trace_constants.SPAN_NAME_PREFIX_TASK + self.init_message.session_id):
+        async with trace.task_span(self.init_message.session_id, self.task):
             await self.event_mng.emit_message(self.init_message)
             await self._do_run()
             return self._task_response
@@ -332,3 +344,33 @@ class TaskEventRunner(TaskRunner):
 
     def response(self):
         return self._task_response
+
+    def is_group_finish(self, event: Message) -> bool:
+        """Determine if an event triggers group completion
+
+        Logic:
+        1. Event must be a Message type with a group_id
+        2. If event.category=Constants.AGENT, check if the agent instance that sent the message is finished
+        3. If event.category=Constants.TOOL, check if the tool execution message level is 0
+
+        Args:
+            event: The event to check
+
+        Returns:
+            bool: Whether the event triggers group completion
+        """
+        if not isinstance(event, Message) or not event.group_id:
+            return False
+
+        if event.category == Constants.AGENT:
+            agent_id = event.sender
+            if not agent_id:
+                return False
+
+            agent = self.swarm.agents.get(agent_id)
+            if not agent:
+                return False
+
+            return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
+
+        return False

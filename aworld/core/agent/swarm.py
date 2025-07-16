@@ -5,8 +5,6 @@ import json
 from enum import Enum
 from typing import Dict, List, Any, Callable, Optional, Tuple
 
-from aworld.agents.parallel_llm_agent import ParallelizableAgent
-from aworld.agents.serial_llm_agent import SerialableAgent
 from aworld.core.agent.agent_desc import agent_handoffs_desc
 from aworld.core.agent.base import AgentFactory, BaseAgent
 from aworld.core.common import ActionModel, Observation
@@ -598,6 +596,9 @@ class WorkflowBuilder(TopologyBuilder):
         Returns:
             Direct topology diagram (AgentGraph) of the agents.
         """
+        from aworld.agents.parallel_llm_agent import ParallelizableAgent
+        from aworld.agents.serial_llm_agent import SerialableAgent
+
         agent_graph = AgentGraph(
             ordered_agents=[], agents={}, successor={}, predecessor={})
         valid_agents = []
@@ -709,6 +710,8 @@ class TeamBuilder(TopologyBuilder):
     """
 
     def build(self):
+        from aworld.agents.parallel_llm_agent import ParallelizableAgent
+
         agent_graph = AgentGraph(
             ordered_agents=[], agents={}, successor={}, predecessor={})
         valid_agents = []
