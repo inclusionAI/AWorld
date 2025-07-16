@@ -160,10 +160,18 @@ class DeepResearchAgentWebUI(AWorldWebAgentUI):
                 steps = plan.get("steps")
                 dags = plan.get("dag")
                 for i, dag in enumerate(dags):
-                    step = steps.get(dag)
-                    step_id = step.get("id")
-                    step_input = step.get("input")
-                    step_info += f" - STEP {i+1}: {step_input}\n"
+                    if isinstance(dag, list):
+                        for sub_i, sub_dag in enumerate(dag):
+                            sub_step = steps.get(sub_dag)
+                            sub_step_id = sub_step.get("id")
+                            sub_step_input = sub_step.get("input")
+                            step_info += f"   - STEP {i+1}.{sub_i+1}: {sub_step_input} @{sub_step_id}\n"
+                    else:
+                        dag = json.loads(dag)
+                        step = steps.get(dag)
+                        step_id = step.get("id")
+                        step_input = step.get("input")
+                        step_info += f" - STEP {i+1}: {step_input} @{step_id}\n"
             except:
                 pass
         if content and step_info:
