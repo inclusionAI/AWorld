@@ -2,7 +2,7 @@ from typing import AsyncGenerator
 from aworld.cmd.utils.agent_server import AgentServer
 from aworld.output.ui.base import AworldUI
 from aworld.output.workspace import WorkSpace
-from .. import (
+from aworld.cmd.data_model import (
     BaseAWorldAgent,
     ChatCompletionChoice,
     ChatCompletionMessage,

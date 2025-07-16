@@ -5,7 +5,7 @@ import sys
 import traceback
 import logging
 from typing import List, Dict
-from .. import AgentModel
+from aworld.cmd.data_model import AgentModel
 
 logger = logging.getLogger(__name__)
 
