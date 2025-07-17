@@ -1,7 +1,10 @@
 import logging
 import os
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
+
+from aworld.logs.util import logger
+from aworld.output.ui.markdown_aworld_ui import MarkdownAworldUI
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, TaskConfig
@@ -15,10 +18,11 @@ from aworld.memory.models import LongTermMemoryTriggerParams, MemoryAIMessage, M
     MemoryHumanMessage
 from aworld.memory.utils import build_history_context
 from aworld.output import PrinterAworldUI, AworldUI
+from aworld.output.utils import load_workspace
 from aworld.prompt import Prompt
 from aworld.runner import Runners
 from aworld.utils.common import load_mcp_config
-from examples.memory.prompts import SELF_EVOLVING_USER_INPUT_REWRITE_PROMPT, SELF_EVOLVING_AGENT_PROMPT
+from examples.memory.prompts import SELF_EVOLVING_USER_INPUT_REWRITE_PROMPT, SELF_EVOLVING_AGENT_PROMPT, RESEARCH_PROMPT
 
 
 class SuperAgent:
@@ -43,13 +47,16 @@ class SuperAgent:
         )
         self.sub_agent = SelfEvolvingAgent(
             conf=agent_config,
+            agent_id="self_evolving_agent",
             name="self_evolving_agent",
-            system_prompt=SELF_EVOLVING_AGENT_PROMPT,
-            mcp_servers=["aworldsearch-server", "filesystem"],
-            # mcp_servers=["filesystem"],
+            system_prompt=RESEARCH_PROMPT,
+            mcp_servers=["ms-playwright","google-search","tavily-mcp", "filesystem"],
             history_messages=100,
             mcp_config=load_mcp_config(),
-            memory_config=AgentMemoryConfig(
+            agent_memory_config=AgentMemoryConfig(
+                enable_summary=True,
+                summary_rounds=10,
+                summary_model=os.environ["LLM_MODEL_NAME"],
                 enable_long_term=True,
                 long_term_config=LongTermConfig.create_simple_config(
                     enable_agent_experiences=True
@@ -73,30 +80,6 @@ class SuperAgent:
 
         await self.post_run(user_id, session_id, task_id, task_context)
 
-    async def add_ai_message(self, user_id, session_id, task_id, result):
-        self.memory.add(MemoryAIMessage(
-            content=result,
-            metadata=MessageMetadata(
-                user_id=user_id,
-                session_id=session_id,
-                task_id=task_id,
-                agent_id=self.id,
-                agent_name=self.name
-            )
-        ), agent_memory_config=self.memory_config)
-
-    async def add_human_input(self, user_id, session_id, task_id, user_input):
-        self.memory.add(MemoryHumanMessage(
-            content=user_input,
-            metadata=MessageMetadata(
-                user_id=user_id,
-                session_id=session_id,
-                task_id=task_id,
-                agent_id=self.id,
-                agent_name=self.name
-            )
-        ), agent_memory_config=self.memory_config)
-
     async def run_task(self, user_id, session_id, task_id, user_input, task_context):
         user_input = await self.rewrite_user_input(user_id, user_input, task_context)
         task = Task(
@@ -109,11 +92,37 @@ class SuperAgent:
             context=task_context
         )
         logging.info(f"[SuperAgent] run task start, task_id = {task.id} input = {input}")
-        rich_ui = PrinterAworldUI()
         result = ""
-        async for output in Runners.streamed_run_task(task).stream_events():
-            res = await AworldUI.parse_output(output, rich_ui)
-            result += res
+
+        session_workspace = await load_workspace(workspace_id=task.session_id, workspace_type="local",
+                                                 workspace_parent_path="data/workspaces")
+        local_ui = MarkdownAworldUI(
+            session_id=task.session_id,
+            task_id=task.id,
+            workspace=session_workspace
+        )
+
+        # get outputs
+        outputs = Runners.streamed_run_task(task)
+
+        with open(f"output_{task.session_id}.md", "a") as f:
+            # render output
+            try:
+                f.write(f"User: {user_input}")
+                async for output in outputs.stream_events():
+                    res = await AworldUI.parse_output(output, local_ui)
+                    if res:
+                        if isinstance(res, AsyncGenerator):
+                            async for item in res:
+                                result += item
+                                f.write(item)
+                        else:
+                            result += res
+                            f.write(res)
+            except Exception as e:
+                logger.error(f"Error: {e}")
+            finally:
+                f.close()
         logging.info(f"[SuperAgent] run task finished, task_id = {task.id} result = {result}")
         return result
 
@@ -156,6 +165,30 @@ class SuperAgent:
         await self.extract_user_profile(user_id, session_id, task_id)
         await self.sub_agent.evolving(user_id, session_id, task_id)
 
+    async def add_ai_message(self, user_id, session_id, task_id, result):
+        await self.memory.add(MemoryAIMessage(
+            content=result,
+            metadata=MessageMetadata(
+                user_id=user_id,
+                session_id=session_id,
+                task_id=task_id,
+                agent_id=self.id,
+                agent_name=self.name
+            )
+        ), agent_memory_config=self.memory_config)
+
+    async def add_human_input(self, user_id, session_id, task_id, user_input):
+        await self.memory.add(MemoryHumanMessage(
+            content=user_input,
+            metadata=MessageMetadata(
+                user_id=user_id,
+                session_id=session_id,
+                task_id=task_id,
+                agent_id=self.id,
+                agent_name=self.name
+            )
+        ), agent_memory_config=self.memory_config)
+
     async def extract_user_profile(self, user_id, session_id, task_id):
         await self.memory.trigger_short_term_memory_to_long_term(LongTermMemoryTriggerParams(
             agent_id=self.id,
@@ -188,7 +221,6 @@ class SuperAgent:
         """
         return await self.memory.retrival_similar_user_messages_history(user_id, user_input)
 
-
 class SelfEvolvingAgent(Agent):
     """
     Self-evolving agent
@@ -198,11 +230,6 @@ class SelfEvolvingAgent(Agent):
                            **kwargs) -> List[ActionModel]:
         return await super().async_policy(observation, info, message, **kwargs)
 
-    async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
-        """
-        custom it
-        """
-        return await super().async_post_run(policy_result, policy_input)
 
     async def evolving(self, user_id, session_id, task_id):
         """
@@ -225,7 +252,7 @@ class SelfEvolvingAgent(Agent):
         agent_experiences = await self.memory.retrival_agent_experience(self.id(), context.get_task().input)
         logging.info(f"[SelfEvolvingAgent] custom_system_prompt agent_experiences = {agent_experiences}")
 
-        return Prompt(SELF_EVOLVING_AGENT_PROMPT).get_prompt(variables={
+        return Prompt(self.system_prompt).get_prompt(variables={
             "history": context.context_info.get("history", ""),
             "agent_experiences": agent_experiences,
             "cur_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
