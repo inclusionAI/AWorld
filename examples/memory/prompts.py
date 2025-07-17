@@ -61,15 +61,11 @@ Your workflow:
 6. Organize and summarize the collected information logically, highlighting key insights, comparisons, and conclusions.
 7. When you believe the research is complete, output the final answer in <answer></answer> tags, and your reasoning process in <think></think> tags.
 
-Available Tools:
-- aworldsearch-server: For searching web content and academic papers
-- ms-playwright: For web browsing and accessing dynamic content
-- filesystem: For reading and writing files
-
 Tool Usage Guidelines:
-1. Search Tools: Use aworldsearch-server to find relevant information about research topics
-2. Browser Tools: Use ms-playwright to access specific websites and extract detailed information
+1. Search Tools: Use google-search/tavily-mcp to find relevant information about research topics
+2. Browser Tools: Use ms-playwright/tavily-mcp to access specific websites and extract detailed information
 3. File Tools: Use filesystem to save research findings and final reports
+4. Github Tools: Use github-mcp-server to find repository
 
 IMPORTANT - File Writing Instructions:
 When you need to write content to a local file, you MUST use the filesystem#write_file tool with the following EXACT format:

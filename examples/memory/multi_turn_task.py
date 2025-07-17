@@ -7,7 +7,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from examples.memory.agent.self_evolving_agent import SuperAgent
-from examples.memory.utils import init_memory, init_postgres_memory
+from examples.memory.utils import init_postgres_memory
 
 
 async def _run_single_session_examples() -> None:
@@ -21,19 +21,112 @@ async def _run_single_session_examples() -> None:
     user_id = "zues"
     session_id = f"session#foo_{salt}"
     logger.info(f"🚀 Running session {session_id}")
-    user_input = ("请针对以下的个智能体记忆系统进行全面的调研与分析，撰写一份约10000字的调查研究报告：\n"
-    "1. Mem0\n"
-    "2. MemoryBank\n"
-    "3. MemoryOS\n"
-    "4. MemoryAgent\n"
-    "\n"
-    "调研内容需包括但不限于：系统简介、核心原理、架构设计、应用场景、优缺点、与其他系统的对比分析、未来发展趋势等。\n"
-    "请充分利用 GitHub、arXiv 等权威网站查找相关资料，确保信息的准确性和前沿性。\n"
-    "最终请输出一份结构清晰、内容详实的 markdown 格式调研报告。\n")
+    
+    # Task 1: Research on Mem0
+    user_input_1 = """Conduct a comprehensive analysis of the Mem0 memory system (Part 1 of 4):
+
+Research Focus Areas:
+- System Overview and Core Principles
+- Architectural Design and Implementation
+- Key Features and Capabilities
+- Use Cases and Applications
+- Integration Patterns
+- Performance Characteristics
+
+Requirements:
+- Utilize authoritative sources (GitHub, arXiv, etc.)
+- Include code examples and implementation details
+- Analyze real-world applications
+- Format as a well-structured Markdown report
+- Prepare for comparison with other memory systems in subsequent analysis
+"""
+
+    # Task 2: Research on MemoryBank
+    user_input_2 = """Conduct a comprehensive analysis of the MemoryBank system (Part 2 of 4):
+
+Research Focus Areas:
+- System Overview and Core Principles
+- Architectural Design and Implementation
+- Key Features and Capabilities
+- Use Cases and Applications
+- Integration Patterns
+- Performance Characteristics
+- Comparative Analysis with Mem0
+
+Requirements:
+- Build upon previous Mem0 analysis
+- Focus on unique features and differentiators
+- Include practical implementation examples
+- Document integration capabilities
+- Format as a well-structured Markdown report
+"""
+
+    # Task 3: Research on MemoryOS
+    user_input_3 = """Conduct a comprehensive analysis of the MemoryOS system (Part 3 of 4):
+
+Research Focus Areas:
+- System Overview and Core Principles
+- Architectural Design and Implementation
+- Key Features and Capabilities
+- Use Cases and Applications
+- Integration Patterns
+- Performance Characteristics
+- Comparative Analysis with Mem0 and MemoryBank
+
+Requirements:
+- Build upon previous analyses
+- Highlight unique operating system integration aspects
+- Include practical implementation examples
+- Analyze scalability and performance
+- Format as a well-structured Markdown report
+"""
+
+    # Task 4: Research on MemoryAgent
+    user_input_4 = """Conduct a comprehensive analysis of the MemoryAgent system (Part 4 of 4):
+
+Research Focus Areas:
+- System Overview and Core Principles
+- Architectural Design and Implementation
+- Key Features and Capabilities
+- Use Cases and Applications
+- Integration Patterns
+- Performance Characteristics
+- Comprehensive Comparative Analysis
+- Future Development Trends
+
+Requirements:
+- Synthesize findings from all previous analyses
+- Create a comparative matrix of all systems
+- Identify best practices and recommendations
+- Discuss future trends and potential improvements
+- Format as a well-structured Markdown report
+"""
+
+    # Execute tasks sequentially
     await super_agent.async_run(user_id=user_id, session_id=session_id, task_id=f"zues:session#foo:task#1_{salt}",
-                                user_input=user_input)
+                              user_input=user_input_1)
+    
     await super_agent.async_run(user_id=user_id, session_id=session_id, task_id=f"zues:session#foo:task#2_{salt}",
-                                user_input="增加一个Aworld Memory模块对比的章节")
+                              user_input=user_input_2)
+    
+    await super_agent.async_run(user_id=user_id, session_id=session_id, task_id=f"zues:session#foo:task#3_{salt}",
+                              user_input=user_input_3)
+    
+    await super_agent.async_run(user_id=user_id, session_id=session_id, task_id=f"zues:session#foo:task#4_{salt}",
+                              user_input=user_input_4)
+
+    # Final task: Add AWorld comparison
+    await super_agent.async_run(user_id=user_id, session_id=session_id, task_id=f"zues:session#foo:task#5_{salt}",
+                              user_input="""Please extend the comparative analysis section to include AWorld's Memory Module [https://github.com/inclusionAI/AWorld/].
+
+Focus on:
+- Integration with the overall AWorld architecture
+- Unique features and capabilities
+- Performance characteristics
+- Implementation differences
+- Potential advantages and limitations
+- Comparative analysis with all previously analyzed systems
+""")
 
     logger.info(f"✅ Session {session_id} completed")
     

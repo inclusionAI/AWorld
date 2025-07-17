@@ -50,8 +50,7 @@ class SuperAgent:
             agent_id="self_evolving_agent",
             name="self_evolving_agent",
             system_prompt=RESEARCH_PROMPT,
-            mcp_servers=["ms-playwright", "aworldsearch-server", "google-search", "filesystem"],
-            # mcp_servers=["filesystem"],
+            mcp_servers=["ms-playwright","google-search","tavily-mcp", "filesystem"],
             history_messages=100,
             mcp_config=load_mcp_config(),
             agent_memory_config=AgentMemoryConfig(
@@ -80,30 +79,6 @@ class SuperAgent:
         await self.add_ai_message(user_id, session_id, task_id, result)
 
         await self.post_run(user_id, session_id, task_id, task_context)
-
-    async def add_ai_message(self, user_id, session_id, task_id, result):
-        await self.memory.add(MemoryAIMessage(
-            content=result,
-            metadata=MessageMetadata(
-                user_id=user_id,
-                session_id=session_id,
-                task_id=task_id,
-                agent_id=self.id,
-                agent_name=self.name
-            )
-        ), agent_memory_config=self.memory_config)
-
-    async def add_human_input(self, user_id, session_id, task_id, user_input):
-        await self.memory.add(MemoryHumanMessage(
-            content=user_input,
-            metadata=MessageMetadata(
-                user_id=user_id,
-                session_id=session_id,
-                task_id=task_id,
-                agent_id=self.id,
-                agent_name=self.name
-            )
-        ), agent_memory_config=self.memory_config)
 
     async def run_task(self, user_id, session_id, task_id, user_input, task_context):
         user_input = await self.rewrite_user_input(user_id, user_input, task_context)
@@ -189,6 +164,30 @@ class SuperAgent:
         logging.info(f"[SuperAgent] post_run user_id = {user_id}, session_id = {session_id}, task_id = {task_id}")
         await self.extract_user_profile(user_id, session_id, task_id)
         await self.sub_agent.evolving(user_id, session_id, task_id)
+
+    async def add_ai_message(self, user_id, session_id, task_id, result):
+        await self.memory.add(MemoryAIMessage(
+            content=result,
+            metadata=MessageMetadata(
+                user_id=user_id,
+                session_id=session_id,
+                task_id=task_id,
+                agent_id=self.id,
+                agent_name=self.name
+            )
+        ), agent_memory_config=self.memory_config)
+
+    async def add_human_input(self, user_id, session_id, task_id, user_input):
+        await self.memory.add(MemoryHumanMessage(
+            content=user_input,
+            metadata=MessageMetadata(
+                user_id=user_id,
+                session_id=session_id,
+                task_id=task_id,
+                agent_id=self.id,
+                agent_name=self.name
+            )
+        ), agent_memory_config=self.memory_config)
 
     async def extract_user_profile(self, user_id, session_id, task_id):
         await self.memory.trigger_short_term_memory_to_long_term(LongTermMemoryTriggerParams(
