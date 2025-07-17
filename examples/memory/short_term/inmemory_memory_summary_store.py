@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -7,6 +8,7 @@ from dotenv import load_dotenv
 from aworld.core.memory import AgentMemoryConfig
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MessageMetadata
+from examples.memory.short_term.utils import add_mock_messages
 from examples.memory.utils import init_postgres_memory
 
 
@@ -16,9 +18,9 @@ async def run():
     memory = MemoryFactory.instance()
     metadata = MessageMetadata(
         user_id="user_id",
-        session_id="session_id20250716150929",
-        task_id="task_id20250716150929",
-        agent_id="self_evolving_agent---uuidd0c142uuid",
+        session_id="session_id",
+        task_id="task_id",
+        agent_id="self_evolving_agent",
         agent_name="self_evolving_agent"
     )
     # Get and print all messages
@@ -29,15 +31,26 @@ async def run():
         "task_id": metadata.task_id
     })
 
+
     summary_config = AgentMemoryConfig(
         enable_summary=True,
-        summary_rounds=5
+        summary_rounds=2,
+        summary_model=os.environ['LLM_MODEL_NAME']
     )
-    new_task_id = f"{metadata.task_id}__copy__{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    for item in items:
-        logging.info(f"{type(item)}")
-        item.set_task_id(new_task_id)
-        await memory.add(item, agent_memory_config=summary_config)
+
+    await add_mock_messages(memory, metadata, memory_config=summary_config)
+
+
+    retrival_memory = memory.get_last_n(last_rounds=3, filters={
+        "user_id": metadata.user_id,
+        "agent_id": metadata.agent_id,
+        "session_id": metadata.session_id,
+        "task_id": metadata.task_id
+    })
+
+    logging.info("==================  RETRIVAL  ==================")
+    for item in retrival_memory:
+        logging.info(f"{item.memory_type}: {item.content}")
 
 
 if __name__ == '__main__':
