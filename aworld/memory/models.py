@@ -250,6 +250,9 @@ class MemoryMessage(MemoryItem):
     def task_id(self) -> str:
         return self.metadata['task_id']
 
+    def set_task_id(self, task_id):
+        self.metadata['task_id'] = task_id
+
     @property
     def agent_id(self) -> str:
         return self.metadata['agent_id']
