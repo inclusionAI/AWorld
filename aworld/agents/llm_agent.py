@@ -1049,31 +1049,31 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         user_id = context.get_task().user_id
 
         histories = self.memory.get_last_n(0, filters={
-             "agent_id": self.id(),
-             "session_id": session_id,
-             "task_id": task_id
-         }, agent_memory_config=self.memory_config)
+            "agent_id": self.id(),
+            "session_id": session_id,
+            "task_id": task_id
+        }, agent_memory_config=self.memory_config)
         if histories and len(histories) > 0:
-             logger.debug(
-                 f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
-             return
+            logger.debug(
+                f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
+            return
         if not self.system_prompt:
-             return
+            return
         content = await self.custom_system_prompt(context=context, content=content)
         logger.info(f'system prompt content: {content}')
 
         await self.memory.add(MemorySystemMessage(
-             content=content,
-             metadata=MessageMetadata(
-                 session_id=session_id,
-                 user_id=user_id,
-                 task_id=task_id,
-                 agent_id=self.id(),
-                 agent_name=self.name(),
-             )
-         ), agent_memory_config=self.memory_config)
-         logger.info(
-             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
+            content=content,
+            metadata=MessageMetadata(
+                session_id=session_id,
+                user_id=user_id,
+                task_id=task_id,
+                agent_id=self.id(),
+                agent_name=self.name(),
+            )
+        ), agent_memory_config=self.memory_config)
+        logger.info(
+            f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
     async def custom_system_prompt(self, context: Context, content: str):
         return content

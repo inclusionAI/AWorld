@@ -230,11 +230,6 @@ class SelfEvolvingAgent(Agent):
                            **kwargs) -> List[ActionModel]:
         return await super().async_policy(observation, info, message, **kwargs)
 
-    async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation) -> Message:
-        """
-        custom it
-        """
-        return await super().async_post_run(policy_result, policy_input)
 
     async def evolving(self, user_id, session_id, task_id):
         """
