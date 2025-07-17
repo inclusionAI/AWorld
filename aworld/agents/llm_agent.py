@@ -212,8 +212,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self.id(),
             "session_id": session_id,
-            "task_id": task_id,
-            "memory_types": ["init","message"]
+            "task_id": task_id
         }, agent_memory_config=self.memory_config)
         if histories:
             # default use the first tool call
@@ -238,6 +237,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return messages
 
     def use_tool_list(self, resp: ModelResponse) -> List[Dict[str, Any]]:
+        if not self.use_tools_in_prompt:
+            return []
         tool_list = []
         try:
             if resp and hasattr(resp, 'content') and resp.content:
@@ -958,11 +959,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
          task_id =  context.get_task().id
          user_id =  context.get_task().user_id
 
-         histories = self.memory.get_last_n(self.history_messages, filters={
+         histories = self.memory.get_last_n(0, filters={
              "agent_id": self.id(),
              "session_id": session_id,
-             "task_id": task_id,
-             "memory_types": ["init"]
+             "task_id": task_id
          }, agent_memory_config=self.memory_config)
          if histories and len(histories) > 0:
              logger.debug(
