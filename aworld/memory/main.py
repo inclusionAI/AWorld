@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import asyncio
 import json
 import traceback
 from typing import Optional, Tuple
@@ -11,8 +10,9 @@ from aworld.logs.util import logger
 from aworld.memory.embeddings.base import EmbeddingsResult, EmbeddingsMetadata
 from aworld.memory.embeddings.factory import EmbedderFactory
 from aworld.memory.longterm import DefaultMemoryOrchestrator
-from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, MessageMetadata, UserProfileExtractParams, \
-    AgentExperienceExtractParams, UserProfile, MemorySummary
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, MemoryToolMessage, MessageMetadata, \
+    UserProfileExtractParams, \
+    AgentExperienceExtractParams, UserProfile, MemorySummary, MemoryAIMessage
 from aworld.memory.vector.factory import VectorDBFactory
 from aworld.models.llm import acall_llm_model
 from aworld.models.utils import num_tokens_from_messages
@@ -248,7 +248,7 @@ class Memory(MemoryBase):
         llm_response = await acall_llm_model(
             self.default_llm_instance,
             messages=summary_messages,
-            model_name=agent_memory_config.summary_model_name,
+            model_name=agent_memory_config.summary_model,
             stream=False,
         )
         logger.debug(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages: {summary_messages}")
@@ -528,15 +528,18 @@ class AworldMemory(Memory):
 
 
     def _check_need_summary(self, to_be_summary_items: list[MemoryItem], agent_memory_config: AgentMemoryConfig) -> Tuple[bool,str]:
+        if isinstance(to_be_summary_items[-1], MemoryAIMessage):
+            if len(to_be_summary_items[-1].tool_calls) > 0:
+                return False,"last message has tool_calls"
         if len(to_be_summary_items) == 0:
-            return False, ""
-        if len(to_be_summary_items) > agent_memory_config.summary_rounds:
+            return False, "items is empty"
+        if len(to_be_summary_items) >= agent_memory_config.summary_rounds:
             return True, "summary_rounds"
         if num_tokens_from_messages([item.to_openai_message() for item in to_be_summary_items]) > agent_memory_config.summary_context_length:
             return True, "summary_context_length"
-        return False, ""
+        return False, "unknown"
 
-    async def _gen_multi_rounds_summary(self, user_task_items: list[MemoryItem], existed_summary_items: list[MemoryItem],
+    async def _gen_multi_rounds_summary(self, user_task_items: list[MemoryItem], existed_summary_items: list[MemorySummary],
                                         to_be_summary_items: list[MemoryItem], agent_memory_config: AgentMemoryConfig) -> str:
         
         if len(to_be_summary_items) == 0:
@@ -544,7 +547,7 @@ class AworldMemory(Memory):
 
         # get user task, existed summary, to be summary
         user_task = [{"role": item.metadata['role'], "content": item.content} for item in user_task_items]
-        existed_summary = [{"role": item.metadata['role'], "content": item.content} for item in existed_summary_items]
+        existed_summary = [{"summary_item_ids": item.summary_item_ids, "content": item.content} for item in existed_summary_items]
         to_be_summary = [{"role": item.metadata['role'], "content": item.content} for item in to_be_summary_items]
 
         # generate summary
@@ -605,66 +608,68 @@ class AworldMemory(Memory):
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
         return self.memory_store.get_all(filters=filters)
 
-    def get_last_n(self, last_rounds, add_first_message=True, filters: dict = None, agent_memory_config: AgentMemoryConfig = None) -> list[MemoryItem]:
-        """Get last n memories.
+    def get_last_n(self, last_rounds, filters: dict = None, agent_memory_config: AgentMemoryConfig = None) -> list[MemoryItem]:
+        """
+        Retrieve the last N rounds of conversation memory, including initialization messages, unsummarized messages, and summary messages.
+
+        Workflow:
+        1. Fetch all relevant messages (init, message, summary types)
+        2. Extract initialization messages (init type)
+        3. Get unsummarized messages (message type not summarized) and summary messages (summary type)
+        4. If total messages <= requested rounds, return all messages
+        5. Otherwise, return the last N rounds while ensuring tool message integrity
 
         Args:
-            last_rounds (int): Number of memories to retrieve.
-            add_first_message (bool):
+            last_rounds (int): Number of recent message rounds to retrieve
+            filters (dict): Filter conditions, must contain agent_id, session_id, task_id
+            agent_memory_config (AgentMemoryConfig): Agent memory configuration
 
         Returns:
-            list[MemoryItem]: List of latest memories.
+            list[MemoryItem]: Returns a combined list of memories in the following order:
+                1. Initialization messages (if any)
+                2. Last N rounds of unsummarized messages and summary messages
+
+        Note:
+            - When the most recent message is a tool message, may return more than last_rounds 
+              messages to ensure tool call integrity
+            - Returns empty list if filters is empty
         """
-        memory_items = self.memory_store.get_last_n(last_rounds, filters=filters)
-        while len(memory_items) > 0 and memory_items[0].metadata and "tool_call_id" in memory_items[0].metadata and \
-                memory_items[0].metadata["tool_call_id"]:
-            last_rounds = last_rounds + 1
-            memory_items = self.memory_store.get_last_n(last_rounds, filters=filters)
+        if last_rounds < 0:
+            return []
+        
+        if not filters:
+            return []
+        
+        # get all messages
+        agent_task_total_message = self.get_all(
+            filters={
+                "agent_id": filters.get('agent_id'),
+                "session_id": filters.get('session_id'),
+                "task_id": filters.get('task_id'),
+                "memory_type": ["init", "message", "summary"]
+            }
+        )
 
-        # If summary is disabled or no summaries exist, return just the last_n_items
-        if not agent_memory_config or not agent_memory_config.enable_summary or not self.summary:
-            return memory_items
+        init_items = [item for item in agent_task_total_message if item.memory_type == "init"]
 
-        # Calculate the range for relevant summaries
-        all_items = self.memory_store.get_all(filters=filters)
-        total_items = len(all_items)
-        end_index = total_items - last_rounds
+        # if last_rounds is 0, return init_items
+        if last_rounds == 0:
+            return init_items
+        
+        # get unsummarized messages and summary messages
+        result_items = [item for item in agent_task_total_message if (item.memory_type == "message" and not item.has_summary) or (item.memory_type == 'summary')]
 
-        # Get complete summaries
-        result = []
-        complete_summary_count = end_index // agent_memory_config.summary_rounds
+        # if total messages <= requested rounds, return all messages
+        if len(result_items) <= last_rounds:
+            return init_items + result_items
+        else:
+            # Ensure tool message completeness: LLM API requires the preceding tool_calls message 
+            # to be included when processing a tool message. If the first message in our window 
+            # is a tool message, we need to expand the window to include its associated tool_calls.
+            while isinstance(result_items[-last_rounds], MemoryToolMessage):
+                last_rounds = last_rounds + 1
+            return init_items + result_items[-last_rounds:]
 
-        # Get complete summaries
-        for i in range(complete_summary_count):
-            range_key = f"{i * agent_memory_config.summary_rounds}_{(i + 1) * agent_memory_config.summary_rounds - 1}"
-            if range_key in self.summary:
-                result.append(self.summary[range_key])
-
-        # Get the last incomplete summary if exists
-        remaining_items = end_index % agent_memory_config.summary_rounds
-        if remaining_items > 0:
-            start = complete_summary_count * agent_memory_config.summary_rounds
-            range_key = f"{start}_{end_index - 1}"
-            if range_key in self.summary:
-                result.append(self.summary[range_key])
-
-        # Add the last n items
-        result.extend(memory_items)
-
-        # Add first user input
-        if add_first_message and last_rounds < self.memory_store.total_rounds():
-            memory_items.insert(0, self.memory_store.get_first(filters=filters))
-
-        if filters["memory_type"] == "message" and "agent_id" in filters:
-            agent_memory_items = self.memory_store.get_all(filters={
-                "memory_type": "init",
-                "agent_id": filters["agent_id"],
-                "application_id": filters["application_id"] if "application_id" in filters else "default",
-            })
-            if len(agent_memory_items) > 0:
-                memory_items.insert(0, agent_memory_items[0])
-
-        return result
 
     def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:
         if self._vector_db:
@@ -685,6 +690,4 @@ class AworldMemory(Memory):
             logger.warning(f"vector_db is None, skip search")
         return []
 
-    def _get_unsummary_message(self, agent_id, task_id, param1, roles) -> list[MemoryItem]:
-        pass
 

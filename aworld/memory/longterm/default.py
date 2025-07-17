@@ -124,7 +124,7 @@ class DefaultMemoryGungnir(MemoryGungnir):
                 f"🧠 [MEMORY:long-term] Extracted user profile:{task.memory_task_id} with result:{user_profiles}")
             return user_profiles
         except Exception as e:
-            logger.error(
+            logger.warning(
                 f"🧠 [MEMORY:long-term] Error extracting user profile:{task.memory_task_id} failed: {e}" + traceback.format_exc())
             return None
 

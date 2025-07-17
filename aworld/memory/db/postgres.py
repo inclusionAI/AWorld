@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
-    MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySystemMessage, MemoryToolMessage, MessageMetadata,
+    MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary, MemorySystemMessage, MemoryToolMessage, MessageMetadata,
     UserProfile, AgentExperience
 )
 from aworld.models.model_response import ToolCall
@@ -87,12 +87,9 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
 
     base_data = {
         'id': orm_item.id,
-        'content': orm_item.content,
         'created_at': to_local_time(orm_item.created_at),  # Convert to local time
         'updated_at': to_local_time(orm_item.updated_at),  # Convert to local time
-        'metadata': memory_meta,  # Map back to metadata for MemoryItem
         'tags': orm_item.tags or [],
-        'memory_type': orm_item.memory_type,
         'version': orm_item.version,
         'deleted': orm_item.deleted
     }
@@ -100,12 +97,14 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
     if role == 'system':
         return MemorySystemMessage(
             content=orm_item.content,
-            metadata=MessageMetadata(**memory_meta)
+            metadata=MessageMetadata(**memory_meta),
+            **base_data
         )
     elif role == 'user':
         return MemoryHumanMessage(
             metadata=MessageMetadata(**memory_meta),
-            content=orm_item.content
+            content=orm_item.content,
+            **base_data
         )
     elif role == 'assistant':
         tool_calls_jsons = memory_meta.get('tool_calls', [])
@@ -116,7 +115,8 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
         return MemoryAIMessage(
             content=orm_item.content,
             tool_calls=tool_calls,
-            metadata=MessageMetadata(**memory_meta)
+            metadata=MessageMetadata(**memory_meta),
+            **base_data
         )
     elif role == 'tool':
         return MemoryToolMessage(
@@ -124,6 +124,7 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
             content=orm_item.content,
             status=memory_meta.get('status', 'success'),
             metadata=MessageMetadata(**memory_meta),
+            **base_data
         )
     elif message_type == 'user_profile':
         if not orm_item.content:
@@ -136,7 +137,8 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
             key=orm_item.content.get('key'),
             value=orm_item.content.get('value'),
             user_id=orm_item.memory_meta.get('user_id'),
-            metadata=memory_meta
+            metadata=memory_meta,
+            **base_data
         )
     elif message_type == 'agent_experience':
         if not orm_item.content:
@@ -149,8 +151,39 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
             agent_id=orm_item.memory_meta.get('agent_id'),
             metadata=memory_meta
         )
+    elif message_type == 'summary':
+        if not orm_item.content:
+            return None
+        if not isinstance(orm_item.content, str):
+            return None
+        # Extract item_ids from metadata
+        item_ids = memory_meta.get('item_ids', [])
+        # Create MessageMetadata from memory_meta
+        summary_metadata = MessageMetadata(
+            agent_id=memory_meta.get('agent_id'),
+            agent_name=memory_meta.get('agent_name'),
+            session_id=memory_meta.get('session_id'),
+            task_id=memory_meta.get('task_id'),
+            user_id=memory_meta.get('user_id')
+        )
+        return MemorySummary(
+            item_ids=item_ids,
+            summary=orm_item.content,
+            metadata=summary_metadata,
+            **base_data
+        )
     else:
-        return MemoryItem(**base_data)
+        return MemoryItem(**{
+            'id': orm_item.id,
+            'content': orm_item.content,
+            'created_at': to_local_time(orm_item.created_at),  # Convert to local time
+            'updated_at': to_local_time(orm_item.updated_at),  # Convert to local time
+            'metadata': memory_meta,  # Map back to metadata for MemoryItem
+            'tags': orm_item.tags or [],
+            'memory_type': orm_item.memory_type,
+            'version': orm_item.version,
+            'deleted': orm_item.deleted
+        })
 
 
 def memory_item_to_orm(item: MemoryItem) -> MemoryItemModel:
@@ -266,6 +299,7 @@ class PostgresMemoryStore(MemoryStore):
             orm_item = session.query(MemoryItemModel).filter_by(id=memory_item.id).first()
             if orm_item:
                 orm_item.content = memory_item.content
+                orm_item.created_at = from_iso_time(memory_item.created_at)
                 orm_item.updated_at = from_iso_time(memory_item.updated_at)  # Convert to UTC
                 orm_item.memory_meta = memory_item.metadata
                 orm_item.tags = memory_item.tags
