@@ -57,7 +57,7 @@ async def add_mock_messages(memory: MemoryBase, metadata: MessageMetadata):
             </cur_time>
     </system_instruction>
     """
-    memory.add(MemorySystemMessage(content=system_content, metadata=metadata))
+    await memory.add(MemorySystemMessage(content=system_content, metadata=metadata))
 
     # Add user message 👤
     user_content = """
@@ -74,7 +74,7 @@ async def add_mock_messages(memory: MemoryBase, metadata: MessageMetadata):
 
     I like play outdoor sports(basketball, tennis, golf, etc.), please recommend some outdoor sports, save it use markdown
     """
-    memory.add(MemoryHumanMessage(content=user_content, metadata=metadata))
+    await memory.add(MemoryHumanMessage(content=user_content, metadata=metadata))
 
     # Add assistant message 🤖
     assistant_content = "I'll recommend some popular outdoor sports and save them in a markdown file for you. Here are some great outdoor sports activities:"
@@ -94,11 +94,13 @@ async def add_mock_messages(memory: MemoryBase, metadata: MessageMetadata):
         function=function
     )
 
-    memory.add(MemoryAIMessage(content=assistant_content, tool_calls=[tool_call], metadata=metadata))
+    await memory.add(MemoryAIMessage(content=assistant_content, tool_calls=[tool_call], metadata=metadata))
+
+
 
     # Add tool response message 🛠️
     tool_content = "Successfully wrote to outdoor_sports_recommendations.md"
-    memory.add(MemoryToolMessage(
+    await memory.add(MemoryToolMessage(
         content=tool_content,
         tool_call_id="fc-249231de-7efb-4741-b659-2ab8696065cc",
         status="success",
