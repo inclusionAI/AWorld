@@ -34,14 +34,14 @@ class WebSearchAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
         super().__init__(conf, **kwargs)
         # 初始化一个 web_search_nums 变量用来记录 search 的次数
-        self.context.context_info['web_search_nums'] = 0
+        # self.context.context_info['web_search_nums'] = 0
         # 添加异步锁来保护计数器
         self._counter_lock = asyncio.Lock()
 
         # 汇总所有的搜索topic
-        self.context.context_info['web_search_topics'] = []
+        # self.context.context_info['web_search_topics'] = []
         # 汇总所有的搜索结果
-        self.context.context_info['web_search_summaries'] = []
+        # self.context.context_info['web_search_summaries'] = []
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
         # 来源可能是 plan_agent 也 可能是 reasoning_loop_agent

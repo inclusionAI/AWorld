@@ -22,6 +22,7 @@ class Constants:
     AGENT_CALLBACK = "agent_callback"
     GROUP = "group"
     MULTI_AGENT_TEAM = "multi_agent_team"
+    PLAN = "plan"
 
 
 class TopicType:

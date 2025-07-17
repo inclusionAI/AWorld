@@ -91,6 +91,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "context_rule") else conf.context_rule
         self.tools_instances = {}
         self.tools_conf = {}
+        self.message_category = kwargs.get("message_category") if kwargs.get("message_category") else None
 
     def deep_copy(self):
         """Create a deep copy of the current Agent instance.
@@ -445,16 +446,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if not actions:
             raise Exception(f'{self.id()} no action decision has been made.')
 
-        if isinstance(self.context.swarm, TeamSwarm):
-            if self.id() == self.context.swarm.communicate_agent.id():
-                logger.info(f"{self.id()} is lead agent in TeamSwarm, will send message to TeamHandler.")
-                return Message(payload=actions,
-                               caller=caller,
-                               sender=self.id(),
-                               receiver=actions[0].tool_name,
-                               category=Constants.MULTI_AGENT_TEAM,
-                               session_id=self.context.session_id if self.context else "",
-                               headers=self._update_headers(input_message))
+        # specified agent result handler
+        if self.message_category:
+            logger.info(f"handler message|specified result handler: {self.message_category}")
+            return AgentMessage(payload=actions,
+                                caller=caller,
+                                sender=self.id(),
+                                receiver=actions[0].tool_name,
+                                session_id=self.context.session_id if self.context else "",
+                                headers=self._update_headers(input_message, message_category=self.message_category))
 
         tools = OrderedDict()
         agents = []
@@ -473,7 +473,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # complex processing
         if _group_name:
-            print("input_message", input_message)
+            logger.info(f"handler message|group result handler: {actions[0].tool_name}")
             return GroupMessage(payload=actions,
                                 caller=caller,
                                 sender=self.id(),
@@ -490,6 +490,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             #     break
 
         elif agents:
+            logger.info(f"handler message|agent result handler {actions[0].tool_name}")
             return AgentMessage(payload=actions,
                                 caller=caller,
                                 sender=self.id(),
@@ -498,6 +499,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 headers=self._update_headers(input_message))
 
         else:
+            logger.info(f"handler message|tool result handler: {actions[0].tool_name}")
             return ToolMessage(payload=actions,
                                caller=caller,
                                sender=self.id(),
@@ -818,6 +820,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         try:
             stream_mode = kwargs.get("stream", False)
             if stream_mode:
+                print("output agent_id: ", self.id())
                 llm_response = ModelResponse(
                     id="", model="", content="", tool_calls=[])
                 resp_stream = acall_llm_model_stream(
@@ -866,6 +869,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     outputs.add_output(output)
 
             else:
+                print("output agent_id: ", self.id())
                 llm_response = await acall_llm_model(
                     self.llm,
                     messages=messages,
@@ -1168,10 +1172,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     f"Task#{task_id}, "
                     f"Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
 
-    def _update_headers(self, input_message: Message) -> Dict[str, Any]:
+    def _update_headers(self, input_message: Message, message_category: str = None) -> Dict[str, Any]:
         headers = input_message.headers.copy()
         headers['context'] = self.context
         headers['level'] = headers.get('level', 0) + 1
         if input_message.group_id:
             headers['parent_group_id'] = input_message.group_id
+        if message_category:
+            headers['message_category'] = message_category
         return headers

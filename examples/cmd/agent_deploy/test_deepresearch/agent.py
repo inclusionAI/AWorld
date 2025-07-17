@@ -1,16 +1,32 @@
+import asyncio
 import json
 import logging
 from mailbox import Message
 import os
+from pathlib import Path
+import sys
 from typing import Any, AsyncGenerator, Dict, List, override
+import uuid
+
+project_root = Path(__file__).parent.parent.parent.parent.parent
+print(project_root)
+sys.path.insert(0, str(project_root))
+os.environ["LLM_MODEL_NAME_DEEPRESEARCH"] = "claude-3-7-sonnet-20250219"
+os.environ["LLM_API_KEY_DEEPRESEARCH"] = "sk-5d0c421b87724cdd883cfa8e883998da"
+os.environ["LLM_BASE_URL_DEEPRESEARCH"] = "https://matrixllm.alipay.com/v1"
 
 from aworld.cmd.utils.agent_ui_parser import AWorldWebAgentUI
-from aworld.core.common import ActionModel, Observation
+from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.context.base import Context
+from aworld.core.event.base import AgentMessage, Constants, TopicType
+from aworld.core.exceptions import AworldException
+from aworld.events.util import subscribe
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
-from aworld.output.base import MessageOutput
+from aworld.output.base import MessageOutput, StepOutput
 from aworld.output.ui.base import AworldUI
 from aworld.output.workspace import WorkSpace
+from aworld.planner.models import StepInfo
+from aworld.planner.parse import parse_plan
 from aworld.planner.plan import PlannerOutputParser
 
 from aworld.core.agent.swarm import TeamSwarm
@@ -25,7 +41,7 @@ from aworld.config.conf import AgentConfig, ModelConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.runner import Runners
-from .prompts import *
+from examples.cmd.agent_deploy.test_deepresearch.prompts import *
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +104,7 @@ class ReportingAgent(BaseDynamicPromptAgent):
     pass
 
 
+
 def get_deepresearch_swarm(user_input):
 
     agent_config = AgentConfig(
@@ -108,6 +125,7 @@ def get_deepresearch_swarm(user_input):
         conf=agent_config,
         use_tools_in_prompt=True,
         resp_parse_func=PlannerOutputParser(agent_id).parse,
+        message_category=Constants.PLAN,
         system_prompt_template=plan_sys_prompt,
     )
 
@@ -210,3 +228,16 @@ class AWorldAgent(BaseAWorldAgent):
                         yield sub_item
                 else:
                     yield item
+
+
+if __name__ == "__main__":
+    swarm = get_deepresearch_swarm("杭州7日游")
+    task = Task(
+            input="杭州7日游",
+            swarm=swarm,
+            conf=TaskConfig(max_steps=20),
+            session_id="123",
+            endless_threshold=50,
+        )
+    result = Runners.sync_run_task(task)
+    print(result)

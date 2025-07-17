@@ -8,6 +8,7 @@ from aworld.core.event import eventbus
 from aworld.core.event.base import Message, Constants
 from aworld.events.manager import EventManager
 from aworld.utils.common import sync_exec
+from aworld.logs.util import logger
 
 
 def subscribe(key: str, category: str = None):
@@ -23,14 +24,15 @@ def subscribe(key: str, category: str = None):
          key: The index key of the handler.
          category: Types of subscription events, the value is `agent` or `tool`.
     """
+    logger.info(f"subscribe: {key}, {category}")
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         if category is None:
             sync_exec(eventbus.subscribe, Constants.TOOL, key, func)
             sync_exec(eventbus.subscribe, Constants.AGENT, key, func)
         else:
+            logger.info(f"subscribe inner: {key}, {category}")
             sync_exec(eventbus.subscribe, category, key, func)
         return func
-
     return decorator
 
 

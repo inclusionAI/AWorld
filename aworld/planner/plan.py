@@ -80,6 +80,7 @@ class PlannerOutputParser(AgentOutputParser):
             return AgentResult(actions=[], current_state=None)
 
         content = resp.content.strip()
+        logger.info(f"PlannerOutputParser|content|{content}")
 
         # Extract planning section
         planning_match = re.search(r'<PLANNING_TAG>(.*?)</PLANNING_TAG>', content, re.DOTALL)
