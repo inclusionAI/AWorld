@@ -7,7 +7,6 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 # common logger info
 logger = logging.getLogger("common")
-logger.setLevel(logging.DEBUG)
 # for trace info
 trace_logger = logging.getLogger("traced")
 
