@@ -22,6 +22,7 @@ from aworld.runners.handler.group import DefaultGroupHandler
 from aworld.runners.handler.output import DefaultOutputHandler
 from aworld.runners.handler.task import DefaultTaskHandler, TaskHandler
 from aworld.runners.handler.tool import DefaultToolHandler, ToolHandler
+from aworld.runners.handler.plan import PlanHandler
 
 from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import override_in_subclass, new_instance
@@ -51,6 +52,10 @@ class TaskEventRunner(TaskRunner):
             raise RuntimeError("no observation, check run process")
 
         self._build_first_message()
+
+        # predefined handlers
+        plan_handler = PlanHandler(runner=self)
+        await self.event_mng.register(Constants.PLAN, Constants.PLAN, plan_handler)
 
         if self.swarm:
             logger.debug(f"swarm: {self.swarm}")
@@ -210,14 +215,28 @@ class TaskEventRunner(TaskRunner):
 
                 logger.info(
                     f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message.id}, session_id = {self.task.session_id}")
+                logger.info(f"con: {con}")
                 if isinstance(con, Message):
                     # process in framework
+                    logger.info(f"handler: {handler}")
                     self.state_manager.save_message_handle_result(name=handler.__name__,
                                                                   message=message,
                                                                   result=con)
+                    logger.info(f"{self.event_mng.event_bus}")
+
+                    target_handlers = self.handlers
+                    # 检查订阅：如果消息的category已经有订阅处理器，就不调用_inner_handler_process
+                    specified_handler_category = con.headers.get('message_category', '')
+                    specified_handlers = self.event_mng.get_handlers(specified_handler_category)[specified_handler_category]
+                    logger.info(f"specified_handler_category: {specified_handler_category}")
+                    logger.info(f"specified_handlers: {specified_handlers}")
+                    if specified_handlers:
+                        logger.info(f"[TaskEventRunner] Message category '{specified_handler_category}' has existing subscription, skipping _inner_handler_process")
+                        target_handlers = specified_handlers
+                    logger.info(f"target_handlers: {target_handlers}")
                     async for event in self._inner_handler_process(
                             results=[con],
-                            handlers=self.handlers
+                            handlers=target_handlers
                     ):
                         if self.is_group_finish(event):
                             from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
