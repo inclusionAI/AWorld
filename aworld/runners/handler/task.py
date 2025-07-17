@@ -38,8 +38,13 @@ class TaskHandler(DefaultHandler):
 
 
 class DefaultTaskHandler(TaskHandler):
-    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+    def is_valid(self, message: Message):
         if message.category != Constants.TASK:
+            return False
+        return True
+
+    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+        if not self.is_valid(message):
             return
 
         logger.debug(f"task handler receive message: {message}")
@@ -65,11 +70,14 @@ class DefaultTaskHandler(TaskHandler):
             logger.warning(f"task {self.runner.task.id} stop, cause: {task_item.msg}")
             self.runner._task_response = TaskResponse(msg=task_item.msg,
                                                       answer='',
+                                                      context=message.context,
                                                       success=False,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
-            await self.runner.task.outputs.mark_completed()
+            if not self.runner.task.is_sub_task:
+                logger.info(f"FINISHED|DefaultTaskHandler|outputs|{self.runner.task.id} {self.runner.task.is_sub_task}")
+                await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
         elif topic == TopicType.FINISHED:
             async for event in self.run_hooks(message, HookPoint.FINISHED):
@@ -77,12 +85,15 @@ class DefaultTaskHandler(TaskHandler):
 
             self.runner._task_response = TaskResponse(answer=str(message.payload),
                                                       success=True,
+                                                      context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
 
-            logger.info(f"{self.runner.task.id} finished.")
-            await self.runner.task.outputs.mark_completed()
+            logger.info(f"FINISHED|task|{self.runner.task.id} finished. {self.runner.task.is_sub_task}")
+            if not self.runner.task.is_sub_task:
+                logger.info(f"FINISHED|DefaultTaskHandler|outputs|{self.runner.task.id} {self.runner.task.is_sub_task}")
+                await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
         elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):
@@ -101,6 +112,7 @@ class DefaultTaskHandler(TaskHandler):
                 await self.runner.task.outputs.add_output(Output(data=message.payload))
             self.runner._task_response = TaskResponse(answer=str(message.payload),
                                                       success=True,
+                                                      context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
@@ -109,7 +121,6 @@ class DefaultTaskHandler(TaskHandler):
             # Avoid waiting to receive events and send a mock event for quick cancel
             yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock')
             await self.runner.stop()
-
 
     async def run_hooks(self, message: Message, hook_point: str) -> AsyncGenerator[Message, None]:
         hooks = self.hooks.get(hook_point, [])

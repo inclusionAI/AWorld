@@ -10,10 +10,13 @@ from aworld.trace.constants import (
     SPAN_NAME_PREFIX_AGENT,
     SPAN_NAME_PREFIX_TOOL,
     ATTRIBUTES_MESSAGE_RUN_TYPE_KEY,
+    SPAN_NAME_PREFIX_TASK,
     RunType
 )
 from aworld.trace.instrumentation.agent import get_agent_span_attributes
 from aworld.trace.instrumentation.tool import get_tool_name, get_tool_span_attributes
+from aworld.trace.instrumentation import semconv
+from aworld.trace.instrumentation.uni_llmmodel.model_response_parse import covert_to_jsonstr
 from aworld.trace.config import configure, ObservabilityConfig
 from typing import Callable, Any
 
@@ -51,7 +54,7 @@ def message_span(message: 'aworld.core.event.base.Message' = None, attributes: d
             "event.sender": message.sender or "",
             "event.category": message.category,
             "event.id": message.id,
-            "event.session_id": message.session_id
+            semconv.SESSION_ID: message.session_id
         }
         message_span_attribute.update(attributes or {})
         return GLOBAL_TRACE_MANAGER.span(
@@ -88,6 +91,34 @@ def handler_span(message: 'aworld.core.event.base.Message' = None, handler: Call
         return GLOBAL_TRACE_MANAGER.span(
             span_name=span_name,
             attributes=attributes
+        )
+
+
+def task_span(session_id: str, task: 'aworld.core.task.Task' = None, attributes: dict = None):
+    attributes = attributes or {}
+    if task:
+        message_span_attribute = {
+            semconv.SESSION_ID: task.session_id,
+            semconv.TASK_ID: task.id,
+            semconv.TASK_INPUT: task.input,
+            semconv.TASK_IS_SUB_TASK: task.is_sub_task,
+            semconv.TASK_GROUP_ID: task.group_id,
+            semconv.TASK: covert_to_jsonstr(task)
+        }
+        message_span_attribute.update(attributes)
+        return GLOBAL_TRACE_MANAGER.span(
+            span_name=SPAN_NAME_PREFIX_TASK + task.id,
+            attributes=message_span_attribute,
+            run_type=RunType.TASK
+        )
+    else:
+        message_span_attribute = {
+            semconv.SESSION_ID: task.session_id
+        }
+        return GLOBAL_TRACE_MANAGER.span(
+            span_name=SPAN_NAME_PREFIX_TASK + session_id,
+            attributes=attributes,
+            run_type=RunType.TASK
         )
 
 

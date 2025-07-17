@@ -1,5 +1,5 @@
 import os
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Sequence, Optional
 from aworld.trace.span_cosumer import SpanConsumer
 from logging import Logger
@@ -19,8 +19,8 @@ class ObservabilityConfig(BaseModel):
     '''
     Observability configuration
     '''
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     trace_provider: Optional[str] = "otlp"
     trace_backends: Optional[Sequence[str]] = ["memory"]
     trace_base_url: Optional[str] = None

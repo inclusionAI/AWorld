@@ -29,3 +29,6 @@ class Handler(Generic[IN, OUT]):
 
 class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
     """Default handler."""
+
+    def is_valid(self, message: Message):
+        return True

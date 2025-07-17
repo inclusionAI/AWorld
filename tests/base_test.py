@@ -1,99 +1,100 @@
 
+import os
+import random
+import sys
+import json
+from pathlib import Path
+import unittest
 
-class BaseTest:
+# Add the project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
-    # Custom assert methods implementation
-    def assertIsNotNone(self, value, msg=None):
-        """Assert that value is not None"""
-        if value is None:
-            raise AssertionError(msg or f"Expected not None, but got None")
-    
-    def assertEqual(self, first, second, msg=None):
-        """Assert that first equals second"""
-        if first != second:
-            raise AssertionError(msg or f"Expected {first} == {second}, but {first} != {second}")
-    
-    def assertTrue(self, expr, msg=None):
-        """Assert that expr is True"""
-        if not expr:
-            raise AssertionError(msg or f"Expected True, but got {expr}")
-    
-    def assertFalse(self, expr, msg=None):
-        """Assert that expr is False"""
-        if expr:
-            raise AssertionError(msg or f"Expected False, but got {expr}")
-    
-    def assertAlmostEqual(self, first, second, places=7, msg=None):
-        """Assert that first and second are approximately equal"""
-        if round(abs(second - first), places) != 0:
-            raise AssertionError(msg or f"Expected {first} ~= {second} (within {places} decimal places)")
-    
-    def assertIs(self, first, second, msg=None):
-        """Assert that first is second (same object identity)"""
-        if first is not second:
-            raise AssertionError(msg or f"Expected {first} is {second}, but they are different objects")
-    
-    def assertIn(self, member, container, msg=None):
-        """Assert that member is in container"""
-        if member not in container:
-            raise AssertionError(msg or f"Expected {member} in {container}")
-    
-    def assertIsInstance(self, obj, cls, msg=None):
-        """Assert that obj is an instance of cls"""
-        if not isinstance(obj, cls):
-            raise AssertionError(msg or f"Expected {obj} to be instance of {cls}, but got {type(obj)}")
-    
-    def assertIsNone(self, value, msg=None):
-        """Assert that value is None"""
-        if value is not None:
-            raise AssertionError(msg or f"Expected None, but got {value}")
-    
-    def assertNotEqual(self, first, second, msg=None):
-        """Assert that first does not equal second"""
-        if first == second:
-            raise AssertionError(msg or f"Expected {first} != {second}, but they are equal")
-    
-    def assertGreater(self, first, second, msg=None):
-        """Assert that first is greater than second"""
-        if not first > second:
-            raise AssertionError(msg or f"Expected {first} > {second}")
-    
-    def assertLess(self, first, second, msg=None):
-        """Assert that first is less than second"""
-        if not first < second:
-            raise AssertionError(msg or f"Expected {first} < {second}")
-    
-    def assertGreaterEqual(self, first, second, msg=None):
-        """Assert that first is greater than or equal to second"""
-        if not first >= second:
-            raise AssertionError(msg or f"Expected {first} >= {second}")
-    
-    def assertLessEqual(self, first, second, msg=None):
-        """Assert that first is less than or equal to second"""
-        if not first <= second:
-            raise AssertionError(msg or f"Expected {first} <= {second}")
-    
-    def assertNotIn(self, member, container, msg=None):
-        """Assert that member is not in container"""
-        if member in container:
-            raise AssertionError(msg or f"Expected {member} not in {container}")
-    
-    def assertIsNot(self, first, second, msg=None):
-        """Assert that first is not second (different object identity)"""
-        if first is second:
-            raise AssertionError(msg or f"Expected {first} is not {second}, but they are the same object")
-    
-    def assertRaises(self, exception_class, callable_obj=None, *args, **kwargs):
-        """Assert that calling callable_obj raises exception_class"""
-        if callable_obj is None:
-            # Return a context manager for use with 'with' statement
-            return self._AssertRaisesContext(exception_class)
+from aworld.core.context.base import Context
+from aworld.config.conf import AgentConfig, ContextRuleConfig, ModelConfig
+from aworld.agents.llm_agent import Agent
+from aworld.runner import Runners
+from aworld.core.agent.swarm import Swarm, TeamSwarm
+from aworld.core.task import Task
+
+
+class BaseTest(unittest.TestCase):
+
+    def setUp(self):
+        """Load test configuration from JSON file"""
+        config_path = Path(__file__).parent / "test_config.json"
+        try:
+            with open(config_path, 'r') as f:
+                self.test_config = json.load(f)
+        except Exception as e:
+            print(f"Warning: Failed to load test_config.json: {e}")
+            self.test_config = {
+                "MODEL_NAME": "qwen/qwen3-1.7b",
+                "BASE_URL": "http://localhost:1234/v1",
+                "API_KEY": "lm-studio"
+            }
+        """Set up test fixtures"""
+        # Initialize from test_config
+        self.mock_model_name = self.test_config.get("MODEL_NAME")
+        self.mock_base_url = self.test_config.get("BASE_URL")
+        self.mock_api_key = self.test_config.get("API_KEY")
+        
+        # Set environment variables
+        os.environ["LLM_API_KEY"] = self.mock_api_key
+        os.environ["LLM_BASE_URL"] = self.mock_base_url
+        os.environ["LLM_MODEL_NAME"] = self.mock_model_name
+
+    def fail(self, msg=None):
+        """Fail immediately with the given message"""
+        raise AssertionError(msg or "Test failed")
+
+    def init_agent(self, config_type: str = "1", context_rule: ContextRuleConfig = None, name: str = "my_agent" + str(random.randint(0, 1000000))):
+        if config_type == "1":
+            conf = AgentConfig(
+                llm_model_name=self.mock_model_name,
+                llm_base_url=self.mock_base_url,
+                llm_api_key=self.mock_api_key
+            )
         else:
-            try:
-                callable_obj(*args, **kwargs)
-                raise AssertionError(f"Expected {exception_class.__name__} to be raised, but no exception was raised")
-            except exception_class:
-                pass  # Expected exception was raised
-            except Exception as e:
-                raise AssertionError(f"Expected {exception_class.__name__} to be raised, but got {type(e).__name__}: {e}")
-    
+            conf = AgentConfig(
+                llm_config=ModelConfig(
+                    llm_model_name=self.mock_model_name,
+                    llm_base_url=self.mock_base_url,
+                    llm_api_key=self.mock_api_key
+                )
+            )
+        return Agent(
+            conf=conf,
+            name=name,
+            system_prompt="You are a helpful assistant.",
+            agent_prompt="make a joke.",
+            context_rule=context_rule
+        )
+
+    def run_agent(self, input, agent: Agent):
+        # swarm = Swarm(agent, max_steps=1)
+        # task = Task(input="""What is an agent.""",
+        #             swarm=swarm, context=context)
+        # return Runners.sync_run_task(task)
+        swarm = Swarm(agent, max_steps=1)
+        task = Task(input=input,
+                    swarm=swarm)
+        return Runners.sync_run_task(
+            task
+        )
+
+    def run_multi_agent(self, input, agent1: Agent, agent2: Agent):
+        swarm = TeamSwarm(agent1, agent2, max_steps=1)
+        return Runners.sync_run(
+            input=input,
+            swarm=swarm
+        )
+
+    def run_task(self, context: Context, agent: Agent):
+        swarm = Swarm(agent, max_steps=1)
+        task = Task(input="""What is an agent.""",
+                    swarm=swarm, context=context)
+        return Runners.sync_run_task(task)
+
+    def run_task(self, task: Task):
+        return Runners.sync_run_task(task)

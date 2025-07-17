@@ -25,8 +25,13 @@ class ToolHandler(DefaultHandler):
 
 
 class DefaultToolHandler(ToolHandler):
-    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+    def is_valid(self, message: Message):
         if message.category != Constants.TOOL:
+            return False
+        return True
+
+    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
+        if not self.is_valid(message):
             return
 
         headers = {"context": message.context}
@@ -105,5 +110,5 @@ class DefaultToolHandler(ToolHandler):
                 sender=actions[0].agent_name if actions else '',
                 session_id=message.session_id,
                 receiver=tool_name,
-                headers=headers
+                headers=message.headers
             )

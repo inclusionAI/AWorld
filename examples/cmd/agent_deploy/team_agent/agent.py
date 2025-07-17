@@ -1,11 +1,10 @@
 import logging
 import os
 import json
-from aworld.agents.plan_agent import PlanAgent
-from aworld.cmd import BaseAWorldAgent, ChatCompletionRequest
+from aworld.cmd.data_model import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import GraphBuildType, Swarm
+from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
 from aworld.runner import Runners
 from .prompt import *

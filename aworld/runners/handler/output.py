@@ -14,8 +14,13 @@ class DefaultOutputHandler(DefaultHandler):
     def __init__(self, runner):
         self.runner = runner
 
-    async def handle(self, message):
+    def is_valid(self, message: Message):
         if message.category != Constants.OUTPUT:
+            return False
+        return True
+
+    async def handle(self, message):
+        if not self.is_valid(message):
             return
         # 1. get outputs
         outputs = self.runner.task.outputs
@@ -40,7 +45,7 @@ class DefaultOutputHandler(DefaultHandler):
                 output.task_id = self.runner.task.id
             elif isinstance(payload, TaskResponse):
                 logger.info(
-                    f"output get task_response with usage: {json.dumps(payload.usage)}")
+                    f"FINISHED|output get task_response with usage: {json.dumps(payload.usage)}")
                 if message.topic == TopicType.FINISHED or message.topic == TopicType.ERROR:
                     mark_complete = True
             elif isinstance(payload, ModelResponse) or isinstance(payload, AsyncGenerator):

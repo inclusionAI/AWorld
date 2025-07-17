@@ -5,8 +5,6 @@ import json
 from enum import Enum
 from typing import Dict, List, Any, Callable, Optional, Tuple
 
-from aworld.agents.parallel_llm_agent import ParallelizableAgent
-from aworld.agents.serial_llm_agent import SerialableAgent
 from aworld.core.agent.agent_desc import agent_handoffs_desc
 from aworld.core.agent.base import AgentFactory, BaseAgent
 from aworld.core.common import ActionModel, Observation
@@ -34,7 +32,7 @@ class Swarm(object):
                  *args,  # agent
                  root_agent: BaseAgent = None,
                  max_steps: int = 0,
-                 register_agents: List[BaseAgent] = [],
+                 register_agents: List[BaseAgent] = None,
                  build_type: GraphBuildType = GraphBuildType.WORKFLOW,
                  builder_cls: str = None,
                  event_driven: bool = True):
@@ -88,7 +86,7 @@ class Swarm(object):
                     self._event_driven = True
                     break
 
-    def reset(self, content: Any, context: Context = None, tools: List[str] = []):
+    def reset(self, content: Any, context: Context = None, tools: List[str] = None):
         """Resets the initial internal state, and init supported tools in agent in swarm.
 
         Args:
@@ -99,7 +97,7 @@ class Swarm(object):
             logger.warning(f"swarm {self} already init")
             return
 
-        self.tools = tools
+        self.tools = tools if tools else []
         # origin task
         self.task = content
 
@@ -271,7 +269,7 @@ class WorkflowSwarm(Swarm):
                  *args,  # agent
                  root_agent: BaseAgent = None,
                  max_steps: int = 0,
-                 register_agents: List[BaseAgent] = [],
+                 register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
                  event_driven: bool = True):
         super().__init__(*args,
@@ -288,7 +286,7 @@ class TeamSwarm(Swarm):
                  *args,  # agent
                  root_agent: BaseAgent = None,
                  max_steps: int = 0,
-                 register_agents: List[BaseAgent] = [],
+                 register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
                  event_driven: bool = True):
         super().__init__(*args,
@@ -304,7 +302,7 @@ class HandoffSwarm(Swarm):
     def __init__(self,
                  *args,  # agent
                  max_steps: int = 0,
-                 register_agents: List[BaseAgent] = [],
+                 register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
                  event_driven: bool = True):
         super().__init__(*args,
@@ -327,10 +325,10 @@ class AgentGraph:
     """The agent's graph is a directed graph, and can update the topology at runtime."""
 
     def __init__(self,
-                 ordered_agents: List[BaseAgent] = [],
-                 agents: Dict[str, BaseAgent] = {},
-                 predecessor: Dict[str, Dict[str, EdgeInfo]] = {},
-                 successor: Dict[str, Dict[str, EdgeInfo]] = {}):
+                 ordered_agents: List[BaseAgent] = None,
+                 agents: Dict[str, BaseAgent] = None,
+                 predecessor: Dict[str, Dict[str, EdgeInfo]] = None,
+                 successor: Dict[str, Dict[str, EdgeInfo]] = None):
         """Agent graph init.
 
         Args:
@@ -339,10 +337,10 @@ class AgentGraph:
             predecessor: The direct predecessor of the agent.
             successor: The direct successor of the agent.
         """
-        self.ordered_agents = ordered_agents
-        self.agents = agents
-        self.predecessor = predecessor
-        self.successor = successor
+        self.ordered_agents = ordered_agents if ordered_agents else []
+        self.agents = agents if agents else {}
+        self.predecessor = predecessor if predecessor else {}
+        self.successor = successor if successor else {}
         self.first = True
         self.root_agent = None
 
@@ -552,10 +550,11 @@ class TopologyBuilder:
     """Multi-agent topology base builder."""
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, agent_list: List[BaseAgent], register_agents: List[BaseAgent] = [], max_steps: int = 0):
+    def __init__(self, agent_list: List[BaseAgent], register_agents: List[BaseAgent] = None, max_steps: int = 0):
         self.agent_list = agent_list
         self.max_steps = max_steps
 
+        register_agents = register_agents if register_agents else []
         for agent in register_agents:
             TopologyBuilder.register_agent(agent)
 
@@ -598,6 +597,9 @@ class WorkflowBuilder(TopologyBuilder):
         Returns:
             Direct topology diagram (AgentGraph) of the agents.
         """
+        from aworld.agents.parallel_llm_agent import ParallelizableAgent
+        from aworld.agents.serial_llm_agent import SerialableAgent
+
         agent_graph = AgentGraph(
             ordered_agents=[], agents={}, successor={}, predecessor={})
         valid_agents = []
@@ -709,6 +711,8 @@ class TeamBuilder(TopologyBuilder):
     """
 
     def build(self):
+        from aworld.agents.parallel_llm_agent import ParallelizableAgent
+
         agent_graph = AgentGraph(
             ordered_agents=[], agents={}, successor={}, predecessor={})
         valid_agents = []

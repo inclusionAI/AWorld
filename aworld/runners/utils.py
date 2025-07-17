@@ -11,7 +11,7 @@ from aworld.logs.util import logger
 from aworld.utils.common import new_instance, snake_to_camel
 
 
-async def choose_runners(tasks: List[Task]) -> List[Runner]:
+async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List[Runner]:
     """Choose the correct runner to run the task.
 
     Args:
@@ -35,7 +35,9 @@ async def choose_runners(tasks: List[Task]) -> List[Runner]:
                 execute_type = GraphBuildType.WORKFLOW.value
 
             if task.event_driven:
-                runner = new_instance("aworld.runners.event_runner.TaskEventRunner", task)
+                runner = new_instance("aworld.runners.event_runner.TaskEventRunner",
+                                      task,
+                                      agent_oriented=agent_oriented)
             else:
                 runner = new_instance(
                     f"aworld.runners.call_driven_runner.{snake_to_camel(execute_type)}Runner",

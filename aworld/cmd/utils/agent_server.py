@@ -6,7 +6,11 @@ import os
 
 from dotenv import load_dotenv
 from aworld import trace
-from aworld.cmd import AgentModel, ChatCompletionMessage, ChatCompletionRequest
+from aworld.cmd.data_model import (
+    AgentModel,
+    ChatCompletionMessage,
+    ChatCompletionRequest,
+)
 from aworld.session.base_session_service import BaseSessionService
 from aworld.session.simple_session_service import SimpleSessionService
 from . import agent_loader

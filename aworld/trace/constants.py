@@ -53,4 +53,5 @@ class RunType(Enum):
     TOOL = "TOOL"
     MCP = "MCP"
     LLM = "LLM"
+    TASK = "TASK"
     OTHER = "OTHER"

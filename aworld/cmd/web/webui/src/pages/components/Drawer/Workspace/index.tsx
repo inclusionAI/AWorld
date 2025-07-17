@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { Typography, Image } from 'antd';
 import { getWorkspaceArtifacts } from '@/api/workspace';
+import { Image, Typography } from 'antd';
+import React, { useEffect, useState } from 'react';
 import type { ToolCardData } from '../../BubbleItem/utils';
 import './index.less';
 
@@ -59,15 +59,15 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
     <div className="listbox">
       {artifacts.map((item, index) => (
         <div className="list" key={index}>
-          <Typography.Link href={item.link} target="_blank">
+          <Typography.Link href={item?.link} target="_blank">
             <Typography.Paragraph className="name" ellipsis={{ rows: 1 }}>
-              {item.title}
+              {item?.title}
             </Typography.Paragraph>
             <Typography.Paragraph className="desc" ellipsis={{ rows: 3 }}>
-              {item.snippet}
+              {item?.snippet}
             </Typography.Paragraph>
             <Typography.Paragraph className="link" ellipsis={{ rows: 1 }}>
-              {item.link}
+              {item?.link}
             </Typography.Paragraph>
           </Typography.Link>
         </div>
