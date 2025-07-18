@@ -228,13 +228,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         session_id = message.context.get_task().session_id
         task_id = message.context.get_task().id
-        histories = self.memory.get_last_n(self.history_messages, filters={
+        histories = self.memory.get_all(filters={
             "agent_id": self.id(),
             "session_id": session_id,
             "task_id": task_id,
-            "message_type": "message"
-        }, agent_memory_config=self.memory_config)
-        last_history = histories[-1] if histories else None
+            "memory_type": "message"
+        })
+        last_history = histories[-1] if histories and len(histories)> 0 else None
 
         # append observation to memory
         if observation.is_tool_result:
@@ -242,7 +242,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 tool_call_id = action_item.tool_call_id
                 content = action_item.content
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
-        elif not self.use_tools_in_prompt and "tool_calls" in last_history.metadata and last_history.metadata[
+        elif not self.use_tools_in_prompt and last_history and last_history.metadata and "tool_calls" in last_history.metadata and last_history.metadata[
             'tool_calls']:
             for tool_call in last_history.metadata['tool_calls']:
                 tool_call_id = tool_call['id']
@@ -620,6 +620,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             ActionModel sequence from agent policy
         """
         # Get current step information for trace recording
+        logger.error(f"ENTER {observation}")
         source_span = trace.get_current_span()
 
         if hasattr(observation, 'context') and observation.context:
@@ -772,7 +773,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     # messages length
                     "origin_messages_count": origin_messages_count,
                     "truncated_messages_count": truncated_messages_count,
-                    "truncated_ratio": round(truncated_messages_count / origin_messages_count, 2),
+                    "truncated_ratio": round(truncated_messages_count / origin_messages_count, 2) if origin_messages_count > 0 else 0,
                     # token length
                     "origin_len": origin_len,
                     "compressed_len": compressed_len,
@@ -792,8 +793,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         outputs = None
         if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
             outputs = kwargs.get("outputs")
-        if not messages:
-            messages = await self._prepare_llm_input(observation, **kwargs)
 
         llm_response = None
         source_span = trace.get_current_span()

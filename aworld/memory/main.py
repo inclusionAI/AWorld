@@ -101,9 +101,9 @@ class InMemoryMemoryStore(MemoryStore):
         if filters.get('memory_type') is not None:
             if memory_item.memory_type is None:
                 return False
-            if isinstance(memory_item.memory_type, list) and memory_item.memory_type not in filters['memory_type']:
-                return False
-            if isinstance(memory_item.memory_type, str) and memory_item.memory_type != filters['memory_type']:
+            elif isinstance(filters['memory_type'], list) and memory_item.memory_type not in filters['memory_type']:
+                    return False
+            elif isinstance(filters['memory_type'], str) and memory_item.memory_type != filters['memory_type']:
                 return False
         return True
 
@@ -528,6 +528,8 @@ class AworldMemory(Memory):
 
 
     def _check_need_summary(self, to_be_summary_items: list[MemoryItem], agent_memory_config: AgentMemoryConfig) -> Tuple[bool,str]:
+        if len(to_be_summary_items) <= 0:
+            return False, "EMPTY"
         if isinstance(to_be_summary_items[-1], MemoryAIMessage):
             if len(to_be_summary_items[-1].tool_calls) > 0:
                 return False,"last message has tool_calls"
