@@ -283,16 +283,13 @@ const App: React.FC = () => {
   const { agentId, setAgentIdAndUpdateURL } = useAgentId();
 
   // ==================== State ====================
-  const [siderCollapsed, setSiderCollapsed] = useState(true); // 默认折叠状态
+  const [siderCollapsed, setSiderCollapsed] = useState(true);
   const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
   const [sessionData, setSessionData] = useState<Record<string, SessionData>>({});
-
   const [conversations, setConversations] = useState<ConversationItem[]>(DEFAULT_CONVERSATIONS_ITEMS);
   const [curConversation, setCurConversation] = useState<string>('');
-
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
-
   const [inputValue, setInputValue] = useState('');
   const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
@@ -306,18 +303,80 @@ const App: React.FC = () => {
   const [traceQuery, setTraceQuery] = useState<string>('');
   const [workspaceData, setWorkspaceData] = useState<any>(null);
 
+  // ==================== 公共样式常量 ====================
+  const collapsedButtonStyle = {
+    width: '40px',
+    height: '40px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid #1677ff34',
+    borderRadius: '8px',
+    transition: 'all 0.2s ease'
+  };
+
+  const buttonHoverHandlers = {
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
+      e.currentTarget.style.backgroundColor = '#1677ff0f';
+      e.currentTarget.style.borderColor = '#1677ff';
+      e.currentTarget.style.transform = 'scale(1.05)';
+    },
+    onMouseLeave: (e: React.MouseEvent<HTMLElement>) => {
+      e.currentTarget.style.backgroundColor = 'transparent';
+      e.currentTarget.style.borderColor = '#1677ff34';
+      e.currentTarget.style.transform = 'scale(1)';
+    }
+  };
+
+  const tabContentStyle = { height: 'calc(100vh - 120px)', overflow: 'auto' };
+  const emptyStateStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '200px',
+    color: '#999'
+  };
+
+  // ==================== 公共函数 ====================
+  const createNewConversation = () => {
+    if (conversations.some(conv => conv.label === 'New Conversation')) {
+      message.warning('New session already exists, please ask a question.');
+      return;
+    }
+
+    if (agent.isRequesting()) {
+      message.error('Message is Requesting, you can create a new conversation after request done or abort it right now...');
+      return;
+    }
+
+    // 关闭右侧侧边栏
+    setRightSiderCollapsed(true);
+
+    // 生成新的session ID
+    const newSessionId = generateNewSessionId();
+
+    // 创建新的会话项
+    const newConversation: ConversationItem = {
+      key: newSessionId,
+      label: 'New Conversation',
+      group: '',
+    };
+
+    setConversations([newConversation, ...conversations]);
+    setCurConversation(newSessionId);
+    setMessages([]);
+  };
+
   const openRightSider = (content: SiderContentType, data?: any) => {
     setRightSiderCollapsed(false);
-    setSiderCollapsed(true); // 打开右侧时自动折叠左侧
+    setSiderCollapsed(true);
     setActiveTab(content);
 
     if (content === 'TraceXY' && data) {
       setTraceId(data);
       const session = sessionData[sessionId];
-      if (session && session.messages) {
-        const userItem = session.messages.find(msg =>
-          msg.trace_id === data && msg.role === 'user'
-        );
+      if (session?.messages) {
+        const userItem = session.messages.find(msg => msg.trace_id === data && msg.role === 'user');
         if (userItem) {
           setTraceQuery(userItem.content);
         }
@@ -325,7 +384,64 @@ const App: React.FC = () => {
     } else if (content === 'Workspace' && data) {
       setWorkspaceData(data);
     }
-  }
+  };
+
+  const handleSessionChange = async (val: string) => {
+    setCurConversation(val);
+    setSessionId(val);
+    updateURLSessionId(val);
+
+    try {
+      const response = await fetch('/api/session/list');
+      if (response.ok) {
+        const sessions: SessionData[] = await response.json();
+        const sessionDataMap: Record<string, SessionData> = {};
+        sessions.forEach(session => {
+          sessionDataMap[session.session_id] = session;
+        });
+        setSessionData(sessionDataMap);
+
+        const session = sessionDataMap[val];
+        if (session?.messages.length > 0) {
+          const chatMessages = session.messages.map((msg, index) => ({
+            id: `${val}-${index}`,
+            message: {
+              role: msg.role,
+              trace_id: msg.trace_id,
+              content: msg.content
+            },
+            status: 'success' as const
+          }));
+          setMessages(chatMessages);
+        } else {
+          setMessages(messageHistory?.[val] || []);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching session data:', error);
+    }
+  };
+
+  const deleteSession = async (sessionKey: string) => {
+    try {
+      const response = await fetch('/api/session/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionKey }),
+      });
+      const data = await response.json();
+
+      if (data.code === 0) {
+        message.success('Session deleted');
+        fetchSessions();
+      } else {
+        message.error('Failed to delete session');
+      }
+    } catch (error) {
+      console.error('Error deleting session:', error);
+      message.error('Failed to delete session');
+    }
+  };
 
   // ==================== API Calls ====================
   const fetchModels = async () => {
@@ -402,9 +518,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (agentId && models.length > 0) {
       const modelExists = models.find(model => model.value === agentId);
-      if (modelExists) {
-        setSelectedModel(agentId);
-      } else {
+      setSelectedModel(modelExists ? agentId : '');
+      if (!modelExists) {
         setAgentIdAndUpdateURL('');
       }
     }
@@ -494,14 +609,13 @@ const App: React.FC = () => {
   const toggleSiderCollapse = () => {
     const newCollapsed = !siderCollapsed;
     setSiderCollapsed(newCollapsed);
-    // 展开左侧时自动折叠右侧
     if (!newCollapsed) {
       setRightSiderCollapsed(true);
     }
   };
 
   const onSubmit = (val: string) => {
-    if (!val || !val.trim()) return;
+    if (!val?.trim()) return;
 
     if (loading) {
       message.error('Request is in progress, please wait for the request to complete.');
@@ -513,10 +627,9 @@ const App: React.FC = () => {
       session_id: sessionId,
       message: { role: 'user', content: val },
     });
-    setTraceQuery(val)
+    setTraceQuery(val);
   };
 
-  // 复制消息内容到剪贴板
   const copyMessageContent = async (content: string) => {
     try {
       await navigator.clipboard.writeText(content);
@@ -528,17 +641,14 @@ const App: React.FC = () => {
   };
 
   const resendMessage = (assistantMessage: any) => {
-    console.log('resendMessage: assistantMessage', assistantMessage, assistantMessage.messageIndex, assistantMessage.content, assistantMessage.message);
     const assistantMessageIndex = assistantMessage.messageIndex;
     const userMessageIndex = assistantMessageIndex - 1;
     if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
       const userMessage = messages[userMessageIndex].message.content;
 
-      // 删除当前assistant消息和对应的用户消息
       const newMessages = messages.filter((_, index) => index !== assistantMessageIndex && index !== userMessageIndex);
       setMessages(newMessages);
 
-      // 重新发送用户消息
       setTimeout(() => {
         onSubmit(userMessage);
       }, 100);
@@ -547,287 +657,191 @@ const App: React.FC = () => {
     }
   };
 
+  // ==================== 组件渲染函数 ====================
+  const renderCollapsedSider = () => (
+    <>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', marginTop: '20px', flex: 1 }}>
+        <Button
+          type="text"
+          icon={<PlusOutlined />}
+          size="large"
+          style={collapsedButtonStyle}
+          title="New Conversation"
+          {...buttonHoverHandlers}
+          onClick={createNewConversation}
+        />
+
+        {conversations.length > 0 && (
+          <div style={{
+            position: 'relative',
+            ...collapsedButtonStyle,
+            border: '1px solid #d9d9d9',
+            backgroundColor: curConversation ? '#1677ff0f' : 'transparent',
+            cursor: 'pointer'
+          }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#1677ff0f';
+              e.currentTarget.style.borderColor = '#1677ff';
+              e.currentTarget.style.transform = 'scale(1.05)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = curConversation ? '#1677ff0f' : 'transparent';
+              e.currentTarget.style.borderColor = '#d9d9d9';
+              e.currentTarget.style.transform = 'scale(1)';
+            }}
+            onClick={() => {
+              setSiderCollapsed(false);
+              setRightSiderCollapsed(true);
+            }}
+            title={`${conversations.length} Conversations - Click to expand`}
+          >
+            <Button
+              type="text"
+              icon={<MessageOutlined />}
+              size="large"
+              style={{ border: 'none', background: 'transparent', pointerEvents: 'none' }}
+            />
+            <span style={{
+              position: 'absolute',
+              top: '-6px',
+              right: '-6px',
+              backgroundColor: '#ff4d4f',
+              color: 'white',
+              borderRadius: '50%',
+              width: '18px',
+              height: '18px',
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 'bold'
+            }}>
+              {conversations.length > 99 ? '99+' : conversations.length}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '8px',
+        borderTop: '1px solid #f0f0f0',
+        paddingTop: '12px',
+        marginTop: 'auto'
+      }}>
+        <Avatar size={32} />
+        <Button
+          type="text"
+          icon={<QuestionCircleOutlined />}
+          size="large"
+          style={collapsedButtonStyle}
+          title="Help"
+        />
+      </div>
+    </>
+  );
+
+  const renderExpandedSider = () => (
+    <>
+      <Button
+        onClick={createNewConversation}
+        type="link"
+        className={styles.addBtn}
+        icon={<PlusOutlined />}
+      >
+        New Conversation
+      </Button>
+
+      <Conversations
+        items={conversations}
+        className={styles.conversations}
+        activeKey={curConversation}
+        onActiveChange={handleSessionChange}
+        groupable={false}
+        styles={{ item: { padding: '0 8px' } }}
+        menu={(conversation) => ({
+          items: [
+            {
+              label: 'Delete',
+              key: 'delete',
+              icon: <DeleteOutlined />,
+              danger: true,
+              onClick: () => deleteSession(conversation.key),
+            },
+          ],
+        })}
+      />
+
+      <div className={styles.siderFooter}>
+        <Avatar size={24} />
+        <Button type="text" icon={<QuestionCircleOutlined />} />
+      </div>
+    </>
+  );
+
   // ==================== Nodes ====================
   const chatSider = (
     <div className={`${styles.sider} ${siderCollapsed ? 'collapsed' : 'expanded'}`}>
-      {/* 折叠/展开按钮 - 垂直居中 */}
       <div className={styles.collapseButton} onClick={toggleSiderCollapse}>
         {siderCollapsed ? <VerticalLeftOutlined /> : <VerticalRightOutlined />}
       </div>
 
       <div className="sider-content">
-        {/* 🌟 Logo */}
         <a href="https://github.com/inclusionAI/AWorld" className={`${styles.logo} ${siderCollapsed ? 'centered' : ''}`} target="_blank">
           <img src={logo} alt="AWorld Logo" width="32" height="32" />
           {!siderCollapsed && <span>AWorld</span>}
         </a>
 
-        {siderCollapsed ? (
-          /* 折叠状态下的简化菜单 */
-          <>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', marginTop: '20px', flex: 1 }}>
-              {/* 新建会话图标 */}
-              <Button
-                type="text"
-                icon={<PlusOutlined />}
-                size="large"
-                style={{
-                  width: '40px',
-                  height: '40px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  border: '1px solid #1677ff34',
-                  borderRadius: '8px',
-                  transition: 'all 0.2s ease'
-                }}
-                title="New Conversation"
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#1677ff0f';
-                  e.currentTarget.style.borderColor = '#1677ff';
-                  e.currentTarget.style.transform = 'scale(1.05)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
-                  e.currentTarget.style.borderColor = '#1677ff34';
-                  e.currentTarget.style.transform = 'scale(1)';
-                }}
-                onClick={() => {
-                  if (conversations.some(conv => conv.label === 'New Conversation')) {
-                    message.warning('New session already exists, please ask a question.');
-                    return;
-                  }
-
-                  if (agent.isRequesting()) {
-                    message.error(
-                      'Message is Requesting, you can create a new conversation after request done or abort it right now...',
-                    );
-                    return;
-                  }
-
-                  // 关闭右侧侧边栏
-                  setRightSiderCollapsed(true);
-
-                  // 生成新的session ID
-                  const newSessionId = generateNewSessionId();
-
-                  // 创建新的会话项
-                  const newConversation: ConversationItem = {
-                    key: newSessionId,
-                    label: `New Conversation`,
-                    group: '', // 移除分组
-                  };
-
-                  setConversations([newConversation, ...conversations]);
-                  setCurConversation(newSessionId);
-                  setMessages([]);
-                }}
-              />
-
-              {/* 会话列表图标 - 显示当前活跃会话数量 */}
-              {conversations.length > 0 && (
-                <div style={{
-                  position: 'relative',
-                  width: '40px',
-                  height: '40px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  border: '1px solid #d9d9d9',
-                  borderRadius: '8px',
-                  backgroundColor: curConversation ? '#1677ff0f' : 'transparent',
-                  transition: 'all 0.2s ease',
-                  cursor: 'pointer'
-                }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#1677ff0f';
-                    e.currentTarget.style.borderColor = '#1677ff';
-                    e.currentTarget.style.transform = 'scale(1.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = curConversation ? '#1677ff0f' : 'transparent';
-                    e.currentTarget.style.borderColor = '#d9d9d9';
-                    e.currentTarget.style.transform = 'scale(1)';
-                  }}
-                  onClick={() => {
-                    setSiderCollapsed(false);
-                    setRightSiderCollapsed(true); // 展开左侧时自动折叠右侧
-                  }}
-                  title={`${conversations.length} Conversations - Click to expand`}
-                >
-                  <Button
-                    type="text"
-                    icon={<MessageOutlined />}
-                    size="large"
-                    style={{ border: 'none', background: 'transparent', pointerEvents: 'none' }}
-                  />
-                  {conversations.length > 0 && (
-                    <span style={{
-                      position: 'absolute',
-                      top: '-6px',
-                      right: '-6px',
-                      backgroundColor: '#ff4d4f',
-                      color: 'white',
-                      borderRadius: '50%',
-                      width: '18px',
-                      height: '18px',
-                      fontSize: '12px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontWeight: 'bold'
-                    }}>
-                      {conversations.length > 99 ? '99+' : conversations.length}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* 折叠状态下的底部菜单 */}
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '8px',
-              borderTop: '1px solid #f0f0f0',
-              paddingTop: '12px',
-              marginTop: 'auto'
-            }}>
-              <Avatar size={32} />
-              <Button
-                type="text"
-                icon={<QuestionCircleOutlined />}
-                size="large"
-                style={{
-                  width: '40px',
-                  height: '40px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
-                }}
-                title="Help"
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            {/* 🌟 添加会话 */}
-            <Button
-              onClick={() => {
-                if (conversations.some(conv => conv.label === 'New Conversation')) {
-                  message.warning('New session already exists, please ask a question.');
-                  return;
-                }
-
-                if (agent.isRequesting()) {
-                  message.error(
-                    'Message is Requesting, you can create a new conversation after request done or abort it right now...',
-                  );
-                  return;
-                }
-
-                // 关闭右侧侧边栏
-                setRightSiderCollapsed(true);
-
-                // 生成新的session ID
-                const newSessionId = generateNewSessionId();
-
-                // 创建新的会话项
-                const newConversation: ConversationItem = {
-                  key: newSessionId,
-                  label: `New Conversation`,
-                  group: '', // 移除分组
-                };
-
-                setConversations([newConversation, ...conversations]);
-                setCurConversation(newSessionId);
-                setMessages([]);
-              }}
-              type="link"
-              className={styles.addBtn}
-              icon={<PlusOutlined />}
-            >
-              New Conversation
-            </Button>
-
-            <Conversations
-              items={conversations}
-              className={styles.conversations}
-              activeKey={curConversation}
-              onActiveChange={async (val) => {
-                console.log('active change: session_id', val);
-                setCurConversation(val);
-                setSessionId(val);
-                updateURLSessionId(val);
-
-                fetchSessions().then(() => {
-                  console.log('fetchSessions: sessionData', sessionData);
-                  const session = sessionData[val];
-                  if (session && session.messages.length > 0) {
-                    const chatMessages = session.messages.map((msg, index) => ({
-                      id: `${val}-${index}`,
-                      message: {
-                        role: msg.role,
-                        trace_id: msg.trace_id,
-                        content: msg.content
-                      },
-                      status: 'success' as const
-                    }));
-                    console.log('chatMessages', chatMessages);
-                    setMessages(chatMessages);
-                  } else {
-                    console.log('messageHistory', messageHistory);
-                    setMessages(messageHistory?.[val] || []);
-                  }
-                });
-              }}
-              groupable={false}
-              styles={{ item: { padding: '0 8px' } }}
-              menu={(conversation) => ({
-                items: [
-                  {
-                    label: 'Delete',
-                    key: 'delete',
-                    icon: <DeleteOutlined />,
-                    danger: true,
-                    onClick: () => {
-                      console.log('delete session: session_id', conversation.key);
-                      fetch('/api/session/delete', {
-                        method: 'POST',
-                        headers: {
-                          'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ session_id: conversation.key }),
-                      }).then((res) => res.json()).then((data) => {
-                        if (data.code === 0) {
-                          message.success('Session deleted');
-                          fetchSessions();
-                        } else {
-                          message.error('Failed to delete session');
-                        }
-                      });
-                    },
-                  },
-                ],
-              })}
-            />
-
-            <div className={styles.siderFooter}>
-              <Avatar size={24} />
-              <Button type="text" icon={<QuestionCircleOutlined />} />
-            </div>
-          </>
-        )}
+        {siderCollapsed ? renderCollapsedSider() : renderExpandedSider()}
       </div>
     </div>
   );
+  const renderMessageActions = (messageItem: any) => {
+    const actions = [
+      {
+        icon: <ReloadOutlined />,
+        onClick: () => resendMessage(messageItem.messageIndex),
+        key: 'resend'
+      },
+      {
+        icon: <CopyOutlined />,
+        onClick: () => copyMessageContent(messageItem.content || ''),
+        key: 'copy'
+      },
+      {
+        icon: <BoxPlotOutlined />,
+        onClick: () => openRightSider('TraceXY', messageItem.props?.trace_id),
+        key: 'trace'
+      },
+      {
+        icon: <AlertFilled />,
+        onClick: () => window.open('/trace_ui.html', '_blank'),
+        key: 'alert'
+      }
+    ];
+
+    return (
+      <div style={{ display: 'flex' }}>
+        {actions.map(action => (
+          <Button
+            key={action.key}
+            type="text"
+            size="small"
+            icon={action.icon}
+            onClick={action.onClick}
+          />
+        ))}
+      </div>
+    );
+  };
+
   const chatList = (
     <div className={styles.chatList}>
       {messages?.length ? (
-        /* 🌟 消息列表 */
         <Bubble.List
-          items={messages?.map((i, index) => ({
+          items={messages.map((i, index) => ({
             ...i.message,
             content: (
               <BubbleItem
@@ -853,52 +867,17 @@ const App: React.FC = () => {
           roles={{
             assistant: {
               placement: 'start',
-              footer: (messageItem) => (
-                <div style={{ display: 'flex' }}>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<ReloadOutlined />}
-                    onClick={() => resendMessage(messageItem.messageIndex)}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<CopyOutlined />}
-                    onClick={() => copyMessageContent(messageItem.content || '')}
-                  />
-                  {/* <Button
-                    type="text"
-                    size="small"
-                    icon={<BoxPlotOutlined />}
-                    onClick={() => openDrawer('Trace', messageItem.props?.trace_id)}
-                  /> */}
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<BoxPlotOutlined />}
-                    onClick={() => openRightSider('TraceXY', messageItem.props?.trace_id)}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<AlertFilled />}
-                    onClick={() => window.open('/trace_ui.html', '_blank')}
-                  />
-                </div>
-              ),
+              footer: renderMessageActions,
               loadingRender: () => <Spin size="small" />,
             },
             user: { placement: 'end' },
           }}
         />
       ) : (
-        <div
-          className={styles.placeholder}
-        >
+        <div className={styles.placeholder}>
           <Welcome
             onSubmit={(v: string) => {
-              if (v && v.trim()) {
+              if (v?.trim()) {
                 onSubmit(v);
                 setInputValue('');
               }
@@ -912,6 +891,31 @@ const App: React.FC = () => {
       )}
     </div>
   );
+  const handleSenderSubmit = () => {
+    if (inputValue.trim()) {
+      onSubmit(inputValue);
+      setInputValue('');
+    }
+  };
+
+  const renderSenderActions = (_: any, info: any) => {
+    const { SendButton, LoadingButton, SpeechButton } = info.components;
+    return (
+      <Flex gap={4}>
+        <SpeechButton className={styles.speechButton} />
+        {loading ? (
+          <LoadingButton type="default" />
+        ) : (
+          <SendButton
+            type="primary"
+            disabled={!inputValue.trim()}
+            className={styles.sendButton}
+          />
+        )}
+      </Flex>
+    );
+  };
+
   const senderHeader = (
     <Sender.Header
       title="Upload File"
@@ -935,33 +939,25 @@ const App: React.FC = () => {
       />
     </Sender.Header>
   );
+
   const chatSender = (
     <>
-      {/* 🌟 提示词 */}
       <Prompts
         items={SENDER_PROMPTS}
         onItemClick={(info) => {
           const description = info.data.description as string;
-          if (description && description.trim()) {
+          if (description?.trim()) {
             onSubmit(description);
           }
         }}
         className={styles.senderPrompt}
       />
-      {/* 🌟 输入框 */}
       <Sender
         value={inputValue}
         header={senderHeader}
-        onSubmit={() => {
-          if (inputValue.trim()) {
-            onSubmit(inputValue);
-            setInputValue('');
-          }
-        }}
+        onSubmit={handleSenderSubmit}
         onChange={setInputValue}
-        onCancel={() => {
-          abortController.current?.abort();
-        }}
+        onCancel={() => abortController.current?.abort()}
         prefix={
           <Button
             type="text"
@@ -972,23 +968,7 @@ const App: React.FC = () => {
         loading={loading}
         className={styles.sender}
         allowSpeech
-        actions={(_, info) => {
-          const { SendButton, LoadingButton, SpeechButton } = info.components;
-          return (
-            <Flex gap={4}>
-              <SpeechButton className={styles.speechButton} />
-              {loading ? (
-                <LoadingButton type="default" />
-              ) : (
-                <SendButton
-                  type="primary"
-                  disabled={!inputValue.trim()}
-                  className={styles.sendButton}
-                />
-              )}
-            </Flex>
-          );
-        }}
+        actions={renderSenderActions}
         placeholder="Ask or input / use skills"
       />
     </>
@@ -1036,23 +1016,19 @@ const App: React.FC = () => {
                 {
                   key: 'Workspace',
                   label: 'Workspace',
-                  children: workspaceData ? (
-                    <div style={{ height: 'calc(100vh - 120px)', overflow: 'auto' }}>
-                      <Workspace
-                        key={`workspace-${rightSiderCollapsed}`}
-                        sessionId={sessionId}
-                        toolCardData={workspaceData}
-                      />
-                    </div>
-                  ) : (
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      height: '200px',
-                      color: '#999'
-                    }}>
-                      No workspace data available
+                  children: (
+                    <div style={tabContentStyle}>
+                      {workspaceData ? (
+                        <Workspace
+                          key={`workspace-${rightSiderCollapsed}`}
+                          sessionId={sessionId}
+                          toolCardData={workspaceData}
+                        />
+                      ) : (
+                        <div style={emptyStateStyle}>
+                          No workspace data available
+                        </div>
+                      )}
                     </div>
                   )
                 },
@@ -1060,7 +1036,7 @@ const App: React.FC = () => {
                   key: 'TraceXY',
                   label: 'Trace',
                   children: (
-                    <div style={{ height: 'calc(100vh - 120px)', overflow: 'auto' }}>
+                    <div style={tabContentStyle}>
                       <TraceXY
                         key={`${traceId}-${rightSiderCollapsed}`}
                         traceId={traceId}
