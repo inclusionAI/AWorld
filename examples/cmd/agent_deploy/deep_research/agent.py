@@ -189,10 +189,10 @@ class AWorldAgent(BaseAWorldAgent):
         super().__init__(*args, **kwargs)
 
     def name(self):
-        return "Test Deepresearch Agent"
+        return "Deep Research Agent"
 
     def description(self):
-        return "Test Deepresearch Agent"
+        return "Deep Research Agent with PlanAgent"
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
 
