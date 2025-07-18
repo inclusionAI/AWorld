@@ -839,9 +839,9 @@ const App: React.FC = () => {
           }))}
           style={{
             height: '100%',
-            paddingInline: siderCollapsed
-              ? 'calc(calc(100% - 700px) / 2 + 30px) calc(calc(100% - 700px) / 2)'
-              : 'calc(calc(100% - 700px) / 2)'
+            paddingInline: '40px',
+            maxWidth: '800px',
+            margin: '0 auto'
           }}
           roles={{
             assistant: {
