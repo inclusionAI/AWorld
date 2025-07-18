@@ -1,29 +1,58 @@
-import React, { useState } from 'react';
+import React, { useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Drawer } from 'antd';
-import { ShrinkOutlined } from '@ant-design/icons';
 import CardDefault from './cardDefault';
 import CardLinkList from './cardLinkList';
-import { extractToolCards } from './utils';
-import Workspace from '../Drawer/Workspace';
-import type { ToolCardData } from './utils';
 import './index.less';
+import type { ToolCardData } from './utils';
+import { extractToolCards } from './utils';
 
 interface BubbleItemProps {
   sessionId: string;
   data: string;
   trace_id: string;
+  onOpenWorkspace?: (data: ToolCardData) => void;
+  isLoading?: boolean;
 }
 
-const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data }) => {
-  const [workspaceVisible, setWorkspaceVisible] = useState(false);
-  const [toolCardData, setToolCardData] = useState<ToolCardData | undefined>(undefined);
+const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data, onOpenWorkspace, isLoading = false }) => {
+  // 移除workspaceVisible和toolCardData状态，不再需要内部Drawer
+
+  // 修改openWorkspace函数，直接调用外部回调
   const openWorkspace = (data: ToolCardData) => {
-    setToolCardData(data);
-    setWorkspaceVisible(true);
+    if (onOpenWorkspace) {
+      onOpenWorkspace(data);
+    }
   };
-  const closeWorkspace = () => setWorkspaceVisible(false);
+
   const { segments } = extractToolCards(data);
+
+  // 自动打开workspace的逻辑 - 只在流式输出过程中自动打开
+  useEffect(() => {
+    // 只有在流式输出过程中才自动打开workspace
+    if (!isLoading) return;
+
+    // 查找最新的具有workspace功能的tool_card（不区分card类型）
+    const toolCardSegments = segments.filter(segment => segment.type === 'tool_card');
+
+    // 从最后一个开始查找，找到第一个有artifacts的tool_card
+    const latestWorkspaceCard = toolCardSegments
+      .slice()
+      .reverse()
+      .find(segment => {
+        return segment.type === 'tool_card' &&
+          segment.data?.artifacts?.length > 0;
+      });
+
+    if (latestWorkspaceCard && latestWorkspaceCard.type === 'tool_card' && onOpenWorkspace) {
+      // 使用setTimeout确保BubbleItem完全渲染后再打开workspace
+      const timer = setTimeout(() => {
+        openWorkspace(latestWorkspaceCard.data);
+      }, 100);
+
+      return () => clearTimeout(timer);
+    }
+  }, [segments, onOpenWorkspace, openWorkspace, isLoading]);
+
   // console.log('segments:', segments);
   return (
     <div className="card">
@@ -43,25 +72,7 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data }) => {
           }
         }
       })}
-      <Drawer
-        title="Workspace"
-        width={700}
-        placement="right"
-        onClose={closeWorkspace}
-        open={workspaceVisible}
-        extra={
-          <ShrinkOutlined
-            onClick={closeWorkspace}
-            style={{
-              fontSize: '18px',
-              color: '#444',
-              cursor: 'pointer'
-            }}
-          />
-        }
-      >
-        <Workspace sessionId={sessionId} toolCardData={toolCardData} />
-      </Drawer>
+      {/* 移除内部的Drawer */}
     </div>
   );
 };

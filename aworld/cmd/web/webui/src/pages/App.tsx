@@ -4,11 +4,13 @@ import {
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
+  MessageOutlined,
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
-  ShrinkOutlined
+  VerticalLeftOutlined,
+  VerticalRightOutlined
 } from '@ant-design/icons';
 import {
   Attachments,
@@ -18,7 +20,7 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Drawer, Flex, type GetProp, message, Spin } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Spin, Tabs } from 'antd';
 import { createStyles } from 'antd-style';
 import React, { useEffect, useRef, useState } from 'react';
 import logo from '../assets/aworld_logo.png';
@@ -29,6 +31,7 @@ import Welcome from '../pages/components/Welcome';
 import BubbleItem from './components/BubbleItem';
 // import Trace from './components/Drawer/TraceThoughtChain';
 import TraceXY from './components/Drawer/TraceXY';
+import Workspace from './components/Drawer/Workspace';
 import './index.less';
 
 type BubbleDataType = {
@@ -84,6 +87,62 @@ const useStyle = createStyles(({ token, css }) => {
       flex-direction: column;
       padding: 0 12px;
       box-sizing: border-box;
+      transition: width 0.3s ease, padding 0.3s ease;
+      position: relative;
+      border-right: 1px solid ${token.colorBorderSecondary};
+      
+      &.collapsed {
+        width: 60px;
+        padding: 0 8px;
+      }
+      
+      &.expanded {
+      }
+      
+      .sider-content {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        flex: 1;
+        opacity: 1;
+        visibility: visible;
+        transition: opacity 0.3s ease, visibility 0.3s ease;
+      }
+    `,
+    collapseButton: css`
+      position: absolute;
+      top: 50%;
+      right: -10px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: ${token.colorBgContainer};
+      border: 1px solid ${token.colorBorderSecondary};
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 1000;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+      transition: all 0.2s ease;
+      transform: translateY(-50%);
+      
+      &:hover {
+        background: ${token.colorBgTextHover};
+        transform: translateY(-50%) scale(1.15);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+        border-color: ${token.colorPrimary};
+      }
+      
+      .anticon {
+        font-size: 10px;
+        color: ${token.colorTextTertiary};
+        transition: color 0.2s ease;
+      }
+      
+      &:hover .anticon {
+        color: ${token.colorPrimary};
+      }
     `,
     logo: css`
       display: flex;
@@ -92,11 +151,24 @@ const useStyle = createStyles(({ token, css }) => {
       box-sizing: border-box;
       gap: 8px;
       margin: 24px 0;
+      transition: justify-content 0.3s ease;
+      text-decoration: none;
 
       span {
         font-weight: bold;
         color: ${token.colorText};
         font-size: 16px;
+        transition: opacity 0.3s ease;
+      }
+      
+      &.centered {
+        justify-content: center;
+        
+        span {
+          opacity: 0;
+          width: 0;
+          overflow: hidden;
+        }
       }
     `,
     addBtn: css`
@@ -130,6 +202,7 @@ const useStyle = createStyles(({ token, css }) => {
       flex-direction: column;
       padding-block: ${token.paddingLG}px;
       gap: 16px;
+      transition: margin-left 0.3s ease, margin-right 0.3s ease;
     `,
     chatPrompt: css`
       .ant-prompts-label {
@@ -199,6 +272,7 @@ const useStyle = createStyles(({ token, css }) => {
         background-color: rgba(0, 0, 0, 0.1) !important;
       }
     `,
+
   };
 });
 
@@ -209,45 +283,160 @@ const App: React.FC = () => {
   const { agentId, setAgentIdAndUpdateURL } = useAgentId();
 
   // ==================== State ====================
+  const [siderCollapsed, setSiderCollapsed] = useState(true);
   const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
   const [sessionData, setSessionData] = useState<Record<string, SessionData>>({});
-
   const [conversations, setConversations] = useState<ConversationItem[]>(DEFAULT_CONVERSATIONS_ITEMS);
   const [curConversation, setCurConversation] = useState<string>('');
-
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
-
   const [inputValue, setInputValue] = useState('');
   const [models, setModels] = useState<Array<{ label: string; value: string }>>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [modelsLoading, setModelsLoading] = useState(false);
 
-  // 右侧抽屉
-  type DrawerContentType = 'Workspace' | 'Trace' | 'TraceXY';
-  const [drawerVisible, setDrawerVisible] = useState(false);
-  const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Workspace');
+  // 右侧侧边栏
+  type SiderContentType = 'TraceXY' | 'Workspace';
+  const [rightSiderCollapsed, setRightSiderCollapsed] = useState(true);
+  const [activeTab, setActiveTab] = useState<string>('TraceXY');
   const [traceId, setTraceId] = useState<string>('');
   const [traceQuery, setTraceQuery] = useState<string>('');
-  const openDrawer = (content: DrawerContentType, id?: string) => {
-    setDrawerVisible(true);
-    setDrawerContent(content);
-    if (id) {
-      setTraceId(id);
+  const [workspaceData, setWorkspaceData] = useState<any>(null);
+
+  // ==================== 公共样式常量 ====================
+  const collapsedButtonStyle = {
+    width: '40px',
+    height: '40px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid #1677ff34',
+    borderRadius: '8px',
+    transition: 'all 0.2s ease'
+  };
+
+  const buttonHoverHandlers = {
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
+      e.currentTarget.style.backgroundColor = '#1677ff0f';
+      e.currentTarget.style.borderColor = '#1677ff';
+      e.currentTarget.style.transform = 'scale(1.05)';
+    },
+    onMouseLeave: (e: React.MouseEvent<HTMLElement>) => {
+      e.currentTarget.style.backgroundColor = 'transparent';
+      e.currentTarget.style.borderColor = '#1677ff34';
+      e.currentTarget.style.transform = 'scale(1)';
+    }
+  };
+
+  const tabContentStyle = { height: 'calc(100vh - 120px)', overflow: 'auto' };
+  const emptyStateStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '200px',
+    color: '#999'
+  };
+
+  // ==================== 公共函数 ====================
+  const createNewConversation = () => {
+    if (conversations.some(conv => conv.label === 'New Conversation')) {
+      message.warning('New session already exists, please ask a question.');
+      return;
+    }
+
+    if (agent.isRequesting()) {
+      message.error('Message is Requesting, you can create a new conversation after request done or abort it right now...');
+      return;
+    }
+
+    // 关闭右侧侧边栏
+    setRightSiderCollapsed(true);
+
+    // 生成新的session ID
+    const newSessionId = generateNewSessionId();
+
+    // 创建新的会话项
+    const newConversation: ConversationItem = {
+      key: newSessionId,
+      label: 'New Conversation',
+      group: '',
+    };
+
+    setConversations([newConversation, ...conversations]);
+    setCurConversation(newSessionId);
+    setMessages([]);
+  };
+
+  const openRightSider = (content: SiderContentType, data?: any) => {
+    setRightSiderCollapsed(false);
+    setSiderCollapsed(true);
+    setActiveTab(content);
+
+    if (content === 'TraceXY' && data) {
+      setTraceId(data);
       const session = sessionData[sessionId];
-      if (session && session.messages) {
-        const userItem = session.messages.find(msg =>
-          msg.trace_id === id && msg.role === 'user'
-        );
+      if (session?.messages) {
+        const userItem = session.messages.find(msg => msg.trace_id === data && msg.role === 'user');
         if (userItem) {
           setTraceQuery(userItem.content);
         }
       }
+    } else if (content === 'Workspace' && data) {
+      setWorkspaceData(data);
     }
-  }
-  const closeDrawer = () => {
-    setDrawerVisible(false);
-  }
+  };
+
+  const handleSessionChange = async (val: string) => {
+    try {
+      // 先从服务端刷新session列表
+      await fetchSessions();
+
+      // 然后设置当前选中的session
+      setCurConversation(val);
+      setSessionId(val);
+      updateURLSessionId(val);
+
+      // 使用刷新后的sessionData来获取当前session的消息
+      const session = sessionData[val];
+      if (session?.messages.length > 0) {
+        const chatMessages = session.messages.map((msg, index) => ({
+          id: `${val}-${index}`,
+          message: {
+            role: msg.role,
+            trace_id: msg.trace_id,
+            content: msg.content
+          },
+          status: 'success' as const
+        }));
+        setMessages(chatMessages);
+      } else {
+        setMessages(messageHistory?.[val] || []);
+      }
+    } catch (error) {
+      console.error('Error fetching session data:', error);
+    }
+  };
+
+  const deleteSession = async (sessionKey: string) => {
+    try {
+      const response = await fetch('/api/session/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionKey }),
+      });
+      const data = await response.json();
+
+      if (data.code === 0) {
+        message.success('Session deleted');
+        fetchSessions();
+      } else {
+        message.error('Failed to delete session');
+      }
+    } catch (error) {
+      console.error('Error deleting session:', error);
+      message.error('Failed to delete session');
+    }
+  };
 
   // ==================== API Calls ====================
   const fetchModels = async () => {
@@ -324,9 +513,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (agentId && models.length > 0) {
       const modelExists = models.find(model => model.value === agentId);
-      if (modelExists) {
-        setSelectedModel(agentId);
-      } else {
+      setSelectedModel(modelExists ? agentId : '');
+      if (!modelExists) {
         setAgentIdAndUpdateURL('');
       }
     }
@@ -413,8 +601,16 @@ const App: React.FC = () => {
   });
 
   // ==================== Event ====================
+  const toggleSiderCollapse = () => {
+    const newCollapsed = !siderCollapsed;
+    setSiderCollapsed(newCollapsed);
+    if (!newCollapsed) {
+      setRightSiderCollapsed(true);
+    }
+  };
+
   const onSubmit = (val: string) => {
-    if (!val || !val.trim()) return;
+    if (!val?.trim()) return;
 
     if (loading) {
       message.error('Request is in progress, please wait for the request to complete.');
@@ -426,10 +622,9 @@ const App: React.FC = () => {
       session_id: sessionId,
       message: { role: 'user', content: val },
     });
-    setTraceQuery(val)
+    setTraceQuery(val);
   };
 
-  // 复制消息内容到剪贴板
   const copyMessageContent = async (content: string) => {
     try {
       await navigator.clipboard.writeText(content);
@@ -441,17 +636,14 @@ const App: React.FC = () => {
   };
 
   const resendMessage = (assistantMessage: any) => {
-    console.log('resendMessage: assistantMessage', assistantMessage, assistantMessage.messageIndex, assistantMessage.content, assistantMessage.message);
     const assistantMessageIndex = assistantMessage.messageIndex;
     const userMessageIndex = assistantMessageIndex - 1;
     if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
       const userMessage = messages[userMessageIndex].message.content;
 
-      // 删除当前assistant消息和对应的用户消息
       const newMessages = messages.filter((_, index) => index !== assistantMessageIndex && index !== userMessageIndex);
       setMessages(newMessages);
 
-      // 重新发送用户消息
       setTimeout(() => {
         onSubmit(userMessage);
       }, 100);
@@ -460,43 +652,96 @@ const App: React.FC = () => {
     }
   };
 
-  // ==================== Nodes ====================
-  const chatSider = (
-    <div className={styles.sider}>
-      {/* 🌟 Logo */}
-      <a href="https://github.com/inclusionAI/AWorld" className={styles.logo} target="_blank">
-        <img src={logo} alt="AWorld Logo" width="24" height="24" />
-        <span>AWorld</span>
-      </a>
-      {/* 🌟 添加会话 */}
+  // ==================== 组件渲染函数 ====================
+  const renderCollapsedSider = () => (
+    <>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', marginTop: '20px', flex: 1 }}>
+        <Button
+          type="text"
+          icon={<PlusOutlined />}
+          size="large"
+          style={collapsedButtonStyle}
+          title="New Conversation"
+          {...buttonHoverHandlers}
+          onClick={createNewConversation}
+        />
+
+        {conversations.length > 0 && (
+          <div style={{
+            position: 'relative',
+            ...collapsedButtonStyle,
+            border: '1px solid #d9d9d9',
+            backgroundColor: curConversation ? '#1677ff0f' : 'transparent',
+            cursor: 'pointer'
+          }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#1677ff0f';
+              e.currentTarget.style.borderColor = '#1677ff';
+              e.currentTarget.style.transform = 'scale(1.05)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = curConversation ? '#1677ff0f' : 'transparent';
+              e.currentTarget.style.borderColor = '#d9d9d9';
+              e.currentTarget.style.transform = 'scale(1)';
+            }}
+            onClick={() => {
+              setSiderCollapsed(false);
+              setRightSiderCollapsed(true);
+            }}
+            title={`${conversations.length} Conversations - Click to expand`}
+          >
+            <Button
+              type="text"
+              icon={<MessageOutlined />}
+              size="large"
+              style={{ border: 'none', background: 'transparent', pointerEvents: 'none' }}
+            />
+            <span style={{
+              position: 'absolute',
+              top: '-6px',
+              right: '-6px',
+              backgroundColor: '#ff4d4f',
+              color: 'white',
+              borderRadius: '50%',
+              width: '18px',
+              height: '18px',
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 'bold'
+            }}>
+              {conversations.length > 99 ? '99+' : conversations.length}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '8px',
+        borderTop: '1px solid #f0f0f0',
+        paddingTop: '12px',
+        marginTop: 'auto'
+      }}>
+        <Avatar size={32} />
+        <Button
+          type="text"
+          icon={<QuestionCircleOutlined />}
+          size="large"
+          style={collapsedButtonStyle}
+          title="Help"
+        />
+      </div>
+    </>
+  );
+
+  const renderExpandedSider = () => (
+    <>
       <Button
-        onClick={() => {
-          if (conversations.some(conv => conv.label === 'New Conversation')) {
-            message.warning('New session already exists, please ask a question.');
-            return;
-          }
-
-          if (agent.isRequesting()) {
-            message.error(
-              'Message is Requesting, you can create a new conversation after request done or abort it right now...',
-            );
-            return;
-          }
-
-          // 生成新的session ID
-          const newSessionId = generateNewSessionId();
-
-          // 创建新的会话项
-          const newConversation: ConversationItem = {
-            key: newSessionId,
-            label: `New Conversation`,
-            group: '', // 移除分组
-          };
-
-          setConversations([newConversation, ...conversations]);
-          setCurConversation(newSessionId);
-          setMessages([]);
-        }}
+        onClick={createNewConversation}
         type="link"
         className={styles.addBtn}
         icon={<PlusOutlined />}
@@ -508,33 +753,7 @@ const App: React.FC = () => {
         items={conversations}
         className={styles.conversations}
         activeKey={curConversation}
-        onActiveChange={async (val) => {
-          console.log('active change: session_id', val);
-          setCurConversation(val);
-          setSessionId(val);
-          updateURLSessionId(val);
-
-          fetchSessions().then(() => {
-            console.log('fetchSessions: sessionData', sessionData);
-            const session = sessionData[val];
-            if (session && session.messages.length > 0) {
-              const chatMessages = session.messages.map((msg, index) => ({
-                id: `${val}-${index}`,
-                message: {
-                  role: msg.role,
-                  trace_id: msg.trace_id,
-                  content: msg.content
-                },
-                status: 'success' as const
-              }));
-              console.log('chatMessages', chatMessages);
-              setMessages(chatMessages);
-            } else {
-              console.log('messageHistory', messageHistory);
-              setMessages(messageHistory?.[val] || []);
-            }
-          });
-        }}
+        onActiveChange={handleSessionChange}
         groupable={false}
         styles={{ item: { padding: '0 8px' } }}
         menu={(conversation) => ({
@@ -544,23 +763,7 @@ const App: React.FC = () => {
               key: 'delete',
               icon: <DeleteOutlined />,
               danger: true,
-              onClick: () => {
-                console.log('delete session: session_id', conversation.key);
-                fetch('/api/session/delete', {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({ session_id: conversation.key }),
-                }).then((res) => res.json()).then((data) => {
-                  if (data.code === 0) {
-                    message.success('Session deleted');
-                    fetchSessions();
-                  } else {
-                    message.error('Failed to delete session');
-                  }
-                });
-              },
+              onClick: () => deleteSession(conversation.key),
             },
           ],
         })}
@@ -570,74 +773,112 @@ const App: React.FC = () => {
         <Avatar size={24} />
         <Button type="text" icon={<QuestionCircleOutlined />} />
       </div>
+    </>
+  );
+
+  // ==================== Nodes ====================
+  const chatSider = (
+    <div className={`${styles.sider} ${siderCollapsed ? 'collapsed' : 'expanded'}`}>
+      <div className={styles.collapseButton} onClick={toggleSiderCollapse}>
+        {siderCollapsed ? <VerticalLeftOutlined /> : <VerticalRightOutlined />}
+      </div>
+
+      <div className="sider-content">
+        <a href="https://github.com/inclusionAI/AWorld" className={`${styles.logo} ${siderCollapsed ? 'centered' : ''}`} target="_blank">
+          <img src={logo} alt="AWorld Logo" width="32" height="32" />
+          {!siderCollapsed && <span>AWorld</span>}
+        </a>
+
+        {siderCollapsed ? renderCollapsedSider() : renderExpandedSider()}
+      </div>
     </div>
   );
+  const renderMessageActions = (messageItem: any) => {
+    const actions = [
+      {
+        icon: <ReloadOutlined />,
+        onClick: () => resendMessage(messageItem.messageIndex),
+        key: 'resend'
+      },
+      {
+        icon: <CopyOutlined />,
+        onClick: () => copyMessageContent(messageItem.content || ''),
+        key: 'copy'
+      },
+      {
+        icon: <BoxPlotOutlined />,
+        onClick: () => openRightSider('TraceXY', messageItem.props?.trace_id),
+        key: 'trace'
+      },
+      {
+        icon: <AlertFilled />,
+        onClick: () => window.open('/trace_ui.html', '_blank'),
+        key: 'alert'
+      }
+    ];
+
+    return (
+      <div style={{ display: 'flex' }}>
+        {actions.map(action => (
+          <Button
+            key={action.key}
+            type="text"
+            size="small"
+            icon={action.icon}
+            onClick={action.onClick}
+          />
+        ))}
+      </div>
+    );
+  };
+
   const chatList = (
     <div className={styles.chatList}>
       {messages?.length ? (
-        /* 🌟 消息列表 */
         <Bubble.List
-          items={messages?.map((i, index) => ({
+          items={messages.map((i, index) => ({
             ...i.message,
             content: (
-              <BubbleItem sessionId={sessionId} data={i.message.content || ''} trace_id={i.message?.trace_id || ''} />
+              <BubbleItem
+                sessionId={sessionId}
+                data={i.message.content || ''}
+                trace_id={i.message?.trace_id || ''}
+                onOpenWorkspace={(data) => openRightSider('Workspace', data)}
+                isLoading={i.status === 'loading'}
+              />
             ),
             classNames: {
               content: i.status === 'loading' ? styles.loadingMessage : '',
             },
             typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
             messageIndex: index,
+            styles: {
+              content: {
+                backgroundColor: '#f5f5f5',
+                maxWidth: '90%'
+              }
+            }
           }))}
-          style={{ height: '100%', paddingInline: 'calc(calc(100% - 700px) /2)' }}
+          style={{
+            height: '100%',
+            paddingInline: '40px',
+            maxWidth: '800px',
+            margin: '0 auto'
+          }}
           roles={{
             assistant: {
               placement: 'start',
-              footer: (messageItem) => (
-                <div style={{ display: 'flex' }}>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<ReloadOutlined />}
-                    onClick={() => resendMessage(messageItem.messageIndex)}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<CopyOutlined />}
-                    onClick={() => copyMessageContent(messageItem.content || '')}
-                  />
-                  {/* <Button
-                    type="text"
-                    size="small"
-                    icon={<BoxPlotOutlined />}
-                    onClick={() => openDrawer('Trace', messageItem.props?.trace_id)}
-                  /> */}
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<BoxPlotOutlined />}
-                    onClick={() => openDrawer('TraceXY', messageItem.props?.trace_id)}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<AlertFilled />}
-                    onClick={() => window.open('/trace_ui.html', '_blank')}
-                  />
-                </div>
-              ),
+              footer: renderMessageActions,
               loadingRender: () => <Spin size="small" />,
             },
             user: { placement: 'end' },
           }}
         />
       ) : (
-        <div
-          className={styles.placeholder}
-        >
+        <div className={styles.placeholder}>
           <Welcome
             onSubmit={(v: string) => {
-              if (v && v.trim()) {
+              if (v?.trim()) {
                 onSubmit(v);
                 setInputValue('');
               }
@@ -651,6 +892,31 @@ const App: React.FC = () => {
       )}
     </div>
   );
+  const handleSenderSubmit = () => {
+    if (inputValue.trim()) {
+      onSubmit(inputValue);
+      setInputValue('');
+    }
+  };
+
+  const renderSenderActions = (_: any, info: any) => {
+    const { SendButton, LoadingButton, SpeechButton } = info.components;
+    return (
+      <Flex gap={4}>
+        <SpeechButton className={styles.speechButton} />
+        {loading ? (
+          <LoadingButton type="default" />
+        ) : (
+          <SendButton
+            type="primary"
+            disabled={!inputValue.trim()}
+            className={styles.sendButton}
+          />
+        )}
+      </Flex>
+    );
+  };
+
   const senderHeader = (
     <Sender.Header
       title="Upload File"
@@ -674,33 +940,25 @@ const App: React.FC = () => {
       />
     </Sender.Header>
   );
+
   const chatSender = (
     <>
-      {/* 🌟 提示词 */}
       <Prompts
         items={SENDER_PROMPTS}
         onItemClick={(info) => {
           const description = info.data.description as string;
-          if (description && description.trim()) {
+          if (description?.trim()) {
             onSubmit(description);
           }
         }}
         className={styles.senderPrompt}
       />
-      {/* 🌟 输入框 */}
       <Sender
         value={inputValue}
         header={senderHeader}
-        onSubmit={() => {
-          if (inputValue.trim()) {
-            onSubmit(inputValue);
-            setInputValue('');
-          }
-        }}
+        onSubmit={handleSenderSubmit}
         onChange={setInputValue}
-        onCancel={() => {
-          abortController.current?.abort();
-        }}
+        onCancel={() => abortController.current?.abort()}
         prefix={
           <Button
             type="text"
@@ -711,23 +969,7 @@ const App: React.FC = () => {
         loading={loading}
         className={styles.sender}
         allowSpeech
-        actions={(_, info) => {
-          const { SendButton, LoadingButton, SpeechButton } = info.components;
-          return (
-            <Flex gap={4}>
-              <SpeechButton className={styles.speechButton} />
-              {loading ? (
-                <LoadingButton type="default" />
-              ) : (
-                <SendButton
-                  type="primary"
-                  disabled={!inputValue.trim()}
-                  className={styles.sendButton}
-                />
-              )}
-            </Flex>
-          );
-        }}
+        actions={renderSenderActions}
         placeholder="Ask or input / use skills"
       />
     </>
@@ -746,36 +988,70 @@ const App: React.FC = () => {
   return (
     <div className={styles.layout}>
       {chatSider}
-      <div className={styles.chat}>
+      <div className={styles.chat} style={{
+        marginRight: rightSiderCollapsed ? '0' : '500px',
+        transition: 'margin-right 0.3s ease'
+      }}>
         {chatList}
         {messages?.length > 0 && chatSender}
       </div>
-      <Drawer
-        placement="right"
-        width={700}
-        title={drawerContent}
-        extra={
-          <ShrinkOutlined
-            onClick={closeDrawer}
-            style={{
-              fontSize: '18px',
-              color: '#444',
-              cursor: 'pointer'
-            }}
-          />
-        }
-        onClose={closeDrawer}
-        closable={false}
-        maskClosable={true}
-        open={drawerVisible}
-      >
-        {/* {drawerContent === 'Trace' ? (
-          <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
-        ) :
-        ( */}
-        <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} traceQuery={traceQuery} drawerVisible={drawerVisible} />
-        {/* )} */}
-      </Drawer>
+      {!rightSiderCollapsed && (
+        <div className={`${styles.sider} ${rightSiderCollapsed ? 'collapsed' : 'expanded'}`} style={{
+          position: 'fixed',
+          right: 0,
+          width: '500px',
+          borderLeft: '1px solid #f0f0f0',
+          borderRight: 'none'
+        }}>
+          <div className={styles.collapseButton} style={{ left: '-10px', right: 'auto' }} onClick={() => setRightSiderCollapsed(true)}>
+            <VerticalLeftOutlined />
+          </div>
+
+          <div className="sider-content">
+            <Tabs
+              activeKey={activeTab}
+              onChange={setActiveTab}
+              size="small"
+              style={{ height: '100%' }}
+              items={[
+                {
+                  key: 'Workspace',
+                  label: 'Workspace',
+                  children: (
+                    <div style={tabContentStyle}>
+                      {workspaceData ? (
+                        <Workspace
+                          key={`workspace-${rightSiderCollapsed}`}
+                          sessionId={sessionId}
+                          toolCardData={workspaceData}
+                        />
+                      ) : (
+                        <div style={emptyStateStyle}>
+                          No workspace data available
+                        </div>
+                      )}
+                    </div>
+                  )
+                },
+                {
+                  key: 'TraceXY',
+                  label: 'Trace',
+                  children: (
+                    <div style={tabContentStyle}>
+                      <TraceXY
+                        key={`${traceId}-${rightSiderCollapsed}`}
+                        traceId={traceId}
+                        traceQuery={traceQuery}
+                        drawerVisible={!rightSiderCollapsed}
+                      />
+                    </div>
+                  )
+                }
+              ]}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

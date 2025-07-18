@@ -39,9 +39,7 @@ app.include_router(sessions.router, prefix=sessions.prefix)
 app.include_router(traces.router, prefix=traces.prefix)
 
 
-
-
-static_path = build_webui(force_rebuild=False)
+static_path = build_webui(force_rebuild=os.getenv("AWORLD_WEB_UI_FORCE_REBUILD", False))
 logger.info(f"Mounting static files from {static_path}")
 app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
 

@@ -15,10 +15,10 @@ class AWorldAgent(BaseAWorldAgent):
         super().__init__(*args, **kwargs)
 
     def name(self):
-        return "Demo Agent"
+        return "Single Agent Demo"
 
     def description(self):
-        return "Demo Agent with fetch and time mcp server"
+        return "Single Agent Demo with search and playwright fetch ability"
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
         llm_provider = os.getenv("LLM_PROVIDER_DEMO", "openai")
@@ -47,7 +47,7 @@ class AWorldAgent(BaseAWorldAgent):
 
         super_agent = Agent(
             conf=agent_config,
-            name="🙋🏻‍♂️ Demo Agent",
+            name="🙋🏻‍♂️ Single Agent Demo",
             system_prompt="""You are a Super Search Agent, your goal is to accomplish the ultimate task following the instructions.""",
             mcp_config=mcp_config,
             # mcp_servers=mcp_config.get("mcpServers", {}).keys(),

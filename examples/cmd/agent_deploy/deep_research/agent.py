@@ -90,11 +90,11 @@ def get_deepresearch_swarm(user_input):
         use_vision=False,
     )
 
-    agent_id = "DeepResearchAgent"
+    agent_id = "DeepResearchPlanAgent"
     plan_agent = PlanAgent(
         agent_id=agent_id,
-        name="planner_agent",
-        desc="planner_agent",
+        name=agent_id,
+        desc=agent_id,
         conf=agent_config,
         use_tools_in_prompt=True,
         resp_parse_func=PlannerOutputParser(agent_id).parse,
@@ -102,16 +102,16 @@ def get_deepresearch_swarm(user_input):
     )
 
     web_search_agent = Agent(
-        name="web_search_agent",
-        desc="web_search_agent",
+        name="WebSearchAgent",
+        desc="WebSearchAgent",
         conf=agent_config,
         system_prompt_template=search_sys_prompt,
         tool_names=[Tools.SEARCH_API.value],
     )
 
     reporting_agent = Agent(
-        name="reporting_agent",
-        desc="reporting_agent",
+        name="ReportingAgent",
+        desc="ReportingAgent",
         conf=agent_config,
         system_prompt_template=reporting_sys_prompt,
     )
@@ -189,10 +189,10 @@ class AWorldAgent(BaseAWorldAgent):
         super().__init__(*args, **kwargs)
 
     def name(self):
-        return "Test Deepresearch Agent"
+        return "Deep Research Agent"
 
     def description(self):
-        return "Test Deepresearch Agent"
+        return "Deep Research Agent with PlanAgent"
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
 
