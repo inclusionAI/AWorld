@@ -26,24 +26,29 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data, onOpenWorkspac
 
   const { segments } = extractToolCards(data);
 
-    // 自动打开workspace的逻辑 - 只在流式输出过程中自动打开
+  // 自动打开workspace的逻辑 - 只在流式输出过程中自动打开
   useEffect(() => {
     // 只有在流式输出过程中才自动打开workspace
     if (!isLoading) return;
-    
-    // 检查是否有cardLinkList类型的工具卡片且有workspace功能
-    const cardLinkListSegment = segments.find(segment => {
-      if (segment.type !== 'tool_card') return false;
-      return segment.data?.card_type === 'tool_call_card_link_list' &&
-             segment.data?.artifacts?.length > 0;
-    });
-    
-    if (cardLinkListSegment && cardLinkListSegment.type === 'tool_card' && onOpenWorkspace) {
+
+    // 查找最新的具有workspace功能的tool_card（不区分card类型）
+    const toolCardSegments = segments.filter(segment => segment.type === 'tool_card');
+
+    // 从最后一个开始查找，找到第一个有artifacts的tool_card
+    const latestWorkspaceCard = toolCardSegments
+      .slice()
+      .reverse()
+      .find(segment => {
+        return segment.type === 'tool_card' &&
+          segment.data?.artifacts?.length > 0;
+      });
+
+    if (latestWorkspaceCard && latestWorkspaceCard.type === 'tool_card' && onOpenWorkspace) {
       // 使用setTimeout确保BubbleItem完全渲染后再打开workspace
       const timer = setTimeout(() => {
-        openWorkspace(cardLinkListSegment.data);
+        openWorkspace(latestWorkspaceCard.data);
       }, 100);
-      
+
       return () => clearTimeout(timer);
     }
   }, [segments, onOpenWorkspace, openWorkspace, isLoading]);
