@@ -605,6 +605,9 @@ const App: React.FC = () => {
                     return;
                   }
 
+                  // 关闭右侧侧边栏
+                  setRightSiderCollapsed(true);
+
                   // 生成新的session ID
                   const newSessionId = generateNewSessionId();
 
@@ -724,6 +727,9 @@ const App: React.FC = () => {
                   return;
                 }
 
+                // 关闭右侧侧边栏
+                setRightSiderCollapsed(true);
+
                 // 生成新的session ID
                 const newSessionId = generateNewSessionId();
 
@@ -829,6 +835,7 @@ const App: React.FC = () => {
                 data={i.message.content || ''}
                 trace_id={i.message?.trace_id || ''}
                 onOpenWorkspace={(data) => openRightSider('Workspace', data)}
+                isLoading={i.status === 'loading'}
               />
             ),
             classNames: {
