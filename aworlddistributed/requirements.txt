@@ -11,7 +11,7 @@ passlib==1.7.4
 passlib[bcrypt]
 PyJWT[crypto]
 
-requests==2.32.2
+requests==2.32.4
 aiohttp==3.9.5
 httpx
 
