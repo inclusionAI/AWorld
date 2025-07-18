@@ -852,6 +852,11 @@ const App: React.FC = () => {
             },
             typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
             messageIndex: index,
+            styles: {
+              content: {
+                backgroundColor: '#f5f5f5',
+              }
+            }
           }))}
           style={{
             height: '100%',
