@@ -1,28 +1,28 @@
-import React, { useState } from 'react';
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Drawer } from 'antd';
-import { ShrinkOutlined } from '@ant-design/icons';
 import CardDefault from './cardDefault';
 import CardLinkList from './cardLinkList';
-import { extractToolCards } from './utils';
-import Workspace from '../Drawer/Workspace';
-import type { ToolCardData } from './utils';
 import './index.less';
+import type { ToolCardData } from './utils';
+import { extractToolCards } from './utils';
 
 interface BubbleItemProps {
   sessionId: string;
   data: string;
   trace_id: string;
+  onOpenWorkspace?: (data: ToolCardData) => void;
 }
 
-const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data }) => {
-  const [workspaceVisible, setWorkspaceVisible] = useState(false);
-  const [toolCardData, setToolCardData] = useState<ToolCardData | undefined>(undefined);
+const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data, onOpenWorkspace }) => {
+  // 移除workspaceVisible和toolCardData状态，不再需要内部Drawer
+
+  // 修改openWorkspace函数，直接调用外部回调
   const openWorkspace = (data: ToolCardData) => {
-    setToolCardData(data);
-    setWorkspaceVisible(true);
+    if (onOpenWorkspace) {
+      onOpenWorkspace(data);
+    }
   };
-  const closeWorkspace = () => setWorkspaceVisible(false);
+
   const { segments } = extractToolCards(data);
   // console.log('segments:', segments);
   return (
@@ -43,25 +43,7 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data }) => {
           }
         }
       })}
-      <Drawer
-        title="Workspace"
-        width={700}
-        placement="right"
-        onClose={closeWorkspace}
-        open={workspaceVisible}
-        extra={
-          <ShrinkOutlined
-            onClick={closeWorkspace}
-            style={{
-              fontSize: '18px',
-              color: '#444',
-              cursor: 'pointer'
-            }}
-          />
-        }
-      >
-        <Workspace sessionId={sessionId} toolCardData={toolCardData} />
-      </Drawer>
+      {/* 移除内部的Drawer */}
     </div>
   );
 };

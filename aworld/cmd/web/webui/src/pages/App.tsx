@@ -9,7 +9,6 @@ import {
   PlusOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
-  ShrinkOutlined,
   VerticalLeftOutlined,
   VerticalRightOutlined
 } from '@ant-design/icons';
@@ -21,7 +20,7 @@ import {
   useXAgent,
   useXChat
 } from '@ant-design/x';
-import { Avatar, Button, Drawer, Flex, type GetProp, message, Spin } from 'antd';
+import { Avatar, Button, Flex, type GetProp, message, Spin, Tabs } from 'antd';
 import { createStyles } from 'antd-style';
 import React, { useEffect, useRef, useState } from 'react';
 import logo from '../assets/aworld_logo.png';
@@ -32,6 +31,7 @@ import Welcome from '../pages/components/Welcome';
 import BubbleItem from './components/BubbleItem';
 // import Trace from './components/Drawer/TraceThoughtChain';
 import TraceXY from './components/Drawer/TraceXY';
+import Workspace from './components/Drawer/Workspace';
 import './index.less';
 
 type BubbleDataType = {
@@ -152,6 +152,7 @@ const useStyle = createStyles(({ token, css }) => {
       gap: 8px;
       margin: 24px 0;
       transition: justify-content 0.3s ease;
+      text-decoration: none;
 
       span {
         font-weight: bold;
@@ -201,7 +202,7 @@ const useStyle = createStyles(({ token, css }) => {
       flex-direction: column;
       padding-block: ${token.paddingLG}px;
       gap: 16px;
-      transition: margin-left 0.3s ease;
+      transition: margin-left 0.3s ease, margin-right 0.3s ease;
     `,
     chatPrompt: css`
       .ant-prompts-label {
@@ -271,6 +272,7 @@ const useStyle = createStyles(({ token, css }) => {
         background-color: rgba(0, 0, 0, 0.1) !important;
       }
     `,
+
   };
 });
 
@@ -296,30 +298,33 @@ const App: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [modelsLoading, setModelsLoading] = useState(false);
 
-  // 右侧抽屉
-  type DrawerContentType = 'Workspace' | 'Trace' | 'TraceXY';
-  const [drawerVisible, setDrawerVisible] = useState(false);
-  const [drawerContent, setDrawerContent] = useState<DrawerContentType>('Workspace');
+  // 右侧侧边栏
+  type SiderContentType = 'TraceXY' | 'Workspace';
+  const [rightSiderCollapsed, setRightSiderCollapsed] = useState(true);
+  const [activeTab, setActiveTab] = useState<string>('TraceXY');
   const [traceId, setTraceId] = useState<string>('');
   const [traceQuery, setTraceQuery] = useState<string>('');
-  const openDrawer = (content: DrawerContentType, id?: string) => {
-    setDrawerVisible(true);
-    setDrawerContent(content);
-    if (id) {
-      setTraceId(id);
+  const [workspaceData, setWorkspaceData] = useState<any>(null);
+
+  const openRightSider = (content: SiderContentType, data?: any) => {
+    setRightSiderCollapsed(false);
+    setSiderCollapsed(true); // 打开右侧时自动折叠左侧
+    setActiveTab(content);
+
+    if (content === 'TraceXY' && data) {
+      setTraceId(data);
       const session = sessionData[sessionId];
       if (session && session.messages) {
         const userItem = session.messages.find(msg =>
-          msg.trace_id === id && msg.role === 'user'
+          msg.trace_id === data && msg.role === 'user'
         );
         if (userItem) {
           setTraceQuery(userItem.content);
         }
       }
+    } else if (content === 'Workspace' && data) {
+      setWorkspaceData(data);
     }
-  }
-  const closeDrawer = () => {
-    setDrawerVisible(false);
   }
 
   // ==================== API Calls ====================
@@ -487,7 +492,12 @@ const App: React.FC = () => {
 
   // ==================== Event ====================
   const toggleSiderCollapse = () => {
-    setSiderCollapsed(!siderCollapsed);
+    const newCollapsed = !siderCollapsed;
+    setSiderCollapsed(newCollapsed);
+    // 展开左侧时自动折叠右侧
+    if (!newCollapsed) {
+      setRightSiderCollapsed(true);
+    }
   };
 
   const onSubmit = (val: string) => {
@@ -548,7 +558,7 @@ const App: React.FC = () => {
       <div className="sider-content">
         {/* 🌟 Logo */}
         <a href="https://github.com/inclusionAI/AWorld" className={`${styles.logo} ${siderCollapsed ? 'centered' : ''}`} target="_blank">
-          <img src={logo} alt="AWorld Logo" width="32"  height="32" />
+          <img src={logo} alt="AWorld Logo" width="32" height="32" />
           {!siderCollapsed && <span>AWorld</span>}
         </a>
 
@@ -636,7 +646,10 @@ const App: React.FC = () => {
                     e.currentTarget.style.borderColor = '#d9d9d9';
                     e.currentTarget.style.transform = 'scale(1)';
                   }}
-                  onClick={() => setSiderCollapsed(false)}
+                  onClick={() => {
+                    setSiderCollapsed(false);
+                    setRightSiderCollapsed(true); // 展开左侧时自动折叠右侧
+                  }}
                   title={`${conversations.length} Conversations - Click to expand`}
                 >
                   <Button
@@ -811,7 +824,12 @@ const App: React.FC = () => {
           items={messages?.map((i, index) => ({
             ...i.message,
             content: (
-              <BubbleItem sessionId={sessionId} data={i.message.content || ''} trace_id={i.message?.trace_id || ''} />
+              <BubbleItem
+                sessionId={sessionId}
+                data={i.message.content || ''}
+                trace_id={i.message?.trace_id || ''}
+                onOpenWorkspace={(data) => openRightSider('Workspace', data)}
+              />
             ),
             classNames: {
               content: i.status === 'loading' ? styles.loadingMessage : '',
@@ -852,7 +870,7 @@ const App: React.FC = () => {
                     type="text"
                     size="small"
                     icon={<BoxPlotOutlined />}
-                    onClick={() => openDrawer('TraceXY', messageItem.props?.trace_id)}
+                    onClick={() => openRightSider('TraceXY', messageItem.props?.trace_id)}
                   />
                   <Button
                     type="text"
@@ -982,36 +1000,74 @@ const App: React.FC = () => {
   return (
     <div className={styles.layout}>
       {chatSider}
-      <div className={styles.chat}>
+      <div className={styles.chat} style={{
+        marginRight: rightSiderCollapsed ? '0' : '500px',
+        transition: 'margin-right 0.3s ease'
+      }}>
         {chatList}
         {messages?.length > 0 && chatSender}
       </div>
-      <Drawer
-        placement="right"
-        width={700}
-        title={drawerContent}
-        extra={
-          <ShrinkOutlined
-            onClick={closeDrawer}
-            style={{
-              fontSize: '18px',
-              color: '#444',
-              cursor: 'pointer'
-            }}
-          />
-        }
-        onClose={closeDrawer}
-        closable={false}
-        maskClosable={true}
-        open={drawerVisible}
-      >
-        {/* {drawerContent === 'Trace' ? (
-          <Trace key={`${traceId}-${drawerVisible}`} drawerVisible={drawerVisible} traceId={traceId} />
-        ) :
-        ( */}
-        <TraceXY key={`${traceId}-${drawerVisible}`} traceId={traceId} traceQuery={traceQuery} drawerVisible={drawerVisible} />
-        {/* )} */}
-      </Drawer>
+      {!rightSiderCollapsed && (
+        <div className={`${styles.sider} ${rightSiderCollapsed ? 'collapsed' : 'expanded'}`} style={{
+          position: 'fixed',
+          right: 0,
+          width: '500px',
+          borderLeft: '1px solid #f0f0f0',
+          borderRight: 'none'
+        }}>
+          <div className={styles.collapseButton} style={{ left: '-10px', right: 'auto' }} onClick={() => setRightSiderCollapsed(true)}>
+            <VerticalLeftOutlined />
+          </div>
+
+          <div className="sider-content">
+            <Tabs
+              activeKey={activeTab}
+              onChange={setActiveTab}
+              size="small"
+              style={{ height: '100%' }}
+              items={[
+                {
+                  key: 'Workspace',
+                  label: 'Workspace',
+                  children: workspaceData ? (
+                    <div style={{ height: 'calc(100vh - 120px)', overflow: 'auto' }}>
+                      <Workspace
+                        key={`workspace-${rightSiderCollapsed}`}
+                        sessionId={sessionId}
+                        toolCardData={workspaceData}
+                      />
+                    </div>
+                  ) : (
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      height: '200px',
+                      color: '#999'
+                    }}>
+                      No workspace data available
+                    </div>
+                  )
+                },
+                {
+                  key: 'TraceXY',
+                  label: 'Trace',
+                  children: (
+                    <div style={{ height: 'calc(100vh - 120px)', overflow: 'auto' }}>
+                      <TraceXY
+                        key={`${traceId}-${rightSiderCollapsed}`}
+                        traceId={traceId}
+                        traceQuery={traceQuery}
+                        drawerVisible={!rightSiderCollapsed}
+                      />
+                    </div>
+                  )
+                }
+              ]}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };
