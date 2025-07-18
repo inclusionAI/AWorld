@@ -387,35 +387,30 @@ const App: React.FC = () => {
   };
 
   const handleSessionChange = async (val: string) => {
-    setCurConversation(val);
-    setSessionId(val);
-    updateURLSessionId(val);
-
     try {
-      const response = await fetch('/api/session/list');
-      if (response.ok) {
-        const sessions: SessionData[] = await response.json();
-        const sessionDataMap: Record<string, SessionData> = {};
-        sessions.forEach(session => {
-          sessionDataMap[session.session_id] = session;
-        });
-        setSessionData(sessionDataMap);
+      // 先从服务端刷新session列表
+      await fetchSessions();
 
-        const session = sessionDataMap[val];
-        if (session?.messages.length > 0) {
-          const chatMessages = session.messages.map((msg, index) => ({
-            id: `${val}-${index}`,
-            message: {
-              role: msg.role,
-              trace_id: msg.trace_id,
-              content: msg.content
-            },
-            status: 'success' as const
-          }));
-          setMessages(chatMessages);
-        } else {
-          setMessages(messageHistory?.[val] || []);
-        }
+      // 然后设置当前选中的session
+      setCurConversation(val);
+      setSessionId(val);
+      updateURLSessionId(val);
+
+      // 使用刷新后的sessionData来获取当前session的消息
+      const session = sessionData[val];
+      if (session?.messages.length > 0) {
+        const chatMessages = session.messages.map((msg, index) => ({
+          id: `${val}-${index}`,
+          message: {
+            role: msg.role,
+            trace_id: msg.trace_id,
+            content: msg.content
+          },
+          status: 'success' as const
+        }));
+        setMessages(chatMessages);
+      } else {
+        setMessages(messageHistory?.[val] || []);
       }
     } catch (error) {
       console.error('Error fetching session data:', error);
