@@ -124,7 +124,7 @@ class DefaultMemoryGungnir(MemoryGungnir):
                 f"🧠 [MEMORY:long-term] Extracted user profile:{task.memory_task_id} with result:{user_profiles}")
             return user_profiles
         except Exception as e:
-            logger.error(
+            logger.warning(
                 f"🧠 [MEMORY:long-term] Error extracting user profile:{task.memory_task_id} failed: {e}" + traceback.format_exc())
             return None
 
@@ -357,7 +357,7 @@ class DefaultMemoryOrchestrator(MemoryOrchestrator):
 
         for memory_item in memory_items:
             logger.info(f"🧠 [MEMORY:long-term] Storing {memory_type} memory: {memory_item.content}")
-            self.memory.add(memory_item)
+            await self.memory.add(memory_item)
 
     async def _add_memory_task(self, task: MemoryProcessingTask) -> None:
         """

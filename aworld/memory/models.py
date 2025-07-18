@@ -66,12 +66,31 @@ class MemoryItem(BaseModel):
         return self.metadata.get('agent_id')
 
     @property
+    def agent_name(self) -> str:
+        return self.metadata.get('agent_name')
+
+    @property
     def application_id(self) -> str:
         return self.metadata.get('application_id', 'default')
 
     @property
     def embedding_text(self) -> Optional[str]:
         return self.content
+
+    def mark_has_summary(self):
+        self.metadata['summary'] = True
+
+    @property
+    def has_summary(self) -> bool:
+        return self.metadata.get('summary', False)
+    
+    @property
+    def content_length(self) -> int:
+        return len(self.content)
+
+    @abstractmethod
+    def to_openai_message(self) -> dict:
+        pass
 
 
 class MessageMetadata(BaseModel):
@@ -84,7 +103,7 @@ class MessageMetadata(BaseModel):
         agent_id (str): The ID of the agent.
     """
     agent_id: str = Field(description="The ID of the agent")
-    agent_name: str = Field(description="The name of the agent")
+    agent_name: Optional[str] = Field(description="The name of the agent")
     session_id: Optional[str] = Field(default=None,description="The ID of the session")
     task_id: Optional[str] = Field(default=None,description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
@@ -133,6 +152,13 @@ class AgentExperience(MemoryItem):
     def embedding_text(self):
         return f"skill:{self.skill}, actions:{self.actions}"
 
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "system",
+            "content": self.content
+        }
+
+
 class UserProfileItem(BaseModel):
     key: str = Field(description="The key of the profile")
     value: Any = Field(description="The value of the profile")
@@ -147,11 +173,11 @@ class UserProfile(MemoryItem):
         value (Any): The profile value.
         metadata (Optional[Dict[str, Any]]): Additional metadata.
     """
-    def __init__(self, user_id: str, key: str, value: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, user_id: str, key: str, value: Any, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         meta = metadata.copy() if metadata else {}
         meta['user_id'] = user_id
         user_profile = UserProfileItem(key=key, value=value)
-        super().__init__(content=user_profile, metadata=meta, memory_type="user_profile")
+        super().__init__(content=user_profile, metadata=meta, memory_type="user_profile", **kwargs)
 
     @property
     def user_id(self) -> str:
@@ -168,7 +194,36 @@ class UserProfile(MemoryItem):
     @property
     def embedding_text(self):
         return f"key:{self.key} value:{self.value}"
+    
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "system",
+            "content": self.content
+        }
 
+class MemorySummary(MemoryItem):
+    """
+    Represents a memory summary.
+    All custom attributes are stored in content and metadata.
+    Args:
+        item_ids (str): The IDS of the agent.
+        summary (str): The summary text.
+        metadata (Optional[Dict[str, Any]]): Additional metadata.
+    """
+    def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, **kwargs) -> None:
+        meta = metadata.to_dict
+        meta['item_ids'] = item_ids
+        super().__init__(content=summary, metadata=meta, memory_type="summary", **kwargs)
+
+    @property
+    def summary_item_ids(self):
+        return self.metadata['item_ids']
+
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "assistant",
+            "content": self.content
+        }
 
 class MemoryMessage(MemoryItem):
     """
@@ -178,10 +233,10 @@ class MemoryMessage(MemoryItem):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (Optional[Any]): Content of the message.
     """
-    def __init__(self, role: str, metadata: MessageMetadata, content: Optional[Any] = None, memory_type="message") -> None:
+    def __init__(self, role: str, metadata: MessageMetadata, content: Optional[Any] = None, memory_type="message", **kwargs) -> None:
         meta = metadata.to_dict
         meta['role'] = role
-        super().__init__(content=content, metadata=meta, memory_type=memory_type)
+        super().__init__(content=content, metadata=meta, memory_type=memory_type, **kwargs)
 
     @property
     def role(self) -> str:
@@ -199,6 +254,9 @@ class MemoryMessage(MemoryItem):
     def task_id(self) -> str:
         return self.metadata['task_id']
 
+    def set_task_id(self, task_id):
+        self.metadata['task_id'] = task_id
+
     @property
     def agent_id(self) -> str:
         return self.metadata['agent_id']
@@ -214,8 +272,8 @@ class MemorySystemMessage(MemoryMessage):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (str): The content of the message.
     """
-    def __init__(self, content: str, metadata: MessageMetadata) -> None:
-        super().__init__(role="system", metadata=metadata, content=content, memory_type="init")
+    def __init__(self, content: str, metadata: MessageMetadata, **kwargs) -> None:
+        super().__init__(role="system", metadata=metadata, content=content, memory_type="init", **kwargs)
 
     def to_openai_message(self) -> dict:
         return {
@@ -235,8 +293,8 @@ class MemoryHumanMessage(MemoryMessage):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (str): The content of the message.
     """
-    def __init__(self, metadata: MessageMetadata, content: Any) -> None:
-        super().__init__(role="user", metadata=metadata, content=content)
+    def __init__(self, metadata: MessageMetadata, content: Any, memory_type = "init", **kwargs) -> None:
+        super().__init__(role="user", metadata=metadata, content=content, memory_type=memory_type, **kwargs)
     
     def to_openai_message(self) -> dict:
         return {
@@ -251,11 +309,11 @@ class MemoryAIMessage(MemoryMessage):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (str): The content of the message.
     """
-    def __init__(self, content: str, tool_calls: Optional[List[ToolCall]] = [], metadata: MessageMetadata = None) -> None:
+    def __init__(self, content: str, tool_calls: Optional[List[ToolCall]] = [], metadata: MessageMetadata = None, **kwargs) -> None:
         meta = metadata.to_dict
         if tool_calls:
             meta['tool_calls'] = [tool_call.to_dict() for tool_call in tool_calls]
-        super().__init__(role="assistant", metadata=MessageMetadata(**meta), content=content)
+        super().__init__(role="assistant", metadata=MessageMetadata(**meta), content=content, **kwargs)
 
     @property
     def tool_calls(self) -> List[ToolCall]:
@@ -280,10 +338,10 @@ class MemoryToolMessage(MemoryMessage):
         status (Literal["success", "error"]): The status of the tool call.
         content (str): The content of the message.
     """
-    def __init__(self, tool_call_id: str, content: Any, status: Literal["success", "error"] = "success", metadata: MessageMetadata = None) -> None:
+    def __init__(self, tool_call_id: str, content: Any, status: Literal["success", "error"] = "success", metadata: MessageMetadata = None, **kwargs) -> None:
         metadata.tool_call_id = tool_call_id
         metadata.status = status
-        super().__init__(role="tool", metadata=metadata, content=content)
+        super().__init__(role="tool", metadata=metadata, content=content, **kwargs)
 
     @property
     def tool_call_id(self) -> str:
@@ -319,14 +377,15 @@ class LongTermExtractParams(BaseModel):
 class UserProfileExtractParams(LongTermExtractParams):
     user_id: Optional[str] = Field(description="The ID of the user")
 
-    def __init__(self, user_id: str, session_id: str, task_id: str, memories: List[MemoryItem] = None, application_id: str = None) -> None:
+    def __init__(self, user_id: str, session_id: str, task_id: str, memories: List[MemoryItem] = None, application_id: str = None, **kwargs) -> None:
         kwargs = {
             "user_id": user_id,
             "session_id": session_id,
             "task_id": task_id,
             "memories": memories or [],
             "application_id": application_id,
-            "extract_type": "user_profile"
+            "extract_type": "user_profile",
+            **kwargs
         }
         super().__init__(**kwargs)
 
@@ -336,12 +395,12 @@ class AgentExperienceExtractParams(LongTermExtractParams):
     agent_id: str = Field(default=None, description="The ID of the agent")
 
     def __init__(self, agent_id: str, session_id: str, task_id: str, memories: List[MemoryItem] = None,
-                 application_id: str = None) -> None:
+                 application_id: str = None,**kwargs) -> None:
         super().__init__(session_id=session_id,
                          task_id=task_id,
                          memories=memories,
                          application_id=application_id,
-                         extract_type="agent_experience")
+                         extract_type="agent_experience", **kwargs)
         self.agent_id = agent_id
 
     model_config = ConfigDict(extra="allow")

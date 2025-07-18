@@ -79,7 +79,7 @@ class OSSClient:
 
     # ---- Basic Data Operation Methods ----
 
-    def upload_data(self, data: Union[IO[AnyStr], str, bytes, dict], oss_key: str) -> Optional[str]:
+    def upload_data(self, data: Union[IO[AnyStr], str, bytes, dict], oss_key: str) -> Optional[dict]:
         """
         Upload data to OSS. Supports various types of data:
         - In-memory file objects (IO[AnyStr])
@@ -93,7 +93,7 @@ class OSSClient:
             oss_key: The key (path) in OSS where the data will be stored
 
         Returns:
-            str: The OSS key if successful, None otherwise
+            dict: {"oss_key": oss_key, "oss_url": url} if successful, None otherwise
         """
         if not self.initialize():
             logger.warn("OSS client not initialized or export is disabled")
@@ -107,13 +107,13 @@ class OSSClient:
                     content = content.encode('utf-8')
                 self.bucket.put_object(oss_key, content)
                 logger.info(f"Successfully uploaded memory file to OSS: {oss_key}")
-                return oss_key
+                return {"oss_key": oss_key, "oss_url": self.get_object_url(oss_key)}
 
             # Handle dictionaries
             if isinstance(data, dict):
                 content = json.dumps(data, ensure_ascii=False).encode('utf-8')
                 self.bucket.put_object(oss_key, content)
-                return oss_key
+                return {"oss_key": oss_key, "oss_url": self.get_object_url(oss_key)}
 
             # Handle strings
             if isinstance(data, str):
@@ -121,16 +121,16 @@ class OSSClient:
                 if os.path.isfile(data):
                     self.bucket.put_object_from_file(oss_key, data)
                     logger.info(f"Successfully uploaded file {data} to OSS: {oss_key}")
-                    return oss_key
+                    return {"oss_key": oss_key, "oss_url": self.get_object_url(oss_key)}
                 # Otherwise treat as string content
                 content = data.encode('utf-8')
                 self.bucket.put_object(oss_key, content)
-                return oss_key
+                return {"oss_key": oss_key, "oss_url": self.get_object_url(oss_key)}
 
             # Handle bytes
             self.bucket.put_object(oss_key, data)
             logger.info(f"Successfully uploaded data to OSS: {oss_key}")
-            return oss_key
+            return {"oss_key": oss_key, "oss_url": self.get_object_url(oss_key)}
         except Exception as e:
             logger.warn(f"Failed to upload data to OSS: {str(e)}")
             return None
@@ -204,30 +204,29 @@ class OSSClient:
             logger.warn(f"Failed to delete data from OSS: {str(e)}")
             return False
 
-    def update_data(self, oss_key: str, data: Union[IO[AnyStr], str, bytes, dict]) -> Optional[str]:
+    def update_data(self, oss_key: str, data: Union[IO[AnyStr], str, bytes, dict]) -> Optional[dict]:
         """
-        Update data in OSS (delete and upload).
+        Update data in OSS (overwrite).
 
         Args:
-            oss_key: The key (path) in OSS of the data to update
-            data: New data to upload, can be a file object or other supported types
+            oss_key: The key (path) in OSS where the data will be updated
+            data: Data to update, can be a file object or other supported types
 
         Returns:
-            str: The OSS key if successful, None otherwise
+            dict: {"oss_key": oss_key, "oss_url": url} if successful, None otherwise
         """
-        # For OSS, update is the same as upload (it overwrites)
         return self.upload_data(data, oss_key)
 
-    def update_json(self, oss_key: str, update_dict: dict) -> Optional[str]:
+    def update_json(self, oss_key: str, update_dict: dict) -> Optional[dict]:
         """
-        Update JSON data in OSS by merging with existing data.
+        Update a JSON file in OSS by merging with the existing content.
 
         Args:
-            oss_key: The key (path) in OSS of the JSON data to update
-            update_dict: Dictionary with fields to update
+            oss_key: The key (path) in OSS of the JSON file to update
+            update_dict: The dictionary to merge into the existing JSON
 
         Returns:
-            str: The OSS key if successful, None otherwise
+            dict: {"oss_key": oss_key, "oss_url": url} if successful, None otherwise
         """
         if not self.initialize():
             logger.warn("OSS client not initialized or export is disabled")
@@ -235,54 +234,47 @@ class OSSClient:
 
         try:
             # Read existing data
-            existing_data = self.read_data(oss_key, as_json=True)
-            if existing_data is None:
-                existing_data = {}
-
-            # Update data
-            if isinstance(existing_data, dict):
-                existing_data.update(update_dict)
-            else:
-                logger.warn(f"Existing data is not a dictionary: {oss_key}")
-                return None
-
-            # Upload updated data
-            return self.upload_data(existing_data, oss_key)
+            existing = self.read_data(oss_key, as_json=True)
+            if not isinstance(existing, dict):
+                existing = {}
+            existing.update(update_dict)
+            content = json.dumps(existing, ensure_ascii=False).encode('utf-8')
+            self.bucket.put_object(oss_key, content)
+            return {"oss_key": oss_key, "oss_url": self.get_object_url(oss_key)}
         except Exception as e:
             logger.warn(f"Failed to update JSON data in OSS: {str(e)}")
             return None
 
     # ---- File Operation Methods ----
 
-    def upload_file(self, local_file: str, oss_key: Optional[str] = None) -> Optional[str]:
+    def upload_file(self, local_file: str, oss_key: Optional[str] = None) -> Optional[dict]:
         """
         Upload a local file to OSS.
 
         Args:
             local_file: Path to the local file
-            oss_key: The key (path) in OSS where the file will be stored.
-                     If None, will use the basename of the local file
+            oss_key: The key (path) in OSS where the file will be stored. If None, use the file name
 
         Returns:
-            str: The OSS key if successful, None otherwise
+            dict: {"oss_key": oss_key, "oss_url": url} if successful, None otherwise
         """
         if not self.initialize():
             logger.warn("OSS client not initialized or export is disabled")
             return None
 
+        if not os.path.isfile(local_file):
+            logger.warn(f"Local file {local_file} does not exist or is not a file")
+            return None
+
+        if oss_key is None:
+            oss_key = os.path.basename(local_file)
+
         try:
-            if not os.path.exists(local_file):
-                logger.warn(f"Local file {local_file} does not exist")
-                return None
-
-            if oss_key is None:
-                oss_key = f"uploads/{os.path.basename(local_file)}"
-
             self.bucket.put_object_from_file(oss_key, local_file)
-            logger.info(f"Successfully uploaded {local_file} to OSS: {oss_key}")
-            return oss_key
+            logger.info(f"Successfully uploaded file {local_file} to OSS: {oss_key}")
+            return {"oss_key": oss_key, "oss_url": self.get_object_url(oss_key)}
         except Exception as e:
-            logger.warn(f"Failed to upload {local_file} to OSS: {str(e)}")
+            logger.warn(f"Failed to upload file to OSS: {str(e)}")
             return None
 
     def download_file(self, oss_key: str, local_file: str) -> bool:
@@ -388,25 +380,13 @@ class OSSClient:
 
     def get_object_url(self, oss_key: str, expires: int = 3600) -> Optional[str]:
         """
-        Generate a temporary URL for accessing an object.
-
-        Args:
-            oss_key: The key (path) in OSS of the object
-            expires: URL expiration time in seconds
-
-        Returns:
-            str: The signed URL, or None if failed
+        返回公开读bucket的直链URL
         """
         if not self.initialize():
             logger.warn("OSS client not initialized or export is disabled")
             return None
 
-        try:
-            url = self.bucket.sign_url('GET', oss_key, expires)
-            return url
-        except Exception as e:
-            logger.warn(f"Failed to generate URL for {oss_key}: {str(e)}")
-            return None
+        return f"https://{self.bucket_name}.{self.endpoint}/{oss_key}"
 
     def upload_directory(self, local_dir: str, oss_prefix: str = "") -> Tuple[bool, List[str]]:
         """
@@ -477,8 +457,44 @@ def get_oss_client(access_key_id: Optional[str] = None,
     return client
 
 
+def get_full_url(self, oss_key: str, temp_url: bool = False, expires: int = 3600) -> str:
+    """
+    生成OSS对象的完整URL
+
+    Args:
+        oss_key: OSS对象的键
+        temp_url: 是否生成带签名的临时URL
+        expires: 临时URL的过期时间(秒)
+
+    Returns:
+        str: 对象的完整URL
+    """
+    if not self.initialize():
+        logger.warn("OSS client not initialized")
+        return None
+
+    try:
+        if temp_url:
+            # 生成带签名的临时URL
+            return self.bucket.sign_url('GET', oss_key, expires)
+        else:
+            # 生成永久URL (公开可访问的对象)
+            return f"https://{self.bucket_name}.{self.endpoint}/{oss_key}"
+    except Exception as e:
+        logger.warn(f"Failed to generate URL for {oss_key}: {str(e)}")
+        return None
+
 # ---- Test Cases ----
 if __name__ == "__main__":
+    os.environ["OSS_ACCESS_KEY_ID"] = ""
+    os.environ["OSS_ACCESS_KEY_SECRET"] = ""
+    os.environ["OSS_ENDPOINT"] = ""
+    os.environ["OSS_BUCKET_NAME"] = ""
+
+    access_key_id = os.environ.get("OSS_ACCESS_KEY_ID")
+    access_key_secret = os.environ.get("OSS_ACCESS_KEY_SECRET")
+    endpoint = os.environ.get("OSS_ENDPOINT")
+    bucket_name = os.environ.get("OSS_BUCKET_NAME")
     """
     OSS tool class test cases
     Note: Before running the tests, you need to set the following environment variables,
@@ -501,26 +517,27 @@ if __name__ == "__main__":
 
     # Method 2: Provide parameters directly
     oss_client = get_oss_client(
-        access_key_id="",  # Replace with your actual access key ID
-        access_key_secret="",  # Replace with your actual access key secret
-        endpoint="",  # Replace with your actual OSS endpoint
-        bucket_name="",  # Replace with your actual bucket name
+        access_key_id=access_key_id,  # Replace with your actual access key ID
+        access_key_secret=access_key_secret,  # Replace with your actual access key secret
+        endpoint=endpoint,  # Replace with your actual OSS endpoint
+        bucket_name=bucket_name,  # Replace with your actual bucket name
         enable_export=True
     )
+    import datetime
 
-    text_key = f"{TEST_PREFIX}/text.txt"
-    result = oss_client.upload_data("malai This is a test text", text_key)
-    print(f"Upload string data: {'Success: ' + result if result else 'Failed'}")
-    print("\nTest 6: Read text data")
-    content = oss_client.read_text(text_key)
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    #Test1: Upload string data
+    print("\nTest 1: Upload string data")
+    text_key_new = f"{TEST_PREFIX}/text2.txt"
+    result = oss_client.upload_data(f"malai This is a test text:{current_time}", text_key_new)
+    print(f"Upload string data: {'Success: ' + result['oss_url'] if result else 'Failed'}")
+    print(f"Upload string data: {result}")
+    content = oss_client.read_data(text_key_new)
     print(f"Read text data: {content}")
 
+    text_key = f"{TEST_PREFIX}/text1.txt"
 
-    # Test 1: Upload string data
-    print("\nTest 1: Upload string data")
-    text_key = f"{TEST_PREFIX}/text.txt"
-    result = oss_client.upload_data("This is a test text", text_key)
-    print(f"Upload string data: {'Success: ' + result if result else 'Failed'}")
 
     # Test 2: Upload dictionary data (automatically converted to JSON)
     print("\nTest 2: Upload dictionary data")
@@ -533,21 +550,27 @@ if __name__ == "__main__":
         }
     }
     result = oss_client.upload_data(data, json_key)
-    print(f"Upload dictionary data: {'Success: ' + result if result else 'Failed'}")
+    print(f"Upload dictionary data: {'Success: ' + result['oss_url'] if result else 'Failed'}")
+    content = oss_client.read_data(text_key)
+    print(f"Read text data: {content}")
 
     # Test 3: Upload in-memory binary file object
     print("\nTest 3: Upload in-memory binary file object")
     binary_key = f"{TEST_PREFIX}/binary.dat"
     binary_data = io.BytesIO(b"\x00\x01\x02\x03\x04")
     result = oss_client.upload_data(binary_data, binary_key)
-    print(f"Upload binary file object: {'Success: ' + result if result else 'Failed'}")
+    print(f"Upload binary file object: {'Success: ' + result['oss_url'] if result else 'Failed'}")
+    content = oss_client.read_data(text_key)
+    print(f"Read text data: {content}")
 
     # Test 4: Upload in-memory text file object
     print("\nTest 4: Upload in-memory text file object")
     text_file_key = f"{TEST_PREFIX}/text_file.txt"
     text_file = io.StringIO("This is the content of an in-memory text file")
     result = oss_client.upload_data(text_file, text_file_key)
-    print(f"Upload text file object: {'Success: ' + result if result else 'Failed'}")
+    print(f"Upload text file object: {'Success: ' + result['oss_url'] if result else 'Failed'}")
+    content = oss_client.read_data(text_key)
+    print(f"Read text data: {content}")
 
     # Test 5: Create and upload temporary file
     print("\nTest 5: Create and upload temporary file")
@@ -557,7 +580,7 @@ if __name__ == "__main__":
 
     file_key = f"{TEST_PREFIX}/temp_file.txt"
     result = oss_client.upload_file(tmp_path, file_key)
-    print(f"Upload temporary file: {'Success: ' + result if result else 'Failed'}")
+    print(f"Upload temporary file: {'Success: ' + result['oss_url'] if result else 'Failed'}")
     os.unlink(tmp_path)  # Delete temporary file
 
     # Test 6: Read text data
@@ -574,7 +597,7 @@ if __name__ == "__main__":
     print("\nTest 8: Update JSON data")
     update_data = {"updated": True, "timestamp": time.time()}
     result = oss_client.update_json(json_key, update_data)
-    print(f"Update JSON data: {'Success: ' + result if result else 'Failed'}")
+    print(f"Update JSON data: {'Success: ' + result['oss_url'] if result else 'Failed'}")
 
     # View updated JSON data
     updated_json = oss_client.read_data(json_key, as_json=True)
@@ -583,7 +606,7 @@ if __name__ == "__main__":
     # Test 9: Overwrite existing data
     print("\nTest 9: Overwrite existing data")
     result = oss_client.upload_data("This is the overwritten text", text_key)
-    print(f"Overwrite existing data: {'Success: ' + result if result else 'Failed'}")
+    print(f"Overwrite existing data: {'Success: ' + result['oss_url'] if result else 'Failed'}")
 
     # View overwritten data
     new_content = oss_client.read_text(text_key)
@@ -616,13 +639,13 @@ if __name__ == "__main__":
     exists = oss_client.exists(non_existent_key)
     print(f"Object {non_existent_key} exists: {exists}")
 
-    # Test 14: Delete objects
-    print("\nTest 14: Delete objects")
-    for obj in objects:
-        success = oss_client.delete_data(obj['key'])
-        print(f"Delete object {obj['key']}: {'Success' if success else 'Failed'}")
-
-    # Cleanup: Delete copied object (may not be included in the previous list)
-    oss_client.delete_data(copy_key)
-
-    print("\nTests completed!")
+    # # Test 14: Delete objects
+    # print("\nTest 14: Delete objects")
+    # for obj in objects:
+    #     success = oss_client.delete_data(obj['key'])
+    #     print(f"Delete object {obj['key']}: {'Success' if success else 'Failed'}")
+    #
+    # # Cleanup: Delete copied object (may not be included in the previous list)
+    # oss_client.delete_data(copy_key)
+    #
+    # print("\nTests completed!")

@@ -3,15 +3,13 @@ import json
 import logging
 import os
 import sys
+import traceback
+from typing import List, Dict, Any, Optional, Union
 
 import aiohttp
-from typing import List, Dict, Any, Optional, Union
-from dotenv import load_dotenv
 from mcp.server import FastMCP
-from pydantic import Field
 from mcp.types import TextContent
-
-from aworld.logs.util import logger
+from pydantic import Field
 
 mcp = FastMCP("aworldsearch-server")
 
@@ -25,7 +23,7 @@ async def search_single(query: str, num: int = 5) -> Optional[Dict[str, Any]]:
         domain = os.getenv('AWORLD_SEARCH_DOMAIN')
         uid = os.getenv('AWORLD_SEARCH_UID')
         if not url or not searchMode or not source or not domain:
-            logger.warning(f"Query failed: url, searchMode, source, domain parameters incomplete")
+            logging.warning(f"Query failed: url, searchMode, source, domain parameters incomplete")
             return None
 
         headers = {
@@ -42,20 +40,22 @@ async def search_single(query: str, num: int = 5) -> Optional[Dict[str, Any]]:
             "userId": uid
         }
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
             try:
                 async with session.post(url, headers=headers, json=data) as response:
                     if response.status != 200:
-                        logger.warning(f"Query failed: {query}, status code: {response.status}")
+                        logging.warning(f"Query failed: {query}, status code: {response.status}")
                         return None
 
                     result = await response.json()
                     return result
-            except aiohttp.ClientError:
-                logger.warning(f"Request error: {query}")
+            except aiohttp.ClientError as err:
+                traceback.print_exc()
+                logging.warning(f"Request error: {query}\n, err is {err}")
                 return None
-    except Exception:
-        logger.warning(f"Query exception: {query}")
+    except Exception as er:
+        traceback.print_exc()
+        logging.warning(f"Request error: {query}\n, err is {er}")
         return None
 
 
@@ -157,20 +157,32 @@ async def search(
         combined_query = ",".join(query_list)
 
         search_items = []
+        # Use a dictionary to deduplicate by URL
+        url_dict = {}
         for doc in all_valid_docs:
-            search_items.append({
-                "title": doc.get("title", ""),
-                "url": doc.get("url", ""),
-                "content": doc.get("doc", "")  # Map doc field to content
-            })
+            url = doc.get("url", "")
+            if url not in url_dict:
+                url_dict[url] = {
+                    "title": doc.get("title", ""),
+                    "url": url,
+                    "snippet": doc.get("doc", "")[:100] + "..." if len(doc.get("doc", "")) > 100 else doc.get("doc",
+                                                                                                              ""),
+                    "content": doc.get("doc", "")  # Map doc field to content
+                }
+
+        # Convert dictionary values to list
+        search_items = list(url_dict.values())
 
         search_output_dict = {
-            "query": combined_query,
-            "results": search_items
+            "artifact_type": "WEB_PAGES",
+            "artifact_data": {
+                "query": combined_query,
+                "results": search_items
+            }
         }
 
         # Log results
-        logger.info(f"Completed {len(query_list)} queries, found {len(all_valid_docs)} valid documents")
+        logging.info(f"Completed {len(query_list)} queries, found {len(all_valid_docs)} valid documents")
 
         # Initialize TextContent with additional parameters
         return TextContent(
@@ -180,7 +192,7 @@ async def search(
         )
     except Exception as e:
         # Handle errors
-        logger.error(f"Search error: {e}")
+        logging.error(f"Search error: {e}")
         # Initialize TextContent with additional parameters
         return TextContent(
             type="text",
