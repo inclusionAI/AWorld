@@ -75,7 +75,7 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
     </div>
   );
 
-  const renderImage = () => <Image src={imgUrl} alt="Workspace Artifact" />;
+  const renderImage = () => <Image preview={false} src={imgUrl} alt="Workspace Artifact" />;
 
   return (
     <div className="workspacebox">
