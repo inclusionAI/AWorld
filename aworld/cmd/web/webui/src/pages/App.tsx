@@ -855,7 +855,7 @@ const App: React.FC = () => {
             styles: {
               content: {
                 backgroundColor: '#f5f5f5',
-                maxWidth: '90%'
+                maxWidth: '800px'
               }
             }
           }))}
