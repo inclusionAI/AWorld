@@ -35,16 +35,21 @@ const CustomNode: React.FC<CustomNodeProps> = ({ data, isFirst, isLast }) => {
           <Handle
             type="target"
             position={Position.Top}
-            className={nodeData.type === 'virtual' ? 'virtual-handle-target' : ''}
           />
         )}
         {!isLast && (
           <Handle
             type="source"
             position={Position.Bottom}
-            className={nodeData.type === 'virtual' ? 'virtual-handle-target' : ''}
+            id="bottom"
           />
         )}
+         {nodeData.sourceHandle?.includes('right') && (
+           <Handle type="source" position={Position.Right} id="right" />
+         )}
+         {nodeData.sourceHandle?.includes('left') && (
+           <Handle type="source" position={Position.Left} id="left" />
+         )}
       </div>
     </Tooltip>
   );
