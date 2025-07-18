@@ -64,18 +64,23 @@ async def stream_run(request: ChatCompletionRequest, agent_server: AgentServer):
     await agent_server.on_chat_completion_request(request)
     try:
         async for output in instance.run(request=request):
-            logger.info(f"Agent {agent.name} output: {output}")
+            try:
+                logger.info(f"Agent {agent.name} output: {output}")
 
-            if isinstance(output, str):
-                yield build_response(output)
-            else:
-                res = await AworldUI.parse_output(output, rich_ui)
-                for item in res if isinstance(res, list) else [res]:
-                    if isinstance(item, AsyncGenerator):
-                        async for sub_item in item:
-                            yield build_response(sub_item)
-                    else:
-                        yield build_response(item)
+                if isinstance(output, str):
+                    yield build_response(output)
+                else:
+                    res = await AworldUI.parse_output(output, rich_ui)
+                    for item in res if isinstance(res, list) else [res]:
+                        if isinstance(item, AsyncGenerator):
+                            async for sub_item in item:
+                                yield build_response(sub_item)
+                        else:
+                            yield build_response(item)
+            except:
+                logger.error(
+                    f"Agent {agent.name} output error! output={output}, error={traceback.format_exc()}"
+                )
     except:
         logger.error(f"Agent {agent.name} error: {traceback.format_exc()}")
     finally:

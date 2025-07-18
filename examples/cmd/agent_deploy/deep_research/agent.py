@@ -52,7 +52,7 @@ class BaseDynamicPromptAgent(Agent):
         content = await self.custom_system_prompt(context=context, content=content)
         logger.info(f"system prompt content: {content}")
 
-        self.memory.add(
+        await self.memory.add(
             MemorySystemMessage(
                 content=content,
                 metadata=MessageMetadata(
@@ -90,7 +90,7 @@ def get_deepresearch_swarm(user_input):
         use_vision=False,
     )
 
-    agent_id = "DeepResearchPlanAgent"
+    agent_id = "DeepResearchAgent"
     plan_agent = PlanAgent(
         agent_id=agent_id,
         name=agent_id,
