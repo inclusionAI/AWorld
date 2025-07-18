@@ -80,7 +80,6 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
   return (
     <div className="workspacebox">
       <div className="border listwrap">
-        <div className="title">Search Results</div>
         {isLinkListCard ? renderArtifactsList() : renderImage()}
       </div>
     </div>
