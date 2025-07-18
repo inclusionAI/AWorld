@@ -326,7 +326,7 @@ class MemoryAIMessage(MemoryMessage):
         return {
             "role": self.role,
             "content": self.content,
-            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []]
+            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None
         }
 
 class MemoryToolMessage(MemoryMessage):

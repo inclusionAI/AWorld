@@ -9,6 +9,7 @@ from aworld.core.common import ActionModel, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.tool.base import AsyncTool, Tool, ToolFactory
 from aworld.logs.util import logger
+from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 
 
@@ -16,6 +17,7 @@ class ToolHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
+        super().__init__()
         self.tools = runner.tools
         self.tools_conf = runner.tools_conf
 
@@ -24,14 +26,15 @@ class ToolHandler(DefaultHandler):
         return "_tool_handler"
 
 
+@HandlerFactory.register(name=f'__{Constants.TOOL}__')
 class DefaultToolHandler(ToolHandler):
-    def is_valid(self, message: Message):
+    def is_valid_message(self, message: Message):
         if message.category != Constants.TOOL:
             return False
         return True
 
-    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if not self.is_valid(message):
+    async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
+        if not self.is_valid_message(message):
             return
 
         headers = {"context": message.context}

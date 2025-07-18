@@ -38,6 +38,9 @@ class ParallelizableAgent(Agent):
         res = []
         for idx, result in enumerate(results):
             res.append(ActionModel(agent_name=self.agents[idx].id(), policy_info=result))
+
+        if self.aggregate_func:
+            res = self.aggregate_func(self, res)
         return res
 
     def finished(self) -> bool:

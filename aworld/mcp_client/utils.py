@@ -390,7 +390,7 @@ async def sandbox_mcp_tool_desc_transform(
     # todo sandbox mcp_config get from registry
 
     if not mcp_config:
-        return None
+        return []
     config = mcp_config
     mcp_servers_config = config.get("mcpServers", {})
     server_configs = []

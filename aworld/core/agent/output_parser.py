@@ -1,5 +1,7 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
 import abc
-from abc import abstractmethod
+
 from aworld.core.agent.base import AgentResult
 from aworld.models.model_response import ModelResponse
 
@@ -7,6 +9,6 @@ from aworld.models.model_response import ModelResponse
 class AgentOutputParser:
     __metaclass__ = abc.ABCMeta
 
-    @abstractmethod
+    @abc.abstractmethod
     def parse(self, resp: ModelResponse) -> AgentResult:
         """Parser for responses that agent output."""

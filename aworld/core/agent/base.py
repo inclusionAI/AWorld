@@ -127,8 +127,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
         self.feedback_tool_result = feedback_tool_result
-        self.sandbox = sandbox or Sandbox(
-            mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
+        self.sandbox = None
+        if self.mcp_servers or self.tool_names:
+            self.sandbox = sandbox or Sandbox(
+                mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
 
     def _init_context(self, context: Context):
         self.context = context

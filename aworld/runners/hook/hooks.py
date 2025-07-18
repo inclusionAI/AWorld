@@ -4,6 +4,7 @@ import abc
 
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
+from aworld.models.model_response import ModelResponse
 
 
 class HookPoint:
@@ -12,6 +13,7 @@ class HookPoint:
     ERROR = "error"
     PRE_LLM_CALL = "pre_llm_call"
     POST_LLM_CALL = "post_llm_call"
+    OUTPUT_PROCESS = "output_process"
 
 class Hook:
     """Runner hook."""
@@ -62,3 +64,22 @@ class PostLLMCallHook(Hook):
 
     def point(self):
         return HookPoint.POST_LLM_CALL
+
+class OutputProcessHook(Hook):
+    """Output process hook for processing output data for display."""
+    __metaclass__ = abc.ABCMeta
+
+    def point(self):
+        return HookPoint.OUTPUT_PROCESS
+
+    def process_output_content(self, content: str) -> str:
+        """process output content
+
+        Args:
+            content: original content
+
+        Returns:
+            processed content
+        """
+        return content
+

@@ -17,11 +17,11 @@ class Constants:
     AGENT = "agent"
     TOOL = "tool"
     TASK = "task"
+    PLAN = "plan"
     OUTPUT = "output"
     TOOL_CALLBACK = "tool_callback"
     AGENT_CALLBACK = "agent_callback"
     GROUP = "group"
-    MULTI_AGENT_TEAM = "multi_agent_team"
 
 
 class TopicType:

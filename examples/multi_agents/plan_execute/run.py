@@ -5,8 +5,8 @@ from aworld.config.conf import ModelConfig, AgentConfig
 from aworld.core.agent.swarm import Swarm, GraphBuildType
 from aworld.core.task import Task
 from aworld.runner import Runners
-from examples.plan_execute.agent import PlanAgent, ExecuteAgent
-from examples.plan_execute.mock import mock_dataset
+from examples.multi_agents.plan_execute.agent import PlanAgent, ExecuteAgent
+from examples.multi_agents.plan_execute.mock import mock_dataset
 from examples.tools.common import Agents, Tools
 
 

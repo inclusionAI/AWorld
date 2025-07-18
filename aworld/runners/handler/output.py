@@ -3,24 +3,37 @@ import json
 from typing import AsyncGenerator
 from aworld.core.task import TaskResponse
 from aworld.models.model_response import ModelResponse
+from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.output.base import StepOutput, MessageOutput, Output
 from aworld.core.common import TaskItem
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.logs.util import logger
+from aworld.runners.hook.hook_factory import HookFactory
+from aworld.runners.hook.hooks import HookPoint
 
 
+@HandlerFactory.register(name=f'__{Constants.OUTPUT}__')
 class DefaultOutputHandler(DefaultHandler):
     def __init__(self, runner):
+        super().__init__()
         self.runner = runner
+        self.hooks = {}
+        if runner.task.hooks:
+            for k, vals in runner.task.hooks.items():
+                self.hooks[k] = []
+                for v in vals:
+                    cls = HookFactory.get_class(v)
+                    if cls:
+                        self.hooks[k].append(cls)
 
-    def is_valid(self, message: Message):
+    def is_valid_message(self, message: Message):
         if message.category != Constants.OUTPUT:
             return False
         return True
 
-    async def handle(self, message):
-        if not self.is_valid(message):
+    async def _do_handle(self, message):
+        if not self.is_valid_message(message):
             return
         # 1. get outputs
         outputs = self.runner.task.outputs
@@ -35,7 +48,14 @@ class DefaultOutputHandler(DefaultHandler):
                 headers={"context": message.context}
             )
             return
-        # 2. build Output
+
+        # 2. Call OUTPUT_PROCESS hooks to process data in the message
+        async for event in self.run_hooks(message, HookPoint.OUTPUT_PROCESS):
+            # If hook returns a processed message, use the processed message
+            if event and isinstance(event, Message) and event.payload:
+                message.payload = event.payload
+
+        # 3. build Output
         payload = message.payload
         mark_complete = False
         output = None
@@ -69,6 +89,7 @@ class DefaultOutputHandler(DefaultHandler):
                 output.metadata['receiver'] = message.receiver
                 await outputs.add_output(output)
             if mark_complete:
+                logger.info(f"FINISHED|output mark_completed|{self.runner.task.id}")
                 await outputs.mark_completed()
 
         return

@@ -10,21 +10,19 @@ from aworld.core.agent.base import is_agent, AgentFactory
 from aworld.core.agent.swarm import GraphBuildType
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
-from aworld.core.exceptions import AworldException
 from aworld.logs.util import logger
-from aworld.planner.models import StepInfo
-from aworld.planner.parse import parse_plan
+from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.utils import endless_detect
 from aworld.output.base import StepOutput
-from aworld.utils.run_util import exec_agent, exec_tool
 
 
 class AgentHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
+        super().__init__()
         self.runner = runner
         self.swarm = runner.swarm
         self.endless_threshold = runner.endless_threshold
@@ -37,8 +35,9 @@ class AgentHandler(DefaultHandler):
         return "_agents_handler"
 
 
+@HandlerFactory.register(name=f'__{Constants.AGENT}__')
 class DefaultAgentHandler(AgentHandler):
-    def is_valid(self, message: Message):
+    def is_valid_message(self, message: Message):
         if message.category != Constants.AGENT:
             if message.sender in self.swarm.agents and message.sender in AgentFactory:
                 if self.agent_calls:
@@ -49,8 +48,8 @@ class DefaultAgentHandler(AgentHandler):
             return False
         return True
 
-    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if not self.is_valid(message):
+    async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
+        if not self.is_valid_message(message):
             return
 
         headers = {"context": message.context}
@@ -260,7 +259,8 @@ class DefaultAgentHandler(AgentHandler):
         if GraphBuildType.TEAM.value == self.swarm.build_type:
             agent = self.swarm.agents.get(action.agent_name)
             caller = self.swarm.agent_graph.root_agent.id() or message.caller
-            if agent.id != self.swarm.agent_graph.root_agent.id():
+            if agent.id() != self.swarm.agent_graph.root_agent.id():
+                logger.info(f"_stop_check Team|{agent.id()} --> {caller}")
                 yield Message(
                     category=Constants.AGENT,
                     payload=Observation(content=action.policy_info),
@@ -290,9 +290,10 @@ class DefaultAgentHandler(AgentHandler):
         if idx == -1:
             yield Message(
                 category=Constants.TASK,
-                payload=TaskItem(msg=f"Can not find {action.agent_name} agent in ordered_agents: {self.swarm.ordered_agents}.",
-                                 data=action,
-                                 stop=True),
+                payload=TaskItem(
+                    msg=f"Can not find {action.agent_name} agent in ordered_agents: {self.swarm.ordered_agents}.",
+                    data=action,
+                    stop=True),
                 sender=self.name(),
                 session_id=session_id,
                 topic=TopicType.ERROR,
@@ -321,7 +322,7 @@ class DefaultAgentHandler(AgentHandler):
                 )
             else:
                 logger.info(f"FINISHED|_sequence_stop_check execute loop {self.swarm.cur_step}. "
-                             f"message: {message}. session_id: {session_id}.")
+                            f"message: {message}. session_id: {session_id}.")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
@@ -436,7 +437,8 @@ class DefaultAgentHandler(AgentHandler):
         if endless_detect(self.agent_calls,
                           endless_threshold=self.endless_threshold,
                           root_agent_name=self.swarm.communicate_agent.id()):
-            logger.info(f"FINISHED|_social_stop_check endless_detect|{self.agent_calls}|{self.endless_threshold}|{self.swarm.communicate_agent.id()}")
+            logger.info(
+                f"FINISHED|_social_stop_check endless_detect|{self.agent_calls}|{self.endless_threshold}|{self.swarm.communicate_agent.id()}")
             yield Message(
                 category=Constants.TASK,
                 payload=action.policy_info,
@@ -449,7 +451,8 @@ class DefaultAgentHandler(AgentHandler):
 
         if not caller or caller == self.swarm.communicate_agent.id():
             if self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished:
-                logger.info(f"FINISHED|_social_stop_check finished|{self.swarm.cur_step}|{self.swarm.max_steps}|{self.swarm.finished}")
+                logger.info(
+                    f"FINISHED|_social_stop_check finished|{self.swarm.cur_step}|{self.swarm.max_steps}|{self.swarm.finished}")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
@@ -488,111 +491,26 @@ class DefaultAgentHandler(AgentHandler):
             )
 
 
-class DefaultTeamHandler(AgentHandler):
-    async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if message.category != Constants.MULTI_AGENT_TEAM:
-            return
-        logger.info(f"DefaultTeamHandler|handle|taskid={self.task_id}|is_sub_task={message.context._task.is_sub_task}")
-        content = message.payload
-        # data is List[ActionModel]
-        for action in content:
-            if not isinstance(action, ActionModel):
-                # error message, p2p
-                yield Message(
-                    category=Constants.OUTPUT,
-                    payload=StepOutput.build_failed_output(name=f"{message.caller or self.name()}",
-                                                           step_num=0,
-                                                           data="action not a ActionModel.",
-                                                           task_id=self.task_id),
-                    sender=self.name(),
-                    session_id=message.session_id,
-                    headers=message.headers
-                )
-                msg = Message(
-                    category=Constants.TASK,
-                    payload=TaskItem(msg="action not a ActionModel.", data=content, stop=True),
-                    sender=self.name(),
-                    session_id=message.session_id,
-                    topic=TopicType.ERROR,
-                    headers=message.headers
-                )
-                logger.info(f"agent handler send task message: {msg}")
-                yield msg
-                return
+    def is_group_finish(self, event: Message) -> bool:
+        """Determine if an event triggers group completion"""
+        if not isinstance(event, Message) or not event.group_id:
+            return False
 
-        logger.info(f"DefaultTeamHandler|content|{content}")
-        plan = parse_plan(content[0].policy_info)
-        logger.info(f"DefaultTeamHandler|plan|{plan}")
-        step_infos = plan.step_infos
-        steps = step_infos.steps
-        dag = step_infos.dag
-        if not steps or not dag:
-            if plan.answer:
-                logger.info(f"FINISHED|DefaultTeamHandler|plan|finished|{plan.answer}")
-                yield Message(
-                    category=Constants.TASK,
-                    payload=plan.answer,
-                    sender=self.name(),
-                    session_id=message.session_id,
-                    topic=TopicType.FINISHED,
-                    headers=message.headers
-                )
-            else:
-                raise AworldException("no steps and answer.")
+        agent_id = event.sender
+        if not agent_id:
+            return False
 
-        group_id = self.runner.task.group_id if self.runner.task.group_id else uuid.uuid4().hex
-        self.runner.task.group_id = group_id
-        merge_context = message.context
-        for node in dag:
-            if isinstance(node, list):
-                logger.info(f"DefaultTeamHandler|parallel_node|start|{node}")
-                # can parallel
-                tasks = []
+        agent = self.swarm.agents.get(agent_id)
+        if not agent:
+            return False
 
-                for n in node:
-                    new_context = merge_context.deep_copy()
-                    step_info: StepInfo = steps.get(n)
-                    agent = self.swarm.agents.get(step_info.id)
-                    if agent:
-                        tasks.append(exec_agent(step_info.input, agent, new_context,
-                                                outputs=merge_context.outputs,
-                                                sub_task=True,
-                                                task_group_id=group_id))
-                    else:
-                        tasks.append(exec_tool(tool_name=step_info.id,
-                                               params=step_info.parameters,
-                                               context=new_context,
-                                               sub_task=True,
-                                               outputs=merge_context.outputs,
-                                               task_group_id=group_id))
+        return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
 
-                res = await asyncio.gather(*tasks)
-                for idx, t in enumerate(res):
-                    merge_context.merge_context(t.context)
-                    merge_context.save_action_trajectory(steps.get(node[idx]).id, t.answer)
-                logger.info(f"DefaultTeamHandler|parallel_node|end|{res}")
-                res = res[-1]
-            else:
-                logger.info(f"DefaultTeamHandler|single_node|start|{node}")
-                step_info: StepInfo = steps.get(node)
-                agent = self.swarm.agents.get(step_info.id)
-                new_context = merge_context.deep_copy()
-                if agent:
-                    res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs, sub_task=True, task_group_id=group_id)
-                else:
-                    res = await exec_tool(tool_name=step_info.id,
-                                          params=step_info.parameters,
-                                          context=new_context,
-                                          outputs=merge_context.outputs,
-                                          sub_task=True,
-                                          task_group_id=group_id)
-                merge_context.merge_context(res.context)
-                merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
-                logger.info(f"DefaultTeamHandler|single_node|end|{res}")
-        logger.info(f"DefaultTeamHandler|single_node|end|{res}")
-        new_plan_input = Observation(content=merge_context.task_input)
-        yield AgentMessage(session_id=message.session_id,
-                           payload=new_plan_input,
-                           sender=self.name(),
-                           receiver=self.swarm.communicate_agent.id(),
-                           headers={'context': merge_context})
+    async def post_handle(self, message: Message) -> Message:
+        if self.is_group_finish(message):
+            from aworld.runners.state_manager import RuntimeStateManager
+            state_mng = RuntimeStateManager.instance()
+            await state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'),
+                                             [message])
+            return None
+        return message

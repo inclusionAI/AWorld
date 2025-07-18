@@ -19,10 +19,10 @@ def parse_step_json(step_json: str) -> StepInfos:
     """Parse JSON string into StepInfos object"""
     try:
         data = json.loads(step_json)
-        return parse_step_infos(data)
     except Exception as e:
         logger.error(f"Failed to parse step JSON: {e}")
         return StepInfos(steps={}, dag=[])
+    return parse_step_infos(data)
 
 
 def parse_plan(plan_text: str) -> Plan:

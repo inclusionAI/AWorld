@@ -12,8 +12,7 @@ from aworld.models.llm import call_llm_model
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.common import Observation, ActionModel
 from aworld.logs.util import logger
-from examples.plan_execute.prompts import *
-from examples.plan_execute.utils import extract_pattern
+from examples.multi_agents.plan_execute.utils import extract_pattern
 
 
 class ExecuteAgent(Agent):

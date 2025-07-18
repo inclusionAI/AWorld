@@ -91,6 +91,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "context_rule") else conf.context_rule
         self.tools_instances = {}
         self.tools_conf = {}
+        self.tools_aggregate_func = kwargs.get("tools_aggregate_func") if kwargs.get(
+            "tools_aggregate_func") else self._tools_aggregate_func
 
     def deep_copy(self):
         """Create a deep copy of the current Agent instance.
@@ -103,7 +105,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         new_agent.system_prompt = self.system_prompt
         new_agent.system_prompt_template = self.system_prompt_template
         new_agent.agent_prompt = self.agent_prompt
-        new_agent.planner = self.planner
         new_agent.event_driven = self.event_driven
         new_agent.handler = self.handler
         new_agent.need_reset = self.need_reset
@@ -407,17 +408,28 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.info(
                 f"[agent] Message {i + 1}: {prefix} ===================================")
             if isinstance(msg['content'], list):
-                for item in msg['content']:
-                    if item.get('type') == 'text':
-                        logger.info(
-                            f"[agent] Text content: {item.get('text')}")
-                    elif item.get('type') == 'image_url':
-                        image_url = item.get('image_url', {}).get('url', '')
-                        if image_url.startswith('data:image'):
-                            logger.info(f"[agent] Image: [Base64 image data]")
-                        else:
+                try:
+                    for item in msg['content']:
+                        if item.get('type') == 'text':
                             logger.info(
-                                f"[agent] Image URL: {image_url[:30]}...")
+                                f"[agent] Text content: {item.get('text')}")
+                        elif item.get('type') == 'image_url':
+                            image_url = item.get('image_url', {}).get('url', '')
+                            if image_url.startswith('data:image'):
+                                logger.info(f"[agent] Image: [Base64 image data]")
+                            else:
+                                logger.info(
+                                    f"[agent] Image URL: {image_url[:30]}...")
+                except Exception as e:
+                    logger.error(f"[agent] Error parsing msg['content']: {msg}. Error: {e}")
+                    content = str(msg['content'])
+                    chunk_size = 500
+                    for j in range(0, len(content), chunk_size):
+                        chunk = content[j:j + chunk_size]
+                        if j == 0:
+                            logger.info(f"[agent] Content: {chunk}")
+                        else:
+                            logger.info(f"[agent] Content (continued): {chunk}")
             else:
                 content = str(msg['content'])
                 chunk_size = 500
@@ -453,7 +465,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                caller=caller,
                                sender=self.id(),
                                receiver=actions[0].tool_name,
-                               category=Constants.MULTI_AGENT_TEAM,
+                               category=Constants.PLAN,
                                session_id=self.context.session_id if self.context else "",
                                headers=self._update_headers(input_message))
 
@@ -721,8 +733,39 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
             return agent_result.actions
         else:
-            result = await self._execute_tool(agent_result.actions, context_message=message)
+            from aworld.utils.run_util import exec_tool
+            tool_results = []
+            for act in agent_result.actions:
+                if is_agent(act):
+                    continue
+                act_result = await exec_tool(tool_name=act.tool_name,
+                                params=act.params,
+                                context=message.context.deep_copy(),
+                                sub_task=True,
+                                outputs=message.context.outputs,
+                                task_group_id=self.context.get_task().group_id or uuid.uuid4().hex)
+                if not act_result.success:
+                    color_log(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
+                              color=Color.red)
+                    continue
+                tool_results.append(
+                    ActionResult(tool_call_id=act.tool_call_id, tool_name = act.tool_name, content=act_result.answer))
+                await self._add_tool_result_to_memory(act.tool_call_id, act_result.answer,
+                                                      context=message.context)
+            result = sync_exec(self.tools_aggregate_func, tool_results)
             return result
+
+    async def _tools_aggregate_func(self, tool_results: List[ActionResult]) -> List[ActionModel]:
+        """Aggregate tool results
+        Args:
+            tool_results: Tool results
+        Returns:
+            ActionModel sequence
+        """
+        content = ""
+        for res in tool_results:
+            content += f"{res.tool_name}: {res.content}\n"
+        return [ActionModel(agent_name=self.id(), policy_info=content)]
 
     async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
                                  **kwargs):

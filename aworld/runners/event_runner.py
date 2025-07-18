@@ -4,7 +4,6 @@ import asyncio
 import time
 import traceback
 import aworld.trace as trace
-import aworld.trace.constants as trace_constants
 from typing import List, Callable, Any
 
 from aworld.core.common import TaskItem
@@ -15,13 +14,8 @@ from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, A
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
-from aworld.runners.callback.tool import ToolCallbackHandler
-from aworld.runners.handler.agent import DefaultAgentHandler, DefaultTeamHandler
+from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
-from aworld.runners.handler.group import DefaultGroupHandler
-from aworld.runners.handler.output import DefaultOutputHandler
-from aworld.runners.handler.task import DefaultTaskHandler, TaskHandler
-from aworld.runners.handler.tool import DefaultToolHandler, ToolHandler
 
 from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import override_in_subclass, new_instance
@@ -37,6 +31,7 @@ class TaskEventRunner(TaskRunner):
         self.event_mng = EventManager(self.context)
         self.context.event_manager = self.event_mng
         self.hooks = {}
+        self.handlers = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
 
@@ -80,20 +75,12 @@ class TaskEventRunner(TaskRunner):
         # handler of process in framework
         handler_list = self.conf.get("handlers")
         if handler_list:
-            handlers = []
+            # handler class name
             for hand in handler_list:
-                handlers.append(new_instance(hand, self))
-
-            self.handlers = handlers
+                self.handlers.append(new_instance(hand, self))
         else:
-            self.handlers = [DefaultAgentHandler(runner=self),
-                             DefaultToolHandler(runner=self),
-                             DefaultTaskHandler(runner=self),
-                             DefaultOutputHandler(runner=self),
-                             ToolCallbackHandler(runner=self),
-                             DefaultGroupHandler(runner=self),
-                             DefaultTeamHandler(runner=self)
-                             ]
+            for handler in HandlerFactory:
+                self.handlers.append(HandlerFactory(handler, runner=self))
         logger.debug(f"[TaskEventRunner] pre_run finish {self.task.id}")
 
     def _build_first_message(self):
@@ -219,12 +206,7 @@ class TaskEventRunner(TaskRunner):
                             results=[con],
                             handlers=self.handlers
                     ):
-                        if self.is_group_finish(event):
-                            from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
-                            state_mng = RuntimeStateManager.instance()
-                            await state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [event])
-                        else:
-                            await self.event_mng.emit_message(event)
+                        await self.event_mng.emit_message(event)
                 else:
                     self.state_manager.save_message_handle_result(name=handler.__name__,
                                                                   message=message)
@@ -283,7 +265,7 @@ class TaskEventRunner(TaskRunner):
                                                            success=True if not msg else False,
                                                            id=self.task.id,
                                                            time_cost=(
-                                                               time.time() - start),
+                                                                   time.time() - start),
                                                            usage=self.context.token_usage)
                     break
                 logger.debug(f"[TaskEventRunner] next snap {self.task.id}")
@@ -318,8 +300,8 @@ class TaskEventRunner(TaskRunner):
                 if not self.task.is_sub_task:
                     logger.info(f"FINISHED|TaskEventRunner|outputs|{self.task.id} {self.task.is_sub_task}")
                     await self.task.outputs.mark_completed()
-                # todo sandbox cleanup
-                if self.swarm and hasattr(self.swarm, 'agents') and self.swarm.agents:
+
+                if self.swarm and self.swarm.agents:
                     for agent_name, agent in self.swarm.agents.items():
                         try:
                             if hasattr(agent, 'sandbox') and agent.sandbox:

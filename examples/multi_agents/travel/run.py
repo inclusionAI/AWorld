@@ -3,7 +3,7 @@
 from aworld.config.conf import AgentConfig, ToolConfig
 from aworld.agents.llm_agent import Agent
 from aworld.config import ModelConfig
-from aworld.core.agent.swarm import Swarm, TeamSwarm, GraphBuildType
+from aworld.core.agent.swarm import TeamSwarm
 from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.browsers.agent import BrowserAgent
@@ -11,7 +11,6 @@ from examples.browsers.config import BrowserAgentConfig
 from examples.tools.common import Tools
 from examples.tools.conf import BrowserToolConfig
 from examples.tools.tool_action import SearchAction
-from examples.travel.prompts import *
 
 model_config = ModelConfig(
     llm_provider="openai",

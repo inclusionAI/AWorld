@@ -61,7 +61,7 @@ class Factory(Generic[T]):
         name = "async_" + name if asyn else name
         return self._ext_info.get(name, {})
 
-    def register(self, name: str, desc: str, **kwargs):
+    def register(self, name: str, desc: str = '', **kwargs):
         def func(cls):
             asyn = kwargs.pop("asyn", False)
             prefix = "async_" if asyn else ""
