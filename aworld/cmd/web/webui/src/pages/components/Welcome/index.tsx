@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Input, Button, Typography, Row, Col, Select, Flex } from 'antd';
 import { ArrowUpOutlined, RightOutlined } from '@ant-design/icons';
+import { Button, Col, Flex, Input, Row, Select, Typography } from 'antd';
+import React, { useState } from 'react';
+import logo from '../../../assets/aworld_logo.png';
 import './index.less';
 
 const { Title } = Typography;
@@ -33,7 +34,19 @@ const Welcome: React.FC<WelcomeProps> = ({
       <div className="content">
         <Row justify="center">
           <Col>
-            <Title level={1}>Hello Aworld</Title>
+            <div className="logo-title-container">
+              <img src={logo} alt="AWorld Logo" width="46" height="46" />
+              <Title level={1} style={{ margin: 0 }}>
+                <a
+                  href="https://github.com/inclusionAI/AWorld"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="aworld-link"
+                >
+                  Hello{' '}AWorld
+                </a>
+              </Title>
+            </div>
           </Col>
         </Row>
         <div className="input-area">
