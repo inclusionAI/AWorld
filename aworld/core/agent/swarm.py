@@ -632,11 +632,9 @@ class WorkflowBuilder(TopologyBuilder):
 
         agent_graph = AgentGraph(GraphBuildType.WORKFLOW.value)
         single_agents = []
-        all_tuple = True
         for agent in self.agent_list:
             if isinstance(agent, (BaseAgent, list)):
                 single_agents.append(agent)
-                all_tuple = False
             elif isinstance(agent, tuple):
                 single_agents.append(agent)
             else:
@@ -644,11 +642,6 @@ class WorkflowBuilder(TopologyBuilder):
 
         if not single_agents:
             raise RuntimeError(f"no valid agent in swarm to build execution graph.")
-
-        if self._is_star(single_agents, all_tuple):
-            # star topology means team
-            builder = TeamBuilder(self.agent_list, [], self.max_steps)
-            return builder.build()
 
         last_agent = None
         for agent in single_agents:
@@ -672,21 +665,6 @@ class WorkflowBuilder(TopologyBuilder):
                 agent_graph.add_edge(last_agent, agent)
             last_agent = agent
         return agent_graph
-
-    def _is_star(self, single_agents: list, all_tuple: bool) -> bool:
-        if all_tuple:
-            # special process, identify whether it is a star topology
-            same_agent = True
-            last = None
-            for agent in single_agents:
-                if not last:
-                    last = agent[0].id()
-                else:
-                    if last != agent[0].id():
-                        same_agent = False
-                        break
-            return same_agent
-        return False
 
     def _flatten_agent(self, agents: Union[tuple, list]) -> List[BaseAgent]:
         """Flatten the nesting of agents and recursively construct corresponding agents."""
@@ -744,6 +722,11 @@ class HandoffBuilder(TopologyBuilder):
         if not valid_agent_pair:
             raise RuntimeError(f"no valid agent pair to build execution graph.")
 
+        if self._is_star(valid_agent_pair):
+            # star topology means team
+            builder = TeamBuilder(self.agent_list, [], self.max_steps)
+            return builder.build()
+
         # agent handoffs graph build.
         agent_graph = AgentGraph(GraphBuildType.HANDOFF.value)
         for pair in valid_agent_pair:
@@ -762,6 +745,19 @@ class HandoffBuilder(TopologyBuilder):
             if pair[1].id() in pair[1].handoffs:
                 pair[1].handoffs.remove(pair[1].id())
         return agent_graph
+
+    def _is_star(self, single_agents: list) -> bool:
+        # special process, identify whether it is a star topology
+        same_agent = True
+        last = None
+        for agent in single_agents:
+            if not last:
+                last = agent[0].id()
+            else:
+                if last != agent[0].id():
+                    same_agent = False
+                    break
+        return same_agent
 
 
 class TeamBuilder(TopologyBuilder):
