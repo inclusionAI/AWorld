@@ -620,7 +620,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             ActionModel sequence from agent policy
         """
         # Get current step information for trace recording
-        logger.error(f"ENTER {observation}")
         source_span = trace.get_current_span()
 
         if hasattr(observation, 'context') and observation.context:
