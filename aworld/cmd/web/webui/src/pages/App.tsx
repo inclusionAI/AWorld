@@ -368,6 +368,7 @@ const App: React.FC = () => {
   };
 
   const openRightSider = (content: SiderContentType, data?: any) => {
+    console.log('openRightSider', content, data);
     setRightSiderCollapsed(false);
     setSiderCollapsed(true);
     setActiveTab(content);
@@ -1008,47 +1009,39 @@ const App: React.FC = () => {
           </div>
 
           <div className="sider-content">
-            <Tabs
-              activeKey={activeTab}
-              onChange={setActiveTab}
-              size="small"
-              style={{ height: '100%' }}
-              items={[
-                {
-                  key: 'Workspace',
-                  label: 'Workspace',
-                  children: (
-                    <div style={tabContentStyle}>
-                      {workspaceData ? (
-                        <Workspace
-                          key={`workspace-${rightSiderCollapsed}`}
-                          sessionId={sessionId}
-                          toolCardData={workspaceData}
-                        />
-                      ) : (
-                        <div style={emptyStateStyle}>
-                          No workspace data available
-                        </div>
-                      )}
-                    </div>
-                  )
-                },
-                {
-                  key: 'TraceXY',
-                  label: 'Trace',
-                  children: (
-                    <div style={tabContentStyle}>
-                      <TraceXY
-                        key={`${traceId}-${rightSiderCollapsed}`}
-                        traceId={traceId}
-                        traceQuery={traceQuery}
-                        drawerVisible={!rightSiderCollapsed}
+            {activeTab === 'Workspace' && (
+              <Tabs size="small" style={{ height: '100%' }} >
+                <Tabs.TabPane key="Workspace" tab="Workspace" active={activeTab === 'Workspace'}>
+                  <div style={tabContentStyle}>
+                    {workspaceData ? (
+                      <Workspace
+                        key={`workspace-${rightSiderCollapsed}`}
+                        sessionId={sessionId}
+                        toolCardData={workspaceData}
                       />
-                    </div>
-                  )
-                }
-              ]}
-            />
+                    ) : (
+                      <div style={emptyStateStyle}>
+                        No workspace data available
+                      </div>
+                    )}
+                  </div>
+                </Tabs.TabPane>
+              </Tabs>
+            )}
+            {activeTab === 'TraceXY' && (
+              <Tabs size="small" style={{ height: '100%' }}>
+                <Tabs.TabPane key="TraceXY" tab="Trace" active={activeTab === 'TraceXY'}>
+                  <div style={tabContentStyle}>
+                    <TraceXY
+                      key={`${traceId}-${rightSiderCollapsed}`}
+                      traceId={traceId}
+                      traceQuery={traceQuery}
+                      drawerVisible={!rightSiderCollapsed}
+                    />
+                  </div>
+                </Tabs.TabPane>
+              </Tabs>
+            )}
           </div>
         </div>
       )}

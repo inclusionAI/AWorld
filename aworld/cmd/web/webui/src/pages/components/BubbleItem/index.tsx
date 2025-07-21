@@ -43,7 +43,10 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data, onOpenWorkspac
   // 自动打开workspace的逻辑 - 只在流式输出过程中自动打开
   useEffect(() => {
     // 只有在流式输出过程中才自动打开workspace
-    if (!isLoading) return;
+    if (!isLoading) {
+      console.log('isLoading:', isLoading);
+      return;
+    }
 
     // 查找最新的具有workspace功能的tool_card（不区分card类型）
     const toolCardSegments = segments.filter(segment => segment.type === 'tool_card');
