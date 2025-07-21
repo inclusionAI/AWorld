@@ -87,11 +87,6 @@ class AWorldPackage(sdist):
 
         generate_version_info(scenario="AWORLD_SDIST")
 
-        from aworld.cmd.web.web_server import build_webui
-
-        # build webui
-        build_webui(force_rebuild=True)
-
         sdist.run(self)
 
 
@@ -107,11 +102,6 @@ class AWorldInstaller(install):
         logger.info(f"{os.getcwd()}: Install AWORLD using extra: {self._extra}")
 
     def run(self):
-        from aworld.cmd.utils.webui_builder import build_webui
-
-        # build webui
-        build_webui(force_rebuild=True)
-        
         # 1. build wheel using this setup.py, thus using the right install_requires according to ALPS_EXTRA
         # 2. install this wheel into pip
         install.run(self)
@@ -226,8 +216,16 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages(
         where=".",
-        exclude=["tests", "tests.*", "*.tests", "*.tests.*",
-                 "test", "*.test", "*.test.*", "test.*"],
+        exclude=[
+            "tests",
+            "tests.*",
+            "*.tests",
+            "*.tests.*",
+            "test",
+            "*.test",
+            "*.test.*",
+            "test.*",
+        ],
     ),
     package_data={
         "aworld": [
