@@ -8,6 +8,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Join%20us-blue?logo=discord&logoColor=white)](https://discord.gg/b4Asj2ynMw)
 [![许可证: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-Explore-blueviolet?logo=wikipedia&logoColor=white)](https://deepwiki.com/inclusionAI/AWorld)
+[![AI Agent Marketplace 用户评价Badge](https://www.deepnlp.org/api/ai_agent_marketplace/svg?name=inclusionai/aworld)](https://www.deepnlp.org/store/ai-agent/ai-agents-frameworks/pub-inclusionai/aworld)
 <!-- [![arXiv](https://img.shields.io/badge/arXiv-xxxx.xxxxx-b31b1b.svg)](https://arxiv.org/abs/xxxx.xxxxx) -->
 
 </div>
