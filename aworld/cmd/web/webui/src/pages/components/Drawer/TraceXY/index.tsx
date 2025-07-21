@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ReactFlow, Background, Controls, ReactFlowProvider, applyNodeChanges } from '@xyflow/react';
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  ReactFlowProvider,
+  applyNodeChanges
+} from '@xyflow/react';
 import type { NodeChange } from '@xyflow/react';
 import CustomNode from './CustomNode';
 import '@xyflow/react/dist/style.css';
@@ -17,19 +23,16 @@ const TraceXY: React.FC<TraceXYProps> = ({ traceId, drawerVisible }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      setNodes((nds) => {
-        const updatedNodes = applyNodeChanges(changes, nds);
-        return updatedNodes.map(node => ({
-          ...node,
-          type: node.type || 'customNode',
-          data: (node as NodeData).data
-        })) as NodeData[];
-      });
-    },
-    []
-  );
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    setNodes((nds) => {
+      const updatedNodes = applyNodeChanges(changes, nds);
+      return updatedNodes.map((node) => ({
+        ...node,
+        type: node.type || 'customNode',
+        data: (node as NodeData).data
+      })) as NodeData[];
+    });
+  }, []);
 
   const processNodes = useCallback((rawNodes: any[] = []): NodeData[] => {
     return rawNodes.map((node) => ({
@@ -51,7 +54,8 @@ const TraceXY: React.FC<TraceXYProps> = ({ traceId, drawerVisible }) => {
       id: `${edge.source}-${edge.target}`,
       source: edge.source,
       target: edge.target,
-      className: 'node-edge'
+      className: 'node-edge',
+      type: 'smoothstep'
     }));
   }, []);
 
