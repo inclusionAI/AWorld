@@ -189,7 +189,7 @@ class AWorldAgent(BaseAWorldAgent):
         super().__init__(*args, **kwargs)
 
     def name(self):
-        return "Deep Research Agent"
+        return "Deep Research[PlanAgent]"
 
     def description(self):
         return "Deep Research Agent with PlanAgent"

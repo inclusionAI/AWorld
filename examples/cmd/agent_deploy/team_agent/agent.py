@@ -4,7 +4,7 @@ import json
 from aworld.cmd.data_model import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import Swarm
+from aworld.core.agent.swarm import GraphBuildType, Swarm
 from aworld.core.task import Task
 from aworld.runner import Runners
 from .prompt import *
@@ -17,7 +17,7 @@ class AWorldAgent(BaseAWorldAgent):
         super().__init__(*args, **kwargs)
 
     def name(self):
-        return "Team Agent"
+        return "Team Agent[AgentAsToolCall]"
 
     def description(self):
         return "Team Agent with fetch and time mcp server"
@@ -61,14 +61,6 @@ class AWorldAgent(BaseAWorldAgent):
             mcp_servers=["google-pse-search"],
         )
 
-        aworld_playwright_agent = Agent(
-            conf=agent_config,
-            name="Aworld-Playwright-Agent",
-            system_prompt=aworld_playwright_sys_prompt,
-            mcp_config=mcp_config,
-            mcp_servers=["aworld-playwright"],
-        )
-
         summary_agent = Agent(
             conf=agent_config,
             name="Summary-Agent",
@@ -79,9 +71,9 @@ class AWorldAgent(BaseAWorldAgent):
         swarm = Swarm(
             plan_agent,
             google_pse_search_agent,
-            # aworld_playwright_agent,
             summary_agent,
             max_steps=10,
+            build_type=GraphBuildType.TEAM,
         )
 
         if prompt is None and request is not None:

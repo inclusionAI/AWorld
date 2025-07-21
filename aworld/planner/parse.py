@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import json
+import traceback
 
 from aworld.logs.util import logger
 from aworld.planner.models import Plan, StepInfos
@@ -9,9 +10,9 @@ from aworld.planner.models import Plan, StepInfos
 def parse_step_infos(step_infos: dict) -> StepInfos:
     """Parse step information dictionary into StepInfos object"""
     try:
-        return StepInfos.from_dict(step_infos)
+        return StepInfos.model_validate(step_infos)
     except Exception as e:
-        logger.error(f"Error parsing step infos: {e}")
+        logger.error(f"Error parsing step infos: {traceback.format_exc()}")
         return StepInfos(steps={}, dag=[])
 
 

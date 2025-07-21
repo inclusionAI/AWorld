@@ -102,7 +102,7 @@ class PlannerOutputParser(AgentOutputParser):
                 logger.info(f"BuiltInPlannerOutputParser|plan|{plan.json()}")
                 actions.append(ActionModel(
                     agent_name=self.agent_name,
-                    policy_info=plan.json()
+                    policy_info=plan.model_dump_json()
                 ))
             except json.JSONDecodeError:
                 logger.warning("Failed to parse planning JSON")
