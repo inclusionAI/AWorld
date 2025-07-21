@@ -74,6 +74,8 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data, onOpenWorkspac
         }, 100);
 
         return () => clearTimeout(timer);
+      } else {
+        console.log("latest workspace opened!", currentWorkspaceData, lastWorkspaceDataRef.current)
       }
     }
   }, [segments, onOpenWorkspace, openWorkspace, isLoading]);
