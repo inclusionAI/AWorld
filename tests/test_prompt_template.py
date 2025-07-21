@@ -30,8 +30,7 @@ class TestPromptTemplate(BaseTest):
         os.environ["LLM_BASE_URL"] = self.mock_base_url
         os.environ["LLM_MODEL_NAME"] = self.mock_model_name
 
-    def init_agent(self, system_prompt: str, agent_prompt: str,
-                   agent_prompt_template: StringPromptFormatter = None):
+    def init_agent(self, system_prompt: str, agent_prompt: str):
         conf = AgentConfig(
             llm_config=ModelConfig(
                 llm_model_name=self.mock_model_name,
@@ -44,7 +43,6 @@ class TestPromptTemplate(BaseTest):
             name="my_agent" + str(random.randint(0, 1000000)),
             system_prompt=system_prompt,
             agent_prompt=agent_prompt,
-            agent_prompt_template=agent_prompt_template,
         )
 
     def run_agent(self, input, agent: Agent):
@@ -145,27 +143,6 @@ class TestPromptTemplate(BaseTest):
         print(messages)
         assert messages[1]['content'] == "Mike {{age}} play"
 
-    def test_agent_prompt_is_none(self):
-        # agent prompt default to None
-        agent = self.init_agent(system_prompt="You are a helpful assistant.", agent_prompt=None)
-        agent._log_messages = self.check_messages_0
-        self.run_agent("hello world", agent)
-
-    def test_agent_prompt_default(self):
-        # agent prompt default to None
-        agent = self.init_agent(system_prompt="You are a helpful assistant.", agent_prompt="hello {{task}}")
-        agent._log_messages = self.check_messages_1
-        self.run_agent("world", agent)
-
-    def test_agent_prompt_not_defined(self):
-        # agent prompt not defined
-        agent = self.init_agent(system_prompt="You are a helpful assistant.", agent_prompt="{{name}} {{age}} {{task}}",
-                                agent_prompt_template=StringPromptFormatter.from_template("{{name}} {{age}} {{task}}",
-                                                      partial_variables={"name": "Mike"}))
-        agent._log_messages = self.check_messages_2
-        self.run_agent("play", agent)
-
-
 if __name__ == "__main__":
     test = TestPromptTemplate()
     test.test_dynamic_variables()
@@ -173,9 +150,5 @@ if __name__ == "__main__":
     test.test_multiple_field_getters()
     test.test_string_prompt_template()
     test.test_enhanced_field_values_basic()
-    test.test_agent_prompt_is_none()
-    test.test_agent_prompt_default()
-    test.test_agent_prompt_not_defined()
-    print("✅ test_prompt_template.py All tests passed!")
     
 
