@@ -6,7 +6,7 @@ import sys
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from aworld.planner.plan import DefaultPlanner
+from aworld.planner.plan import PlannerOutputParser
 
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.runner import Runners
@@ -35,13 +35,15 @@ def get_deepresearch_swarm(user_input):
         use_vision=False
     )
 
+    agent_id = "planner_agent"
     plan_agent = Agent(
+        agent_id = agent_id,
         name="planner_agent",
         desc="planner_agent",
         conf=agent_config,
-        use_planner=True,
-        planner=DefaultPlanner(plan_sys_prompt, replan_sys_prompt),
-        use_tools_in_prompt=True
+        use_tools_in_prompt=True,
+        resp_parse_func=PlannerOutputParser(agent_id).parse,
+        system_prompt_template=plan_sys_prompt,
     )
 
     web_search_agent = Agent(
@@ -50,27 +52,6 @@ def get_deepresearch_swarm(user_input):
         conf=agent_config,
         system_prompt_template=search_sys_prompt,
         tool_names=[Tools.SEARCH_API.value]
-        # mcp_servers=["aworldsearch_server"],
-        # mcp_config={
-        #     "mcpServers": {
-        #         "aworldsearch_server": {
-        #             "command": "python",
-        #             "args": [
-        #                 "-m",
-        #                 "mcp_servers.aworldsearch_server"
-        #             ],
-        #             "env": {
-        #                 "AWORLD_SEARCH_URL": "https://antragflowInside.alipay.com/v1/rpc/ragLlmSearch",
-        #                 "AWORLD_SEARCH_TOTAL_NUM": "10",
-        #                 "AWORLD_SEARCH_SLICE_NUM": "3",
-        #                 "AWORLD_SEARCH_DOMAIN": "google",
-        #                 "AWORLD_SEARCH_SEARCHMODE": "RAG_LLM",
-        #                 "AWORLD_SEARCH_SOURCE": "lingxi_agent",
-        #                 "AWORLD_SEARCH_UID": "2088802724428205"
-        #             }
-        #         }
-        #     }
-        # }
     )
     
     reporting_agent = Agent(
