@@ -43,26 +43,6 @@ Context serves as both a session-level context manager and agent-level context m
 5. **LLM Call Intervention**: Provide complete control over the LLM call process through Hook and ContextProcessor
 6. **Multi-task State Management**: Support fork_new_task and context merging for complex multi-task scenarios
 
-#### Session-Level Functionality
-- **Scope**: Spans the entire AWorld Runner execution period
-- **Responsibility**: Global state management, task coordination, and resource allocation
-- **Dictionary Interface**: Supports simple key-value state storage using `context['key'] = value` syntax
-- **Multi-Agent Coordination**: Manages multiple Agent instances and enables seamless data exchange between different Agents
-- **Session Management**: Provides Context API for cross-agent state management
-- **Task Coordination**: Handles task management, agent coordination, and resource allocation
-
-#### Agent-Level Functionality
-- **Scope**: Spans individual Agent execution period
-- **Responsibility**: Agent-specific state management and runtime tracking
-- **Configuration Management**: Maintains immutable Agent configuration (agent_id, agent_name, agent_desc, system_prompt, agent_prompt, tool_names, context_rule)
-- **Runtime State Tracking**: Manages mutable runtime state (tools, step, messages, context_usage, trajectories)
-- **Dynamic Prompt Management**: Supports runtime modification of system_prompt and agent_prompt based on execution context
-- **Tool Lifecycle Management**: Handles tool object initialization, execution, and state management
-- **Conversation History**: Maintains complete message history throughout Agent execution
-- **Step-by-Step Execution**: Tracks current execution step and manages step transitions
-- **Context Optimization**: Monitors context usage statistics and applies context processing rules
-- **State Persistence**: Preserves Agent state across multiple LLM calls and tool invocations within a single execution period
-
 ### Example: Agent State Transfer
 
 > **📋 Test Implementation**: See complete test implementation at [`tests/test_context_management.py::TestContextManagement::test_multi_agent_state_trace()`](../../../tests/test_context_management.py)
@@ -175,99 +155,6 @@ context = Context()
 context.context_info.update({"task": "What is an agent."})
 self.run_task(context=context, agent=mock_agent)
 ```
-
-## Context Rule Configuration
-
-![Context Rule](../../../readme_assets/context_rule.svg)
-
-AWorld's `ContextRuleConfig` provides system-level guidance for context management, inspired by [Cline's rules system](https://docs.cline.bot/features/cline-rules). It offers comprehensive context processing through configuration-based rules that control optimization and compression behavior.
-
-### OptimizationConfig
-
-Controls context optimization behavior for dynamic context loading, reranking, truncation, and compression:
-
-- `enabled`: Whether to enable context optimization (default: `False`)
-- `max_token_budget_ratio`: Maximum token budget ratio for context window usage (default: `0.5`, range: 0.0-1.0)
-
-### LlmCompressionConfig (Beta Feature)
-
-**⚠️ Beta Feature**: This configuration is currently in beta and may undergo changes in future versions.
-
-Controls intelligent context compression within the context rule pipeline:
-
-- `enabled`: Whether to enable LLM-based compression (default: `False`)
-- `trigger_compress_token_length`: Token threshold to trigger basic compression (default: `10000`)
-- `trigger_mapreduce_compress_token_length`: Token threshold to trigger map-reduce compression (default: `100000`)
-- `compress_model`: ModelConfig for compression LLM calls (optional)
-
-### Example: Using Default Context Configuration (Recommended)
-
-> **📋 Test Implementation**: See default configuration test at [`tests/test_context_management.py::TestContextManagement::test_default_context_configuration()`](../../../tests/test_context_management.py)
-
-```python
-from aworld.agents.llm_agent import Agent
-from aworld.config.conf import AgentConfig
-
-# No need to explicitly configure context_rule, system automatically uses default configuration
-# Default configuration is equivalent to:
-# context_rule=ContextRuleConfig(
-#     optimization_config=OptimizationConfig(
-#         enabled=True,
-#         max_token_budget_ratio=1.0  # Use 100% of context window
-#     ),
-#     llm_compression_config=LlmCompressionConfig(
-#         enabled=False  # Compression disabled by default
-#     )
-# )
-mock_agent = self.init_agent("1")
-response = self.run_agent(
-    input="What is an agent. describe within 20 words", 
-    agent=mock_agent
-)
-
-assert response.answer is not None
-assert mock_agent.conf.llm_config.llm_model_name == self.mock_model_name
-
-# Test default context rule behavior
-assert mock_agent.context_rule is not None
-assert mock_agent.context_rule.optimization_config is not None
-```
-
-### Example: Custom Context Configuration
-
-> **📋 Test Implementation**: See custom configuration test at [`tests/test_context_management.py::TestContextManagement::test_custom_context_configuration()`](../../../tests/test_context_management.py)
-
-```python
-from aworld.config.conf import AgentConfig, ContextRuleConfig, OptimizationConfig, LlmCompressionConfig, ModelConfig
-
-# Create custom context rules
-mock_agent = self.init_agent(context_rule=ContextRuleConfig(
-    optimization_config=OptimizationConfig(
-        enabled=True,
-        max_token_budget_ratio=0.00015
-    ),
-    llm_compression_config=LlmCompressionConfig(
-        enabled=True,
-        trigger_compress_token_length=100,
-        compress_model=ModelConfig(
-            llm_model_name=self.mock_model_name,
-            llm_base_url=self.mock_base_url,
-            llm_api_key=self.mock_api_key,
-        )
-    )
-))
-
-response = self.run_agent(
-    input="describe What is an agent in details", 
-    agent=mock_agent
-)
-assert response.answer is not None
-
-# Test configuration values
-assert mock_agent.context_rule.optimization_config.enabled
-assert mock_agent.context_rule.llm_compression_config.enabled
-```
-
 
 ## Prompt Template
 
@@ -383,67 +270,6 @@ def test_formatted_field_getter():
     assert json.dumps(value, ensure_ascii=False, indent=None) == result
 ```
 
-### Example: Batch Field Processing
-
-> **📋 Test Implementation**: See complete test implementation at [`tests/test_prompt_template.py::test_multiple_field_getters()`](../../../tests/test_prompt_template.py)
-
-```python
-# Example 3: Batch field processing from string list
-from aworld.core.context.prompts.dynamic_variables import get_field_values_from_list
-
-def test_multiple_field_getters():
-    context = Context()
-    context.context_info.update({"task": "chat"})
-    context.trajectories.update({"steps": [1, 2, 3]})
-
-    # Process multiple fields from string list
-    field_paths = ["context_info.task", "trajectories.steps"]
-    result = get_field_values_from_list(context=context, field_paths=field_paths)
-    
-    # Result keys are automatically normalized
-    assert result["context_info_task"] == "chat"
-    assert result["trajectories_steps"] == "[1, 2, 3]"
-```
-
-### Enhanced Field Retrieval
-
-> **📋 Test Implementation**: See complete test implementations at:
-> - [`tests/test_prompt_template.py::test_enhanced_field_values()`](../../../tests/test_prompt_template.py) - Multi-source field retrieval
-> - [`tests/test_prompt_template.py::test_enhanced_field_value_single()`](../../../tests/test_prompt_template.py) - Single field retrieval
-> - [`tests/test_prompt_template.py::test_enhanced_field_getter_creation()`](../../../tests/test_prompt_template.py) - Enhanced getter creation
-
-The Enhanced Field Retrieval system provides a comprehensive approach to field value retrieval that automatically tries multiple data sources in priority order. This system is built on top of `get_field_values_from_list` but extends it with intelligent fallback mechanisms for time variables and system variables.
-
-#### Data Source Priority Order
-
-1. **Context Fields** (Highest Priority): Fields from the Context object using path resolution
-2. **Time Variables**: Dynamic time-based variables like `current_time`, `current_date`
-3. **System Variables**: System information like `hostname`, `username`, `system_platform`
-4. **Default Value** (Lowest Priority): Fallback value when no source provides the field
-
-#### Available Dynamic Variables
-
-The system provides two main categories of dynamic variables:
-
-**Time Variables**:
-- `current_time`: Current time in HH:MM:SS format
-- `current_date`: Current date in YYYY-MM-DD format
-- `current_datetime`: Current datetime in YYYY-MM-DD HH:MM:SS format
-- `current_timestamp`: Current Unix timestamp
-- `current_weekday`: Current weekday name
-- `current_month`: Current month name
-- `current_year`: Current year
-
-**System Variables**:
-- `system_platform`: System platform (Windows/Linux/Darwin)
-- `system_os`: Operating system name
-- `python_version`: Python version
-- `hostname`: System hostname
-- `username`: Current username
-- `working_directory`: Current working directory
-- `random_uuid`: Random UUID string
-- `short_uuid`: Short UUID (8 characters)
-
 ### Example: Enhanced Multi-Source Field Retrieval
 
 ```python
@@ -474,133 +300,121 @@ result = get_enhanced_field_values_from_list(
 # result["missing_field"] == "not_found"     # Used default value
 ```
 
-### Example: Enhanced Single Field Retrieval
+#### Available Dynamic Variables
+
+The system provides two main categories of dynamic variables:
+
+**Time Variables**:
+- `current_time`: Current time in HH:MM:SS format
+- `current_date`: Current date in YYYY-MM-DD format
+- `current_datetime`: Current datetime in YYYY-MM-DD HH:MM:SS format
+- `current_timestamp`: Current Unix timestamp
+- `current_weekday`: Current weekday name
+- `current_month`: Current month name
+- `current_year`: Current year
+
+**System Variables**:
+- `system_platform`: System platform (Windows/Linux/Darwin)
+- `system_os`: Operating system name
+- `python_version`: Python version
+- `hostname`: System hostname
+- `username`: Current username
+- `working_directory`: Current working directory
+- `random_uuid`: Random UUID string
+- `short_uuid`: Short UUID (8 characters)
+
+
+## Context Pre-LLM-Call optimization Configuration
+
+![Context Pre-LLM-Call Optimization](../../../readme_assets/context_pre_llm_call_optimization.svg)
+
+AWorld's `ContextRuleConfig` provides system-level guidance for context management, inspired by [Cline's rules system](https://docs.cline.bot/features/cline-rules). It offers comprehensive context processing through configuration-based rules that control optimization and compression behavior.
+
+### OptimizationConfig
+
+Controls context optimization behavior for dynamic context loading, reranking, truncation, and compression:
+
+- `enabled`: Whether to enable context optimization (default: `False`)
+- `max_token_budget_ratio`: Maximum token budget ratio for context window usage (default: `0.5`, range: 0.0-1.0)
+
+### LlmCompressionConfig (Beta Feature)
+
+**⚠️ Beta Feature**: This configuration is currently in beta and may undergo changes in future versions.
+
+Controls intelligent context compression within the context rule pipeline:
+
+- `enabled`: Whether to enable LLM-based compression (default: `False`)
+- `trigger_compress_token_length`: Token threshold to trigger basic compression (default: `10000`)
+- `trigger_mapreduce_compress_token_length`: Token threshold to trigger map-reduce compression (default: `100000`)
+- `compress_model`: ModelConfig for compression LLM calls (optional)
+
+### Example: Using Default Context Configuration (Recommended)
+
+> **📋 Test Implementation**: See default configuration test at [`tests/test_context_management.py::TestContextManagement::test_default_context_configuration()`](../../../tests/test_context_management.py)
 
 ```python
-from aworld.core.context.prompts.dynamic_variables import get_enhanced_field_value
+from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig
 
-context = Context()
-context.agent_info.update({"name": "Assistant"})
-
-# Get field with automatic fallback
-name = get_enhanced_field_value(context, "agent_info.name", "Unknown")
-# name == "Assistant" (from context)
-
-current_time = get_enhanced_field_value(context, "current_time", "N/A")
-# current_time == "14:30:25" (from time variables)
-
-hostname = get_enhanced_field_value(context, "hostname", "localhost")
-# hostname == "my-computer" (from system variables)
-
-# With custom processor
-name_upper = get_enhanced_field_value(
-    context, "agent_info.name", "Unknown",
-    processor=lambda x: x.upper()
+# No need to explicitly configure context_rule, system automatically uses default configuration
+# Default configuration is equivalent to:
+# context_rule=ContextRuleConfig(
+#     optimization_config=OptimizationConfig(
+#         enabled=True,
+#         max_token_budget_ratio=1.0  # Use 100% of context window
+#     ),
+#     llm_compression_config=LlmCompressionConfig(
+#         enabled=False  # Compression disabled by default
+#     )
+# )
+mock_agent = self.init_agent("1")
+response = self.run_agent(
+    input="What is an agent. describe within 20 words", 
+    agent=mock_agent
 )
-# name_upper == "ASSISTANT"
+
+assert response.answer is not None
+assert mock_agent.conf.llm_config.llm_model_name == self.mock_model_name
+
+# Test default context rule behavior
+assert mock_agent.context_rule is not None
+assert mock_agent.context_rule.optimization_config is not None
 ```
 
-### Example: Enhanced Field Getter Creation
+### Example: Custom Context Configuration
+
+> **📋 Test Implementation**: See custom configuration test at [`tests/test_context_management.py::TestContextManagement::test_custom_context_configuration()`](../../../tests/test_context_management.py)
 
 ```python
-from aworld.core.context.prompts.dynamic_variables import create_enhanced_field_getter
+from aworld.config.conf import AgentConfig, ContextRuleConfig, OptimizationConfig, LlmCompressionConfig, ModelConfig
 
-# Create enhanced getter with fallback to time variables
-get_task_or_time = create_enhanced_field_getter(
-    "context_info.task",
-    default="No task available",
-    enable_time_variables=True,
-    processor=lambda x: f"Current: {x.upper()}"
+# Create custom context rules
+mock_agent = self.init_agent(context_rule=ContextRuleConfig(
+    optimization_config=OptimizationConfig(
+        enabled=True,
+        max_token_budget_ratio=0.00015
+    ),
+    llm_compression_config=LlmCompressionConfig(
+        enabled=True,
+        trigger_compress_token_length=100,
+        compress_model=ModelConfig(
+            llm_model_name=self.mock_model_name,
+            llm_base_url=self.mock_base_url,
+            llm_api_key=self.mock_api_key,
+        )
+    )
+))
+
+response = self.run_agent(
+    input="describe What is an agent in details", 
+    agent=mock_agent
 )
+assert response.answer is not None
 
-context = Context()
-# If task exists in context: "Current: CHAT"
-# If task doesn't exist: will try time variables or use default
-
-# Create system info getter
-get_system_info = create_enhanced_field_getter(
-    "hostname",
-    default="unknown-host",
-    enable_system_variables=True
-)
-
-hostname = get_system_info(context)  # Returns actual system hostname
+# Test configuration values
+assert mock_agent.context_rule.optimization_config.enabled
+assert mock_agent.context_rule.llm_compression_config.enabled
 ```
-
-### Example: Fallback Control and Priority
-
-```python
-# Test priority order - context takes priority over dynamic variables
-context = Context()
-context.current_time = "context_override_time"
-
-result = get_enhanced_field_value(context, "current_time", "default")
-# result == "context_override_time" (context takes priority)
-
-# Remove from context, will fallback to time variable
-del context.current_time
-result = get_enhanced_field_value(context, "current_time", "default")
-# result == "14:30:25" (actual current time from time variables)
-
-# Disable fallbacks
-result = get_enhanced_field_values_from_list(
-    context=context,
-    field_paths=["current_time", "hostname"],
-    enable_time_variables=False,
-    enable_system_variables=False,
-    default="disabled"
-)
-# Both fields will return "disabled" since fallbacks are disabled
-```
-
-### Example: List Available Dynamic Variables
-
-```python
-from aworld.core.context.prompts.dynamic_variables import (
-    get_available_dynamic_variables,
-    list_available_dynamic_variables
-)
-
-# Get variables dictionary
-variables = get_available_dynamic_variables()
-print(variables["current_time"])  # "Current time in HH:MM:SS format"
-
-# Get formatted list
-formatted_list = list_available_dynamic_variables()
-print(formatted_list)
-# Output:
-# Available Dynamic Variables:
-# 
-# Time Variables:
-#   - current_time: Current time in HH:MM:SS format
-#   - current_date: Current date in YYYY-MM-DD format
-#   ...
-# 
-# System Variables:
-#   - hostname: System hostname
-#   - username: Current username
-#   ...
-```
-
-#### Key Benefits
-
-1. **Intelligent Fallback**: Automatically tries multiple data sources in priority order
-2. **Zero Configuration**: Works out-of-the-box with sensible defaults
-3. **Flexible Control**: Enable/disable specific fallback sources as needed
-4. **Error Resilience**: Graceful handling of missing fields and processor errors
-5. **Consistent API**: Same interface as existing field getter functions
-6. **Performance Optimized**: Only tries fallback sources when primary source fails
-7. **Debug Friendly**: Comprehensive logging and function naming for troubleshooting
-
-### Key Features
-
-1. **Variable Recognition**: Automatically identifies template variables from the template string
-2. **Flexible Formatting**: Supports multiple template formats (f-string, Jinja2)
-3. **Context Awareness**: Integrates seamlessly with AWorld Context objects
-4. **Reusability**: Partial variables allow for template reuse with pre-filled values
-5. **Composability**: Templates can be combined and extended using operators
-6. **Dynamic Content**: Support for dynamic variables that resolve at runtime
-
 
 ## Notes
 
