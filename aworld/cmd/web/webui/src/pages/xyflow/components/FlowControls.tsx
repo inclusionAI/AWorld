@@ -40,12 +40,12 @@ export const FlowControls: FC<FlowControlsProps> = ({
       <ControlButton onClick={onAutoLayout} title="Auto Layout">
         <ReloadOutlined />
       </ControlButton>
-      <ControlButton onClick={onUndo} title="Undo">
+      {/* <ControlButton onClick={onUndo} title="Undo">
         <UndoOutlined />
       </ControlButton>
       <ControlButton onClick={onRedo} title="Redo">
         <RedoOutlined />
-      </ControlButton>
+      </ControlButton> */}
       <ControlButton onClick={onToggleMinimap} title={showMinimap ? 'Hide minimap' : 'Show minimap'}>
         <GlobalOutlined />
       </ControlButton>
