@@ -15,7 +15,7 @@ class StepInfo(BaseModel):
     # input for agent
     input: Optional[str] = Field(..., description="Step description")
     # parameters for tools
-    parameters: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Tool or agent parameters")
+    parameters: Optional[Dict[str, Any]] = Field(..., default_factory=dict, description="Tool or agent parameters")
     # id of tool or agent
     id: str = Field(..., description="Tool or agent ID for execution")
 
