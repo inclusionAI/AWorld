@@ -90,7 +90,7 @@ def get_deepresearch_swarm(user_input):
         use_vision=False,
     )
 
-    agent_id = "DeepResearchAgent"
+    agent_id = "🧠 DeepResearchPlanAgent"
     plan_agent = PlanAgent(
         agent_id=agent_id,
         name=agent_id,
@@ -102,16 +102,16 @@ def get_deepresearch_swarm(user_input):
     )
 
     web_search_agent = Agent(
-        name="WebSearchAgent",
-        desc="WebSearchAgent",
+        name="🔎 WebSearchAgent",
+        desc="🔎 WebSearchAgent",
         conf=agent_config,
         system_prompt_template=search_sys_prompt,
         tool_names=[Tools.SEARCH_API.value],
     )
 
     reporting_agent = Agent(
-        name="ReportingAgent",
-        desc="ReportingAgent",
+        name="📝 ReportingAgent",
+        desc="📝 ReportingAgent",
         conf=agent_config,
         system_prompt_template=reporting_sys_prompt,
     )
