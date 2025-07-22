@@ -16,6 +16,7 @@ from aworld.runners.utils import choose_runners, execute_runner
 async def exec_tool(tool_name: str,
                     action_name: str,
                     params: dict,
+                    agent_name: str,
                     context: Context,
                     sub_task: bool = False,
                     outputs: Outputs = None,
@@ -26,12 +27,13 @@ async def exec_tool(tool_name: str,
         tool_name: Name of tool, required.
         action_name: Action name of tool, required.
         params: Tool params, required.
+        agent_name: Agent name, required, can be empty.
         context: Context in the runtime, required.
         sub_task: Is it a subtask with the main task set to False.
         outputs: The same outputs instance, required in subtask.
         task_group_id: ID of group of task.
     """
-    actions = [ActionModel(tool_name=tool_name, action_name=action_name, params=params, agent_name="")]
+    actions = [ActionModel(tool_name=tool_name, action_name=action_name, params=params, agent_name=agent_name)]
     task = Task(input=actions,
                 context=context,
                 is_sub_task=sub_task,
