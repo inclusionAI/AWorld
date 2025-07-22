@@ -1,11 +1,15 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import os
 import time
 import traceback
+from datetime import datetime
+
 import aworld.trace as trace
 from typing import List, Callable, Any
 
+from aworld.core.agent.base import is_agent, is_agent_by_name
 from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
 
@@ -14,11 +18,12 @@ from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, A
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
+from aworld.replay_buffer import EventReplayBuffer
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 
 from aworld.runners.task_runner import TaskRunner
-from aworld.utils.common import override_in_subclass, new_instance
+from aworld.utils.common import override_in_subclass, new_instance, get_local_ip
 from aworld.runners.state_manager import EventRuntimeStateManager
 
 
@@ -34,6 +39,7 @@ class TaskEventRunner(TaskRunner):
         self.handlers = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
+        self.replay_buffer = EventReplayBuffer()
 
     async def pre_run(self):
         logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
@@ -316,6 +322,7 @@ class TaskEventRunner(TaskRunner):
         async with trace.task_span(self.init_message.session_id, self.task):
             await self.event_mng.emit_message(self.init_message)
             await self._do_run()
+            await self._save_trajectories()
             return self._task_response
 
     async def stop(self):
@@ -327,32 +334,36 @@ class TaskEventRunner(TaskRunner):
     def response(self):
         return self._task_response
 
-    def is_group_finish(self, event: Message) -> bool:
-        """Determine if an event triggers group completion
+    async def _save_trajectories(self):
+        messages = self.event_mng.messages_by_task_id(self.task.id)
+        valid_agent_messages = await self._filter_replay_messages(messages)
+        data_rows = []
+        try:
+            for msg in valid_agent_messages:
+                data_row = self.replay_buffer.build_data_row_from_message(msg)
+                if data_row:
+                    data_rows.append(data_row)
 
-        Logic:
-        1. Event must be a Message type with a group_id
-        2. If event.category=Constants.AGENT, check if the agent instance that sent the message is finished
-        3. If event.category=Constants.TOOL, check if the tool execution message level is 0
+            self.replay_buffer.store_batch(data_rows)
+            timestamp = datetime.now().strftime("%Y%m%d")
+            export_dir = os.getenv('REPLAY_EXPORT_DIRECTORY', None)
+            replay_dir = os.path.join(export_dir or "./trace_data", timestamp, get_local_ip(), "replays")
+            os.makedirs(replay_dir, exist_ok=True)
+            self.replay_buffer.export(data_rows, replay_dir)
+        except Exception as e:
+            logger.error(f"Failed to save trajectories: {str(e)}.{traceback.format_exc()}")
 
-        Args:
-            event: The event to check
-
-        Returns:
-            bool: Whether the event triggers group completion
-        """
-        if not isinstance(event, Message) or not event.group_id:
-            return False
-
-        if event.category == Constants.AGENT:
-            agent_id = event.sender
-            if not agent_id:
-                return False
-
-            agent = self.swarm.agents.get(agent_id)
-            if not agent:
-                return False
-
-            return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
-
-        return False
+    async def _filter_replay_messages(self, messages:List[Message]) -> List[Message]:
+        results = []
+        for message in messages:
+            if message.category != Constants.AGENT:
+                continue
+            sender = message.sender
+            receiver = message.receiver
+            if not sender or not receiver or not is_agent_by_name(receiver):
+                continue
+            agent_as_tool = message.headers.get("agent_as_tool", False)
+            if agent_as_tool:
+                continue
+            results.append(message)
+        return results

@@ -245,6 +245,8 @@ class DefaultAgentHandler(AgentHandler):
                               headers=headers)
             return
 
+        headers = message.headers.copy()
+        # headers.update({"agent_as_tool": True})
         yield Message(
             category=Constants.AGENT,
             payload=observation,
@@ -252,7 +254,7 @@ class DefaultAgentHandler(AgentHandler):
             sender=action.agent_name,
             session_id=session_id,
             receiver=action.tool_name,
-            headers=message.headers
+            headers=headers,
         )
 
     async def _stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
@@ -507,6 +509,9 @@ class DefaultAgentHandler(AgentHandler):
         return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
 
     async def post_handle(self, message: Message) -> Message:
+        new_context = message.context.deep_copy()
+        new_context._task = message.context.get_task()
+        message.context = new_context
         if self.is_group_finish(message):
             from aworld.runners.state_manager import RuntimeStateManager
             state_mng = RuntimeStateManager.instance()

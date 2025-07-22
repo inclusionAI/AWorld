@@ -108,6 +108,15 @@ class EventManager:
     def session_messages(self, session_id: str) -> List[Message]:
         return [m for k, msg in self.messages.items() for m in msg if m.session_id == session_id]
 
+    def messages_by_task_id(self, task_id: str):
+        results = []
+        for _, msgs in self.messages.items():
+            for msg in msgs:
+                if msg.context.task_id == task_id:
+                    results.append(msg)
+        results.sort(key=lambda x: x.timestamp)
+        return results
+
     @staticmethod
     def mark_valid(messages: List[Message]):
         for msg in messages:
