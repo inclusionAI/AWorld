@@ -68,12 +68,12 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data, onOpenWorkspac
         // 更新记录的workspace数据
         lastWorkspaceDataRef.current = currentWorkspaceData;
 
-        // 使用setTimeout确保BubbleItem完全渲染后再打开workspace
-        const timer = setTimeout(() => {
+        // 使用requestAnimationFrame确保在下一帧渲染后打开workspace
+        const frameId = requestAnimationFrame(() => {
           openWorkspace(currentWorkspaceData);
-        }, 100);
+        });
 
-        return () => clearTimeout(timer);
+        return () => cancelAnimationFrame(frameId);
       } else {
         console.log("latest workspace opened!", currentWorkspaceData, lastWorkspaceDataRef.current)
       }
