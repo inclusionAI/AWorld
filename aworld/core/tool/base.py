@@ -251,8 +251,11 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
 
-        agent = self.context.swarm.agents.get(action[0].agent_name)
-        feedback_tool_result = agent.feedback_tool_result if agent else False
+        if self.context.swarm:
+            agent = self.context.swarm.agents.get(action[0].agent_name)
+            feedback_tool_result = agent.feedback_tool_result if agent else False
+        else:
+            feedback_tool_result = True
         if feedback_tool_result:
             return AgentMessage(payload=step_res,
                                 caller=action[0].agent_name,
@@ -355,8 +358,11 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
 
-        agent = self.context.swarm.agents.get(action[0].agent_name)
-        feedback_tool_result = agent.feedback_tool_result if agent else False
+        if self.context.swarm:
+            agent = self.context.swarm.agents.get(action[0].agent_name)
+            feedback_tool_result = agent.feedback_tool_result if agent else False
+        else:
+            feedback_tool_result = True
         if feedback_tool_result:
             return AgentMessage(payload=step_res,
                                 caller=action[0].agent_name,

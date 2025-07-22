@@ -39,7 +39,7 @@ class AgentHandler(DefaultHandler):
 class DefaultAgentHandler(AgentHandler):
     def is_valid_message(self, message: Message):
         if message.category != Constants.AGENT:
-            if message.sender in self.swarm.agents and message.sender in AgentFactory:
+            if self.swarm and message.sender in self.swarm.agents and message.sender in AgentFactory:
                 if self.agent_calls:
                     if self.agent_calls[-1] != message.sender:
                         self.agent_calls.append(message.sender)
