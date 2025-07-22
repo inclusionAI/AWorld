@@ -10,7 +10,7 @@ if __name__ == '__main__':
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="openai/gpt-4o",
-        llm_api_key="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",
+        llm_api_key="sk-or-v1-***",
         llm_base_url="https://openrouter.ai/api/v1"
     )
 
