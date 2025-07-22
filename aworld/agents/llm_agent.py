@@ -767,7 +767,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """
         content = ""
         for res in tool_results:
-            content += f"{res.tool_name}: {res.content}\n"
+            content += f"{res.content}\n"
         return [ActionModel(agent_name=self.id(), policy_info=content)]
 
     async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
