@@ -1,16 +1,20 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
+import os
 from aworld.config.conf import AgentConfig
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 
 
 if __name__ == '__main__':
+    # Get API key from environment variable
+    api_key = os.getenv('OPENROUTER_API_KEY')
+    
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="openai/gpt-4o",
-        llm_api_key="sk-or-v1-***",
+        llm_api_key=api_key,
         llm_base_url="https://openrouter.ai/api/v1"
     )
 
