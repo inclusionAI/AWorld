@@ -742,6 +742,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 act_result = await exec_tool(tool_name=act.tool_name,
                                              action_name=act.action_name,
                                              params=act.params,
+                                             agent_name=self.id(),
                                              context=message.context.deep_copy(),
                                              sub_task=True,
                                              outputs=message.context.outputs,
