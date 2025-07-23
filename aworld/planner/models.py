@@ -53,5 +53,5 @@ class Plan(BaseModel):
             data = json.loads(json_str)
             return Plan.parse_obj(data)
         except Exception as e:
-            logger.warning(f"Failed to parse Plan and default to origin answer: {traceback.format_exc()}")
+            logger.warning(f"{json_str} Failed to parse Plan and default to origin answer. \n{traceback.format_exc()}")
             return Plan(step_infos=StepInfos(steps={}, dag=[]), answer=json_str)
