@@ -70,7 +70,169 @@ python setup.py install
 ```
 
 ## Quick Start
-> Here's a quick start guide to: (1) create your first agent; (2) equip it with a MCP tool; (3) assign a teammate; and (4) answer a user query through teamwork.
+> Here's a quick start guide to create your own agent.
+
+### 1. Setup Environment
+
+Create & Activate Virtual Environment (Recommended):
+
+```shell
+# venv
+python -m venv .vent
+# conda
+conda create -n aworld python==3.12 -y
+conda activate -n aworld
+```
+
+Install AWorld SDK
+
+```shell
+pip install aworld -U
+```
+
+### 2. Create Agent Project
+
+We have 2 ways to create agent:
+
+#### 2.1 Run Agent with WebUI/Rest API
+
+##### Project Structure:
+
+```text
+project_root_dir/
+    agent_deploy/
+      your_agent_1/
+        __init__.py
+        agent.py
+      your_agent_2/
+        __init__.py
+        agent.py
+```
+
+
+##### Define your agent:
+
+`__init__.py`
+
+Now create an `__ini__.py` file in folder `agent_deploy/your_agent_1`
+
+```shell
+mkdir -p agent_deploy/your_agent_1
+cd agent_deploy/your_agent_1
+touch __init__.py
+```
+
+`agent.py`
+
+Create `agent.py` in the same folder
+
+Define class `class AWorldAgent(BaseAWorldAgent):`
+
+example code:
+
+```python
+import logging
+import os
+import json
+from aworld.cmd.data_model import BaseAWorldAgent, ChatCompletionRequest
+from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.agents.llm_agent import Agent
+from aworld.core.task import Task
+from aworld.runner import Runners
+
+logger = logging.getLogger(__name__)
+
+
+class AWorldAgent(BaseAWorldAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def name(self):
+        return "Agent Demo"
+
+    def description(self):
+        return "Agent Demo"
+
+    async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
+        llm_provider = os.getenv("LLM_PROVIDER_DEMO", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_DEMO")
+        llm_api_key = os.getenv("LLM_API_KEY_DEMO")
+        llm_base_url = os.getenv("LLM_BASE_URL_DEMO")
+        llm_temperature = os.getenv("LLM_TEMPERATURE_DEMO", 0.0)
+
+        if not llm_model_name or not llm_api_key or not llm_base_url:
+            raise ValueError(
+                "llm_model_name, llm_api_key, llm_base_url is empty!"
+            )
+
+        agent_config = AgentConfig(
+            llm_provider=llm_provider,
+            llm_model_name=llm_model_name,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_temperature=llm_temperature,
+        )
+
+        # Register the MCP tool here, or create a separate configuration file.
+        mcp_config = {
+            "mcpServers": {
+                "amap-amap-sse": {
+                    "type": "sse",
+                    "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",
+                    "timeout": 5,
+                    "sse_read_timeout": 300
+                }
+            }
+        }
+
+        super_agent = Agent(
+            conf=agent_config,
+            name="Agent Demo",
+            system_prompt="""You are a Demo Agent, your goal is to answer user question friendly""",
+            mcp_servers=["amap-amap-sse"], # MCP server name for agent to use
+            mcp_config=mcp_config
+        )
+
+        if prompt is None and request is not None:
+            prompt = request.messages[-1].content
+
+        task = Task(
+            input=prompt,
+            agent=super_agent,
+            conf=TaskConfig(max_steps=5),
+            session_id=request.session_id,
+        )
+
+        async for output in Runners.streamed_run_task(task).stream_events():
+            yield output
+```
+
+##### Run your agent:
+
+Start your agent with command `aworld`
+
+```
+cd ${project_root_dir}
+# Setup LLM Model API Credential
+export LLM_MODEL_NAME_DEMO=xxx
+export LLM_API_KEY_DEMO=xxx
+export LLM_BASE_URL_DEMO=xxx
+
+# Run Agent in WebUI
+aworld web
+open 'http://localhost:8000'
+
+
+# Run Agent in RestAPI
+aworld api_server
+open 'http://localhost:8000/docs'
+```
+
+#### 2.2 Run Agent with python script
+
+`demo_agent.py`
+
+Create Demo Agent script `demo_agent.py`.
 
 ```python
 from aworld.config.conf import AgentConfig
@@ -78,14 +240,13 @@ from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from aworld.core.agent.swarm import Swarm
 
-if __name__ == '__main__':
+def run_agent(prompt: str):
     agent_config = AgentConfig(
-        llm_provider="openai",
-        llm_model_name="gpt-4o",
-
-        # Set via environment variable or direct configuration
-        # llm_api_key="YOUR_API_KEY", 
-        # llm_base_url="https://api.openai.com/v1"
+        llm_provider = os.getenv("LLM_PROVIDER_DEMO", "openai")
+        llm_model_name = os.getenv("LLM_MODEL_NAME_DEMO")
+        llm_api_key = os.getenv("LLM_API_KEY_DEMO")
+        llm_base_url = os.getenv("LLM_BASE_URL_DEMO")
+        llm_temperature = os.getenv("LLM_TEMPERATURE_DEMO", 0.0)
     )
 
     # Register the MCP tool here, or create a separate configuration file.
@@ -120,9 +281,25 @@ if __name__ == '__main__':
     swarm = Swarm(search, summary)
 
     # Run agent team
-    res = Runners.sync_run(input="Hotels within 1 kilometer of West Lake in Hangzhou",
+    res = Runners.sync_run(input=prompt,
                      swarm=swarm)
-    print(res)
+    return res
+
+if __name__ == '__main__':
+    res = run_agent("Hotels within 1 kilometer of West Lake in Hangzhou")
+    print(f"agent response: {res.model_dump_json(indent=2)}")
+```
+
+Run Demo Agent in terminal
+
+```shell
+# Setup LLM Model API Credential
+export LLM_MODEL_NAME_DEMO=xxx
+export LLM_API_KEY_DEMO=xxx
+export LLM_BASE_URL_DEMO=xxx
+
+# Run Agent
+python demo_agent.py
 ```
 
 ## Architecture
