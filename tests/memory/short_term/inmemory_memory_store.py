@@ -33,5 +33,5 @@ async def run():
         logging.info(f"{type(item)}: {item.content}")
 
 
-if __name__ == '__main__':
-    asyncio.run(run())
+# if __name__ == '__main__':
+#     asyncio.run(run())

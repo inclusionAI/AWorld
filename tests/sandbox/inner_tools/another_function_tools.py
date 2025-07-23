@@ -93,12 +93,11 @@ if __name__ == "__main__":
     # Test tools
     print("=== Testing get_weather tool ===")
     weather = function.call_tool("get_weather", {"city": "Beijing"})
-    print(json.dumps(weather, indent=2))
-    
+
     print("\n=== Testing convert_currency tool ===")
     conversion = function.call_tool("convert_currency", {
         "amount": 100,
         "from_currency": "USD",
         "to_currency": "EUR"
     })
-    print(json.dumps(conversion, indent=2)) 
+    print(conversion)

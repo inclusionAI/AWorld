@@ -43,17 +43,6 @@ def main():
     else:
         print("print_content callback function not found")
 
-    # # Get and execute uppercase_content callback function
-    # print("\n===== Execute uppercase_content Callback Function =====")
-    # uppercase_func = CallbackRegistry.get("uppercase_content")
-    #
-    # if uppercase_func:
-    #     print("Callback function found, executing...")
-    #     result = uppercase_func("Hello, Uppercase Callback!")
-    #     print(f"Callback function execution result: {result}")
-    # else:
-    #     print("uppercase_content callback function not found")
-
 
 if __name__ == "__main__":
     main() 

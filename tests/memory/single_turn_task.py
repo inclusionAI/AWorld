@@ -17,6 +17,6 @@ async def _run_single_task_examples() -> None:
                                 task_id="zues:session#foo:task#1",
                                 user_input="please recommend some outdoor sports, save it use markdown")
 
-if __name__ == '__main__':
-    load_dotenv()
-    asyncio.run(_run_single_task_examples())
+# if __name__ == '__main__':
+#     load_dotenv()
+#     asyncio.run(_run_single_task_examples())

@@ -5,9 +5,6 @@ from aworld.replay_buffer.query_filter import QueryBuilder
 from aworld.core.common import Observation, ActionModel
 from aworld.logs.util import logger
 
-storage = RedisStorage(host="localhost", port=6379,
-                       recreate_idx_if_exists=False)
-
 
 def generate_data_row() -> list[DataRow]:
     rows: list[DataRow] = []
@@ -34,14 +31,14 @@ def generate_data_row() -> list[DataRow]:
     return rows
 
 
-def wriete_data():
+def wriete_data(storage):
     storage.clear()
     rows = generate_data_row()
     storage.add_batch(rows)
     logger.info(f"Add {len(rows)} rows to storage.")
 
 
-def read_data():
+def read_data(storage):
     query_condition = (QueryBuilder()
                        .eq("exp_meta.task_id", "task_1")
                        .and_()
@@ -64,6 +61,8 @@ def read_data():
         logger.info(f"get_paginated: {row}")
 
 
-if __name__ == "__main__":
-    # wriete_data()
-    read_data()
+# if __name__ == "__main__":
+#     storage = RedisStorage(host="localhost", port=6379,
+#                            recreate_idx_if_exists=False)
+#     wriete_data(storage)
+#     read_data(storage)

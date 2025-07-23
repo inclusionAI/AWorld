@@ -217,20 +217,5 @@ def __call__():
 
 sys.modules[__name__].__call__ = __call__
 
-if __name__ == "__main__":
-    main()
-
 # if __name__ == "__main__":
-#     # Configure logging
-#     logging.basicConfig(
-#         level=logging.INFO,
-#         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-#     )
-#
-#
-#     # Test single query
-#     # asyncio.run(search("Alibaba financial report"))
-#
-#     # Test multiple queries
-#     test_queries = ["Alibaba financial report", "Tencent financial report", "Baidu financial report"]
-#     asyncio.run(search(query_list=test_queries))
+#     main()

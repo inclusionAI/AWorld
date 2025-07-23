@@ -63,8 +63,3 @@ def read_data():
                                batch_size=2)
     for data in datas:
         logger.info(f"agent_5 data: {data}")
-
-
-if __name__ == "__main__":
-    # write_data()
-    read_data()

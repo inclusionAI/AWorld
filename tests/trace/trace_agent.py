@@ -8,8 +8,6 @@ from aworld.models.llm import call_llm_model, acall_llm_model
 from aworld.trace.config import ObservabilityConfig
 from aworld.utils.common import sync_exec
 from aworld.logs.util import logger
-from examples.common.tools import Tools
-from examples.common.tools import GetTraceAction
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.trace.server import get_trace_server
@@ -49,7 +47,7 @@ class TraceAgent(Agent):
         tool.reset()
         tool_params = {}
         action = ActionModel(tool_name=tool_name,
-                             action_name=GetTraceAction.GET_TRACE.name,
+                             action_name="get_trace",
                              agent_name=self.id(),
                              params=tool_params)
         message = tool.step(action)
@@ -98,7 +96,7 @@ class TraceAgent(Agent):
         tool.reset()
         tool_params = {}
         action = ActionModel(tool_name=tool_name,
-                             action_name=GetTraceAction.GET_TRACE.name,
+                             action_name='get_trace',
                              agent_name=self.id(),
                              params=tool_params)
         message = tool.step([action])
@@ -199,7 +197,7 @@ def _print_tree(graph, node_id, prefix, is_last):
                         ("    " if is_last else "│   "), i == len(children) - 1)
 
 
-if __name__ == "__main__":
+def run():
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="DeepSeek-V3-Function-Call",
@@ -214,7 +212,7 @@ if __name__ == "__main__":
         name="search_agent",
         system_prompt=search_sys_prompt,
         agent_prompt=search_prompt,
-        tool_names=[Tools.SEARCH_API.value]
+        tool_names=["search_api"]
     )
 
     summary = Agent(

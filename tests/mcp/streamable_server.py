@@ -37,4 +37,5 @@ def get_current_weather(city: str=Field(
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    # mcp.run(transport="streamable-http")
+    pass

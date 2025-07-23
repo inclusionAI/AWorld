@@ -43,12 +43,12 @@ def main():
         invoke_api()
 
 
-if __name__ == "__main__":
-    server_thread = threading.Thread(
-        target=lambda: uvicorn.run(app, host="0.0.0.0", port=7071),
-        daemon=True
-    )
-    server_thread.start()
-    time.sleep(1)
-    main()
-    server_thread.join()
+# if __name__ == "__main__":
+#     server_thread = threading.Thread(
+#         target=lambda: uvicorn.run(app, host="0.0.0.0", port=7071),
+#         daemon=True
+#     )
+#     server_thread.start()
+#     time.sleep(1)
+#     main()
+#     server_thread.join()

@@ -131,10 +131,10 @@ Focus on:
     logger.info(f"✅ Session {session_id} completed")
     
 
-if __name__ == '__main__':
-    load_dotenv()
-
-    init_postgres_memory()
-    # Run the multi-session example with concrete learning tasks
-    asyncio.run(_run_single_session_examples())
+# if __name__ == '__main__':
+#     load_dotenv()
+#
+#     init_postgres_memory()
+#     # Run the multi-session example with concrete learning tasks
+#     asyncio.run(_run_single_session_examples())
 

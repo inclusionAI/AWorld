@@ -89,7 +89,7 @@ async def query_agent_experience():
 
 
 
-if __name__ == '__main__':
-    asyncio.run(trigger_long_term_memory_agent_experience())
-    asyncio.run(query_agent_experience())
+# if __name__ == '__main__':
+#     asyncio.run(trigger_long_term_memory_agent_experience())
+#     asyncio.run(query_agent_experience())
 

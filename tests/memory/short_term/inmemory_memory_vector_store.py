@@ -70,6 +70,6 @@ async def run_search():
         logging.info(f"search result {type(result)}: {result.id}[{result.metadata['score']}]{result.content}")
 
 
-if __name__ == '__main__':
-    asyncio.run(run())
-    asyncio.run(run_search())
+# if __name__ == '__main__':
+#     asyncio.run(run())
+#     asyncio.run(run_search())

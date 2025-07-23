@@ -27,7 +27,3 @@ def main():
         span.set_attribute("parent_test_attr", "pppppp")
         logger.info("hello aworld")
         trace_logger.info("trace hello aworld")
-
-
-if __name__ == "__main__":
-    main()

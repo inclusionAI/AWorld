@@ -88,11 +88,11 @@ async def _run_multi_session_examples() -> None:
     # )
 
 
-if __name__ == '__main__':
-    load_dotenv()
-
-    MemoryFactory.init()
-
-    # Run the multi-session example with concrete learning tasks
-    asyncio.run(_run_multi_session_examples())
+# if __name__ == '__main__':
+#     load_dotenv()
+#
+#     MemoryFactory.init()
+#
+#     # Run the multi-session example with concrete learning tasks
+#     asyncio.run(_run_multi_session_examples())
 

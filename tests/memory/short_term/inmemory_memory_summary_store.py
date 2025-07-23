@@ -52,5 +52,5 @@ async def run():
         logging.info(f"{item.memory_type}: {item.content}")
 
 
-if __name__ == '__main__':
-    asyncio.run(run())
+# if __name__ == '__main__':
+#     asyncio.run(run())

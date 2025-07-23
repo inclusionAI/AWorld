@@ -53,7 +53,3 @@ async def run():
     result = Runners.sync_run_task(task)
     print( "----------------------------------------------------------------------------------------------")
     print(result)
-
-
-if __name__ == "__main__":
-    asyncio.run(run())

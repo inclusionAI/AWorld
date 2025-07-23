@@ -28,7 +28,3 @@ async def main():
                 "q": "bubble sort language:python"
             })
             print(result)
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())

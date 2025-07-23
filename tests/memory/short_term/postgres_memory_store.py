@@ -37,6 +37,6 @@ async def run():
     for item in items:
         logging.info(f"{type(item)}: {item.content}, {item.created_at}")
 
-
-if __name__ == '__main__':
-    asyncio.run(run())
+#
+# if __name__ == '__main__':
+#     asyncio.run(run())

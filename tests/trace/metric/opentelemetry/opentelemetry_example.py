@@ -42,11 +42,11 @@ def custom_code():
         time.sleep(random.uniform(0, 1))
 
 
-if __name__ == '__main__':
-    while 1:
-        MetricContext.count(my_counter, 1, {"test_label": "b"})
-        MetricContext.gauge_set(my_gauge, random.randint(1, 10), {"test_label": "b"})
-        # MetricContext.histogram_record(my_histogram, random.randint(0, 1000))
-        # api()
-        # custom_code()
-        time.sleep(random.random())
+# if __name__ == '__main__':
+#     while 1:
+#         MetricContext.count(my_counter, 1, {"test_label": "b"})
+#         MetricContext.gauge_set(my_gauge, random.randint(1, 10), {"test_label": "b"})
+#         # MetricContext.histogram_record(my_histogram, random.randint(0, 1000))
+#         # api()
+#         # custom_code()
+#         time.sleep(random.random())

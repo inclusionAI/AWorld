@@ -43,10 +43,6 @@ def test():
     return 'Hello, World!'
 
 
-thread = threading.Thread(target=lambda: app.run(port=7070), daemon=True)
-thread.start()
-
-
 def invoke_api():
     import requests
     session = requests.session()
@@ -65,7 +61,9 @@ def main():
     invoke_api()
 
 
-if __name__ == "__main__":
-    main()
-    get_tracer_provider().force_flush(1000)
-    thread.join()
+# if __name__ == "__main__":
+#     thread = threading.Thread(target=lambda: app.run(port=7070), daemon=True)
+#     thread.start()
+#     main()
+#     get_tracer_provider().force_flush(1000)
+#     thread.join()

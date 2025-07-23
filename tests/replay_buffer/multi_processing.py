@@ -57,7 +57,7 @@ def read_processing_by_agent(replay_buffer: ReplayBuffer, agent_id: str):
         time.sleep(1)
 
 
-if __name__ == "__main__":
+def run():
     multiprocessing.freeze_support()
     multiprocessing.set_start_method('spawn')
     manager = multiprocessing.Manager()

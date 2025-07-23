@@ -72,7 +72,7 @@ class RichAworldUI(AworldUI):
             self.console.print(f"============={output.name} ❓❓❓UNKNOWN#{output.status} ======================")
 
 
-if __name__ == '__main__':
+def run():
     load_dotenv()
     agent_config = AgentConfig(
         llm_provider="openai",

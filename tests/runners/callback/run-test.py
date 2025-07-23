@@ -1,25 +1,17 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import asyncio
 import json
-import logging
 import os
 
 from dotenv import load_dotenv
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, TaskConfig
-#from aworld.core.agent.llm_agent import Agent
 from aworld.core.task import Task
 
 from aworld.runner import Runners
 from aworld.runners.callback.decorator import reg_callback
 from aworld.tools.mcp_tool import async_mcp_tool
-
-#import aworld.tools.examples.aworldsearch_function_tools
-
-
-
 
 @reg_callback("print_content")
 def simple_callback(content):
@@ -93,7 +85,6 @@ async def run():
         # input="Make sure to use the human_confirm tool to let the user confirm this message: 'Do you want to make a payment to this customer'",
         # input="Use the gen_audio_server tool to convert this sentence to audio: 'Nice to meet you'",
         #input="Use the gen_video_server tool to generate a video of this description: 'A cat walking alone on a snowy day'",
-        #input="现在纽约、上海、北京的天气怎么样？这里是三个城市，希望大模型识别调用工具的时候返回三个工具",
         # input="First call the filewrite_server tool, then call the fileread_server tool",
         # input="Use the playwright tool, with Google browser, search for the latest news about the Trump administration on www.baidu.com",
         # input="Use tavily-mcp",
@@ -102,21 +93,5 @@ async def run():
         event_driven=True
     )
 
-    #result = Runners.sync_run_task(task)
-    #result = Runners.sync_run_task(task)
-    #result = await Runners.streamed_run_task(task)
-    # result = await Runners.run_task(task)
-    # print(
-    #     "----------------------------------------------------------------------------------------------"
-    # )
-    # print(result)
-    # async for chunk in Runners.streamed_run_task(task).stream_events():
-    #     print(chunk, end="", flush=True)
-
     async for output in Runners.streamed_run_task(task).stream_events():
         print(f"Agent Ouput: {output}")
-
-
-
-if __name__ == "__main__":
-    asyncio.run(run())

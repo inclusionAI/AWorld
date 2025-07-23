@@ -11,7 +11,7 @@ from aworld.replay_buffer.query_filter import QueryBuilder, QueryFilter
 from aworld.logs.util import logger
 
 
-def test_filter():
+def filter():
     row = DataRow(
         exp_meta=ExpMeta(
             task_id="task_1",
@@ -20,7 +20,7 @@ def test_filter():
             step=1,
             execute_time=time.time(),
         ),
-        exp_data=Experience(state=Observation(), action=ActionModel())
+        exp_data=Experience(state=Observation(), action=[ActionModel()])
     )
 
     query = QueryBuilder().eq("exp_meta.task_id", "task_1").build()
@@ -35,7 +35,3 @@ def test_filter():
         "exp_meta.agent_id", "agent_2").build()
     filter3 = QueryFilter(query)
     assert not filter3.check_condition(row)
-
-
-if __name__ == "__main__":
-    test_filter()

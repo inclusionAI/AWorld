@@ -63,7 +63,3 @@ def main():
     # b.classb_function_2()
     if get_trace_server():
         get_trace_server().join()
-
-
-if __name__ == "__main__":
-    main()

@@ -102,7 +102,6 @@ async def query_user_profile():
 
 
 
-if __name__ == '__main__':
-    asyncio.run(trigger_long_term_memory_user_profile())
-    asyncio.run(query_user_profile())
-
+# if __name__ == '__main__':
+#     asyncio.run(trigger_long_term_memory_user_profile())
+#     asyncio.run(query_user_profile())

@@ -108,8 +108,3 @@ async def run():
 
     async for output in Runners.streamed_run_task(task).stream_events():
         print(f"Agent Ouput: {output}")
-
-
-
-if __name__ == "__main__":
-    asyncio.run(run())

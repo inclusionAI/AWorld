@@ -23,7 +23,3 @@ def main():
         trace_logger.info("start run child_thread_func")
         threading.Thread(target=child_thread_func).start()
         threading.Thread(target=child_thread_func).start()
-
-
-if __name__ == "__main__":
-    main()
