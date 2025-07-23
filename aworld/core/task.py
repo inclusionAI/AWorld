@@ -60,6 +60,18 @@ class TaskResponse:
     success: bool = field(default=False)
     msg: str | None = field(default=None)
 
+    @property
+    def trajectory(self) -> List[Dict[str, Any]]:
+        if not self.context:
+            return []
+        return self.context._task_trajectory
+
+    @trajectory.setter
+    def trajectory(self, value: List[Dict[str, Any]]):
+        if not self.context:
+            return
+        self.context._task_trajectory = value
+
 
 class Runner(object):
     __metaclass__ = abc.ABCMeta

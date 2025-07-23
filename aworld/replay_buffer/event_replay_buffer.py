@@ -1,13 +1,17 @@
 import json
 import os.path
-from typing import Dict, List
+import traceback
+from datetime import datetime
+from typing import Dict, List, Any
 
 from aworld import import_package
-from aworld.core.event.base import Message
+from aworld.core.agent.base import is_agent_by_name
+from aworld.core.event.base import Message, Constants
 from aworld.logs.util import logger
 from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience, InMemoryStorage, Storage
 from aworld.runners.state_manager import RuntimeStateManager
 from aworld.runners.utils import _to_serializable
+from aworld.utils.common import get_local_ip
 
 
 class EventReplayBuffer(ReplayBuffer):
@@ -21,6 +25,48 @@ class EventReplayBuffer(ReplayBuffer):
     ):
         super().__init__(storage)
         self.task_agent_map = {}
+
+    async def get_trajectory(self, messages: List[Message]) -> List[Dict[str, Any]] | None:
+        if not messages:
+            return None
+        valid_agent_messages = await self._filter_replay_messages(messages)
+        if not valid_agent_messages:
+            return None
+        data_rows = []
+        try:
+            for msg in valid_agent_messages:
+                data_row = self.build_data_row_from_message(msg)
+                if data_row:
+                    data_rows.append(data_row)
+
+            self.store_batch(data_rows)
+            trajectory = [_to_serializable(data_row) for data_row in data_rows]
+
+            timestamp = datetime.now().strftime("%Y%m%d")
+            export_dir = os.getenv('REPLAY_EXPORT_DIRECTORY', None)
+            replay_dir = os.path.join(export_dir or "./trace_data", timestamp, get_local_ip(), "replays")
+            os.makedirs(replay_dir, exist_ok=True)
+            self.export(data_rows, replay_dir)
+
+            return trajectory
+        except Exception as e:
+            logger.error(f"Failed to save trajectories: {str(e)}.{traceback.format_exc()}")
+            return None
+
+    async def _filter_replay_messages(self, messages: List[Message]) -> List[Message]:
+        results = []
+        for message in messages:
+            if message.category != Constants.AGENT:
+                continue
+            sender = message.sender
+            receiver = message.receiver
+            if not sender or not receiver or not is_agent_by_name(receiver):
+                continue
+            agent_as_tool = message.headers.get("agent_as_tool", False)
+            if agent_as_tool:
+                continue
+            results.append(message)
+        return results
 
     def build_data_row_from_message(self, message: Message) -> DataRow:
         '''

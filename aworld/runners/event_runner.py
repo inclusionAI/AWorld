@@ -4,12 +4,10 @@ import asyncio
 import os
 import time
 import traceback
-from datetime import datetime
 
 import aworld.trace as trace
 from typing import List, Callable, Any
 
-from aworld.core.agent.base import is_agent, is_agent_by_name
 from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
 
@@ -23,7 +21,7 @@ from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 
 from aworld.runners.task_runner import TaskRunner
-from aworld.utils.common import override_in_subclass, new_instance, get_local_ip
+from aworld.utils.common import override_in_subclass, new_instance
 from aworld.runners.state_manager import EventRuntimeStateManager
 
 
@@ -335,35 +333,10 @@ class TaskEventRunner(TaskRunner):
         return self._task_response
 
     async def _save_trajectories(self):
-        messages = self.event_mng.messages_by_task_id(self.task.id)
-        valid_agent_messages = await self._filter_replay_messages(messages)
-        data_rows = []
         try:
-            for msg in valid_agent_messages:
-                data_row = self.replay_buffer.build_data_row_from_message(msg)
-                if data_row:
-                    data_rows.append(data_row)
-
-            self.replay_buffer.store_batch(data_rows)
-            timestamp = datetime.now().strftime("%Y%m%d")
-            export_dir = os.getenv('REPLAY_EXPORT_DIRECTORY', None)
-            replay_dir = os.path.join(export_dir or "./trace_data", timestamp, get_local_ip(), "replays")
-            os.makedirs(replay_dir, exist_ok=True)
-            self.replay_buffer.export(data_rows, replay_dir)
+            messages = self.event_mng.messages_by_task_id(self.task.id)
+            trajectory = await self.replay_buffer.get_trajectory(messages)
+            self._task_response.trajectory = trajectory
         except Exception as e:
-            logger.error(f"Failed to save trajectories: {str(e)}.{traceback.format_exc()}")
+            logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 
-    async def _filter_replay_messages(self, messages:List[Message]) -> List[Message]:
-        results = []
-        for message in messages:
-            if message.category != Constants.AGENT:
-                continue
-            sender = message.sender
-            receiver = message.receiver
-            if not sender or not receiver or not is_agent_by_name(receiver):
-                continue
-            agent_as_tool = message.headers.get("agent_as_tool", False)
-            if agent_as_tool:
-                continue
-            results.append(message)
-        return results

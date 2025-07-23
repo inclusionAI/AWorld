@@ -118,6 +118,7 @@ class Context:
         # TODO workspace
         self._swarm = None
         self._event_manager = None
+        self._task_trajectory = None
 
     def add_token(self, usage: Dict[str, int]):
         self._token_usage = nest_dict_counter(self._token_usage, usage)
