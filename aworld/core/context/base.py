@@ -31,6 +31,7 @@ class ContextUsage:
         self.used_context_length = used_context_length
 
 
+@dataclass
 class Context:
     """Context is the core context management class in the AWorld architecture, used to store and manage
     the complete state information of an Agent, including configuration data and runtime state.
