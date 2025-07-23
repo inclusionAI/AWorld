@@ -1,8 +1,8 @@
 # Multi-Agent Examples
 
 This directory contains a variety of multi-agent system examples built on the AWorld framework. 
-These examples demonstrate three core paradigms of agent collaboration, coordination, and workflow, 
-corresponding to Swarm of Handoff, Team, and Workflow respectively.
+These examples demonstrate three core paradigms of agent **collaboration**, **coordination**, and **workflow**, 
+corresponding to **Swarm** of Handoff, Team, and Workflow respectively.
 
 ## Examples of Paradigm
 
@@ -44,7 +44,3 @@ corresponding to Swarm of Handoff, Team, and Workflow respectively.
 - Each subdirectory contains its own entry point (usually `run.py`) and may include additional configuration or requirements files.
 - Before running any example, ensure you have installed all required dependencies and set the necessary environment variables (e.g., LLM provider credentials, API keys).
 - For detailed instructions, refer to the README or comments within each subdirectory.
-
----
-
-If you need more detailed usage instructions or want to add new multi-agent scenarios, refer to the documentation and code samples in each subdirectory. 

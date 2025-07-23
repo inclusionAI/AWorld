@@ -52,7 +52,7 @@ def setup_routes(storage: TraceStorage):
 
     @app.get('/api/trace_flow/{trace_id}')
     async def get_trace_flow(trace_id):
-        from examples.trace.agent_flow import get_agent_flow
+        from tests.trace import get_agent_flow
         trace_tree = get_agent_flow(trace_id)
         return JSONResponse(content={
             'trace_id': trace_id,
