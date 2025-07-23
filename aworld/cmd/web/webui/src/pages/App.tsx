@@ -856,13 +856,15 @@ const App: React.FC = () => {
             styles: {
               content: {
                 backgroundColor: '#f5f5f5',
+                maxWidth: '98%'
               }
             }
           }))}
           style={{
             height: '100%',
             paddingInline: '10px',
-            margin: '0 auto'
+            margin: '0 auto',
+            maxWidth: `calc(100vw - ${siderCollapsed ? '60px' : '280px'} - ${rightSiderCollapsed ? '0px' : '500px'} - 40px)`
           }}
           roles={{
             assistant: {
