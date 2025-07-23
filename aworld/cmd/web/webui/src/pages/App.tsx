@@ -856,14 +856,12 @@ const App: React.FC = () => {
             styles: {
               content: {
                 backgroundColor: '#f5f5f5',
-                maxWidth: '95%'
               }
             }
           }))}
           style={{
             height: '100%',
             paddingInline: '10px',
-            width: '750px',
             margin: '0 auto'
           }}
           roles={{
