@@ -49,17 +49,17 @@ All these components together form the complete **AgentContext** for each agent.
 │  │  (Global coordinator, manages and accesses RunnerContext,            │  │
 │  │   orchestrates all agents and workflow)                              │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
-│         │    ▲                                                             │
-│         │    │                                                             │
-│         ▼    │                                                             │
+│                                    ▲                                       │
+│                                    │                                       │
+│                                    ▼                                       │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
 │  │                           RunnerContext                              │  │
 │  │  (Accessible by Runner and all agents, contains global and runtime   │  │
 │  │   information for multi-agent collaboration)                         │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
-│         │    ▲                                                             │
-│         │    │                                                             │
-│         ▼    │                                                             │
+│                                    ▲                                       │
+│                                    │                                       │
+│                                    ▼                                       │
 │  ┌──────────────────────────────────────────────────────────────────────┐  │
 │  │                                                                      │  │
 │  │  ┌────────────────────┐  ┌────────────────────┐  ┌────────────────┐  │  │
