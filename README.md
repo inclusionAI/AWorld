@@ -83,7 +83,6 @@ python setup.py install
 Virtual Environment:
 
 ```shell
-# Create and activate virtual environment
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
@@ -91,7 +90,6 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 Conda Environment:
 
 ```shell
-# Create and activate conda environment
 conda create -n aworld python=3.12 -y
 conda activate aworld
 ```
@@ -99,7 +97,6 @@ conda activate aworld
 **Install AWorld framwork:**
 
 ```shell
-# Install AWorld
 pip install aworld -U
 ```
 
@@ -108,22 +105,14 @@ pip install aworld -U
 
 AWorld offers two flexible approaches to build and run your agents:
 
-- Option A: Web-Based Agent (Recommended for beginners)
-
-Perfect for rapid prototyping with built-in UI and REST API
+- Option A: Run Agent in build-in WebUI/REST API Server(Recommended)
 
 - Option B: Script-Based Agent  
 
-Ideal for custom integrations and advanced use cases
 
+### Option A: Run Agent in build-in WebUI/REST API Server
 
-### Option A: Web-Based Agent Development
-
-#### Step 1: Create Project Structure
-```shell
-mkdir my-aworld-project && cd my-aworld-project
-mkdir -p agent_deploy/my_first_agent
-```
+#### Project Structure
 
 Your project structure should look like this:
 ```text
@@ -134,15 +123,25 @@ agent-project-root-dir/
         agent.py
 ```
 
-#### Step 2: Initialize Agent Module
-Create the required `__init__.py` file:
+Create project folders.
+
+```shell
+mkdir my-aworld-project && cd my-aworld-project # project-root-dir
+mkdir -p agent_deploy/my_first_agent
+```
+
+#### Step 1: Define Your Agent
+
+Create your first agnet in `agent_deploy/my_first_agent`:
+
+`__init__.py`: Create empty `__ini__.py` file.
+
 ```shell
 cd agent_deploy/my_first_agent
 touch __init__.py
 ```
 
-#### Step 3: Define Your Agent
-Create `agent.py` with your agent logic:
+`agent.py`: Define your agent logic:
 
 ```python
 import logging
@@ -184,7 +183,7 @@ class AWorldAgent(BaseAWorldAgent):
             "mcpServers": {
                 "amap-mcp": {
                     "type": "sse",
-                    "url": "https://mcp.example.com/sse?key=YOUR_API_KEY",
+                    "url": "https://mcp.example.com/sse?key=YOUR_API_KEY", # Replace Your API Key
                     "timeout": 30,
                     "sse_read_timeout": 300
                 }
@@ -219,7 +218,10 @@ class AWorldAgent(BaseAWorldAgent):
             yield output
 ```
 
-#### Step 4: Set Environment Variables
+#### Step 2: Run Agent
+
+Setup environment variables:
+
 ```shell
 # Navigate back to project root
 cd ${agent-project-root-dir}
@@ -230,9 +232,9 @@ export LLM_API_KEY="your-api-key-here"
 export LLM_BASE_URL="https://api.openai.com/v1"  # Optional for OpenAI
 ```
 
-#### Step 5: Launch Your Agent
+Launch Your Agent:
 ```shell
-# Option 1: Launch with Web UI (Interactive chat interface)
+# Option 1: Launch with Web UI
 aworld web
 # Then open http://localhost:8000 in your browser
 
@@ -276,7 +278,7 @@ def create_agent_team(user_query: str):
         "mcpServers": {
             "amap-mcp": {
                 "type": "sse", 
-                "url": "https://mcp.example.com/search?key=YOUR_API_KEY",
+                "url": "https://mcp.example.com/search?key=YOUR_API_KEY", # Replace Your own API Key
                 "timeout": 30,
                 "sse_read_timeout": 300
             }
@@ -314,12 +316,13 @@ if __name__ == '__main__':
     query = "What are the latest developments in AI agent technology?"
     response = create_agent_team(query)
     
-    print("🤖 Agent Team Response:")
+    print("Agent Response:")
     print("=" * 50)
     print(response.model_dump_json(indent=2))
 ```
 
-#### Step 2: Set Environment and Run
+#### Step 2: Run Agent
+
 ```shell
 # Set your LLM credentials
 export LLM_MODEL_NAME="gpt-4"
@@ -335,8 +338,8 @@ python my_agent.py
 ### Next Steps
 
 - **Customize**: Modify prompts and workflows for your specific needs
-- **Add Tools**: Integrate MCP servers for enhanced capabilities  
-- **Explore Examples**: Check out `./examples/cmd` for advanced use cases
+- **Add Tools**: Integrate Tools for enhanced capabilities  
+- **Explore Examples**: Check out `./examples` for advanced use cases
 
 
 ## Architecture
