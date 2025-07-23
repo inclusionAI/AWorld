@@ -1,5 +1,4 @@
 import asyncio
-import os
 from dotenv import load_dotenv
 
 from aworld.logs.util import logger

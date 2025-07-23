@@ -104,4 +104,4 @@ if __name__ == '__main__':
         swarm=swarm
     )
 ```
-You can view search example [code](../../examples/search).
+You can view search example [code](../../examples/multi_agents/workflow/search).
