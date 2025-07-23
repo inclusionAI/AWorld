@@ -1009,37 +1009,53 @@ const App: React.FC = () => {
 
           <div className="sider-content">
             {activeTab === 'Workspace' && (
-              <Tabs size="small" style={{ height: '100%' }} >
-                <Tabs.TabPane key="Workspace" tab="Workspace" active={activeTab === 'Workspace'}>
-                  <div style={tabContentStyle}>
-                    {workspaceData ? (
-                      <Workspace
-                        key={`workspace-${rightSiderCollapsed}`}
-                        sessionId={sessionId}
-                        toolCardData={workspaceData}
-                      />
-                    ) : (
-                      <div style={emptyStateStyle}>
-                        No workspace data available
+              <Tabs
+                size="small"
+                style={{ height: '100%' }}
+                items={[
+                  {
+                    key: "Workspace",
+                    label: "Workspace",
+                    children: (
+                      <div style={tabContentStyle}>
+                        {workspaceData ? (
+                          <Workspace
+                            key={`workspace-${rightSiderCollapsed}`}
+                            sessionId={sessionId}
+                            toolCardData={workspaceData}
+                          />
+                        ) : (
+                          <div style={emptyStateStyle}>
+                            No workspace data available
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                </Tabs.TabPane>
-              </Tabs>
+                    )
+                  }
+                ]}
+              />
             )}
             {activeTab === 'TraceXY' && (
-              <Tabs size="small" style={{ height: '100%' }}>
-                <Tabs.TabPane key="TraceXY" tab="Trace" active={activeTab === 'TraceXY'}>
-                  <div style={tabContentStyle}>
-                    <TraceXY
-                      key={`${traceId}-${rightSiderCollapsed}`}
-                      traceId={traceId}
-                      traceQuery={traceQuery}
-                      drawerVisible={!rightSiderCollapsed}
-                    />
-                  </div>
-                </Tabs.TabPane>
-              </Tabs>
+              <Tabs
+                size="small"
+                style={{ height: '100%' }}
+                items={[
+                  {
+                    key: "TraceXY",
+                    label: "Trace",
+                    children: (
+                      <div style={tabContentStyle}>
+                        <TraceXY
+                          key={`${traceId}-${rightSiderCollapsed}`}
+                          traceId={traceId}
+                          traceQuery={traceQuery}
+                          drawerVisible={!rightSiderCollapsed}
+                        />
+                      </div>
+                    )
+                  }
+                ]}
+              />
             )}
           </div>
         </div>
