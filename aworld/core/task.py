@@ -59,18 +59,7 @@ class TaskResponse:
     time_cost: float | None = field(default=0.0)
     success: bool = field(default=False)
     msg: str | None = field(default=None)
-
-    @property
-    def trajectory(self) -> List[Dict[str, Any]]:
-        if not self.context:
-            return []
-        return self.context._task_trajectory
-
-    @trajectory.setter
-    def trajectory(self, value: List[Dict[str, Any]]):
-        if not self.context:
-            return
-        self.context._task_trajectory = value
+    trajectory: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class Runner(object):
