@@ -154,52 +154,53 @@ class EventReplayBuffer(ReplayBuffer):
             # Write to JSON file
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(data_dicts, f, ensure_ascii=False, indent=2)
-                
             logger.info(f"Successfully exported {len(data_rows)} data rows to {os.path.abspath(filepath)}")
 
-            import_package("oss2")
-            import oss2
-
-
-            # Get OSS credentials from environment variables
-            enable_oss_export = os.getenv("EXPORT_REPLAY_TRACE_TO_OSS", "false").lower() == "true"
-            access_key_id = os.getenv('OSS_ACCESS_KEY_ID')
-            access_key_secret = os.getenv('OSS_ACCESS_KEY_SECRET')
-            endpoint = os.getenv('OSS_ENDPOINT')
-            bucket_name = os.getenv('OSS_BUCKET_NAME')
-            bucket = None
-
-            if not all([access_key_id, access_key_secret, endpoint, bucket_name]):
-                enable_oss_export = False
-                logger.warn("Missing required OSS environment variables")
-            else:
-                try:
-                    # Initialize OSS client
-                    auth = oss2.Auth(access_key_id, access_key_secret)
-                    bucket = oss2.Bucket(auth, endpoint, bucket_name)
-                except Exception as e:
-                    enable_oss_export = False
-                    logger.warn(
-                        f"Failed to initialize OSS client, endpoint: {endpoint}, bucket: {bucket_name}. Error: {str(e)}")
-
+            enable_oss_export = os.getenv("EXPORT_REPLAY_TO_OSS", "false").lower() == "true"
             if enable_oss_export:
-                # Upload to OSS
-                try:
-                    # Get the relative path
-                    abs_path = os.path.abspath(filepath)
-                    path_parts = abs_path.split(os.sep)
-                    if len(path_parts) >= 4:
-                        # Get the last 4 parts of the path
-                        relative_path = os.sep.join(path_parts[-4:])
-                        oss_key = relative_path
-                    else:
-                        oss_key = f"replay_buffer/{os.path.basename(filepath)}"
-                    logger.info(f"Uploading replay datas to OSS: {oss_key}")
-                    bucket.put_object_from_file(oss_key, filepath)
-                    logger.info(f"Successfully uploaded {filepath} to OSS: {oss_key}")
-                except Exception as e:
-                    logger.warn(f"Failed to upload {filepath} to OSS: {str(e)}")
+                self.export_to_oss(data_dicts, filepath)
 
         except Exception as e:
             logger.error(f"Failed to export data to {filepath}: {str(e)}")
-            raise 
+            raise
+
+    def export_to_oss(self, datas, filepath):
+        import_package("oss2")
+        import oss2
+
+        # Get OSS credentials from environment variables
+        access_key_id = os.getenv('OSS_ACCESS_KEY_ID')
+        access_key_secret = os.getenv('OSS_ACCESS_KEY_SECRET')
+        endpoint = os.getenv('OSS_ENDPOINT')
+        bucket_name = os.getenv('OSS_BUCKET_NAME')
+        bucket = None
+
+        if not all([access_key_id, access_key_secret, endpoint, bucket_name]):
+            logger.warn("Missing required OSS environment variables")
+            return
+        else:
+            try:
+                # Initialize OSS client
+                auth = oss2.Auth(access_key_id, access_key_secret)
+                bucket = oss2.Bucket(auth, endpoint, bucket_name)
+            except Exception as e:
+                logger.warn(
+                    f"Failed to initialize OSS client, endpoint: {endpoint}, bucket: {bucket_name}. Error: {str(e)}")
+                return
+
+        # Upload to OSS
+        try:
+            # Get the relative path
+            abs_path = os.path.abspath(filepath)
+            path_parts = abs_path.split(os.sep)
+            if len(path_parts) >= 4:
+                # Get the last 4 parts of the path
+                relative_path = os.sep.join(path_parts[-4:])
+                oss_key = relative_path
+            else:
+                oss_key = f"replay_buffer/{os.path.basename(filepath)}"
+            logger.info(f"Uploading replay datas to OSS: {oss_key}")
+            bucket.put_object_from_file(oss_key, filepath)
+            logger.info(f"Successfully uploaded {filepath} to OSS: {oss_key}")
+        except Exception as e:
+            logger.warn(f"Failed to upload {filepath} to OSS: {str(e)}")
