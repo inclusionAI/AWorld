@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Any, TYPE_CHECKING
 
+
 from aworld.config import ConfigDict
 from aworld.core.context.context_state import ContextState
+from aworld.core.context.agent_state import AgentContext
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
@@ -104,20 +106,30 @@ class Context:
     def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None):
         self._task_id = task_id
         self._task = None
-        self._engine = engine
-        self._trace_id = trace_id
+
+        # self._engine = engine
+
         self._session: Session = session
+
+        # share_info
         self.context_info = ContextState()
-        self.agent_info = ConfigDict()
-        self.trajectories = OrderedDict()
+
+        # agent isolated context
+        self._agent_context = Dict[str, AgentContext]
+
+        # self.agent_info = ConfigDict()
+        # self.trajectories = OrderedDict()
+
+        self._swarm = None
+        self._event_manager = None
+
+        # self._trace_state = TraceState()
+        self._trace_id = trace_id
         self._token_usage = {
             "completion_tokens": 0,
             "prompt_tokens": 0,
             "total_tokens": 0,
         }
-        # TODO workspace
-        self._swarm = None
-        self._event_manager = None
 
     def add_token(self, usage: Dict[str, int]):
         self._token_usage = nest_dict_counter(self._token_usage, usage)
