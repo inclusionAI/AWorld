@@ -78,39 +78,46 @@ python setup.py install
 
 ### 1. Environment Setup
 
-**Option A: Using Virtual Environment (Recommended)**
+**Setup Indenpendent Environment (Recommended)**
+
+Virtual Environment:
+
 ```shell
 # Create and activate virtual environment
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install AWorld
-pip install aworld -U
 ```
 
-**Option B: Using Conda**
+Conda Environment:
+
 ```shell
 # Create and activate conda environment
 conda create -n aworld python=3.12 -y
 conda activate aworld
+```
 
+**Install AWorld framwork:**
+
+```shell
 # Install AWorld
 pip install aworld -U
 ```
+
 
 ### 2. Choose Your Development Approach
 
 AWorld offers two flexible approaches to build and run your agents:
 
-#### 🌐 Option A: Web-Based Agent (Recommended for beginners)
+- Option A: Web-Based Agent (Recommended for beginners)
+
 Perfect for rapid prototyping with built-in UI and REST API
 
-#### 💻 Option B: Script-Based Agent  
+- Option B: Script-Based Agent  
+
 Ideal for custom integrations and advanced use cases
 
----
 
-### 🌐 Option A: Web-Based Agent Development
+### Option A: Web-Based Agent Development
 
 #### Step 1: Create Project Structure
 ```shell
@@ -234,11 +241,11 @@ aworld api_server
 # Then visit http://localhost:8000/docs for API documentation
 ```
 
-🎉 **Success!** Your agent is now running and ready to chat!
+**Success!** Your agent is now running and ready to chat!
 
 ---
 
-### 💻 Option B: Script-Based Agent Development
+### Option B: Script-Based Agent Development
 
 Perfect for custom workflows and programmatic usage.
 
