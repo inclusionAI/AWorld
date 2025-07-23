@@ -70,70 +70,76 @@ python setup.py install
 ```
 
 ## Quick Start
-> Here's a quick start guide to create your own agent.
+> Get started with AWorld in minutes! Follow this step-by-step guide to create and deploy your first intelligent agent.
 
-### 1. Setup Environment
+### Prerequisites
+- Python 3.11 or higher
+- An OpenAI Compatible LLM API provider credentials
 
-Create & Activate Virtual Environment (Recommended):
+### 1. Environment Setup
 
+**Option A: Using Virtual Environment (Recommended)**
 ```shell
-# venv
-python -m venv .vent
-# conda
-conda create -n aworld python==3.12 -y
-conda activate -n aworld
-```
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-Install AWorld SDK
-
-```shell
+# Install AWorld
 pip install aworld -U
 ```
 
-### 2. Create Agent Project
+**Option B: Using Conda**
+```shell
+# Create and activate conda environment
+conda create -n aworld python=3.12 -y
+conda activate aworld
 
-We have 2 ways to create agent:
+# Install AWorld
+pip install aworld -U
+```
 
-#### 2.1 Run Agent with WebUI/Rest API
+### 2. Choose Your Development Approach
 
-##### Project Structure:
+AWorld offers two flexible approaches to build and run your agents:
 
+#### 🌐 Option A: Web-Based Agent (Recommended for beginners)
+Perfect for rapid prototyping with built-in UI and REST API
+
+#### 💻 Option B: Script-Based Agent  
+Ideal for custom integrations and advanced use cases
+
+---
+
+### 🌐 Option A: Web-Based Agent Development
+
+#### Step 1: Create Project Structure
+```shell
+mkdir my-aworld-project && cd my-aworld-project
+mkdir -p agent_deploy/my_first_agent
+```
+
+Your project structure should look like this:
 ```text
-project_root_dir/
+agent-project-root-dir/
     agent_deploy/
-      your_agent_1/
-        __init__.py
-        agent.py
-      your_agent_2/
+      my_first_agent/
         __init__.py
         agent.py
 ```
 
-
-##### Define your agent:
-
-`__init__.py`
-
-Now create an `__ini__.py` file in folder `agent_deploy/your_agent_1`
-
+#### Step 2: Initialize Agent Module
+Create the required `__init__.py` file:
 ```shell
-mkdir -p agent_deploy/your_agent_1
-cd agent_deploy/your_agent_1
+cd agent_deploy/my_first_agent
 touch __init__.py
 ```
 
-`agent.py`
-
-Create `agent.py` in the same folder
-
-Define class `class AWorldAgent(BaseAWorldAgent):`
-
-example code:
+#### Step 3: Define Your Agent
+Create `agent.py` with your agent logic:
 
 ```python
 import logging
 import os
-import json
 from aworld.cmd.data_model import BaseAWorldAgent, ChatCompletionRequest
 from aworld.config.conf import AgentConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
@@ -142,165 +148,189 @@ from aworld.runner import Runners
 
 logger = logging.getLogger(__name__)
 
-
 class AWorldAgent(BaseAWorldAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def name(self):
-        return "Agent Demo"
+        return "My First Agent"
 
     def description(self):
-        return "Agent Demo"
+        return "A helpful assistant that can answer questions and help with tasks"
 
     async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
-        llm_provider = os.getenv("LLM_PROVIDER_DEMO", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME_DEMO")
-        llm_api_key = os.getenv("LLM_API_KEY_DEMO")
-        llm_base_url = os.getenv("LLM_BASE_URL_DEMO")
-        llm_temperature = os.getenv("LLM_TEMPERATURE_DEMO", 0.0)
-
-        if not llm_model_name or not llm_api_key or not llm_base_url:
-            raise ValueError(
-                "llm_model_name, llm_api_key, llm_base_url is empty!"
-            )
-
+        # Load LLM configuration from environment variables
         agent_config = AgentConfig(
-            llm_provider=llm_provider,
-            llm_model_name=llm_model_name,
-            llm_api_key=llm_api_key,
-            llm_base_url=llm_base_url,
-            llm_temperature=llm_temperature,
+            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+            llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4"),
+            llm_api_key=os.getenv("LLM_API_KEY"),
+            llm_base_url=os.getenv("LLM_BASE_URL"),
+            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7"))
         )
 
-        # Register the MCP tool here, or create a separate configuration file.
+        # Validate required configuration
+        if not agent_config.llm_model_name or not agent_config.llm_api_key:
+            raise ValueError("LLM_MODEL_NAME and LLM_API_KEY must be set!")
+
+        # Optional: Configure MCP tools for enhanced capabilities
         mcp_config = {
             "mcpServers": {
-                "amap-amap-sse": {
+                "amap-mcp": {
                     "type": "sse",
-                    "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",
-                    "timeout": 5,
+                    "url": "https://mcp.example.com/sse?key=YOUR_API_KEY",
+                    "timeout": 30,
                     "sse_read_timeout": 300
                 }
             }
         }
 
-        super_agent = Agent(
+        # Create the agent instance
+        agent = Agent(
             conf=agent_config,
-            name="Agent Demo",
-            system_prompt="""You are a Demo Agent, your goal is to answer user question friendly""",
-            mcp_servers=["amap-amap-sse"], # MCP server name for agent to use
+            name="My First Agent",
+            system_prompt="""You are a helpful AI assistant. Your goal is to:
+            - Answer questions accurately and helpfully
+            - Provide clear, step-by-step guidance when needed
+            - Be friendly and professional in your responses""",
+            mcp_servers=["amap-mcp"],
             mcp_config=mcp_config
         )
 
-        if prompt is None and request is not None:
-            prompt = request.messages[-1].content
-
+        # Extract user input
+        user_input = prompt or (request.messages[-1].content if request else "")
+        
+        # Create and execute task
         task = Task(
-            input=prompt,
-            agent=super_agent,
+            input=user_input,
+            agent=agent,
             conf=TaskConfig(max_steps=5),
-            session_id=request.session_id,
+            session_id=getattr(request, 'session_id', None)
         )
 
+        # Stream the agent's response
         async for output in Runners.streamed_run_task(task).stream_events():
             yield output
 ```
 
-##### Run your agent:
+#### Step 4: Set Environment Variables
+```shell
+# Navigate back to project root
+cd ${agent-project-root-dir}
 
-Start your agent with command `aworld`
-
+# Set your LLM credentials
+export LLM_MODEL_NAME="gpt-4"
+export LLM_API_KEY="your-api-key-here"
+export LLM_BASE_URL="https://api.openai.com/v1"  # Optional for OpenAI
 ```
-cd ${project_root_dir}
-# Setup LLM Model API Credential
-export LLM_MODEL_NAME_DEMO=xxx
-export LLM_API_KEY_DEMO=xxx
-export LLM_BASE_URL_DEMO=xxx
 
-# Run Agent in WebUI
+#### Step 5: Launch Your Agent
+```shell
+# Option 1: Launch with Web UI (Interactive chat interface)
 aworld web
-open 'http://localhost:8000'
+# Then open http://localhost:8000 in your browser
 
-
-# Run Agent in RestAPI
+# Option 2: Launch REST API (For integrations)
 aworld api_server
-open 'http://localhost:8000/docs'
+# Then visit http://localhost:8000/docs for API documentation
 ```
 
-#### 2.2 Run Agent with python script
+🎉 **Success!** Your agent is now running and ready to chat!
 
-`demo_agent.py`
+---
 
-Create Demo Agent script `demo_agent.py`.
+### 💻 Option B: Script-Based Agent Development
+
+Perfect for custom workflows and programmatic usage.
+
+#### Step 1: Create Agent Script
+Create `my_agent.py`:
 
 ```python
+import os
 from aworld.config.conf import AgentConfig
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from aworld.core.agent.swarm import Swarm
 
-def run_agent(prompt: str):
+def create_agent_team(user_query: str):
+    """Create and run a multi-agent team to handle user queries."""
+    
+    # Configure your LLM settings
     agent_config = AgentConfig(
-        llm_provider = os.getenv("LLM_PROVIDER_DEMO", "openai")
-        llm_model_name = os.getenv("LLM_MODEL_NAME_DEMO")
-        llm_api_key = os.getenv("LLM_API_KEY_DEMO")
-        llm_base_url = os.getenv("LLM_BASE_URL_DEMO")
-        llm_temperature = os.getenv("LLM_TEMPERATURE_DEMO", 0.0)
+        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_base_url=os.getenv("LLM_BASE_URL"),
+        llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7"))
     )
 
-    # Register the MCP tool here, or create a separate configuration file.
+    # Optional: Advanced MCP tool integration
     mcp_config = {
         "mcpServers": {
-            "amap-amap-sse": {
-                "type": "sse",
-                "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",
-                "timeout": 5,
+            "amap-mcp": {
+                "type": "sse", 
+                "url": "https://mcp.example.com/search?key=YOUR_API_KEY",
+                "timeout": 30,
                 "sse_read_timeout": 300
             }
         }
     }
 
-    # Create your first agent equipped with an MCP tool
-    search = Agent(
+    # Create specialized agents
+    researcher = Agent(
         conf=agent_config,
-        name="search_agent",
-        system_prompt="You are a helpful agent.",
-        mcp_servers=["amap-amap-sse"], # MCP server name for agent to use
+        name="Research Agent",
+        system_prompt="You are an expert researcher. Find accurate, up-to-date information.",
+        mcp_servers=["amap-mcp"],
         mcp_config=mcp_config
     )
 
-    # Add a new teammate to the agent
-    summary = Agent(
+    analyst = Agent(
         conf=agent_config,
-        name="summary_agent",
-        system_prompt="You are a helpful summary agent."
+        name="Analysis Agent", 
+        system_prompt="You are an expert analyst. Synthesize information and provide insights."
     )
 
-    # Collaborate as a team; the default is a static workflow
-    swarm = Swarm(search, summary)
+    # Create agent team with collaborative workflow
+    agent_team = Swarm(researcher, analyst)
 
-    # Run agent team
-    res = Runners.sync_run(input=prompt,
-                     swarm=swarm)
-    return res
+    # Execute the task
+    result = Runners.sync_run(
+        input=user_query,
+        swarm=agent_team
+    )
+    
+    return result
 
 if __name__ == '__main__':
-    res = run_agent("Hotels within 1 kilometer of West Lake in Hangzhou")
-    print(f"agent response: {res.model_dump_json(indent=2)}")
+    # Example usage
+    query = "What are the latest developments in AI agent technology?"
+    response = create_agent_team(query)
+    
+    print("🤖 Agent Team Response:")
+    print("=" * 50)
+    print(response.model_dump_json(indent=2))
 ```
 
-Run Demo Agent in terminal
-
+#### Step 2: Set Environment and Run
 ```shell
-# Setup LLM Model API Credential
-export LLM_MODEL_NAME_DEMO=xxx
-export LLM_API_KEY_DEMO=xxx
-export LLM_BASE_URL_DEMO=xxx
+# Set your LLM credentials
+export LLM_MODEL_NAME="gpt-4"
+export LLM_API_KEY="your-api-key-here"
+export LLM_BASE_URL="https://api.openai.com/v1"
 
-# Run Agent
-python demo_agent.py
+# Run your agent
+python my_agent.py
 ```
+
+---
+
+### Next Steps
+
+- **Customize**: Modify prompts and workflows for your specific needs
+- **Add Tools**: Integrate MCP servers for enhanced capabilities  
+- **Explore Examples**: Check out `./examples/cmd` for advanced use cases
+
 
 ## Architecture
 AWorld is designed to achieve two primary objectives: (1) provide an efficient forward process, and (2) facilitate diverse backward processes, including but not limited to foundation model training and system design meta-learning.
