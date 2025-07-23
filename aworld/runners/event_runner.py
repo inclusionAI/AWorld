@@ -1,8 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import os
 import time
 import traceback
+
 import aworld.trace as trace
 from typing import List, Callable, Any
 
@@ -14,6 +16,7 @@ from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, A
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
+from aworld.replay_buffer import EventReplayBuffer
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 
@@ -34,6 +37,7 @@ class TaskEventRunner(TaskRunner):
         self.handlers = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
+        self.replay_buffer = EventReplayBuffer()
 
     async def pre_run(self):
         logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
@@ -316,6 +320,7 @@ class TaskEventRunner(TaskRunner):
         async with trace.task_span(self.init_message.session_id, self.task):
             await self.event_mng.emit_message(self.init_message)
             await self._do_run()
+            await self._save_trajectories()
             return self._task_response
 
     async def stop(self):
@@ -327,32 +332,11 @@ class TaskEventRunner(TaskRunner):
     def response(self):
         return self._task_response
 
-    def is_group_finish(self, event: Message) -> bool:
-        """Determine if an event triggers group completion
+    async def _save_trajectories(self):
+        try:
+            messages = self.event_mng.messages_by_task_id(self.task.id)
+            trajectory = await self.replay_buffer.get_trajectory(messages, self.task.id)
+            self._task_response.trajectory = trajectory
+        except Exception as e:
+            logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 
-        Logic:
-        1. Event must be a Message type with a group_id
-        2. If event.category=Constants.AGENT, check if the agent instance that sent the message is finished
-        3. If event.category=Constants.TOOL, check if the tool execution message level is 0
-
-        Args:
-            event: The event to check
-
-        Returns:
-            bool: Whether the event triggers group completion
-        """
-        if not isinstance(event, Message) or not event.group_id:
-            return False
-
-        if event.category == Constants.AGENT:
-            agent_id = event.sender
-            if not agent_id:
-                return False
-
-            agent = self.swarm.agents.get(agent_id)
-            if not agent:
-                return False
-
-            return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
-
-        return False

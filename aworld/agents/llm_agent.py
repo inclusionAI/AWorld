@@ -843,6 +843,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         source_span = trace.get_current_span()
         serializable_messages = self._to_serializable(messages)
+        self.context.context_info["llm_input"] = serializable_messages
 
         if source_span:
             source_span.set_attribute("messages", json.dumps(
@@ -940,6 +941,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 await send_message(output_message)
             raise e
         finally:
+            self.context.context_info["llm_output"] = llm_response
             return llm_response
 
     async def _execute_tool(self, actions: List[ActionModel], context_message: Message = None) -> Any:

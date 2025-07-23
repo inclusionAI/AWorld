@@ -5,6 +5,7 @@ import os
 from aworld.config.conf import AgentConfig
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
+import json
 
 
 if __name__ == '__main__':
@@ -38,7 +39,15 @@ if __name__ == '__main__':
     )
 
     # run
-    Runners.sync_run(
-        input="use mcp tools in the GorillaFileSystem server to perform file operations: delete the hello_world.py file if exists, and create a file called hello_world.py with the content 'print('Hello, World!')'    ",
+    result = Runners.sync_run(
+        input=(
+            "use mcp tools in the GorillaFileSystem server to perform file operations: "
+            "write the content 'AWorld' into the hello_world.py file with a new line "
+            "and keep the original content of the file. Make sure the new and old "
+            "content are all in the file; and display the content of the file"
+        ),
         agent=file_sys
     )
+
+    # print the first step of the trajectory, which is a dict
+    print(json.dumps(result.trajectory[0], indent=4))
