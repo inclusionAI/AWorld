@@ -235,7 +235,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "task_id": task_id,
             "memory_type": "message"
         })
-        last_history = histories[-1] if histories and len(histories)> 0 else None
+        last_history = histories[-1] if histories and len(histories) > 0 else None
 
         # append observation to memory
         if observation.is_tool_result:
@@ -243,8 +243,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 tool_call_id = action_item.tool_call_id
                 content = action_item.content
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=content, context=message.context)
-        elif not self.use_tools_in_prompt and last_history and last_history.metadata and "tool_calls" in last_history.metadata and last_history.metadata[
-            'tool_calls']:
+        elif not self.use_tools_in_prompt and last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
+                last_history.metadata[
+                    'tool_calls']:
             for tool_call in last_history.metadata['tool_calls']:
                 tool_call_id = tool_call['id']
                 tool_name = tool_call['function']['name']
@@ -739,17 +740,19 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if is_agent(act):
                     continue
                 act_result = await exec_tool(tool_name=act.tool_name,
-                                params=act.params,
-                                context=message.context.deep_copy(),
-                                sub_task=True,
-                                outputs=message.context.outputs,
-                                task_group_id=self.context.get_task().group_id or uuid.uuid4().hex)
+                                             action_name=act.action_name,
+                                             params=act.params,
+                                             agent_name=self.id(),
+                                             context=message.context.deep_copy(),
+                                             sub_task=True,
+                                             outputs=message.context.outputs,
+                                             task_group_id=self.context.get_task().group_id or uuid.uuid4().hex)
                 if not act_result.success:
                     color_log(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
                               color=Color.red)
                     continue
                 tool_results.append(
-                    ActionResult(tool_call_id=act.tool_call_id, tool_name = act.tool_name, content=act_result.answer))
+                    ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer))
                 await self._add_tool_result_to_memory(act.tool_call_id, act_result.answer,
                                                       context=message.context)
             result = sync_exec(self.tools_aggregate_func, tool_results)
@@ -764,7 +767,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """
         content = ""
         for res in tool_results:
-            content += f"{res.tool_name}: {res.content}\n"
+            content += f"{res.content}\n"
         return [ActionModel(agent_name=self.id(), policy_info=content)]
 
     async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
@@ -815,7 +818,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     # messages length
                     "origin_messages_count": origin_messages_count,
                     "truncated_messages_count": truncated_messages_count,
-                    "truncated_ratio": round(truncated_messages_count / origin_messages_count, 2) if origin_messages_count > 0 else 0,
+                    "truncated_ratio": round(truncated_messages_count / origin_messages_count,
+                                             2) if origin_messages_count > 0 else 0,
                     # token length
                     "origin_len": origin_len,
                     "compressed_len": compressed_len,
@@ -1119,7 +1123,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     async def custom_system_prompt(self, context: Context, content: str):
         return content
 
-    async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type = "init"):
+    async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
         if not context.get_task():
             logger.error(f"Task is None")
@@ -1176,7 +1180,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
-        if hasattr(tool_result, 'content') and isinstance(tool_result.content, str) and tool_result.content.startswith("data:image"):
+        if hasattr(tool_result, 'content') and isinstance(tool_result.content, str) and tool_result.content.startswith(
+                "data:image"):
             image_content = tool_result.content
             tool_result.content = "this picture is below "
             await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)

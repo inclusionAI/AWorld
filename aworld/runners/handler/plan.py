@@ -95,8 +95,12 @@ class PlanHandler(AgentHandler):
                                                 sub_task=True,
                                                 task_group_id=group_id))
                     else:
-                        tasks.append(exec_tool(tool_name=step_info.id,
+                        names = step_info.id.split("__")
+                        action_name = '__'.join(names[1:]) if len(names) > 1 else ''
+                        tasks.append(exec_tool(tool_name=names[0],
+                                               action_name=action_name,
                                                params=step_info.parameters,
+                                               agent_name=message.sender,
                                                context=new_context,
                                                sub_task=True,
                                                outputs=merge_context.outputs,
@@ -116,8 +120,12 @@ class PlanHandler(AgentHandler):
                     res = await exec_agent(step_info.input, agent, new_context, outputs=merge_context.outputs,
                                            sub_task=True, task_group_id=group_id)
                 else:
+                    names = step_info.id.split("__")
+                    action_name = '__'.join(names[1:]) if len(names) > 1 else ''
                     res = await exec_tool(tool_name=step_info.id,
+                                          action_name=action_name,
                                           params=step_info.parameters,
+                                          agent_name=message.sender,
                                           context=new_context,
                                           outputs=merge_context.outputs,
                                           sub_task=True,

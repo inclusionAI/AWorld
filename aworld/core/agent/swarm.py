@@ -614,10 +614,6 @@ class WorkflowBuilder(TopologyBuilder):
     but agent3 and agent5 are executed sequentially, and agent2 and agent4 are also executed in sequentially,
     then agent6 and agent7 are executed in parallel after the sequential execution of agent2 and agent4, and
     agent8 is executed after completion.
-
-    If the topology is constructed in this way, it will be automatically recognized as team swarm.
-    >>> Swarm((agent1, agent2), (agent1, agent3), (agent1, agent4), (agent1, agent5))
-    So the star topology will be built and executed in a team swarm.
     """
 
     def build(self):
@@ -698,6 +694,10 @@ class HandoffBuilder(TopologyBuilder):
     >>> agent1 = Agent(name='agent1'); agent2 = Agent(name='agent2'); agent3 = Agent(name='agent3')
     >>> agent4 = Agent(name='agent4'); agent5 = Agent(name='agent5'); agent6 = Agent(name='agent6')
     >>> Swarm((agent1, agent2), (agent1, agent3), (agent2, agent3), build_type=GraphBuildType.HANDOFF)
+
+    If the topology is constructed in this way, it will be automatically recognized as team swarm.
+    >>> Swarm((agent1, agent2), (agent1, agent3), (agent1, agent4), (agent1, agent5), build_type=GraphBuildType.HANDOFF)
+    So the star topology will be built and executed in a team swarm.
     """
 
     def build(self):
