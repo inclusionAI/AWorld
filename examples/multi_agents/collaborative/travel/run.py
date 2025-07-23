@@ -6,11 +6,11 @@ from aworld.config import ModelConfig
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.core.task import Task
 from aworld.runner import Runners
-from examples.agent.browsers.agent import BrowserAgent
-from examples.agent.browsers.config import BrowserAgentConfig
-from examples.tools.common import Tools
-from examples.tools.conf import BrowserToolConfig
-from examples.tools.tool_action import SearchAction
+from examples.browser_use.agent import BrowserAgent
+from examples.browser_use.config import BrowserAgentConfig
+from examples.common.tools.common import Tools
+from examples.common.tools.conf import BrowserToolConfig
+from examples.common.tools.tool_action import SearchAction
 
 model_config = ModelConfig(
     llm_provider="openai",

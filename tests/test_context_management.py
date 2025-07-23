@@ -138,7 +138,7 @@ class TestContextManagement(BaseTest):
 
 class TestHookSystem(TestContextManagement):
     def test_hook_registration(self):
-        from examples.runners.hook.llm_hook import TestPreLLMHook, TestPostLLMHook
+        from tests.runners.hook.llm_hook import TestPreLLMHook, TestPostLLMHook
         """Test hook registration and retrieval"""
         # Test that hooks are registered in _cls attribute
         self.assertIn("TestPreLLMHook", HookFactory._cls)

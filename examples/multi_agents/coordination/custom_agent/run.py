@@ -7,7 +7,7 @@ from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.multi_agents.coordination.custom_agent.agent import PlanAgent, ExecuteAgent
 from examples.multi_agents.coordination.custom_agent.mock import mock_dataset
-from examples.tools.common import Agents, Tools
+from examples.common.tools.common import Agents, Tools
 
 
 def main():

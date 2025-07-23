@@ -3,9 +3,9 @@
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
-from aworld.core.agent.swarm import Swarm, WorkflowSwarm
+from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
-from examples.tools.common import Tools
+from examples.common.tools.common import Tools
 
 search_sys_prompt = "You are a helpful search agent."
 search_prompt = """

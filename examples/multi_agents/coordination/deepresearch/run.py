@@ -1,20 +1,13 @@
 
 import os
-from pathlib import Path
-import sys
-
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from aworld.planner.plan import PlannerOutputParser
-
-from aworld.core.agent.swarm import TeamSwarm
-from aworld.runner import Runners
-from examples.tools.common import Tools
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
+from aworld.core.agent.swarm import TeamSwarm
+from aworld.planner.plan import PlannerOutputParser
+from aworld.runner import Runners
 
+from examples.common.tools.common import Tools
 from examples.multi_agents.coordination.deepresearch.prompts import *
 
 # os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"

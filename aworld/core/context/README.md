@@ -127,7 +127,7 @@ assert task.context.context_info.get("hello") == "world"
 > - [`tests/test_context_management.py::TestHookSystem::test_hook_execution()`](../../../tests/test_context_management.py) - Hook execution test
 
 ```python
-from examples.runners.hook.llm_hook import TestPreLLMHook, TestPostLLMHook
+from tests.runners import TestPreLLMHook, TestPostLLMHook
 from aworld.runners.hook.hook_factory import HookFactory
 
 # Test hook registration and retrieval

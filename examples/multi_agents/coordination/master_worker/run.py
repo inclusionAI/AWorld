@@ -7,7 +7,7 @@ sys.path.insert(0, str(project_root))
 
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.runner import Runners
-from examples.tools.common import Tools
+from examples.common.tools.common import Tools
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig

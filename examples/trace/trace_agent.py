@@ -2,14 +2,14 @@ import traceback
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ConfigDict
 from aworld.core.common import Observation, ActionModel
-from typing import Dict, Any, List, Union, Callable
+from typing import Dict, Any, List, Union
 from aworld.core.tool.base import ToolFactory
 from aworld.models.llm import call_llm_model, acall_llm_model
 from aworld.trace.config import ObservabilityConfig
 from aworld.utils.common import sync_exec
 from aworld.logs.util import logger
-from examples.tools.common import Tools
-from examples.tools.tool_action import GetTraceAction
+from examples.common.tools import Tools
+from examples.common.tools import GetTraceAction
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.trace.server import get_trace_server

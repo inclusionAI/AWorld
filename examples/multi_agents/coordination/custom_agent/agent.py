@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Union
 
 from examples.multi_agents.coordination.custom_agent.prompts import execute_system_prompt, plan_system_prompt, plan_done_prompt, \
     plan_postfix_prompt, init_prompt
-from examples.tools.common import Agents
+from examples.common.tools.common import Agents
 from aworld.core.agent.base import AgentResult
 from aworld.agents.llm_agent import Agent
 from aworld.models.llm import call_llm_model
