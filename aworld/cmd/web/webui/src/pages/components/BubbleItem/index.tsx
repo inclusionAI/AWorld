@@ -44,7 +44,6 @@ const BubbleItem: React.FC<BubbleItemProps> = ({ sessionId, data, onOpenWorkspac
   useEffect(() => {
     // 只有在流式输出过程中才自动打开workspace
     if (!isLoading) {
-      console.log('isLoading:', isLoading);
       return;
     }
 

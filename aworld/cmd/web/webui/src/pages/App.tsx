@@ -8,7 +8,6 @@ import {
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined,
   VerticalLeftOutlined,
   VerticalRightOutlined
 } from '@ant-design/icons';
@@ -636,23 +635,6 @@ const App: React.FC = () => {
     }
   };
 
-  const resendMessage = (assistantMessage: any) => {
-    const assistantMessageIndex = assistantMessage.messageIndex;
-    const userMessageIndex = assistantMessageIndex - 1;
-    if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
-      const userMessage = messages[userMessageIndex].message.content;
-
-      const newMessages = messages.filter((_, index) => index !== assistantMessageIndex && index !== userMessageIndex);
-      setMessages(newMessages);
-
-      setTimeout(() => {
-        onSubmit(userMessage);
-      }, 100);
-    } else {
-      message.error('Cannot find corresponding user message');
-    }
-  };
-
   // ==================== 组件渲染函数 ====================
   const renderCollapsedSider = () => (
     <>
@@ -795,12 +777,8 @@ const App: React.FC = () => {
     </div>
   );
   const renderMessageActions = (messageItem: any) => {
+    console.log("renderMessageActions", messageItem);
     const actions = [
-      {
-        icon: <ReloadOutlined />,
-        onClick: () => resendMessage(messageItem.messageIndex),
-        key: 'resend'
-      },
       {
         icon: <CopyOutlined />,
         onClick: () => copyMessageContent(messageItem.content || ''),
@@ -837,7 +815,7 @@ const App: React.FC = () => {
     <div className={styles.chatList}>
       {messages?.length ? (
         <Bubble.List
-          items={messages.map((i, index) => ({
+          items={messages.map((i, _) => ({
             ...i.message,
             content: (
               <BubbleItem
@@ -852,7 +830,6 @@ const App: React.FC = () => {
               content: i.status === 'loading' ? styles.loadingMessage : '',
             },
             typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
-            messageIndex: index,
             styles: {
               content: {
                 backgroundColor: '#f5f5f5',
