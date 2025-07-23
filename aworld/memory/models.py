@@ -201,6 +201,44 @@ class UserProfile(MemoryItem):
             "content": self.content
         }
 
+
+class Fact(MemoryItem):
+    """
+    Represents Fact from conversation.
+    Args:
+        user_id (str): The ID of the user.
+        content (str): fact.
+        metadata (Optional[Dict[str, Any]]): Additional metadata.
+    """
+    def __init__(self, user_id: str, content: str, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        meta = metadata.copy() if metadata else {}
+        meta['user_id'] = user_id
+        super().__init__(content=content, metadata=meta, memory_type="fact", **kwargs)
+
+    @property
+    def user_id(self) -> str:
+        return self.metadata['user_id']
+
+    @property
+    def key(self) -> str:
+        return self.content.key
+
+    @property
+    def value(self) -> Any:
+        return self.content.value
+
+    @property
+    def embedding_text(self):
+        return self.content
+
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "system",
+            "content": self.content
+        }
+
+
+
 class MemorySummary(MemoryItem):
     """
     Represents a memory summary.
