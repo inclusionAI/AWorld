@@ -59,6 +59,7 @@ class TaskResponse:
     time_cost: float | None = field(default=0.0)
     success: bool = field(default=False)
     msg: str | None = field(default=None)
+    trajectory: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class Runner(object):
