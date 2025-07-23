@@ -78,7 +78,7 @@ python setup.py install
 
 ### 1. Environment Setup
 
-**Setup Indenpendent Environment (Recommended)**
+**Setup Isolated Environment (Recommended)**
 
 Virtual Environment:
 
