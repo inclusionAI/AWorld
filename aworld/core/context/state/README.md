@@ -44,19 +44,19 @@ All these components together form the complete **AgentContext** for each agent.
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
 │                                                                            │
-│  ┌──────────────────────┐                                                  │
-│  │                      │                                                  │
-│  │       Runner         │  Coordinates all agents, manages global workflow │
-│  │                      │  and information flow                            │
-│  └──────────────────────┘                                                  │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                              Runner                                  │  │
+│  │  (Global coordinator, manages and accesses RunnerContext,            │  │
+│  │   orchestrates all agents and workflow)                              │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
 │         │    ▲                                                             │
 │         │    │                                                             │
 │         ▼    │                                                             │
-│  ┌──────────────────────┬──────────────────────┐                           │
-│  │                      │                      │                           │
-│  │   Shared Memory      │   Working Memory     │  Both accessible by       │
-│  │                      │                      │  Runner and agents        │
-│  └──────────────────────┴──────────────────────┘                           │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                           RunnerContext                              │  │
+│  │  (Accessible by Runner and all agents, contains global and runtime   │  │
+│  │   information for multi-agent collaboration)                         │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
 │         │    ▲                                                             │
 │         │    │                                                             │
 │         ▼    │                                                             │
@@ -73,16 +73,13 @@ All these components together form the complete **AgentContext** for each agent.
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Shared Memory[Init]
+## RunnerContext
 
 - **task**: Task object reference, allows all agents or cells to access and operate on global task information.
 - **session**: Session management, records all conversation history, actions, and reasoning steps; supports context sharing in multi-agent collaboration.
 - **user_profile**: User profile and preferences, supports long-term memory and personalized service.
 - **facts**: Relation facts, serves as a long-term knowledge/fact base for agent reasoning.
 - **custom_information**: Retrieved information and references, stores external knowledge and temporary data for flexible extension.
-
-## Working Memory[Runtime]
-
 - **working_state**: Stores the current task state and intermediate results, accessible by both Runner and all agents. Used for sharing the latest progress, temporary variables, and intermediate outputs during task execution.
 - **outputs**: Output buffer for synthesized results and conclusions, shared among agents and Runner for collaborative decision-making.
 - **artifacts**: Stores AIGC artifacts generated during the task, available for all agents to access and utilize.
