@@ -328,7 +328,7 @@ const App: React.FC = () => {
     }
   };
 
-  const tabContentStyle = { height: 'calc(100vh - 120px)', overflow: 'auto' };
+  const tabContentStyle = { height: 'calc(100vh - 50px)', overflow: 'auto' };
   const emptyStateStyle = {
     display: 'flex',
     alignItems: 'center',
@@ -856,14 +856,14 @@ const App: React.FC = () => {
             styles: {
               content: {
                 backgroundColor: '#f5f5f5',
-                maxWidth: '800px'
+                maxWidth: '95%'
               }
             }
           }))}
           style={{
             height: '100%',
-            paddingInline: '40px',
-            maxWidth: '800px',
+            paddingInline: '10px',
+            width: '750px',
             margin: '0 auto'
           }}
           roles={{
@@ -990,7 +990,6 @@ const App: React.FC = () => {
     <div className={styles.layout}>
       {chatSider}
       <div className={styles.chat} style={{
-        marginRight: rightSiderCollapsed ? '0' : '500px',
         transition: 'margin-right 0.3s ease'
       }}>
         {chatList}
@@ -998,9 +997,9 @@ const App: React.FC = () => {
       </div>
       {!rightSiderCollapsed && (
         <div className={`${styles.sider} ${rightSiderCollapsed ? 'collapsed' : 'expanded'}`} style={{
-          position: 'fixed',
           right: 0,
           width: '500px',
+          flexShrink: 0,
           borderLeft: '1px solid #f0f0f0',
           borderRight: 'none'
         }}>
