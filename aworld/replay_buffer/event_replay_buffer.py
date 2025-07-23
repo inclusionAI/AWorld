@@ -26,7 +26,7 @@ class EventReplayBuffer(ReplayBuffer):
         super().__init__(storage)
         self.task_agent_map = {}
 
-    async def get_trajectory(self, messages: List[Message]) -> List[Dict[str, Any]] | None:
+    async def get_trajectory(self, messages: List[Message], task_id: str) -> List[Dict[str, Any]] | None:
         if not messages:
             return None
         valid_agent_messages = await self._filter_replay_messages(messages)
@@ -42,11 +42,7 @@ class EventReplayBuffer(ReplayBuffer):
             self.store_batch(data_rows)
             trajectory = [_to_serializable(data_row) for data_row in data_rows]
 
-            timestamp = datetime.now().strftime("%Y%m%d")
-            export_dir = os.getenv('REPLAY_EXPORT_DIRECTORY', None)
-            replay_dir = os.path.join(export_dir or "./trace_data", timestamp, get_local_ip(), "replays")
-            os.makedirs(replay_dir, exist_ok=True)
-            self.export(data_rows, replay_dir)
+            self.export(data_rows, task_id)
 
             return trajectory
         except Exception as e:
@@ -128,7 +124,7 @@ class EventReplayBuffer(ReplayBuffer):
         context = message.context
         return context.context_info.get("llm_input", [])
 
-    def export(self, data_rows: List[DataRow], directory: str = None) -> None:
+    def export(self, data_rows: List[DataRow], task_id: str) -> None:
         '''
         Export data rows to a specified file.
         
@@ -139,29 +135,37 @@ class EventReplayBuffer(ReplayBuffer):
         Raises:
             ValueError: When the data rows list is empty or the file path is invalid
         '''
-        if not data_rows:
-            logger.error("Data rows list cannot be empty")
-            return
-        if not directory:
-            logger.error("File path cannot be empty")
+        enable_file_export = os.getenv("EXPORT_REPLAY_FILES", "false").lower() == "true"
+        enable_oss_export = os.getenv("EXPORT_REPLAY_TO_OSS", "false").lower() == "true"
+        if not enable_file_export and not enable_oss_export:
             return
 
-        filepath = os.path.join(directory, "data.json")
+        if not data_rows:
+            logger.warn("Data rows list cannot be empty")
+            return
+
         try:
             # Convert data rows to dictionary list
             data_dicts = [_to_serializable(data_row) for data_row in data_rows]
-            
-            # Write to JSON file
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(data_dicts, f, ensure_ascii=False, indent=2)
-            logger.info(f"Successfully exported {len(data_rows)} data rows to {os.path.abspath(filepath)}")
 
-            enable_oss_export = os.getenv("EXPORT_REPLAY_TO_OSS", "false").lower() == "true"
+            timestamp = datetime.now().strftime("%Y%m%d")
+            export_dir = os.getenv('REPLAY_EXPORT_DIRECTORY', None)
+            replay_dir = os.path.join(export_dir or "./trace_data", timestamp, get_local_ip(), "replays")
+            os.makedirs(replay_dir, exist_ok=True)
+            filepath = os.path.join(replay_dir, f"task_replay_{task_id}.json")
+
+            if enable_file_export:
+                logger.info(f"Exporting {len(data_rows)} data rows to {filepath}")
+                # Write to JSON file
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(data_dicts, f, ensure_ascii=False, indent=2)
+                logger.info(f"Successfully exported {len(data_rows)} data rows to {os.path.abspath(filepath)}")
+
             if enable_oss_export:
+                logger.info(f"Exporting {len(data_rows)} data rows to oss")
                 self.export_to_oss(data_dicts, filepath)
-
         except Exception as e:
-            logger.error(f"Failed to export data to {filepath}: {str(e)}")
+            logger.error(f"Failed to export replay datas: {e}")
             raise
 
     def export_to_oss(self, datas, filepath):
