@@ -11,20 +11,20 @@ from aworld.runner import Runners
 from examples.common.tools.common import Tools
 from examples.multi_agents.coordination.deepresearch.prompts import *
 
+# os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
 # os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
-# os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
-# os.environ["LLM_API_KEY"] = "lm-studio"
-os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
-os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
-os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
+# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
+# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
 
 def get_deepresearch_swarm(user_input):
 
     agent_config = AgentConfig(
         llm_config=ModelConfig(
+            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
             llm_model_name=os.getenv("LLM_MODEL_NAME"),
             llm_base_url=os.getenv("LLM_BASE_URL"),
-            llm_api_key=os.getenv("LLM_API_KEY")
+            llm_api_key=os.getenv("LLM_API_KEY"),
+            llm_temperature=os.getenv("LLM_TEMPERATURE", 0.0)
         ),
         use_vision=False
     )

@@ -1,9 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import os
 from aworld.config.conf import AgentConfig, ToolConfig
 from aworld.agents.llm_agent import Agent
 from aworld.config import ModelConfig
-from aworld.core.agent.swarm import TeamSwarm
+from aworld.core.agent.swarm import TeamSwarm, Swarm, GraphBuildType
 from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.browser_use.agent import BrowserAgent
@@ -13,10 +14,17 @@ from examples.common.tools.conf import BrowserToolConfig
 from examples.common.tools.tool_action import SearchAction
 from examples.multi_agents.collaborative.travel.prompts import *
 
+# os.environ["LLM_PROVIDER"] = "openai"
+# os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
+# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
+# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
+
 model_config = ModelConfig(
-    llm_provider="openai",
-    llm_model_name="gpt-4o",
-    # need to set llm_api_key for use LLM
+    llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+    llm_model_name=os.getenv("LLM_MODEL_NAME"),
+    llm_base_url=os.getenv("LLM_BASE_URL"),
+    llm_api_key=os.getenv("LLM_API_KEY"),
+    llm_temperature=os.getenv("LLM_TEMPERATURE", 0.0)
 )
 agent_config = AgentConfig(
     llm_config=model_config,
@@ -58,6 +66,7 @@ browser_agent = BrowserAgent(
         llm_config=model_config,
         use_vision=False
     ),
+    custom_executor=True,
     tool_names=[Tools.BROWSER.value]
 )
 
@@ -67,8 +76,8 @@ def main():
         I need a 7-day Japan itinerary from April 2 to April 8 2025, departing from Hangzhou, We want to see beautiful cherry blossoms and experience traditional Japanese culture (kendo, tea ceremonies, Zen meditation). We would like to taste matcha in Uji and enjoy the hot springs in Kobe. I am planning to propose during this trip, so I need a special location recommendation. Please provide a detailed itinerary and create a simple HTML travel handbook that includes a 7-day Japan itinerary, an updated cherry blossom table, attraction descriptions, essential Japanese phrases, and travel tips for us to reference throughout our journey.
         you need search and extract different info 1 times, and then write, at last use browser agent goto the html url and then, complete the task.
         """
-    # swarm = Swarm((plan, search), (plan, browser_agent), (plan, write), build_type=GraphBuildType.TEAM)
-    swarm = TeamSwarm(plan, search, browser_agent, write)
+    swarm = Swarm((plan, search), (plan, browser_agent), (plan, write), build_type=GraphBuildType.HANDOFF)
+    # swarm = TeamSwarm(plan, search, browser_agent, write)
     task = Task(
         swarm=swarm,
         input=goal,

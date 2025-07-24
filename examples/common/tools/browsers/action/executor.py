@@ -53,7 +53,7 @@ class BrowserToolActionExecutor(ToolActionExecutor):
             raise ValueError(f'Action {action_name} not found')
 
         action = ActionFactory(action_name)
-        action_result, page = action.act(action_model, page=self.tool.page, browser=self.tool.context, **kwargs)
+        action_result, page = action.act(action_model, page=self.tool.page, browser=self.tool.browser_context, **kwargs)
         logger.info(f"{action_name} execute finished")
         return action_result, page
 
@@ -65,6 +65,7 @@ class BrowserToolActionExecutor(ToolActionExecutor):
                 raise ValueError(f'Action {action_name} not found')
 
         action = ActionFactory(action_name)
-        action_result, page = await action.async_act(action_model, page=self.tool.page, browser=self.tool.context, **kwargs)
+        action_result, page = await action.async_act(action_model, page=self.tool.page,
+                                                     browser=self.tool.browser_context, **kwargs)
         logger.info(f"{action_name} execute finished")
         return action_result, page

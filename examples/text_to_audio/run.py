@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import os
 
 from aworld.config.conf import AgentConfig
 from aworld.agents.llm_agent import Agent
@@ -7,10 +8,11 @@ from aworld.runner import Runners
 
 if __name__ == '__main__':
     agent_config = AgentConfig(
-        llm_provider="openai",
-        llm_model_name="gpt-4o",
-        llm_api_key="YOUR_API_KEY",
-        llm_base_url="http://localhost:5080"
+        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        llm_model_name=os.getenv("LLM_MODEL_NAME"),
+        llm_base_url=os.getenv("LLM_BASE_URL"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_temperature=os.getenv("LLM_TEMPERATURE", 0.0)
     )
 
     edu_sys_prompt = "You are a helpful agent to convert text to audio for children education."

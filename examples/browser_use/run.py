@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import os
 
 from aworld.config.conf import ModelConfig
 from aworld.core.task import Task
@@ -9,13 +10,17 @@ from examples.browser_use.config import BrowserAgentConfig
 from examples.common.tools.common import Agents, Tools
 from examples.common.tools.conf import BrowserToolConfig
 
+# os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
+# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
+# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
+
 if __name__ == '__main__':
     llm_config = ModelConfig(
-        llm_provider="openai",
-        llm_model_name="gpt-4o",
-        llm_temperature=0.3,
-        llm_api_key="dummy",
-        llm_base_url="http://localhost:34567",
+        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        llm_model_name=os.getenv("LLM_MODEL_NAME"),
+        llm_base_url=os.getenv("LLM_BASE_URL"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_temperature=os.getenv("LLM_TEMPERATURE", 0.0)
     )
     browser_tool_config = BrowserToolConfig(width=1280,
                                             height=720,

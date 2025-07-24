@@ -1,11 +1,15 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
+import os
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from examples.common.tools.common import Tools
+
+# os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
+# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
+# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
 
 search_sys_prompt = "You are a helpful search agent."
 search_prompt = """
@@ -33,10 +37,11 @@ if __name__ == "__main__":
     # os.environ['GOOGLE_ENGINE_ID'] = ""
 
     agent_config = AgentConfig(
-        llm_provider="openai",
-        llm_model_name="gpt-4o",
-        llm_temperature=1,
-        # need to set llm_api_key for use LLM
+        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        llm_model_name=os.getenv("LLM_MODEL_NAME"),
+        llm_base_url=os.getenv("LLM_BASE_URL"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_temperature=os.getenv("LLM_TEMPERATURE", 0.0)
     )
 
     search = Agent(
