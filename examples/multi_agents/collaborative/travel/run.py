@@ -66,6 +66,7 @@ browser_agent = BrowserAgent(
         llm_config=model_config,
         use_vision=False
     ),
+    custom_executor=True,
     tool_names=[Tools.BROWSER.value]
 )
 
