@@ -50,14 +50,5 @@ def setup_routes(storage: TraceStorage):
             'root_span': trace_tree,
         })
 
-    @app.get('/api/trace_flow/{trace_id}')
-    async def get_trace_flow(trace_id):
-        from examples.trace.agent_flow import get_agent_flow
-        trace_tree = get_agent_flow(trace_id)
-        return JSONResponse(content={
-            'trace_id': trace_id,
-            'data': trace_tree
-        })
-
     routes_setup = True
     return app
