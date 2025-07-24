@@ -37,7 +37,21 @@ class Swarm(object):
                  register_agents: List[BaseAgent] = None,
                  build_type: GraphBuildType = GraphBuildType.WORKFLOW,
                  builder_cls: str = None,
+                 keep_build_type: bool = True,
                  event_driven: bool = True):
+        """Swarm init.
+
+        Args:
+            root_agent: Communication agent of swarm, and it is the first executing agent.
+            max_steps: Maximum number of iterations.
+            register_agents: Only used for agents registered to swarm, not for topology structures.
+            build_type: The construction type of topology, different construction types execute differently.
+            builder_cls: Custom topology class, must comply with the protocol of TopologyBuilder.
+            keep_build_type: Whether to maintain the build type set.
+                             If value is False, the build type will be automatically recognized for special topologies.
+                             For example, a star topology will automatically assume that it should be built by TeamBuilder.
+            event_driven: Should event driven be used. Do not modify this parameter.
+        """
         self._communicate_agent = root_agent
         if root_agent and root_agent not in args:
             self.agent_list: List[BaseAgent] = [root_agent] + list(args)
@@ -53,7 +67,7 @@ class Swarm(object):
             self.builder = new_instance(builder_cls, self)
         else:
             self.builder = BUILD_CLS.get(self.build_type)(
-                self.agent_list, register_agents, max_steps)
+                self.agent_list, register_agents, keep_build_type)
 
         self.agent_graph: AgentGraph = None
 
@@ -567,9 +581,11 @@ class TopologyBuilder:
     """Multi-agent topology base builder."""
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self, agent_list: List[BaseAgent], register_agents: List[BaseAgent] = None, max_steps: int = 0):
+    def __init__(self, agent_list: List[BaseAgent],
+                 register_agents: List[BaseAgent] = None,
+                 keep_build_type: bool = True):
         self.agent_list = agent_list
-        self.max_steps = max_steps
+        self.keep_type = keep_build_type
 
         register_agents = register_agents if register_agents else []
         for agent in register_agents:
@@ -591,6 +607,19 @@ class TopologyBuilder:
                 AgentFactory._agent_instance[agent.id()] = agent
             if agent.desc():
                 AgentFactory._desc[agent.id()] = agent.desc()
+
+    def _is_star(self, single_agents: list) -> bool:
+        # special process, identify whether it is a star topology
+        same_agent = True
+        last = None
+        for agent in single_agents:
+            if not last:
+                last = agent[0].id()
+            else:
+                if last != agent[0].id():
+                    same_agent = False
+                    break
+        return same_agent
 
 
 class WorkflowBuilder(TopologyBuilder):
@@ -638,6 +667,11 @@ class WorkflowBuilder(TopologyBuilder):
 
         if not single_agents:
             raise RuntimeError(f"no valid agent in swarm to build execution graph.")
+
+        if not self.keep_type and self._is_star(single_agents):
+            # star topology means team
+            builder = TeamBuilder(self.agent_list, [], self.keep_type)
+            return builder.build()
 
         last_agent = None
         for agent in single_agents:
@@ -722,9 +756,9 @@ class HandoffBuilder(TopologyBuilder):
         if not valid_agent_pair:
             raise RuntimeError(f"no valid agent pair to build execution graph.")
 
-        if self._is_star(valid_agent_pair):
+        if not self.keep_type and self._is_star(valid_agent_pair):
             # star topology means team
-            builder = TeamBuilder(self.agent_list, [], self.max_steps)
+            builder = TeamBuilder(self.agent_list, [], self.keep_type)
             return builder.build()
 
         # agent handoffs graph build.
@@ -745,19 +779,6 @@ class HandoffBuilder(TopologyBuilder):
             if pair[1].id() in pair[1].handoffs:
                 pair[1].handoffs.remove(pair[1].id())
         return agent_graph
-
-    def _is_star(self, single_agents: list) -> bool:
-        # special process, identify whether it is a star topology
-        same_agent = True
-        last = None
-        for agent in single_agents:
-            if not last:
-                last = agent[0].id()
-            else:
-                if last != agent[0].id():
-                    same_agent = False
-                    break
-        return same_agent
 
 
 class TeamBuilder(TopologyBuilder):

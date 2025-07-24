@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import os
 
 from aworld.config.conf import ModelConfig, AgentConfig
 from aworld.core.agent.swarm import Swarm, GraphBuildType
@@ -9,15 +10,19 @@ from examples.multi_agents.coordination.custom_agent.agent import PlanAgent, Exe
 from examples.multi_agents.coordination.custom_agent.mock import mock_dataset
 from examples.common.tools.common import Agents, Tools
 
-
+# os.environ["LLM_PROVIDER"] = "openai"
+# os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
+# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
+# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
 def main():
     test_sample = mock_dataset("gaia")
 
     model_config = ModelConfig(
-        llm_provider="openai",
-        llm_temperature=1,
-        llm_model_name="gpt-4o",
-        # need to set llm_api_key for use LLM
+        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        llm_model_name=os.getenv("LLM_MODEL_NAME"),
+        llm_base_url=os.getenv("LLM_BASE_URL"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_temperature=os.getenv("LLM_TEMPERATURE", 0.0)
     )
 
     agent1_config = AgentConfig(
@@ -38,7 +43,7 @@ def main():
 
     # Define a task
     task_id = 'task'
-    task = Task(id=task_id, input=test_sample, swarm=swarm, endless_threshold=10)
+    task = Task(id=task_id, input=test_sample, swarm=swarm, endless_threshold=5)
 
     # Run task
     result = Runners.sync_run_task(task=task)

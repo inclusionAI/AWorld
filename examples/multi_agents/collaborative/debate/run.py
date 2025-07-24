@@ -12,15 +12,21 @@ from examples.multi_agents.collaborative.debate.agent.prompts import generate_op
 from aworld.config import AgentConfig
 from aworld.output import WorkSpace
 
+# os.environ["LLM_PROVIDER"] = "openai"
+# os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
+# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
+# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
+
 if __name__ == '__main__':
     load_dotenv()
     trace.configure()
 
     base_config = {
-        "llm_provider": "openai",
+        "llm_provider": os.getenv("LLM_PROVIDER"),
         "llm_model_name": os.environ['LLM_MODEL_NAME'],
         "llm_base_url": os.environ['LLM_BASE_URL'],
         "llm_api_key": os.environ['LLM_API_KEY'],
+        "llm_temperature": os.getenv("LLM_TEMPERATURE", 0.0)
     }
 
     agentConfig = AgentConfig.model_validate(base_config)

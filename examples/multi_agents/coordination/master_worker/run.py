@@ -19,9 +19,9 @@ from examples.multi_agents.coordination.master_worker.prompts_single_action impo
 )
 
 # Set environment variables, configure LLM model
-os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
-os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
-os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
+# os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
+# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
+# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
 
 def get_single_action_team_swarm(user_input):
     """
@@ -38,9 +38,11 @@ def get_single_action_team_swarm(user_input):
     # Create a unified Agent configuration
     agent_config = AgentConfig(
         llm_config=ModelConfig(
+            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
             llm_model_name=os.getenv("LLM_MODEL_NAME"),
             llm_base_url=os.getenv("LLM_BASE_URL"),
-            llm_api_key=os.getenv("LLM_API_KEY")
+            llm_api_key=os.getenv("LLM_API_KEY"),
+            llm_temperature=os.getenv("LLM_TEMPERATURE", 0.0)
         ),
         use_vision=False
     )

@@ -42,6 +42,9 @@ application area, making it easy for developers to explore and extend.
 
 ## Usage
 
+Create .env file in the examples' dir, the file content is the environment variables required for runtime, 
+such as LLM_MODEL_NAME, LLM_API_KEY, LLM_BASE_URL, LLM_TEMPERATURE = 0.0 etc.
+
 - Each subdirectory contains its own entry point (usually `run.py`) and may include additional configuration or requirements files.
 - Before running any example, ensure you have installed all required dependencies and set the necessary environment variables (e.g., LLM provider credentials, API keys).
 - For detailed instructions, refer to the README or comments within each subdirectory.
