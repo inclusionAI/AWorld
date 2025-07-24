@@ -94,8 +94,9 @@ agent_config = AgentConfig(
 mcp_config = {
     "mcpServers": {
         "GorillaFileSystem": {
-            "type": "sse",
-            "url": "http://127.0.0.1:8000/sse/"
+            "type": "stdio",
+            "command": "python",
+            "args": ["mcp_tools/gorilla_file_system.py"],
         }
     }
 }
@@ -104,12 +105,13 @@ mcp_config = {
 ### 3. Agent Creation
 
 ```python
+file_sys_prompt = "You are a helpful agent to use the standard file system..."
 file_sys = Agent(
     conf=agent_config,
     name="file_sys_agent",
-    system_prompt="You are a helpful agent to use the standard file system...",
-    mcp_servers=["GorillaFileSystem"],
-    mcp_config=mcp_config
+    system_prompt=file_sys_prompt,
+    mcp_servers=mcp_config.get("mcpServers", []).keys(),
+    mcp_config=mcp_config,
 )
 ```
 
@@ -118,9 +120,13 @@ file_sys = Agent(
 ```python
 result = Runners.sync_run(
     input="use mcp tools to perform file operations...",
-    agent=file_sys
+    agent=file_sys,
 )
-sample = result.trajectory  # Access trajectory data, which is a list of steps.
+
+print("=" * 100)
+print(f"result.answer: {result.answer}")
+print("=" * 100)
+print(f"result.trajectory: {json.dumps(result.trajectory[0], indent=4)}")
 ```
 
 ## 🛠️ MCP Tools (GorillaFileSystem)
