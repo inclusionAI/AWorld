@@ -39,15 +39,15 @@ The BFCL example consists of:
 ```bash
 # Set your OpenRouter API key
 export OPENROUTER_API_KEY="your-api-key-here"
-
-# Navigate to the BFCL example
-cd examples/BFCL
 ```
 
 ### 2. Run the Example
 
 ```bash
-# Execute the file system agent
+# Navigate to the BFCL example directory
+cd examples/BFCL
+
+# Run the BFCL agent example
 python run.py
 ```
 
