@@ -4,6 +4,7 @@ import os
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import TeamSwarm
+from aworld.core.event.base import Constants
 from aworld.planner.plan import PlannerOutputParser
 from aworld.runner import Runners
 
@@ -37,6 +38,7 @@ def get_deepresearch_swarm(user_input):
         use_tools_in_prompt=True,
         resp_parse_func=PlannerOutputParser(agent_id).parse,
         system_prompt_template=plan_sys_prompt,
+        response_handler_name=Constants.PLAN
     )
 
     web_search_agent = Agent(

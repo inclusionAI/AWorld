@@ -92,6 +92,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.tools_conf = {}
         self.tools_aggregate_func = kwargs.get("tools_aggregate_func") if kwargs.get(
             "tools_aggregate_func") else self._tools_aggregate_func
+        self.response_handler_name = kwargs.get("response_handler_name")
 
     def deep_copy(self):
         """Create a deep copy of the current Agent instance.
@@ -457,17 +458,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
             raise Exception(f'{self.id()} no action decision has been made.')
-
-        if isinstance(self.context.swarm, TeamSwarm):
-            if self.id() == self.context.swarm.communicate_agent.id():
-                logger.info(f"{self.id()} is lead agent in TeamSwarm, will send message to TeamHandler.")
-                return Message(payload=actions,
-                               caller=caller,
-                               sender=self.id(),
-                               receiver=actions[0].tool_name,
-                               category=Constants.PLAN,
-                               session_id=self.context.session_id if self.context else "",
-                               headers=self._update_headers(input_message))
+        if self.response_handler_name:
+            return Message(payload=actions,
+                           caller=caller,
+                           sender=self.id(),
+                           receiver=actions[0].tool_name,
+                           category=self.response_handler_name,
+                           session_id=self.context.session_id if self.context else "",
+                           headers=self._update_headers(input_message))
 
         tools = OrderedDict()
         agents = []
