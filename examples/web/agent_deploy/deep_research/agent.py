@@ -20,7 +20,7 @@ from aworld.config.conf import AgentConfig, ModelConfig, TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.runner import Runners
-from examples.common.tools import Tools
+from examples.common.tools.common import Tools
 from .prompts import *
 
 logger = logging.getLogger(__name__)

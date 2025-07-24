@@ -19,6 +19,11 @@ application area, making it easy for developers to explore and extend.
 - **web/**  
   Aworld web for visual interaction.
 
+  **Run agent in build-in WebUI**
+
+  - **Configure Environment**: Navigate to `examples/web/agent_deploy/` and you'll find 3 demo agents: `single_agent`, `team_agent`, and `deep_research`. Copy `.env.template` to `.env` in your chosen agent directory, then update the configuration values with your own settings.
+  - **Launch WebUI**: Start the web server by running: `cd examples/web/ && aworld web`
+
 ## Application Overview
 
 - **browser_use/**  
