@@ -8,23 +8,24 @@ from aworld.runner import Runners
 import json
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Get API key from environment variable
-    api_key = os.getenv('OPENROUTER_API_KEY')
-    
+    api_key = os.getenv("OPENROUTER_API_KEY")
+
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="openai/gpt-4o",
         llm_api_key=api_key,
-        llm_base_url="https://openrouter.ai/api/v1"
+        llm_base_url="https://openrouter.ai/api/v1",
     )
 
     # Register the MCP tool here, or create a separate configuration file.
     mcp_config = {
         "mcpServers": {
             "GorillaFileSystem": {
-                "type": "sse",
-                "url": "http://127.0.0.1:8000/sse/"
+                "type": "stdio",
+                "command": "python",
+                "args": ["mcp_tools/gorilla_file_system.py"],
             }
         }
     }
@@ -34,8 +35,8 @@ if __name__ == '__main__':
         conf=agent_config,
         name="file_sys_agent",
         system_prompt=file_sys_prompt,
-        mcp_servers=["GorillaFileSystem"],  # MCP server name for agent to use
-        mcp_config=mcp_config
+        mcp_servers=mcp_config.get("mcpServers", []).keys(),
+        mcp_config=mcp_config,
     )
 
     # run
@@ -46,8 +47,10 @@ if __name__ == '__main__':
             "and keep the original content of the file. Make sure the new and old "
             "content are all in the file; and display the content of the file"
         ),
-        agent=file_sys
+        agent=file_sys,
     )
 
-    # print the first step of the trajectory, which is a dict
-    print(json.dumps(result.trajectory[0], indent=4))
+    print("=" * 100)
+    print(f"result.answer: {result.answer}")
+    print("=" * 100)
+    print(f"result.trajectory: {json.dumps(result.trajectory[0], indent=4)}")

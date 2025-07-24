@@ -938,7 +938,7 @@ if __name__ == "__main__":
     }
     args = ActionArguments(
         name="GorillaFileSystem",
-        transport="sse"
+        transport="stdio"
     )
 
     try:
