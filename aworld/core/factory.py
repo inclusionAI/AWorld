@@ -75,6 +75,9 @@ class Factory(Generic[T]):
                 if equal:
                     logger.warning(f"{name} already in {self._type} factory, will override it.")
 
+            # Add REGISTERED_NAME attribute to the class to save the registered name
+            setattr(cls, "REGISTERED_NAME", name)
+
             self._asyn[name] = asyn
             self._cls[prefix + name] = cls
             self._desc[prefix + name] = desc

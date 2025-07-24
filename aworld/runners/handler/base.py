@@ -34,7 +34,23 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
     def __init__(self):
         self.hooks = None
 
+    def get_registered_name(self):
+        """Get the registered name of the handler.
+        
+        If the class has a REGISTERED_NAME attribute, return the value of the attribute;
+        otherwise return None.
+        """
+        return getattr(self.__class__, "REGISTERED_NAME", None)
+
     def is_valid_message(self, message: Message):
+        """Validate if the message is valid for this handler.
+        
+        If the class has a REGISTERED_NAME attribute, check if the message's category matches the registered name;
+        otherwise return True.
+        """
+        registered_name = self.get_registered_name()
+        if registered_name is not None:
+            return message.category == registered_name
         return True
 
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
