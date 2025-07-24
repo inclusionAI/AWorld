@@ -216,7 +216,7 @@ class Context:
 
     def deep_copy(self) -> 'Context':
         """Create a deep copy of this Context instance with all attributes copied.
-        
+
         Returns:
             Context: A new Context instance with deeply copied attributes
         """
@@ -282,19 +282,7 @@ class Context:
         return new_context
 
     def merge_context(self, other_context: 'Context') -> None:
-        """Merge the state of another Context instance into the current Context
-        
-        This method is used to merge the state of a child Context (such as one created by fork_new_task) 
-        back into the parent Context. The merge operation includes:
-        1. Merge context_info state
-        2. Merge trajectories
-        3. Merge token usage statistics
-        4. Merge agent_info configuration (if there are new configurations)
-        
-        Args:
-            other_context: The other Context instance to merge
-        """
-        if not other_context or not isinstance(other_context, Context):
+        if not other_context:
             return
 
         # 1. Merge context_info state
