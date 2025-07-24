@@ -5,5 +5,5 @@ from aworld.core.tool.base import Tool, AsyncTool
 from aworld.core.tool.action import ExecutableAction
 from aworld.utils.common import scan_packages
 
-scan_packages("examples.tools", [Tool, AsyncTool, ExecutableAction])
+scan_packages("examples.common.tools", [Tool, AsyncTool, ExecutableAction])
 from examples.common.tools.browsers.action.actions import *

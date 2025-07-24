@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 from enum import Enum
 
-package = 'examples.tools'
+package = 'examples.common.tools'
 
 
 class Tools(Enum):

@@ -71,12 +71,12 @@ class BrowserTool(Tool):
         self.context_manager = sync_playwright()
         self.playwright = self.context_manager.start()
         self.browser = self._create_browser()
-        self.context = self._create_browser_context()
+        self.browser_context = self._create_browser_context()
 
         if self.record_trace:
-            self.context.tracing.start(screenshots=True, snapshots=True)
+            self.browser_context.tracing.start(screenshots=True, snapshots=True)
 
-        self.page = self.context.new_page()
+        self.page = self.browser_context.new_page()
         if self.conf.get("custom_executor"):
             self.action_executor = BrowserToolActionExecutor(self)
         else:
@@ -222,7 +222,7 @@ class BrowserTool(Tool):
                 self.page.go_back()
             except:
                 logger.warning("current page abnormal, new page to use.")
-                self.page = self.context.new_page()
+                self.page = self.browser_context.new_page()
             try:
                 dom_tree = self._parse_dom_tree()
                 image = self.screenshot()
@@ -280,11 +280,11 @@ class BrowserTool(Tool):
 
     def save_trace(self, trace_path: str | Path) -> None:
         if self.record_trace:
-            self.context.tracing.stop(path=trace_path)
+            self.browser_context.tracing.stop(path=trace_path)
 
     def close(self) -> None:
-        if hasattr(self, 'context') and self.context:
-            self.context.close()
+        if hasattr(self, 'context') and self.browser_context:
+            self.browser_context.close()
         if hasattr(self, 'browser') and self.browser:
             self.browser.close()
         if hasattr(self, 'playwright') and self.playwright:

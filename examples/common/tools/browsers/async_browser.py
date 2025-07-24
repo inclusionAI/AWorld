@@ -68,12 +68,12 @@ class BrowserTool(AsyncTool):
         self.playwright = await self.context_manager.start()
 
         self.browser = await self._create_browser()
-        self.context = await self._create_browser_context()
+        self.browser_context = await self._create_browser_context()
 
         if self.record_trace:
-            await self.context.tracing.start(screenshots=True, snapshots=True)
+            await self.browser_context.tracing.start(screenshots=True, snapshots=True)
 
-        self.page = await self.context.new_page()
+        self.page = await self.browser_context.new_page()
         if self.conf.get("custom_executor"):
             self.action_executor = BrowserToolActionExecutor(self)
         else:
@@ -217,7 +217,7 @@ class BrowserTool(AsyncTool):
                     await self.page.go_back()
                 except:
                     logger.warning("current page abnormal, new page to use.")
-                    self.page = await self.context.new_page()
+                    self.page = await self.browser_context.new_page()
                 dom_tree = await self._parse_dom_tree()
                 image = await self.screenshot()
                 pixels_above, pixels_below = await self._scroll_info()
@@ -271,15 +271,15 @@ class BrowserTool(AsyncTool):
 
     async def save_trace(self, trace_path: str | Path) -> None:
         if self.record_trace:
-            await self.context.tracing.stop(path=trace_path)
+            await self.browser_context.tracing.stop(path=trace_path)
 
     @property
     async def finished(self) -> bool:
         return self._finish
 
     async def close(self) -> None:
-        if hasattr(self, 'context') and self.context:
-            await self.context.close()
+        if hasattr(self, 'context') and self.browser_context:
+            await self.browser_context.close()
         if hasattr(self, 'browser') and self.browser:
             await self.browser.close()
         if hasattr(self, 'playwright') and self.playwright:
