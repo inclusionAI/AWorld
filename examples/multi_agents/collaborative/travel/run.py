@@ -11,6 +11,7 @@ from examples.browser_use.config import BrowserAgentConfig
 from examples.common.tools.common import Tools
 from examples.common.tools.conf import BrowserToolConfig
 from examples.common.tools.tool_action import SearchAction
+from examples.multi_agents.collaborative.travel.prompts import *
 
 model_config = ModelConfig(
     llm_provider="openai",
