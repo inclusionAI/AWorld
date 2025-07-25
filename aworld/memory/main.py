@@ -12,7 +12,7 @@ from aworld.memory.embeddings.factory import EmbedderFactory
 from aworld.memory.longterm import DefaultMemoryOrchestrator
 from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, MemoryToolMessage, MessageMetadata, \
     UserProfileExtractParams, \
-    AgentExperienceExtractParams, UserProfile, MemorySummary, MemoryAIMessage
+    AgentExperienceExtractParams, UserProfile, MemorySummary, MemoryAIMessage, Fact
 from aworld.memory.vector.factory import VectorDBFactory
 from aworld.models.llm import acall_llm_model
 from aworld.models.utils import num_tokens_from_messages
@@ -433,6 +433,15 @@ class Memory(MemoryBase):
             filters = {}
 
         return self.search(user_input, limit=limit,memory_type='user_profile',threshold=threshold, filters={
+            'user_id': user_id,
+            **filters
+        })
+
+    async def retrival_user_facts(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[Fact]]:
+        if not filters:
+            filters = {}
+
+        return self.search(user_input, limit=limit,memory_type='fact',threshold=threshold, filters={
             'user_id': user_id,
             **filters
         })

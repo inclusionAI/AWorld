@@ -5,7 +5,7 @@ from typing import Optional, Any, Literal, Union, List, Dict
 from pydantic import BaseModel, Field
 
 from aworld.config import ConfigDict
-from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfile, MemoryItem
+from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfile, MemoryItem, Fact
 from aworld.models.llm import LLMModel, get_llm_model
 
 
@@ -578,6 +578,21 @@ class MemoryBase(ABC):
     
     @abstractmethod
     async def retrival_user_profile(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[UserProfile]]:
+        """
+        Retrival user profile by user_id.
+
+        Args:
+            user_id (str): ID of the user to search for.
+            user_input (str): User input to search for.
+            threshold (float, optional): Threshold for similarity. Defaults to 0.5.
+            limit (int, optional): Limit the number of results. Defaults to 3.
+        Returns:
+            list[UserProfile]: List of user profiles.
+        """
+        pass
+
+    @abstractmethod
+    async def retrival_user_facts(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[Fact]]:
         """
         Retrival user profile by user_id.
 

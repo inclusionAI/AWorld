@@ -17,7 +17,7 @@ class MemoryItem(BaseModel):
     tags: list[str] = Field(description="tags")
     histories: list["MemoryItem"] = Field(default_factory=list)
     deleted: bool = Field(default=False)
-    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile"] = Field(default="message")
+    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile", "fact"] = Field(default="message")
     version: int = Field(description="version")
 
     def __init__(self, **data):
@@ -192,12 +192,51 @@ class UserProfile(MemoryItem):
         return self.content.value
 
     @property
+    def item(self) -> UserProfileItem:
+        return self.content
+
+    @property
     def embedding_text(self):
         return f"key:{self.key} value:{self.value}"
     
     def to_openai_message(self) -> dict:
         return {
             "role": "system",
+            "content": self.content
+        }
+
+class Fact(MemoryItem):
+    """
+    Represents Fact from conversation.
+    Args:
+        user_id (str): The ID of the user.
+        content (str): fact.
+        metadata (Optional[Dict[str, Any]]): Additional metadata.
+    """
+    def __init__(self, user_id: str, content: str, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+        meta = metadata.copy() if metadata else {}
+        meta['user_id'] = user_id
+        super().__init__(content=content, metadata=meta, memory_type="fact", **kwargs)
+
+    @property
+    def user_id(self) -> str:
+        return self.metadata['user_id']
+
+    @property
+    def key(self) -> str:
+        return self.content.key
+
+    @property
+    def value(self) -> Any:
+        return self.content.value
+
+    @property
+    def embedding_text(self):
+        return self.content
+
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "user",
             "content": self.content
         }
 
