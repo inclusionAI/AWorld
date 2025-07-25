@@ -13,11 +13,11 @@ class GuardToolCaller:
     """simple reasoning diagnostic tool caller"""
     
     def __init__(self):
-        # 加载环境变量
+        # loading env
         env_path = ".env"
         load_dotenv(env_path, override=True, verbose=True)
         
-        # 初始化推理诊断LLM
+        # initialize guard llm
         self.guard_llm = self._init_guard_llm()
     
     def _init_guard_llm(self):

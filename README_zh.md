@@ -23,6 +23,7 @@
 - [许可证](#许可证) — 项目授权信息。
 
 ## 最新动态
+- 🐱 [2025/07/25] AWorld实现快速数学推理！仅用几小时就构建了多智能体系统，解决了IMO 2025中5/6的题目。查看[IMO](examples/imo/README.md)部分的实现。
 - 🦍 [2025/07/23] 我们发布了BFCL基准测试的运行时构建教程！学习如何在我们的综合[`教程`](examples/BFCL/README.md)中合成函数调用样本。
 - 🦤 [2025/07/07] AWorld 作为运行时现已准备好进行智能体训练。详情请参见[自我改进部分](#self-improvement-with-diverse-runtimes)。我们在 GAIA 测试中的得分已更新至 77.08。在[演示部分](#demo-of-gaia-agent-runtime)了解如何构建 GAIA 运行时。
 - 🦩 [2025/06/19] GAIA 测试分数提升至 72.43，新增本地运行模式，详见 `./README-local.md`。
