@@ -238,7 +238,7 @@ if __name__ == "__main__":
         results: List[Dict[str, Any]] = []
 
     try:
-        # 只运行指定的task_id
+        # appoint the task+id
         if args.q is not None:
             dataset_slice = [dataset_record for dataset_record in full_dataset if dataset_record["task_id"] == args.q]
             if not dataset_slice:

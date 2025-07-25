@@ -26,6 +26,7 @@
 - [License](#license) — Project licensing details.
 
 ## News 
+- 🐱 [2025/07/25] AWorld achieves rapid mathematical reasoning! Built a multi-agent system in just hours that solved 5/6 IMO 2025 problems. See implementation in [IMO](examples/imo/README.md) section.
 - 🦍 [2025/07/23] We released the runtime construction tutorial for BFCL benchmark! Learn how to synthesize function call samples in our comprehensive [`tutorial`](examples/BFCL/README.md). 
 - 🦤 [2025/07/07] AWorld, as a runtime, is now ready for agentic training. See [Self-Improvement section](#self-improvement-with-diverse-runtimes) for details. We have updated our score to 77.08 on the GAIA test. Learn how to construct a GAIA runtime in the [Demo section](#demo-of-gaia-agent-runtime).
 - 🦩 [2025/06/19] We have updated our score to 72.43 on the GAIA test. Additionally, we have introduced a new local running mode. See `./README-local.md` for detailed instructions.

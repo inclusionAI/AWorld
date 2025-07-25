@@ -94,7 +94,7 @@ Before running the program, you need to set up your environment variables:
 
    # Path Configurations (use relative paths)
    IMO_DATASET_PATH="."                      # Current directory
-   AWORLD_WORKSPACE="."                      # Current directory
+   AWORLD_WORKSPACE="Record"                 # Record directory
 
    # IMO Server (same as LLM configuration for most cases)
    IMO_LLM_API_KEY="your_imo_api_key"        # Same as LLM_API_KEY
