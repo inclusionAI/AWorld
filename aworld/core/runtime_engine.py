@@ -97,6 +97,8 @@ class LocalRuntime(RuntimeEngine):
                     res = await func(*args, **kwargs)
                 else:
                     res = func(*args, **kwargs)
+                if not res:
+                    return {}
                 return {res.id: res}
             except Exception as e:
                 logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
