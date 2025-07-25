@@ -67,7 +67,7 @@ class GuardRunner:
         self.guard_tool_caller = guard_tool_caller
         self.original_task = original_task
         self.conversation_history = []
-        self.max_iterations = 10  # 最大对话轮数
+        self.max_iterations = 10  # max conversation rounds
         
     async def run_conversation(self, question: str) -> str:
         """run the conversation"""

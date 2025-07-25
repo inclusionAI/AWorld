@@ -81,7 +81,7 @@ def question_scorer(model_answer: str, ground_truth: str) -> bool:
 
 
 def load_dataset_meta(path: str):
-    # 对于IMO数据集，metadata.jsonl直接放在imo文件夹下
+    # For IMO dataset, metadata.jsonl is directly placed in the imo folder
     data_dir = Path(path)
     
     dataset = []
@@ -95,7 +95,7 @@ def load_dataset_meta(path: str):
         lines = metaf.readlines()
         for line_num, line in enumerate(lines, 1):
             try:
-                # 清理行末尾的逗号
+                # Clean trailing commas at the end of lines
                 line = line.strip().rstrip(',')
                 if not line:
                     continue
@@ -103,7 +103,7 @@ def load_dataset_meta(path: str):
                 data = json.loads(line)
                 if data["task_id"] == "0-0-0-0-0":
                     continue
-                # IMO数据集可能没有file_name字段
+                # IMO dataset may not have file_name field
                 if "file_name" in data and data["file_name"]:
                     data["file_name"] = data_dir / data["file_name"]
                 dataset.append(data)
@@ -135,7 +135,7 @@ def load_dataset_meta_dict(path: str, split: str = "validation"):
 
 def add_file_path(task: Dict[str, Any], file_path: str = "./imo_dataset"):
     if "file_name" in task and task["file_name"]:
-        # 对于IMO数据集，文件路径可能需要调整
+        # For IMO dataset, file paths may need adjustment
         base_path = Path(file_path)
         file_path = base_path / task["file_name"]
             
