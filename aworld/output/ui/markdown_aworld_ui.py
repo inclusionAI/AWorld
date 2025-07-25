@@ -154,7 +154,7 @@ class MarkdownAworldUI(AworldUI):
                 })
 
         # web_pages
-        if metadata.get("artifact_type") in ["WEB_PAGES", "MARKDOWN", "TEXT"]  :
+        elif metadata.get("artifact_type") in ["WEB_PAGES"]  :
             data_dict = metadata.get("artifact_data")
             data_dict['task_id'] = self.task_id
             search_output = SearchOutput.from_dict(data_dict)
@@ -165,6 +165,19 @@ class MarkdownAworldUI(AworldUI):
                 content=search_output,
                 metadata={
                     "query": search_output.query,
+                }
+            )
+            result.append({
+                "artifact_type": metadata.get("artifact_type"),
+                "artifact_id": artifact_id
+            })
+        elif metadata.get("artifact_type") in ["MARKDOWN", "TEXT"]  :
+            artifact_id = str(uuid.uuid4())
+            await self.workspace.create_artifact(
+                artifact_type=metadata.get("artifact_type"),
+                artifact_id=artifact_id,
+                content=metadata.get("artifact_data"),
+                metadata={
                 }
             )
             result.append({
