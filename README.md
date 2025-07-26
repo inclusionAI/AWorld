@@ -1,7 +1,7 @@
 <div align="left">
 
 # AWorld: The Agent Runtime for Self-Improvement
-*"Self-awareness: the hardest problem isn't solving within limits, it's discovering the own limitations"*
+*"Self-awareness: the hardest problem isn't solving within limits, it's discovering one's own limitations"*
 
 
 [![Twitter Follow](https://img.shields.io/twitter/follow/AWorld_AI?style=social)](https://x.com/InclusionAI666)
