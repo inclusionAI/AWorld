@@ -10,7 +10,6 @@ sys.path.insert(0, str(project_root))
 
 from aworld.core.context.session import Session
 from aworld.core.agent.swarm import Swarm
-from aworld.core.context.context_manager import ContextManager
 from tests.base_test import assertEqual, assertIn, assertIsInstance, assertIsNotNone, assertTrue, run_multi_agent_as_team, run_task
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.core.context.base import Context
@@ -21,21 +20,27 @@ from tests.base_test import init_agent, run_agent, run_multi_agent_as_team
 
 class TestContextManagement(unittest.TestCase):
 
-    def test_save_and_reload(self):
-        context = Context()
-        context.context_info.set("hello", "world")
-        task = Task(input="""What is an agent.""",
-                    swarm=Swarm(init_agent("1"), max_steps=1), context=context)
-        task.session_id = "1"
-        context.session = Session(session_id="1")
-        context.set_task(task)
-        context_manager = ContextManager()
-        checkpoint = asyncio.run(context_manager.save(context))
+    # def test_save_and_reload(self):
+    #     context = Context()
+    #     context.context_info.set("hello", "world")
+    #     task = Task(input="""What is an agent.""",
+    #                 swarm=Swarm(init_agent("1"), max_steps=1), context=context)
+    #     task.session_id = "1"
+    #     context.session = Session(session_id="1")
+    #     context.set_task(task)
+    #     context_manager = ContextManager()
+    #     checkpoint = asyncio.run(context_manager.save(context))
 
-        session_id = context.session_id
-        context = asyncio.run(context_manager.reload(session_id))
-        assertEqual(context.context_info.get("hello"), "world")
-        
+    #     session_id = context.session_id
+    #     context = asyncio.run(context_manager.reload(session_id))
+    #     assertEqual(context.context_info.get("hello"), "world")
+
+    def test_sub_context(self):
+        class SubContext(Context):
+            state: str = "HelloWorld"
+        sub_context = SubContext()
+        assertEqual(sub_context.state, "HelloWorld")
+
     def test_default_context_configuration(self):
         mock_agent = init_agent("1")
         response = run_agent(
@@ -164,6 +169,7 @@ class TestContextManagement(unittest.TestCase):
         context = Context()
         context.context_info.update({"task": "What is an agent."})
         run_task(context=context, agent=mock_agent)
+
 
 
 

@@ -4,13 +4,14 @@ import copy
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING, Optional
 
 from aworld.config import ConfigDict
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from aworld.core.task import Task
@@ -29,8 +30,9 @@ class ContextUsage:
         self.used_context_length = used_context_length
 
 
-class Context:
-    """Context is the core context management class in the AWorld architecture, used to store and manage
+class Context(BaseModel):
+    """
+    Context is the core context management class in the AWorld architecture, used to store and manage
     the complete state information of an Agent, including configuration data and runtime state.
 
     Context serves as both a session-level context manager and agent-level context manager, providing:
@@ -87,43 +89,35 @@ class Context:
         >>> child_context = context.deep_copy()
         >>> context.merge_context(child_context)
     """
+    user: Optional[str] = None
+    task_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    session: Optional[Session] = None
+    engine: Optional[str] = None
+    context_info: Any = Field(default_factory=lambda: ContextState())
+    agent_info: Dict[str, Any] = Field(default_factory=ConfigDict)
+    trajectories: Any = Field(default_factory=OrderedDict)
+    token_usage: Dict[str, int] = Field(default_factory=lambda: {
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "total_tokens": 0,
+    })
+    swarm: Any = None
+    event_manager: Any = None
+    _task: Optional['Task'] = None
 
-    def __init__(self,
-                 user: str = None,
-                 task_id: str = None,
-                 trace_id: str = None,
-                 session: Session = None,
-                 engine: str = None,
-                 **kwargs):
-
-        super().__init__()
-        self._user = user
-        self._init(task_id=task_id, trace_id=trace_id,
-                   session=session, engine=engine, **kwargs)
-
-    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None):
-        self._task_id = task_id
-        self._task = None
-        self._engine = engine
-        self._trace_id = trace_id
-        self._session: Session = session
-        self.context_info = ContextState()
-        self.agent_info = ConfigDict()
-        self.trajectories = OrderedDict()
-        self._token_usage = {
-            "completion_tokens": 0,
-            "prompt_tokens": 0,
-            "total_tokens": 0,
-        }
-        # TODO workspace
-        self._swarm = None
-        self._event_manager = None
+    model_config = {
+        "arbitrary_types_allowed": True
+    }
 
     def add_token(self, usage: Dict[str, int]):
-        self._token_usage = nest_dict_counter(self._token_usage, usage)
+        self.token_usage = nest_dict_counter(self.token_usage, usage)
 
     def reset(self, **kwargs):
-        self._init(**kwargs)
+        # Reset fields based on kwargs
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
     def set_task(self, task: 'Task'):
         self._task = task
@@ -132,81 +126,29 @@ class Context:
         return self._task
 
     @property
-    def trace_id(self):
-        return self._trace_id
-
-    @trace_id.setter
-    def trace_id(self, trace_id):
-        self._trace_id = trace_id
-
-    @property
-    def token_usage(self):
-        return self._token_usage
-
-    @property
-    def engine(self):
-        return self._engine
-
-    @engine.setter
-    def engine(self, engine: str):
-        self._engine = engine
-
-    @property
-    def user(self):
-        return self._user
-
-    @user.setter
-    def user(self, user):
-        if user is not None:
-            self._user = user
-
-    @property
-    def task_id(self):
-        return self._task_id
-
-    @task_id.setter
-    def task_id(self, task_id):
-        if task_id is not None:
-            self._task_id = task_id
-
-    @property
     def session_id(self):
+        """Get session ID from session object"""
         if self.session:
             return self.session.session_id
-        else:
-            return None
+        return None
 
-    @property
-    def session(self):
-        return self._session
-
-    @session.setter
-    def session(self, session: Session):
-        self._session = session
-
-    @property
-    def swarm(self):
-        return self._swarm
-
-    @swarm.setter
-    def swarm(self, swarm: 'Swarm'):
-        self._swarm = swarm
-
-    @property
-    def event_manager(self):
-        return self._event_manager
-
-    @event_manager.setter
-    def event_manager(self, event_manager: 'EventManager'):
-        self._event_manager = event_manager
+    @session_id.setter
+    def session_id(self, value: str):
+        self.session.session_id = value
 
     @property
     def task_input(self):
-        return self._task.input
+        """Get task input from task object"""
+        if self._task:
+            return self._task.input
+        return None
 
     @property
     def outputs(self):
-        return self._task.outputs
+        """Get outputs from task object"""
+        if self._task:
+            return self._task.outputs
+        return None
 
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.context_info.get(key, default)
@@ -220,18 +162,18 @@ class Context:
         Returns:
             Context: A new Context instance with deeply copied attributes
         """
-        # Create a new Context instance without calling __init__ to avoid singleton issues
-        new_context = object.__new__(Context)
+        # Create a new Context instance using Pydantic's proper initialization
+        new_context = Context()
 
         # Manually copy all important instance attributes
         # Basic attributes
-        new_context._user = self._user
-        new_context._task_id = self._task_id
-        new_context._engine = self._engine
-        new_context._trace_id = self._trace_id
+        new_context.user = self.user
+        new_context.task_id = self.task_id
+        new_context.engine = self.engine
+        new_context.trace_id = self.trace_id
 
         # Session - shallow copy to maintain reference
-        new_context._session = self._session
+        new_context.session = self.session
 
         # Task - set to None to avoid circular references
         new_context._task = None
@@ -269,15 +211,15 @@ class Context:
             new_context.trajectories = copy.copy(self.trajectories)
 
         try:
-            new_context._token_usage = copy.deepcopy(self._token_usage)
+            new_context.token_usage = copy.deepcopy(self.token_usage)
         except Exception:
-            new_context._token_usage = copy.copy(self._token_usage)
+            new_context.token_usage = copy.copy(self.token_usage)
 
         # Copy other attributes if they exist
-        if hasattr(self, '_swarm'):
-            new_context._swarm = self._swarm  # Shallow copy for complex objects
-        if hasattr(self, '_event_manager'):
-            new_context._event_manager = self._event_manager  # Shallow copy for complex objects
+        if hasattr(self, 'swarm'):
+            new_context.swarm = self.swarm  # Shallow copy for complex objects
+        if hasattr(self, 'event_manager'):
+            new_context.event_manager = self.event_manager  # Shallow copy for complex objects
 
         return new_context
 
@@ -314,58 +256,6 @@ class Context:
             except Exception as e:
                 logger.warning(f"Failed to merge trajectories: {e}")
 
-        # 3. Merge token usage statistics
-        if hasattr(other_context, '_token_usage') and other_context._token_usage:
-            try:
-                # Calculate net token usage increment from child context (avoid double counting tokens inherited from parent context)
-                # If child context was created through deep_copy, it already contains parent context's tokens
-                # We need to calculate the net increment
-                parent_tokens = self._token_usage.copy()
-                child_tokens = other_context._token_usage.copy()
-
-                # Calculate net increment: child context tokens - parent context tokens
-                net_tokens = {}
-                for key in child_tokens:
-                    child_value = child_tokens.get(key, 0)
-                    parent_value = parent_tokens.get(key, 0)
-                    net_value = child_value - parent_value
-                    if net_value > 0:  # Only merge net increment
-                        net_tokens[key] = net_value
-
-                # Add net increment to parent context
-                if net_tokens:
-                    self.add_token(net_tokens)
-            except Exception as e:
-                logger.warning(f"Failed to merge token usage: {e}")
-                # If calculating net increment fails, directly add child context's tokens (may result in double counting)
-                try:
-                    self.add_token(other_context._token_usage)
-                except Exception:
-                    pass
-
-        # 4. Merge agent_info configuration (only merge new configuration items)
-        if hasattr(other_context, 'agent_info') and other_context.agent_info:
-            try:
-                # Only merge configuration items that don't exist in parent context
-                for key, value in other_context.agent_info.items():
-                    if key not in self.agent_info:
-                        self.agent_info[key] = value
-            except Exception as e:
-                logger.warning(f"Failed to merge agent_info: {e}")
-
-        # Record merge operation
-        try:
-            merge_info = {
-                "merged_at": datetime.now().isoformat(),
-                "merged_from_task_id": getattr(other_context, '_task_id', 'unknown'),
-                "merged_trajectories_count": len(other_context.trajectories) if hasattr(other_context,
-                                                                                        'trajectories') else 0,
-                "merged_token_usage": other_context._token_usage if hasattr(other_context, '_token_usage') else {},
-            }
-            self.context_info.set('last_merge_info', merge_info)
-        except Exception as e:
-            logger.warning(f"Failed to record merge info: {e}")
-
     def save_action_trajectory(self,
                                step,
                                result: str,
@@ -382,3 +272,36 @@ class Context:
             "tool_name": tool_name
         }
         self.trajectories[step_key] = step_data
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert Context to dictionary for serialization
+        
+        Returns:
+            Dict containing all serializable Context attributes
+        """
+        result = {
+            "user": self.user,
+            "task_id": self.task_id,
+            "trace_id": self.trace_id,
+            "engine": self.engine,
+            "context_info": self.context_info.to_dict() if hasattr(self.context_info, 'to_dict') else self.context_info,
+            "agent_info": dict(self.agent_info) if hasattr(self.agent_info, '__iter__') else self.agent_info,
+            "trajectories": dict(self.trajectories) if hasattr(self.trajectories, '__iter__') else self.trajectories,
+            "token_usage": self.token_usage,
+            "swarm": None,  # Skip complex objects
+            "event_manager": None,  # Skip complex objects
+            "_task": None,  # Skip task reference to avoid circular references
+        }
+        
+        # Add session info if available
+        if self.session:
+            result["session"] = {
+                "session_id": self.session.session_id,
+                "last_update_time": self.session.last_update_time,
+                "trajectories": self.session.trajectories
+            }
+        
+        return result
+
+
