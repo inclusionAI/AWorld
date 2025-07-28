@@ -5,6 +5,7 @@ import uuid
 from dataclasses import field
 from typing import List, Optional
 
+from aworld.memory.models import MemoryMessage
 from pydantic import BaseModel, Field
 
 
