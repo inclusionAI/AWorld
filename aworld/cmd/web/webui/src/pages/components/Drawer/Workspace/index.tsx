@@ -1,6 +1,6 @@
 import { getWorkspaceArtifacts } from '@/api/workspace';
 import { Image, Typography } from 'antd';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { ToolCardData } from '../../BubbleItem/utils';
 import './index.less';
 
@@ -14,13 +14,20 @@ interface ArtifactItem {
 
 interface WorkspaceProps {
   sessionId: string;
-  toolCardData?: ToolCardData;
+  toolCardData: ToolCardData;
 }
 
 const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
   const [imgUrl, setImgUrl] = useState<string | undefined>();
   const isLinkListCard = toolCardData?.card_type === 'tool_call_card_link_list';
+
+  // 用于缓存上次的请求参数，避免重复调用
+  const lastRequestRef = useRef<{
+    sessionId: string;
+    artifactType: string;
+    artifactId: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!toolCardData) return; // 如果没有 toolCardData，直接退出
@@ -34,6 +41,24 @@ const Workspace: React.FC<WorkspaceProps> = ({ sessionId, toolCardData }) => {
           console.warn('Invalid artifact data');
           return;
         }
+
+        // 检查是否与上次请求参数相同
+        const currentRequest = {
+          sessionId,
+          artifactType,
+          artifactId
+        };
+
+        if (lastRequestRef.current &&
+          lastRequestRef.current.sessionId === currentRequest.sessionId &&
+          lastRequestRef.current.artifactType === currentRequest.artifactType &&
+          lastRequestRef.current.artifactId === currentRequest.artifactId) {
+          // 参数相同，跳过重复请求
+          return;
+        }
+
+        // 更新缓存的请求参数
+        lastRequestRef.current = currentRequest;
 
         const data = await getWorkspaceArtifacts(sessionId, {
           artifact_types: [artifactType],

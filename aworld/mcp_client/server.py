@@ -185,7 +185,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
                     try:
                         await exit_stack.aclose()
                     except Exception as e:
-                        logging.error(f"Error closing exit stack during cleanup: {e}")
+                        logging.debug(f"Error closing exit stack during cleanup: {e}")
             except Exception as e:
                 logging.error(f"Error during server cleanup: {e}")
             finally:

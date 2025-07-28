@@ -35,7 +35,6 @@ from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import StepOutput, MessageOutput, Output
-from aworld.planner.plan import DefaultPlanner, PlannerOutputParser
 from aworld.prompt import Prompt
 from aworld.runners.hook.hooks import HookPoint
 from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
@@ -93,6 +92,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.tools_conf = {}
         self.tools_aggregate_func = kwargs.get("tools_aggregate_func") if kwargs.get(
             "tools_aggregate_func") else self._tools_aggregate_func
+        self.response_handler_name = kwargs.get("response_handler_name")
 
     def deep_copy(self):
         """Create a deep copy of the current Agent instance.
@@ -264,7 +264,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     urls.append(
                         {'type': 'image_url', 'image_url': {"url": image_url}})
                 content = urls
-            await self._add_human_input_to_memory(content, message.context)
+            await self._add_human_input_to_memory(content, message.context, memory_type="message")
 
         # from memory get last n messages
         histories = self.memory.get_last_n(self.history_messages, filters={
@@ -458,17 +458,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
             raise Exception(f'{self.id()} no action decision has been made.')
-
-        if isinstance(self.context.swarm, TeamSwarm):
-            if self.id() == self.context.swarm.communicate_agent.id():
-                logger.info(f"{self.id()} is lead agent in TeamSwarm, will send message to TeamHandler.")
-                return Message(payload=actions,
-                               caller=caller,
-                               sender=self.id(),
-                               receiver=actions[0].tool_name,
-                               category=Constants.PLAN,
-                               session_id=self.context.session_id if self.context else "",
-                               headers=self._update_headers(input_message))
+        if self.response_handler_name:
+            return Message(payload=actions,
+                           caller=caller,
+                           sender=self.id(),
+                           receiver=actions[0].tool_name,
+                           category=self.response_handler_name,
+                           session_id=self.context.session_id if self.context else "",
+                           headers=self._update_headers(input_message))
 
         tools = OrderedDict()
         agents = []
@@ -843,6 +840,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         source_span = trace.get_current_span()
         serializable_messages = self._to_serializable(messages)
+        self.context.context_info["llm_input"] = serializable_messages
 
         if source_span:
             source_span.set_attribute("messages", json.dumps(
@@ -940,6 +938,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 await send_message(output_message)
             raise e
         finally:
+            self.context.context_info["llm_output"] = llm_response
             return llm_response
 
     async def _execute_tool(self, actions: List[ActionModel], context_message: Message = None) -> Any:

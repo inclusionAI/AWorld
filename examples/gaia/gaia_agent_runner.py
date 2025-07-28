@@ -320,7 +320,7 @@ if __name__ == "__main__":
         try:
             prompt = args.prompt
 
-            llm_provider = os.getenv("LLM_PROVIDER")
+            llm_provider = os.getenv("LLM_PROVIDER", "openai")
             llm_model_name = os.getenv("LLM_MODEL_NAME")
             llm_api_key = os.getenv("LLM_API_KEY")
             llm_base_url = os.getenv("LLM_BASE_URL")

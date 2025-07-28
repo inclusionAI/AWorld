@@ -1,7 +1,7 @@
 <div align="left">
 
 # AWorld: The Agent Runtime for Self-Improvement
-*"Self-awareness: the hardest problem isn't solving within limits, it's discovering the own limitations"*
+*"Self-awareness: the hardest problem isn't solving within limits, it's discovering one's own limitations"*
 
 
 [![Twitter Follow](https://img.shields.io/twitter/follow/AWorld_AI?style=social)](https://x.com/InclusionAI666)
@@ -25,7 +25,9 @@
 - [Contributing](#contributing) — How to get involved and contribute.
 - [License](#license) — Project licensing details.
 
-## News
+## News 
+- 🐱 [2025/07/25] AWorld achieves rapid mathematical reasoning! Built a multi-agent system in just hours that solved 5/6 IMO 2025 problems. See implementation in [IMO](examples/imo/README.md) section.
+- 🦍 [2025/07/23] We released the runtime construction tutorial for BFCL benchmark! Learn how to synthesize function call samples in our comprehensive [`tutorial`](examples/BFCL/README.md). 
 - 🦤 [2025/07/07] AWorld, as a runtime, is now ready for agentic training. See [Self-Improvement section](#self-improvement-with-diverse-runtimes) for details. We have updated our score to 77.08 on the GAIA test. Learn how to construct a GAIA runtime in the [Demo section](#demo-of-gaia-agent-runtime).
 - 🦩 [2025/06/19] We have updated our score to 72.43 on the GAIA test. Additionally, we have introduced a new local running mode. See `./README-local.md` for detailed instructions.
 - 🐳 [2025/05/22] For quick GAIA evaluation, MCP tools, AWorld, and models are now available in a single Docker image. See <code>./README-docker.md</code> for instructions and [youtube video](https://www.youtube.com/watch?v=kkYWeVvJKrg) for demo.
@@ -46,7 +48,7 @@ By constructing diverse runtime environments (with tools, agents, or models in t
 
 | Category | Runtime | Performance | Key Information |
 |-----|----------------|-------------|--------------|
-| Tool Use | Function call runtime to be released | Competitive on BFCL benchmark  <br> ![Agent Framework](readme_assets/funReason_BFCL.png) | [![Dataset](https://img.shields.io/badge/Dataset-Coming%20Soon-007ACC?style=for-the-badge&logo=dataset&logoColor=white)]() <br> [![Model](https://img.shields.io/badge/Model-Hugging%20Face-FF6B6B?style=for-the-badge&logo=huggingface&logoColor=white)](https://huggingface.co/Bingguang/FunReason) <br> [![Paper](https://img.shields.io/badge/Paper-arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/pdf/2505.20192) <br> [![Blog](https://img.shields.io/badge/Blog-Coming%20Soon-FF5722?style=for-the-badge&logo=blogger&logoColor=white)]() <br> [![Code](https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/BingguangHao/FunReason)|
+| Tool Use | Function call runtime construction  [`tutorial`](examples/BFCL/README.md) | Competitive on BFCL benchmark  <br> ![Agent Framework](readme_assets/funReason_BFCL.png) | [![Dataset](https://img.shields.io/badge/Dataset-Coming%20Soon-007ACC?style=for-the-badge&logo=dataset&logoColor=white)]() <br> [![Model](https://img.shields.io/badge/Model-Hugging%20Face-FF6B6B?style=for-the-badge&logo=huggingface&logoColor=white)](https://huggingface.co/Bingguang/FunReason) <br> [![Paper](https://img.shields.io/badge/Paper-arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/pdf/2505.20192) <br> [![Blog](https://img.shields.io/badge/Blog-Coming%20Soon-FF5722?style=for-the-badge&logo=blogger&logoColor=white)]() <br> [![Code](https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/BingguangHao/FunReason)|
 | Deep Search | Search runtime to be released | SOTA on HotpotQA benchmark  <br> ![Agent Framework](readme_assets/HotpotQA_chart.png) | [![Dataset](https://img.shields.io/badge/Dataset-GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/inclusionAI/AgenticLearning) <br> [![Model](https://img.shields.io/badge/Model-Hugging%20Face-FF6B6B?style=for-the-badge&logo=huggingface&logoColor=white)](https://huggingface.co/collections/endertzw/rag-r1-68481d7694b3fca8b809aa29) <br> [![Paper](https://img.shields.io/badge/Paper-arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://arxiv.org/abs/2507.02962) <br> [![Code](https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/inclusionAI/AgenticLearning)|
 
 ### Demo of GAIA Agent-Runtime
@@ -70,60 +72,277 @@ python setup.py install
 ```
 
 ## Quick Start
-> Here's a quick start guide to: (1) create your first agent; (2) equip it with a MCP tool; (3) assign a teammate; and (4) answer a user query through teamwork.
+> Get started with AWorld in minutes! Follow this step-by-step guide to create and deploy your first intelligent agent.
+
+### Prerequisites
+- Python 3.11 or higher
+- An OpenAI Compatible LLM API provider credentials
+
+### 1. Environment Setup
+
+**Setup Isolated Environment (Recommended)**
+
+Virtual Environment:
+
+```shell
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
+
+Conda Environment:
+
+```shell
+conda create -n aworld python=3.12 -y
+conda activate aworld
+```
+
+**Install AWorld framwork:**
+
+```shell
+pip install aworld -U
+```
+
+
+### 2. Choose Your Development Approach
+
+AWorld offers two flexible approaches to build and run your agents:
+
+- Option A: Run Agent in build-in WebUI/REST API Server(Recommended)
+
+- Option B: Script-Based Agent  
+
+
+### Option A: Run Agent in build-in WebUI/REST API Server
+
+#### Project Structure
+
+Your project structure should look like this:
+```text
+agent-project-root-dir/
+    agent_deploy/
+      my_first_agent/
+        __init__.py
+        agent.py
+```
+
+Create project folders.
+
+```shell
+mkdir my-aworld-project && cd my-aworld-project # project-root-dir
+mkdir -p agent_deploy/my_first_agent
+```
+
+#### Step 1: Define Your Agent
+
+Create your first agnet in `agent_deploy/my_first_agent`:
+
+`__init__.py`: Create empty `__ini__.py` file.
+
+```shell
+cd agent_deploy/my_first_agent
+touch __init__.py
+```
+
+`agent.py`: Define your agent logic:
 
 ```python
+import logging
+import os
+from aworld.cmd.data_model import BaseAWorldAgent, ChatCompletionRequest
+from aworld.config.conf import AgentConfig, TaskConfig
+from aworld.agents.llm_agent import Agent
+from aworld.core.task import Task
+from aworld.runner import Runners
+
+logger = logging.getLogger(__name__)
+
+class AWorldAgent(BaseAWorldAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def name(self):
+        return "My First Agent"
+
+    def description(self):
+        return "A helpful assistant that can answer questions and help with tasks"
+
+    async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
+        # Load LLM configuration from environment variables
+        agent_config = AgentConfig(
+            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+            llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4"),
+            llm_api_key=os.getenv("LLM_API_KEY"),
+            llm_base_url=os.getenv("LLM_BASE_URL"),
+            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7"))
+        )
+
+        # Validate required configuration
+        if not agent_config.llm_model_name or not agent_config.llm_api_key:
+            raise ValueError("LLM_MODEL_NAME and LLM_API_KEY must be set!")
+
+        # Optional: Configure MCP tools for enhanced capabilities
+        mcp_config = {
+            "mcpServers": {
+                "amap-mcp": {
+                    "type": "sse",
+                    "url": "https://mcp.example.com/sse?key=YOUR_API_KEY", # Replace Your API Key
+                    "timeout": 30,
+                    "sse_read_timeout": 300
+                }
+            }
+        }
+
+        # Create the agent instance
+        agent = Agent(
+            conf=agent_config,
+            name="My First Agent",
+            system_prompt="""You are a helpful AI assistant. Your goal is to:
+            - Answer questions accurately and helpfully
+            - Provide clear, step-by-step guidance when needed
+            - Be friendly and professional in your responses""",
+            mcp_servers=["amap-mcp"],
+            mcp_config=mcp_config
+        )
+
+        # Extract user input
+        user_input = prompt or (request.messages[-1].content if request else "")
+        
+        # Create and execute task
+        task = Task(
+            input=user_input,
+            agent=agent,
+            conf=TaskConfig(max_steps=5),
+            session_id=getattr(request, 'session_id', None)
+        )
+
+        # Stream the agent's response
+        async for output in Runners.streamed_run_task(task).stream_events():
+            yield output
+```
+
+#### Step 2: Run Agent
+
+Setup environment variables:
+
+```shell
+# Navigate back to project root
+cd ${agent-project-root-dir}
+
+# Set your LLM credentials
+export LLM_MODEL_NAME="gpt-4"
+export LLM_API_KEY="your-api-key-here"
+export LLM_BASE_URL="https://api.openai.com/v1"  # Optional for OpenAI
+```
+
+Launch Your Agent:
+```shell
+# Option 1: Launch with Web UI
+aworld web
+# Then open http://localhost:8000 in your browser
+
+# Option 2: Launch REST API (For integrations)
+aworld api_server
+# Then visit http://localhost:8000/docs for API documentation
+```
+
+**Success!** Your agent is now running and ready to chat!
+
+---
+
+### Option B: Script-Based Agent Development
+
+Perfect for custom workflows and programmatic usage.
+
+#### Step 1: Create Agent Script
+Create `my_agent.py`:
+
+```python
+import os
 from aworld.config.conf import AgentConfig
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from aworld.core.agent.swarm import Swarm
 
-if __name__ == '__main__':
+def create_agent_team(user_query: str):
+    """Create and run a multi-agent team to handle user queries."""
+    
+    # Configure your LLM settings
     agent_config = AgentConfig(
-        llm_provider="openai",
-        llm_model_name="gpt-4o",
-
-        # Set via environment variable or direct configuration
-        # llm_api_key="YOUR_API_KEY", 
-        # llm_base_url="https://api.openai.com/v1"
+        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_base_url=os.getenv("LLM_BASE_URL"),
+        llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7"))
     )
 
-    # Register the MCP tool here, or create a separate configuration file.
+    # Optional: Advanced MCP tool integration
     mcp_config = {
         "mcpServers": {
-            "amap-amap-sse": {
-                "type": "sse",
-                "url": "https://mcp.amap.com/sse?key=YOUR_API_KEY",
-                "timeout": 5,
+            "amap-mcp": {
+                "type": "sse", 
+                "url": "https://mcp.example.com/search?key=YOUR_API_KEY", # Replace Your own API Key
+                "timeout": 30,
                 "sse_read_timeout": 300
             }
         }
     }
 
-    # Create your first agent equipped with an MCP tool
-    search = Agent(
+    # Create specialized agents
+    researcher = Agent(
         conf=agent_config,
-        name="search_agent",
-        system_prompt="You are a helpful agent.",
-        mcp_servers=["amap-amap-sse"], # MCP server name for agent to use
+        name="Research Agent",
+        system_prompt="You are an expert researcher. Find accurate, up-to-date information.",
+        mcp_servers=["amap-mcp"],
         mcp_config=mcp_config
     )
 
-    # Add a new teammate to the agent
-    summary = Agent(
+    analyst = Agent(
         conf=agent_config,
-        name="summary_agent",
-        system_prompt="You are a helpful summary agent."
+        name="Analysis Agent", 
+        system_prompt="You are an expert analyst. Synthesize information and provide insights."
     )
 
-    # Collaborate as a team; the default is a static workflow
-    swarm = Swarm(search, summary)
+    # Create agent team with collaborative workflow
+    agent_team = Swarm(researcher, analyst)
 
-    # Run agent team
-    res = Runners.sync_run(input="Hotels within 1 kilometer of West Lake in Hangzhou",
-                     swarm=swarm)
-    print(res)
+    # Execute the task
+    result = Runners.sync_run(
+        input=user_query,
+        swarm=agent_team
+    )
+    
+    return result
+
+if __name__ == '__main__':
+    # Example usage
+    query = "What are the latest developments in AI agent technology?"
+    response = create_agent_team(query)
+    
+    print("Agent Response:")
+    print("=" * 50)
+    print(response.model_dump_json(indent=2))
 ```
+
+#### Step 2: Run Agent
+
+```shell
+# Set your LLM credentials
+export LLM_MODEL_NAME="gpt-4"
+export LLM_API_KEY="your-api-key-here"
+export LLM_BASE_URL="https://api.openai.com/v1"
+
+# Run your agent
+python my_agent.py
+```
+
+---
+
+### Next Steps
+
+- **Customize**: Modify prompts and workflows for your specific needs
+- **Add Tools**: Integrate Tools for enhanced capabilities  
+- **Explore Examples**: Check out `./examples` for advanced use cases
+
 
 ## Architecture
 AWorld is designed to achieve two primary objectives: (1) provide an efficient forward process, and (2) facilitate diverse backward processes, including but not limited to foundation model training and system design meta-learning.
@@ -132,6 +351,11 @@ AWorld is designed to achieve two primary objectives: (1) provide an efficient f
 > An illustration of the runtime, showing the message workflow when Agent1 receives a query from a user.
 
 ![](readme_assets/runtime.jpg)
+
+#### Usage
+
+Here is a forward illustration to collect BFCL forward trajectories: [`tutorial`](examples/BFCL/README.md).
+
 
 ### Backward
 
@@ -167,7 +391,7 @@ git apply 0001-feat-add-agent-training-support-with-aworld-server.patch
 ```
 
 ## Demo
-> Running Pre-defined Agents (e.g., see [demo code](examples/browsers/run.py)). Below are demonstration videos showcasing AWorld's capabilities across various agent configurations and environments.
+> Running Pre-defined Agents (e.g., see [demo code](examples/browser_use/run.py)). Below are demonstration videos showcasing AWorld's capabilities across various agent configurations and environments.
 
 
 <table>

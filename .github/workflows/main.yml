@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip==25.0.1
-          python -m pip install flake8 pytest python-dotenv
+          python -m pip install flake8 pytest pytest-asyncio python-dotenv
           python setup.py install
       #    - name: Lint with flake8
       #      run: |
@@ -38,4 +38,5 @@ jobs:
       #        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
       - name: Run tests with pytest
         run: |
+          pip install pytest
           pytest tests

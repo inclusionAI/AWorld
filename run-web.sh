@@ -7,4 +7,4 @@ sh -c "cd aworld/cmd/web && npm install && npm run build"
 
 python setup.py install
 
-cd examples/cmd && aworld web
+cd examples/web && aworld web

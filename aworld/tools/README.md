@@ -53,7 +53,7 @@ from aworld.core.tool.action import ExecutableAction
 from aworld.core.tool.base import ActionFactory, ToolFactory, AgentInput
 from aworld.tools.template_tool import TemplateTool
 
-from examples.tools.tool_action import GymAction
+from examples.common.tools.tool_action import GymAction
 
 
 @ToolFactory.register(name="openai_gym", desc="gym classic control game", supported_action=GymAction)

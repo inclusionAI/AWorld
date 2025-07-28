@@ -115,3 +115,9 @@ class DefaultToolHandler(ToolHandler):
                 receiver=tool_name,
                 headers=message.headers
             )
+
+    async def post_handle(self, message: Message) -> Message:
+        new_context = message.context.deep_copy()
+        new_context._task = message.context.get_task()
+        message.context = new_context
+        return message

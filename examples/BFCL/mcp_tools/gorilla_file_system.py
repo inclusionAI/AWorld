@@ -431,7 +431,7 @@ class GorillaFileSystem(ActionCollection):
 
     def mcp_find(
         self, 
-        path: str = Field(".", description="The directory path to start the search. Defaults to the current directory (\".\")."), 
+        path: str = Field("", description="The directory path to start the search. Defaults to the current directory (\".\")."),
         name: Optional[str] = Field(None, description="The name of the file or directory to search for. If None, all items are returned.")
     ) -> Dict[str, List[str]]:
         """
@@ -938,7 +938,7 @@ if __name__ == "__main__":
     }
     args = ActionArguments(
         name="GorillaFileSystem",
-        transport="sse"
+        transport="stdio"
     )
 
     try:

@@ -8,7 +8,6 @@ import {
   PaperClipOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
-  ReloadOutlined,
   VerticalLeftOutlined,
   VerticalRightOutlined
 } from '@ant-design/icons';
@@ -328,7 +327,7 @@ const App: React.FC = () => {
     }
   };
 
-  const tabContentStyle = { height: 'calc(100vh - 120px)', overflow: 'auto' };
+  const tabContentStyle = { height: 'calc(100vh - 50px)', overflow: 'auto' };
   const emptyStateStyle = {
     display: 'flex',
     alignItems: 'center',
@@ -368,6 +367,7 @@ const App: React.FC = () => {
   };
 
   const openRightSider = (content: SiderContentType, data?: any) => {
+    console.log('openRightSider', content, data);
     setRightSiderCollapsed(false);
     setSiderCollapsed(true);
     setActiveTab(content);
@@ -635,23 +635,6 @@ const App: React.FC = () => {
     }
   };
 
-  const resendMessage = (assistantMessage: any) => {
-    const assistantMessageIndex = assistantMessage.messageIndex;
-    const userMessageIndex = assistantMessageIndex - 1;
-    if (userMessageIndex >= 0 && messages[userMessageIndex]?.message?.role === 'user') {
-      const userMessage = messages[userMessageIndex].message.content;
-
-      const newMessages = messages.filter((_, index) => index !== assistantMessageIndex && index !== userMessageIndex);
-      setMessages(newMessages);
-
-      setTimeout(() => {
-        onSubmit(userMessage);
-      }, 100);
-    } else {
-      message.error('Cannot find corresponding user message');
-    }
-  };
-
   // ==================== 组件渲染函数 ====================
   const renderCollapsedSider = () => (
     <>
@@ -794,12 +777,8 @@ const App: React.FC = () => {
     </div>
   );
   const renderMessageActions = (messageItem: any) => {
+    console.log("renderMessageActions", messageItem);
     const actions = [
-      {
-        icon: <ReloadOutlined />,
-        onClick: () => resendMessage(messageItem.messageIndex),
-        key: 'resend'
-      },
       {
         icon: <CopyOutlined />,
         onClick: () => copyMessageContent(messageItem.content || ''),
@@ -836,7 +815,7 @@ const App: React.FC = () => {
     <div className={styles.chatList}>
       {messages?.length ? (
         <Bubble.List
-          items={messages.map((i, index) => ({
+          items={messages.map((i, _) => ({
             ...i.message,
             content: (
               <BubbleItem
@@ -851,19 +830,18 @@ const App: React.FC = () => {
               content: i.status === 'loading' ? styles.loadingMessage : '',
             },
             typing: i.status === 'loading' ? { step: 5, interval: 20, suffix: <>💗</> } : false,
-            messageIndex: index,
             styles: {
               content: {
                 backgroundColor: '#f5f5f5',
-                maxWidth: '800px'
+                maxWidth: '98%'
               }
             }
           }))}
           style={{
             height: '100%',
-            paddingInline: '40px',
-            maxWidth: '800px',
-            margin: '0 auto'
+            paddingInline: '10px',
+            margin: '0 auto',
+            maxWidth: `calc(100vw - ${siderCollapsed ? '60px' : '280px'} - ${rightSiderCollapsed ? '0px' : '500px'} - 40px)`
           }}
           roles={{
             assistant: {
@@ -989,7 +967,6 @@ const App: React.FC = () => {
     <div className={styles.layout}>
       {chatSider}
       <div className={styles.chat} style={{
-        marginRight: rightSiderCollapsed ? '0' : '500px',
         transition: 'margin-right 0.3s ease'
       }}>
         {chatList}
@@ -997,9 +974,9 @@ const App: React.FC = () => {
       </div>
       {!rightSiderCollapsed && (
         <div className={`${styles.sider} ${rightSiderCollapsed ? 'collapsed' : 'expanded'}`} style={{
-          position: 'fixed',
           right: 0,
           width: '500px',
+          flexShrink: 0,
           borderLeft: '1px solid #f0f0f0',
           borderRight: 'none'
         }}>
@@ -1008,47 +985,55 @@ const App: React.FC = () => {
           </div>
 
           <div className="sider-content">
-            <Tabs
-              activeKey={activeTab}
-              onChange={setActiveTab}
-              size="small"
-              style={{ height: '100%' }}
-              items={[
-                {
-                  key: 'Workspace',
-                  label: 'Workspace',
-                  children: (
-                    <div style={tabContentStyle}>
-                      {workspaceData ? (
-                        <Workspace
-                          key={`workspace-${rightSiderCollapsed}`}
-                          sessionId={sessionId}
-                          toolCardData={workspaceData}
+            {activeTab === 'Workspace' && (
+              <Tabs
+                size="small"
+                style={{ height: '100%' }}
+                items={[
+                  {
+                    key: "Workspace",
+                    label: "Workspace",
+                    children: (
+                      <div style={tabContentStyle}>
+                        {workspaceData ? (
+                          <Workspace
+                            key={`workspace-${rightSiderCollapsed}`}
+                            sessionId={sessionId}
+                            toolCardData={workspaceData}
+                          />
+                        ) : (
+                          <div style={emptyStateStyle}>
+                            No workspace data available
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+                ]}
+              />
+            )}
+            {activeTab === 'TraceXY' && (
+              <Tabs
+                size="small"
+                style={{ height: '100%' }}
+                items={[
+                  {
+                    key: "TraceXY",
+                    label: "Trace",
+                    children: (
+                      <div style={tabContentStyle}>
+                        <TraceXY
+                          key={`${traceId}-${rightSiderCollapsed}`}
+                          traceId={traceId}
+                          traceQuery={traceQuery}
+                          drawerVisible={!rightSiderCollapsed}
                         />
-                      ) : (
-                        <div style={emptyStateStyle}>
-                          No workspace data available
-                        </div>
-                      )}
-                    </div>
-                  )
-                },
-                {
-                  key: 'TraceXY',
-                  label: 'Trace',
-                  children: (
-                    <div style={tabContentStyle}>
-                      <TraceXY
-                        key={`${traceId}-${rightSiderCollapsed}`}
-                        traceId={traceId}
-                        traceQuery={traceQuery}
-                        drawerVisible={!rightSiderCollapsed}
-                      />
-                    </div>
-                  )
-                }
-              ]}
-            />
+                      </div>
+                    )
+                  }
+                ]}
+              />
+            )}
           </div>
         </div>
       )}

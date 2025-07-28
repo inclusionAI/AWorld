@@ -59,6 +59,7 @@ class TaskResponse:
     time_cost: float | None = field(default=0.0)
     success: bool = field(default=False)
     msg: str | None = field(default=None)
+    trajectory: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class Runner(object):
@@ -89,7 +90,9 @@ class Runner(object):
             await self.pre_run()
             await self._daemon_run()
             ret = await self.do_run(self.context)
-            return 0 if ret is None else ret
+            if ret is None:
+                ret = TaskResponse(id=self.context.task_id if self.context else "", success=False, msg = "Task return None.")
+            return ret
         except BaseException as ex:
             self._exception = ex
             # do record or report

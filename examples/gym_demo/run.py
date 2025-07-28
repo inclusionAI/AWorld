@@ -2,15 +2,13 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 
-from aworld.agents.parallel_llm_agent import ParallelizableAgent
 from aworld.config import RunConfig
 
 from aworld.config.conf import AgentConfig
 from aworld.core.task import Task
 from aworld.runner import Runners
-from examples.tools.common import Tools, Agents
+from examples.common.tools.common import Tools, Agents
 from examples.gym_demo.agent import GymDemoAgent as GymAgent
-from examples.tools.gym_tool.async_openai_gym import OpenAIGym
 
 
 async def main():

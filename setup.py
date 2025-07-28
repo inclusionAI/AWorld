@@ -87,11 +87,6 @@ class AWorldPackage(sdist):
 
         generate_version_info(scenario="AWORLD_SDIST")
 
-        from aworld.cmd.web.web_server import build_webui
-
-        # build webui
-        build_webui(force_rebuild=True)
-
         sdist.run(self)
 
 
@@ -107,11 +102,6 @@ class AWorldInstaller(install):
         logger.info(f"{os.getcwd()}: Install AWORLD using extra: {self._extra}")
 
     def run(self):
-        from aworld.cmd.utils.webui_builder import build_webui
-
-        # build webui
-        build_webui(force_rebuild=True)
-        
         # 1. build wheel using this setup.py, thus using the right install_requires according to ALPS_EXTRA
         # 2. install this wheel into pip
         install.run(self)
@@ -141,7 +131,7 @@ class AWorldInstaller(install):
             # install requirements one by one
             for req in reqs:
                 try:
-                    cmd = f"{sys.executable} -m pip install {info} {req}"
+                    cmd = f"{sys.executable} -m pip install {info} '{req}'"
                     call_process(cmd)
                     logger.info(f"Installing optional package {req} have succeeded.")
                 except:
@@ -149,7 +139,8 @@ class AWorldInstaller(install):
                         f"Installing optional package {req} is failed, Ignored."
                     )  # ignore
         elif reqs:
-            cmd = f"{sys.executable} -m pip install {info} {' '.join(reqs)}"
+            cmd_reqs = "'" + "' '".join(reqs) + "'"
+            cmd = f"{sys.executable} -m pip install {info} {cmd_reqs}"
             call_process(cmd)
             logger.info(f"Packages {str(reqs)} have been installed.")
 
@@ -226,8 +217,16 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages(
         where=".",
-        exclude=["tests", "tests.*", "*.tests", "*.tests.*",
-                 "test", "*.test", "*.test.*", "test.*"],
+        exclude=[
+            "tests",
+            "tests.*",
+            "*.tests",
+            "*.tests.*",
+            "test",
+            "*.test",
+            "*.test.*",
+            "test.*",
+        ],
     ),
     package_data={
         "aworld": [

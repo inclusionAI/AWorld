@@ -85,7 +85,7 @@ second_agent = StateTrackingAgent(
 )
 
 # Run multi-agent scenario
-response = self.run_multi_agent(
+response = self.run_multi_agent_as_team(
     input="What is an agent. describe within 20 words",
     agent1=custom_agent,
     agent2=second_agent
@@ -127,7 +127,7 @@ assert task.context.context_info.get("hello") == "world"
 > - [`tests/test_context_management.py::TestHookSystem::test_hook_execution()`](../../../tests/test_context_management.py) - Hook execution test
 
 ```python
-from tests.test_llm_hook import TestPreLLMHook, TestPostLLMHook
+from tests.runners import TestPreLLMHook, TestPostLLMHook
 from aworld.runners.hook.hook_factory import HookFactory
 
 # Test hook registration and retrieval
@@ -144,16 +144,11 @@ assert isinstance(post_hook, TestPostLLMHook)
 # Test hook execution
 mock_agent = self.init_agent("1")
 response = self.run_agent(
-    input="What is an agent. describe within 20 words", 
+    input="What is an agent. describe within 20 words",
     agent=mock_agent
 )
 assert response.answer is not None
 
-# Test task context transfer
-from tests.test_context_hook import CheckContextPreLLMHook
-context = Context()
-context.context_info.update({"task": "What is an agent."})
-self.run_task(context=context, agent=mock_agent)
 ```
 
 ## Prompt Template

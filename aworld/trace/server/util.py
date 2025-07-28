@@ -214,6 +214,10 @@ def get_agent_flow(trace_id):
     _remove_span_detail(data["nodes"])
 
     # add query start node
+    _add_query_node(data, top_task_nodes)
+    return data
+
+def _add_query_node(data, top_task_nodes):
     top_task_node = top_task_nodes[0] if top_task_nodes else None
     if top_task_node:
         start_node_span_id = f'{uuid.uuid4().hex[:16]}'
@@ -222,9 +226,16 @@ def get_agent_flow(trace_id):
             'show_name': top_task_node['attributes'].get(semconv.TASK_INPUT),
         })
         root_nodes = _get_root_nodes(data['edges'])
-        for root_node in root_nodes:
-            data['edges'].append({
-                'source': start_node_span_id,
-                'target': root_node,
-            })
-    return data
+        if root_nodes:
+            for root_node in root_nodes:
+                data['edges'].append({
+                    'source': start_node_span_id,
+                    'target': root_node,
+                })
+        else:
+            for root_node in data['nodes']:
+                if root_node['span_id'] != start_node_span_id:
+                    data['edges'].append({
+                        'source': start_node_span_id,
+                        'target': root_node['span_id'],
+                    })

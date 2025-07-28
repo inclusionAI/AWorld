@@ -1,6 +1,3 @@
-
-import os
-import random
 import sys
 from pathlib import Path
 
@@ -13,9 +10,8 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.core.context.base import Context
 from aworld.config.conf import AgentConfig, ContextRuleConfig, ModelConfig, OptimizationConfig, LlmCompressionConfig
 from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
-from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task
+
 
 class TestContextManagement(BaseTest):
     """Test cases for Context Management system based on README examples"""
@@ -39,18 +35,6 @@ class TestContextManagement(BaseTest):
             return True  # Suppress the exception
 
     def test_default_context_configuration(self):
-
-        # No need to explicitly configure context_rule, system automatically uses default configuration
-        # Default configuration is equivalent to:
-        # context_rule=ContextRuleConfig(
-        #     optimization_config=OptimizationConfig(
-        #         enabled=True,
-        #         max_token_budget_ratio=1.0  # Use 100% of context window
-        #     ),
-        #     llm_compression_config=LlmCompressionConfig(
-        #         enabled=False  # Compression disabled by default
-        #     )
-        # )
         mock_agent = self.init_agent("1")
         response = self.run_agent(
             input="""What is an agent. describe within 20 words""", agent=mock_agent)
@@ -130,7 +114,7 @@ class TestContextManagement(BaseTest):
             agent_prompt="You are a helpful assistant.",
         )
 
-        response = self.run_multi_agent(
+        response = self.run_multi_agent_as_team(
             input="What is an agent. describe within 20 words",
             agent1=custom_agent,
             agent2=second_agent
@@ -147,17 +131,14 @@ class TestContextManagement(BaseTest):
         new_context.context_info.update({"hello": "world"})
         self.run_task(context=new_context, agent=self.init_agent("1"))
         self.assertEqual(new_context.context_info.get("hello"), "world")
-        
+
         task.context.merge_context(new_context)
         self.assertEqual(task.context.context_info.get("hello"), "world")
 
 
 class TestHookSystem(TestContextManagement):
-    def __init__(self):
-        super().__init__()
-
     def test_hook_registration(self):
-        from tests.test_llm_hook import TestPreLLMHook, TestPostLLMHook
+        from tests.runners.hook.llm_hook import TestPreLLMHook, TestPostLLMHook
         """Test hook registration and retrieval"""
         # Test that hooks are registered in _cls attribute
         self.assertIn("TestPreLLMHook", HookFactory._cls)
@@ -171,31 +152,13 @@ class TestHookSystem(TestContextManagement):
         self.assertIsInstance(post_hook, TestPostLLMHook)
 
     def test_hook_execution(self):
-        from tests.test_llm_hook import TestPreLLMHook, TestPostLLMHook
-
         mock_agent = self.init_agent("1")
         response = self.run_agent(
             input="""What is an agent. describe within 20 words""", agent=mock_agent)
         self.assertIsNotNone(response.answer)
 
     def test_task_context_transfer(self):
-        from tests.test_context_hook import CheckContextPreLLMHook
-
         mock_agent = self.init_agent("1")
         context = Context()
         context.context_info.update({"task": "What is an agent."})
         self.run_task(context=context, agent=mock_agent)
-
-
-if __name__ == '__main__':
-    testContextManagement = TestContextManagement()
-    testContextManagement.test_default_context_configuration()
-    testContextManagement.test_custom_context_configuration()
-    testContextManagement.test_multi_agent_state_trace()
-    testContextManagement.test_multi_task_state_trace()
-    testHookSystem = TestHookSystem()
-    testHookSystem.test_hook_registration()
-    testHookSystem = TestHookSystem()
-    testHookSystem.test_hook_execution()
-    testHookSystem = TestHookSystem()
-    testHookSystem.test_task_context_transfer()
