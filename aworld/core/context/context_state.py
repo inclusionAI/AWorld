@@ -8,12 +8,11 @@ Provides hierarchical state management with parent-child state inheritance
 
 import logging
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
 
-class ContextState(BaseModel):
+class ContextState:
     """
     Hierarchical state management class
     
@@ -23,56 +22,54 @@ class ContextState(BaseModel):
     - State isolation: Write operations only affect local state
     - Flexible lookup: Supports multi-level state lookup
     """
-    data: Dict[str, Any] = Field(default_factory=dict, description="State data")
-    parent_state: Optional['ContextState'] = Field(default=None, description="Parent state")
-
-    # def __init__(self, parent_state: Optional['ContextState'] = None):
-    #     """
-    #     Initialize ContextState
+    
+    def __init__(self, parent_state: Optional['ContextState'] = None):
+        """
+        Initialize ContextState
         
-    #     Args:
-    #         parent_state: Parent state object for implementing state inheritance
-    #     """
-    #     self.data: Dict[str, Any] = {}
-    #     self.parent_state: Optional['ContextState'] = parent_state
+        Args:
+            parent_state: Parent state object for implementing state inheritance
+        """
+        self._data: Dict[str, Any] = {}
+        self._parent_state: Optional['ContextState'] = parent_state
     
     def __getitem__(self, key: str) -> Any:
         """Get state value with parent state inheritance support"""
-        if key in self.data:
-            return self.data[key]
-        elif self.parent_state is not None:
-            return self.parent_state[key]
+        if key in self._data:
+            return self._data[key]
+        elif self._parent_state is not None:
+            return self._parent_state[key]
         else:
             logger.error(f"Key '{key}' not found in state")
             return None
     
     def __setitem__(self, key: str, value: Any) -> None:
         """Set state value, only writes to local state"""
-        self.data[key] = value
+        self._data[key] = value
     
     def __delitem__(self, key: str) -> None:
         """Delete state value, only deletes from local state"""
-        if key in self.data:
-            del self.data[key]
+        if key in self._data:
+            del self._data[key]
         else:
             logger.error(f"Key '{key}' not found in local state")
     
     def __contains__(self, key: str) -> bool:
         """Check if contains specified key, including parent state"""
-        return key in self.data or (self.parent_state is not None and key in self.parent_state)
+        return key in self._data or (self._parent_state is not None and key in self._parent_state)
     
     def __len__(self) -> int:
         """Return the count of all accessible states (including parent state)"""
-        keys = set(self.data.keys())
-        if self.parent_state is not None:
-            keys.update(self.parent_state.keys())
+        keys = set(self._data.keys())
+        if self._parent_state is not None:
+            keys.update(self._parent_state.keys())
         return len(keys)
     
     def __iter__(self):
         """Iterate over all accessible keys (including parent state)"""
-        keys = set(self.data.keys())
-        if self.parent_state is not None:
-            keys.update(self.parent_state.keys())
+        keys = set(self._data.keys())
+        if self._parent_state is not None:
+            keys.update(self._parent_state.keys())
         return iter(keys)
     
     def get(self, key: str, default: Any = None) -> Any:
@@ -86,10 +83,10 @@ class ContextState(BaseModel):
         Returns:
             Value corresponding to key or default value
         """
-        if key in self.data:
-            return self.data[key]
-        elif self.parent_state is not None:
-            return self.parent_state.get(key, default)
+        if key in self._data:
+            return self._data[key]
+        elif self._parent_state is not None:
+            return self._parent_state.get(key, default)
         else:
             return default
     
@@ -101,7 +98,7 @@ class ContextState(BaseModel):
             key: The key to set
             value: The value to set
         """
-        self.data[key] = value
+        self._data[key] = value
     
     def update(self, other: Union[Dict[str, Any], 'ContextState'] = None, **kwargs) -> None:
         """
@@ -128,16 +125,16 @@ class ContextState(BaseModel):
             # Handle positional argument
             if other is not None:
                 if isinstance(other, dict):
-                    self.data.update(other)
+                    self._data.update(other)
                 elif isinstance(other, ContextState):
-                    self.data.update(other.data)
+                    self._data.update(other._data)
                 else:
                     logger.error(f"update() first argument must be dict or ContextState, got {type(other)}")
                     return
             
             # Handle keyword arguments
             if kwargs:
-                self.data.update(kwargs)
+                self._data.update(kwargs)
                 
         except Exception as e:
             logger.error(f"Error updating state: {e}")
@@ -153,17 +150,17 @@ class ContextState(BaseModel):
         Returns:
             The deleted value or default value
         """
-        return self.data.pop(key, default)
+        return self._data.pop(key, default)
     
     def clear(self) -> None:
         """Clear local state (does not affect parent state)"""
-        self.data.clear()
+        self._data.clear()
     
     def keys(self) -> List[str]:
         """Return list of all accessible keys (including parent state)"""
-        keys = set(self.data.keys())
-        if self.parent_state is not None:
-            keys.update(self.parent_state.keys())
+        keys = set(self._data.keys())
+        if self._parent_state is not None:
+            keys.update(self._parent_state.keys())
         return list(keys)
     
     def values(self) -> List[Any]:
@@ -182,9 +179,9 @@ class ContextState(BaseModel):
             Dictionary containing all accessible states
         """
         result = {}
-        if self.parent_state is not None:
-            result.update(self.parent_state.to_dict())
-        result.update(self.data)
+        if self._parent_state is not None:
+            result.update(self._parent_state.to_dict())
+        result.update(self._data)
         return result
     
     def local_dict(self) -> Dict[str, Any]:
@@ -194,7 +191,7 @@ class ContextState(BaseModel):
         Returns:
             Dictionary containing only local state
         """
-        return self.data.copy()
+        return self._data.copy()
     
     def set_parent(self, parent_state: Optional['ContextState']) -> None:
         """
@@ -203,7 +200,7 @@ class ContextState(BaseModel):
         Args:
             parent_state: New parent state object
         """
-        self.parent_state = parent_state
+        self._parent_state = parent_state
     
     def get_parent(self) -> Optional['ContextState']:
         """
@@ -212,7 +209,7 @@ class ContextState(BaseModel):
         Returns:
             Parent state object or None
         """
-        return self.parent_state
+        return self._parent_state
     
     def has_parent(self) -> bool:
         """
@@ -221,13 +218,13 @@ class ContextState(BaseModel):
         Returns:
             True if has parent state, False otherwise
         """
-        return self.parent_state is not None
+        return self._parent_state is not None
     
     def __repr__(self) -> str:
         """Return string representation of state"""
-        local_count = len(self.data)
+        local_count = len(self._data)
         total_count = len(self)
-        parent_info = f" (with parent: {total_count - local_count} inherited)" if self.parent_state else ""
+        parent_info = f" (with parent: {total_count - local_count} inherited)" if self._parent_state else ""
         return f"ContextState(local: {local_count}{parent_info})"
     
     def __str__(self) -> str:

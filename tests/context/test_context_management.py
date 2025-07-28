@@ -8,7 +8,6 @@ import unittest
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.core.agent.swarm import Swarm
 from tests.base_test import assertEqual, assertIn, assertIsInstance, assertIsNotNone, assertTrue, run_multi_agent_as_team, run_task
@@ -41,13 +40,6 @@ class TestContextManagement(unittest.TestCase):
             state: str = "HelloWorld"
         sub_context = SubContext()
         assertEqual(sub_context.state, "HelloWorld")
-        class SubContextState(ContextState):
-            state: str = "HelloWorld"
-        sub_context.context_info = SubContextState()
-        sub_context.context_info.set("name", "HelloWorld")
-        assertEqual(sub_context.context_info.state, "HelloWorld")
-        assertEqual(sub_context.context_info.get("name"), "HelloWorld")
-        print(sub_context.context_info, ' ', sub_context.context_info.state)
 
     def test_default_context_configuration(self):
         mock_agent = init_agent("1")
