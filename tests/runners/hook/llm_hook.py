@@ -14,7 +14,7 @@ class TestPreLLMHook(PreLLMCallHook):
 
     async def exec(self, message: Message, context: Context = None) -> Message:
         agent = AgentFactory.agent_instance(message.sender)
-        context = agent.context
+        context = message.context
         context.context_info.set('step', 1)
         return message
 
@@ -26,6 +26,6 @@ class TestPostLLMHook(PostLLMCallHook):
 
     async def exec(self, message: Message, context: Context = None) -> Message:
         agent = AgentFactory.agent_instance(message.sender)
-        context = agent.context
+        context = message.context
         assert context.context_info.get('step') == 1
         return message
