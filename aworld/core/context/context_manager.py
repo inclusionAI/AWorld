@@ -19,7 +19,7 @@ class ContextManager:
         session_id = task.session_id
 
         # Use new Context functionality to create complete session state snapshot
-        values = context.to_dict()
+        values = {"context": context.model_dump()}
         
         # Add additional parameters
         values.update(kwargs)
@@ -46,7 +46,7 @@ class ContextManager:
         logger.info(f"[ContextManager] Found checkpoint for session {session_id}, task {checkpoint.metadata.task_id}")
         
         # Restore Context from checkpoint
-        context = Context(**checkpoint.values)
+        context = Context(**checkpoint.values["context"])
         
         logger.info(f"[ContextManager] Successfully reloaded context for session {session_id} {context}")
         return context
@@ -61,7 +61,7 @@ class ContextManager:
         if not isinstance(state, BaseAgentState):
             logger.warning(f"[ContextManager] Invalid state type: {type(state)}, expected BaseAgentState")
             return
-            
+
         try:
             # Merge memory_messages (short-term memory)
             if state.memory_messages:
@@ -74,7 +74,7 @@ class ContextManager:
                     # Replace if not a list
                     context.context_info['memory_messages'] = state.memory_messages
                 logger.debug(f"[ContextManager] Merged {len(state.memory_messages)} memory messages")
-            
+
             # Merge artifacts (AIGC artifacts)
             if state.artifacts:
                 existing_artifacts = context.context_info.get('artifacts', [])
@@ -86,7 +86,7 @@ class ContextManager:
                     # Replace if not a list
                     context.context_info['artifacts'] = state.artifacts
                 logger.debug(f"[ContextManager] Merged {len(state.artifacts)} artifacts")
-            
+
             # Merge kv_store (custom key-value store)
             if state.kv_store:
                 existing_kv_store = context.context_info.get('kv_store', {})
@@ -98,7 +98,7 @@ class ContextManager:
                     # Replace if not a dict
                     context.context_info['kv_store'] = state.kv_store.copy()
                 logger.debug(f"[ContextManager] Merged {len(state.kv_store)} kv_store entries")
-            
+
             # Merge context_usage if available
             if state.context_usage:
                 existing_usage = context.context_info.get('context_usage')
@@ -106,7 +106,7 @@ class ContextManager:
                     # Merge usage statistics
                     if hasattr(existing_usage, 'total_context_length'):
                         existing_usage.total_context_length = max(
-                            existing_usage.total_context_length, 
+                            existing_usage.total_context_length,
                             state.context_usage.total_context_length
                         )
                     if hasattr(existing_usage, 'used_context_length'):
@@ -114,14 +114,14 @@ class ContextManager:
                 else:
                     context.context_info['context_usage'] = state.context_usage
                 logger.debug(f"[ContextManager] Merged context usage information")
-            
+
             # Merge context_rule if available
             if state.context_rule:
                 context.context_info['context_rule'] = state.context_rule
                 logger.debug(f"[ContextManager] Merged context rule")
-                
+
             logger.info(f"[ContextManager] Successfully merged BaseAgentState into context")
-            
+
         except Exception as e:
             logger.error(f"[ContextManager] Failed to merge state: {e}")
             raise

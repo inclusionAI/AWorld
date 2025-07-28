@@ -1,11 +1,11 @@
+import os
 import sys
 from pathlib import Path
+import unittest
 
 # Add the project root to Python path
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
-
-from tests.base_test import BaseTest
 
 from aworld.config.conf import AgentConfig, ModelConfig, ContextRuleConfig, OptimizationConfig, LlmCompressionConfig
 from aworld.core.context.processor import CompressionResult, CompressionType
@@ -13,13 +13,17 @@ from aworld.core.context.processor.llm_compressor import LLMCompressor
 from aworld.core.context.processor.prompt_processor import PromptProcessor
 
 
-class TestPromptCompressor(BaseTest):
+class TestPromptCompressor(unittest.TestCase):
     """Test cases for PromptCompressor.compress_batch function"""
 
     def test_compress_batch_basic(self):
 
         compressor = LLMCompressor(
-            llm_config=self.mock_llm_config
+            llm_config=ModelConfig(
+                llm_model_name=os.environ["LLM_MODEL_NAME"],
+                llm_base_url=os.environ["LLM_BASE_URL"],
+                llm_api_key=os.environ["LLM_API_KEY"],
+            )
         )
 
         # Test data
@@ -49,12 +53,20 @@ class TestPromptCompressor(BaseTest):
             llm_compression_config=LlmCompressionConfig(
                 enabled=True,
                 trigger_compress_token_length=10,  # Low threshold to trigger compression
-                compress_model=self.mock_llm_config
+                compress_model=ModelConfig(
+                    llm_model_name=os.environ["LLM_MODEL_NAME"],
+                    llm_base_url=os.environ["LLM_BASE_URL"],
+                    llm_api_key=os.environ["LLM_API_KEY"],
+                )
             )
         )
 
         # Create prompt processor with context_rule and model_config
-        processor = PromptProcessor(context_rule=context_rule, model_config=self.mock_llm_config)
+        processor = PromptProcessor(context_rule=context_rule, model_config=ModelConfig(
+            llm_model_name=os.environ["LLM_MODEL_NAME"],
+            llm_base_url=os.environ["LLM_BASE_URL"],
+            llm_api_key=os.environ["LLM_API_KEY"],
+        ))
 
         # Test messages with repeated content that needs compression
         messages = [
@@ -92,3 +104,7 @@ class TestPromptCompressor(BaseTest):
         self.assertNotEqual(user_message["content"], original_content)
         # The compressed content should be shorter than original
         self.assertLess(len(user_message["content"]), len(original_content))
+
+
+if __name__ == "__main__":
+    unittest.main()

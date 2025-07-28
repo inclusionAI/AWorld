@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import logging
 logger = logging.getLogger("prompts")
 
-from aworld.core.context.prompts.base_prompt_formatter import BasePromptFormatter, PromptValue, StringPromptValue
+from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate, PromptValue, StringPromptValue
 from aworld.core.context.prompts.formatters import (
     TemplateFormat, 
     format_template, 
@@ -17,7 +17,7 @@ from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC
 if TYPE_CHECKING:
     from aworld.core.context.base import Context
 
-class StringPromptTemplate(BasePromptFormatter):
+class StringPromptTemplate(BasePromptTemplate):
     """String-based prompt template."""
     
     def __init__(self, 
@@ -60,10 +60,14 @@ class StringPromptTemplate(BasePromptFormatter):
             
             # 5. Process template variables
             for var in template_vars:
+                # If the variable is a callable, create a context getter
+                if var in partial_variables:
+                    if callable(partial_variables[var]):
+                        partial_variables[var] = create_context_field_getter(field_path=var, processor=partial_variables[var])
+                # Create context getter as fallback
                 if var not in partial_variables:
-                    # Create context getter as fallback
                     partial_variables[var] = create_context_field_getter(var)
-            
+
             # 7. Log variable processing information
             logger.debug(f"Template variables: {template_vars}")
             logger.debug(f"User input variables: {input_variables}")

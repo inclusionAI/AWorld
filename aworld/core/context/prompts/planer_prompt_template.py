@@ -15,7 +15,7 @@ import traceback
 from typing import Dict, Any, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
-from aworld.core.context.prompts.string_prompt_formatter import PromptTemplate
+from aworld.core.context.prompts.string_prompt_template import PromptTemplate
 from aworld.logs.util import logger
 
 # Import type hints

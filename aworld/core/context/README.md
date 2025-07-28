@@ -6,6 +6,114 @@ Core context management system in the AWorld architecture, providing comprehensi
 
 The Context Management system implements intelligent context processing with multiple optimization strategies based on context length analysis and configuration parameters.
 
+┌───────────────────────────────────────────────────────────────────────────┐
+│                                                                           │
+│  ┌─────────────────┐                                                      │
+│  │                 │                                                      │
+│  │   Define Core   │  Establish the primary objective and problem scope   │
+│  │   State         │                                                      │
+│  │                 │                                                      │
+│  └─────────────────┘                                                      │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────┐                                                      │
+│  │                 │                                                      │
+│  │ Create Minimal  │  Build the most basic prompt with essential info    │
+│  │    Prompt       │                                                      │
+│  │                 │                                                      │
+│  └─────────────────┘                                                      │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────┐                                                      │
+│  │                 │                                                      │
+│  │   Measure       │  Record baseline performance metrics for comparison  │
+│  │   Baseline      │                                                      │
+│  │  Performance    │                                                      │
+│  │                 │                                                      │
+│  └─────────────────┘                                                      │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                                                                     │  │
+│  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐              │  │
+│  │  │             │    │             │    │             │              │  │
+│  │  │   Role      │    │ Few-shot    │    │Constraints/ │    ...       │  │
+│  │  │Assignment   │    │ Examples    │    │Requirements │              │  │
+│  │  │             │    │             │    │             │              │  │
+│  │  └─────────────┘    └─────────────┘    └─────────────┘              │  │
+│  │                                                                     │  │
+│  │  ┌─────────────┐    ┌─────────────┐                                │  │
+│  │  │             │    │             │                                │  │
+│  │  │  Audience   │    │ Tone/Style  │                                │  │
+│  │  │Specification│    │  Guidance   │                                │  │
+│  │  │             │    │             │                                │  │
+│  │  └─────────────┘    └─────────────┘                                │  │
+│  │                                                                     │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────┐                                                      │
+│  │                 │                                                      │
+│  │ Test Each Layer │  Individually validate each context layer's effect  │
+│  │  Individually   │                                                      │
+│  │                 │                                                      │
+│  └─────────────────┘                                                      │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────┐                                                      │
+│  │                 │                                                      │
+│  │ Combine Promising│  Merge effective layers into optimized prompt      │
+│  │     Layers      │                                                      │
+│  │                 │                                                      │
+│  └─────────────────┘                                                      │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                                                                     │  │
+│  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐              │  │
+│  │  │             │    │             │    │             │              │  │
+│  │  │   Token     │    │  Response   │    │   Latency   │              │  │
+│  │  │   Usage     │    │  Quality    │    │             │              │  │
+│  │  │             │    │             │    │             │              │  │
+│  │  └─────────────┘    └─────────────┘    └─────────────┘              │  │
+│  │                                                                     │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────┐                                                      │
+│  │                 │                                                      │
+│  │ Prune Unnecessary│  Remove ineffective layers to optimize efficiency  │
+│  │     Layers      │                                                      │
+│  │                 │                                                      │
+│  └─────────────────┘                                                      │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────┐                                                      │
+│  │                 │                                                      │
+│  │ Compress Remaining│  Optimize remaining context for token efficiency  │
+│  │    Context      │                                                      │
+│  │                 │                                                      │
+│  └─────────────────┘                                                      │
+│         │   ▲                                                             │
+│         │   │                                                             │
+│         ▼   │                                                             │
+│  ┌─────────────────┐                                                      │
+│  │                 │                                                      │
+│  │ Final Optimization│  Achieve maximum token efficiency in final prompt │
+│  │ (Token Efficiency)│                                                      │
+│  │                 │                                                      │
+│  └─────────────────┘                                                      │
+│                                                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+
 ## Features
 
 - Comprehensive context management with both global and agent-specific functionality
@@ -42,6 +150,10 @@ Context serves as both a session-level context manager and agent-level context m
 4. **LLM Prompt Management**: Manage and maintain the complete prompt context required for LLM calls, including system prompts, historical messages, etc.
 5. **LLM Call Intervention**: Provide complete control over the LLM call process through Hook and ContextProcessor
 6. **Multi-task State Management**: Support fork_new_task and context merging for complex multi-task scenarios
+
+### Example: Context Definition
+
+
 
 ### Example: Agent State Transfer
 
