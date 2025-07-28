@@ -43,8 +43,6 @@ Context serves as both a session-level context manager and agent-level context m
 5. **LLM Call Intervention**: Provide complete control over the LLM call process through Hook and ContextProcessor
 6. **Multi-task State Management**: Support fork_new_task and context merging for complex multi-task scenarios
 
-
-
 ### Example: Agent State Transfer
 
 > **📋 Test Implementation**: See complete test implementation at [`tests/test_context_management.py::TestContextManagement::test_multi_agent_state_trace()`](../../../tests/test_context_management.py)
