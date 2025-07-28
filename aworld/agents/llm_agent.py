@@ -70,6 +70,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # for backward compatibility
         if not self.system_prompt_template:
             self.system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
+        if isinstance(self.system_prompt_template, str):
+            self.system_prompt_template = StringPromptTemplate.from_template(self.system_prompt_template)
         if not self.system_prompt:
             self.system_prompt = self.system_prompt_template.template
         self.agent_prompt: str = kwargs.get("agent_prompt") if kwargs.get("agent_prompt") else conf.agent_prompt
@@ -1102,7 +1104,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return
         if not self.system_prompt:
             return
-        content = await self.custom_system_prompt(context=context, content=content)
+        content = await self.custom_system_prompt(context=context, content=content, tool_list=self.tools)
         logger.info(f'system prompt content: {content}')
 
         await self.memory.add(MemorySystemMessage(
