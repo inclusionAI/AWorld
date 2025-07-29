@@ -127,10 +127,6 @@ class LocalRuntime(RuntimeEngine):
         return results
 
 
-class K8sRuntime(LocalRuntime):
-    """K8s runtime key is 'k8s', and execute tasks in kubernetes cluster."""
-
-
 class KubernetesRuntime(LocalRuntime):
     """kubernetes runtime key is 'kubernetes', and execute tasks in kubernetes cluster."""
 
