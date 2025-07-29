@@ -2,16 +2,17 @@
 # Copyright (c) 2025 inclusionAI.
 
 import abc
+import os
 import uuid
-from typing import Generic, TypeVar, Dict, Any, List, Tuple, Union
+from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union
 
 from pydantic import BaseModel
 
-from aworld.config.conf import AgentConfig, load_config, ConfigDict
+from aworld.config.conf import AgentConfig, ConfigDict, load_config
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event import eventbus
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Constants, Message
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
 from aworld.logs.util import logger
@@ -19,8 +20,8 @@ from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
 
-INPUT = TypeVar('INPUT')
-OUTPUT = TypeVar('OUTPUT')
+INPUT = TypeVar("INPUT")
+OUTPUT = TypeVar("OUTPUT")
 
 
 def is_agent_by_name(name: str) -> bool:
@@ -28,7 +29,9 @@ def is_agent_by_name(name: str) -> bool:
 
 
 def is_agent(policy: ActionModel) -> bool:
-    return is_agent_by_name(policy.tool_name) or (not policy.tool_name and not policy.action_name)
+    return is_agent_by_name(policy.tool_name) or (
+        not policy.tool_name and not policy.action_name
+    )
 
 
 class AgentStatus:
@@ -64,19 +67,21 @@ class MemoryModel(BaseModel):
 class BaseAgent(Generic[INPUT, OUTPUT]):
     __metaclass__ = abc.ABCMeta
 
-    def __init__(self,
-                 conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
-                 name: str,
-                 desc: str = None,
-                 agent_id: str = None,
-                 *,
-                 tool_names: List[str] = None,
-                 agent_names: List[str] = None,
-                 mcp_servers: List[str] = None,
-                 mcp_config: Dict[str, Any] = None,
-                 feedback_tool_result: bool = True,
-                 sandbox: Sandbox = None,
-                 **kwargs):
+    def __init__(
+        self,
+        name: str,
+        conf: Union[Dict[str, Any], ConfigDict, AgentConfig, None],
+        desc: str = None,
+        agent_id: str = None,
+        *,
+        tool_names: List[str] = None,
+        agent_names: List[str] = None,
+        mcp_servers: List[str] = None,
+        mcp_config: Dict[str, Any] = None,
+        feedback_tool_result: bool = True,
+        sandbox: Sandbox = None,
+        **kwargs,
+    ):
         """Base agent init.
 
         Args:
@@ -92,7 +97,30 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 Instead, Agent1 uses the tool's result and makes a decision again.
             sandbox: Sandbox instance for tool execution, advanced usage.
         """
-        self.conf = conf
+        if conf is None:
+            model_name = os.getenv("LLM_MODEL_NAME")
+            api_key = os.getenv("LLM_API_KEY")
+            base_url = os.getenv("LLM_BASE_URL")
+
+            assert api_key and model_name, (
+                "LLM_MODEL_NAME and LLM_API_KEY (environment variables) must be set, "
+                "or pass AgentConfig explicitly"
+            )
+            logger.info(f"AgentConfig is empty, using env variables:\n"
+                           f"LLM_API_KEY={api_key}\n"
+                           f"LLM_BASE_URL={base_url}\n"
+                           f"LLM_MODEL_NAME={model_name}")
+
+            conf = AgentConfig(
+                llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+                llm_model_name=model_name,
+                llm_api_key=api_key,
+                llm_base_url=base_url,
+                llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+            )
+        else:
+            self.conf = conf
+
         if isinstance(conf, ConfigDict):
             pass
         elif isinstance(conf, Dict):
@@ -103,11 +131,12 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         else:
             logger.warning(f"Unknown conf type: {type(conf)}")
 
-        self._name = name if name else convert_to_snake(
-            self.__class__.__name__)
+        self._name = name if name else convert_to_snake(self.__class__.__name__)
         self._desc = desc if desc else self._name
         # Unique flag based agent name
-        self._id = agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
+        self._id = (
+            agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
+        )
         self.task = None
         # An agent can use the tool list
         self.tool_names: List[str] = tool_names or []
@@ -130,7 +159,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.sandbox = None
         if self.mcp_servers or self.tool_names:
             self.sandbox = sandbox or Sandbox(
-                mcp_servers=self.mcp_servers, mcp_config=self.mcp_config)
+                mcp_servers=self.mcp_servers, mcp_config=self.mcp_config
+            )
 
     def _init_context(self, context: Context):
         self.context = context
@@ -147,13 +177,18 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
         observation = message.payload
-        sync_exec(send_message, Message(
-            category=Constants.OUTPUT,
-            payload=StepOutput.build_start_output(name=f"{self.id()}", alias_name=self.name(), step_num=0),
-            sender=self.id(),
-            session_id=self.context.session_id,
-            headers={"context": self.context}
-        ))
+        sync_exec(
+            send_message,
+            Message(
+                category=Constants.OUTPUT,
+                payload=StepOutput.build_start_output(
+                    name=f"{self.id()}", alias_name=self.name(), step_num=0
+                ),
+                sender=self.id(),
+                session_id=self.context.session_id,
+                headers={"context": self.context},
+            ),
+        )
         self.pre_run()
         result = self.policy(observation, message=message, **kwargs)
         final_result = self.post_run(result, observation, message)
@@ -163,22 +198,26 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._init_context(message.context)
         observation = message.payload
         if eventbus is not None:
-            await send_message(Message(
-                category=Constants.OUTPUT,
-                payload=StepOutput.build_start_output(name=f"{self.id()}",
-                                                      alias_name=self.name(),
-                                                      step_num=0),
-                sender=self.id(),
-                session_id=self.context.session_id,
-                headers={'context': self.context}
-            ))
+            await send_message(
+                Message(
+                    category=Constants.OUTPUT,
+                    payload=StepOutput.build_start_output(
+                        name=f"{self.id()}", alias_name=self.name(), step_num=0
+                    ),
+                    sender=self.id(),
+                    session_id=self.context.session_id,
+                    headers={"context": self.context},
+                )
+            )
         await self.async_pre_run()
         result = await self.async_policy(observation, message=message, **kwargs)
         final_result = await self.async_post_run(result, observation, message)
         return final_result
 
     @abc.abstractmethod
-    def policy(self, observation: INPUT, info: Dict[str, Any] = None, **kwargs) -> OUTPUT:
+    def policy(
+        self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
+    ) -> OUTPUT:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -187,7 +226,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         """
 
     @abc.abstractmethod
-    async def async_policy(self, observation: INPUT, info: Dict[str, Any] = None, **kwargs) -> OUTPUT:
+    async def async_policy(
+        self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
+    ) -> OUTPUT:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -219,13 +260,17 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def pre_run(self):
         pass
 
-    def post_run(self, policy_result: OUTPUT, input: INPUT, message: Message = None) -> Message:
+    def post_run(
+        self, policy_result: OUTPUT, input: INPUT, message: Message = None
+    ) -> Message:
         return policy_result
 
     async def async_pre_run(self):
         pass
 
-    async def async_post_run(self, policy_result: OUTPUT, input: INPUT, message: Message = None) -> Message:
+    async def async_post_run(
+        self, policy_result: OUTPUT, input: INPUT, message: Message = None
+    ) -> Message:
         return policy_result
 
 
@@ -246,17 +291,16 @@ class AgentManager(Factory):
         elif isinstance(conf, BaseModel):
             conf = conf.model_dump()
 
-        user_conf = kwargs.pop('conf', None)
+        user_conf = kwargs.pop("conf", None)
         if user_conf:
             if isinstance(user_conf, BaseModel):
                 conf.update(user_conf.model_dump())
             elif isinstance(user_conf, dict):
                 conf.update(user_conf)
             else:
-                logger.warning(
-                    f"Unknown conf type: {type(user_conf)}, ignored!")
+                logger.warning(f"Unknown conf type: {type(user_conf)}, ignored!")
 
-        conf['name'] = name
+        conf["name"] = name
         conf = ConfigDict(conf)
         if name in self._cls:
             agent = self._cls[name](conf=conf, **kwargs)
