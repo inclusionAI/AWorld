@@ -58,6 +58,9 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
         run_conf = RunConfig()
 
     name = run_conf.name
+    if name == 'k8s':
+        name = 'kubernetes'
+
     if run_conf.cls:
         runtime_backend = new_instance(run_conf.cls, run_conf)
     else:
