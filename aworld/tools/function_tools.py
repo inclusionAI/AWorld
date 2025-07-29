@@ -321,108 +321,19 @@ class FunctionTools:
         try:
             # Call based on function type
             if is_async:
-                # Async functions need to run in event loop
                 import asyncio
-                
-                # Safer way to handle async calls
                 try:
-                    # Check if already in event loop
-                    running_loop = asyncio._get_running_loop()
-                    if running_loop is not None:
-                        # Already in event loop, use nest_asyncio to solve nesting issues
-                        try:
-                            import nest_asyncio
-                            nest_asyncio.apply()
-                            logger.debug(f"Applied nest_asyncio for {tool_name}")
-                        except ImportError:
-                            logger.warning("nest_asyncio not available, using alternative approach")
-                            # If nest_asyncio not available, use alternative method
-                            # Create new thread to run async function
-                            import threading
-                            import queue
-                            
-                            result_queue = queue.Queue()
-                            
-                            def run_async_in_thread():
-                                try:
-                                    # Create new event loop
-                                    new_loop = asyncio.new_event_loop()
-                                    asyncio.set_event_loop(new_loop)
-                                    # Run async function
-                                    result = new_loop.run_until_complete(func(**filtered_args))
-                                    # Put in queue
-                                    result_queue.put(("result", result))
-                                except Exception as e:
-                                    # Put in queue
-                                    result_queue.put(("error", e))
-                                finally:
-                                    new_loop.close()
-                            
-                            # Start thread
-                            thread = threading.Thread(target=run_async_in_thread)
-                            thread.start()
-                            thread.join(timeout=60)  # Wait up to 60 seconds
-                            
-                            if thread.is_alive():
-                                raise TimeoutError(f"Timeout waiting for {tool_name} to complete")
-                            
-                            # Get result
-                            result_type, result_value = result_queue.get()
-                            if result_type == "error":
-                                raise result_value
-                            result = result_value
-                            return self._format_result(result)
-                    
-                    # Get or create event loop
-                    try:
-                        loop = asyncio.get_event_loop()
-                    except RuntimeError:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                    
-                    # Run async function
-                    result = loop.run_until_complete(func(**filtered_args))
-                    
-                except RuntimeError as e:
-                    if "This event loop is already running" in str(e):
-                        # If event loop already running, use thread method
-                        logger.warning(f"Event loop already running, using thread approach for {tool_name}")
-                        import threading
-                        import queue
-                        
-                        result_queue = queue.Queue()
-                        
-                        def run_async_in_thread():
-                            try:
-                                # Create new event loop
-                                new_loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(new_loop)
-                                # Run async function
-                                result = new_loop.run_until_complete(func(**filtered_args))
-                                # Put in queue
-                                result_queue.put(("result", result))
-                            except Exception as e:
-                                # Put in queue
-                                result_queue.put(("error", e))
-                            finally:
-                                new_loop.close()
-                        
-                        # Start thread
-                        thread = threading.Thread(target=run_async_in_thread)
-                        thread.start()
-                        thread.join(timeout=60)  # Wait up to 60 seconds
-                        
-                        if thread.is_alive():
-                            raise TimeoutError(f"Timeout waiting for {tool_name} to complete")
-                        
-                        # Get result
-                        result_type, result_value = result_queue.get()
-                        if result_type == "error":
-                            raise result_value
-                        result = result_value
-                    else:
-                        # Other RuntimeError
-                        raise
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop and loop.is_running():
+                    # If in a running event loop, schedule the coroutine
+                    future = asyncio.run_coroutine_threadsafe(func(**filtered_args), loop)
+                    result = future.result(timeout=60)
+                else:
+                    # If not in a running event loop, run it directly
+                    result = asyncio.run(func(**filtered_args))
             else:
                 # Sync call
                 result = func(**filtered_args)
