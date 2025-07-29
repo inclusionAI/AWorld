@@ -305,9 +305,9 @@ def replace_env_variables(config) -> Any:
         pattern = r'\${([^}]+)}'
         matches = re.findall(pattern, config)
         for env_var_name in matches:
-            env_var_value = os.getenv(env_var_name)
-            if env_var_value is not None:
-                config = config.replace(f'${{{env_var_name}}}', env_var_value)
+            env_var_value = os.getenv(env_var_name, f"${{{env_var_name}}}")
+            config = config.replace(f'${{{env_var_name}}}', env_var_value)
+            if env_var_value != f"${{{env_var_name}}}":
                 logger.info(f"Replaced ${{{env_var_name}}} with {env_var_value}")
     return config
 
