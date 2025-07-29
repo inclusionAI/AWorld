@@ -182,8 +182,8 @@ class RayRuntime(RuntimeEngine):
     resource allocation and communication etc. advanced features.
     """
 
-    def __init__(self, engine_options):
-        super(RayRuntime, self).__init__(engine_options)
+    def __init__(self, conf: RunConfig):
+        super(RayRuntime, self).__init__(conf)
 
     def _build_engine(self):
         import ray
