@@ -56,11 +56,11 @@ class BrowserAgent(Agent):
         super(BrowserAgent, self).__init__(conf, name, **kwargs)
         self.state = AgentState()
         self.settings = self.conf
-        provider = self.conf.llm_config.llm_provider if self.conf.llm_config.llm_provider else self.conf.llm_provider
+        provider = self.conf.llm_config.llm_provider
         if self.conf.llm_config.llm_provider:
             self.conf.llm_config.llm_provider = "chat" + provider
         else:
-            self.conf.llm_provider = "chat" + provider
+            raise Exception("no llm provider")
 
         self.save_file_path = self.conf.save_file_path
         self.available_actions = self._build_action_prompt()
@@ -393,7 +393,7 @@ class BrowserAgent(Agent):
         messages.append(system_message)
 
         tool_calling_method = self.settings.get("tool_calling_method")
-        llm_provider = self.conf.llm_provider if self.conf.llm_provider else self.conf.llm_config.llm_provider
+        llm_provider = self.conf.llm_config.llm_provider
 
         if tool_calling_method == 'raw' or (tool_calling_method == 'auto' and (
                 llm_provider == 'deepseek-reasoner' or llm_provider.startswith('deepseek-r1'))):

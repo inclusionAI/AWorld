@@ -38,7 +38,7 @@ def get_deepresearch_swarm(user_input):
         use_tools_in_prompt=True,
         resp_parse_func=PlannerOutputParser(agent_id).parse,
         system_prompt_template=plan_sys_prompt,
-        response_handler_name=Constants.PLAN
+        event_handler_name=Constants.PLAN
     )
 
     web_search_agent = Agent(

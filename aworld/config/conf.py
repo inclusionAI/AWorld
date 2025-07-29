@@ -107,7 +107,7 @@ class BaseConfig(BaseModel):
 
 
 class ModelConfig(BaseConfig):
-    llm_provider: str = None
+    llm_provider: str = "openai"
     llm_model_name: str = None
     llm_temperature: float = 1.
     llm_base_url: str = None
@@ -180,14 +180,16 @@ class AgentConfig(BaseConfig):
         super().__init__(**kwargs)
         # Initialize llm_config with relevant kwargs
         llm_config_kwargs = {k: v for k, v in kwargs.items() if k in ModelConfig.model_fields}
-        self.llm_config = ModelConfig(**llm_config_kwargs)
+        # Reassignment if it has llm config args
+        if llm_config_kwargs:
+            self.llm_config = ModelConfig(**llm_config_kwargs)
 
         # Initialize max_model_len if not set
-        if self.max_model_len is None:
+        if self.llm_config.max_model_len is None:
             if self.llm_config.model_type == 'claude':
-                self.max_model_len = 200000
+                self.llm_config.max_model_len = 200000
             else:
-                self.max_model_len = 128000
+                self.llm_config.max_model_len = 128000
 
 class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
