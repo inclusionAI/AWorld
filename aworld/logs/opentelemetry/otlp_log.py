@@ -44,7 +44,7 @@ def _build_otlp_privider(backend: str = None, base_url: str = None, write_token:
     return logger_provider
 
 
-def _configure_logfire_exporter(write_token: str, base_url: str = None) -> None:
+def _configure_logfire_exporter(write_token: str, base_url: str = None) -> OTLPLogExporter:
     """Configure the Logfire exporter.
     Args:
         write_token: The write token to use.

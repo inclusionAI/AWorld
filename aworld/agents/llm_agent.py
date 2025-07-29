@@ -58,9 +58,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             conf: Agent config, supported AgentConfig, ConfigDict or dict.
             resp_parse_func: Response parse function for the agent standard output, transform llm response.
         """
-        super(Agent, self).__init__(conf, name, **kwargs)
+        super(Agent, self).__init__(name, conf, **kwargs)
         conf = self.conf
-        self.model_name = conf.llm_config.llm_model_name if conf.llm_config.llm_model_name else conf.llm_model_name
+        self.model_name = conf.llm_config.llm_model_name
         self._llm = None
         self.memory = MemoryFactory.instance()
         self.memory_config = agent_memory_config if agent_memory_config else AgentMemoryConfig()

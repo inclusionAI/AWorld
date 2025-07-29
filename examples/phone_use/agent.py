@@ -30,11 +30,11 @@ from examples.common.tools.tool_action import AndroidAction
 class AndroidAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
         super(AndroidAgent, self).__init__(conf, name, **kwargs)
-        provider = self.conf.llm_config.llm_provider if self.conf.llm_config.llm_provider else self.conf.llm_provider
+        provider = self.conf.llm_config.llm_provider
         if self.conf.llm_config.llm_provider:
             self.conf.llm_config.llm_provider = "chat" + provider
         else:
-            self.conf.llm_provider = "chat" + provider
+            raise Exception("no llm provider")
         self.available_actions_desc = self._build_action_prompt()
         # Settings
         self.settings = self.conf
