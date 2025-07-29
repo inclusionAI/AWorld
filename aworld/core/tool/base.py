@@ -25,6 +25,9 @@ from aworld.utils.common import convert_to_snake, sync_exec
 AgentInput = TypeVar("AgentInput")
 ToolInput = TypeVar("ToolInput")
 
+# Forward declaration of action_executor to fix NameError
+action_executor = None
+
 
 class BaseTool(Generic[AgentInput, ToolInput]):
     """The basic generic classes of tools in the environment, with two parameterized types: AgentInput and ToolInput.
