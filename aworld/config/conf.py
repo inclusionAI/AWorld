@@ -107,7 +107,7 @@ class BaseConfig(BaseModel):
 
 
 class ModelConfig(BaseConfig):
-    llm_provider: str = None
+    llm_provider: str = "openai"
     llm_model_name: str = None
     llm_temperature: float = 1.
     llm_base_url: str = None
