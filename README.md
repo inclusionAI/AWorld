@@ -24,7 +24,7 @@
 [Architecture](#️-architecture-design-principles) |
 [Applications](#-applications) |
 [Contributing](#contributing) |
-[Appendix](#appendix-demo)
+[Appendix](#appendix-web-client-usage)
 
 </h4>
 
