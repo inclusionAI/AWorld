@@ -29,26 +29,34 @@
 </h4>
 
 ---
-**AWorld (Agent World)** is a next-generation framework for agent learning with three key characteristics: 
+<!-- **AWorld (Agent World)** is a next-generation framework for agent learning with three key characteristics: 
 1. **Plug-and-Play:** Box up complex modules with bulletproof protocols and zero-drama state control.
 2. **Cloud-Native Velocity:** Train smarter agents that evolve their own brains—prompts, workflows, memory, and tools—on the fly.  
-3. **Self-Awareness**: Synthesize the agent's own knowledge and experience to achieve ultimate self-improvement.
+3. **Self-Awareness**: Synthesize the agent's own knowledge and experience to achieve ultimate self-improvement. -->
+
+**AWorld (Agent World)** is the next-generation framework engineered for agent self-improvement at scale. We enable AI agents to continuously evolve by synthesizing their own knowledge and experiences. This core capability is powered by:
+
+1. **Multi-Agent Systems (MAS)**: Build complex, interacting agent societies with ease using our plug-and-play protocols and robust state management. This fluid MAS environment is the crucible where collective intelligence emerges, providing the rich interactions necessary for learning and adaptation.
+
+2. **Intelligence Beyond a Single Model**: Our MAS design inherently drives intelligence superior to any single agent. Agents observe, collaborate, and compete within the system, generating high-quality feedback (for rewards, critiques, or demonstrations) and diverse synthetic training data that fuel individual agent evolution.
+
+3. **Cloud-Native for Diversity & Scale**: Rapidly prototype and deploy vast, diverse agent populations (mathematical reasoners, tool-users, debaters, etc.) across distributed infrastructure. This cloud-native foundation delivers the high concurrency and scalability essential for generating the massive, varied experiences needed to train smarter agents and achieve true self-improvement.
+
+AWorld empowers you to rapidly build `individual tool-using agents`, `orchestrate sophisticated multi-agent systems`, `train agents effectively`, and `synthesize the high-quality data` required for continuous agent evolution – all converging towards autonomous self-improvement.
+
+
+> **Agentic Achievements Unboxed!** 🔥
+>
+> 🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  
+> Built a MAS in hours that solved <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> - proving **rapid agent orchestration** beats solo models. Peek at the genius [under the hood](examples/imo/README.md)!
+>
+> 🧩 **[2025/07/23]** Build BFCL Runtimes Effortlessly!  
+> New BFCL tutorial shows how to **synthesize function calls training data in minutes**. Start cooking up your own agents [right here](examples/BFCL/README.md)!
+>
+> 🏆 **[2025/07/07]** GAIA Score Skyrockets to <span style="color: #d81b60; font-weight: bold;">77.08</span> with crafted toolset!  
+> **Cloud-native runtimes** now enable distributed agent evolution. See how diverse environments evolves smarter models [training recipe](#backward-process-design).
 
 <br>
-
-![](readme_assets/aworld-overview.png)
-
-
-> **Agentic Achievements Unboxed!**
->
-> 🏅 **[2025/07/25]** AWorld achieves rapid mathematical reasoning! Built a multi-agent system in just hours that solved <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span>. See implementation in [IMO](examples/imo/README.md) section.  
->
-> 🦍 **[2025/07/23]** We released the runtime construction tutorial for BFCL benchmark! Learn how to synthesize function call samples in our comprehensive [`tutorial`](examples/BFCL/README.md). 
->
-> 🦤 **[2025/07/07]** AWorld, as a runtime, is now ready for agentic training. See [Self-Improvement section](#self-improvement-with-diverse-runtimes) for details. We have updated our score to <span style="color: #d81b60; font-weight: bold;">77.08</span> on the <u>GAIA test</u>. Learn how to construct a GAIA runtime in the [demo](#demo-of-gaia-agent-runtime) section.
-
-<br>
-<!-- bar -->
 
 # 🏃‍♀️ Quickstart
 ## Prerequisites
@@ -78,7 +86,7 @@ result = Runners.sync_run(
 )
 ```
 
-Next, we introduce the concepts of `Swarm` to construct a team of agents.
+In parallel, we introduce the concepts of `Swarm` to construct a team of agents.
 ```python
 import os
 
@@ -391,7 +399,7 @@ AWorld allows you to construct **agents** and **multi-agent systems** with ease.
 
 - [✔️] **[BFCL Runtime](examples/BFCL/README.md)** - AWorld supports function call data synthesis for [BFCL benchmark](https://gorilla.cs.berkeley.edu/leaderboard.html). -->
 
-## Self-Improvement & Self-awareness
+## Multi-Agent Systems for Model Evolutions
 AWorld aims to reach the limitations of models and continuously push intelligence forward by constructing diverse runtime environments, such as tools, agents, and models, 
 
 The following is a list of successful proposal (with open-source models, technical reports, and code):
@@ -556,7 +564,7 @@ aworld api_server
 # Then visit http://localhost:8000/docs for API documentation
 ```
 
-**Success!** Your agent is now running and ready to chat!
+Success! Your agent is now running and ready to chat!
 
 
 <!-- resource section start -->
