@@ -1,3 +1,4 @@
+import unittest
 import uuid
 import asyncio
 import random
@@ -13,10 +14,8 @@ from aworld.runners.state_manager import (
     RunNode
 )
 
-from tests.base_test import BaseTest
 
-
-class StateManagerTest(BaseTest):
+class StateManagerTest(unittest.TestCase):
     def test_runtime_state_manager(self):
         state_manager = RuntimeStateManager()
         session_id = "1"
