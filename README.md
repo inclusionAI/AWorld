@@ -42,8 +42,9 @@
 
 3. **Cloud-Native for Diversity & Scale**: Rapidly prototype and deploy vast, diverse agent populations (mathematical reasoners, tool-users, debaters, etc.) across distributed infrastructure. This cloud-native foundation delivers the high concurrency and scalability essential for generating the massive, varied experiences needed to train smarter agents and achieve true self-improvement.
 
-AWorld empowers you to rapidly build `individual tool-using agents`, `orchestrate sophisticated multi-agent systems`, `train agents effectively`, and `synthesize the high-quality data` required for continuous agent evolution – all converging towards autonomous self-improvement.
+![](./readme_assets/heading_banner.png)
 
+AWorld empowers you to rapidly build `individual tool-using agents`, `orchestrate sophisticated multi-agent systems`, `train agents effectively`, and `synthesize the high-quality data` required for continuous agent evolution – all converging towards autonomous self-improvement.
 
 > **Agentic Achievements Unboxed!** 🔥
 >
