@@ -9,7 +9,7 @@ Utility functions for working with prompt templates.
 from typing import Any, Dict, List
 
 from aworld.core.context.prompts.formatters import TemplateFormat
-from aworld.core.context.prompts.string_prompt_formatter import PromptTemplate
+from aworld.core.context.prompts.string_prompt_template import PromptTemplate
 
 def create_few_shot_prompt(examples: List[Dict[str, str]],
                           example_template: str,

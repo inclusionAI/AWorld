@@ -70,7 +70,7 @@ class ChatPromptValue(PromptValue):
         return f"ChatPromptValue(messages={self.messages!r})"
 
 
-class BasePromptFormatter(ABC):
+class BasePromptTemplate(ABC):
     """Base class for all prompt templates."""
     
     def __init__(self, 
@@ -135,7 +135,7 @@ class BasePromptFormatter(ABC):
         """Validate that all required input variables are provided."""
         missing_vars = set(self.input_variables) - set(variables.keys())
     
-    def partial(self, **kwargs: Any) -> 'BasePromptFormatter':
+    def partial(self, **kwargs: Any) -> 'BasePromptTemplate':
         """Create a new prompt template with some variables pre-filled."""
         conflicts = set(kwargs.keys()) & set(self.input_variables)
         if conflicts:

@@ -129,7 +129,7 @@ class ModelConfig(BaseConfig):
         if not hasattr(self, 'max_model_len') or self.max_model_len is None:
             # qwen or other default model_type
             self.max_model_len = 128000
-            if hasattr(self, 'model_type') and self.model_type == 'claude':
+            if self.model_type and self.model_type == 'claude':
                 self.max_model_len = 200000
 
 class LlmCompressionConfig(BaseConfig):

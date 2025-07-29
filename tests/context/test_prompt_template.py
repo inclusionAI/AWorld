@@ -1,18 +1,21 @@
 # Add the project root to Python path
 from pathlib import Path
 import sys
+import unittest
 
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent
+print(project_root)
 sys.path.insert(0, str(project_root))
 
-from tests.base_test import BaseTest
+from aworld.agents.llm_agent import Agent
+from tests.base_test import assertEqual, init_agent, run_agent, run_task
 from aworld.core.context.base import Context
 from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter, format_ordered_dict_json, \
     get_field_values_from_list, get_value_by_path
-from aworld.core.context.prompts.string_prompt_formatter import StringPromptFormatter
+from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 
 
-class TestPromptTemplate(BaseTest):
+class TestPromptTemplate(unittest.TestCase):
     def test_dynamic_variables(self):
         context = Context()
         context.context_info.update({"task": "chat"})
@@ -54,7 +57,7 @@ class TestPromptTemplate(BaseTest):
 
     def test_string_prompt_template(self):
         # Use proper dot notation for nested field access
-        template = StringPromptFormatter.from_template(
+        template = StringPromptTemplate.from_template(
             "Hello {{name}}, welcome to {{place}}! Task: {{task}} Age: {{age}}",
             partial_variables={"age": "1"})
         assert "name" in template.input_variables
@@ -85,3 +88,38 @@ class TestPromptTemplate(BaseTest):
         # Verify time variable retrieved (should be in HH:MM:SS format)
         assert ":" in result["current_time"]
         assert len(result["current_time"].split(":")) == 3
+
+    def test_undefined_system_prompt_template(self):
+        agent = init_agent()
+        agent._log_messages = lambda messages: assertEqual(messages[0]['content'], "You are a helpful assistant.")
+        result = run_task(
+            input="What is the weather in Beijing?",
+            agent=agent
+        )
+        assert result is not None
+
+    def test_custom_system_prompt_template(self):
+        context = Context()
+        context.context_info.set("name", "Qwen")
+        context.context_info.set("plan", [{"input": "query weather in Beijing"}])
+
+        system_prompt_template = StringPromptTemplate.from_template(
+            "Hello {{context_info.name}}, you are a {{role}}, {{context_info.plan}}",
+            partial_variables={"role": "assistant", "context_info.plan": lambda ob: "please " + ob[0]['input']})
+        
+        agent = init_agent(
+            system_prompt_template=system_prompt_template,
+        )
+
+        agent._log_messages = lambda messages: assertEqual(messages[0]['content'], "Hello Qwen, you are a assistant, please query weather in Beijing")
+
+        result = run_task(
+            input="What is the weather in Beijing?",
+            agent=agent,
+            context=context
+        )
+        assert result is not None
+
+
+if __name__ == "__main__":
+    unittest.main()
