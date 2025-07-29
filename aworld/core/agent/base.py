@@ -23,9 +23,12 @@ from aworld.utils.common import convert_to_snake, replace_env_variables, sync_ex
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
 
+# Forward declaration
+AgentFactory = None
+
 
 def is_agent_by_name(name: str) -> bool:
-    return name in AgentFactory
+    return name in AgentFactory if AgentFactory else False
 
 
 def is_agent(policy: ActionModel) -> bool:
@@ -107,7 +110,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 "or pass AgentConfig explicitly"
             )
             logger.info(f"AgentConfig is empty, using env variables:\n"
-                           f"LLM_API_KEY={api_key}\n"
+                           f"LLM_API_KEY={'*' * min(len(api_key), 8) if api_key else 'Not set'}\n"
                            f"LLM_BASE_URL={base_url}\n"
                            f"LLM_MODEL_NAME={model_name}")
 

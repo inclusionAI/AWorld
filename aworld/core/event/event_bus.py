@@ -108,12 +108,16 @@ class InMemoryEventbus(Eventbus):
 
     async def subscribe(self, task_id: str, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):
-            if event_type in self._transformer:
-                logger.warning(f"{event_type} transform already subscribe.")
+            # Initialize task_id dict if not exists
+            if task_id not in self._transformer:
+                self._transformer[task_id] = {}
+                
+            if event_type in self._transformer[task_id]:
+                logger.warning(f"{event_type} transform already subscribe for task {task_id}.")
                 return
 
             if isfunction(handler):
-                self._transformer[event_type] = handler
+                self._transformer[task_id][event_type] = handler
             else:
                 logger.warning(f"{event_type} {topic} subscribe fail, handler {handler} is not a function.")
             return

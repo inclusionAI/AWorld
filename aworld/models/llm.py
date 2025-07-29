@@ -222,9 +222,16 @@ class LLMModel:
                 stop=stop,
                 **kwargs
             )
+        except AttributeError as e:
+            logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
+            raise NotImplementedError(f"Provider {self.provider_name} does not support async completion") from e
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(f"Network error calling {self.provider_name}: {e}")
+            raise ConnectionError(f"Failed to connect to {self.provider_name} API") from e
         except Exception as e:
-            logger.error(f"Error calling model: {traceback.format_exc()}, messages: {messages}, kwargs: {kwargs}")
-            raise e
+            logger.error(f"Unexpected error calling model {self.provider_name}: {traceback.format_exc()}")
+            logger.debug(f"Failed request details - messages: {messages}, kwargs: {kwargs}")
+            raise RuntimeError(f"Model call failed: {str(e)}") from e
 
     def completion(self,
                    messages: List[Dict[str, str]],
@@ -379,12 +386,21 @@ def register_llm_provider(provider: str, provider_class: type):
 
 
 def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key: str) -> bool:
-    """Check if conf contains key.
+    """Check if configuration contains a specific key.
+    
     Args:
-        conf: Config object.
-        key: Key to check.
+        conf: Configuration object (ConfigDict or AgentConfig).
+        key: Key to check for existence.
+        
     Returns:
-        bool: Whether conf contains key.
+        bool: True if the key exists in the configuration, False otherwise.
+        
+    Examples:
+        >>> conf = AgentConfig(llm_provider="openai")
+        >>> conf_contains_key(conf, "llm_provider")
+        True
+        >>> conf_contains_key(conf, "nonexistent_key")
+        False
     """
     if not conf:
         return False
@@ -517,7 +533,8 @@ async def acall_llm_model_stream(
         stop: List[str] = None,
         **kwargs
 ) -> AsyncGenerator[ModelResponse, None]:
-    async for chunk in await llm_model.astream_completion(
+    # Fix: Cannot await an async generator, directly iterate over it
+    async for chunk in llm_model.astream_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
