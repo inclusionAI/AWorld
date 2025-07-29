@@ -1,22 +1,22 @@
-import uuid
 import asyncio
 import random
-import pytest
+import uuid
 from typing import List
+from unittest import TestCase
+
+import pytest
 
 from aworld.core.event.base import Constants, Message
 from aworld.runners.state_manager import (
     EventRuntimeStateManager,
-    RuntimeStateManager,
+    RunNode,
     RunNodeBusiType,
     RunNodeStatus,
-    RunNode
+    RuntimeStateManager,
 )
 
-from tests.base_test import BaseTest
 
-
-class StateManagerTest(BaseTest):
+class StateManagerTest(TestCase):
     def test_runtime_state_manager(self):
         state_manager = RuntimeStateManager()
         session_id = "1"
