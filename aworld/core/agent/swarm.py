@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import json
 from enum import Enum
 from typing import Dict, List, Any, Callable, Optional, Tuple, Iterator, Union
 
@@ -9,7 +8,7 @@ from aworld.core.agent.agent_desc import agent_handoffs_desc
 from aworld.core.agent.base import AgentFactory, BaseAgent
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
-from aworld.core.exceptions import AworldException
+from aworld.core.exceptions import AWorldRuntimeException as AworldException
 from aworld.logs.util import logger
 from aworld.utils.common import new_instance, convert_to_subclass
 

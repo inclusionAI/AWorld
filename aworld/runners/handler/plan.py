@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.event.base import AgentMessage, Constants, TopicType, Message
-from aworld.core.exceptions import AworldException
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.output.base import StepOutput
 from aworld.planner.models import StepInfo
 from aworld.planner.parse import parse_plan
@@ -74,7 +74,7 @@ class PlanHandler(AgentHandler):
                     headers=message.headers
                 )
             else:
-                raise AworldException("no steps and answer.")
+                raise AWorldRuntimeException("no steps and answer.")
 
         group_id = self.runner.task.group_id if self.runner.task.group_id else uuid.uuid4().hex
         self.runner.task.group_id = group_id
