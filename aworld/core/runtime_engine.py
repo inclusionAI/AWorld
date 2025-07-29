@@ -113,17 +113,29 @@ class LocalRuntime(RuntimeEngine):
             num_process = 1
 
         futures = []
-        with ProcessPoolExecutor(num_process) as pool:
-            for func in funcs:
-                futures.append(pool.submit(self.func_wrapper, func, *args, **kwargs))
-
         results = {}
-        for future in futures:
-            future: Future = future
-            if future.exception():
-                logger.warning(f"exception: {future._exception}")
-            res = future.result()
-            results[res.id] = res
+        
+        try:
+            with ProcessPoolExecutor(num_process) as pool:
+                for func in funcs:
+                    futures.append(pool.submit(self.func_wrapper, func, *args, **kwargs))
+                
+                # Wait for all futures to complete with timeout
+                for future in futures:
+                    try:
+                        res = future.result(timeout=300)  # 5 minute timeout per task
+                        if res and hasattr(res, 'id'):
+                            results[res.id] = res
+                    except TimeoutError:
+                        logger.error(f"Task execution timed out after 5 minutes")
+                    except Exception as e:
+                        logger.error(f"Task execution failed: {e}")
+                        if future.exception():
+                            logger.debug(f"Exception details: {future.exception()}")
+        except Exception as e:
+            logger.error(f"ProcessPoolExecutor failed: {e}")
+            raise
+            
         return results
 
 
