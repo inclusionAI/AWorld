@@ -25,9 +25,9 @@ class GuardToolCaller:
         try:
             agent_config = AgentConfig(
                 llm_provider="openai",
-                llm_model_name=os.getenv("GUARD_LLM_MODEL_NAME", "deepseek/deepseek-r1-0528:free"),
-                llm_api_key=os.getenv("GUARD_LLM_API_KEY"),
-                llm_base_url=os.getenv("GUARD_LLM_BASE_URL"),
+                llm_model_name=os.getenv("IMO_LLM_MODEL_NAME", "deepseek/deepseek-r1-0528:free"),
+                llm_api_key=os.getenv("IMO_LLM_API_KEY"),
+                llm_base_url=os.getenv("IMO_LLM_BASE_URL"),
                 llm_temperature=0.1,
             )
             

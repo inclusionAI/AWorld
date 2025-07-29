@@ -83,8 +83,12 @@ class GuardRunner:
             logging.info(f"Super-agent output: {super_output[:200]}...")
             
             # 2. Check if the output contains the final answer
-            if self._has_final_answer(super_output):
+            if self._has_final_answer(super_output) and iteration > 1:
                 logging.info("find the final answer, the conversation should stop")
+                return super_output
+            
+            if iteration == self.max_iterations - 1: 
+                logging.info("reach the max conversation rounds, the conversation should stop and return the final answer")
                 return super_output
             
             # 3. Call the guard tool
