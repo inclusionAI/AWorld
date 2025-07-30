@@ -34,30 +34,31 @@
 2. **Cloud-Native Velocity:** Train smarter agents that evolve their own brains—prompts, workflows, memory, and tools—on the fly.  
 3. **Self-Awareness**: Synthesize the agent's own knowledge and experience to achieve ultimate self-improvement. -->
 
+![](./readme_assets/heading_banner.png)
+
 **AWorld (Agent World)** is the next-generation framework engineered for agent self-improvement at scale. We enable AI agents to continuously evolve by synthesizing their own knowledge and experiences. This core capability is powered by:
 
-1. **Multi-Agent Systems (MAS)**: Build complex, interacting agent societies with ease using our plug-and-play protocols and robust state management. This fluid MAS environment is the crucible where collective intelligence emerges, providing the rich interactions necessary for learning and adaptation.
+1. **Multi-Agent Systems (MAS)**: Build complex, interacting agent societies using our plug-and-play protocols and robust state management. 
 
-2. **Intelligence Beyond a Single Model**: Our MAS design inherently drives intelligence superior to any single agent. Agents observe, collaborate, and compete within the system, generating high-quality feedback (for rewards, critiques, or demonstrations) and diverse synthetic training data that fuel individual agent evolution.
+2. **Intelligence Beyond a Single Model**: Generates high-quality feedback and diverse synthetic training data that fuel individual agent evolution.
 
-3. **Cloud-Native for Diversity & Scale**: Rapidly prototype and deploy vast, diverse agent populations (mathematical reasoners, tool-users, debaters, etc.) across distributed infrastructure. This cloud-native foundation delivers the high concurrency and scalability essential for generating the massive, varied experiences needed to train smarter agents and achieve true self-improvement.
-
-![](./readme_assets/heading_banner.png)
+3. **Cloud-Native for Diversity & Scale**: Delivers the high concurrency and scalability for training smarter agents and achieving self-improvement.
 
 AWorld empowers you to rapidly build `individual tool-using agents`, `orchestrate sophisticated multi-agent systems`, `train agents effectively`, and `synthesize the high-quality data` required for continuous agent evolution – all converging towards autonomous self-improvement.
 
-> **Agentic Achievements Unboxed!** 🔥
->
-> 🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  
-> Built a MAS in hours that solved <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> - proving **rapid agent orchestration** beats solo models. Peek at the genius [under the hood](examples/imo/README.md)!
->
-> 🧩 **[2025/07/23]** Build BFCL Runtimes Effortlessly!  
-> New BFCL tutorial shows how to **synthesize function calls training data in minutes**. Start cooking up your own agents [right here](examples/BFCL/README.md)!
->
-> 🏆 **[2025/07/07]** GAIA Score Skyrockets to <span style="color: #d81b60; font-weight: bold;">77.08</span> with crafted toolset!  
-> **Cloud-native runtimes** now enable distributed agent evolution. See how diverse environments evolves smarter models [training recipe](#backward-process-design).
+<div style="background: #F0FAF8; padding: 1em 1.5em; border-radius: 6px; color: #333;">
 
-<br>
+**Agentic Achievements Unboxed!** 🔥
+
+🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  ![IMO] ![MAS]    
+Built a MAS solving <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> in hours - proving **agent orchestration** beats solo models. Peek at the genius [under the hood](examples/imo/README.md)!
+
+🧩 **[2025/07/23]** Build BFCL Runtimes Readily!  ![BFCL] ![Runtime]  
+New BFCL tutorial shows how to **synthesize function calls training data in minutes**. Start cooking up your own agents [right here](examples/BFCL/README.md)!
+
+🏆 **[2025/07/07]** GAIA Soars to <span style="color: #d81b60; font-weight: bold;">77.08</span>! ![GAIA] ![Cloud-Native] ![Leaderboard]  
+**Cloud-native runtimes** now enable distributed agent evolution. See how diverse environments evolves smarter models [training recipe](#backward-process-design).
+</div>
 
 # 🏃‍♀️ Quickstart
 ## Prerequisites
@@ -267,7 +268,7 @@ MemoryFactory.init(
 ```
 
 ### Mutil-Agent Systems
-We present two kinds of topologies: `Leader-Executor` and `Fully Meshed`.
+We present a classic topology: `Leader-Executor`.
 ```python
 """
 Leader-Executor topology:
@@ -278,38 +279,26 @@ Each agent communicates with a single supervisor agent,
 well recognized as Leader-Executor topology, 
 also referred to as a team topology in Aworld.
 """
+from aworld.agents.llm_agent import Agent
+from aworld.core.agent.swarm import TeamSwarm
+
 plan = Agent(name="plan", conf=agent_conf)
 exec1 = Agent(name="exec1", conf=agent_conf)
 exec2 = Agent(name="exec2", conf=agent_conf)
-swarm = TeamSwarm(plan, exec1, exec2, build_type=GraphBuildType.TEAM)
+swarm = TeamSwarm(plan, exec1, exec2)
 ```
-
+Optionally, you can use `Handsoff` mechanism to customize your own topology.
 ```python
-"""
-Fully Meshed topology:
-    ┌─────────── A ──────────┐
-    B ───────────|────────── C 
-    └─────────── D  ─────────┘
-
-Fully meshed topology means that each agent 
-can communicate with every other agent, 
-any agent can decide which other agent to call next.
-"""
-A = Agent(name="A", conf=agent_conf)
-B = Agent(name="B", conf=agent_conf)
-C = Agent(name="C", conf=agent_conf)
-D = Agent(name="D", conf=agent_conf)
-swarm = MeshSwarm(A, B, C, D)
+from aworld.core.agent.swarm import HandoffSwarm
+swarm = HandoffSwarm((plan, exec1), (plan, exec2))
 ```
 
 </details>
 
-<br>
-
 # 🏗️ Architecture Design Principles
-AWorld is a versatile multi-agent framework designed to facilitate collaborative interactions and self-improvement among agents. 
+<!-- AWorld is a versatile multi-agent framework designed to facilitate collaborative interactions and self-improvement among agents.  -->
 
-It provides a comprehensive environment that supports a diverse array of applications, such as `Product Prototype Verification`, `Foundational Model Training`, and the design of `Multi-Agent Systems (MAS)` through meta-learning. 
+AWorld provides a comprehensive environment that supports a diverse array of applications, such as `Product Prototype Verification`, `Foundational Model Training`, and the design of `Multi-Agent Systems (MAS)` through meta-learning. 
 
 This framework is engineered to be highly adaptable, enabling researchers and developers to explore and innovate across multiple domains, thereby advancing the capabilities and applications of multi-agent systems.
 
@@ -332,14 +321,14 @@ This framework is engineered to be highly adaptable, enabling researchers and de
 <details>
 <summary style="font-size: 1.2em;font-weight: bold;"> 🌏 Click to View Architecture Diagram </summary>
 
-![](./readme_assets/aworld-framework.png)
+![](./readme_assets/framework_arch.png)
 
 </details>
 
 ## Characteristics
-| <div style="width:200px;white-space:nowrap">1. Agent Construction</div> | <div style="width:200px;white-space:nowrap">2. Topology Orchestration</div> | 3. Environment |
+| 1. Agent Construction | 2. Topology Orchestration | 3. Environment |
 |:---------------------|:-------------------------|:----------------|
-| ✅ Various model providers <br> ✅ Integrated MCP services <br> ✅ Convient  customizations | ✅ Encapsulated agent runtime <br> ✅ Flexible MAS patterns | ✅ Runtime state management <br> ✅ Clear state tracing <br> ✅ Distributed & high-concurrency environments for training |
+| ✅ Various model providers<br> ✅ Integrated MCP services <br> ✅ Convient  customizations | ✅ Encapsulated agent runtime <br> ✅ Flexible MAS patterns | ✅ Runtime state management <br> ✅ Clear state tracing <br> ✅ Distributed & high-concurrency environments for training |
 
 
 ## Forward Process Design
@@ -387,18 +376,8 @@ git apply 0001-feat-add-agent-training-support-with-aworld-server.patch
 ```
 </details>
 
-<br>
-
 # 🧩 Applications
 AWorld allows you to construct **agents** and **multi-agent systems** with ease. 
-
-<!-- Here are some examples of how you can use AWorld to construct your own applications.
-
-- [✔️] **[IMO MAS](examples/imo/README.md)** - AWorld achieves rapid mathematical reasoning on [IMO](https://www.imo-official.org/year_info.aspx?year=2025) problems, solving <span style="color: #d81b60; font-weight: bold;">5 out of 6</span>  extremely hard question.
-
-- [✔️] **[GAIA Agent](examples/gaia/README.md)** - AWorld is the first open-source framework to achieve <span style="color: #d81b60; font-weight: bold;">77.08</span> on <u>GAIA test</u> and <span style="color: #d81b60; font-weight: bold;">Pass@1 = 61.8</span> on <u>GAIA validation</u>.
-
-- [✔️] **[BFCL Runtime](examples/BFCL/README.md)** - AWorld supports function call data synthesis for [BFCL benchmark](https://gorilla.cs.berkeley.edu/leaderboard.html). -->
 
 ## Multi-Agent Systems for Model Evolutions
 AWorld aims to reach the limitations of models and continuously push intelligence forward by constructing diverse runtime environments, such as tools, agents, and models, 
@@ -409,9 +388,13 @@ The following is a list of successful proposal (with open-source models, technic
 | --------------- | --------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------- |
 | **Tool Use**    | Function call runtime construction [`tutorial`][funreason-model-url] | Competitive on BFCL benchmark  <br> ![Agent Framework](readme_assets/bfclv2_leaderboard.png) | ![Dataset][huggingface-dataset-image] <br> [![Model][huggingface-model-image]][funreason-model-url] <br> [![Paper][arxiv-image]][funreason-paper-url] <br> ![Blog][blog-image] <br> [![Code][github-code-image]][funreason-code-url] |
 | **Deep Search** | Search runtime to be released           | SOTA on HotpotQA benchmark  <br> ![Agent Framework](readme_assets/hotpotqa_benchmark.png)    | [![Dataset][huggingface-dataset-image]][deepsearch-dataset-url] <br> [![Model][huggingface-model-image]][deepsearch-model-url] <br> [![Paper][arxiv-image]][deepsearch-paper-url] <br> [![Code][github-code-image]][deepsearch-code-url]      |
-<!-- | **GAIA Agent** | Fully prepared playground and training pipeline | GAIA Agent Runtime Demo <br> ![GAIA Agent Runtime Demo](readme_assets/gaia_demo.gif) | Follow the instructions in [GAIA Runtime](./examples/gaia/README.md) | -->
 
-<br>
+
+## Multi-Agent Systems for Model Evolutions
+AWorld converges agent building blocks—individual tools, MAS orchestration, training, and data synthesis—into an autonomous self-improvement engine.
+
+See [Appendix: Web Client Usage](#appendix-web-client-usage) for GAIA implementation examples.
+
 
 # Contributing
 We warmly welcome developers to join us in building and improving AWorld! Whether you're interested in enhancing the framework, fixing bugs, or adding new features, your contributions are valuable to us.
@@ -434,7 +417,7 @@ For academic citations or wish to contact us, please use the following BibTeX en
 ![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date)
 
 # Appendix: Web Client Usage
-#### GAIA Agent Runtime Demo <br><br> ![GAIA Agent Runtime Demo](readme_assets/gaia_demo.gif)
+![GAIA Agent Runtime Demo](readme_assets/gaia_demo.gif)
 
 Your project structure should look like this:
 ```text
@@ -567,7 +550,7 @@ aworld api_server
 
 Success! Your agent is now running and ready to chat!
 
-
+---
 <!-- resource section start -->
 <!-- image links -->
 [arxiv-image]: https://img.shields.io/badge/Paper-arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white
@@ -600,4 +583,16 @@ Success! Your agent is now running and ready to chat!
 [deepsearch-dataset-url]: https://github.com/inclusionAI/AgenticLearning
 [deepsearch-model-url]: https://huggingface.co/collections/endertzw/rag-r1-68481d7694b3fca8b809aa29
 [deepsearch-paper-url]: https://arxiv.org/abs/2507.02962
+
+<!-- badge -->
+[MAS]: https://img.shields.io/badge/Mutli--Agent-System-EEE1CE
+<!-- [IBaSM]:  -->
+[IMO]: https://img.shields.io/badge/IMO-299D8F?cacheSeconds=https%3A%2F%2Fwww.imo-official.org%2Fyear_info.aspx%3Fyear%3D2025
+[BFCL]: https://img.shields.io/badge/BFCL-8AB07D
+[GAIA]: https://img.shields.io/badge/GAIA-E66F51?cacheSeconds=https%3A%2F%2Fhuggingface.co%2Fspaces%2Fgaia-benchmark%2Fleaderboard
+[Runtime]: https://img.shields.io/badge/AWorld-Runtime-287271
+[Leaderboard]: https://img.shields.io/badge/Leaderboard-FFE6B7
+[Benchmark]: https://img.shields.io/badge/Benchmark-FFE6B7
+[Cloud-Native]: https://img.shields.io/badge/Cloud--Native-B19CD7
+
 <!-- resource section end -->
