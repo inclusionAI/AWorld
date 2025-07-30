@@ -38,7 +38,7 @@
 
 **AWorld (Agent World)** is the next-generation framework engineered for agent self-improvement at scale. We enable AI agents to continuously evolve by synthesizing their own knowledge and experiences. This core capability is powered by:
 
-1. **Multi-Agent Systems (MAS)**: Build complex, interacting agent societies using our plug-and-play protocols and robust state management. 
+1. **Multi-Agent Systems (MAS)**: Build complex, interacting agent societies using our plug-and-play protocols and robust context management. 
 
 2. **Intelligence Beyond a Single Model**: Generates high-quality feedback and diverse synthetic training data that fuel individual agent evolution.
 
@@ -147,7 +147,7 @@ gpt_conf = AgentConfig(
 openrouter_conf = AgentConfig(
     llm_provider="openai",
     llm_model_name="google/gemini-2.5-pro",
-    llm_api_key="<OPENROUTER_API_KEY>",
+    llm_ap i_key="<OPENROUTER_API_KEY>",
     llm_base_url="https://openrouter.ai/api/v1"
     llm_temperature=0.1,
 )
@@ -320,13 +320,6 @@ This framework is engineered to be highly adaptable, enabling researchers and de
 > 💡 Check the [examples](./examples/) directory to explore diverse AWorld applications.
 
 
-<details>
-<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 Click to View Architecture Diagram </summary>
-
-![](./readme_assets/framework_arch.png)
-
-</details>
-
 ## Characteristics
 <!--
 | 1. Agent Construction | 2. Topology Orchestration | 3. Environment |
@@ -343,21 +336,17 @@ This framework is engineered to be highly adaptable, enabling researchers and de
 
 | Agent Construction         | Topology Orchestration      | Environment                    |
 |:---------------------------|:----------------------------|:-------------------------------|
-| ☑️ Integrated MCP services | ☑️ Encapsulated runtime  | ☑️ Runtime state management  |
-| ☑️ Multi-model providers   | ☑️ Flexible MAS patterns | ☑️ High-concurrency support  |
-| ☑️ Customization options   | ☑️ Clear state tracing   | ☑️ Distributed training      |
+| ✅ Integrated MCP services | ✅ Encapsulated runtime  | ✅ Runtime state management  |
+| ✅ Multi-model providers   | ✅ Flexible MAS patterns | ✅ High-concurrency support  |
+| ✅ Customization options   | ✅ Clear state tracing   | ✅ Distributed training      |
 
 
 
 ## Forward Process Design
 ![](readme_assets/runtime.jpg)
 
-<details>
-<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 Click to View Tutorial Example</summary>
-
 Here is a forward illustration to collect BFCL forward trajectories: [`tutorial`](./examples/BFCL/README.md).
 
-</details>
 
 ## Backward Process Design
 
