@@ -121,13 +121,14 @@ class LocalRuntime(RuntimeEngine):
                     futures.append(pool.submit(self.func_wrapper, func, *args, **kwargs))
                 
                 # Wait for all futures to complete with timeout
+                timeout = self.conf.get('timeout', 300)
                 for future in futures:
                     try:
-                        res = future.result(timeout=300)  # 5 minute timeout per task
+                        res = future.result(timeout=timeout)  # 5 minute timeout per task
                         if res and hasattr(res, 'id'):
                             results[res.id] = res
                     except TimeoutError:
-                        logger.error(f"Task execution timed out after 5 minutes")
+                        logger.error(f"Task execution timed out after {timeout} seconds")
                     except Exception as e:
                         logger.error(f"Task execution failed: {e}")
                         if future.exception():

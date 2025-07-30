@@ -297,32 +297,18 @@ def replace_env_variables(config) -> Any:
     """
     if isinstance(config, dict):
         for key, value in config.items():
-            if isinstance(value, str):
-                if "${" in value and "}" in value:
-                    pattern = r'\${([^}]+)}'
-                    matches = re.findall(pattern, value)
-                    result = value
-                    for env_var_name in matches:
-                        env_var_value = os.getenv(env_var_name, f"${{{env_var_name}}}")
-                        result = result.replace(f"${{{env_var_name}}}", env_var_value)
-                    config[key] = result
-                    logger.info(f"Replaced {value} with {config[key]}")
-            if isinstance(value, dict) or isinstance(value, list):
-                replace_env_variables(value)
+            config[key] = replace_env_variables(value)
     elif isinstance(config, list):
-        for index, item in enumerate(config):
-            if isinstance(item, str):
-                if "${" in item and "}" in item:
-                    pattern = r'\${([^}]+)}'
-                    matches = re.findall(pattern, item)
-                    result = item
-                    for env_var_name in matches:
-                        env_var_value = os.getenv(env_var_name, f"${{{env_var_name}}}")
-                        result = result.replace(f"${{{env_var_name}}}", env_var_value)
-                    config[index] = result
-                    logger.info(f"Replaced {item} with {config[index]}")
-            if isinstance(item, dict) or isinstance(item, list):
-                replace_env_variables(item)
+        for i, item in enumerate(config):
+            config[i] = replace_env_variables(item)
+    elif isinstance(config, str):
+        pattern = r'\${([^}]+)}'
+        matches = re.findall(pattern, config)
+        for env_var_name in matches:
+            env_var_value = os.getenv(env_var_name, f"${{{env_var_name}}}")
+            config = config.replace(f'${{{env_var_name}}}', env_var_value)
+            if env_var_value != f"${{{env_var_name}}}":
+                logger.info(f"Replaced ${{{env_var_name}}} with {env_var_value}")
     return config
 
 
