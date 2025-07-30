@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import json
 import os
 import time
 import traceback
@@ -23,6 +24,8 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import override_in_subclass, new_instance
 from aworld.runners.state_manager import EventRuntimeStateManager
+from aworld.core.tracking.agent_call_middleware import AgentCallTrackingMiddleware, AgentCallTrackingService
+from aworld.core.tracking.visualizer import AgentCallVisualizer
 
 
 class TaskEventRunner(TaskRunner):
@@ -38,10 +41,17 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
         self.replay_buffer = EventReplayBuffer()
+        
+        # 初始化Agent调用跟踪中间件
+        self.call_tracker = AgentCallTrackingService.instance()
+        self.call_tracking_middleware = AgentCallTrackingMiddleware(self.call_tracker)
 
     async def pre_run(self):
         logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
         await super().pre_run()
+
+        # 注册Agent调用跟踪中间件
+        self.call_tracking_middleware.register_to_event_manager(self.event_mng)
 
         if self.swarm and not self.swarm.max_steps:
             self.swarm.max_steps = self.task.conf.get('max_steps', 10)
@@ -209,6 +219,7 @@ class TaskEventRunner(TaskRunner):
                             results=[con],
                             handlers=self.handlers
                     ):
+                        event.headers["pre_message_id"] = message.id
                         await self.event_mng.emit_message(event)
                 else:
                     self.state_manager.save_message_handle_result(name=handler.__name__,
@@ -333,9 +344,31 @@ class TaskEventRunner(TaskRunner):
 
     async def _save_trajectories(self):
         try:
-            messages = self.event_mng.messages_by_task_id(self.task.id)
-            trajectory = await self.replay_buffer.get_trajectory(messages, self.task.id)
-            self._task_response.trajectory = trajectory
+            # messages = self.event_mng.messages_by_task_id(self.task.id)
+            # trajectory = await self.replay_buffer.get_trajectory(messages, self.task.id)
+            # self._task_response.trajectory = trajectory
+            # logger.info(f"[TaskEventRunner] _save_trajectories from event_mng: {json.dumps(trajectory, ensure_ascii=False)}")
+
+            # 从agent_tracker获取trajectory
+            call_hierarchy = self.call_tracker.call_hierarchy
+            agent_trajectory = await self.replay_buffer.get_trajectory_from_tracker(call_hierarchy, self.task.id)
+            logger.info(f"[TaskEventRunner] _save_trajectories from agent_tracker: {json.dumps(agent_trajectory, ensure_ascii=False)}")
+            
+            # 导出Agent调用关系图
+            try:
+                output_dir = self.task.conf.get('output_dir', './trace_data')
+                visualizer = AgentCallVisualizer(self.call_tracker)
+                visualization_files = visualizer.export_visualization(output_dir, self.task.id)
+                
+                # 将可视化文件路径添加到任务响应中
+                if not hasattr(self._task_response, 'extra_data'):
+                    self._task_response.extra_data = {}
+                self._task_response.extra_data['agent_call_visualization'] = visualization_files
+                
+                logger.info(f"Agent调用关系图已导出到: {visualization_files['html_path']}")
+            except Exception as e:
+                logger.error(f"导出Agent调用关系图失败: {str(e)}")
+                
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 

@@ -265,6 +265,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
                                 session_id=self.context.session_id,
+                                call_type="tool_result",
                                 headers={"context": self.context})
         else:
             return AgentMessage(payload=step_res,
@@ -367,11 +368,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
+            logger.warn("--- call_type: tool_result --- ")
             return AgentMessage(payload=step_res,
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
                                 session_id=self.context.session_id,
+                                call_type="tool_result",
                                 headers={"context": self.context})
         else:
             return AgentMessage(payload=step_res,
