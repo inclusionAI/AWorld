@@ -328,9 +328,25 @@ This framework is engineered to be highly adaptable, enabling researchers and de
 </details>
 
 ## Characteristics
+<!--
 | 1. Agent Construction | 2. Topology Orchestration | 3. Environment |
 |:---------------------|:-------------------------|:----------------|
 | ✅ Various model providers<br> ✅ Integrated MCP services <br> ✅ Convient  customizations | ✅ Encapsulated agent runtime <br> ✅ Flexible MAS patterns | ✅ Runtime state management <br> ✅ Clear state tracing <br> ✅ Distributed & high-concurrency environments for training |
+
+| Agent Construction         | Topology Orchestration       | Environment                     |
+|:---------------------------|:-----------------------------|:--------------------------------|
+| ✅ Multi-model providers   | ✅ Encapsulated runtime      | ✅ Runtime state management     |
+| ✅ Integrated MCP services | ✅ Flexible MAS patterns     | ✅ Clear state tracing          |
+| ✅ Customization options   |                              | ✅ Distributed training         |
+|                            |                              | ✅ High-concurrency support    |
+-->
+
+| Agent Construction            | Topology Orchestration      | Environment                    |
+|:------------------------------|:----------------------------|:-------------------------------|
+| ☑️ Multi-model providers   | ☑️ Encapsulated runtime  | ☑️ Runtime state management |
+| ☑️ Integrated MCP services | ☑️ Flexible MAS patterns | ☑️ Distributed training     |
+| ☑️ Customization options   | ☑️ Clear state tracing   | ☑️ High-concurrency support |
+
 
 
 ## Forward Process Design
