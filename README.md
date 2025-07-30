@@ -19,7 +19,7 @@
 
 <h4 align="center">
 
-[中文版](./elegant_readme_zh.md) |
+[中文版](./README_zh.md) |
 [Quickstart](#️-quickstart) |
 [Architecture](#️-architecture-design-principles) |
 [Applications](#-applications) |
