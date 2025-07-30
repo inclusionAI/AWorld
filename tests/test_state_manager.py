@@ -2,16 +2,18 @@ import unittest
 import uuid
 import asyncio
 import random
-import pytest
+import uuid
 from typing import List
+
+import pytest
 
 from aworld.core.event.base import Constants, Message
 from aworld.runners.state_manager import (
     EventRuntimeStateManager,
-    RuntimeStateManager,
+    RunNode,
     RunNodeBusiType,
     RunNodeStatus,
-    RunNode
+    RuntimeStateManager,
 )
 
 
