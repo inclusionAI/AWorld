@@ -49,15 +49,15 @@ AWorld empowers you to rapidly build individual tool-using agents, orchestrate s
 ---
 **Agentic Achievements Unboxed!** 🔥
 
-🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  ![IMO] ![MAS]    
+🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) [![][MAS]](#)  
 Built a MAS solving <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> in hours - proving **agent orchestration** beats solo models. <br>
 Peek at the genius [under the hood](examples/imo/README.md)!
 
-🧩 **[2025/07/23]** Build BFCL Runtimes Readily!  ![BFCL] ![Runtime]  
+🧩 **[2025/07/23]** Build BFCL Runtimes Readily!  [![][BFCL]](https://gorilla.cs.berkeley.edu/leaderboard.html) [![][Runtime]](#)  
 New BFCL tutorial shows how to **synthesize function calls training data in minutes**. <br>
 Start cooking up your own agents [right here](examples/BFCL/README.md)!
 
-🏆 **[2025/07/07]** GAIA Soars to <span style="color: #d81b60; font-weight: bold;">77.08</span>! ![GAIA] ![Cloud-Native] ![Leaderboard]  
+🏆 **[2025/07/07]** GAIA Soars to <span style="color: #d81b60; font-weight: bold;">77.08</span>! [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][Cloud-Native]](#) [![][Leaderboard]](#)  
 **Cloud-native runtimes** now enable distributed agent evolution. <br>
 See how diverse environments evolves smarter models [training recipe](#backward-process-design).
 
@@ -341,11 +341,11 @@ This framework is engineered to be highly adaptable, enabling researchers and de
 |                            |                              | ✅ High-concurrency support    |
 -->
 
-| Agent Construction            | Topology Orchestration      | Environment                    |
-|:------------------------------|:----------------------------|:-------------------------------|
-| ☑️ Multi-model providers   | ☑️ Encapsulated runtime  | ☑️ Runtime state management |
-| ☑️ Integrated MCP services | ☑️ Flexible MAS patterns | ☑️ Distributed training     |
-| ☑️ Customization options   | ☑️ Clear state tracing   | ☑️ High-concurrency support |
+| Agent Construction         | Topology Orchestration      | Environment                    |
+|:---------------------------|:----------------------------|:-------------------------------|
+| ☑️ Integrated MCP services | ☑️ Encapsulated runtime  | ☑️ Runtime state management  |
+| ☑️ Multi-model providers   | ☑️ Flexible MAS patterns | ☑️ High-concurrency support  |
+| ☑️ Customization options   | ☑️ Clear state tracing   | ☑️ Distributed training      |
 
 
 
@@ -408,8 +408,14 @@ The following is a list of successful proposal (with open-source models, technic
 | **Deep Search** | Search runtime to be released           | SOTA on HotpotQA benchmark  <br> ![Agent Framework](readme_assets/hotpotqa_benchmark.png)    | [![Dataset][huggingface-dataset-image]][deepsearch-dataset-url] <br> [![Model][huggingface-model-image]][deepsearch-model-url] <br> [![Paper][arxiv-image]][deepsearch-paper-url] <br> [![Code][github-code-image]][deepsearch-code-url]      |
 
 
-## Multi-Agent Systems for Model Evolutions
-AWorld converges agent building blocks—individual tools, MAS orchestration, training, and data synthesis—into an autonomous self-improvement engine.
+## Multi-Agent Systems for Applications
+AWorld's plug-and-play MAS architecture enables **real-world web application development** beyond agent training. 
+
+Build production-ready systems that handle complex tasks through:
+- **Code generation & execution**  
+- **Browser automation & tool use**  
+- **Multimodal understanding & generation**  
+- And many more to emerge!
 
 See [Appendix: Web Client Usage](#appendix-web-client-usage) for GAIA implementation examples.
 
@@ -604,13 +610,14 @@ Success! Your agent is now running and ready to chat!
 
 <!-- badge -->
 [MAS]: https://img.shields.io/badge/Mutli--Agent-System-EEE1CE
-<!-- [IBaSM]:  -->
-[IMO]: https://img.shields.io/badge/IMO-299D8F?cacheSeconds=https%3A%2F%2Fwww.imo-official.org%2Fyear_info.aspx%3Fyear%3D2025
+[IMO]: https://img.shields.io/badge/IMO-299D8F
 [BFCL]: https://img.shields.io/badge/BFCL-8AB07D
-[GAIA]: https://img.shields.io/badge/GAIA-E66F51?cacheSeconds=https%3A%2F%2Fhuggingface.co%2Fspaces%2Fgaia-benchmark%2Fleaderboard
+[GAIA]: https://img.shields.io/badge/GAIA-E66F51
 [Runtime]: https://img.shields.io/badge/AWorld-Runtime-287271
 [Leaderboard]: https://img.shields.io/badge/Leaderboard-FFE6B7
 [Benchmark]: https://img.shields.io/badge/Benchmark-FFE6B7
 [Cloud-Native]: https://img.shields.io/badge/Cloud--Native-B19CD7
+
+
 
 <!-- resource section end -->
