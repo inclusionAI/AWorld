@@ -46,8 +46,7 @@
 
 AWorld empowers you to rapidly build `individual tool-using agents`, `orchestrate sophisticated multi-agent systems`, `train agents effectively`, and `synthesize the high-quality data` required for continuous agent evolution – all converging towards autonomous self-improvement.
 
-<div style="background: #F0FAF8; padding: 1em 1.5em; border-radius: 6px; color: #333;">
-
+---
 **Agentic Achievements Unboxed!** 🔥
 
 🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  ![IMO] ![MAS]    
@@ -58,7 +57,7 @@ New BFCL tutorial shows how to **synthesize function calls training data in minu
 
 🏆 **[2025/07/07]** GAIA Soars to <span style="color: #d81b60; font-weight: bold;">77.08</span>! ![GAIA] ![Cloud-Native] ![Leaderboard]  
 **Cloud-native runtimes** now enable distributed agent evolution. See how diverse environments evolves smarter models [training recipe](#backward-process-design).
-</div>
+
 
 # 🏃‍♀️ Quickstart
 ## Prerequisites
