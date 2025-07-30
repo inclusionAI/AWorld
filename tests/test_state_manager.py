@@ -1,8 +1,9 @@
+import unittest
+import uuid
 import asyncio
 import random
 import uuid
 from typing import List
-from unittest import TestCase
 
 import pytest
 
@@ -16,7 +17,7 @@ from aworld.runners.state_manager import (
 )
 
 
-class StateManagerTest(TestCase):
+class StateManagerTest(unittest.TestCase):
     def test_runtime_state_manager(self):
         state_manager = RuntimeStateManager()
         session_id = "1"
