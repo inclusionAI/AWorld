@@ -68,6 +68,7 @@ class Eventbus(Messageable, InheritanceSingleton):
         return self._subscribers.get(task_id, {}).get(event_type, {}).get(topic, [])
 
     def get_transform_handler(self, task_id: str, key: str) -> Callable[..., Any]:
+        # return self._transformer.get(key, None)
         return self._transformer.get(task_id, {}).get(key, None)
 
     def close(self):
@@ -162,3 +163,7 @@ class InMemoryEventbus(Eventbus):
         handlers = self._subscribers[task_id][event_type]
         topic_handlers: List = handlers.get(topic, [])
         topic_handlers.remove(handler)
+
+    async def transform(self, message: Message, **kwargs):
+        if "handler" in kwargs:
+            return await kwargs["handler"](message)

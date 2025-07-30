@@ -2,11 +2,12 @@ import json
 import os.path
 import traceback
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, OrderedDict
 
 from aworld import import_package
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.event.base import Message, Constants
+from aworld.core.tracking import CallHierarchyNode
 from aworld.logs.util import logger
 from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience, InMemoryStorage, Storage
 from aworld.runners.state_manager import RuntimeStateManager
@@ -25,6 +26,30 @@ class EventReplayBuffer(ReplayBuffer):
     ):
         super().__init__(storage)
         self.task_agent_map = {}
+
+    async def get_trajectory_from_tracker(self, call_hierarchy: OrderedDict[int, List[CallHierarchyNode]], task_id: str) -> List[Dict[str, Any]] | None:
+        if not call_hierarchy:
+            return None
+        data_rows = []
+        trajectory = []
+        try:
+            for level, nodes in call_hierarchy.items():
+                level_nodes = {}
+                for node in nodes:
+                    data_row = self.build_data_row_from_node(node)
+                    if data_row:
+                        data_rows.append(data_row)
+                        agent_id = data_row.exp_meta.agent_id
+                        if agent_id not in level_nodes:
+                            level_nodes[agent_id] = []
+                        level_nodes[agent_id].append(_to_serializable(data_row))
+                trajectory.append({str(level): level_nodes})
+            self.store_batch(data_rows)
+            self.export(data_rows, task_id)
+            return trajectory
+        except Exception as e:
+            logger.error(f"Failed to save trajectories: {str(e)}.{traceback.format_exc()}")
+            return None
 
     async def get_trajectory(self, messages: List[Message], task_id: str) -> List[Dict[str, Any]] | None:
         if not messages:
@@ -63,6 +88,64 @@ class EventReplayBuffer(ReplayBuffer):
                 continue
             results.append(message)
         return results
+
+    def build_data_row_from_node(self, node: CallHierarchyNode) -> DataRow:
+        '''
+        Build DataRow from a message.
+
+        Args:
+            message (Dict): Message data containing necessary metadata and experience data
+
+        Returns:
+            DataRow: The constructed data row
+
+        Raises:
+            ValueError: When the message is missing required fields
+        '''
+        if not node:
+            raise ValueError("CallHierarchyNode cannot be empty")
+
+        state_manager = RuntimeStateManager.instance()
+        message_node = state_manager._find_node(node.id)
+
+        message_context = message_node.metadata.get("context")
+        agent_id = message_node.busi_id
+        task_id = message_context.task_id
+        task_name = message_context.get_task().name
+        pre_agent = message_node.msg_from
+        task_agent_id = f"{task_id}_{agent_id}"
+        if task_agent_id not in self.task_agent_map:
+            self.task_agent_map[task_agent_id] = 0
+        self.task_agent_map[task_agent_id] += 1
+        id = f"{task_agent_id}_{self.task_agent_map[task_agent_id]}"
+
+        # Build ExpMeta
+        exp_meta = ExpMeta(
+            task_id=task_id,
+            task_name=task_name,
+            agent_id=agent_id,
+            step=self.task_agent_map[task_agent_id],
+            execute_time=message_node.create_time,
+            pre_agent=pre_agent
+        )
+
+        observation = message_node.request
+        agent_results = []
+        for handle_result in message_node.results:
+            result = handle_result.result
+            if isinstance(result, Message) and isinstance(result.payload, list):
+                agent_results.extend(result.payload)
+        messages = message_context.context_info.get("llm_input", [])
+
+        # Build Experience
+        exp_data = Experience(
+            state=observation,
+            actions=agent_results,
+            messages=messages
+        )
+
+        # Build and return DataRow
+        return DataRow(exp_meta=exp_meta, exp_data=exp_data, id=id)
 
     def build_data_row_from_message(self, message: Message) -> DataRow:
         '''

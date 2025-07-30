@@ -2,7 +2,7 @@ import abc
 import time
 import asyncio
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
 from aworld.core.event.base import Message
 from enum import Enum
 from abc import ABC, abstractmethod, ABCMeta
@@ -70,6 +70,7 @@ class RunNode(BaseModel):
     sub_group_root_id: Optional[str] = None
     # metadata is used to store the context of the sub task when group_id is not None
     metadata: Optional[dict] = None
+    request: Optional[Any] = None
 
     def has_finished(self):
         return self.status in [RunNodeStatus.SUCCESS, RunNodeStatus.FAILED, RunNodeStatus.TIMEOUT]
@@ -278,7 +279,8 @@ class RuntimeStateManager(InheritanceSingleton):
                     msg_from: str = None,
                     group_id: str = None,
                     sub_group_root_id: str = None,
-                    metadata: Optional[dict] = None) -> RunNode:
+                    metadata: Optional[dict] = None,
+                    request: Optional[Any] = None) -> RunNode:
         '''
             create node and insert to storage
         '''
@@ -303,7 +305,8 @@ class RuntimeStateManager(InheritanceSingleton):
                        create_time=time.time(),
                        group_id=group_id,
                        sub_group_root_id=sub_group_root_id,
-                       metadata=metadata)
+                       metadata=metadata,
+                       request=request)
         self.storage.insert(node)
         # create sub group if node is the root node of sub group
         if group_id and sub_group_root_id and node_id == sub_group_root_id:
@@ -751,7 +754,8 @@ class EventRuntimeStateManager(RuntimeStateManager):
                 msg_from=message.sender,
                 group_id=metadata.get("group_id") if metadata else None,
                 sub_group_root_id=metadata.get("root_message_id") if metadata else None,
-                metadata=metadata)
+                metadata=metadata,
+                request=message.payload)
             self.run_node(message.id)
 
     def save_message_handle_result(self, name: str, message: Message, result: Message = None):

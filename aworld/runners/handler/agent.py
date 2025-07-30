@@ -246,7 +246,7 @@ class DefaultAgentHandler(AgentHandler):
             return
 
         headers = message.headers.copy()
-        # headers.update({"agent_as_tool": True})
+        headers.update({"agent_as_tool": True})
         yield Message(
             category=Constants.AGENT,
             payload=observation,
@@ -255,6 +255,7 @@ class DefaultAgentHandler(AgentHandler):
             session_id=session_id,
             receiver=action.tool_name,
             headers=headers,
+            call_type="agent_as_tool"
         )
 
     async def _stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:

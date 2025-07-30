@@ -387,57 +387,57 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
         """Log the sequence of messages for debugging purposes"""
-        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
+        logger.info(f"[agent {self.id()}] Invoking LLM with {len(messages)} messages:")
         for i, msg in enumerate(messages):
             prefix = msg.get('role')
             logger.info(
-                f"[agent] Message {i + 1}: {prefix} ===================================")
+                f"[agent {self.id()}] Message {i + 1}: {prefix} ===================================")
             if isinstance(msg['content'], list):
                 try:
                     for item in msg['content']:
                         if item.get('type') == 'text':
                             logger.info(
-                                f"[agent] Text content: {item.get('text')}")
+                                f"[agent {self.id()}] Text content: {item.get('text')}")
                         elif item.get('type') == 'image_url':
                             image_url = item.get('image_url', {}).get('url', '')
                             if image_url.startswith('data:image'):
-                                logger.info(f"[agent] Image: [Base64 image data]")
+                                logger.info(f"[agent {self.id()}] Image: [Base64 image data]")
                             else:
                                 logger.info(
-                                    f"[agent] Image URL: {image_url[:30]}...")
+                                    f"[agent {self.id()}] Image URL: {image_url[:30]}...")
                 except Exception as e:
-                    logger.error(f"[agent] Error parsing msg['content']: {msg}. Error: {e}")
+                    logger.error(f"[agent {self.id()}] Error parsing msg['content']: {msg}. Error: {e}")
                     content = str(msg['content'])
                     chunk_size = 500
                     for j in range(0, len(content), chunk_size):
                         chunk = content[j:j + chunk_size]
                         if j == 0:
-                            logger.info(f"[agent] Content: {chunk}")
+                            logger.info(f"[agent {self.id()}] Content: {chunk}")
                         else:
-                            logger.info(f"[agent] Content (continued): {chunk}")
+                            logger.info(f"[agent {self.id()}] Content (continued): {chunk}")
             else:
                 content = str(msg['content'])
                 chunk_size = 500
                 for j in range(0, len(content), chunk_size):
                     chunk = content[j:j + chunk_size]
                     if j == 0:
-                        logger.info(f"[agent] Content: {chunk}")
+                        logger.info(f"[agent {self.id()}] Content: {chunk}")
                     else:
-                        logger.info(f"[agent] Content (continued): {chunk}")
+                        logger.info(f"[agent {self.id()}] Content (continued): {chunk}")
 
             if 'tool_calls' in msg and msg['tool_calls']:
                 for tool_call in msg.get('tool_calls'):
                     if isinstance(tool_call, dict):
                         logger.info(
-                            f"[agent] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
+                            f"[agent {self.id()}] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
                         args = str(tool_call.get('function', {}).get(
                             'arguments', {}))[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+                        logger.info(f"[agent {self.id()}] Tool args: {args}...")
                     elif isinstance(tool_call, ToolCall):
                         logger.info(
-                            f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
+                            f"[agent {self.id()}] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
                         args = str(tool_call.function.arguments)[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+                        logger.info(f"[agent {self.id()}] Tool args: {args}...")
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
