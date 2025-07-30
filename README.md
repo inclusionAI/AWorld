@@ -50,13 +50,16 @@ AWorld empowers you to rapidly build `individual tool-using agents`, `orchestrat
 **Agentic Achievements Unboxed!** 🔥
 
 🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  ![IMO] ![MAS]    
-Built a MAS solving <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> in hours - proving **agent orchestration** beats solo models. Peek at the genius [under the hood](examples/imo/README.md)!
+Built a MAS solving <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> in hours - proving **agent orchestration** beats solo models. <br>
+Peek at the genius [under the hood](examples/imo/README.md)!
 
 🧩 **[2025/07/23]** Build BFCL Runtimes Readily!  ![BFCL] ![Runtime]  
-New BFCL tutorial shows how to **synthesize function calls training data in minutes**. Start cooking up your own agents [right here](examples/BFCL/README.md)!
+New BFCL tutorial shows how to **synthesize function calls training data in minutes**. <br>
+Start cooking up your own agents [right here](examples/BFCL/README.md)!
 
 🏆 **[2025/07/07]** GAIA Soars to <span style="color: #d81b60; font-weight: bold;">77.08</span>! ![GAIA] ![Cloud-Native] ![Leaderboard]  
-**Cloud-native runtimes** now enable distributed agent evolution. See how diverse environments evolves smarter models [training recipe](#backward-process-design).
+**Cloud-native runtimes** now enable distributed agent evolution. <br>
+See how diverse environments evolves smarter models [training recipe](#backward-process-design).
 
 
 # 🏃‍♀️ Quickstart
