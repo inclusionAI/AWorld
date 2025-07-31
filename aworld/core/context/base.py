@@ -215,13 +215,17 @@ class Context:
         self.context_info[key] = value
 
     def deep_copy(self) -> 'Context':
+        # Create a new Context instance without calling __init__ to avoid singleton issues
+        new_context = object.__new__(Context)
+        return self._deep_copy(new_context)
+
+    def _deep_copy(self, new_context) -> 'Context':
         """Create a deep copy of this Context instance with all attributes copied.
 
         Returns:
             Context: A new Context instance with deeply copied attributes
         """
-        # Create a new Context instance without calling __init__ to avoid singleton issues
-        new_context = object.__new__(Context)
+
 
         # Manually copy all important instance attributes
         # Basic attributes
