@@ -9,7 +9,7 @@ from aworld.core.common import TaskItem
 from aworld.core.tool.base import Tool, AsyncTool
 
 from aworld.core.event.base import Message, Constants, TopicType
-from aworld.core.task import TaskResponse
+from aworld.core.task import TaskResponse, TaskResponseState
 from aworld.logs.util import logger
 from aworld.output import Output
 from aworld.runners import HandlerFactory
@@ -77,7 +77,8 @@ class DefaultTaskHandler(TaskHandler):
                                                       success=False,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage)
+                                                      usage=self.runner.context.token_usage,
+                                                      finished_state=TaskResponseState.ERROR)
             if not self.runner.task.is_sub_task:
                 logger.info(f"FINISHED|DefaultTaskHandler|outputs|{self.runner.task.id} {self.runner.task.is_sub_task}")
                 await self.runner.task.outputs.mark_completed()
@@ -91,7 +92,8 @@ class DefaultTaskHandler(TaskHandler):
                                                       context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage)
+                                                      usage=self.runner.context.token_usage,
+                                                      finished_state=TaskResponseState.SUCCESS)
 
             logger.info(f"FINISHED|task|{self.runner.task.id} finished. {self.runner.task.is_sub_task}")
             if not self.runner.task.is_sub_task:
@@ -118,7 +120,8 @@ class DefaultTaskHandler(TaskHandler):
                                                       context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage)
+                                                      usage=self.runner.context.token_usage,
+                                                      finished_state=TaskResponseState.INTERRUPTED)
             await self.runner.stop()
         elif topic == TopicType.CANCEL:
             # Avoid waiting to receive events and send a mock event for quick cancel
