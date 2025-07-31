@@ -33,7 +33,8 @@ ASCII = "".join(chr(x) for x in range(32, 128))
                       desc="browser",
                       asyn=True,
                       supported_action=BrowserAction,
-                      conf_file_name=f'browser_tool.yaml')
+                      conf_file_name=f'browser_tool.yaml',
+                      dir=f"{Path(__file__).parent.absolute()}")
 class BrowserTool(AsyncTool):
     def __init__(self, conf: BrowserToolConfig, **kwargs) -> None:
         super(BrowserTool, self).__init__(conf)

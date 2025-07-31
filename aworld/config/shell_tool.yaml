@@ -1,6 +1,0 @@
-custom_executor: False
-env:
-  TEST_ENV: test
-enable_recording: False
-working_dir: "/tmp"
-max_retry: 3

@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
+from pathlib import Path
 from typing import Dict, Any, Tuple, SupportsFloat, List, Union
 
 from aworld.config import ConfigDict, ToolConfig
@@ -19,7 +19,8 @@ class ActionType(object):
 @ToolFactory.register(name="openai_gym",
                       desc="gym classic control game",
                       supported_action=GymAction,
-                      conf_file_name=f'openai_gym_tool.yaml')
+                      conf_file_name=f'openai_gym_tool.yaml',
+                      dir=f"{Path(__file__).parent.absolute()}")
 class OpenAIGym(Tool):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         """Gym environment constructor.
