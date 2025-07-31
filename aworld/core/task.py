@@ -3,6 +3,7 @@
 import abc
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Union, List, Dict, Callable, Optional
 
 from pydantic import BaseModel
@@ -50,6 +51,15 @@ class Task:
     max_retry_count: int = 0
 
 
+class TaskResponseState(Enum):
+    SUCCESS = 'success'
+    INTERRUPTED = 'interrupted'
+    MAX_STEP_EXCEEDED = 'max_step_exceeded'
+    HUMAN_INTERVENTION = 'human_intervention'
+    EMPTY_RESULT = 'empty_result'
+    ERROR = 'error'
+
+
 @dataclass
 class TaskResponse:
     id: str = field(default=None)
@@ -60,6 +70,7 @@ class TaskResponse:
     success: bool = field(default=False)
     msg: str | None = field(default=None)
     trajectory: List[Dict[str, Any]] = field(default_factory=list)
+    finished_state: TaskResponseState = TaskResponseState.SUCCESS
 
 
 class Runner(object):
@@ -91,7 +102,10 @@ class Runner(object):
             await self._daemon_run()
             ret = await self.do_run(self.context)
             if ret is None:
-                ret = TaskResponse(id=self.context.task_id if self.context else "", success=False, msg = "Task return None.")
+                ret = TaskResponse(id=self.context.task_id if self.context else "",
+                                   success=False,
+                                   msg = "Task return None.",
+                                   finished_state=TaskResponseState.EMPTY_RESULT)
             return ret
         except BaseException as ex:
             self._exception = ex
