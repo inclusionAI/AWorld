@@ -136,7 +136,7 @@ class LlmCompressionConfig(BaseConfig):
     enabled: bool = False
     compress_type: str = 'llm' # llm, llmlingua
     trigger_compress_token_length: int = 10000  # Trigger compression when exceeding this length
-    compress_model: ModelConfig = None
+    compress_model: Optional[ModelConfig] = Field(default=None, description="Compression model configuration")
 
 class OptimizationConfig(BaseConfig):
     enabled: bool = False
