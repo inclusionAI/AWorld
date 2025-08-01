@@ -250,7 +250,8 @@ class WorkSpace(BaseModel):
 
     async def add_artifact(
             self,
-            artifact: Artifact
+            artifact: Artifact,
+            index: bool = False
     ) -> None:
         """
         Create a new artifact

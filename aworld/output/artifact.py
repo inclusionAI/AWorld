@@ -161,3 +161,7 @@ class Artifact(Output):
             artifact.version_history = data["version_history"]
 
         return artifact
+
+    @property
+    def embedding_text(self):
+        return self.content
