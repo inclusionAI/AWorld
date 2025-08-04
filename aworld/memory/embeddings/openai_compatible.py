@@ -46,8 +46,6 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
             logging.info(f"OpenAI embedding response: {data}")
             return self.resolve_embedding(data)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             raise RuntimeError(f"OpenAI embedding API error: {e}")
 
     async def async_embed_query(self, text: str) -> List[float]:
@@ -67,8 +65,6 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
             logging.info(f"OpenAI embedding response: {data}")
             return self.resolve_embedding(data)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             raise RuntimeError(f"OpenAI async embedding API error: {e}")
 
     @staticmethod
