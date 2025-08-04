@@ -36,7 +36,8 @@ BROWSER = "browser"
 @ToolFactory.register(name=BROWSER,
                       desc="browser",
                       supported_action=BrowserAction,
-                      conf_file_name=f'browser_tool.yaml')
+                      conf_file_name=f'browser_tool.yaml',
+                      dir=f"{Path(__file__).parent.absolute()}")
 class BrowserTool(Tool):
     def __init__(self, conf: Union[ConfigDict, BrowserToolConfig], **kwargs) -> None:
         super(BrowserTool, self).__init__(conf, **kwargs)

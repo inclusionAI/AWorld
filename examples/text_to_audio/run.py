@@ -24,6 +24,7 @@ if __name__ == '__main__':
         mcp_config={
             "mcpServers": {
                 "text_to_audio_local_sse": {
+                    "type": "sse",
                     "url": "http://0.0.0.0:8888/sse"
                 }
             }

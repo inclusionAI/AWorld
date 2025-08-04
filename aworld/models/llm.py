@@ -6,7 +6,7 @@ from typing import (
     Generator,
     AsyncGenerator,
 )
-from aworld.config import ConfigDict
+from aworld.config import ConfigDict, ModelConfig
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.logs.util import logger
 
@@ -44,7 +44,7 @@ class LLMModel:
     """Unified large model interface, encapsulates different model implementations, provides a unified completion method.
     """
 
-    def __init__(self, conf: Union[ConfigDict, AgentConfig] = None, custom_provider: LLMProviderBase = None, **kwargs):
+    def __init__(self, conf: Union[ConfigDict, AgentConfig, ModelConfig] = None, custom_provider: LLMProviderBase = None, **kwargs):
         """Initialize unified model interface.
 
         Args:
@@ -65,7 +65,7 @@ class LLMModel:
             self.provider_name = "custom"
             self.provider = custom_provider
             return
-
+        conf = conf.llm_config if type(conf).__name__ == 'AgentConfig' else conf
         # Get basic parameters
         base_url = kwargs.get("base_url") or (
             conf.llm_base_url if conf else None)
@@ -111,6 +111,8 @@ class LLMModel:
 
         # Get all parameters from conf
         if type(conf).__name__ == 'AgentConfig':
+            conf_dict = conf.model_dump()
+        elif type(conf).__name__ == 'ModelConfig':
             conf_dict = conf.model_dump()
         else:  # ConfigDict
             conf_dict = conf
@@ -385,7 +387,7 @@ def register_llm_provider(provider: str, provider_class: type):
     PROVIDER_CLASSES[provider] = provider_class
 
 
-def conf_contains_key(conf: Union[ConfigDict, AgentConfig], key: str) -> bool:
+def conf_contains_key(conf: Union[ConfigDict, AgentConfig, ModelConfig], key: str) -> bool:
     """Check if configuration contains a specific key.
     
     Args:
@@ -433,7 +435,7 @@ def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
 
     if (llm_provider == "chatopenai"):
         from langchain_openai import ChatOpenAI
-
+        conf = conf.llm_config if type(conf).__name__ == 'AgentConfig' else conf
         base_url = kwargs.get("base_url") or (
             conf.llm_base_url if conf_contains_key(conf, "llm_base_url") else None)
         model_name = kwargs.get("model_name") or (

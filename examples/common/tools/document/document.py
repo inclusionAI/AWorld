@@ -6,6 +6,7 @@ import os
 import base64
 import tempfile
 import subprocess
+from pathlib import Path
 from typing import Any, Dict, Tuple
 from urllib.parse import urlparse
 
@@ -28,7 +29,8 @@ class InputDocument(BaseModel):
 @ToolFactory.register(name="document_analysis",
                       desc="document analysis",
                       supported_action=DocumentExecuteAction,
-                      conf_file_name=f'document_analysis_tool.yaml')
+                      conf_file_name=f'document_analysis_tool.yaml',
+                      dir=f"{Path(__file__).parent.absolute()}")
 class DocumentTool(Tool):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
         """Init document tool."""

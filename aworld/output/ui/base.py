@@ -1,3 +1,6 @@
+import traceback
+
+from aworld.logs.util import logger
 from aworld.output.utils import consume_content
 
 from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput, Output
@@ -42,14 +45,20 @@ class AworldUI:
         """
             parse_output
         """
-        if isinstance(output, MessageOutput):
-            return await ui.message_output(output)
-        elif isinstance(output, ToolResultOutput):
-            return await ui.tool_result(output)
-        elif isinstance(output, StepOutput):
-            return await ui.step(output)
-        else:
-            return await ui.custom_output(output)
+
+        try:
+            if isinstance(output, MessageOutput):
+                return await ui.message_output(output)
+            elif isinstance(output, ToolResultOutput):
+                return await ui.tool_result(output)
+            elif isinstance(output, StepOutput):
+                return await ui.step(output)
+            else:
+                return await ui.custom_output(output)
+        except Exception as err:
+            logger.warning(f"parse_output failed. err is {err}, traceback is {traceback.format_exc()}")
+            return ""
+
 
 class PrinterAworldUI(AworldUI):
     """"""

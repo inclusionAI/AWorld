@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
+from pathlib import Path
 from typing import Dict, Any, Tuple, SupportsFloat, Union, List
 
 from pydantic import BaseModel
@@ -18,7 +18,12 @@ class ActionType(object):
     CONTINUOUS = 'continuous'
 
 
-@ToolFactory.register(name="openai_gym", desc="gym classic control game", asyn=True, supported_action=GymAction)
+@ToolFactory.register(name="openai_gym",
+                      desc="gym classic control game",
+                      asyn=True,
+                      supported_action=GymAction,
+                      conf_file_name=f'openai_gym_tool.yaml',
+                      dir=f"{Path(__file__).parent.absolute()}")
 class OpenAIGym(AsyncTool):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, BaseModel], **kwargs) -> None:
         """Gym environment constructor.

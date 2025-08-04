@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import List, Optional
 import uuid
 
@@ -9,15 +10,15 @@ from aworld.core.memory import EmbeddingsConfig
 
 class EmbeddingsMetadata(BaseModel):
     memory_id: str = Field(..., description="memory_id")
-    agent_id: Optional[str] = Field(..., description="agent_id")
-    session_id: Optional[str] = Field(..., description="session_id")
-    task_id: Optional[str] = Field(..., description="task_id")
-    user_id: Optional[str] = Field(..., description="user_id")
-    application_id: Optional[str] = Field(..., description="application_id")
+    agent_id: Optional[str] = Field(default=None, description="agent_id")
+    session_id: Optional[str] = Field(default=None, description="session_id")
+    task_id: Optional[str] = Field(default=None, description="task_id")
+    user_id: Optional[str] = Field(default=None, description="user_id")
+    application_id: Optional[str] = Field(default=None, description="application_id")
     memory_type: str = Field(..., description="memory_type")
     embedding_model: str = Field(..., description="Embedding model")
-    created_at: str = Field(..., description="Created at")
-    updated_at: str = Field(..., description="Updated at")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Created at")
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="Updated at")
 
     model_config = ConfigDict(extra="allow")
 

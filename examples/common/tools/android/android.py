@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 import traceback
+from pathlib import Path
 from typing import Any, Tuple, List, Dict
 
 from examples.common.tools.tool_action import AndroidAction
@@ -19,7 +20,8 @@ ALL_UNICODE_CHARS = frozenset(chr(i) for i in range(0x10FFFF + 1))
 @ToolFactory.register(name="android",
                       desc="android",
                       supported_action=AndroidAction,
-                      conf_file_name=f'android_tool.yaml')
+                      conf_file_name=f'android_tool.yaml',
+                      dir=f"{Path(__file__).parent.absolute()}")
 class AndroidTool(Tool):
 
     def __init__(self, conf: AndroidToolConfig, **kwargs):

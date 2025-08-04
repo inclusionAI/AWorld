@@ -2,6 +2,7 @@ import sys
 import ast
 import re
 import subprocess
+from pathlib import Path
 from typing import Any, Dict, Tuple, List
 from io import StringIO
 
@@ -17,7 +18,8 @@ from aworld.tools.utils import build_observation
 @ToolFactory.register(name="python_execute",
                       desc="python interpreter tool",
                       supported_action=PythonToolAction,
-                      conf_file_name=f'python_execute_tool.yaml')
+                      conf_file_name=f'python_execute_tool.yaml',
+                      dir=f"{Path(__file__).parent.absolute()}")
 class PythonTool(Tool):
 
     def __init__(self,

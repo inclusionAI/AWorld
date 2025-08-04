@@ -5,6 +5,7 @@ import re
 import time
 import traceback
 import json
+from pathlib import Path
 from typing import Dict, Any, Optional, List, Union, Tuple
 from dataclasses import dataclass, field
 
@@ -50,7 +51,6 @@ class Trajectory:
             json.dump(his_li, f, ensure_ascii=False, indent=4)
 
 
-@AgentFactory.register(name='browser_agent', desc="browser agent")
 class BrowserAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
         super(BrowserAgent, self).__init__(conf, name, **kwargs)
@@ -531,7 +531,10 @@ class BrowserAgent(Agent):
                     state_message = AgentMessagePrompt(
                         observation,
                         self.state.last_result,
-                        include_attributes=self.settings.get('include_attributes'),
+                        include_attributes=self.settings.get('include_attributes',
+                                                             ["title", "type", "name", "role", "aria-label",
+                                                              "placeholder", "value", "alt", "aria-expanded",
+                                                              "data-date-format"]),
                         step_info=step_info,
                     ).get_user_message(self.settings.get('use_vision'))
                     messages.append(state_message)

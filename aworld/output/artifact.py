@@ -62,6 +62,14 @@ class Artifact(Output):
     create_file: bool = Field(default=False, description="Flag to indicate if a file should be created")
     attachments: Optional[list[ArtifactAttachment]] = Field(default_factory=list, description="Attachments associated with the artifact")
 
+    @property
+    def summary(self):
+        return self.metadata['summary']
+
+    @summary.setter
+    def summary(self, summary_content: str):
+        self.metadata['summary'] = summary_content
+
     def _record_version(self, description: str) -> None:
         """Record current state as a new version"""
         version = {
@@ -153,3 +161,7 @@ class Artifact(Output):
             artifact.version_history = data["version_history"]
 
         return artifact
+
+    @property
+    def embedding_text(self):
+        return self.content
