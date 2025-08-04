@@ -42,9 +42,10 @@ class WorkSpace(BaseModel):
             observers: Optional[List[WorkspaceObserver]] = None,
             use_default_observer: bool = True,
             clear_existing: bool = False,
-            repository: Optional[ArtifactRepository] = None
+            repository: Optional[ArtifactRepository] = None,
+            **kwargs
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         self.workspace_id = workspace_id or str(uuid.uuid4())
         self.name = name or f"Workspace-{self.workspace_id[:8]}"
         self.created_at = datetime.now().isoformat()
@@ -128,7 +129,8 @@ class WorkSpace(BaseModel):
                             name: Optional[str] = None,
                             storage_path: Optional[str] = None,
                             observers: Optional[List[WorkspaceObserver]] = None,
-                            use_default_observer: bool = True
+                            use_default_observer: bool = True,
+                            **kwargs
                             ) -> "WorkSpace":
         """
         Create a workspace instance from local storage
@@ -151,7 +153,8 @@ class WorkSpace(BaseModel):
             storage_path=storage_path,
             observers=observers,
             use_default_observer=use_default_observer,
-            clear_existing=False  # Always try to load existing data
+            clear_existing=False,
+            **kwargs
         )
         return workspace
 
@@ -163,6 +166,7 @@ class WorkSpace(BaseModel):
                           observers: Optional[List[WorkspaceObserver]] = None,
                           use_default_observer: bool = True,
                           oss_config: Optional[Dict[str, Any]] = None,
+                          **kwargs
                           ) -> "WorkSpace":
         if oss_config is None:
             oss_config = {
@@ -184,7 +188,8 @@ class WorkSpace(BaseModel):
             storage_path=storage_path,
             observers=observers,
             use_default_observer=use_default_observer,
-            repository=repository
+            repository=repository,
+            **kwargs
         )
         return workspace
 
