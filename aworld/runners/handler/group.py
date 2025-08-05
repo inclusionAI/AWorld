@@ -240,7 +240,7 @@ class DefaultGroupHandler(GroupHandler):
                 agent_message = act[2]
                 # self.runner.state_manager.start_message_node(agent_message)
                 messages_ids.append(agent_message.id)
-                tasks[agent_message.id] = exec_agent(act[0], act[1], new_context, sub_task=True)
+                tasks[agent_message.id] = exec_agent(act[0], act[1], new_context, sub_task=True, outputs=self.context.outputs)
 
         return messages_ids, tasks
 
