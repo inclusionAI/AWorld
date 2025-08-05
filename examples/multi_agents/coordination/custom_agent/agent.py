@@ -5,6 +5,7 @@ import json
 import traceback
 from typing import Dict, Any, List, Union
 
+from aworld.utils.common import sync_exec
 from examples.multi_agents.coordination.custom_agent.prompts import execute_system_prompt, plan_system_prompt, plan_done_prompt, \
     plan_postfix_prompt, init_prompt
 from examples.common.tools.common import Agents
@@ -118,7 +119,7 @@ class ExecuteAgent(Agent):
             llm_result = call_llm_model(self.llm, input_content, model=self.model_name,
                                         tools=self.tools, temperature=0)
             logger.info(f"Execute response: {llm_result.message}")
-            res = self.response_parse(llm_result)
+            res = sync_exec(self.model_output_parser.parse, llm_result, agent_id=self.id())
             content = res.actions[0].policy_info
             tool_calls = llm_result.tool_calls
         except Exception as e:
@@ -228,7 +229,7 @@ class PlanAgent(Agent):
                 self.trajectory.append((ob, info, llm_result))
             else:
                 logger.warning("no result to record!")
-        res = self.response_parse(llm_result)
+        res = sync_exec(self.model_output_parser.parse, llm_result, agent_id=self.id())
         content = res.actions[0].policy_info
         if "TASK_DONE" not in content:
             content += self.done_prompt

@@ -111,17 +111,3 @@ def endless_detect(records: List[str], endless_threshold: int, root_agent_name: 
                     return True
 
     return False
-
-def _to_serializable(obj):
-    if isinstance(obj, dict):
-        return {k: _to_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_to_serializable(i) for i in obj]
-    elif hasattr(obj, "to_dict"):
-        return obj.to_dict()
-    elif hasattr(obj, "model_dump"):
-        return obj.model_dump()
-    elif hasattr(obj, "dict"):
-        return obj.dict()
-    else:
-        return obj

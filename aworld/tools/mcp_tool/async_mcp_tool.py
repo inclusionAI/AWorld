@@ -53,7 +53,6 @@ class McpTool(AsyncTool):
         reward = 0
         fail_error = ""
         terminated = kwargs.get("terminated", False)
-        # todo sandbox
         agent = AgentFactory.agent_instance(actions[0].agent_name)
         if not agent:
             logger.warning(
@@ -105,7 +104,6 @@ class McpTool(AsyncTool):
 
         action_results = None
         try:
-            # todo sandbox
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
                 action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions, task_id=task_id, session_id=session_id)

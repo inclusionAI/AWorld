@@ -8,7 +8,7 @@ from math import ceil
 from aworld.core.common import ActionModel, Observation
 from aworld.replay_buffer.query_filter import QueryCondition, QueryFilter
 from aworld.logs.util import logger
-from aworld.runners.utils import _to_serializable
+from aworld.utils.serialized_util import to_serializable
 
 T = TypeVar('T')
 
@@ -27,8 +27,8 @@ class Experience:
 
     def to_dict(self):
         return {
-            "state": _to_serializable(self.state),
-            "actions": _to_serializable(self.actions),
+            "state": to_serializable(self.state),
+            "actions": to_serializable(self.actions),
             "reward_t": self.reward_t,
             "adv_t": self.adv_t,
             "v_t": self.v_t,

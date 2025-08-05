@@ -4,7 +4,7 @@ import json
 import re
 
 from aworld.core.agent.base import AgentResult
-from aworld.core.agent.output_parser import AgentOutputParser
+from aworld.core.model_output_parser import AgentOutputParser
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.logs.util import logger

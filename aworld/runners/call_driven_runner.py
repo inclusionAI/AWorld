@@ -25,7 +25,7 @@ from aworld.runners.utils import endless_detect
 from aworld.sandbox import Sandbox
 from aworld.tools.utils import build_observation
 from aworld.utils.common import override_in_subclass
-from aworld.utils.json_encoder import NumpyEncoder
+from aworld.utils.serialized_util import NumpyEncoder
 
 
 def action_result_transform(message: Message, sandbox: Sandbox) -> Tuple[Observation, float, bool, bool, dict]:

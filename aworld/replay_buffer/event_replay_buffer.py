@@ -10,7 +10,7 @@ from aworld.core.event.base import Message, Constants
 from aworld.logs.util import logger
 from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience, InMemoryStorage, Storage
 from aworld.runners.state_manager import RuntimeStateManager
-from aworld.runners.utils import _to_serializable
+from aworld.utils.serialized_util import to_serializable
 from aworld.utils.common import get_local_ip
 
 
@@ -40,7 +40,7 @@ class EventReplayBuffer(ReplayBuffer):
                     data_rows.append(data_row)
 
             self.store_batch(data_rows)
-            trajectory = [_to_serializable(data_row) for data_row in data_rows]
+            trajectory = [to_serializable(data_row) for data_row in data_rows]
 
             self.export(data_rows, task_id)
 
@@ -146,7 +146,7 @@ class EventReplayBuffer(ReplayBuffer):
 
         try:
             # Convert data rows to dictionary list
-            data_dicts = [_to_serializable(data_row) for data_row in data_rows]
+            data_dicts = [to_serializable(data_row) for data_row in data_rows]
 
             timestamp = datetime.now().strftime("%Y%m%d")
             export_dir = os.getenv('REPLAY_EXPORT_DIRECTORY', None)

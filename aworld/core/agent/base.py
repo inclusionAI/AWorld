@@ -82,6 +82,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         mcp_servers: List[str] = None,
         mcp_config: Dict[str, Any] = None,
         feedback_tool_result: bool = True,
+        wait_tool_result: bool = False,
         sandbox: Sandbox = None,
         **kwargs,
     ):
@@ -98,6 +99,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             feedback_tool_result: Whether feedback on the results of the tool.
                 Agent1 uses tool1 when the value is True, it does not go to the other agent after obtaining the result of tool1.
                 Instead, Agent1 uses the tool's result and makes a decision again.
+            wait_tool_result: Whether wait on the results of the tool.
             sandbox: Sandbox instance for tool execution, advanced usage.
         """
         if conf is None:
@@ -159,6 +161,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
         self.feedback_tool_result = feedback_tool_result
+        self.wait_tool_result = wait_tool_result
         self.sandbox = None
         if self.mcp_servers or self.tool_names:
             self.sandbox = sandbox or Sandbox(
