@@ -67,7 +67,7 @@ class StringPromptTemplate(BasePromptTemplate):
                         # Check if it's an async function
                         is_async = inspect.iscoroutinefunction(partial_variables[var])
                         if is_async:
-                            # TODO 异步化支持
+                            # TODO support async
                             pass
                         else:
                             partial_variables[var] = create_context_field_getter(field_path=var, processor=partial_variables[var])
