@@ -21,12 +21,13 @@ class ParallelizableAgent(Agent):
     """
 
     def __init__(self,
+                 name: str,
                  conf: Config,
                  model_output_parser: ModelOutputParser[ModelResponse, AgentResult] = None,
                  agents: List[Agent] = None,
                  aggregate_func: Callable[..., Any] = None,
                  **kwargs):
-        super().__init__(conf=conf, model_output_parser=model_output_parser, **kwargs)
+        super().__init__(name=name, conf=conf, model_output_parser=model_output_parser, **kwargs)
         self.agents = agents if agents else []
         # The function of aggregating the results of the parallel execution of agents.
         self.aggregate_func = aggregate_func

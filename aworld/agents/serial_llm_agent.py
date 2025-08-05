@@ -16,11 +16,12 @@ class SerialableAgent(Agent):
     """Support for serial execution of agents based on dependency relationships in the swarm."""
 
     def __init__(self,
+                 name: str,
                  conf: Config,
                  model_output_parser: ModelOutputParser[ModelResponse, AgentResult] = None,
                  agents: List[Agent] = None,
                  **kwargs):
-        super().__init__(conf=conf, model_output_parser=model_output_parser, **kwargs)
+        super().__init__(name=name, conf=conf, model_output_parser=model_output_parser, **kwargs)
         self.agents = agents if agents else []
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
