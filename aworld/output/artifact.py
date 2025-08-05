@@ -64,7 +64,7 @@ class Artifact(Output):
 
     @property
     def summary(self):
-        return self.metadata['summary']
+        return self.metadata.get('summary')
 
     @summary.setter
     def summary(self, summary_content: str):
