@@ -234,11 +234,8 @@ class DefaultGroupHandler(GroupHandler):
         for agent_name, acts in agent_messages.items():
             for act in acts:
                 new_context = self.context.deep_copy()
-                # # todo: context.task里有swarm()，要把swarm去掉？
-                # new_context.set_task(self.context.get_task())
 
                 agent_message = act[2]
-                # self.runner.state_manager.start_message_node(agent_message)
                 messages_ids.append(agent_message.id)
                 tasks[agent_message.id] = exec_agent(act[0], act[1], new_context, sub_task=True, outputs=self.context.outputs)
 

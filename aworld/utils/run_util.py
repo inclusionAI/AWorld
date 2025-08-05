@@ -65,7 +65,6 @@ async def exec_agent(question: Any, agent: Agent, context: Context, sub_task: bo
                 is_sub_task=sub_task,
                 group_id=task_group_id,
                 session_id=context.session_id)
-    # task.context.task_id = task.id
     if outputs:
         task.outputs = outputs
     runners = await choose_runners([task])
