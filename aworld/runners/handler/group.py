@@ -125,8 +125,12 @@ class DefaultGroupHandler(GroupHandler):
                     node_ids.append(msg.id)
 
             # create group
+            group_meta_data = message.headers.copy()
+            group_meta_data["context"] = message.context.deep_copy()
+            group_meta_data["context"].set_task(message.context.get_task())
             await state_manager.create_group(group_id, message.session_id, node_ids,
-                                             message.headers.get('parent_group_id'))
+                                             message.headers.get('parent_group_id'),
+                                             group_meta_data)
             for _, acts in agent_messages.items():
                 for act in acts:
                     self.runner.state_manager.start_message_node(act[2])
@@ -230,7 +234,9 @@ class DefaultGroupHandler(GroupHandler):
         for agent_name, acts in agent_messages.items():
             for act in acts:
                 new_context = self.context.deep_copy()
-                new_context._task = self.context.get_task()
+                # # todo: context.task里有swarm()，要把swarm去掉？
+                # new_context.set_task(self.context.get_task())
+
                 agent_message = act[2]
                 # self.runner.state_manager.start_message_node(agent_message)
                 messages_ids.append(agent_message.id)
@@ -392,9 +398,9 @@ class DefaultGroupHandler(GroupHandler):
         )
 
     def _update_headers(self, message: Message, parent_message: Message):
-        headers = message.headers
+        headers = message.headers.copy()
         context = message.context.deep_copy()
-        context._task = self.context.get_task()
+        context.set_task(self.context.get_task())
         headers['context'] = context
         headers['group_id'] = parent_message.group_id
         headers['root_message_id'] = message.id
@@ -403,6 +409,7 @@ class DefaultGroupHandler(GroupHandler):
         headers['group_sender'] = parent_message.sender
         headers['group_sender_node_id'] = parent_message.id
         headers['parent_group_id'] = parent_message.headers.get('parent_group_id')
+        message.headers = headers
 
     def _merge_context(self, context: Context, new_context: Context):
         if not new_context:

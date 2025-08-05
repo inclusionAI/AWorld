@@ -653,7 +653,7 @@ class NodeGroupManager(InheritanceSingleton):
             logger.warning(f"group finish message already sent, group_id: {group_id}")
             return
         group_results = {}
-        metadata = None
+        metadata = group.metadata
         for root_node_id in group.root_node_ids:
             subgroup = self.sub_group_storage.get(root_node_id)
             group_results[root_node_id] = subgroup.results
