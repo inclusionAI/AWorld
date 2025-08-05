@@ -141,7 +141,7 @@ gpt_conf = AgentConfig(
 openrouter_conf = AgentConfig(
     llm_provider="openai",
     llm_model_name="google/gemini-2.5-pro",
-    llm_ap i_key="<OPENROUTER_API_KEY>",
+    llm_api_key="<OPENROUTER_API_KEY>",
     llm_base_url="https://openrouter.ai/api/v1"
     llm_temperature=0.1,
 )
