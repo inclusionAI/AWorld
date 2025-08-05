@@ -83,7 +83,7 @@ class EventManager:
         await self.event_bus.unsubscribe(self.context.task_id, event_type, topic, handler, transformer=True, **kwargs)
 
     def get_handlers(self, event_type: str) -> Dict[str, List[Callable[..., Any]]]:
-        return self.event_bus.get_handlers(self.context.task_id, event_type)
+        return self.event_bus.get_handlers(self.context._task_id, event_type)
 
     def get_transform_handler(self, key: str) -> Callable[..., Any]:
         return self.event_bus.get_transform_handler(self.context.task_id, key)
