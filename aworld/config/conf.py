@@ -3,15 +3,14 @@
 import os
 import traceback
 import uuid
+import yaml
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-import yaml
 from pydantic import BaseModel, Field
 from enum import Enum
 
-from aworld.core.context.prompts import BasePromptTemplate
 from aworld.logs.util import logger
 
 
@@ -127,11 +126,9 @@ class ModelConfig(BaseConfig):
                 setattr(self, key, value)
 
         # init max_model_len
-        if not hasattr(self, 'max_model_len') or self.max_model_len is None:
+        if self.max_model_len is None:
             # qwen or other default model_type
-            self.max_model_len = 128000
-            if self.model_type and self.model_type == 'claude':
-                self.max_model_len = 200000
+            self.max_model_len = 128000 if self.model_type != 'claude' else 200000
 
 
 class LlmCompressionConfig(BaseConfig):
@@ -184,8 +181,6 @@ class AgentMemoryConfig(BaseConfig):
 
 
 class AgentConfig(BaseConfig):
-    name: str = None
-    desc: str = None
     llm_config: ModelConfig = ModelConfig()
     memory_config: AgentMemoryConfig = AgentMemoryConfig()
     context_rule: ContextRuleConfig = ContextRuleConfig()
@@ -212,22 +207,14 @@ class AgentConfig(BaseConfig):
         # Initialize llm_config with relevant kwargs
         llm_config_kwargs = {k: v for k, v in kwargs.items() if k in ModelConfig.model_fields}
         # Reassignment if it has llm config args
-        if llm_config_kwargs:
+        if llm_config_kwargs or not self.llm_config:
             self.llm_config = ModelConfig(**llm_config_kwargs)
-
-        # Initialize max_model_len if not set
-        if self.llm_config.max_model_len is None:
-            if self.llm_config.model_type == 'claude':
-                self.llm_config.max_model_len = 200000
-            else:
-                self.llm_config.max_model_len = 128000
 
 
 class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
-    max_actions_per_step: int = 10
     stream: bool = False
     exit_on_failure: bool = False
     ext: dict = {}
@@ -253,7 +240,6 @@ class RunConfig(BaseConfig):
     cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
-    replay_buffer: Optional[Dict[str, Any]] = None
 
 
 class EvaluationConfig(BaseConfig):

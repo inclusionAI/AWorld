@@ -16,7 +16,7 @@ from typing import (
 from binascii import b2a_hex
 
 from aworld.config.conf import ClientType
-from aworld.core.llm_provider_base import LLMProviderBase
+from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError, ToolCall
 from aworld.logs.util import logger
