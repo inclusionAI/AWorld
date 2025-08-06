@@ -203,7 +203,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def deep_copy(self):
         """Create a deep copy of the current Agent instance."""
-        new_agent = Agent(self.name(), self.conf, self.desc(), self.id(), model_output_parser=self.model_output_parser)
+        new_agent = Agent(
+            name=self.name(),
+            conf=self.conf,
+            desc=self.desc(),
+            id=self.id(),
+            model_output_parser=self.model_output_parser)
         new_agent._llm = None
         new_agent.system_prompt = self.system_prompt
         new_agent.system_prompt_template = self.system_prompt_template
