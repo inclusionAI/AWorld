@@ -242,7 +242,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.debug(traceback.format_exc())
 
         # step2. LLM messages build
-        messages = await self._prepare_llm_input(observation, info, message=message, **kwargs)
+        messages = await self._prepare_llm_input(observation, message=message)
         serializable_messages = to_serializable(messages)
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
@@ -250,7 +250,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # step3. LLM call
         llm_response = None
         try:
-            llm_response = await self._call_llm_model(observation, messages, info, message=message, **kwargs)
+            llm_response = await self._call_llm_model(messages, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
@@ -569,24 +569,25 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return result
 
     async def _tools_aggregate_func(self, tool_results: List[ActionResult]) -> List[ActionModel]:
-        """Aggregate tool results
+        """Aggregate tool results.
+
         Args:
-            tool_results: Tool results
+            tool_results: Tool action results
+
         Returns:
-            ActionModel sequence
+            ActionModel sequence.
         """
         content = ""
         for res in tool_results:
             content += f"{res.content}\n"
         return [ActionModel(agent_name=self.id(), policy_info=content)]
 
-    async def _prepare_llm_input(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
-                                 **kwargs):
-        """Prepare LLM input
+    async def _prepare_llm_input(self, observation: Observation, message: Message = None) -> List[Dict[str, Any]]:
+        """Prepare LLM input.
+
         Args:
             observation: The state observed from the environment
-            info: Extended information to assist the agent in decision-making
-            **kwargs: Other parameters
+            message: Event received by the agent.
         """
         await self.async_desc_transform()
         images = observation.images if self.conf.use_vision else None
@@ -634,15 +635,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     "compress_ratio": round(compressed_len / origin_len, 2)
                 })
 
-    async def _call_llm_model(self, observation: Observation, messages: List[Dict[str, str]] = [],
-                              info: Dict[str, Any] = {}, **kwargs) -> ModelResponse:
-        """Perform LLM call
+    async def _call_llm_model(self, messages: List[Dict[str, str]] = [], **kwargs) -> ModelResponse:
+        """Perform LLM call.
+
         Args:
-            observation: The state observed from the environment
-            info: Extended information to assist the agent in decision-making
-            **kwargs: Other parameters
+            messages: LLM input messages.
+            **kwargs: Some extent parameters, such as `event` received by the agent.
+                    outputs: Output instance.
+                    stream: Whether use stream output.
+
         Returns:
-            LLM response
+            ModelResponse instance.
         """
         outputs = None
         if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
