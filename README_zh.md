@@ -43,8 +43,8 @@ AWorld 使您能够快速构建个体工具使用智能体、编排复杂的多�
 ---
 **智能体成就解锁！** 🔥
 
-🥳 **[2025/08/06]** AWorld 通过多智能体模式提升了 GAIA 题目复现的稳定性 [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][Cloud-Native]](#) [![][Leaderboard]](#)  
-在 GAIA Test集的 109 个任务中，Pass@1 平均分达到 67.89，Pass@3分数为83.49，[查看复现细节](./examples/gaia/README_GUARD.md)。技术报告在未来3天即将发布！[了解更多](https://huggingface.co/spaces/gaia-benchmark/leaderboard)
+🏅️ **[2025/08/06]** 在GAIA基准测试中，多智能体系统展现卓越稳定性 [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][MAS]](#) [![][Leaderboard]](#)  
+在测试数据集的109个任务中，实现了平均Pass@1得分67.89和Pass@3得分83.49。[查看详细内容](./examples/gaia/README_GUARD.md)。技术报告即将发布。
 
 🏅️ **[2025/07/25]** 即插即用数学大师！  [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) [![][MAS]](#)  
 构建了一个在数小时内解决 <span style="color: #d81b60; font-weight: bold;">IMO 2025 6道题中的5道</span> 的MAS——证明**智能体编排**胜过单一模型。 <br>
