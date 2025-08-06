@@ -859,9 +859,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(
             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
-    async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
+    async def custom_system_prompt(self, context: Context, content: str):
         logger.info(f"llm_agent custom_system_prompt .. agent#{self.id()}")
-        return self.system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+        return self.system_prompt_template.format(context=context, task=content)
 
     async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
