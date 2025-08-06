@@ -4,7 +4,7 @@ import json
 import re
 
 from aworld.core.agent.base import AgentResult
-from aworld.core.agent.output_parser import AgentOutputParser
+from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
@@ -68,13 +68,13 @@ class DefaultPlanner(BasePlanner):
         return self.replan_system_prompt
 
 
-class PlannerOutputParser(AgentOutputParser):
+class PlannerOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
     """Parser for responses that include thinking process and planning."""
 
     def __init__(self, agent_name: str):
         self.agent_name = agent_name
 
-    def parse(self, resp: ModelResponse) -> AgentResult:
+    async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
         if not resp or not resp.content:
             logger.warning("No valid response content!")
             return AgentResult(actions=[], current_state=None)

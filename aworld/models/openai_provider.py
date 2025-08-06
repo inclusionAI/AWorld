@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Generator, AsyncGenerator
 from openai import OpenAI, AsyncOpenAI
 
 from aworld.config.conf import ClientType
-from aworld.core.llm_provider_base import LLMProviderBase
+from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from aworld.logs.util import logger

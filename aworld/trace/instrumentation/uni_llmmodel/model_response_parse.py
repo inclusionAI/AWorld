@@ -5,6 +5,7 @@ from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.trace.base import Span
 from aworld.trace.instrumentation.openai.inout_parse import should_trace_prompts, need_flatten_messages
 from aworld.logs.util import logger
+from aworld.utils.serialized_util import to_serializable
 
 
 def parser_request_params(kwargs, instance: 'aworld.models.llm.LLMModel'):
@@ -176,42 +177,7 @@ def response_to_dic(response: ModelResponse) -> dict:
 
 def covert_to_jsonstr(obj):
     try:
-        return json.dumps(_to_serializable(obj), ensure_ascii=False)
+        return json.dumps(to_serializable(obj), ensure_ascii=False)
     except:
         logger.warning(f"covert_to_jsonstr error: {obj.__class__.__name__}")
         return str(obj)
-
-
-def _to_serializable(obj, _memo=None):
-    if _memo is None:
-        _memo = set()
-    obj_id = id(obj)
-    if obj_id in _memo:
-        return str(obj)
-    _memo.add(obj_id)
-
-    if isinstance(obj, (dict, list, set)):
-        if isinstance(obj, set):
-            return [_to_serializable(i, _memo) for i in obj]
-        elif isinstance(obj, dict):
-            return {k: _to_serializable(v, _memo) for k, v in obj.items()}
-        else:
-            return [_to_serializable(i, _memo) for i in obj]
-    elif hasattr(obj, "to_dict"):
-        return obj.to_dict()
-    elif hasattr(obj, "model_dump"):
-        return obj.model_dump()
-    elif hasattr(obj, "dict"):
-        return obj.dict()
-    elif hasattr(obj, "__dataclass_fields__"):
-        return {field.name: _to_serializable(getattr(obj, field.name), _memo)
-                for field in obj.__dataclass_fields__.values()}
-    elif hasattr(obj, "__dict__"):
-        return {k: _to_serializable(v, _memo) for k, v in obj.__dict__.items()
-                if not k.startswith('_') and not callable(v)}
-    else:
-        try:
-            json.dumps(obj)
-            return obj
-        except TypeError:
-            return "[Unserializable Object]"

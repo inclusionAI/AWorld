@@ -10,7 +10,7 @@ from aworld.config import ConfigDict, ModelConfig
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.logs.util import logger
 
-from aworld.core.llm_provider_base import LLMProviderBase
+from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider

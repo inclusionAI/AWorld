@@ -4,7 +4,7 @@ import traceback
 
 from typing_extensions import Optional, List, Dict, Any
 
-from aworld.mcp_client.utils import sandbox_mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
+from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
     call_function_tool
 from mcp.types import TextContent, ImageContent
 
@@ -26,15 +26,13 @@ class McpServers:
         self.server_instances = {}
         self.tool_list = None
 
-    async def list_tools(
-            self,
-    ) -> List[Dict[str, Any]]:
+    async def list_tools(self) -> List[Dict[str, Any]]:
         if self.tool_list:
             return self.tool_list
         if not self.mcp_servers or not self.mcp_config:
             return []
         try:
-            self.tool_list = await sandbox_mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
+            self.tool_list = await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
             return self.tool_list
         except Exception as e:
             traceback.print_exc()

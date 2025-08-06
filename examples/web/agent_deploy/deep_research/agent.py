@@ -44,7 +44,7 @@ class BaseDynamicPromptAgent(Agent):
 
         if not self.system_prompt:
             return
-        content = await self.custom_system_prompt(context=context, content=content)
+        content = self.system_prompt_template.format(context=context, task=content)
         logger.info(f"system prompt content: {content}")
 
         await self.memory.add(
@@ -92,7 +92,7 @@ def get_deepresearch_swarm(user_input):
         desc=agent_id,
         conf=agent_config,
         use_tools_in_prompt=True,
-        resp_parse_func=PlannerOutputParser(agent_id).parse,
+        model_output_parser=PlannerOutputParser(agent_id),
         system_prompt_template=plan_sys_prompt,
     )
 

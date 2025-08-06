@@ -3,12 +3,12 @@
 import os
 import traceback
 import uuid
+import yaml
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-import yaml
-from pydantic import BaseModel,Field
+from pydantic import BaseModel, Field
 from enum import Enum
 
 from aworld.logs.util import logger
@@ -102,7 +102,7 @@ class ConfigDict(dict):
 
 
 class BaseConfig(BaseModel):
-    def config_dict(self) -> ConfigDict:
+    def to_dict(self) -> ConfigDict:
         return ConfigDict(self.model_dump())
 
 
@@ -117,30 +117,31 @@ class ModelConfig(BaseConfig):
     llm_async_enabled: bool = True
     max_retries: int = 3
     max_model_len: Optional[int] = None  # Maximum model context length
-    model_type: Optional[str] = 'qwen' # Model type determines tokenizer and maximum length
+    model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
-        
+
         # init max_model_len
-        if not hasattr(self, 'max_model_len') or self.max_model_len is None:
+        if self.max_model_len is None:
             # qwen or other default model_type
-            self.max_model_len = 128000
-            if self.model_type and self.model_type == 'claude':
-                self.max_model_len = 200000
+            self.max_model_len = 128000 if self.model_type != 'claude' else 200000
+
 
 class LlmCompressionConfig(BaseConfig):
     enabled: bool = False
-    compress_type: str = 'llm' # llm, llmlingua
+    compress_type: str = 'llm'  # llm, llmlingua
     trigger_compress_token_length: int = 10000  # Trigger compression when exceeding this length
     compress_model: Optional[ModelConfig] = Field(default=None, description="Compression model configuration")
+
 
 class OptimizationConfig(BaseConfig):
     enabled: bool = False
     max_token_budget_ratio: float = 0.5  # Maximum context length ratio
+
 
 class ContextRuleConfig(BaseConfig):
     """Context interference rule configuration"""
@@ -151,10 +152,38 @@ class ContextRuleConfig(BaseConfig):
     # ===== LLM conversation compression configuration =====
     llm_compression_config: LlmCompressionConfig = LlmCompressionConfig()
 
+
+class AgentMemoryConfig(BaseConfig):
+    """Configuration for procedural memory."""
+
+    model_config = ConfigDict(
+        from_attributes=True, validate_default=True, revalidate_instances='always', validate_assignment=True,
+        arbitrary_types_allowed=True
+    )
+    history_number: int = Field(default=100)
+    # short-term config
+    enable_summary: bool = Field(default=False,
+                                 description="enable_summary use llm to create summary short-term memory")
+    summary_model: Optional[str] = Field(default=None, description="short-term summary model")
+    summary_rounds: Optional[int] = Field(default=5,
+                                          description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
+    summary_context_length: Optional[int] = Field(default=40960,
+                                                  description=" when the content length is greater than the summary_context_length, the summary will be created")
+    # summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
+    trim_rounds: int = Field(default=5,
+                             description="rounds of message msg; when the number of messages is greater than the trim_rounds, the memory will be trimmed")
+
+    # Long-term memory config
+    enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
+    long_term_model: Optional[str] = Field(default=None, description="long-term extract model")
+    # LongTermConfig
+    long_term_config: Optional[BaseModel] = Field(default=None, description="long_term_config")
+
+
 class AgentConfig(BaseConfig):
-    name: str = None
-    desc: str = None
     llm_config: ModelConfig = ModelConfig()
+    memory_config: AgentMemoryConfig = AgentMemoryConfig()
+    context_rule: ContextRuleConfig = ContextRuleConfig()
 
     # default reset init in first
     need_reset: bool = True
@@ -173,29 +202,19 @@ class AgentConfig(BaseConfig):
     ext: dict = {}
     human_tools: List[str] = []
 
-    # context rule
-    context_rule: ContextRuleConfig = ContextRuleConfig()
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # Initialize llm_config with relevant kwargs
         llm_config_kwargs = {k: v for k, v in kwargs.items() if k in ModelConfig.model_fields}
         # Reassignment if it has llm config args
-        if llm_config_kwargs:
+        if llm_config_kwargs or not self.llm_config:
             self.llm_config = ModelConfig(**llm_config_kwargs)
 
-        # Initialize max_model_len if not set
-        if self.llm_config.max_model_len is None:
-            if self.llm_config.model_type == 'claude':
-                self.llm_config.max_model_len = 200000
-            else:
-                self.llm_config.max_model_len = 128000
 
 class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
-    max_actions_per_step: int = 10
     stream: bool = False
     exit_on_failure: bool = False
     ext: dict = {}
@@ -221,7 +240,6 @@ class RunConfig(BaseConfig):
     cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
-    replay_buffer: Optional[Dict[str, Any]] = None
 
 
 class EvaluationConfig(BaseConfig):

@@ -55,13 +55,10 @@ class TaskEventRunner(TaskRunner):
             logger.debug(f"swarm: {self.swarm}")
             # register agent handler
             for _, agent in self.swarm.agents.items():
-                if agent.handler:
-                    await self.event_mng.register(Constants.AGENT, agent.id(), agent.handler)
+                if override_in_subclass('async_policy', agent.__class__, Agent):
+                    await self.event_mng.register(Constants.AGENT, agent.id(), agent.async_run)
                 else:
-                    if override_in_subclass('async_policy', agent.__class__, Agent):
-                        await self.event_mng.register(Constants.AGENT, agent.id(), agent.async_run)
-                    else:
-                        await self.event_mng.register(Constants.AGENT, agent.id(), agent.run)
+                    await self.event_mng.register(Constants.AGENT, agent.id(), agent.run)
         # register tool handler
         for key, tool in self.tools.items():
             if tool.handler:

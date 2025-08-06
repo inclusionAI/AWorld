@@ -16,7 +16,7 @@ from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
 from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
-from aworld.runners.utils import _to_serializable
+from aworld.utils.serialized_util import to_serializable
 from aworld.utils.run_util import exec_agent
 
 
@@ -184,7 +184,7 @@ class DefaultGroupHandler(GroupHandler):
 
                 if node_results and tool_call_id:
                     act_res = ActionResult(
-                        content=json.dumps(_to_serializable(node_results), ensure_ascii=False),
+                        content=json.dumps(to_serializable(node_results), ensure_ascii=False),
                         tool_call_id=tool_call_id
                     )
                     action_results.append(act_res)

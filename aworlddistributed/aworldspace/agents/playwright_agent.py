@@ -539,7 +539,7 @@ class PlayWrightAgent(Agent):
         if outputs and isinstance(outputs, Outputs):
             await outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
 
-        agent_result = sync_exec(self.resp_parse_func, llm_response)
+        agent_result = await self.model_output_parser.parse(llm_response, agent_id=self.id())
         if not agent_result.is_call_tool:
             self._finished = True
 

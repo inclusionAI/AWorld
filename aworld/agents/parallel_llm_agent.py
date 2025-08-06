@@ -4,7 +4,10 @@ import asyncio
 from typing import List, Dict, Any, Callable
 
 from aworld.agents.llm_agent import Agent
+from aworld.core.agent.base import AgentResult
 from aworld.core.common import Observation, ActionModel, Config
+from aworld.core.model_output_parser import ModelOutputParser
+from aworld.models.model_response import ModelResponse
 from aworld.utils.run_util import exec_agent
 
 
@@ -18,12 +21,13 @@ class ParallelizableAgent(Agent):
     """
 
     def __init__(self,
+                 name: str,
                  conf: Config,
-                 resp_parse_func: Callable[..., Any] = None,
+                 model_output_parser: ModelOutputParser[ModelResponse, AgentResult] = None,
                  agents: List[Agent] = None,
                  aggregate_func: Callable[..., Any] = None,
                  **kwargs):
-        super().__init__(conf=conf, resp_parse_func=resp_parse_func, **kwargs)
+        super().__init__(name=name, conf=conf, model_output_parser=model_output_parser, **kwargs)
         self.agents = agents if agents else []
         # The function of aggregating the results of the parallel execution of agents.
         self.aggregate_func = aggregate_func

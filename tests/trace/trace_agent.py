@@ -81,7 +81,7 @@ class TraceAgent(Agent):
                 raise RuntimeError(
                     f"{self.id()} failed to get LLM response")
 
-        agent_result = sync_exec(self.resp_parse_func, llm_response)
+        agent_result = sync_exec(self.model_output_parser.parse, llm_response, agent_id=self.id())
         if not agent_result.is_call_tool:
             self._finished = True
         return agent_result.actions
@@ -130,7 +130,7 @@ class TraceAgent(Agent):
                 raise RuntimeError(
                     f"{self.id()} failed to get LLM response")
 
-        agent_result = sync_exec(self.resp_parse_func, llm_response)
+        agent_result = await self.model_output_parser.parse(llm_response, agent_id=self.id())
         if not agent_result.is_call_tool:
             self._finished = True
         return agent_result.actions
