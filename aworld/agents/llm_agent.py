@@ -561,7 +561,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             if not self.wait_tool_result:
                 return agent_result.actions
             else:
-                return self.execution_tools(agent_result.actions, message)
+                return await self.execution_tools(agent_result.actions, message)
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
         """Tool execution operations.
