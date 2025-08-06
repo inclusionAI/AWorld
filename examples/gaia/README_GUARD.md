@@ -49,7 +49,7 @@ To run specific subsets of GAIA tasks, add the following code to `run.py`:
 
 ```python
 # load task subset from subset.txt
-subset_file_path = Path(__file__).parent / "GAIA" / "subset.txt"
+subset_file_path = Path(__file__).parent / "subset.txt"
 
 if subset_file_path.exists():
     with open(subset_file_path, "r", encoding="utf-8") as f:
