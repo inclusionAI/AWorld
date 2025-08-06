@@ -64,13 +64,9 @@ class StringPromptTemplate(BasePromptTemplate):
                 if var in partial_variables:
 
                     if callable(partial_variables[var]):
-                        # Check if it's an async function
-                        is_async = inspect.iscoroutinefunction(partial_variables[var])
-                        if is_async:
-                            # TODO support async
-                            pass
-                        else:
-                            partial_variables[var] = create_context_field_getter(field_path=var, processor=partial_variables[var])
+                        pass
+                    else:
+                        partial_variables[var] = create_context_field_getter(field_path=var, processor=partial_variables[var])
 
                 # Create context getter as fallback
                 if var not in partial_variables:
