@@ -13,7 +13,7 @@ from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants
+from aworld.core.event.base import Message, ToolEvent, AgentEvent, Constants
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
 from aworld.logs.util import logger
@@ -260,17 +260,17 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
-            return AgentMessage(payload=step_res,
-                                caller=action[0].agent_name,
-                                sender=self.name(),
-                                receiver=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+            return AgentEvent(payload=step_res,
+                              caller=action[0].agent_name,
+                              sender=self.name(),
+                              receiver=action[0].agent_name,
+                              session_id=self.context.session_id,
+                              headers={"context": self.context})
         else:
-            return AgentMessage(payload=step_res,
-                                sender=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+            return AgentEvent(payload=step_res,
+                              sender=action[0].agent_name,
+                              session_id=self.context.session_id,
+                              headers={"context": self.context})
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
@@ -367,17 +367,17 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
-            return AgentMessage(payload=step_res,
-                                caller=action[0].agent_name,
-                                sender=self.name(),
-                                receiver=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+            return AgentEvent(payload=step_res,
+                              caller=action[0].agent_name,
+                              sender=self.name(),
+                              receiver=action[0].agent_name,
+                              session_id=self.context.session_id,
+                              headers={"context": self.context})
         else:
-            return AgentMessage(payload=step_res,
-                                sender=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+            return AgentEvent(payload=step_res,
+                              sender=action[0].agent_name,
+                              session_id=self.context.session_id,
+                              headers={"context": self.context})
 
     async def _exec_tool_callback(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                                   action: List[ActionModel],

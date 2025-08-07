@@ -7,8 +7,9 @@ from typing import Dict, List, Any
 from aworld import import_package
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.event.base import Message, Constants
+from aworld.core.storage.base import Storage, InMemoryStorage
 from aworld.logs.util import logger
-from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience, InMemoryStorage, Storage
+from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience
 from aworld.runners.state_manager import RuntimeStateManager
 from aworld.utils.serialized_util import to_serializable
 from aworld.utils.common import get_local_ip

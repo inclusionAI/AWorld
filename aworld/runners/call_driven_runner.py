@@ -13,7 +13,7 @@ from aworld.core.agent.base import is_agent
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, AgentMessage
+from aworld.core.event.base import Message, ToolEvent, AgentEvent
 from aworld.core.tool.base import ToolFactory, Tool, AsyncTool
 from aworld.core.tool.tool_desc import is_tool_by_name
 from aworld.core.task import Task, TaskResponse
@@ -143,7 +143,7 @@ class WorkflowRunner(TaskRunner):
                     except:
                         pass
                     pre_agent_name = cur_agent.id()
-                    agent_message = AgentMessage(
+                    agent_message = AgentEvent(
                         payload=observation,
                         session_id=self.context.session_id,
                         headers={"context": self.context}
@@ -335,7 +335,7 @@ class WorkflowRunner(TaskRunner):
             tool_mapping[act.tool_name].append(act)
 
         for tool_name, action in tool_mapping.items():
-            tool_message = ToolMessage(
+            tool_message = ToolEvent(
                 payload=action,
                 session_id=self.context.session_id,
                 headers={"context": self.context}
@@ -550,7 +550,7 @@ class HandoffRunner(TaskRunner):
         self.swarm.cur_agent = self.swarm.communicate_agent
         pre_agent_name = None
         # use communicate agent every time
-        agent_message = AgentMessage(
+        agent_message = AgentEvent(
             payload=observation,
             session_id=self.context.session_id,
             headers={"context": self.context}
@@ -654,7 +654,7 @@ class HandoffRunner(TaskRunner):
                 if observation:
                     if cur_agent is None:
                         cur_agent = self.swarm.cur_agent
-                    agent_message = AgentMessage(
+                    agent_message = AgentEvent(
                         payload=observation,
                         session_id=self.context.session_id,
                         headers={"context": self.context}
@@ -735,7 +735,7 @@ class HandoffRunner(TaskRunner):
                              "agent_names": cur_agent.handoffs,
                              "mcp_servers": cur_agent.mcp_servers})
 
-        agent_message = AgentMessage(
+        agent_message = AgentEvent(
             payload=observation,
             session_id=self.context.session_id,
             headers={"context": self.context}
@@ -786,7 +786,7 @@ class HandoffRunner(TaskRunner):
             tool_mapping[act.tool_name].append(act)
 
         for tool_name, action in tool_mapping.items():
-            tool_message = ToolMessage(
+            tool_message = ToolEvent(
                 payload=action,
                 session_id=self.context.session_id,
                 headers={"context": self.context}

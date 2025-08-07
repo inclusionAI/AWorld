@@ -19,7 +19,7 @@ from aworld.core.common import ActionResult, Observation, ActionModel, Config
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.event import eventbus
-from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType
+from aworld.core.event.base import Message, ToolEvent, Constants, AgentEvent, GroupEvent, TopicType
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message
@@ -483,29 +483,29 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # complex processing
         if _group_name:
-            return GroupMessage(payload=actions,
-                                caller=caller,
-                                sender=self.id(),
-                                receiver=actions[0].tool_name,
-                                session_id=self.context.session_id if self.context else "",
-                                group_id=_group_name,
-                                topic=TopicType.GROUP_ACTIONS,
-                                headers=self._update_headers(input_message))
+            return GroupEvent(payload=actions,
+                              caller=caller,
+                              sender=self.id(),
+                              receiver=actions[0].tool_name,
+                              session_id=self.context.session_id if self.context else "",
+                              group_id=_group_name,
+                              topic=TopicType.GROUP_ACTIONS,
+                              headers=self._update_headers(input_message))
         elif agents:
-            return AgentMessage(payload=actions,
-                                caller=caller,
-                                sender=self.id(),
-                                receiver=actions[0].tool_name,
-                                session_id=self.context.session_id if self.context else "",
-                                headers=self._update_headers(input_message))
+            return AgentEvent(payload=actions,
+                              caller=caller,
+                              sender=self.id(),
+                              receiver=actions[0].tool_name,
+                              session_id=self.context.session_id if self.context else "",
+                              headers=self._update_headers(input_message))
 
         else:
-            return ToolMessage(payload=actions,
-                               caller=caller,
-                               sender=self.id(),
-                               receiver=actions[0].tool_name,
-                               session_id=self.context.session_id if self.context else "",
-                               headers=self._update_headers(input_message))
+            return ToolEvent(payload=actions,
+                             caller=caller,
+                             sender=self.id(),
+                             receiver=actions[0].tool_name,
+                             session_id=self.context.session_id if self.context else "",
+                             headers=self._update_headers(input_message))
 
     def post_run(self, policy_result: List[ActionModel], policy_input: Observation, message: Message = None) -> Message:
         return self._agent_result(

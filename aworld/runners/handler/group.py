@@ -9,7 +9,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, Constants, TopicType, GroupMessage
+from aworld.core.event.base import Message, Constants, TopicType, GroupEvent
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.runners import HandlerFactory
@@ -42,7 +42,7 @@ class DefaultGroupHandler(GroupHandler):
             return False
         return True
 
-    async def _do_handle(self, message: GroupMessage) -> AsyncGenerator[Message, None]:
+    async def _do_handle(self, message: GroupEvent) -> AsyncGenerator[Message, None]:
         if not self.is_valid_message(message):
             return
 

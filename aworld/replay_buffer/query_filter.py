@@ -1,24 +1,7 @@
 from typing import Any, List, TypeVar, Union, Literal, TypedDict, Dict
 
-DataRow = TypeVar('DataRow')
 
-
-class BaseCondition(TypedDict):
-    field: str
-    value: Any
-    op: Literal[
-        'eq', 'ne', 'gt', 'gte', 'lt', 'lte',
-        'in', 'not_in', 'like', 'not_like',
-        'is_null', 'is_not_null'
-    ]
-
-
-class LogicalCondition(TypedDict):
-    and_: List['QueryCondition']
-    or_: List['QueryCondition']
-
-
-QueryCondition = Union[BaseCondition, LogicalCondition]
+from aworld.core.storage.condition import Condition
 
 
 class QueryBuilder:
@@ -98,7 +81,7 @@ class QueryBuilder:
         self.conditions.append({"nested": builder.build()})
         return self
 
-    def build(self) -> QueryCondition:
+    def build(self) -> Condition:
         conditions = self.conditions  # all conditions（including nested）
         operators = self.logical_ops
 
@@ -147,10 +130,10 @@ class QueryFilter:
     Query filter for replay buffer.
     '''
 
-    def __init__(self, query_condition: QueryCondition) -> None:
+    def __init__(self, query_condition: Condition) -> None:
         self.query_condition = query_condition
 
-    def _get_field_value(self, row: DataRow, field: str) -> Any:
+    def _get_field_value(self, row: 'DataItem', field: str) -> Any:
         '''
         Get field value from row.
         '''
@@ -161,7 +144,7 @@ class QueryFilter:
                 break
         return obj
 
-    def _do_check(self, row: DataRow, condition: QueryCondition) -> bool:
+    def _do_check(self, row: 'DataItem', condition: Condition) -> bool:
         """
         check if row match condition
         """
@@ -208,13 +191,13 @@ class QueryFilter:
 
         return False
 
-    def check_condition(self, row: DataRow) -> bool:
+    def check_condition(self, row: 'DataItem') -> bool:
         """
         check if row match condition
         """
         return self._do_check(row, self.query_condition)
 
-    def filter(self, rows: List[DataRow]) -> List[DataRow]:
+    def filter(self, rows: List['DataItem']) -> List['DataItem']:
         """filter rows by condition
         Args:
             rows (List[DataRow]): List of rows to filter.

@@ -118,7 +118,7 @@ class TaskEvent(Message[TaskItem]):
 
 
 @dataclass
-class AgentMessage(Message[Observation]):
+class AgentEvent(Message[Observation]):
     """Agent event is oriented towards applications, can interact with third-party entities independently.
 
     For example, `agent` event can interact with other agents through the A2A protocol.
@@ -127,7 +127,7 @@ class AgentMessage(Message[Observation]):
 
 
 @dataclass
-class ToolMessage(Message[List[ActionModel]]):
+class ToolEvent(Message[List[ActionModel]]):
     """Tool event is oriented towards applications, can interact with third-party entities independently.
 
     For example, `tool` event can interact with other tools through the MCP protocol.
@@ -136,14 +136,15 @@ class ToolMessage(Message[List[ActionModel]]):
 
 
 @dataclass
-class CancelMessage(Message[TaskItem]):
+class CancelEvent(Message[TaskItem]):
     """Cancel event of the task, has higher priority."""
     category: str = 'task'
     priority: int = -1
     topic: str = TopicType.CANCEL
 
+
 @dataclass
-class GroupMessage(Message[Union[Dict[str, Any], List[ActionModel]]]):
+class GroupEvent(Message[Union[Dict[str, Any], List[ActionModel]]]):
     category: str = 'group'
     group_id: str = None
 
@@ -187,30 +188,4 @@ class Messageable(object):
 
         Args:
             message: Message structure that carries the data that needs to be processed.
-        """
-
-
-class Recordable(Messageable):
-    """Top-level API for recording data."""
-
-    async def send(self, message: Message, **kwargs):
-        return await self.write(message, **kwargs)
-
-    async def receive(self, message: Message, **kwargs):
-        return await self.read(message, **kwargs)
-
-    @abc.abstractmethod
-    async def read(self, message: Message, **kwargs):
-        """Read a message from the store.
-
-        Args:
-            message: Message structure that carries the data that needs to be read.
-        """
-
-    @abc.abstractmethod
-    async def write(self, message: Message, **kwargs):
-        """Write a message to the store.
-
-        Args:
-            message: Message structure that carries the data that needs to be write.
         """

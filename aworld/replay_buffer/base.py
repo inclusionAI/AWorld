@@ -6,7 +6,8 @@ from abc import ABC, abstractmethod
 from math import ceil
 
 from aworld.core.common import ActionModel, Observation
-from aworld.replay_buffer.query_filter import QueryCondition, QueryFilter
+from aworld.core.storage.base import Storage, InMemoryStorage
+from aworld.core.storage.condition import Condition
 from aworld.logs.util import logger
 from aworld.utils.serialized_util import to_serializable
 
@@ -74,77 +75,6 @@ class DataRow:
         }
 
 
-class Storage(ABC):
-    '''
-    Storage for storing and sampling data.
-    '''
-
-    @abstractmethod
-    def add(self, data: DataRow):
-        '''
-        Add data to the storage.
-        Args:
-            data (DataRow): Data to add.
-        '''
-
-    @abstractmethod
-    def add_batch(self, data_batch: List[DataRow]):
-        '''
-        Add batch of data to the storage.
-        Args:
-            data_batch (List[DataRow]): List of data to add.
-        '''
-
-    @abstractmethod
-    def size(self, query_condition: QueryCondition = None) -> int:
-        '''
-        Get the size of the storage.
-        Returns:
-            int: Size of the storage.
-        '''
-
-    @abstractmethod
-    def get_paginated(self, page: int, page_size: int, query_condition: QueryCondition = None) -> List[DataRow]:
-        '''
-        Get paginated data from the storage.
-        Args:
-            page (int): Page number.
-            page_size (int): Number of data per page.
-        Returns:
-            List[DataRow]: List of data.
-        '''
-
-    @abstractmethod
-    def get_all(self, query_condition: QueryCondition = None) -> List[DataRow]:
-        '''
-        Get all data from the storage.
-        Returns:
-            List[DataRow]: List of data.
-        '''
-
-    @abstractmethod
-    def get_by_task_id(self, task_id: str) -> List[DataRow]:
-        '''
-        Get data by task_id from the storage.
-        Args:
-            task_id (str): Task id.
-        Returns:
-            List[DataRow]: List of data.
-        '''
-
-    @abstractmethod
-    def get_bacth_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
-        '''
-        Get batch of data by task_ids from the storage.
-        Args:
-            task_ids (List[str]): List of task ids.
-        Returns:
-            Dict[str, List[DataRow]]: Dictionary of data.
-            The key is the task_id and the value is the list of data.
-            The list of data is sorted by step.
-        '''
-
-
 class Sampler(ABC):
     '''
     Sample data from the storage.
@@ -153,7 +83,7 @@ class Sampler(ABC):
     def sample(self,
                storage: Storage,
                batch_size: int,
-               query_condition: QueryCondition = None) -> List[DataRow]:
+               query_condition: Condition = None) -> List[DataRow]:
         '''
         Sample data from the storage.
         Args:
@@ -185,14 +115,14 @@ class TaskSampler(Sampler):
     def sample(self,
                storage: Storage,
                batch_size: int,
-               query_condition: QueryCondition = None) -> List[DataRow]:
+               query_condition: Condition = None) -> List[DataRow]:
         task_ids = self.sample_task_ids(storage, batch_size, query_condition)
         return storage.get_bacth_by_task_ids(task_ids)
 
     def sample_tasks(self,
                      storage: Storage,
                      batch_size: int,
-                     query_condition: QueryCondition = None) -> Dict[str, List[DataRow]]:
+                     query_condition: Condition = None) -> Dict[str, List[DataRow]]:
         '''
         Sample data from the storage.
         Args:
@@ -212,7 +142,7 @@ class TaskSampler(Sampler):
     def sample_task_ids(self,
                         storage: Storage,
                         batch_size: int,
-                        query_condition: QueryCondition = None) -> List[str]:
+                        query_condition: Condition = None) -> List[str]:
         '''
         Sample task_ids from the storage.
         Args:
@@ -240,76 +170,6 @@ class Converter(ABC):
         '''
 
 
-class InMemoryStorage(Storage):
-    '''
-    In-memory storage for storing and sampling data.
-    '''
-
-    def __init__(self, max_capacity: int = 10000):
-        self._data: Dict[str, List[DataRow]] = {}
-        self._max_capacity = max_capacity
-        self._fifo_queue = []  # (task_id)
-
-    def add(self, data: DataRow):
-        if not data:
-            raise ValueError("Data is required")
-        if not data.exp_meta:
-            raise ValueError("exp_meta is required")
-
-        while self.size() >= self._max_capacity and self._fifo_queue:
-            oldest_task_id = self._fifo_queue.pop(0)
-            if oldest_task_id in self._data:
-                del self._data[oldest_task_id]
-
-        if data.exp_meta.task_id not in self._data:
-            self._data[data.exp_meta.task_id] = []
-        self._data[data.exp_meta.task_id].append(data)
-        self._fifo_queue.append(data.exp_meta.task_id)
-
-        if data.exp_meta.task_id not in self._data:
-            self._data[data.exp_meta.task_id] = []
-        self._data[data.exp_meta.task_id].append(data)
-
-    def add_batch(self, data_batch: List[DataRow]):
-        for data in data_batch:
-            self.add(data)
-
-    def size(self, query_condition: QueryCondition = None) -> int:
-        return len(self.get_all(query_condition))
-
-    def get_paginated(self, page: int, page_size: int, query_condition: QueryCondition = None) -> List[DataRow]:
-        if page < 1:
-            raise ValueError("Page must be greater than 0")
-        if page_size < 1:
-            raise ValueError("Page size must be greater than 0")
-        all_data = self.get_all(query_condition)
-        start_index = (page - 1) * page_size
-        end_index = start_index + page_size
-        return all_data[start_index:end_index]
-
-    def get_all(self, query_condition: QueryCondition = None) -> List[DataRow]:
-        all_data = []
-        query_filter = None
-        if query_condition:
-            query_filter = QueryFilter(query_condition)
-        for data in self._data.values():
-            if query_filter:
-                all_data.extend(query_filter.filter(data))
-            else:
-                all_data.extend(data)
-        return all_data
-
-    def get_by_task_id(self, task_id: str) -> List[DataRow]:
-        return self._data.get(task_id, [])
-
-    def get_bacth_by_task_ids(self, task_ids: List[str]) -> Dict[str, List[DataRow]]:
-        return {task_id: self._data.get(task_id, []) for task_id in task_ids}
-
-    def clear(self):
-        self._data = {}
-        self._fifo_queue = []
-
-
 class RandomTaskSample(TaskSampler):
     '''
     Randomly sample data from the storage.
@@ -318,7 +178,7 @@ class RandomTaskSample(TaskSampler):
     def sample_task_ids(self,
                         storage: Storage,
                         batch_size: int,
-                        query_condition: QueryCondition = None) -> List[str]:
+                        query_condition: Condition = None) -> List[str]:
         total_size = storage.size(query_condition)
         if total_size <= batch_size:
             return storage.get_all(query_condition)
@@ -384,7 +244,7 @@ class ReplayBuffer:
 
     def sample_task(self,
                     sampler: TaskSampler = RandomTaskSample(),
-                    query_condition: QueryCondition = None,
+                    query_condition: Condition = None,
                     converter: Converter = DefaultConverter(),
                     batch_size: int = 1000) -> List[T]:
         '''
@@ -397,7 +257,7 @@ class ReplayBuffer:
 
     def sample(self,
                sampler: Sampler = RandomTaskSample(),
-               query_condition: QueryCondition = None,
+               query_condition: Condition = None,
                converter: Converter = DefaultConverter(),
                batch_size: int = 1000) -> List[T]:
         '''
