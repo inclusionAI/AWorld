@@ -202,13 +202,21 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.event_handler_name = event_handler_name
 
     def deep_copy(self):
-        """Create a deep copy of the current Agent instance."""
-        new_agent = Agent(
+        """Create a deep copy of the current Agent instance.
+
+        Returns:
+            A new instance of the same type as the current agent with all attributes copied.
+        """
+        # Use type(self)() to create an instance of the same class as self
+        # This ensures that subclasses will create instances of their own type
+        new_agent = type(self)(
             name=self.name(),
             conf=self.conf,
             desc=self.desc(),
             id=self.id(),
             model_output_parser=self.model_output_parser)
+
+        # Copy all relevant attributes
         new_agent._llm = None
         new_agent.system_prompt = self.system_prompt
         new_agent.system_prompt_template = self.system_prompt_template
@@ -497,6 +505,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             ActionModel sequence from agent policy
         """
+        logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
+
         # Get current step information for trace recording
         source_span = trace.get_current_span()
         self._finished = False
@@ -860,7 +870,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             f"🧠 [MEMORY:short-term] Added system input to agent memory:  Agent#{self.id()}, 💬 {content[:100]}...")
 
     async def custom_system_prompt(self, context: Context, content: str):
-        logger.info(f"llm_agent custom_system_prompt .. agent#{self.id()}")
+        logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
         return self.system_prompt_template.format(context=context, task=content)
 
     async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type="init"):
