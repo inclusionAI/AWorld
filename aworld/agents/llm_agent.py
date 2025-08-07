@@ -195,7 +195,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def deep_copy(self):
         """Create a deep copy of the current Agent instance."""
-        new_agent = Agent(self.name(), self.conf, self.desc(), self.id(), model_output_parser=self.model_output_parser)
+        new_agent = Agent(
+            name=self.name(),
+            conf=self.conf,
+            desc=self.desc(),
+            id=self.id(),
+            model_output_parser=self.model_output_parser
+        )
         new_agent._llm = None
         new_agent.system_prompt = self.system_prompt
         new_agent.agent_prompt = self.agent_prompt
@@ -228,6 +234,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Args:
             observation: The state observed from tools in the environment.
             info: Extended information is used to assist the agent to decide a policy.
+            message: Event received by the agent.
 
         Returns:
             ActionModel sequence from agent policy
@@ -295,7 +302,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             return agent_result.actions
 
     def desc_transform(self):
-        """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
         sync_exec(self.async_desc_transform, )
 
     async def async_desc_transform(self):
@@ -404,57 +410,43 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
         """Log the sequence of messages for debugging purposes"""
-        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
+        logger.info(f"[agent{self.id()}] Invoking LLM with {len(messages)} messages:")
+        chunk_size = 500
         for i, msg in enumerate(messages):
-            prefix = msg.get('role')
-            logger.info(
-                f"[agent] Message {i + 1}: {prefix} ===================================")
+            logger.info(f"[agent{self.id()}] Message {i + 1}: {msg.get('role')} ===================================")
             if isinstance(msg['content'], list):
                 try:
                     for item in msg['content']:
                         if item.get('type') == 'text':
-                            logger.info(
-                                f"[agent] Text content: {item.get('text')}")
+                            logger.info(f"[agent{self.id()}] Text content: {item.get('text')}")
                         elif item.get('type') == 'image_url':
                             image_url = item.get('image_url', {}).get('url', '')
                             if image_url.startswith('data:image'):
-                                logger.info(f"[agent] Image: [Base64 image data]")
+                                logger.info(f"[agent{self.id()}] Image: [Base64 image data]")
                             else:
-                                logger.info(
-                                    f"[agent] Image URL: {image_url[:30]}...")
+                                logger.info(f"[agent{self.id()}] Image URL: {image_url[:30]}...")
                 except Exception as e:
-                    logger.error(f"[agent] Error parsing msg['content']: {msg}. Error: {e}")
+                    logger.error(f"[agent{self.id()}] Error parsing msg['content']: {msg}. Error: {e}")
                     content = str(msg['content'])
-                    chunk_size = 500
                     for j in range(0, len(content), chunk_size):
                         chunk = content[j:j + chunk_size]
-                        if j == 0:
-                            logger.info(f"[agent] Content: {chunk}")
-                        else:
-                            logger.info(f"[agent] Content (continued): {chunk}")
+                        logger.info(f"[agent{self.id()}] Content{'' if j == 0 else ' (continued)'}: {chunk}")
             else:
                 content = str(msg['content'])
-                chunk_size = 500
                 for j in range(0, len(content), chunk_size):
                     chunk = content[j:j + chunk_size]
-                    if j == 0:
-                        logger.info(f"[agent] Content: {chunk}")
-                    else:
-                        logger.info(f"[agent] Content (continued): {chunk}")
+                    logger.info(f"[agent{self.id()}] Content{'' if j == 0 else ' (continued)'}: {chunk}")
 
-            if 'tool_calls' in msg and msg['tool_calls']:
-                for tool_call in msg.get('tool_calls'):
-                    if isinstance(tool_call, dict):
-                        logger.info(
-                            f"[agent] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
-                        args = str(tool_call.get('function', {}).get(
-                            'arguments', {}))[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
-                    elif isinstance(tool_call, ToolCall):
-                        logger.info(
-                            f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
-                        args = str(tool_call.function.arguments)[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+            tool_calls = msg.get('tool_calls')
+            if not tool_calls:
+                return
+            for tool_call in tool_calls:
+                if isinstance(tool_call, ToolCall):
+                    tool_call = tool_call.to_dict()
+                func = tool_call.get('function', {})
+                logger.info(f"[agent] Tool call: {func.get('name', {})} - ID: {tool_call.get('id')}")
+                args = str(func.get('arguments', {}))[:1000]
+                logger.info(f"[agent] Tool args: {args}...")
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
@@ -791,9 +783,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if msg:
                     logger.debug(f"Hook {hook.point()} executed successfully")
                     yield msg
-            except Exception as e:
-                logger.warning(
-                    f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
+            except Exception:
+                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
 
     async def _add_system_message_to_memory(self, context: Context, content: str):
         if not self.system_prompt:
@@ -811,9 +802,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.debug(f"🧠 [Agent#{self.id()}:short-term] histories not empty, do not need add it to agent memory")
             return
 
-        content = self.system_prompt.format(context=context, task=content, tool_list=self.tools)
-        logger.info(f'system prompt content: {content}')
-
+        content = await self.custom_system_prompt(context=context, content=content)
         await self.memory.add(MemorySystemMessage(
             content=content,
             metadata=MessageMetadata(
@@ -825,6 +814,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             )
         ), agent_memory_config=self.memory_config)
         logger.info(f"🧠[Agent#{self.id()}:short-term] Added system input to agent memory, 💬 {content[:100]}...")
+
+    async def custom_system_prompt(self, context: Context, content: str):
+        logger.info(f"llm_agent custom_system_prompt .. agent#{self.id()}")
+        return self.system_prompt.format(context=context, task=content)
 
     async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""

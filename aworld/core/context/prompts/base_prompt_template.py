@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 """Base classes for prompt templates."""
-
+import traceback
 from abc import ABC, abstractmethod
 import logging
 logger = logging.getLogger("prompts")
@@ -114,7 +114,7 @@ class BasePromptTemplate(ABC):
                                 merged[key] = value()
                             except Exception as e2:
                                 # If still error, use default value or placeholder
-                                logger.error(f"Error calling function {key} even without parameters: {e2}, using placeholder")
+                                logger.error(f"Error calling function {key} even without parameters: {e2}, using placeholder, traceback is {traceback.format_exc()}")
                                 merged[key] = f"<Error calling function {key}: {e}>"
                     else:
                         merged[key] = value

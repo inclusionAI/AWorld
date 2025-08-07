@@ -364,7 +364,7 @@ class DefaultGroupHandler(GroupHandler):
 
     async def _build_tool_message(self, actions: List[ActionModel], message: Message):
         session_id = message.session_id
-        headers = {"context": copy.deepcopy(message.context)}
+        headers = {"context": message.context.deep_copy()}
         return Message(
             category=Constants.TOOL,
             payload=actions,
