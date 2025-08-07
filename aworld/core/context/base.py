@@ -206,7 +206,8 @@ class Context:
 
     @task_input.setter
     def task_input(self, task_input):
-        self._task.input = task_input
+        if self._task:
+            self._task.input = task_input
 
     @property
     def outputs(self):
