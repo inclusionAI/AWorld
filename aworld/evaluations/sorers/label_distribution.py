@@ -1,9 +1,10 @@
 from collections import Counter
-from evaluations.base import Scorer, EvaluationResultRow
+from aworld.evaluations.base import Scorer, EvaluationResultRow
 from typing import Any, Optional
 from aworld.utils.import_package import import_package
 
 import_package('scipy')
+
 
 class LabelDistributionScorer(Scorer):
     def __init__(self, name: str = None, dataset_column: str = None):
