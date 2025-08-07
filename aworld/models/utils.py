@@ -136,6 +136,7 @@ def agent_desc_transform(agent_dict: Dict[str, Any],
                     "type": "function",
                     "function": openai_function_schema
                 })
+    logger.debug(f"agent_desc_transform is {agent_as_tools}")
     return agent_as_tools
 
 
