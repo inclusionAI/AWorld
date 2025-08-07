@@ -446,14 +446,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
             tool_calls = msg.get('tool_calls')
             if not tool_calls:
-                return
-            for tool_call in tool_calls:
-                if isinstance(tool_call, ToolCall):
-                    tool_call = tool_call.to_dict()
-                func = tool_call.get('function', {})
-                logger.info(f"[agent] Tool call: {func.get('name', {})} - ID: {tool_call.get('id')}")
+                continue
+            for tc in tool_calls:
+                if isinstance(tc, ToolCall):
+                    tc = tc.to_dict()
+                func = tc.get('function', {})
                 args = str(func.get('arguments', {}))[:1000]
-                logger.info(f"[agent] Tool args: {args}...")
+                logger.info(f"[agent{self.id()}] Tool call: {func.get('name')}, ID: {tc.get('id')}, args: {args}")
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
