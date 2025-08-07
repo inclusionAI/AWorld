@@ -194,14 +194,21 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.event_handler_name = event_handler_name
 
     def deep_copy(self):
-        """Create a deep copy of the current Agent instance."""
-        new_agent = Agent(
+        """Create a deep copy of the current Agent instance.
+
+        Returns:
+            A new instance of the same type as the current agent with all attributes copied.
+        """
+        # Use type(self)() to create an instance of the same class as self
+        # This ensures that subclasses will create instances of their own type
+        new_agent = type(self)(
             name=self.name(),
             conf=self.conf,
             desc=self.desc(),
             id=self.id(),
             model_output_parser=self.model_output_parser
         )
+        # Copy all relevant attributes
         new_agent._llm = None
         new_agent.system_prompt = self.system_prompt
         new_agent.agent_prompt = self.agent_prompt
@@ -865,7 +872,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(f"🧠[Agent#{self.id()}:short-term] Added system input to agent memory, 💬 {content[:100]}...")
 
     async def custom_system_prompt(self, context: Context, content: str):
-        logger.info(f"llm_agent custom_system_prompt .. agent#{self.id()}")
+        logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
         return self.system_prompt.format(context=context, task=content)
 
     async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type="init"):

@@ -57,6 +57,8 @@ class Swarm(object):
         else:
             self.agent_list: List[BaseAgent] = list(args)
 
+        logger.debug(f"{type(self)}Swarm Agent List is : {[type(agent) for agent in self.agent_list]}")
+
         self.setting_build_type(build_type)
         self.max_steps = max_steps
         self._cur_step = 0
@@ -596,6 +598,7 @@ class TopologyBuilder:
 
     @staticmethod
     def register_agent(agent: BaseAgent):
+        logger.info(f"register_agent: {type(agent)}: {agent.id()}")
         if agent.id() not in AgentFactory:
             AgentFactory._cls[agent.id()] = agent.__class__
             AgentFactory._desc[agent.id()] = agent.desc()
