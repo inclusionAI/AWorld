@@ -37,7 +37,7 @@ def get_deepresearch_swarm(user_input):
         conf=agent_config,
         use_tools_in_prompt=True,
         model_output_parser=PlannerOutputParser(agent_id),
-        system_prompt_template=plan_sys_prompt,
+        system_prompt=plan_sys_prompt,
         event_handler_name=Constants.PLAN
     )
 
@@ -45,7 +45,7 @@ def get_deepresearch_swarm(user_input):
         name="web_search_agent",
         desc="web_search_agent",
         conf=agent_config,
-        system_prompt_template=search_sys_prompt,
+        system_prompt=search_sys_prompt,
         tool_names=[Tools.SEARCH_API.value]
     )
     
@@ -53,7 +53,7 @@ def get_deepresearch_swarm(user_input):
         name="reporting_agent",
         desc="reporting_agent",
         conf=agent_config,
-        system_prompt_template=reporting_sys_prompt,
+        system_prompt=reporting_sys_prompt,
     )
 
     return TeamSwarm(plan_agent, web_search_agent, reporting_agent, max_steps=1)
