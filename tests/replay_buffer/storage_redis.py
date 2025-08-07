@@ -1,6 +1,6 @@
 import time
 from aworld.replay_buffer.base import DataRow, ExpMeta, Experience
-from aworld.replay_buffer.storage.redis import RedisStorage
+from aworld.core.storage.redis import RedisStorage
 from aworld.replay_buffer.query_filter import QueryBuilder
 from aworld.core.common import Observation, ActionModel
 from aworld.logs.util import logger

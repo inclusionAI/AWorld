@@ -12,7 +12,7 @@ from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
+from aworld.core.event.base import Message, Constants, TopicType, ToolEvent, AgentEvent
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
@@ -86,19 +86,19 @@ class TaskEventRunner(TaskRunner):
     def _build_first_message(self):
         # build the first message
         if self.agent_oriented:
-            self.init_message = AgentMessage(payload=self.observation,
-                                             sender='runner',
-                                             receiver=self.swarm.communicate_agent.id(),
-                                             session_id=self.context.session_id,
-                                             headers={'context': self.context})
+            self.init_message = AgentEvent(payload=self.observation,
+                                           sender='runner',
+                                           receiver=self.swarm.communicate_agent.id(),
+                                           session_id=self.context.session_id,
+                                           headers={'context': self.context})
         else:
             actions = self.observation.content
             receiver = actions[0].tool_name
-            self.init_message = ToolMessage(payload=self.observation.content,
-                                            sender='runner',
-                                            receiver=receiver,
-                                            session_id=self.context.session_id,
-                                            headers={'context': self.context})
+            self.init_message = ToolEvent(payload=self.observation.content,
+                                          sender='runner',
+                                          receiver=receiver,
+                                          session_id=self.context.session_id,
+                                          headers={'context': self.context})
 
     async def _common_process(self, message: Message) -> List[Message]:
         logger.debug(

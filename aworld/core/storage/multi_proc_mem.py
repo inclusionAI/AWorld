@@ -2,7 +2,7 @@ import multiprocessing
 import traceback
 import pickle
 from typing import Dict, List
-from aworld.replay_buffer.base import Storage, DataRow
+from aworld.replay_buffer.base import DataRow
 from aworld.replay_buffer.query_filter import QueryCondition, QueryFilter
 from aworld.logs.util import logger
 

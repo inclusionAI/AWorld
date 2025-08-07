@@ -6,7 +6,7 @@ import uuid
 from typing import AsyncGenerator
 
 from aworld.core.common import ActionModel, Observation, TaskItem
-from aworld.core.event.base import AgentMessage, Constants, TopicType, Message
+from aworld.core.event.base import AgentEvent, Constants, TopicType, Message
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.output.base import StepOutput
 from aworld.planner.models import StepInfo
@@ -134,8 +134,8 @@ class PlanHandler(AgentHandler):
                 merge_context.save_action_trajectory(step_info.id, res.answer, agent_name=agent.id())
                 logger.info(f"PlanHandler|single_node|end|{res}")
         new_plan_input = Observation(content=merge_context.task_input)
-        yield AgentMessage(session_id=message.session_id,
-                           payload=new_plan_input,
-                           sender=self.name(),
-                           receiver=self.swarm.communicate_agent.id(),
-                           headers={'context': merge_context})
+        yield AgentEvent(session_id=message.session_id,
+                         payload=new_plan_input,
+                         sender=self.name(),
+                         receiver=self.swarm.communicate_agent.id(),
+                         headers={'context': merge_context})
