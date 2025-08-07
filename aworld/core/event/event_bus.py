@@ -140,7 +140,7 @@ class InMemoryEventbus(Eventbus):
         else:
             self._subscribers[task_id][event_type][topic].insert(order, handler)
         logger.info(f"subscribe {event_type} {topic} {handler} success.")
-        logger.info(f"{self._subscribers}")
+        logger.info(f"subscribers {task_id}: {self._subscribers}")
 
     async def unsubscribe(self, task_id: str, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):
