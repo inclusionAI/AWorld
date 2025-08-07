@@ -670,7 +670,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             outputs = kwargs.get("outputs")
 
         llm_response = None
-        llm_output = None
         source_span = trace.get_current_span()
         serializable_messages = to_serializable(messages)
         self.context.context_info["llm_input"] = serializable_messages
