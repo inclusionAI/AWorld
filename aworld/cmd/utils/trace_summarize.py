@@ -92,7 +92,7 @@ async def _do_summarize_trace(trace_id: str):
         feedback_tool_result=True,
     )
 
-    if trace_agent.conf.llm_api_key is None:
+    if trace_agent.conf.llm_config.llm_api_key is None:
         logger.warning(
             "LLM_API_KEY_TRACE is not set, trace summarize will not be executed."
         )
@@ -131,11 +131,12 @@ def summarize_trace(trace_id: str):
             llm_base_url=os.getenv("LLM_BASE_URL_TRACE", None),
             llm_api_key=os.getenv("LLM_API_KEY_TRACE", None),
         )
+    llm_config = agent_config.llm_config
     if not _trace_summary_cache.trace_exists(trace_id):
         if (
-            agent_config.llm_api_key is None
-            or not agent_config.llm_base_url
-            or not agent_config.llm_model_name
+            llm_config.llm_api_key is None
+            or not llm_config.llm_base_url
+            or not llm_config.llm_model_name
         ):
             logger.warning(
                 "LLM_MODEL_NAME_TRACE, LLM_BASE_URL_TRACE, LLM_API_KEY_TRACE is not set, trace summarize will not be executed."
