@@ -133,9 +133,9 @@ def summarize_trace(trace_id: str):
         )
     if not _trace_summary_cache.trace_exists(trace_id):
         if (
-            agent_config.llm_api_key is None
-            or not agent_config.llm_base_url
-            or not agent_config.llm_model_name
+            agent_config.llm_config.llm_api_key is None
+            or not agent_config.llm_config.llm_base_url
+            or not agent_config.llm_config.llm_model_name
         ):
             logger.warning(
                 "LLM_MODEL_NAME_TRACE, LLM_BASE_URL_TRACE, LLM_API_KEY_TRACE is not set, trace summarize will not be executed."
