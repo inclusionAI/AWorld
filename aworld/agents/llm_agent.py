@@ -627,6 +627,32 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     "compress_ratio": round(compressed_len / origin_len, 2)
                 })
 
+    async def _handle_llm_output(self, outputs, llm_output, llm_response):
+        """Unified processing of LLM output, regardless of streaming or non-streaming mode
+        
+        Args:
+            eventbus: Event bus for sending messages
+            outputs: Output collector
+            output: MessageOutput object containing output content
+            llm_response: ModelResponse object
+            resp_stream: Response stream object, only used in streaming mode
+        """
+        if not llm_response or not llm_response.content or not llm_response.tool_calls:
+            return
+        if self.event_driven:
+            output_message = Message(
+                category=Constants.OUTPUT,
+                payload=llm_output,
+                sender=self.id(),
+                session_id=self.context.session_id if self.context else "",
+                headers={"context": self.context}
+            )
+            await send_message(output_message)
+        elif outputs:
+            outputs.add_output(llm_output)
+        else:
+            logger.warning(f"LLM response can not be the output. {llm_response}")
+    
     async def _call_llm_model(self, messages: List[Dict[str, str]] = [], **kwargs) -> ModelResponse:
         """Perform LLM call.
 
@@ -644,6 +670,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             outputs = kwargs.get("outputs")
 
         llm_response = None
+        llm_output = None
         source_span = trace.get_current_span()
         serializable_messages = to_serializable(messages)
         self.context.context_info["llm_input"] = serializable_messages
@@ -665,41 +692,70 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 )
 
                 async def async_call_llm(resp_stream, json_parse=False):
-                    llm_resp = ModelResponse(id="", model="", content="", tool_calls=[])
-
-                    # Async streaming with acall_llm_model
+                    # Use the external llm_response object instead of creating a new one
+                    nonlocal llm_response
+                    
+                    # Create a content queue to pass content to async_generator while updating llm_response
+                    import asyncio
+                    content_queue = asyncio.Queue()
+                    
+                    # Create a completion event to notify async_generator when the stream has ended
+                    stream_done = asyncio.Event()
+                    
+                    # Create a separate task to process streaming responses and update llm_response
+                    async def update_llm_response():
+                        try:
+                            async for chunk in resp_stream:
+                                if chunk.content:
+                                    llm_response.content += chunk.content
+                                    # Put content in the queue for async_generator to use
+                                    await content_queue.put(chunk.content)
+                                if chunk.tool_calls:
+                                    llm_response.tool_calls.extend(chunk.tool_calls)
+                                if chunk.error:
+                                    llm_response.error = chunk.error
+                                llm_response.id = chunk.id
+                                llm_response.model = chunk.model
+                                llm_response.usage = nest_dict_counter(
+                                    llm_response.usage, chunk.usage)
+                        finally:
+                            # Mark the stream as ended
+                            stream_done.set()
+                    
+                    # Start the update task
+                    update_task = asyncio.create_task(update_llm_response())
+                    
+                    # Create a generator for MessageOutput that gets content from the queue
                     async def async_generator():
-                        async for chunk in resp_stream:
-                            if chunk.content:
-                                llm_resp.content += chunk.content
-                                yield chunk.content
-                            if chunk.tool_calls:
-                                llm_resp.tool_calls.extend(chunk.tool_calls)
-                            if chunk.error:
-                                llm_resp.error = chunk.error
-                            llm_resp.id = chunk.id
-                            llm_resp.model = chunk.model
-                            llm_resp.usage = nest_dict_counter(
-                                llm_resp.usage, chunk.usage)
+                        while True:
+                            # If the queue is empty and the stream has ended, exit the loop
+                            if content_queue.empty() and stream_done.is_set():
+                                break
+                            
+                            # If the queue is empty but the stream hasn't ended, wait for new content
+                            if content_queue.empty():
+                                try:
+                                    # Wait for new content or stream end
+                                    await asyncio.wait(
+                                        [asyncio.create_task(content_queue.get()), 
+                                         asyncio.create_task(stream_done.wait())],
+                                        return_when=asyncio.FIRST_COMPLETED
+                                    )
+                                    # If the queue is still empty, the stream has ended
+                                    if content_queue.empty():
+                                        break
+                                except asyncio.CancelledError:
+                                    break
+                            
+                            # Get content and yield it
+                            content = await content_queue.get()
+                            yield content
 
-                    return MessageOutput(source=async_generator(), json_parse=json_parse), llm_resp
+                    # Return MessageOutput and the already updating llm_response
+                    return MessageOutput(source=async_generator(), json_parse=json_parse), llm_response
 
-                output, response = await async_call_llm(resp_stream)
-                llm_response = response
+                llm_output, response = await async_call_llm(resp_stream)
 
-                if self.event_driven:
-                    output_message = Message(
-                        category=Constants.OUTPUT,
-                        payload=output,
-                        sender=self.id(),
-                        session_id=self.context.session_id if self.context else "",
-                        headers={"context": self.context}
-                    )
-                    await send_message(output_message)
-                elif outputs:
-                    outputs.add_output(output)
-                else:
-                    logger.warning(f"LLM response can not be the output. {llm_response}")
             else:
                 llm_response = await acall_llm_model(
                     self.llm,
@@ -709,21 +765,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=kwargs.get("stream", False)
                 )
+                
+                # In non-streaming mode, create a MessageOutput wrapping llm_response
+                llm_output = MessageOutput(source=llm_response, json_parse=False)
+            
+            await self._handle_llm_output(outputs, llm_output, llm_response)
 
-                if self.event_driven:
-                    await send_message(Message(
-                        category=Constants.OUTPUT,
-                        payload=llm_response,
-                        sender=self.id(),
-                        session_id=self.context.session_id if self.context else "",
-                        headers={"context": self.context}
-                    ))
-                elif outputs:
-                    outputs.add_output(MessageOutput(source=llm_response, json_parse=False))
-                else:
-                    logger.warning(f"LLM response can not be the output. {llm_response}")
+            logger.info(
+                f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
 
-            logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
         except Exception as e:
             logger.warn(traceback.format_exc())
             if self.event_driven:
