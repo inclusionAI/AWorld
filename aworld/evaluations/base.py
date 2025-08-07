@@ -1,9 +1,11 @@
 import abc
+from ast import Set
 import statistics
 import asyncio
-from typing import Any, Iterable, Optional, List
+from typing import Any, Iterable, Optional, List, Callable, Awaitable
 from dataclasses import dataclass, field
 from itertools import chain, repeat
+from aworld.logs.util import logger
 
 
 @dataclass
@@ -109,7 +111,7 @@ class Evaluator(abc.ABC):
 
     def __init__(self,
                  scorers: list[Scorer],
-                 prepare_dataset: Optional[callable[Dataset, List[dict]]] = None,
+                 prepare_dataset: Optional[Callable[[Dataset], List[dict]]] = None,
                  repeat_times: int = 1,
                  eval_parallelism: int = 1):
         self.scorers = scorers
@@ -123,11 +125,11 @@ class Evaluator(abc.ABC):
     def _default_prepare_dataset(self, dataset: Dataset) -> List[dict]:
         return dataset.rows
 
-    async def _evaluate_in_task(self, evaluatable: Evaluatable, dataset: Iterable[dict], evaluate_fun: callable[int, Evaluatable, dict]):
+    async def _evaluate_in_task(self, evaluatable: Evaluatable, dataset: Iterable[dict], evaluate_fun: Callable[[int, Evaluatable, dict], Awaitable[dict]]):
         # create a semaphore to limit the parallelism
         semaphore: asyncio.Semaphore = asyncio.Semaphore(self.eval_parallelism)
         dataset_iter = iter(dataset)
-        running_tasks = []
+        running_tasks: Set[asyncio.Task] = set()
         index = 0
 
         async def __evaluate_fun(index: int, evaluatable: Evaluatable, input: dict) -> dict:
@@ -137,9 +139,10 @@ class Evaluator(abc.ABC):
         def __create_eval_task():
             nonlocal dataset_iter
             nonlocal index
+            nonlocal running_tasks
             try:
                 input = next(dataset_iter)
-                running_tasks.append(asyncio.create_task(__evaluate_fun(index, evaluatable, input)))
+                running_tasks.add(asyncio.create_task(__evaluate_fun(index, evaluatable, input)))
                 index += 1
             except StopIteration:
                 return None
