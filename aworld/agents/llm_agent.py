@@ -630,7 +630,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             images = [observation.image]
         messages = await self.async_messages_transform(image_urls=images, observation=observation, message=message)
 
-        self._log_messages(messages)
+        # self._log_messages(messages)
 
         return messages
 
@@ -854,7 +854,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if not self.system_prompt:
             return
         content = await self.custom_system_prompt(context=context, content=content)
-        logger.info(f'system prompt content: {content}')
+        logger.debug(f'system prompt content: {content}')
 
         await self.memory.add(MemorySystemMessage(
             content=content,
