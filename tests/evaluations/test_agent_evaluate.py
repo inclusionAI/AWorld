@@ -46,5 +46,5 @@ class AgentEvaluationTest(unittest.IsolatedAsyncioTestCase):
         evaluatable = AgentEvaluatable(agent=summarize_agent)
         evaluator = Evaluator(scorers=[SummarizeQualityScorer(model_config=score_llm_config)])
 
-        result = await evaluator.evaluate(evaluatable, dataset)
-        print(f"result.summary: {result.summary}")
+        result = await evaluator.evaluate(dataset, evaluatable)
+        print(f"result: {result}")

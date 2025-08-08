@@ -1,5 +1,6 @@
 import abc
 from ast import Set
+from re import M
 import statistics
 import asyncio
 from typing import Any, Iterable, Optional, List, Callable, Awaitable
@@ -70,30 +71,34 @@ class Scorer(abc.ABC):
         """
         raise NotImplementedError
 
+    def _do_summarize(self, scores: list[Any]) -> dict:
+        score_dict = {}
+        score = scores[0]
+        if isinstance(score, bool):
+            score_dict['true_count'] = scores.count(True)
+            score_dict['true_rate'] = scores.count(True) / len(scores)
+        elif isinstance(score, (int, float)):
+            score_dict['mean'] = sum(scores) / len(scores)
+            score_dict['min'] = min(scores)
+            score_dict['max'] = max(scores)
+            score_dict['std'] = statistics.stdev(scores)
+        elif isinstance(score, dict):
+            all_keys = list(
+                dict.fromkeys([k for score in scores if isinstance(score, dict) for k in score.keys()])
+            )
+            for k in all_keys:
+                score_dict[k] = self._do_summarize([score[k] for score in scores if k in score])
+        return score_dict
+
     def summarize(self, result_rows: list[EvaluationResultRow]) -> Optional[dict]:
         '''
             summarize the score rows.
         '''
+        logger.info(f"result_rows: {result_rows}")
         if not result_rows or not result_rows[0].score_rows or self.name not in result_rows[0].score_rows:
             return {}
         my_scores = [result.score_rows[self.name] for result in result_rows]
-        score_dict = {}
-        score = my_scores[0]
-        if isinstance(score, bool):
-            score_dict['true_count'] = my_scores.count(True)
-            score_dict['true_rate'] = my_scores.count(True) / len(my_scores)
-        elif isinstance(score, (int, float)):
-            score_dict['mean'] = sum(my_scores) / len(my_scores)
-            score_dict['min'] = min(my_scores)
-            score_dict['max'] = max(my_scores)
-            score_dict['std'] = statistics.stdev(my_scores)
-        elif isinstance(score, dict):
-            all_keys = list(
-                dict.fromkeys([k for score in my_scores if isinstance(score, dict) for k in score.keys()])
-            )
-            for k in all_keys:
-                score_dict[k] = self.summarize([score[k] for score in my_scores if k in score])
-        return score_dict
+        return self._do_summarize(my_scores)
 
 
 @dataclass

@@ -1,3 +1,4 @@
+from aworld.core import task
 from aworld.evaluations.base import Scorer
 from aworld.config.conf import ModelConfig, AgentConfig
 from typing import Any
@@ -24,9 +25,7 @@ Given an <input> and a <summary>, evaluate the quality of the <summary>.
 `poor`: The <summary> misses most or all of the key information in the <input>, or is very verbose or vague, or is not concise or informative, or has many grammatical errors, or contains information or assertions that are not present in the <input>.
 """
 
-DEFAULT_SUMMARIZE_QUALITY_USER_PROMPT = """
-Evaluate the quality of the following <summary> given the <input>:
-
+TASK_TEMPLATE = """
 <input>
 {input}
 </input>
@@ -34,9 +33,14 @@ Evaluate the quality of the following <summary> given the <input>:
 <summary>
 {summary}
 </summary>
+"""
+
+DEFAULT_SUMMARIZE_QUALITY_USER_PROMPT = """
+Evaluate the quality of the following <summary> given the <input>:
+{task}
 
 Please output in the following standard JSON format without any additional explanatory text:
-{{"quality":"ok"}}
+{{"quality":"ok", "score_reasoning":"Think step-by-step about the quality of the summary before deciding on the summarization score."}}
 """
 
 summarize_quality_score_mapping = {"poor": 0.0, "ok": 0.5, "excellent": 1.0}
@@ -45,6 +49,7 @@ summarize_quality_score_mapping = {"poor": 0.0, "ok": 0.5, "excellent": 1.0}
 class SummarizeQualityScorer(Scorer):
 
     def __init__(self, model_config: ModelConfig, query_column: str = 'query', answer_column: str = 'answer'):
+        super().__init__()
         self.model_config = model_config
         self.query_column = query_column
         self.answer_column = answer_column
@@ -57,7 +62,7 @@ class SummarizeQualityScorer(Scorer):
         )
 
     def _fetch_json_from_result(self, input_str):
-        json_match = re.search(r"\[.*\]", input_str, re.DOTALL)
+        json_match = re.search(r'\{[^{}]*\}', input_str, re.DOTALL)
         if json_match:
             json_str = json_match.group(0)
             try:
@@ -79,14 +84,14 @@ class SummarizeQualityScorer(Scorer):
         """
         query = input[self.query_column]
         answer = output[self.answer_column]
-        agent_prompt = DEFAULT_SUMMARIZE_QUALITY_USER_PROMPT.format(input=query,
-                                                                    summary=answer)
+        task_input = TASK_TEMPLATE.format(input=query, summary=answer)
+
         score_agent = Agent(conf=self.agent_config, name='score_agent',
                             system_prompt=DEFAULT_SUMMARIZE_QUALITY_SYSTEM_PROMPT,
-                            agent_prompt=agent_prompt)
+                            agent_prompt=DEFAULT_SUMMARIZE_QUALITY_USER_PROMPT)
 
-        response = await Runners.run(input[self.query_column], agent=score_agent)
+        response = await Runners.run(task_input, agent=score_agent)
         jsonObj = self._fetch_json_from_result(response.answer)
         if jsonObj:
-            return {"summary_quality_score": summarize_quality_score_mapping[jsonObj["quality"]]}
-        return {"summary_quality_score": 0.0}
+            return {"summary_quality_score": summarize_quality_score_mapping[jsonObj["quality"]], "score_reasoning": jsonObj["score_reasoning"]}
+        return {"summary_quality_score": 0.0, "score_reasoning": "score response error"}
