@@ -50,7 +50,7 @@ AWorld empowers you to rapidly build individual tool-using agents, orchestrate s
 **Agentic Achievements Unboxed!** 🔥
 
 🏅️ **[2025/08/06]** Excel in Stability with Multi-Agent System on GAIA [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][MAS]](#) [![][Leaderboard]](#)  
-Achieved an average Pass@1 score of 67.89 and Pass@3 score of 83.49 across 109 tasks from the test dataset. [See more details here](./examples/gaia/README_GUARD.md). Technical report coming soon.
+Achieved an average Pass@1 score of 67.89 and Pass@3 score of 83.49 across 109 tasks from the test dataset. See [more details here](./examples/gaia/README_GUARD.md). See [Technical report here](https://huggingface.co/blog/chengle/aworld-gaia).
 
 🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) [![][MAS]](#)  
 Built a MAS solving <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> in hours - proving **agent orchestration** beats solo models. <br>
