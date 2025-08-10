@@ -8,11 +8,9 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from pydantic import BaseModel, Field
 from enum import Enum
 
-from aworld.core.context.prompts import BasePromptTemplate
 from aworld.logs.util import logger
 
 
@@ -246,3 +244,7 @@ class RunConfig(BaseConfig):
 class EvaluationConfig(BaseConfig):
     work_dir: Optional[str] = None
     run_times: int = 1
+
+
+class StorageConfig(BaseConfig):
+    name: str = "inmemory"
