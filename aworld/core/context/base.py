@@ -228,8 +228,8 @@ class Context:
         return new_context
 
 
-    def merge_sub_context(self, sub_task_context: 'ApplicationContext'):
-        self.merge_context(self, sub_task_context)
+    def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
+        self.merge_context(sub_task_context)
 
     def deep_copy(self) -> 'Context':
         # Create a new Context instance without calling __init__ to avoid singleton issues
