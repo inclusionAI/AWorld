@@ -233,11 +233,9 @@ class DefaultGroupHandler(GroupHandler):
         messages_ids = []
         for agent_name, acts in agent_messages.items():
             for act in acts:
-                new_context = self.context.deep_copy()
-
                 agent_message = act[2]
                 messages_ids.append(agent_message.id)
-                tasks[agent_message.id] = exec_agent(act[0], act[1], new_context, sub_task=True, outputs=self.context.outputs)
+                tasks[agent_message.id] = exec_agent(act[0], act[1], self.context, sub_task=True, outputs=self.context.outputs)
 
         return messages_ids, tasks
 

@@ -204,6 +204,11 @@ class Context:
     def task_input(self):
         return self._task.input
 
+    @task_input.setter
+    def task_input(self, task_input):
+        if self._task:
+            self._task.input = task_input
+
     @property
     def outputs(self):
         return self._task.outputs
@@ -213,6 +218,14 @@ class Context:
 
     def set_state(self, key: str, value: Any):
         self.context_info[key] = value
+
+    async def build_sub_context(self, sub_task_content: str, sub_task_id: str = None):
+        # Create a new Context instance without calling __init__ to avoid singleton issues
+        new_context = object.__new__(Context)
+        self._deep_copy(new_context)
+        new_context.task_id = sub_task_id
+        new_context.task_input = sub_task_content
+        return new_context
 
     def deep_copy(self) -> 'Context':
         # Create a new Context instance without calling __init__ to avoid singleton issues
