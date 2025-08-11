@@ -96,7 +96,6 @@ examples/gaia/gaia_dataset/
 *.jar
 *.rar
 *.tar
-*.zip
 
 # Temporary files
 *.tmp
