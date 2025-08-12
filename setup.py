@@ -126,21 +126,26 @@ class AWorldInstaller(install):
 
     @staticmethod
     def _install_reqs(reqs, ignore_error=False, no_deps=False):
-        info = "--no-deps" if no_deps else ""
+        """
+        Install a list of requirements using pip.
+        Use argument lists (no shell) to avoid quoting issues on Windows (single quotes are literal).
+        """
+        base_cmd = [sys.executable, "-m", "pip", "install"]
+        if no_deps:
+            base_cmd.append("--no-deps")
         if ignore_error:
-            # install requirements one by one
+            # install requirements one by one so a failure doesn't stop the rest
             for req in reqs:
                 try:
-                    cmd = f"{sys.executable} -m pip install {info} '{req}'"
+                    cmd = base_cmd + [req]
                     call_process(cmd)
                     logger.info(f"Installing optional package {req} have succeeded.")
-                except:
+                except Exception:
                     logger.warning(
                         f"Installing optional package {req} is failed, Ignored."
                     )  # ignore
         elif reqs:
-            cmd_reqs = "'" + "' '".join(reqs) + "'"
-            cmd = f"{sys.executable} -m pip install {info} {cmd_reqs}"
+            cmd = base_cmd + list(reqs)
             call_process(cmd)
             logger.info(f"Packages {str(reqs)} have been installed.")
 

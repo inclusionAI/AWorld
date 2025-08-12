@@ -9,6 +9,7 @@ from aworld.config import RunConfig
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.task import Task, TaskResponse
+from aworld.logs.util import logger
 from aworld.output.outputs import Outputs
 from aworld.runners.utils import choose_runners, execute_runner
 
@@ -59,9 +60,13 @@ async def exec_agent(question: Any, agent: Agent, context: Context, sub_task: bo
         outputs: The same outputs instance.
         task_group_id: ID of group of task.
     """
-    task = Task(input=question,
+    task_id = uuid.uuid1().hex
+    sub_task_context = await context.build_sub_context(question, task_id)
+    logger.info(f"{context.task_id} build sub_task: {task_id}, sub_task_context: {sub_task_context}")
+    task = Task(id=task_id,
+                input=question,
                 agent=agent,
-                context=context,
+                context=sub_task_context,
                 is_sub_task=sub_task,
                 group_id=task_group_id,
                 session_id=context.session_id)
