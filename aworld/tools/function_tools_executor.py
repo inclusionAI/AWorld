@@ -27,7 +27,7 @@ class FunctionToolsExecutor(ToolActionExecutor):
         self.function_tools_cache = {}
     
     def execute_action(self, actions: List[ActionModel], **kwargs) -> Tuple[List[ActionResult], Any]:
-        """Synchronously execute tool actions
+        """Execute tool actions synchronously
         
         Args:
             actions: List of actions
@@ -37,8 +37,12 @@ class FunctionToolsExecutor(ToolActionExecutor):
             List of execution results and additional information
         """
         # For synchronous execution, we use asyncio to run the async method
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.async_execute_action(actions, **kwargs))
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(self.async_execute_action(actions, **kwargs))
+        except RuntimeError:
+            # No event loop available, create a new one
+            return asyncio.run(self.async_execute_action(actions, **kwargs))
     
     async def async_execute_action(self, actions: List[ActionModel], **kwargs) -> Tuple[List[ActionResult], Any]:
         """Asynchronously execute tool actions

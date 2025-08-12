@@ -70,6 +70,11 @@ class EventManager:
     async def done(self):
         await self.event_bus.done(self.context.task_id)
 
+    async def cleanup(self):
+        """Clean up resources for the current task."""
+        if hasattr(self.event_bus, '_cleanup_queue'):
+            self.event_bus._cleanup_queue(self.context.task_id)
+
     async def register(self, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         await self.event_bus.subscribe(self.context.task_id, event_type, topic, handler, **kwargs)
 

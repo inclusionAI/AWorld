@@ -4,7 +4,7 @@
 import logging
 
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+logging.basicConfig(level=logging.ERROR, format=LOG_FORMAT)
 # common logger info
 logger = logging.getLogger("common")
 # for trace info
