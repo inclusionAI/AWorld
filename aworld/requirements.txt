@@ -16,3 +16,4 @@ fastapi
 aiohttp~=3.9.5
 click
 packaging
+numpy
