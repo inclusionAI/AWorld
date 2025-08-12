@@ -279,8 +279,12 @@ class FunctionTools:
                 # Sync call
                 import asyncio
                 # Use run_in_executor to run sync function, avoid blocking
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lambda: func(**filtered_args))
+                try:
+                    loop = asyncio.get_event_loop()
+                    result = await loop.run_in_executor(None, lambda: func(**filtered_args))
+                except RuntimeError:
+                    # No event loop available, run the sync function directly
+                    result = func(**filtered_args)
                 
             return self._format_result(result)
         except Exception as e:

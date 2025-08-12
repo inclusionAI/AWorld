@@ -171,18 +171,39 @@ class ReturnThread(threading.Thread):
         self.args = args
         self.kwargs = kwargs
         self.result = None
+        self.exception = None
         self.daemon = True
 
     def run(self):
-        self.result = asyncio.run(self.func(*self.args, **self.kwargs))
+        try:
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                self.result = loop.run_until_complete(self.func(*self.args, **self.kwargs))
+            finally:
+                # Clean up the event loop
+                loop.close()
+        except Exception as e:
+            self.exception = e
+            logger.error(f"Error in ReturnThread: {e}")
+            raise
 
 
 def asyncio_loop():
+    """Get the current running event loop, or None if not available."""
     try:
         loop = asyncio.get_running_loop()
+        return loop
     except RuntimeError:
-        loop = None
-    return loop
+        # No running loop in current thread
+        try:
+            # Try to get the current event loop (might not be running)
+            loop = asyncio.get_event_loop()
+            return loop
+        except RuntimeError:
+            # No event loop available in this thread
+            return None
 
 
 def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
@@ -192,17 +213,47 @@ def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
 
     loop = asyncio_loop()
     if loop and loop.is_running():
+        # When running in an event loop, create a new thread to avoid blocking
         thread = ReturnThread(async_func, *args, **kwargs)
         thread.start()
         thread.join()
+        if thread.exception:
+            raise thread.exception
         result = thread.result
     else:
+        # No running loop, check if we can get an event loop
         try:
+            # Try to get the current event loop
             loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is running, use thread approach
+                thread = ReturnThread(async_func, *args, **kwargs)
+                thread.start()
+                thread.join()
+                if thread.exception:
+                    raise thread.exception
+                result = thread.result
+            else:
+                # Use the existing loop
+                result = loop.run_until_complete(async_func(*args, **kwargs))
+        except RuntimeError as e:
+            # No event loop available in this thread (e.g., ThreadPoolExecutor)
+            # Create a new thread with its own event loop
+            thread = ReturnThread(async_func, *args, **kwargs)
+            thread.start()
+            thread.join()
+            if thread.exception:
+                raise thread.exception
+            result = thread.result
         except Exception as e:
-            logger.warning(f"get_event_loop fail. {e}")
-            return asyncio.run(async_func(*args, **kwargs))
-        result = loop.run_until_complete(async_func(*args, **kwargs))
+            logger.warning(f"Unexpected error in sync_exec: {e}")
+            # Fallback to creating a new thread
+            thread = ReturnThread(async_func, *args, **kwargs)
+            thread.start()
+            thread.join()
+            if thread.exception:
+                raise thread.exception
+            result = thread.result
     return result
 
 

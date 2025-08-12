@@ -767,9 +767,11 @@ class EventRuntimeStateManager(RuntimeStateManager):
                     status=RunNodeStatus.FAILED,
                     result=result)
             else:
+                node = self.get_node(message.id)
+                status = node.status if node else RunNodeStatus.FAILED
                 handle_result = HandleResult(
                     name=name,
-                    status=self.get_node(message.id).status if self.get_node(message.id) else RunNodeStatus.FAILED,
+                    status=status,
                     result=result)
             self.save_result(node_id=message.id, result=handle_result)
 
@@ -780,7 +782,11 @@ class EventRuntimeStateManager(RuntimeStateManager):
         run_node_busi_type = RunNodeBusiType.from_message_category(
             message.category)
         if run_node_busi_type:
-            node = self._node_exist(node_id=message.id)
+            node = self._find_node(message.id)
+            if not node:
+                logger.warning(f"Node not found for message {message.id}, skipping end_message_node")
+                return
+                
             status = RunNodeStatus.SUCCESS
             if node.results:
                 for result in node.results:

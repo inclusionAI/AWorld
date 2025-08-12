@@ -82,7 +82,8 @@ class EventReplayBuffer(ReplayBuffer):
 
         agent_id = message.receiver
         task_id = message.context.task_id
-        task_name = message.context.get_task().name
+        task = message.context.get_task()
+        task_name = task.name if task else "unknown_task"
         pre_agent = message.sender
         task_agent_id = f"{task_id}_{agent_id}"
         if task_agent_id not in self.task_agent_map:
@@ -103,11 +104,14 @@ class EventReplayBuffer(ReplayBuffer):
         state_manager = RuntimeStateManager.instance()
         observation = message.payload
         node = state_manager._find_node(message.id)
+        
         agent_results = []
-        for handle_result in node.results:
-            result = handle_result.result
-            if isinstance(result, Message) and isinstance(result.payload, list):
-                agent_results.extend(result.payload)
+        if node and node.results:
+            for handle_result in node.results:
+                result = handle_result.result
+                if isinstance(result, Message) and isinstance(result.payload, list):
+                    agent_results.extend(result.payload)
+        
         messages = self._get_llm_messages_from_memory(message)
 
         # Build Experience

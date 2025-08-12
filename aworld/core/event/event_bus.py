@@ -4,6 +4,7 @@ import abc
 from asyncio import Queue, PriorityQueue
 from inspect import isfunction
 from typing import Callable, Any, Dict, List
+import threading
 
 from aworld.core.singleton import InheritanceSingleton
 
@@ -11,6 +12,8 @@ from aworld.core.common import Config
 from aworld.core.event.base import Message, Messageable
 from aworld.logs.util import logger
 
+# Thread-local storage for event loops
+_thread_local = threading.local()
 
 class Eventbus(Messageable, InheritanceSingleton):
     __metaclass__ = abc.ABCMeta
@@ -82,29 +85,52 @@ class InMemoryEventbus(Eventbus):
         # use asyncio Queue as default, isolation based on session_id
         # self._message_queue: Queue = Queue()
         self._message_queue: Dict[str, Queue] = {}
+        self._queue_lock = threading.Lock()
+
+    def _get_or_create_queue(self, task_id: str) -> Queue:
+        """Get or create a PriorityQueue for the given task_id in the current event loop context."""
+        with self._queue_lock:
+            if task_id not in self._message_queue:
+                # Create the queue in the current event loop context
+                self._message_queue[task_id] = PriorityQueue()
+            return self._message_queue[task_id]
+
+    def _cleanup_queue(self, task_id: str):
+        """Clean up a queue for a specific task_id."""
+        with self._queue_lock:
+            if task_id in self._message_queue:
+                # Clear the queue before removing it
+                queue = self._message_queue[task_id]
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except:
+                        break
+                del self._message_queue[task_id]
 
     def wait_consume_size(self, id: str) -> int:
-        return self._message_queue.get(id, Queue()).qsize()
+        queue = self._get_or_create_queue(id)
+        return queue.qsize()
 
     async def publish(self, message: Message, **kwargs):
         logger.info(f"publish taskid: {message.task_id}, message: {message}")
-        queue = self._message_queue.get(message.task_id)
-        if not queue:
-            queue = PriorityQueue()
-            self._message_queue[message.task_id] = queue
+        queue = self._get_or_create_queue(message.task_id)
         logger.debug(f"publish message: {message.task_id}:  {message.session_id}, queue: {id(queue)}")
         await queue.put(message)
 
     async def consume(self, message: Message, **kwargs):
-        return await self._message_queue.get(message.task_id, PriorityQueue()).get()
+        queue = self._get_or_create_queue(message.task_id)
+        return await queue.get()
 
     async def consume_nowait(self, message: Message):
-        return self._message_queue.get(message.task_id, PriorityQueue()).get_nowait()
+        queue = self._get_or_create_queue(message.task_id)
+        return queue.get_nowait()
 
     async def done(self, id: str):
-        while not self._message_queue.get(id, PriorityQueue()).empty():
-            self._message_queue.get(id, PriorityQueue()).get_nowait()
-        self._message_queue.get(id, PriorityQueue()).task_done()
+        queue = self._get_or_create_queue(id)
+        while not queue.empty():
+            queue.get_nowait()
+        queue.task_done()
 
     async def subscribe(self, task_id: str, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):

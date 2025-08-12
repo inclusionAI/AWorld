@@ -258,6 +258,7 @@ class TaskEventRunner(TaskRunner):
                     logger.debug(
                         f"[TaskEventRunner] break snap {self.task.id}")
                     await self.event_mng.done()
+                    await self.event_mng.cleanup()
                     logger.info(
                         f" [TaskEventRunner] stop task {self.task.id}...")
                     if self._task_response is None:
@@ -297,6 +298,15 @@ class TaskEventRunner(TaskRunner):
         finally:
             logger.debug(
                 f"[TaskEventRunner] _do_run finished  await_is_stopped {self.task.id}")
+            # Ensure cleanup happens even if an exception occurred
+            try:
+                await self.event_mng.cleanup()
+            except Exception as e:
+                logger.warning(f"Failed to cleanup event manager: {e}")
+            # # 等待所有 background_tasks 完成，防止 pending
+            # if self.background_tasks:
+            #     logger.info(f"Waiting for {len(self.background_tasks)} background tasks to finish...")
+            #     await asyncio.gather(*self.background_tasks, return_exceptions=True)
             if await self.is_stopped():
                 logger.info(
                     f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
