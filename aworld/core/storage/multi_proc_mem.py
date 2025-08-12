@@ -112,12 +112,14 @@ class MultiProcessStorage(Storage):
             return len(await self.select_data(condition))
 
     async def select_data(self, condition: Condition = None) -> List[DataItem]:
-        datas = []
-        datas.extend(self._load_from_shared_memory(data) for data in self._data.keys())
+        with self._lock:
+            datas = []
+            datas.extend(self._load_from_shared_memory(data) for data in self._data.keys())
 
-        if condition:
-            datas = ConditionFilter(condition).filter(datas)
-        return datas
+            if condition:
+                datas = ConditionFilter(condition).filter(datas)
+            return datas
 
     async def get_data(self, block_id: str = None) -> List[DataItem]:
-        return self._load_from_shared_memory(block_id)
+        with self._lock:
+            return self._load_from_shared_memory(block_id)
