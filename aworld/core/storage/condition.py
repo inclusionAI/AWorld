@@ -3,6 +3,9 @@
 import abc
 from typing import Any, Literal, TypedDict, List, Union, Dict
 
+from aworld.core.exceptions import AWorldRuntimeException
+from aworld.core.storage.base import DataItem
+
 
 class BaseCondition(TypedDict):
     field: str
@@ -104,3 +107,73 @@ class ConditionBuilder:
     def nested(self, builder: 'ConditionBuilder') -> 'ConditionBuilder':
         self.conditions.append({"nested": builder.build()})
         return self
+
+
+class ConditionFilter:
+    def __init__(self, condition: Condition) -> None:
+        self.condition = condition
+
+    def _get_field_value(self, data: DataItem, field: str) -> Any:
+        """Get the field value from data."""
+        if data.value:
+            return getattr(data.value, field, None)
+        else:
+            raise AWorldRuntimeException(f"{data} no value to get.")
+
+    def check_condition(self, data: DataItem, condition: Condition) -> bool:
+        """Data match condition check."""
+        if condition is None:
+            return True
+        if "field" in condition and "op" in condition:
+            field_val = self._get_field_value(data, condition["field"])
+            op = condition["op"]
+            target_val = condition["value"]
+
+            if op == "eq":
+                return field_val == target_val
+            if op == "ne":
+                return field_val != target_val
+            if op == "gt":
+                return field_val > target_val
+            if op == "gte":
+                return field_val >= target_val
+            if op == "lt":
+                return field_val < target_val
+            if op == "lte":
+                return field_val <= target_val
+            if op == "in":
+                return field_val in target_val
+            if op == "not_in":
+                return field_val not in target_val
+            if op == "like":
+                return target_val in field_val
+            if op == "not_like":
+                return target_val not in field_val
+            if op == "is_null":
+                return field_val is None
+            if op == "is_not_null":
+                return field_val is not None
+        elif "and_" in condition or "or_" in condition:
+            if "and_" in condition:
+                return all(self.check_condition(data, c) for c in condition["and_"])
+            if "or_" in condition:
+                return any(self.check_condition(data, c) for c in condition["or_"])
+
+        return False
+
+    def filter(self, data: List[DataItem], condition: Condition = None) -> List[DataItem]:
+        """Filter data by condition.
+
+        Args:
+            data: List of data item to filter.
+            condition: Data select condition.
+        Returns:
+            List[DataRow]: List of rows that match the condition.
+        """
+        if not condition:
+            condition = self.condition
+
+        if not condition:
+            return data
+
+        return [row for row in data if self.check_condition(row, condition)]
