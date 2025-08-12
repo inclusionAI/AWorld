@@ -134,7 +134,9 @@ class InmemoryFilter:
 class InMemoryStorage(Storage[DataItem]):
     """In-memory storage."""
 
-    def __init__(self, conf: InmemoryConfig):
+    def __init__(self, conf: InmemoryConfig = None):
+        if not conf:
+            conf = InmemoryConfig()
         super().__init__(conf)
 
         self.blocks: Dict[str, DataBlock] = OrderedDict()
@@ -216,7 +218,7 @@ class InMemoryStorage(Storage[DataItem]):
     async def get_data(self, block_id: str = None) -> List[DataItem]:
         return self.datas.get(block_id, [])
 
-    async def close(self):
+    async def delete_all(self):
         self.blocks.clear()
         self.datas.clear()
 

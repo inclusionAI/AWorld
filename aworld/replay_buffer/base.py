@@ -6,8 +6,9 @@ from abc import ABC, abstractmethod
 from math import ceil
 
 from aworld.core.common import ActionModel, Observation
-from aworld.core.storage.base import Storage, InMemoryStorage
+from aworld.core.storage.base import Storage
 from aworld.core.storage.condition import Condition
+from aworld.core.storage.inmemory import InMemoryStorage
 from aworld.logs.util import logger
 from aworld.utils.serialized_util import to_serializable
 
