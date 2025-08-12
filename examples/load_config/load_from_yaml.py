@@ -1,7 +1,7 @@
 # coding: utf-8
 # Example: load agents and swarm from a YAML file and run
 
-from aworld.config.agent_loader import load_swarm_from_yaml
+from aworld.config.agent_loader import load_agents_from_yaml, load_swarm_from_yaml
 from aworld.runner import Runners
 
 if __name__ == "__main__":
