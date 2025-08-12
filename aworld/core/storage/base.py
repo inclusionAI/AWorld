@@ -4,6 +4,7 @@ import time
 import uuid
 from abc import abstractmethod, ABCMeta
 from dataclasses import dataclass, field
+from dataclasses_json import dataclass_json
 from typing import Generic, TypeVar, List, Dict, Union, Any
 
 from aworld.config import StorageConfig
@@ -18,6 +19,7 @@ class DataBlock:
     meta_info: dict = field(default_factory=dict)
 
 
+@dataclass_json
 @dataclass
 class Data:
     """The base definition structure of AWorld data storage."""
@@ -48,7 +50,7 @@ class Storage(Generic[DataItem]):
         """Storage backend instance, used to perform native operations on storage."""
 
     @abstractmethod
-    async def close(self):
+    async def delete_all(self):
         """Close the storage backend."""
 
     async def name(self) -> str:
