@@ -443,7 +443,7 @@ class OpenAIProvider(LLMProviderBase):
         ]
 
         for param in supported_params:
-            if param in kwargs:
+            if param in kwargs and kwargs[param] is not None:
                 openai_params[param] = kwargs[param]
 
         return openai_params
