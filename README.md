@@ -49,12 +49,15 @@ AWorld empowers you to rapidly build individual tool-using agents, orchestrate s
 ---
 **Agentic Achievements Unboxed!** 🔥
 
-🏅️ **[2025/08/06]** Excel in Stability with Multi-Agent System on GAIA [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][MAS]](#) [![][Leaderboard]](#)  
+🏅️ **[2025/08/06]** Excel in Stability with Multi-Agent System on GAIA [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][MAS]](#) [![][Leaderboard]](#)  [![][Forward]]()
 Achieved an average Pass@1 score of 67.89 and Pass@3 score of 83.49 across 109 tasks from the test dataset. See [more details here](./examples/gaia/README_GUARD.md). See [Technical report here](https://huggingface.co/blog/chengle/aworld-gaia).
 
-🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) [![][MAS]](#)  
+🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) [![][MAS]](#) [![][Forward]]()
 Built a MAS solving <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> in hours - proving **agent orchestration** beats solo models. <br>
 Peek at the genius [under the hood](examples/imo/README.md)!
+
+<details>
+<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 Click to View Previous News </summary>
 
 🧩 **[2025/07/23]** Build BFCL Runtimes Readily!  [![][BFCL]](https://gorilla.cs.berkeley.edu/leaderboard.html) [![][Runtime]](#)  
 New BFCL tutorial shows how to **synthesize function calls training data in minutes**. <br>
@@ -63,6 +66,8 @@ Start cooking up your own agents [right here](examples/BFCL/README.md)!
 🏆 **[2025/07/07]** GAIA Soars to <span style="color: #d81b60; font-weight: bold;">77.08</span>! [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][Cloud-Native]](#) [![][Leaderboard]](#)  
 **Cloud-native runtimes** now enable distributed agent evolution. <br>
 See how diverse environments evolves smarter models [training recipe](#backward-process-design).
+
+</details>
 
 
 # 🏃‍♀️ Quickstart
@@ -609,6 +614,8 @@ Success! Your agent is now running and ready to chat!
 [Leaderboard]: https://img.shields.io/badge/Leaderboard-FFE6B7
 [Benchmark]: https://img.shields.io/badge/Benchmark-FFE6B7
 [Cloud-Native]: https://img.shields.io/badge/Cloud--Native-B19CD7
+[Forward]: https://img.shields.io/badge/Forward-4A90E2
+[Backward]: https://img.shields.io/badge/Backward-7B68EE
 
 
 
