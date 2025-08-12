@@ -139,8 +139,6 @@ class TaskEventRunner(TaskRunner):
                         t = asyncio.create_task(
                             self._handle_task(message, handler))
                         handle_tasks.append(t)
-                        self.background_tasks.add(t)
-                        t.add_done_callback(self.background_tasks.discard)
                 logger.debug(
                     f"[TaskEventRunner] _common_process handle_tasks collect finished {self.task.id}, message_id = {message.id}")
 
@@ -265,7 +263,7 @@ class TaskEventRunner(TaskRunner):
                                                            success=True if not msg else False,
                                                            id=self.task.id,
                                                            time_cost=(
-                                                                   time.time() - start),
+                                                               time.time() - start),
                                                            usage=self.context.token_usage)
                     break
                 logger.debug(f"[TaskEventRunner] next snap {self.task.id}")
@@ -335,4 +333,3 @@ class TaskEventRunner(TaskRunner):
             self._task_response.trajectory = trajectory
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
-
