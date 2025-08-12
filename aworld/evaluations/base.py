@@ -1,9 +1,28 @@
 import abc
+from ast import Set
 import statistics
 import asyncio
-from typing import Any, Iterable, Optional, List
+from typing import Any, Iterable, Optional, List, Callable, Awaitable
 from dataclasses import dataclass, field
 from itertools import chain, repeat
+from aworld.logs.util import logger
+
+
+@dataclass
+class EvaluationResultRow:
+    index: int = 0
+    input: dict = field(default_factory=dict)
+    output: dict = field(default_factory=dict)
+    score_rows: dict = field(default_factory=dict)
+
+
+@dataclass
+class EvaluationResult:
+    '''
+    Evaluation result.
+    '''
+    summary: dict = field(default_factory=dict)
+    details: list[EvaluationResultRow] = field(default_factory=list)
 
 
 class Evaluatable(abc.ABC):
@@ -21,6 +40,11 @@ class Evaluatable(abc.ABC):
         raise NotImplementedError
 
 
+class NoActionEvaluatable(Evaluatable):
+    async def predict(self, input: dict) -> dict:
+        return {}
+
+
 class Scorer(abc.ABC):
     '''
     The base class of scorer.
@@ -33,53 +57,47 @@ class Scorer(abc.ABC):
         return self.name
 
     @abc.abstractmethod
-    async def score(self, input: dict, output: dict) -> Any:
+    async def score(self, index: int, input: dict, output: dict) -> Any:
         """score the execute result.
 
+        Args:
+            index: the index of the example.
+            input: the input of the example.
+            output: the output of the example.
+
         Returns:
-            score
+            score: the score of the example.
         """
         raise NotImplementedError
 
-    def summarize(self, score_rows: list) -> Optional[dict]:
+    def _do_summarize(self, scores: list[Any]) -> dict:
+        score_dict = {}
+        score = scores[0]
+        if isinstance(score, bool):
+            score_dict['true_count'] = scores.count(True)
+            score_dict['true_rate'] = scores.count(True) / len(scores)
+        elif isinstance(score, (int, float)):
+            score_dict['mean'] = sum(scores) / len(scores)
+            score_dict['min'] = min(scores)
+            score_dict['max'] = max(scores)
+            score_dict['std'] = statistics.stdev(scores)
+        elif isinstance(score, dict):
+            all_keys = list(
+                dict.fromkeys([k for score in scores if isinstance(score, dict) for k in score.keys()])
+            )
+            for k in all_keys:
+                score_dict[k] = self._do_summarize([score[k] for score in scores if k in score])
+        return score_dict
+
+    def summarize(self, result_rows: list[EvaluationResultRow]) -> Optional[dict]:
         '''
             summarize the score rows.
         '''
-        if not score_rows:
+        logger.info(f"result_rows: {result_rows}")
+        if not result_rows or not result_rows[0].score_rows or self.name not in result_rows[0].score_rows:
             return {}
-        score_dict = {}
-        score = score_rows[0]
-        if isinstance(score, bool):
-            score_dict['true_count'] = score_rows.count(True)
-            score_dict['true_rate'] = score_rows.count(True) / len(score_rows)
-        elif isinstance(score, (int, float)):
-            score_dict['mean'] = sum(score_rows) / len(score_rows)
-            score_dict['min'] = min(score_rows)
-            score_dict['max'] = max(score_rows)
-            score_dict['std'] = statistics.stdev(score_rows)
-        elif isinstance(score, dict):
-            all_keys = list(
-                dict.fromkeys([k for score in score_rows if isinstance(score, dict) for k in score.keys()])
-            )
-            for k in all_keys:
-                score_dict[k] = self.summarize([score[k] for score in score_rows if k in score])
-        return score_dict
-
-
-@dataclass
-class EvaluationResultRow:
-    input: dict = field(default_factory=dict)
-    output: dict = field(default_factory=dict)
-    score_rows: dict = field(default_factory=dict)
-
-
-@dataclass
-class EvaluationResult:
-    '''
-    Evaluation result.
-    '''
-    summary: dict = field(default_factory=dict)
-    details: list[EvaluationResultRow] = field(default_factory=list)
+        my_scores = [result.score_rows[self.name] for result in result_rows]
+        return self._do_summarize(my_scores)
 
 
 @dataclass
@@ -97,7 +115,7 @@ class Evaluator(abc.ABC):
 
     def __init__(self,
                  scorers: list[Scorer],
-                 prepare_dataset: Optional[callable[Dataset, List[dict]]] = None,
+                 prepare_dataset: Optional[Callable[[Dataset], List[dict]]] = None,
                  repeat_times: int = 1,
                  eval_parallelism: int = 1):
         self.scorers = scorers
@@ -111,21 +129,25 @@ class Evaluator(abc.ABC):
     def _default_prepare_dataset(self, dataset: Dataset) -> List[dict]:
         return dataset.rows
 
-    async def _evaluate_in_task(self, evaluatable: Evaluatable, dataset: Iterable[dict], evaluate_fun: callable[Evaluatable, dict]):
+    async def _evaluate_in_task(self, evaluatable: Evaluatable, dataset: Iterable[dict], evaluate_fun: Callable[[int, Evaluatable, dict], Awaitable[dict]]):
         # create a semaphore to limit the parallelism
         semaphore: asyncio.Semaphore = asyncio.Semaphore(self.eval_parallelism)
         dataset_iter = iter(dataset)
-        running_tasks = []
+        running_tasks: Set[asyncio.Task] = set()
+        index = 0
 
-        async def __evaluate_fun(evaluatable: Evaluatable, input: dict) -> dict:
+        async def __evaluate_fun(index: int, evaluatable: Evaluatable, input: dict) -> dict:
             async with semaphore:
-                return await evaluate_fun(evaluatable, input)
+                return await evaluate_fun(index, evaluatable, input)
 
         def __create_eval_task():
             nonlocal dataset_iter
+            nonlocal index
+            nonlocal running_tasks
             try:
                 input = next(dataset_iter)
-                running_tasks.append(asyncio.create_task(__evaluate_fun(evaluatable, input)))
+                running_tasks.add(asyncio.create_task(__evaluate_fun(index, evaluatable, input)))
+                index += 1
             except StopIteration:
                 return None
 
@@ -144,7 +166,7 @@ class Evaluator(abc.ABC):
                 task.cancel()
             raise e
 
-    async def run_single_case(self, evaluatable: Evaluatable, input: dict) -> EvaluationResultRow:
+    async def run_single_case(self, index: int, evaluatable: Evaluatable, input: dict) -> EvaluationResultRow:
         """Run a single case.
 
         Args:
@@ -157,11 +179,11 @@ class Evaluator(abc.ABC):
         output = await evaluatable.predict(input)
         score_rows = {}
         for scorer in self.scorers:
-            score_rows[scorer.name] = await scorer.score(input, output)
-        return EvaluationResultRow(input=input, output=output, score_rows=score_rows)
+            score_rows[scorer.name] = await scorer.score(index, input, output)
+        return EvaluationResultRow(index=index, input=input, output=output, score_rows=score_rows)
 
-    async def evaluate(self, evaluatable: Evaluatable, dataset: Dataset) -> EvaluationResult:
-        """Evaluate the dataset/task.
+    async def evaluate(self, dataset: Dataset, evaluatable: Evaluatable = NoActionEvaluatable()) -> EvaluationResult:
+        """Evaluate the dataset/llm/agent.
 
         Returns:
             EvaluationResult
@@ -176,7 +198,8 @@ class Evaluator(abc.ABC):
         async for result_row in self._evaluate_in_task(evaluatable, input_dataset_chain, self.run_single_case):
             details.append(result_row)
 
+        details.sort(key=lambda x: x.index)
         summary = {}
         for scorer in self.scorers:
-            summary[scorer.name] = scorer.summarize([result_row.score_rows[scorer.name] for result_row in details])
+            summary[scorer.name] = scorer.summarize(details)
         return EvaluationResult(summary=summary, details=details)
