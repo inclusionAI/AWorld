@@ -17,7 +17,7 @@ class MemoryItem(BaseModel):
     tags: list[str] = Field(description="tags")
     histories: list["MemoryItem"] = Field(default_factory=list)
     deleted: bool = Field(default=False)
-    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile", "fact"] = Field(default="message")
+    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile", "fact", "conversation_summary"] = Field(default="message")
     version: int = Field(description="version")
 
     def __init__(self, **data):
@@ -263,6 +263,30 @@ class MemorySummary(MemoryItem):
             "role": "assistant",
             "content": self.content
         }
+
+
+class ConversationSummary(MemoryItem):
+    """
+    Represents a memory summary.
+    All custom attributes are stored in content and metadata.
+    Args:
+        item_ids (str): The IDS of the agent.
+        summary (str): The summary text.
+        metadata (Optional[Dict[str, Any]]): Additional metadata.
+    """
+
+    def __init__(self, user_id: str, session_id: str, summary: str, metadata: MessageMetadata, **kwargs) -> None:
+        meta = metadata.to_dict
+        meta['user_id'] = user_id
+        meta['session_id'] = session_id
+        super().__init__(content=summary, metadata=meta, memory_type="conversation_summary", **kwargs)
+
+    def to_openai_message(self) -> dict:
+        return {
+            "role": "assistant",
+            "content": self.content
+        }
+
 
 class MemoryMessage(MemoryItem):
     """
