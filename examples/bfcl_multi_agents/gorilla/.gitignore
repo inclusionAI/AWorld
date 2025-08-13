@@ -1,0 +1,43 @@
+build
+dist
+*.egg-info
+**/__pycache__/
+*.log
+**/*.lic
+.vscode
+.idea
+.env
+.editorconfig
+.DS_Store
+**/*.pyc
+goex/exec_engine/checkpoints/
+goex/exec_engine/credentials/*
+!goex/exec_engine/credentials/credentials_utils.py
+!goex/exec_engine/credentials/supported.txt
+goex/docker/*/requirements.txt
+goex/docker/misc/images.json
+
+################## Berkley Function Call Leaderboard ##########################
+
+# Ignore inference results
+berkeley-function-call-leaderboard/result/
+
+# Ignore leaderboard score
+berkeley-function-call-leaderboard/score/
+
+# Ignore environment variables
+berkeley-function-call-leaderboard/.env
+!berkeley-function-call-leaderboard/bfcl_eval/.env.example
+
+# Ignore config file for generating test cases
+berkeley-function-call-leaderboard/test_case_ids_to_generate.json
+!berkeley-function-call-leaderboard/bfcl_eval/test_case_ids_to_generate.json.example
+
+# Ignore multi turn ground truth conversation log
+berkeley-function-call-leaderboard/bfcl_eval/scripts/ground_truth_conversation/
+
+.direnv/
+.venv
+
+# Ignore the wandb cache:
+**/wandb/
