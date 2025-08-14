@@ -6,9 +6,9 @@ from pathlib import Path
 
 from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
-    MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary, 
+    MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary,
     MemorySystemMessage, MemoryToolMessage, MessageMetadata,
-    UserProfile, AgentExperience
+    UserProfile, AgentExperience, ConversationSummary
 )
 from aworld.models.model_response import ToolCall
 
@@ -226,6 +226,19 @@ class SQLiteMemoryStore(MemoryStore):
                 item_ids=item_ids,
                 summary=content_data,
                 metadata=summary_metadata,
+                **base_data
+            )
+        elif memory_type == 'conversation_summary':
+            content_data = self._deserialize_content(content)
+            if not content_data or not isinstance(content_data, str):
+                return None
+            # Preserve all custom metadata attributes
+            conversation_summary_metadata = MessageMetadata(**memory_meta)
+            return ConversationSummary(
+                user_id=memory_meta.get('user_id'),
+                session_id=memory_meta.get('session_id'),
+                summary=content_data,
+                metadata=conversation_summary_metadata,
                 **base_data
             )
         else:

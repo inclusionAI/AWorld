@@ -267,12 +267,13 @@ class MemorySummary(MemoryItem):
 
 class ConversationSummary(MemoryItem):
     """
-    Represents a memory summary.
+    Represents a conversation summary.
     All custom attributes are stored in content and metadata.
     Args:
-        item_ids (str): The IDS of the agent.
-        summary (str): The summary text.
-        metadata (Optional[Dict[str, Any]]): Additional metadata.
+        user_id (str): The ID of the user.
+        session_id (str): The ID of the session.
+        summary (str): The summary text of the conversation.
+        metadata (MessageMetadata): Metadata object containing additional information.
     """
 
     def __init__(self, user_id: str, session_id: str, summary: str, metadata: MessageMetadata, **kwargs) -> None:
