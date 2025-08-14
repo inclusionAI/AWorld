@@ -90,7 +90,7 @@ def create_checkpoint(
         ts=datetime.now(timezone.utc).isoformat(),
         metadata=metadata,
         values=values,
-        version=VersionUtils.get_next_version(version),
+        version=version,
         parent_id=parent_id,
         namespace=namespace,
     )
