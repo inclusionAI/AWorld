@@ -42,7 +42,7 @@ def execute_multi_turn_func_call(
         module_name = CLASS_FILE_PATH_MAPPING[class_name]
         # TODO: Handler the model name issue from handler more elegantly
         instance_name = (
-            f"{model_name.replace('-', '_').replace('.', '_').replace('/', '_')}_{test_entry_id}_{class_name.lower()}_instance"
+            f"{model_name.replace('[', '_').replace(']', '_').replace('-', '_').replace('.', '_').replace('/', '_')}_{test_entry_id}_{class_name.lower()}_instance"
         )
         if instance_name not in globals():
             module = importlib.import_module(module_name)

@@ -572,7 +572,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
                 logger.info(f"Execute response: {llm_response.message}")
             except Exception as e:
-                logger.warn(traceback.format_exc())
+                logger.error(traceback.format_exc())
                 raise e
             finally:
                 if llm_response:

@@ -41,6 +41,7 @@ The Berkeley Function Calling Leaderboard (BFCL) is a comprehensive evaluation f
 
 - Python 3.11+
 - AWorld framework installed
+- Prepare basic BFCL environment variables following the BFCL installation guidance: [BFCL README](gorilla/berkeley-function-call-leaderboard/README.md)
 - OpenRouter API key (for model access)
 
 ## Environment Setup
@@ -50,6 +51,8 @@ The `init_env.sh` script sets up the necessary environment variables:
 ```bash
 export BFCL_PROJECT_ROOT=/path/to/berkeley-function-call-leaderboard
 export OPENROUTER_API_KEY=your_api_key_here
+export AGI_API_KEY=****
+export AGI_BASE_URL=*****
 cp $(python -c "import bfcl_eval, pathlib; print(pathlib.Path(bfcl_eval.__path__[0]) / 'test_case_ids_to_generate.json.example')") $BFCL_PROJECT_ROOT/test_case_ids_to_generate.json
 ```
 
@@ -57,7 +60,7 @@ cp $(python -c "import bfcl_eval, pathlib; print(pathlib.Path(bfcl_eval.__path__
 
 - `BFCL_PROJECT_ROOT`: Path to the BFCL project root directory
 - `OPENROUTER_API_KEY`: Your OpenRouter API key for accessing LLM models
-
+- You may need AGI related environment variables if you want to use models need .
 
 ### Setup Steps
 
@@ -163,7 +166,7 @@ To add new models or modify existing implementations:
 4. Update configuration files as needed
 
 ## Additional Resources
-- more information about BFCL installation please refer to [BFCL README](BFCL/AWorld/examples/bfcl_multi_agents/gorilla/berkeley-function-call-leaderboard/README.md)
+- more information about BFCL installation please refer to [BFCL README](gorilla/berkeley-function-call-leaderboard/README.md)
 - [BFCL Documentation](https://gorilla.cs.berkeley.edu/leaderboard)
 - [Gorilla Project](https://github.com/ShishirPatil/gorilla)
 - [Berkeley Function Calling Leaderboard](https://gorilla.cs.berkeley.edu/leaderboard.html)
