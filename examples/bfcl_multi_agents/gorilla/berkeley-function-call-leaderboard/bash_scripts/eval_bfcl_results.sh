@@ -1,2 +1,2 @@
-cd /Users/jackiezhangant/codes/ACT_LMM/BFCL/gorilla/berkeley-function-call-leaderboard/bfcl_eval/
+cd /Users/jackiezhangant/codes/ACT_LMM/BFCL/AWorld/examples/bfcl_multi_agents/gorilla/berkeley-function-call-leaderboard/bfcl_eval
 python __main__.py evaluate

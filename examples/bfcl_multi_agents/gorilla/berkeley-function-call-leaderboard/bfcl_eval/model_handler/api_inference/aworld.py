@@ -52,8 +52,8 @@ def build_aworld_agent(or_model_name, bfcl_prompt):
         api_key = os.getenv("OPENROUTER_API_KEY")
 
         if or_model_name in ["xlam-lp-70b"]:
-            _base_url="https://agi.alipay.com/api"
-            api_key="123"
+            _base_url=os.getenv("AGI_BASE_URL")
+            api_key  =os.getenv("AGI_API_KEY")
 
         agent_config = AgentConfig(
             llm_provider="openai",

@@ -113,7 +113,7 @@ class MultiQueryAgent(Agent):
             await self._add_human_input_to_memory(content, message.context, memory_type="message")
 
         # from memory get last n messages
-        histories = self.memory.get_last_n(self.memory_config.history_number, filters={
+        histories = self.memory.get_last_n(self.history_messages, filters={
             "agent_id": self.id(),
             "session_id": session_id,
             # "task_id": task_id

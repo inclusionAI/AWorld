@@ -63,12 +63,21 @@ Here is a list of functions in JSON format that you can invoke.\n{functions}\n
 
 ### If you decide to invoke any of the function(s), you MUST put it in the format of [func_name1(params_name1=params_value1, params_name2=params_value2...), func_name2(params)], You SHOULD NOT include any other text in THIS KIND of response.
 
-TIPS:
-    - We provide you a verifier agent to verify whether the function call you generated meets the documentation requirements. When calling this verifier agent, you need to briefly describe the user's needs and inform the verifier agent of the result of your function call. The verifier agent will return some suggestions, which you can use to modify your function call.
-    - Only one verifier agent can be called per round, and only once.
-    - Modify your function call until you and the verifier agent reach an agreement.
+We provide you following helper agents to help you with the previous tasks. You can call them in the following ways:
+    1. Call the verifier agent to verify whether the function call you generated meets the documentation requirements. When calling this verifier agent, you need to briefly describe the user's intention and inform the verifier agent of the result of your function call. The verifier agent will return some suggestions, which you can use to modify your function call. You can pass the entire generated function calls as parameters to the verifier agent, instead of making separate calls.
+
+For example, when the user requests to navigate to the 'document' folder and create a file named 'TeamNotes.txt' for tracking ideas, and the function calls you intend to generate are [cd(folder='document'), create_file(file_name='TeamNotes.txt')], you have two options:
+    1.If you are confident enough and believe there are no issues, you can directly output [cd(folder='document'), create_file(file_name='TeamNotes.txt')] instead of calling verifier agent. DO NOT call the verifier agent in this case! DO NOT call any tools! Only output the function calls as strings!!!
+    2.Alternatively, you can ask the verifier agent to help you check whether the function calls comply with the requirements. You can pass both the user's intent—"The user wants to navigate to the 'document' folder and create a file named 'TeamNotes.txt' for tracking ideas."—and your generated function calls [cd(folder='document'), create_file(file_name='TeamNotes.txt')] to the verifier agent. It will return some suggestions, which you can then use to refine your function calls.
+
+Remember that only one helper agent can be called per round! Don't call multiple helper agents in the same round! Don't call the same helper agent multiple times in the same round!
 """
 )
+
+#  1. Call the helper agent to generate a function call.
+#  - You can call the helper agent to generate a function call by sending a message to the helper agent.
+#  - The helper agent will return a function call in the format of [func_name1(params_name1=params_value1, params_name2=params_value2...), func_name2(params)].
+
 
 
 def aworld_swarm_prompt_processing(function_docs):
@@ -93,8 +102,8 @@ def _build_swarm(or_model_name, bfcl_func_docs):
     api_key = OPENROUTE_API_KEY
 
     if or_model_name in ["xlam-lp-70b"]:
-        _base_url="https://agi.alipay.com/api"
-        api_key="123"
+        _base_url=os.getenv("AGI_BASE_URL")
+        api_key  =os.getenv("AGI_API_KEY")
 
     execute_prompt, verify_system_prompt = aworld_swarm_prompt_processing(function_docs=bfcl_func_docs)
 
@@ -155,17 +164,19 @@ def build_swarm_in_agent_as_tool(or_model_name, bfcl_func_docs):
         system_prompt=execute_prompt,
         mcp_servers=mcp_config.get("mcpServers", []).keys(),
         mcp_config=mcp_config,
+        use_tools_in_prompt=True,
     )
 
     verify_agent = MultiQueryAgent(
         conf=agent_config,
-        name="verify_function_call_agent",
+        name="verifier_agent",
+        desc="You can pass the complete function calls along with the purpose of calling them as parameters to the verifier agent, which will return some suggestions that you can use to modify your function calls.",
         system_prompt=verify_system_prompt,
         mcp_servers=mcp_config.get("mcpServers", []).keys(),
         mcp_config=mcp_config,
     )
 
-    swarm = Swarm( (exe_agent, verify_agent), max_steps=1, build_type=GraphBuildType.HANDOFF)
+    swarm = Swarm( (exe_agent, verify_agent), max_steps=6, build_type=GraphBuildType.HANDOFF)
     return swarm
 
 
