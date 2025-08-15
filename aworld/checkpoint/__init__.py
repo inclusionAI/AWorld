@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime, timezone
 from abc import ABC, abstractmethod
 import asyncio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
+
 
 class CheckpointMetadata(BaseModel):
     """
@@ -16,6 +17,8 @@ class CheckpointMetadata(BaseModel):
     """
     session_id: str = Field(..., description="The session identifier.")
     task_id: Optional[str] = Field(None, description="The task identifier.")
+
+    model_config = ConfigDict(extra="allow")
 
 class Checkpoint(BaseModel):
     """
