@@ -358,4 +358,4 @@ def main(args):
                 test_cases_total = test_cases_total[: args.limit_cnt]
                 print(f"Limiting to {args.limit_cnt} test cases.")
 
-            generate_results_aworld(args, model_name, test_cases_total)
+            generate_results(args, model_name, test_cases_total)

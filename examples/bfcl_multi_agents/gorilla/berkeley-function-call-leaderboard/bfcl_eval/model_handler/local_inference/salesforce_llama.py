@@ -1,13 +1,18 @@
 import json
-
+import os
 from bfcl_eval.model_handler.local_inference.base_oss_handler import OSSHandler
 from bfcl_eval.model_handler.utils import func_doc_language_specific_pre_processing
 from overrides import override
+from openai import OpenAI
 
 
 class SalesforceLlamaHandler(OSSHandler):
     def __init__(self, model_name, temperature) -> None:
         super().__init__(model_name, temperature)
+
+        self.base_url = os.getenv("AGI_BASE_URL")
+        self.client = OpenAI(base_url=self.base_url, api_key=os.getenv("AGI_API_KEY"))
+
 
     @override
     def _format_prompt(self, messages, function):

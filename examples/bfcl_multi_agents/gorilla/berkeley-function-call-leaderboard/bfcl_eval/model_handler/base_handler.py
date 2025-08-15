@@ -81,6 +81,7 @@ class BaseHandler:
         all_reasoning_content: list[list] = []
         # Execute no function call, but just to get a reference to all the instances to get the initial state for logging purpose
         if not exclude_state_log:
+            # init the evaluation system
             _, involved_instances = execute_multi_turn_func_call(
                 [],
                 initial_config,
@@ -176,7 +177,8 @@ class BaseHandler:
                 # Try parsing the model response
                 model_response_data = self._parse_query_response_FC(api_response)
                 model_responses = model_response_data["model_responses"]
-
+                
+                print(f"Model response: {model_responses}")
                 # Add the assistant message to the chat history
                 inference_data = self._add_assistant_message_FC(
                     inference_data, model_response_data

@@ -27,9 +27,10 @@ from bfcl_eval.model_handler.api_inference.openroute_completion import (
     OpenRouteOpenAICompletionsHandler,
 )
 from bfcl_eval.model_handler.api_inference.aworld_fastapi import AWorldOpenAICompletionsHandler
-
 from bfcl_eval.model_handler.api_inference.aworld_multi_agent import LocalAWorldSwarmOpenAICompletionsHandler
 from bfcl_eval.model_handler.api_inference.aworld import LocalAWorldOpenAICompletionsHandler
+from bfcl_eval.model_handler.api_inference.aworld_single_agent_xlam import AWorldOpenAICompletionsHandlerXLAM
+from bfcl_eval.model_handler.api_inference.xlam_chat_completions import XLAMCompletionsHandler
 
 from bfcl_eval.model_handler.api_inference.openai_response import OpenAIResponsesHandler
 from bfcl_eval.model_handler.api_inference.qwen import (
@@ -125,6 +126,18 @@ class ModelConfig:
 
 # Inference through API calls
 api_inference_model_map = {
+    "AGI/ChatCompletions[xlam-lp-70b]": ModelConfig(
+        model_name=  "AGI/ChatCompletions[xlam-lp-70b]",
+        display_name="AGI/ChatCompletions[xlam-lp-70b]",
+        url="https://github.com/inclusionAI/AWorld",
+        org="Google",
+        license="Apache 2.0",
+        model_handler=XLAMCompletionsHandler,
+        input_price=2.5,
+        output_price=10,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
     "AWorldLocal/AgentSwarm[xlam-lp-70b]": ModelConfig(
         model_name=  "AWorldLocal/AgentSwarm[xlam-lp-70b]",
         display_name="AWorldLocal/AgentSwarm[xlam-lp-70b]",
@@ -167,7 +180,8 @@ api_inference_model_map = {
         url="https://github.com/inclusionAI/AWorld",
         org="Google",
         license="Apache 2.0",
-        model_handler= LocalAWorldOpenAICompletionsHandler,
+        # model_handler= AWorldOpenAICompletionsHandlerXLAM,
+        model_handler=LocalAWorldOpenAICompletionsHandler,
         input_price=0,
         output_price=0,
         is_fc_model=False,
