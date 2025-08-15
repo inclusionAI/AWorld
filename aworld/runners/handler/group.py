@@ -256,7 +256,7 @@ class DefaultGroupHandler(GroupHandler):
                 return
             root_agent_id = node.metadata.get('root_agent_id')
             root_agent_set.add(root_agent_id)
-            self.context.merge_context(res.context)
+            self.context.merge_sub_context(res.context)
             msg = Message(
                 category=Constants.AGENT,
                 payload=[ActionModel(policy_info=res.answer, agent_name=root_agent_id)],

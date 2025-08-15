@@ -73,7 +73,8 @@ class ChromaVectorDB(VectorDB):
                 where_conditions = []
                 if filter:
                     for key, value in filter.items():
-                        where_conditions.append({key: {"$eq": value}})
+                        if value:
+                            where_conditions.append({key: {"$eq": value}})
                     where_filter = {"$and": where_conditions} if len(where_conditions) > 1 else where_conditions[0]
                 else:
                     where_filter = None
