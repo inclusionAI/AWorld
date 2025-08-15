@@ -94,11 +94,20 @@ class OSSHandler(BaseHandler, EnforceOverrides):
                     )
 
             self.model_path_or_id = local_model_path
+
             load_kwargs = {
                 "pretrained_model_name_or_path": self.model_path_or_id,
                 "local_files_only": True,
                 "trust_remote_code": True,
             }
+            if 'xlam' in local_model_path.lower():
+                self.model_path_or_id = 'xlam-lp-70b'
+
+                load_kwargs = {
+                    "pretrained_model_name_or_path": local_model_path,
+                    "local_files_only": True,
+                    "trust_remote_code": True,
+                }
         else:
             self.model_path_or_id = self.model_name_huggingface
             load_kwargs = {
@@ -205,6 +214,10 @@ class OSSHandler(BaseHandler, EnforceOverrides):
                     )
                 try:
                     # Make a simple request to check if the server is up
+                    if 'agi' in self.base_url:
+                        print(f"Base url is {self.base_url}, skip server ready check")
+                        server_ready = True
+
                     response = requests.get(f"{self.base_url}/models")
                     if response.status_code == 200:
                         server_ready = True

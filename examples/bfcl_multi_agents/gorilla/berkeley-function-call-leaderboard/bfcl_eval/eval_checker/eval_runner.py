@@ -197,6 +197,8 @@ def multi_turn_runner(
         multi_turn_model_result_list: list[list] = model_result[i]["result"]
         multi_turn_ground_truth_list: list[list[str]] = possible_answer[i]["ground_truth"]
         test_entry: dict = prompt[i]
+        
+        assert model_result[i]["id"] == possible_answer[i]["id"] == index
 
         # Remove the function doc from the score file for better readability; they are repeated and way too long
         if "function" in test_entry:
@@ -298,8 +300,11 @@ def multi_turn_runner(
             result.append(temp)
         else:
             correct_count += 1
-
-    accuracy = correct_count / len(model_result)
+    if len(model_result) > 0:
+        accuracy = correct_count / len(model_result)
+    else:
+        accuracy = 0
+        
     result.insert(
         0,
         {
@@ -577,6 +582,7 @@ def evaluate_task(
     record_cost_latency(state["leaderboard_table"], model_name, model_result)
 
     # Find the corresponding test file.
+    # /Users/jackiezhangant/codes/ACT_LMM/BFCL/AWorld/examples/bfcl_multi_agents/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/BFCL_v3_multi_turn_long_context.json
     prompt_file = find_file_with_suffix(PROMPT_PATH, test_category)
     prompt = load_file(prompt_file, sort_by_id=True)
 
@@ -587,7 +593,7 @@ def evaluate_task(
 
     else:
         # Find the corresponding possible answer file
-        possible_answer_file = find_file_with_suffix(POSSIBLE_ANSWER_PATH, test_category)
+        possible_answer_file = find_file_with_suffix(POSSIBLE_ANSWER_PATH, test_category) # PosixPath('/Users/jackiezhangant/codes/ACT_LMM/BFCL/AWorld/examples/bfcl_multi_agents/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v3_multi_turn_base.json')
         possible_answer = load_file(possible_answer_file, sort_by_id=True)
 
         if is_multi_turn(test_category):
