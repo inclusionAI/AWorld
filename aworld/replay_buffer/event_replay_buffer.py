@@ -29,7 +29,7 @@ class EventReplayBuffer(ReplayBuffer):
     async def get_trajectory(self, messages: List[Message], task_id: str) -> List[Dict[str, Any]] | None:
         if not messages:
             return None
-        valid_agent_messages = await self._filter_replay_messages(messages)
+        valid_agent_messages = await self._filter_replay_messages(messages, task_id)
         if not valid_agent_messages:
             return None
         data_rows = []
@@ -49,10 +49,11 @@ class EventReplayBuffer(ReplayBuffer):
             logger.error(f"Failed to save trajectories: {str(e)}.{traceback.format_exc()}")
             return None
 
-    async def _filter_replay_messages(self, messages: List[Message]) -> List[Message]:
+    async def _filter_replay_messages(self, messages: List[Message], task_id: str) -> List[Message]:
         results = []
+        logger.info(f"Retrieving agent messages for task: {task_id}")
         for message in messages:
-            if message.category != Constants.AGENT:
+            if message.task_id != task_id or message.category != Constants.AGENT:
                 continue
             sender = message.sender
             receiver = message.receiver
@@ -103,6 +104,9 @@ class EventReplayBuffer(ReplayBuffer):
         state_manager = RuntimeStateManager.instance()
         observation = message.payload
         node = state_manager._find_node(message.id)
+        if node is None or not node.results:
+            logger.error(f"Node result not found for message id: {message.id}, node: {node}")
+            return None
         agent_results = []
         for handle_result in node.results:
             result = handle_result.result

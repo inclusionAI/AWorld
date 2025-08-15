@@ -156,24 +156,37 @@ class McpServers:
                             logging.warning(f"Failed to cleanup server {server_name}: {e}")
                 else:
                     if call_result_raw and call_result_raw.content:
-                        if isinstance(call_result_raw.content[0], TextContent):
-                            action_result = ActionResult(
-                                tool_name=server_name,
-                                action_name=tool_name,
-                                content=call_result_raw.content[0].text,
-                                keep=True,
-                                metadata=call_result_raw.content[0].model_extra.get(
-                                    "metadata", {}
-                                ),
-                            )
-                        elif isinstance(call_result_raw.content[0], ImageContent):
-                            action_result = ActionResult(
-                                tool_name=server_name,
-                                action_name=tool_name,
-                                content=f"data:image/jpeg;base64,{call_result_raw.content[0].data}",
-                                keep=True,
-                                metadata=call_result_raw.content[0].model_extra.get("metadata", {}),
-                            )
+                        metadata = call_result_raw.content[0].model_extra.get("metadata", {})
+                        artifact_datas = []
+
+                        content_list: list[str] = []
+                        for content in call_result_raw.content:
+                            if isinstance(call_result_raw.content[0], TextContent):
+                                content_list.append(content.text)
+                                _metadata = content.model_extra.get("metadata", {})
+                                if "artifact_data" in _metadata and isinstance(_metadata["artifact_data"], dict):
+                                    artifact_datas.append({
+                                        "artifact_type": _metadata["artifact_type"],
+                                        "artifact_data": _metadata["artifact_data"]
+                                    })
+                            elif isinstance(call_result_raw.content[0], ImageContent):
+                                content_list.append(f"data:image/jpeg;base64,{content.data}")
+                                _metadata = content.model_extra.get("metadata", {})
+                                if "artifact_data" in _metadata and isinstance(_metadata["artifact_data"], dict):
+                                    artifact_datas.append({
+                                        "artifact_type": _metadata["artifact_type"],
+                                        "artifact_data": _metadata["artifact_data"]
+                                    })
+                    if metadata and artifact_datas:
+                        metadata["artifacts"] = artifact_datas
+
+                    action_result = ActionResult(
+                        tool_name=server_name,
+                        action_name=tool_name,
+                        content=json.dumps(content_list, ensure_ascii=False),
+                        keep=True,
+                        metadata=metadata
+                    )
                     results.append(action_result)
                     self._update_metadata(result_key, action_result, operation_info)
 
