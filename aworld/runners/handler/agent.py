@@ -259,6 +259,21 @@ class DefaultAgentHandler(AgentHandler):
 
     async def _stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
         if GraphBuildType.TEAM.value == self.swarm.build_type:
+            caller = message.caller
+            session_id = message.session_id
+            agent = self.swarm.agents.get(action.agent_name)
+            if ((not caller or caller == self.swarm.communicate_agent.id())
+                    and (self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished)):
+                logger.info(
+                    f"FINISHED|_social_stop_check finished|{self.swarm.cur_step}|{self.swarm.max_steps}|{self.swarm.finished}")
+                yield Message(
+                    category=Constants.TASK,
+                    payload=action.policy_info,
+                    sender=agent.id(),
+                    session_id=session_id,
+                    topic=TopicType.FINISHED,
+                    headers={"context": message.context}
+                )
             agent = self.swarm.agents.get(action.agent_name)
             caller = self.swarm.agent_graph.root_agent.id() or message.caller
             if agent.id() != self.swarm.agent_graph.root_agent.id():

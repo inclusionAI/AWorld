@@ -295,6 +295,7 @@ class TaskEventRunner(TaskRunner):
             if await self.is_stopped():
                 logger.info(
                     f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
+                await self.context.update_task_after_run(self._task_response)
                 if not self.task.is_sub_task:
                     logger.info(f"FINISHED|TaskEventRunner|outputs|{self.task.id} {self.task.is_sub_task}")
                     await self.task.outputs.mark_completed()

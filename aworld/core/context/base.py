@@ -13,7 +13,7 @@ from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
-    from aworld.core.task import Task
+    from aworld.core.task import Task, TaskResponse
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
@@ -227,7 +227,6 @@ class Context:
         new_context.task_input = sub_task_content
         return new_context
 
-
     def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
         self.merge_context(sub_task_context)
 
@@ -403,3 +402,6 @@ class Context:
             "tool_name": tool_name
         }
         self.trajectories[step_key] = step_data
+
+    async def update_task_after_run(self, task_response: 'TaskResponse'):
+        pass
