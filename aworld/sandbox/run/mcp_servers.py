@@ -2,6 +2,13 @@ import logging
 import json
 import traceback
 
+from aworld.core.context.base import Context
+
+from aworld.utils.common import sync_exec
+
+from aworld.events.util import send_message
+
+from aworld.core.event.base import Message, Constants
 from typing_extensions import Optional, List, Dict, Any
 
 from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
@@ -9,6 +16,7 @@ from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_serve
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
+from aworld.output import Output
 
 
 class McpServers:
@@ -43,7 +51,8 @@ class McpServers:
             self,
             action_list: List[Dict[str, Any]] = None,
             task_id: str = None,
-            session_id: str = None
+            session_id: str = None,
+            context: Context=None
     ) -> List[ActionResult]:
         results = []
         if not action_list:
@@ -137,7 +146,25 @@ class McpServers:
                 max_retry = 3
                 for i in range(max_retry):
                     try:
-                        call_result_raw = await server.call_tool(tool_name, parameter)
+                        async def progress_callback(
+                                progress: float, total: float | None, message: str | None
+                        ):
+                            try:
+                                output = Output()
+                                output.data = message
+                                tool_output_message = Message(
+                                    category=Constants.OUTPUT,
+                                    payload=output,
+                                    sender=f"{server_name}__{tool_name}",
+                                    session_id=context.session_id if context else "",
+                                    headers={"context": context}
+                                )
+                                sync_exec(send_message, tool_output_message)
+                            except BaseException as e:
+                                logging.warning(f"Error calling progress callback: {e}")
+
+                        call_result_raw = await server.call_tool(tool_name=tool_name, arguments=parameter,
+                                                                 progress_callback=progress_callback)
                         break
                     except Exception as e:
                         logging.warning(f"Error calling tool error: {e}")
