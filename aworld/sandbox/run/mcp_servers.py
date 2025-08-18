@@ -3,6 +3,8 @@ import json
 import traceback
 
 from aworld.core.context.base import Context
+#from fastmcp.server.middleware import Middleware, MiddlewareContext
+
 
 from aworld.utils.common import sync_exec
 
@@ -47,6 +49,69 @@ class McpServers:
             logging.warning(f"Failed to list tools: {e}")
             return []
 
+    async def check_tool_params(self,context: Context, server_name: str, tool_name: str, parameter: Dict[str, Any]) -> Any:
+        """
+        检查工具参数，并从 context 中自动补充 session_id、task_id 等参数
+        
+        Args:
+            context: 上下文对象，包含 session_id、task_id 等信息
+            server_name: 服务器名称
+            tool_name: 工具名称
+            parameter: 参数字典，会被修改
+            
+        Returns:
+            bool: 参数检查是否通过
+        """
+        # 确保 tool_list 已加载
+        if not self.tool_list or not context:
+            return False
+            
+        if not self.mcp_servers or not self.mcp_config:
+            return False
+            
+        if not parameter:
+            parameter = {}
+            
+        try:
+            # 构建工具的唯一标识符
+            tool_identifier = f"mcp__{server_name}__{tool_name}"
+            
+            # 在 tool_list 中查找对应的工具
+            target_tool = None
+            for tool in self.tool_list:
+                if tool.get("type") == "function" and tool.get("function", {}).get("name") == tool_identifier:
+                    target_tool = tool
+                    break
+                    
+            if not target_tool:
+                logging.warning(f"Tool not found: {tool_identifier}")
+                return False
+                
+            # 获取工具的参数定义
+            function_info = target_tool.get("function", {})
+            tool_parameters = function_info.get("parameters", {})
+            properties = tool_parameters.get("properties", {})
+            
+            # 检查是否需要 session_id 或 task_id 参数
+            # 检查是否需要 session_id
+            if "session_id" in properties and "session_id" not in parameter:
+                if hasattr(context, 'session_id') and context.session_id:
+                    parameter["session_id"] = context.session_id
+                    logging.debug(f"Auto-added session_id: {context.session_id}")
+
+            # 检查是否需要 task_id
+            if "task_id" in properties and "task_id" not in parameter:
+                if hasattr(context, 'task_id') and context.task_id:
+                    parameter["task_id"] = context.task_id
+                    logging.debug(f"Auto-added task_id: {context.task_id}")
+
+                            
+            return True
+            
+        except Exception as e:
+            logging.warning(f"Error checking tool parameters: {e}")
+            return False
+
     async def call_tool(
             self,
             action_list: List[Dict[str, Any]] = None,
@@ -84,6 +149,12 @@ class McpServers:
                 #     parameter["task_id"] = task_id
                 # if session_id:
                 #     parameter["session_id"] = session_id
+                #
+                # mcp_context.set_state("session_id", "12312")
+                # print(mcp_context.get_state("session_id"))
+
+                # FastMCPContext = FastMCPContext.fastmcp_context.set_state("session_id", "session_id")
+                #
 
                 if not server_name or not tool_name:
                     continue
@@ -163,6 +234,8 @@ class McpServers:
                             except BaseException as e:
                                 logging.warning(f"Error calling progress callback: {e}")
 
+                        await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
+                                                    parameter=parameter)
                         call_result_raw = await server.call_tool(tool_name=tool_name, arguments=parameter,
                                                                  progress_callback=progress_callback)
                         break
