@@ -125,8 +125,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     """Basic agent for unified protocol within the framework."""
 
     def __init__(self,
-                 conf: Config,
                  name: str,
+                 conf: Config | None = None,
                  desc: str = None,
                  agent_id: str = None,
                  *,
@@ -564,6 +564,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                             agent_id=self.id(),
                                                             use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
+        self.agent_result = agent_result
         if not agent_result.is_call_tool:
             self._finished = True
             return agent_result.actions
@@ -792,6 +793,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _init_context(self, context: Context):
         super()._init_context(context)
+        self.agent_result = AgentResult(current_state=None, is_call_tool=False, actions=[])
         # Generate default configuration when context_rule is empty
         if self.conf.context_rule is None:
             self.conf.context_rule = ContextRuleConfig(

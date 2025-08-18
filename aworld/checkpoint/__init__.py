@@ -10,13 +10,15 @@ from pydantic import BaseModel, Field, ConfigDict
 class CheckpointMetadata(BaseModel):
     """
     Metadata for a checkpoint, including session and task identifiers.
-    
+
     Attributes:
         session_id (str): The session identifier (required).
         task_id (Optional[str]): The task identifier (optional).
+        artifact_id (Optional[str]): The artifact identifier (optional).
     """
     session_id: str = Field(..., description="The session identifier.")
     task_id: Optional[str] = Field(None, description="The task identifier.")
+    artifact_id: Optional[str] = Field(None, description="The artifact identifier.")
 
     model_config = ConfigDict(extra="allow")
 
