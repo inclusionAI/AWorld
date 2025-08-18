@@ -51,18 +51,18 @@ class McpServers:
 
     async def check_tool_params(self,context: Context, server_name: str, tool_name: str, parameter: Dict[str, Any]) -> Any:
         """
-        检查工具参数，并从 context 中自动补充 session_id、task_id 等参数
+        Check tool parameters and automatically supplement session_id, task_id and other parameters from context
         
         Args:
-            context: 上下文对象，包含 session_id、task_id 等信息
-            server_name: 服务器名称
-            tool_name: 工具名称
-            parameter: 参数字典，会被修改
+            context: Context object containing session_id, task_id and other information
+            server_name: Server name
+            tool_name: Tool name
+            parameter: Parameter dictionary, will be modified
             
         Returns:
-            bool: 参数检查是否通过
+            bool: Whether parameter check passed
         """
-        # 确保 tool_list 已加载
+        # Ensure tool_list is loaded
         if not self.tool_list or not context:
             return False
             
@@ -73,10 +73,10 @@ class McpServers:
             parameter = {}
             
         try:
-            # 构建工具的唯一标识符
+            # Build unique identifier for the tool
             tool_identifier = f"mcp__{server_name}__{tool_name}"
             
-            # 在 tool_list 中查找对应的工具
+            # Find corresponding tool in tool_list
             target_tool = None
             for tool in self.tool_list:
                 if tool.get("type") == "function" and tool.get("function", {}).get("name") == tool_identifier:
@@ -87,19 +87,19 @@ class McpServers:
                 logging.warning(f"Tool not found: {tool_identifier}")
                 return False
                 
-            # 获取工具的参数定义
+            # Get tool parameter definitions
             function_info = target_tool.get("function", {})
             tool_parameters = function_info.get("parameters", {})
             properties = tool_parameters.get("properties", {})
             
-            # 检查是否需要 session_id 或 task_id 参数
-            # 检查是否需要 session_id
+            # Check if session_id or task_id parameters are needed
+            # Check if session_id is needed
             if "session_id" in properties and "session_id" not in parameter:
                 if hasattr(context, 'session_id') and context.session_id:
                     parameter["session_id"] = context.session_id
                     logging.debug(f"Auto-added session_id: {context.session_id}")
 
-            # 检查是否需要 task_id
+            # Check if task_id is needed
             if "task_id" in properties and "task_id" not in parameter:
                 if hasattr(context, 'task_id') and context.task_id:
                     parameter["task_id"] = context.task_id
