@@ -125,8 +125,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     """Basic agent for unified protocol within the framework."""
 
     def __init__(self,
-                 conf: Config,
                  name: str,
+                 conf: Config | None = None,
                  desc: str = None,
                  agent_id: str = None,
                  *,
