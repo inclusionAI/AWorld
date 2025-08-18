@@ -47,26 +47,27 @@
 AWorld empowers you to rapidly build individual tool-using agents, orchestrate sophisticated multi-agent systems, train agents effectively, and synthesize the high-quality data required for continuous agent evolution – all converging towards autonomous self-improvement.
 
 ---
-**Agentic Achievements Unboxed!** 🔥
+**Collective Intelligence Achievements** 🚀
 
-🏅️ **[2025/08/06]** Excel in Stability with Multi-Agent System on GAIA [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][MAS]](#) [![][Leaderboard]](#)  [![][Forward]]() <br>
-Achieved an average Pass@1 score of 67.89 and Pass@3 score of 83.49 across 109 tasks from the test dataset. See [more details here](./examples/gaia/README_GUARD.md). See [Technical report here](https://huggingface.co/blog/chengle/aworld-gaia).
+Demonstrating collective intelligence across diverse domains. Join us in the ongoing projects!
 
-🚀 **[2025/07/25]** Plug-&-Play Math Mastery!  [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) [![][MAS]](#) [![][Forward]]() <br>
-Built a MAS solving <span style="color: #d81b60; font-weight: bold;">5/6 IMO 2025 problems</span> in hours - proving **agent orchestration** beats solo models. Peek at the genius [under the hood](examples/imo/README.md)!
+| **Category** | **Achievement** | **Performance** | **Key Innovation** | **Date** |
+|:-------------|:----------------|:----------------|:-------------------|:----------|
+| **🤖 Agent** | **GAIA Benchmark Excellence** [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) | Pass@1: **67.89**, Pass@3: **83.49** (109 tasks) [![][Code]](./examples/gaia/README_GUARD.md)  | Multi-agent system stability & orchestration [![][Paper]](https://arxiv.org/abs/2508.09889) | 2025/08/06 |
+| **🧠 Reasoning** | **IMO 2025 Problem Solving** [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) | 5/6 problems solved in 6 hours [![][Code]](examples/imo/README.md) | Multi-agent collaboration beats solo models | 2025/07/25 |
 
 <details>
-<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 Click to View Previous News </summary>
+<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 View ongoing projects </summary>
 
-🧩 **[2025/07/23]** Build BFCL Runtimes Readily!  [![][BFCL]](https://gorilla.cs.berkeley.edu/leaderboard.html) [![][Runtime]](#)  
-New BFCL tutorial shows how to **synthesize function calls training data in minutes**. <br>
-Start cooking up your own agents [right here](examples/BFCL/README.md)!
-
-🏆 **[2025/07/07]** GAIA Soars to <span style="color: #d81b60; font-weight: bold;">77.08</span>! [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][Cloud-Native]](#) [![][Leaderboard]](#)  
-**Cloud-native runtimes** now enable distributed agent evolution. <br>
-See how diverse environments evolves smarter models [training recipe](#backward-process-design).
+| **Category** | **Achievement** | **Status** | **Expected Impact** |
+|:-------------|:----------------|:-----------|:-------------------|
+| **🖼️ Multi-Modal** | Advanced OS / Web Interaction |  In Progress | Visual reasoning & environment understanding |
+| **💻 Code** | Advanced installation, coding, testing, debugging, etc. ability | In Progress | Automated software engineering capabilities |
+| **🔧 Tool Use** | Advanced multi-turn function call | Comming soon | Impact the real world |
 
 </details>
+
+---
 
 
 # 🏃‍♀️ Quickstart
@@ -615,7 +616,8 @@ Success! Your agent is now running and ready to chat!
 [Cloud-Native]: https://img.shields.io/badge/Cloud--Native-B19CD7
 [Forward]: https://img.shields.io/badge/Forward-4A90E2
 [Backward]: https://img.shields.io/badge/Backward-7B68EE
-
+[Code]: https://img.shields.io/badge/Code-FF6B6B
+[Paper]: https://img.shields.io/badge/Paper-4ECDC4
 
 
 <!-- resource section end -->

@@ -41,23 +41,27 @@
 AWorld 使您能够快速构建个体工具使用智能体、编排复杂的多智能体系统、有效训练智能体，并综合持续智能体进化所需的高质量数据——所有这些都汇聚于自主自我改进。
 
 ---
-**智能体成就解锁！** 🔥
+**集体智能成就展示** 🚀
 
-🏅️ **[2025/08/06]** 在GAIA基准测试中，多智能体系统展现卓越稳定性 [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][MAS]](#) [![][Leaderboard]](#)  
-在测试数据集的109个任务中，实现了平均Pass@1得分67.89和Pass@3得分83.49。[查看详细内容](./examples/gaia/README_GUARD.md)。技术报告即将发布。
+展示群体智能在不同领域的SOTA效果。欢迎加入我们正在进行中的项目！
 
-🏅️ **[2025/07/25]** 即插即用数学大师！  [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) [![][MAS]](#)  
-构建了一个在数小时内解决 <span style="color: #d81b60; font-weight: bold;">IMO 2025 6道题中的5道</span> 的MAS——证明**智能体编排**胜过单一模型。 <br>
-查看[幕后天才](examples/imo/README.md)！
+| **类别** | **成就** | **性能表现** | **核心创新** | **日期** |
+|:-------------|:----------------|:----------------|:-------------------|:----------|
+| **🤖 智能体** | **GAIA基准测试卓越表现** [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) | Pass@1: **67.89**, Pass@3: **83.49** (109个任务) [![][Code]](./examples/gaia/README_GUARD.md)  | 多智能体系统稳定性与编排 [![][Paper]](https://arxiv.org/abs/2508.09889) | 2025/08/06 |
+| **🧠 推理能力** | **IMO 2025问题求解** [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) | 6小时内解决5/6道题 [![][Code]](examples/imo/README.md) | 多智能体协作超越单一模型 | 2025/07/25 |
 
-🧩 **[2025/07/23]** 轻松构建BFCL运行时！  [![][BFCL]](https://gorilla.cs.berkeley.edu/leaderboard.html) [![][Runtime]](#)  
-新的BFCL教程展示了如何在几分钟内**综合函数调用训练数据**。 <br>
-立即开始[制作您自己的智能体](examples/BFCL/README.md)！
+<details>
+<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 查看进行中的项目 </summary>
 
-🏆 **[2025/07/07]** GAIA飙升至 <span style="color: #d81b60; font-weight: bold;">77.08</span>！ [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) [![][Cloud-Native]](#) [![][Leaderboard]](#)  
-**云原生运行时**现在支持分布式智能体进化。 <br>
-查看多样化环境如何[进化更智能的模型](#反向过程设计)。
+| **类别** | **成就** | **状态** | **预期影响** |
+|:-------------|:----------------|:-----------|:-------------------|
+| **🖼️ 多模态** | 领先的操作系统/网页交互 | 进行中 | 视觉推理与环境理解 |
+| **💻 编程** | 领先的安装、编码、测试、调试等能力 | 进行中 | 自动化软件工程能力 |
+| **🔧 工具使用** | 领先的多轮函数调用 | 即将推出 | 影响现实世界 |
 
+</details>
+
+---
 
 # 快速开始
 ## 前置要求
@@ -591,6 +595,9 @@ aworld api_server
 [Leaderboard]: https://img.shields.io/badge/Leaderboard-FFE6B7
 [Benchmark]: https://img.shields.io/badge/Benchmark-FFE6B7
 [Cloud-Native]: https://img.shields.io/badge/Cloud--Native-B19CD7
+[Code]: https://img.shields.io/badge/Code-FF6B6B
+[Paper]: https://img.shields.io/badge/Paper-4ECDC4
+
 
 
 
