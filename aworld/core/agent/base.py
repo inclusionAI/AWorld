@@ -73,7 +73,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def __init__(
         self,
         name: str,
-        conf: Union[Dict[str, Any], ConfigDict, AgentConfig, None],
+        conf: Union[Dict[str, Any], ConfigDict, AgentConfig, None] = None,
         desc: str = None,
         agent_id: str = None,
         *,
