@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import time
 import uuid
 from typing import Callable, Any
@@ -71,6 +72,11 @@ class TaskRunner(Runner):
 
     async def pre_run(self):
         task = self.task
+        # copy context from parent_task(if exists)
+        if task.parent_task is not None and task.parent_task.context is not None:
+            task.context = await task.parent_task.context.build_sub_context(task.input, task.id)
+            self.context = task.context
+            self.context.set_task(task)
         self.swarm = task.swarm
         self.input = task.input
         self.outputs = task.outputs
