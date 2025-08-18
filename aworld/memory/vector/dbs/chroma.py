@@ -67,6 +67,9 @@ class ChromaVectorDB(VectorDB):
             Optional[EmbeddingsResults]: Search results or None if collection doesn't exist
         """
         try:
+            if not self.has_collection(collection_name):
+                return []
+
             collection = self.client.get_collection(name=collection_name)
             if collection:
                 # Convert simple key-value filters to ChromaDB operator format
