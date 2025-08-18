@@ -13,7 +13,7 @@ class GymDemoAgent(Agent):
     """Example agent"""
 
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], **kwargs):
-        super(GymDemoAgent, self).__init__(conf, **kwargs)
+        super(GymDemoAgent, self).__init__(conf=conf, **kwargs)
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
         List[ActionModel], None]:
