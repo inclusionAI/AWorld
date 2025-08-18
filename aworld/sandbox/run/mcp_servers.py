@@ -2,6 +2,15 @@ import logging
 import json
 import traceback
 
+from aworld.core.context.base import Context
+#from fastmcp.server.middleware import Middleware, MiddlewareContext
+
+
+from aworld.utils.common import sync_exec
+
+from aworld.events.util import send_message
+
+from aworld.core.event.base import Message, Constants
 from typing_extensions import Optional, List, Dict, Any
 
 from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
@@ -9,6 +18,7 @@ from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_serve
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
+from aworld.output import Output
 
 
 class McpServers:
@@ -39,11 +49,75 @@ class McpServers:
             logging.warning(f"Failed to list tools: {e}")
             return []
 
+    async def check_tool_params(self,context: Context, server_name: str, tool_name: str, parameter: Dict[str, Any]) -> Any:
+        """
+        Check tool parameters and automatically supplement session_id, task_id and other parameters from context
+        
+        Args:
+            context: Context object containing session_id, task_id and other information
+            server_name: Server name
+            tool_name: Tool name
+            parameter: Parameter dictionary, will be modified
+            
+        Returns:
+            bool: Whether parameter check passed
+        """
+        # Ensure tool_list is loaded
+        if not self.tool_list or not context:
+            return False
+            
+        if not self.mcp_servers or not self.mcp_config:
+            return False
+            
+        if not parameter:
+            parameter = {}
+            
+        try:
+            # Build unique identifier for the tool
+            tool_identifier = f"mcp__{server_name}__{tool_name}"
+            
+            # Find corresponding tool in tool_list
+            target_tool = None
+            for tool in self.tool_list:
+                if tool.get("type") == "function" and tool.get("function", {}).get("name") == tool_identifier:
+                    target_tool = tool
+                    break
+                    
+            if not target_tool:
+                logging.warning(f"Tool not found: {tool_identifier}")
+                return False
+                
+            # Get tool parameter definitions
+            function_info = target_tool.get("function", {})
+            tool_parameters = function_info.get("parameters", {})
+            properties = tool_parameters.get("properties", {})
+            
+            # Check if session_id or task_id parameters are needed
+            # Check if session_id is needed
+            if "session_id" in properties and "session_id" not in parameter:
+                if hasattr(context, 'session_id') and context.session_id:
+                    parameter["session_id"] = context.session_id
+                    logging.debug(f"Auto-added session_id: {context.session_id}")
+
+            # Check if task_id is needed
+            if "task_id" in properties and "task_id" not in parameter:
+                if hasattr(context, 'task_id') and context.task_id:
+                    parameter["task_id"] = context.task_id
+                    logging.debug(f"Auto-added task_id: {context.task_id}")
+
+                            
+            return True
+            
+        except Exception as e:
+            logging.warning(f"Error checking tool parameters: {e}")
+            return False
+
     async def call_tool(
             self,
             action_list: List[Dict[str, Any]] = None,
             task_id: str = None,
-            session_id: str = None
+            session_id: str = None,
+            context: Context=None
     ) -> List[ActionResult]:
         results = []
         if not action_list:
@@ -75,6 +149,12 @@ class McpServers:
                 #     parameter["task_id"] = task_id
                 # if session_id:
                 #     parameter["session_id"] = session_id
+                #
+                # mcp_context.set_state("session_id", "12312")
+                # print(mcp_context.get_state("session_id"))
+
+                # FastMCPContext = FastMCPContext.fastmcp_context.set_state("session_id", "session_id")
+                #
 
                 if not server_name or not tool_name:
                     continue
@@ -137,7 +217,27 @@ class McpServers:
                 max_retry = 3
                 for i in range(max_retry):
                     try:
-                        call_result_raw = await server.call_tool(tool_name, parameter)
+                        async def progress_callback(
+                                progress: float, total: float | None, message: str | None
+                        ):
+                            try:
+                                output = Output()
+                                output.data = message
+                                tool_output_message = Message(
+                                    category=Constants.OUTPUT,
+                                    payload=output,
+                                    sender=f"{server_name}__{tool_name}",
+                                    session_id=context.session_id if context else "",
+                                    headers={"context": context}
+                                )
+                                sync_exec(send_message, tool_output_message)
+                            except BaseException as e:
+                                logging.warning(f"Error calling progress callback: {e}")
+
+                        await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
+                                                    parameter=parameter)
+                        call_result_raw = await server.call_tool(tool_name=tool_name, arguments=parameter,
+                                                                 progress_callback=progress_callback)
                         break
                     except Exception as e:
                         logging.warning(f"Error calling tool error: {e}")
