@@ -59,9 +59,10 @@ class TaskRunner(Runner):
         if check_input and not task.input:
             raise ValueError("task no input")
 
-        self.context = task.context if task.context else Context()
+        if not task.parent_task or not task.parent_task.context:
+            self.context = task.context if task.context else Context()
+            self.context.set_task(task)
         self.task = task
-        self.context.set_task(task)
         self.agent_oriented = agent_oriented
         self.daemon_target = daemon_target
         self._use_demon = False if not task.conf else task.conf.get(
