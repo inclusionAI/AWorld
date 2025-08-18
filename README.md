@@ -80,14 +80,14 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
       </td>
       <td style="padding: 8px; vertical-align: top;">
         Pass@1: <strong>67.89</strong> <br>
-        Pass@3: <strong>83.49</strong> (109 tasks)
-        <br>
+        Pass@3: <strong>83.49</strong>
+        <br> (109 tasks)
         <a href="./examples/gaia/README_GUARD.md" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        Multi-agent system stability & orchestration
+        Multi-agent system <br>stability & orchestration
         <br>
         <a href="https://arxiv.org/abs/2508.09889" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper">
@@ -111,7 +111,7 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
-      <td style="padding: 8px; vertical-align: top;">Multi-agent collaboration beats solo models</td>
+      <td style="padding: 8px; vertical-align: top;">Multi-agent collaboration <br>beats solo models</td>
       <td style="padding: 8px; vertical-align: top;">2025/07/25</td>
     </tr>
   </tbody>
@@ -142,13 +142,13 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
       <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
       <td style="padding: 8px; vertical-align: top;">Advanced OS / Web Interaction</td>
       <td style="padding: 8px; vertical-align: top;">In Progress</td>
-      <td style="padding: 8px; vertical-align: top;">Visual reasoning & environment understanding</td>
+      <td style="padding: 8px; vertical-align: top;">Visual reasoning <br>environment understanding</td>
     </tr>
     <tr>
       <td style="padding: 8px; vertical-align: top;">💻 Code</td>
       <td style="padding: 8px; vertical-align: top;">Advanced installation, coding, <br>testing, debugging, etc. ability</td>
       <td style="padding: 8px; vertical-align: top;">In Progress</td>
-      <td style="padding: 8px; vertical-align: top;">Automated software engineering capabilities</td>
+      <td style="padding: 8px; vertical-align: top;">Automated software <br>engineering capabilities</td>
     </tr>
     <tr>
       <td style="padding: 8px; vertical-align: top;">🔧 Tool Use</td>
