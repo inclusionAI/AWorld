@@ -219,7 +219,7 @@ class Context:
     def set_state(self, key: str, value: Any):
         self.context_info[key] = value
 
-    async def build_sub_context(self, sub_task_content: Any, sub_task_id: str = None):
+    async def build_sub_context(self, sub_task_content: Any, sub_task_id: str = None, **kwargs):
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
         self._deep_copy(new_context)
