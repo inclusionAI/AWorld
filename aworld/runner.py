@@ -115,20 +115,39 @@ class Runners:
         return res.get(task.id)
 
     @staticmethod
-    async def run_batch_tasks(
+    def sync_batch_run(
             agent: Agent = None,
             swarm: Swarm = None,
             input_queries: List[str] = None,
             input_tasks: List[Task] = None,
             batch_size: int = None,
             run_config: RunConfig = None) -> Dict[str, TaskResponse]:
-        """Run batch task.
+        return sync_exec(
+            Runners.batch_run,
+            agent=agent,
+            swarm=swarm,
+            input_queries=input_queries,
+            input_tasks=input_tasks,
+            batch_size=batch_size,
+            run_config=run_config
+        )
+
+    @staticmethod
+    async def batch_run(
+            agent: Agent = None,
+            swarm: Swarm = None,
+            input_queries: List[str] = None,
+            input_tasks: List[Task] = None,
+            batch_size: int = None,
+            run_config: RunConfig = None) -> Dict[str, TaskResponse]:
+        """Build and run tasks in batches.
 
         Args:
             agent: Agent used to create tasks when `input_queries` is provided.
             input_queries: List of raw inputs to create tasks from.
             input_tasks: Pre-constructed tasks to execute.
             batch_size: Optional batch size for splitting tasks. If not set or <= 0, runs all at once.
+            run_config: Runtime configuration settings. If not provided, uses default RunConfig.
         """
         if not input_queries and not input_tasks:
             raise ValueError('input is empty.')
@@ -169,20 +188,21 @@ class Runners:
         return results
 
     @staticmethod
-    async def run_batch_tasks_stream(
+    async def batch_run_stream(
             agent: Agent = None,
             swarm: Swarm = None,
             input_queries: List[str] = None,
             input_tasks: List[Task] = None,
             batch_size: int = None
     ) -> AsyncIterator[Dict[str, TaskResponse]]:
-        """Run tasks in batches and yield each batch's results as they complete.
+        """Build and run tasks in batches and yield each batch's results as they complete.
 
         Args:
             agent: Agent used to create tasks when `input_queries` is provided.
             input_queries: List of raw inputs to create tasks from.
             input_tasks: Pre-constructed tasks to execute.
             batch_size: Optional batch size for splitting tasks. If not set or <= 0, runs all at once.
+            run_config: Runtime configuration settings. If not provided, uses default RunConfig.
 
         Yields:
             Dict[str, TaskResponse]: Results for each executed batch.
