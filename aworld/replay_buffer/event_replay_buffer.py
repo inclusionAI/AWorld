@@ -38,6 +38,9 @@ class EventReplayBuffer(ReplayBuffer):
                 data_row = self.build_data_row_from_message(msg)
                 if data_row:
                     data_rows.append(data_row)
+            if not data_rows:
+                logger.warn(f"No valid agent messages found for task: {task_id}")
+                return None
 
             self.store_batch(data_rows)
             trajectory = [to_serializable(data_row) for data_row in data_rows]

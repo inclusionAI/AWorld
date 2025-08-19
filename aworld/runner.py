@@ -2,8 +2,10 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import logging
+import uuid
 from concurrent.futures.process import ProcessPoolExecutor
-from typing import List, Dict, Union
+from datetime import datetime
+from typing import List, Dict, Union, AsyncIterator
 
 from aworld.config import RunConfig
 from aworld.config.conf import TaskConfig
@@ -111,3 +113,110 @@ class Runners:
                     event_driven=swarm.event_driven, session_id=session_id)
         res = await Runners.run_task(task)
         return res.get(task.id)
+
+    @staticmethod
+    async def run_batch_tasks(
+            agent: Agent = None,
+            swarm: Swarm = None,
+            input_queries: List[str] = None,
+            input_tasks: List[Task] = None,
+            batch_size: int = None,
+            run_config: RunConfig = None) -> Dict[str, TaskResponse]:
+        """Run batch task.
+
+        Args:
+            agent: Agent used to create tasks when `input_queries` is provided.
+            input_queries: List of raw inputs to create tasks from.
+            input_tasks: Pre-constructed tasks to execute.
+            batch_size: Optional batch size for splitting tasks. If not set or <= 0, runs all at once.
+        """
+        if not input_queries and not input_tasks:
+            raise ValueError('input is empty.')
+        if input_queries and not agent and not swarm:
+            raise ValueError("`agent` and `swarm` cannot both be None.")
+
+        tasks = []
+        if input_queries:
+            for i in range(len(input_queries)):
+                input = input_queries[i]
+                task_id = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + str(i) + "_" + str(uuid.uuid4())
+                session_id = task_id
+                new_swarm = None
+                if agent:
+                    new_swarm = Swarm(agent.deep_copy())
+                else:
+                    new_swarm = swarm.deep_copy()
+                task = Task(id = task_id, input=input, swarm=new_swarm, session_id=session_id)
+                tasks.append(task)
+        else:
+            tasks = input_tasks
+
+        run_conf = run_config or RunConfig(worker_num=2)
+        results: Dict[str, TaskResponse] = {}
+        if not batch_size or batch_size <= 0:
+            batch_size = len(tasks)
+
+        for i in range(0, len(tasks), batch_size):
+            batch = tasks[i:i + batch_size]
+            # Run each task in the batch concurrently, but submit to exec_tasks one by one
+            coros = [exec_tasks([t], run_conf) for t in batch]
+            batch_results_list = await asyncio.gather(*coros, return_exceptions=False)
+            # Merge results
+            batch_results: Dict[str, TaskResponse] = {}
+            for br in batch_results_list:
+                batch_results.update(br)
+            results.update(batch_results)
+        return results
+
+    @staticmethod
+    async def run_batch_tasks_stream(
+            agent: Agent = None,
+            swarm: Swarm = None,
+            input_queries: List[str] = None,
+            input_tasks: List[Task] = None,
+            batch_size: int = None
+    ) -> AsyncIterator[Dict[str, TaskResponse]]:
+        """Run tasks in batches and yield each batch's results as they complete.
+
+        Args:
+            agent: Agent used to create tasks when `input_queries` is provided.
+            input_queries: List of raw inputs to create tasks from.
+            input_tasks: Pre-constructed tasks to execute.
+            batch_size: Optional batch size for splitting tasks. If not set or <= 0, runs all at once.
+
+        Yields:
+            Dict[str, TaskResponse]: Results for each executed batch.
+        """
+        if not input_queries and not input_tasks:
+            raise ValueError('input is empty.')
+        if input_queries and not agent and not swarm:
+            raise ValueError("`agent` and `swarm` cannot both be None.")
+
+        tasks: List[Task] = []
+        if input_queries:
+            for i in range(len(input_queries)):
+                input = input_queries[i]
+                task_id = datetime.now().strftime("%Y%m%d%H%M%S") + "_" + str(i) + "_" + str(uuid.uuid4())
+                session_id = task_id
+                new_swarm = None
+                if agent:
+                    new_swarm = Swarm(agent.deep_copy())
+                else:
+                    new_swarm = swarm.deep_copy()
+                task = Task(id=task_id, input=input, swarm=new_swarm, session_id=session_id)
+                tasks.append(task)
+        else:
+            tasks = input_tasks
+
+        run_conf = RunConfig()
+        if not batch_size or batch_size <= 0:
+            batch_size = len(tasks)
+
+        for i in range(0, len(tasks), batch_size):
+            batch = tasks[i:i + batch_size]
+            coros = [exec_tasks([t], run_conf) for t in batch]
+            batch_results_list = await asyncio.gather(*coros, return_exceptions=False)
+            merged_batch: Dict[str, TaskResponse] = {}
+            for br in batch_results_list:
+                merged_batch.update(br)
+            yield merged_batch
