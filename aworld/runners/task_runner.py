@@ -59,7 +59,7 @@ class TaskRunner(Runner):
         if check_input and not task.input:
             raise ValueError("task no input")
 
-        if not task.parent_task or not task.parent_task.context:
+        if not task.is_sub_task:
             self.context = task.context if task.context else Context()
             self.context.set_task(task)
         self.task = task
