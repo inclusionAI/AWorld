@@ -1,3 +1,11 @@
+"""
+ChromaDB vector database implementation for aworld.
+
+This implementation is based on the open-webui project's ChromaDB vector database code.
+Special thanks to the open-webui contributors for their excellent work.
+
+Reference: https://github.com/open-webui/open-webui/blob/main/backend/open_webui/retrieval/vector/dbs/chroma.py
+"""
 import logging
 import time
 import traceback
@@ -67,6 +75,9 @@ class ChromaVectorDB(VectorDB):
             Optional[EmbeddingsResults]: Search results or None if collection doesn't exist
         """
         try:
+            if not self.has_collection(collection_name):
+                return []
+
             collection = self.client.get_collection(name=collection_name)
             if collection:
                 # Convert simple key-value filters to ChromaDB operator format

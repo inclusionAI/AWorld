@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable, Optional
 
+from aworld.utils.serialized_util import to_serializable
 from pydantic import BaseModel
 
 from aworld.agents.llm_agent import Agent
@@ -47,7 +48,40 @@ class Task:
     context: 'Context' = field(default=None)
     is_sub_task: bool = field(default=False)
     group_id: str = field(default=None)
+    # parent task reference
+    parent_task: Optional['Task'] = field(default=None, repr=False)
     max_retry_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize Task to dict while excluding parent_task to avoid recursion.
+
+        Returns:
+            Dict[str, Any]: Serialized task dictionary without parent_task; includes parent_task_id instead.
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "input": to_serializable(self.input),
+            "conf": to_serializable(self.conf),
+            "tools": to_serializable(self.tools),
+            "tool_names": to_serializable(self.tool_names),
+            "tools_conf": to_serializable(self.tools_conf),
+            "mcp_servers_conf": to_serializable(self.mcp_servers_conf),
+            "swarm": to_serializable(self.swarm),
+            "agent": to_serializable(self.agent),
+            "event_driven": self.event_driven,
+            "endless_threshold": self.endless_threshold,
+            "outputs": to_serializable(self.outputs),
+            "runner_cls": self.runner_cls,
+            "hooks": to_serializable(self.hooks),
+            "context": to_serializable(self.context),
+            "is_sub_task": self.is_sub_task,
+            "group_id": self.group_id,
+            "max_retry_count": self.max_retry_count,
+            "parent_task_id": self.parent_task.id if self.parent_task else None,
+        }
 
 
 @dataclass

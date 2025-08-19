@@ -32,7 +32,6 @@ class TaskEventRunner(TaskRunner):
         super().__init__(task, *args, **kwargs)
         self._task_response = None
         self.event_mng = EventManager(self.context)
-        self.context.event_manager = self.event_mng
         self.hooks = {}
         self.handlers = []
         self.background_tasks = set()
@@ -42,6 +41,8 @@ class TaskEventRunner(TaskRunner):
     async def pre_run(self):
         logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
         await super().pre_run()
+        self.event_mng.context = self.context
+        self.context.event_manager = self.event_mng
 
         if self.swarm and not self.swarm.max_steps:
             self.swarm.max_steps = self.task.conf.get('max_steps', 10)
@@ -295,6 +296,7 @@ class TaskEventRunner(TaskRunner):
             if await self.is_stopped():
                 logger.info(
                     f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
+                await self.context.update_task_after_run(self._task_response)
                 if not self.task.is_sub_task:
                     logger.info(f"FINISHED|TaskEventRunner|outputs|{self.task.id} {self.task.is_sub_task}")
                     await self.task.outputs.mark_completed()

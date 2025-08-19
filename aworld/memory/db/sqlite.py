@@ -21,7 +21,7 @@ class SQLiteMemoryStore(MemoryStore):
     implementing all required methods from the MemoryStore interface.
     """
     
-    def __init__(self, db_path: str = "aworld_memory.db"):
+    def __init__(self, db_path: str = "./data/aworld_memory.db"):
         """
         Initialize SQLite memory store.
         
