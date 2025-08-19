@@ -74,8 +74,8 @@ class TaskRunner(Runner):
     async def pre_run(self):
         task = self.task
         # copy context from parent_task(if exists)
-        if task.parent_task is not None and task.parent_task.context is not None:
-            task.context = await task.parent_task.context.build_sub_context(task.input, task.id)
+        if task.is_sub_task:
+            task.context = await task.context.build_sub_context(task.input, task.id, agents=task.swarm.agents if task.swarm and task.swarm.agents else None)
             self.context = task.context
             self.context.set_task(task)
         self.swarm = task.swarm
