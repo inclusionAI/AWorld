@@ -810,6 +810,8 @@ class TeamBuilder(TopologyBuilder):
         if isinstance(root_agent, tuple):
             valid_agents.append(root_agent)
             root_agent = root_agent[0]
+        TopologyBuilder.register_agent(root_agent)
+        root_agent.feedback_tool_result = True
         agent_graph.add_node(root_agent)
         root_agent.feedback_tool_result = True
 
