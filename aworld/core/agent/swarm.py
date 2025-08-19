@@ -78,6 +78,65 @@ class Swarm(object):
         self.initialized: bool = False
         self._finished: bool = False
 
+    def deep_copy(self) -> 'Swarm':
+        """Create a deep copy of the current Swarm, including internal agent instances.
+
+        Notes:
+        - Recursively deep copies the `agent_list` structure (supports nesting of BaseAgent, list, tuple).
+        - For each agent, calls its `deep_copy()` method to create a copy.
+        - If root communication agent (`communicate_agent`) exists, it will be mapped to its corresponding new copy as `root_agent`.
+        - Copies key runtime parameters like `max_steps`, `event_driven`, `build_type`; lightweight states like `tools` and `task` are also copied.
+        """
+
+        def _copy_agent_structure(item, mapping: dict):
+            from aworld.core.agent.base import BaseAgent
+            if isinstance(item, BaseAgent):
+                new_agent = item.deep_copy()
+                mapping[item] = new_agent
+                return new_agent
+            elif isinstance(item, tuple):
+                copied_items = tuple(_copy_agent_structure(sub, mapping) for sub in item)
+                return copied_items
+            elif isinstance(item, list):
+                copied_items = [_copy_agent_structure(sub, mapping) for sub in item]
+                return copied_items
+            else:
+                # Return unsupported types directly (theoretically shouldn't occur)
+                return item
+
+        # 1) Deep copy agent_list and establish old->new agent mapping
+        original_to_copy = {}
+        copied_agent_list = [_copy_agent_structure(agent, original_to_copy) for agent in self.agent_list]
+
+        # 2) Root communication agent mapping
+        root_agent_copy = None
+        if self._communicate_agent is not None:
+            root_agent_copy = original_to_copy.get(self._communicate_agent, None)
+        
+        register_agents_copy = [_copy_agent_structure(agent, original_to_copy) for agent in self.register_agents]
+
+        # 3) Create a new Swarm instance with the same build type/event-driven mode and other parameters
+        build_type_enum = GraphBuildType(self.build_type) if isinstance(self.build_type, str) else self.build_type
+        new_swarm = Swarm(
+            *copied_agent_list,
+            root_agent=root_agent_copy,
+            max_steps=self.max_steps,
+            register_agents=register_agents_copy,
+            build_type=build_type_enum,
+            builder_cls=self.builder_cls,
+            keep_build_type=self.keep_build_type,
+            event_driven=self.event_driven,
+        )
+
+        # 4) Copy lightweight runtime states (tools/task), initialization state remains default uninitialized
+        new_swarm.tools = list(self.tools) if self.tools else []
+        new_swarm.task = self.task
+        new_swarm.initialized = False
+        new_swarm._finished = False
+        new_swarm._cur_step = 0
+
+        return new_swarm
+
     def setting_build_type(self, build_type: GraphBuildType):
         all_pair = True
         for agent in self.agent_list:
