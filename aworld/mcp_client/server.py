@@ -140,7 +140,6 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         except Exception as e:
             logging.error(f"Error initializing MCP server: {e}")
             await self.cleanup()
-            raise
 
     async def list_tools(self) -> list[MCPTool]:
         """List the tools available on the server."""
