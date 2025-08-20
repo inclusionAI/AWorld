@@ -177,13 +177,7 @@ class Runners:
 
         for i in range(0, len(tasks), batch_size):
             batch = tasks[i:i + batch_size]
-            # Run each task in the batch concurrently, but submit to exec_tasks one by one
-            coros = [exec_tasks([t], run_conf) for t in batch]
-            batch_results_list = await asyncio.gather(*coros, return_exceptions=False)
-            # Merge results
-            batch_results: Dict[str, TaskResponse] = {}
-            for br in batch_results_list:
-                batch_results.update(br)
+            batch_results = await exec_tasks(batch, run_conf)
             results.update(batch_results)
         return results
 
@@ -234,9 +228,8 @@ class Runners:
 
         for i in range(0, len(tasks), batch_size):
             batch = tasks[i:i + batch_size]
-            coros = [exec_tasks([t], run_conf) for t in batch]
-            batch_results_list = await asyncio.gather(*coros, return_exceptions=False)
+            batch_results = await exec_tasks(batch, run_conf)
             merged_batch: Dict[str, TaskResponse] = {}
-            for br in batch_results_list:
+            for br in batch_results:
                 merged_batch.update(br)
             yield merged_batch

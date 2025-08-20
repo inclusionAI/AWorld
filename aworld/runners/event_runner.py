@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-import os
 import time
 import traceback
 
@@ -331,7 +330,7 @@ class TaskEventRunner(TaskRunner):
     async def _save_trajectories(self):
         try:
             messages = self.event_mng.messages_by_task_id(self.task.id)
-            trajectory = await self.replay_buffer.get_trajectory(messages, self.task.id)
+            trajectory = await self.replay_buffer.get_trajectory(messages, self.task.id, self.state_manager)
             self._task_response.trajectory = trajectory
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
