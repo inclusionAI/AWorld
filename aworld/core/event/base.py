@@ -54,7 +54,7 @@ class Message(Generic[DataType]):
     or by extending `Message`.
     """
     session_id: str = field(default_factory=str)
-    payload: Optional[DataType] = field(default_factory=object)
+    payload: Optional[DataType] = field(default_factory=object, repr=False)
     # Current caller
     sender: str = field(default_factory=str)
     # event type

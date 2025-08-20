@@ -45,7 +45,7 @@ class BaseDynamicPromptAgent(Agent):
         if not self.system_prompt:
             return
         content = self.system_prompt_template.format(context=context, task=content)
-        logger.info(f"system prompt content: {content}")
+        # logger.info(f"system prompt content: {content}")
 
         await self.memory.add(
             MemorySystemMessage(

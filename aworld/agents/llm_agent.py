@@ -359,7 +359,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
         return messages
 
-    def _log_messages(self, messages: List[Dict[str, Any]]) -> None:
+    def _log_messages(self, messages: List[Dict[str, Any]], **kwargs) -> None:
         """Log the sequence of messages for debugging purposes"""
         logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
         for i, msg in enumerate(messages):
@@ -631,7 +631,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             images = [observation.image]
         messages = await self.async_messages_transform(image_urls=images, observation=observation, message=message)
 
-        self._log_messages(messages)
+        self._log_messages(messages, context=message.context)
 
         return messages
 
@@ -698,6 +698,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         try:
             stream_mode = kwargs.get("stream", False)
+            float_temperature=float(self.conf.llm_config.llm_temperature)
             if stream_mode:
                 llm_response = ModelResponse(
                     id="", model="", content="", tool_calls=[])
@@ -705,7 +706,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     self.llm,
                     messages=messages,
                     model=self.model_name,
-                    temperature=self.conf.llm_config.llm_temperature,
+                    temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=True
                 )
@@ -751,7 +752,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     self.llm,
                     messages=messages,
                     model=self.model_name,
-                    temperature=self.conf.llm_config.llm_temperature,
+                    temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=kwargs.get("stream", False)
                 )
@@ -856,7 +857,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if not self.system_prompt:
             return
         content = await self.custom_system_prompt(context=context, content=content, tool_list=self.tools)
-        logger.info(f'system prompt content: {content}')
+        # logger.info(f'system prompt content: {content}')
 
         await self.memory.add(MemorySystemMessage(
             content=content,
