@@ -130,11 +130,11 @@ class LocalRuntime(RuntimeEngine):
                     except TimeoutError:
                         logger.error(f"Task execution timed out after {timeout} seconds")
                     except Exception as e:
-                        logger.error(f"Task execution failed: {e}")
+                        logger.error(f"Task execution failed: {e}, traceback: {traceback.format_exc()}")
                         if future.exception():
                             logger.debug(f"Exception details: {future.exception()}")
         except Exception as e:
-            logger.error(f"ProcessPoolExecutor failed: {e}")
+            logger.error(f"ProcessPoolExecutor failed: {e}, traceback: {traceback.format_exc()}")
             raise
             
         return results
