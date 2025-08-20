@@ -259,7 +259,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                agents=self.handoffs if self.handoffs else []))
         # MCP servers are tools
         if self.sandbox:
-            mcp_tools = await self.sandbox.mcpservers.list_tools()
+            mcp_tools = await self.sandbox.mcpservers.list_tools(self.context)
             self.tools.extend(mcp_tools)
         else:
             self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))

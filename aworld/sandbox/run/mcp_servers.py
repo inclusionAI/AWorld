@@ -3,7 +3,7 @@ import json
 import traceback
 
 from aworld.core.context.base import Context
-#from fastmcp.server.middleware import Middleware, MiddlewareContext
+# from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 
 from aworld.utils.common import sync_exec
@@ -14,7 +14,7 @@ from aworld.core.event.base import Message, Constants
 from typing_extensions import Optional, List, Dict, Any
 
 from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
-    call_function_tool
+    call_function_tool, mcp_tool_desc_transform_v2
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
@@ -27,7 +27,7 @@ class McpServers:
             self,
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Dict[str, Any] = None,
-            sandbox = None,
+            sandbox=None,
     ) -> None:
         self.mcp_servers = mcp_servers
         self.mcp_config = mcp_config
@@ -36,20 +36,22 @@ class McpServers:
         self.server_instances = {}
         self.tool_list = None
 
-    async def list_tools(self) -> List[Dict[str, Any]]:
+    async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
         if self.tool_list:
             return self.tool_list
         if not self.mcp_servers or not self.mcp_config:
             return []
         try:
-            self.tool_list = await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
+            #self.tool_list = await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
+            self.tool_list = await mcp_tool_desc_transform_v2(self.mcp_servers, self.mcp_config,context,self.server_instances)
             return self.tool_list
         except Exception as e:
             traceback.print_exc()
             logging.warning(f"Failed to list tools: {e}")
             return []
 
-    async def check_tool_params(self,context: Context, server_name: str, tool_name: str, parameter: Dict[str, Any]) -> Any:
+    async def check_tool_params(self, context: Context, server_name: str, tool_name: str,
+                                parameter: Dict[str, Any]) -> Any:
         """
         Check tool parameters and automatically supplement session_id, task_id and other parameters from context
         
@@ -65,49 +67,48 @@ class McpServers:
         # Ensure tool_list is loaded
         if not self.tool_list or not context:
             return False
-            
+
         if not self.mcp_servers or not self.mcp_config:
             return False
-            
+
         if not parameter:
             parameter = {}
-            
+
         try:
             # Build unique identifier for the tool
             tool_identifier = f"mcp__{server_name}__{tool_name}"
-            
+
             # Find corresponding tool in tool_list
             target_tool = None
             for tool in self.tool_list:
                 if tool.get("type") == "function" and tool.get("function", {}).get("name") == tool_identifier:
                     target_tool = tool
                     break
-                    
+
             if not target_tool:
                 logging.warning(f"Tool not found: {tool_identifier}")
                 return False
-                
+
             # Get tool parameter definitions
             function_info = target_tool.get("function", {})
             tool_parameters = function_info.get("parameters", {})
             properties = tool_parameters.get("properties", {})
-            
+
             # Check if session_id or task_id parameters are needed
             # Check if session_id is needed
-            if "session_id" in properties and "session_id" not in parameter:
+            if "session_id" in properties:
                 if hasattr(context, 'session_id') and context.session_id:
                     parameter["session_id"] = context.session_id
                     logging.debug(f"Auto-added session_id: {context.session_id}")
 
             # Check if task_id is needed
-            if "task_id" in properties and "task_id" not in parameter:
+            if "task_id" in properties:
                 if hasattr(context, 'task_id') and context.task_id:
                     parameter["task_id"] = context.task_id
                     logging.debug(f"Auto-added task_id: {context.task_id}")
 
-                            
             return True
-            
+
         except Exception as e:
             logging.warning(f"Error checking tool parameters: {e}")
             return False
@@ -117,7 +118,7 @@ class McpServers:
             action_list: List[Dict[str, Any]] = None,
             task_id: str = None,
             session_id: str = None,
-            context: Context=None
+            context: Context = None
     ) -> List[ActionResult]:
         results = []
         if not action_list:
@@ -135,14 +136,13 @@ class McpServers:
                 tool_name = action_dict.get("action_name")
                 parameter = action_dict.get("params")
                 result_key = f"{server_name}__{tool_name}"
-                
 
                 operation_info = {
                     "server_name": server_name,
                     "tool_name": tool_name,
                     "params": parameter
                 }
-                
+
                 if parameter is None:
                     parameter = {}
                 # if task_id:
@@ -196,7 +196,7 @@ class McpServers:
                 server = self.server_instances.get(server_name)
                 if server is None:
                     # If it doesn't exist, create a new instance and save it
-                    server = await get_server_instance(server_name, self.mcp_config)
+                    server = await get_server_instance(server_name, self.mcp_config,context)
                     if server:
                         self.server_instances[server_name] = server
                         logging.info(f"Created and cached new server instance for {server_name}")
@@ -235,7 +235,7 @@ class McpServers:
                                 logging.warning(f"Error calling progress callback: {e}")
 
                         await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
-                                                    parameter=parameter)
+                                                     parameter=parameter)
                         call_result_raw = await server.call_tool(tool_name=tool_name, arguments=parameter,
                                                                  progress_callback=progress_callback)
                         break
@@ -295,7 +295,7 @@ class McpServers:
             return None
 
         return results
-    
+
     def _update_metadata(self, result_key: str, result: Any, operation_info: Dict[str, Any]):
         """
         Update sandbox metadata with a single tool call result
@@ -307,9 +307,9 @@ class McpServers:
         """
         if not self.sandbox or not hasattr(self.sandbox, '_metadata'):
             return
-            
+
         try:
-            metadata = self.sandbox._metadata.get("mcp_metadata",{})
+            metadata = self.sandbox._metadata.get("mcp_metadata", {})
             tmp_data = {
                 "input": operation_info,
                 "output": result
@@ -342,4 +342,3 @@ class McpServers:
                 logging.info(f"Cleaned up server instance for {server_name}")
             except Exception as e:
                 logging.warning(f"Failed to cleanup server {server_name}: {e}")
-
