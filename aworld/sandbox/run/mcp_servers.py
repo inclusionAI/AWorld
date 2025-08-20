@@ -241,7 +241,8 @@ class McpServers:
                         break
                     except Exception as e:
                         logging.warning(f"Error calling tool error: {e}")
-                logging.info(f"tool_name:{server_name},action_name:{tool_name},call-mcp-tool-result: {call_result_raw}")
+                logging.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
+                logging.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
                 if not call_result_raw:
                     logging.warning(f"Error calling tool with cached server: {e}")
 
