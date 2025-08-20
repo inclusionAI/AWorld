@@ -495,7 +495,7 @@ The following is a list of successful proposal (with open-source models, technic
 
 | Category | Runtime | <div style="width:400px">Performance</div> | <div style="width:100px;">Key Information</div> |
 | --------------- | --------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------- |
-| **Multi-Modal**    | OSWorld runtime | Competitive on ScreenSpot-Pro benchmark  <br> ![Agent Framework](readme_assets/screenspotpro_leaderboard.png) | [![Paper][arxiv-image]][v2p-paper-url]  <br> [![Code][github-code-image]][v2p-code-url] |
+| **Multi-Modal**    | OSWorld runtime | Competitive on ScreenSpot-Pro benchmark  <br> ![Agent Framework](readme_assets/screenspotpro_leaderboard.png) | [![Model][huggingface-model-comming-soon-image]] <br> [![Paper][arxiv-image]][v2p-paper-url]  <br> [![Code][github-code-image]][v2p-code-url] |
 | **Tool Use**    | Function call runtime construction [`tutorial`][funreason-model-url] | Competitive on BFCL benchmark  <br> ![Agent Framework](readme_assets/bfclv2_leaderboard.png) | ![Dataset][huggingface-dataset-image] <br> [![Model][huggingface-model-image]][funreason-model-url] <br> [![Paper][arxiv-image]][funreason-paper-url] <br> ![Blog][blog-image] <br> [![Code][github-code-image]][funreason-code-url] |
 | **Deep Search** | Search runtime to be released           | SOTA on HotpotQA benchmark  <br> ![Agent Framework](readme_assets/hotpotqa_benchmark.png)    | [![Dataset][huggingface-dataset-image]][deepsearch-dataset-url] <br> [![Model][huggingface-model-image]][deepsearch-model-url] <br> [![Paper][arxiv-image]][deepsearch-paper-url] <br> [![Code][github-code-image]][deepsearch-code-url]      |
 
@@ -676,6 +676,7 @@ Success! Your agent is now running and ready to chat!
 [github-code-image]: https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white
 [huggingface-dataset-image]: https://img.shields.io/badge/Dataset-Coming%20Soon-007ACC?style=for-the-badge&logo=dataset&logoColor=white
 [huggingface-model-image]: https://img.shields.io/badge/Model-Hugging%20Face-FF6B6B?style=for-the-badge&logo=huggingface&logoColor=white
+[huggingface-model-comming-soon-image]: https://img.shields.io/badge/Model-Coming%20Soon-FF5722??style=for-the-badge&logo=huggingface&logoColor=white
 [license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
 [twitter-image]: https://img.shields.io/twitter/follow/AWorld_AI?style=social
 [wechat-image]: https://img.shields.io/badge/WeChat-Add%20us-green?logo=wechat&logoColor=white
