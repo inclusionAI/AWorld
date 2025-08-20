@@ -495,6 +495,7 @@ The following is a list of successful proposal (with open-source models, technic
 
 | Category | Runtime | <div style="width:400px">Performance</div> | <div style="width:100px;">Key Information</div> |
 | --------------- | --------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------- |
+| **Multi-Modal**    | OSWorld runtime | Competitive on ScreenSpot-Pro benchmark  <br> ![Agent Framework](readme_assets/screenspotpro_leaderboard.png) | [![Paper][arxiv-image]][v2p-paper-url]  <br> [![Code][github-code-image]][v2p-code-url] |
 | **Tool Use**    | Function call runtime construction [`tutorial`][funreason-model-url] | Competitive on BFCL benchmark  <br> ![Agent Framework](readme_assets/bfclv2_leaderboard.png) | ![Dataset][huggingface-dataset-image] <br> [![Model][huggingface-model-image]][funreason-model-url] <br> [![Paper][arxiv-image]][funreason-paper-url] <br> ![Blog][blog-image] <br> [![Code][github-code-image]][funreason-code-url] |
 | **Deep Search** | Search runtime to be released           | SOTA on HotpotQA benchmark  <br> ![Agent Framework](readme_assets/hotpotqa_benchmark.png)    | [![Dataset][huggingface-dataset-image]][deepsearch-dataset-url] <br> [![Model][huggingface-model-image]][deepsearch-model-url] <br> [![Paper][arxiv-image]][deepsearch-paper-url] <br> [![Code][github-code-image]][deepsearch-code-url]      |
 
@@ -685,6 +686,10 @@ Success! Your agent is now running and ready to chat!
 [license-url]: https://opensource.org/licenses/MIT
 [twitter-url]: https://x.com/InclusionAI666
 [wechat-url]: https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat.png
+
+<!-- multi-modal links -->
+[v2p-paper-url]: https://arxiv.org/abs/2508.13634
+[v2p-code-url]: https://github.com/inclusionAI/AgenticLearning/tree/main/V2P
 
 <!-- funreason links -->
 [funreason-code-url]: https://github.com/BingguangHao/FunReason
