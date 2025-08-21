@@ -7,15 +7,8 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 from aworld.runner import Runners
 from omegaconf import DictConfig
-from transformers import AutoTokenizer, AutoProcessor
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    convert_to_openai_messages,
-)
-
 
 GAIA_SYSTEM_PROMPT = """
 You are an all-capable AI assistant, aimed at solving any task presented by the user.
@@ -27,8 +20,8 @@ GAIA_MCP_CONFIG = {
             "type": "streamable-http",
             "url": "",
             "headers": {
-              "Authorization": "",
-              "MCP_SERVERS": "",
+                "Authorization": "",
+                "MCP_SERVERS": "",
             },
             "timeout": 600,
             "sse_read_timeout": 600,
@@ -37,59 +30,54 @@ GAIA_MCP_CONFIG = {
     }
 }
 
+gaia_agent_config = AgentConfig(
+    llm_model_name="{YOUR_CONFIG}",
+    llm_base_url="{YOUR_CONFIG}",
+    llm_api_key="{YOUR_CONFIG}",
+)
+
+
 class GaiaAgentLoop(AgentLoopBase):
     @classmethod
-    def init_class(cls, config: DictConfig, tokenizer: AutoTokenizer, **kwargs):
+    def init_class(cls, config: DictConfig, tokenizer, **kwargs):
         super().init_class(config=config, tokenizer=tokenizer, **kwargs)
-        cls.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+
         cls.agent = cls.build_agent()
 
     @classmethod
     def build_agent(cls):
-        agent_config = AgentConfig(
-            llm_model_name="{YOUR_CONFIG}",
-            llm_base_url="{YOUR_CONFIG}",
-            llm_api_key="{YOUR_CONFIG}",
-        )
         super_agent = Agent(
-            conf=agent_config,
+            conf=gaia_agent_config,
             name="gaia_super_agent",
-            system_prompt="{YOUR_SYSTEM_PROMPT}",
+            system_prompt=GAIA_SYSTEM_PROMPT,
             mcp_config=GAIA_MCP_CONFIG,
             mcp_servers=list(server_name for server_name in GAIA_MCP_CONFIG.get("mcpServers", {}).keys()),
         )
         return super_agent
 
     async def run(self, messages: list, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
-        # ##################################################################
-        # # run batch tasks
-        # # messages: 输入的query集合
-        # results = Runners.sync_batch_run(agent=self.agent,
-        #                                  input_queries=messages,
-        #                                  batch_size=8,
-        #                                  run_config=RunConfig())
-        # # 其中task_id作为llm server的request id
-        # for task_id, task_resp in results.items():
-        #     traj = task_resp.trajectory
-        # ##################################################################
-
         # update base url
         server = self.server_manager._choose_server(uuid.uuid4().hex)
-        base_url = await server.get_server_address()
-        self.agent.conf.get("llm_config", {}).put("llm_base_url", base_url)
+        base_url = await server.get_server_address.remote()
+        self.agent.conf.get("llm_config", {})["llm_base_url"] = base_url
 
         # collect trajectory
         result = Runners.sync_run(input=messages[0], agent=self.agent.deep_copy())
         res = result.trajectory
-        output = await self.convert_to_agent_loop_output(trajectory=res, response_length=self.config.actor_rollout_ref.rollout.response_length)
+
+        # build agent loop output
+        output = await self.to_agent_loop_output(trajectory=res,
+                                                 response_length=self.config.actor_rollout_ref.rollout.response_length)
         return output
 
-    async def convert_to_agent_loop_output(self, trajectory: List[Dict[str, Any]], response_length: int) -> AgentLoopOutput:
-        """Convert messages to AgentLoopOutput.
+    def get_num_turns(self, trajectory: List[Dict[str, Any]]):
+        return len(trajectory)
+
+    async def to_agent_loop_output(self, trajectory: List[Dict[str, Any]], response_length: int) -> AgentLoopOutput:
+        """Convert trajectory to AgentLoopOutput.
 
         Args:
-            messages (List[BaseMessage]): List of messages, last message must be assistant
-                with response_metadata containing `prompt_ids` and `response_mask`.
+            trajectory (List[Dict[str, Any]]): List of agent execution trajectory.
             response_length (int): Max length of response.
 
         Returns:
@@ -98,7 +86,7 @@ class GaiaAgentLoop(AgentLoopBase):
         if not trajectory:
             raise Exception("Trajectory is empty")
 
-        num_turns = len(trajectory)
+        num_turns = self.get_num_turns(trajectory)
         messages = trajectory[-1].get("exp_data", {}).get("messages", [])
         if not messages:
             return AgentLoopOutput(
@@ -112,7 +100,7 @@ class GaiaAgentLoop(AgentLoopBase):
             try:
                 actions = trajectory[-1].get("exp_data", {}).get("actions", [])
                 assert len(actions) >= 1, f"Last action must not be empty, but got {actions}"
-                agent_resp_content = actions[0].get("policy_info")
+                agent_resp_content = str(actions[0].get("policy_info"))
                 last_assistant_message = {
                     "role": "assistant",
                     "content": agent_resp_content
@@ -131,12 +119,13 @@ class GaiaAgentLoop(AgentLoopBase):
                 messages.append(last_assistant_message)
             except Exception as e:
                 raise Exception(f"Failed to get last assistant message from last trajectory: {trajectory[-1]}")
+
         prompt_ids = []
         response_ids = []
         response_mask = []
         chat_list = []
         loop = asyncio.get_running_loop()
-        system_prompt_prefix_ids = self.tokenizer.apply_chat_template([{}], add_generation_prompt=False, tokenize=True)
+        # system_prompt_prefix_ids = self.tokenizer.apply_chat_template([{}], add_generation_prompt=False, tokenize=True)
         i = 0
         while i < len(messages):
             if messages[i].get("role") == "system":
@@ -145,7 +134,7 @@ class GaiaAgentLoop(AgentLoopBase):
                 continue
             # initial chat completion
             if messages[i].get("role") == "user":
-                if (i == 0 or messages[i-1].get("role") == "system"):
+                if (i == 0 or messages[i - 1].get("role") == "system"):
                     chat_list.append(messages[i])
                     prompt_ids = await loop.run_in_executor(
                         None,
@@ -181,6 +170,7 @@ class GaiaAgentLoop(AgentLoopBase):
                     None,
                     lambda: self.tokenizer.apply_chat_template(
                         chat_list,
+                        tools=self.agent.tools,
                         add_generation_prompt=True,
                         tokenize=True,
                     ),
@@ -192,18 +182,30 @@ class GaiaAgentLoop(AgentLoopBase):
                 continue
             # follow up chat completion with tool response:
             if messages[i].get("role") == "tool":
-                while i < len(messages) and messages[i].get("role") == "tool" :
-                    chat_list.append(messages[i])
-                    i += 1
-                tool_response_ids = await loop.run_in_executor(
+                last_assistant_message = messages[i - 1]
+                chat_list.append(last_assistant_message)
+                token_assistant = await loop.run_in_executor(
                     None,
                     lambda: self.tokenizer.apply_chat_template(
                         chat_list,
+                        tools=self.agent.tools,
                         add_generation_prompt=True,
                         tokenize=True,
                     ),
                 )
-                tool_response_ids = tool_response_ids[len(system_prompt_prefix_ids) :]
+                while i < len(messages) and messages[i].get("role") == "tool":
+                    chat_list.append(messages[i])
+                    i += 1
+                token_assistant_tool = await loop.run_in_executor(
+                    None,
+                    lambda: self.tokenizer.apply_chat_template(
+                        chat_list,
+                        tools=self.agent.tools,
+                        add_generation_prompt=True,
+                        tokenize=True,
+                    ),
+                )
+                tool_response_ids = token_assistant_tool[len(token_assistant):]
                 chat_list = []
                 response_ids += tool_response_ids
                 response_mask += [0] * len(tool_response_ids)
