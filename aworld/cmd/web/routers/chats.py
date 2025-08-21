@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from aworld.cmd.data_model import AgentModel, ChatCompletionRequest
 from aworld.cmd.utils import agent_executor
 from aworld.cmd.utils.trace_summarize import summarize_trace
-from aworld.cmd.web.web_server import get_user_id_from_jwt
+from aworld.cmd.web.utils.users import get_user_id_from_jwt
 import aworld.trace as trace
 
 logger = logging.getLogger(__name__)
