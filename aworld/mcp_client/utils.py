@@ -364,7 +364,7 @@ async def mcp_tool_desc_transform_v2(
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
                     if context and context.session_id:
-                        headers["SESSSION_ID"] = context.session_id
+                        headers["SESSION_ID"] = context.session_id
                     if context and context.user:
                         headers["USER_ID"] = context.user
                     params["headers"] = headers
@@ -376,7 +376,7 @@ async def mcp_tool_desc_transform_v2(
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
                     if context and context.session_id:
-                        headers["SESSSION_ID"] = context.session_id
+                        headers["SESSION_ID"] = context.session_id
                     if context and context.user:
                         headers["USER_ID"] = context.user
                     params["headers"] = headers
