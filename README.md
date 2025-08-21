@@ -659,7 +659,7 @@ aworld web
 # Then open http://localhost:8000 in your browser
 
 # Option 2: Launch REST API (For integrations)
-aworld api_server
+aworld api
 # Then visit http://localhost:8000/docs for API documentation
 ```
 

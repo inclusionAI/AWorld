@@ -43,7 +43,7 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
                 input=text,
                 dimensions=self.config.dimensions)
             data = response.data
-            logging.info(f"OpenAI embedding response: {data}")
+            logging.debug(f"OpenAI embedding response: {data}")
             return self.resolve_embedding(data)
         except Exception as e:
             raise RuntimeError(f"OpenAI embedding API error: {e}")
@@ -62,7 +62,7 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
                 input=text,
                 dimensions=self.config.dimensions)
             data = response.data
-            logging.info(f"OpenAI embedding response: {data}")
+            logging.debug(f"OpenAI embedding response: {data}")
             return self.resolve_embedding(data)
         except Exception as e:
             raise RuntimeError(f"OpenAI async embedding API error: {e}")
