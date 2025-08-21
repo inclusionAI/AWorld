@@ -87,7 +87,7 @@ class Task:
 @dataclass
 class TaskResponse:
     id: str = field(default=None)
-    answer: str | None = field(default=None)
+    answer: Any | None = field(default=None)
     context: Context | None = field(default_factory=Context)
     usage: Dict[str, Any] | None = field(default_factory=dict)
     time_cost: float | None = field(default=0.0)

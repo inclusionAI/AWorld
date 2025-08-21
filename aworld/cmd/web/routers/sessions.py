@@ -3,7 +3,7 @@ from typing import List
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from aworld.cmd.data_model import SessionModel
-from aworld.cmd.web.web_server import get_user_id_from_jwt
+from aworld.cmd.web.utils.users import get_user_id_from_jwt
 
 logger = logging.getLogger(__name__)
 

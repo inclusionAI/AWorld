@@ -546,7 +546,7 @@ aworld web
 # 然后在浏览器中打开 http://localhost:8000
 
 # 选项2：启动REST API（用于集成）
-aworld api_server
+aworld api
 # 然后访问 http://localhost:8000/docs 查看API文档
 ```
 
