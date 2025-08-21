@@ -88,11 +88,10 @@ class GaiaAgentLoop(AgentLoopBase):
         return len(trajectory)
 
     async def convert_to_agent_loop_output(self, trajectory: List[Dict[str, Any]], response_length: int) -> AgentLoopOutput:
-        """Convert messages to AgentLoopOutput.
+        """Convert trajectory to AgentLoopOutput.
 
         Args:
-            messages (List[BaseMessage]): List of messages, last message must be assistant
-                with response_metadata containing `prompt_ids` and `response_mask`.
+            trajectory (List[Dict[str, Any]]): List of agent execution trajectory.
             response_length (int): Max length of response.
 
         Returns:
