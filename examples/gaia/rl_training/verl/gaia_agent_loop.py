@@ -3,7 +3,6 @@
 from typing import Union
 
 from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
@@ -14,7 +13,7 @@ GAIA_SYSTEM_PROMPT = """
 You are an all-capable AI assistant, aimed at solving any task presented by the user.
 """
 
-GAIA_MCP_CONFIG = {
+GAIA_TOOL_CONFIG = {
     "mcpServers": {
         "virtualpc-mcp-server": {
             "type": "streamable-http",
@@ -32,11 +31,10 @@ GAIA_MCP_CONFIG = {
 
 
 class GaiaAgentLoop(AworldAgentLoop):
-    def build_agent(self) -> Union[Agent, Swarm]:
+    def build_agents(self) -> Union[Agent, Swarm]:
         return Agent(
-            conf=AgentConfig(llm_api_key="dummy"),
             name="gaia_super_agent",
             system_prompt=GAIA_SYSTEM_PROMPT,
-            mcp_config=GAIA_MCP_CONFIG,
-            mcp_servers=list(server_name for server_name in GAIA_MCP_CONFIG.get("mcpServers", {}).keys()),
+            mcp_config=GAIA_TOOL_CONFIG,
+            mcp_servers=list(server_name for server_name in GAIA_TOOL_CONFIG.get("mcpServers", {}).keys()),
         )

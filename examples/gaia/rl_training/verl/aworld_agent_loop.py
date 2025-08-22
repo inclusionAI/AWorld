@@ -17,7 +17,7 @@ class AworldAgentLoop(AgentLoopBase):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def build_agent(self) -> Union[Agent, Swarm]:
+    def build_agents(self) -> Union[Agent, Swarm]:
         """Build single- or multi-agent"""
 
     # main branch
@@ -34,6 +34,7 @@ class AworldAgentLoop(AgentLoopBase):
             base_url = await server.get_server_address.remote()
             base_url = f"http://{base_url}/v1"
             agent.conf.get("llm_config", {})["llm_base_url"] = base_url
+            agent.conf.get("llm_config", {})["llm_api_key"] = "dummy"
 
         if not agent.conf.get("llm_config", {}).get("llm_model_name"):
             model_name = "/".join(self.config.actor_rollout_ref.model.path.split("/")[-2:])
