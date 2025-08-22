@@ -674,14 +674,18 @@ class AworldMemory(Memory):
 
         # if total messages <= requested rounds, return all messages
         if len(result_items) <= last_rounds:
-            return init_items + result_items
+            result_items =  init_items + result_items
         else:
             # Ensure tool message completeness: LLM API requires the preceding tool_calls message 
             # to be included when processing a tool message. If the first message in our window 
             # is a tool message, we need to expand the window to include its associated tool_calls.
             while isinstance(result_items[-last_rounds], MemoryToolMessage):
                 last_rounds = last_rounds + 1
-            return init_items + result_items[-last_rounds:]
+            result_items = init_items + result_items[-last_rounds:]
+
+        result_items.sort(key=lambda x: x.created_at, reverse=False)
+        return result_items
+
 
 
     def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:
