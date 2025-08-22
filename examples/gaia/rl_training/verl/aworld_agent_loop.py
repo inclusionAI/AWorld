@@ -39,17 +39,22 @@ class AworldAgentLoop(AgentLoopBase):
             model_name = "/".join(self.config.actor_rollout_ref.model.path.split("/")[-2:])
             agent.conf.get("llm_config", {})["llm_model_name"] = model_name
 
-        # collect trajectory
-        if isinstance(agent, Swarm):
-            result = Runners.sync_run(input=messages[0], swarm=agent)
-        else:
-            result = Runners.sync_run(input=messages[0], agent=agent)
+        result = await self.run_agents(messages[0], agent)
         res = result.trajectory
 
         # build agent loop output
         output = await self.to_agent_loop_output(trajectory=res,
                                                  response_length=self.config.actor_rollout_ref.rollout.response_length)
         return output
+
+    async def run_agents(self, input, agent):
+        # collect trajectory
+        if isinstance(agent, Swarm):
+            result = Runners.sync_run(input=input, swarm=agent)
+        else:
+            result = Runners.sync_run(input=input, agent=agent)
+
+        return result
 
     def get_num_turns(self, trajectory: List[Dict[str, Any]]):
         return len(trajectory)
