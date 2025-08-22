@@ -7,7 +7,7 @@ from aworld.core.agent.swarm import Swarm
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
 
-from examples.gaia.rl_training.verl.aworld_agent_loop import AworldAgentLoop
+from train.verl.aworld_agent_loop import AworldAgentLoop
 
 GAIA_SYSTEM_PROMPT = """
 You are an all-capable AI assistant, aimed at solving any task presented by the user.
