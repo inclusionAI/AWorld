@@ -1,3 +1,5 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
 import argparse
 import json
 import os
@@ -6,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 
-def load_gaia_dataset(path: str, split: str = "validation", total_num_dataset: int = 500):
+def load_gaia_dataset(path: str, split: str = "validation", total_num_dataset: int = 300):
     data_dir = Path(path) / split
 
     split_dataset = []
@@ -33,11 +35,9 @@ def load_gaia_dataset(path: str, split: str = "validation", total_num_dataset: i
                 {"task_id": data["task_id"], "split": split, "level": data["Level"], "answer": data["Final answer"]}
             )
             rl_dataset["agent_name"].append("gaia_agent")
-
-            # todo: need to add data_source, ability, reward_model
-            rl_dataset["data_source"].append("")
-            rl_dataset["ability"].append("")
-            rl_dataset["reward_model"].append({"style": "lighteval/MATH", "ground_truth": "123"})
+            rl_dataset["data_source"].append("gaia")
+            rl_dataset["ability"].append("agi")
+            rl_dataset["reward_model"].append({"style": "GAIA", "ground_truth": data['Final answer']})
 
             cnt += 1
             if cnt >= total_num_dataset:
@@ -48,8 +48,8 @@ def load_gaia_dataset(path: str, split: str = "validation", total_num_dataset: i
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GAIA Dataset Generator")
-    parser.add_argument("--train_size", type=int, default=5000, help="Number of training samples")
-    parser.add_argument("--test_size", type=int, default=500, help="Number of testing samples")
+    parser.add_argument("--train_size", type=int, default=300, help="Number of training samples")
+    parser.add_argument("--test_size", type=int, default=100, help="Number of testing samples")
     parser.add_argument("--output_dir", default="gaia_data/", help="Directory to save the dataset")
     parser.add_argument("--dataset_path", default="./gaia_dataset", help="GAIA dataset path")
     args = parser.parse_args()
