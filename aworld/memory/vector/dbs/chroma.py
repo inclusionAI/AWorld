@@ -133,8 +133,17 @@ class ChromaVectorDB(VectorDB):
         try:
             collection = self.client.get_collection(name=collection_name)
             if collection:
+                where_conditions = []
+                if filter:
+                    for key, value in filter.items():
+                        if value:
+                            where_conditions.append({key: {"$eq": value}})
+                    where_filter = {"$and": where_conditions} if len(where_conditions) > 1 else where_conditions[0]
+                else:
+                    where_filter = None
+
                 result = collection.get(
-                    where=filter,
+                    where=where_filter,
                     limit=limit,
                 )
 
