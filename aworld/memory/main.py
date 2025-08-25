@@ -437,7 +437,7 @@ class Memory(MemoryBase):
             **filters
         })
 
-    async def retrival_user_facts(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[Fact]]:
+    async def retrival_facts(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[Fact]]:
         if not filters:
             filters = {}
 
