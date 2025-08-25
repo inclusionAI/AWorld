@@ -7,7 +7,7 @@ import traceback
 import uuid
 from collections import OrderedDict
 from datetime import datetime
-from typing import Dict, Any, List, Callable
+from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
 from aworld.core.agent.agent_desc import get_agent_desc
@@ -199,38 +199,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
         self.event_handler_name = event_handler_name
-
-    def deep_copy(self):
-        """Create a deep copy of the current Agent instance.
-
-        Returns:
-            A new instance of the same type as the current agent with all attributes copied.
-        """
-        # Use type(self)() to create an instance of the same class as self
-        # This ensures that subclasses will create instances of their own type
-        new_agent = type(self)(
-            name=self.name(),
-            conf=self.conf,
-            desc=self.desc(),
-            id=self.id(),
-            model_output_parser=self.model_output_parser)
-
-        # Copy all relevant attributes
-        new_agent._llm = None
-        new_agent.system_prompt = self.system_prompt
-        new_agent.system_prompt_template = self.system_prompt_template
-        new_agent.agent_prompt = self.agent_prompt
-        new_agent.event_driven = self.event_driven
-        new_agent.need_reset = self.need_reset
-        new_agent.step_reset = self.step_reset
-        new_agent.black_tool_actions = copy.deepcopy(self.black_tool_actions)
-        new_agent.use_tools_in_prompt = self.use_tools_in_prompt
-        new_agent.tool_names = self.tool_names
-        new_agent.handoffs = copy.deepcopy(self.handoffs)
-        new_agent.mcp_servers = copy.deepcopy(self.mcp_servers)
-        new_agent.mcp_config = copy.deepcopy(self.mcp_config)
-        new_agent.sandbox = self.sandbox
-        return new_agent
 
     @property
     def llm(self):
@@ -624,7 +592,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             info: Extended information to assist the agent in decision-making
             **kwargs: Other parameters
         """
-        await self.async_desc_transform()
+        await self.async_desc_transform(message)
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
@@ -635,7 +603,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return messages
 
     def _process_messages(self, messages: List[Dict[str, Any]],
-                          context: Context = None) -> Message:
+                          context: Context = None) -> Optional[List[Dict[str, Any]]]:
         origin_messages = messages
         st = time.time()
         with trace.span(f"{SPAN_NAME_PREFIX_AGENT}llm_context_process", attributes={
