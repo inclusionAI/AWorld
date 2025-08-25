@@ -241,7 +241,7 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
 
         except Exception as e:
             logging.error(f"❌ server #{i + 1} ({server.name}) connect fail: {e}")
-            return []
+            continue
 
     return openai_tools
 

@@ -241,6 +241,8 @@ class McpServers:
                         break
                     except Exception as e:
                         logging.warning(f"Error calling tool error: {e}")
+                    except BaseException as e:
+                        logging.warning(f"Error calling tool error: {e}")
                 logging.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
                 logging.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
                 if not call_result_raw:
@@ -286,7 +288,8 @@ class McpServers:
                         action_name=tool_name,
                         content=json.dumps(content_list, ensure_ascii=False),
                         keep=True,
-                        metadata=metadata
+                        metadata=metadata,
+                        parameter=parameter
                     )
                     results.append(action_result)
                     self._update_metadata(result_key, action_result, operation_info)
@@ -294,6 +297,8 @@ class McpServers:
         except Exception as e:
             logging.warning(f"Failed to call_tool: {e}")
             return None
+        except BaseException as e:
+            logging.warning(f"Failed to call_tool: {e}")
 
         return results
 
