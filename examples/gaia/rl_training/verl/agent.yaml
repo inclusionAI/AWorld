@@ -1,0 +1,2 @@
+- name: gaia_agent
+  _target_: examples.gaia.rl_training.verl.gaia_agent_loop.GaiaAgentLoop
