@@ -7,6 +7,7 @@ from contextlib import AsyncExitStack
 import traceback
 
 import requests
+from aworld.core.context.base import Context
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
@@ -40,7 +41,7 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
                     param_type = (
                         param_info.get("type")
                         if param_info.get("type") != "str"
-                        and param_info.get("type") is not None
+                           and param_info.get("type") is not None
                         else "string"
                     )
                     param_desc = param_info.get("description", "")
@@ -151,7 +152,7 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
                         param_type = (
                             param_info.get("type")
                             if param_info.get("type") != "str"
-                            and param_info.get("type") is not None
+                               and param_info.get("type") is not None
                             else "string"
                         )
                         param_desc = param_info.get("description", "")
@@ -240,13 +241,182 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
 
         except Exception as e:
             logging.error(f"❌ server #{i + 1} ({server.name}) connect fail: {e}")
-            return []
+            continue
+
+    return openai_tools
+
+
+async def mcp_tool_desc_transform_v2(
+        tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
+        server_instances: Dict[str, Any] = None
+) -> List[Dict[str, Any]]:
+    # todo sandbox mcp_config get from registry
+
+    if not mcp_config:
+        return []
+    config = mcp_config
+    mcp_servers_config = config.get("mcpServers", {})
+    server_configs = []
+    openai_tools = []
+    mcp_openai_tools = []
+
+    for server_name, server_config in mcp_servers_config.items():
+        # Skip disabled servers
+        if server_config.get("disabled", False):
+            continue
+
+        if tools is None or server_name in tools:
+            # Handle SSE server
+            if "function_tool" == server_config.get("type", ""):
+                try:
+                    tmp_function_tool = get_function_tool(server_name)
+                    openai_tools.extend(tmp_function_tool)
+                except Exception as e:
+                    logging.warning(f"server_name:{server_name} translate failed: {e}")
+            elif "api" == server_config.get("type", ""):
+                api_result = requests.get(server_config["url"] + "/list_tools")
+                try:
+                    if not api_result or not api_result.text:
+                        continue
+                        # return None
+                    data = json.loads(api_result.text)
+                    if not data or not data.get("tools"):
+                        continue
+                    for item in data.get("tools"):
+                        tmp_function = {
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__" + server_name + "__" + item["name"],
+                                "description": item["description"],
+                                "parameters": {
+                                    **item["parameters"],
+                                    "properties": {
+                                        k: v
+                                        for k, v in item["parameters"]
+                                        .get("properties", {})
+                                        .items()
+                                        if "default" not in v
+                                    },
+                                },
+                            },
+                        }
+                        openai_tools.append(tmp_function)
+                except Exception as e:
+                    logging.warning(f"server_name:{server_name} translate failed: {e}")
+            elif "sse" == server_config.get("type", ""):
+                server_configs.append(
+                    {
+                        "name": "mcp__" + server_name,
+                        "type": "sse",
+                        "params": {
+                            "url": server_config["url"],
+                            "headers": server_config.get("headers"),
+                            "timeout": server_config.get("timeout"),
+                            "sse_read_timeout": server_config.get("sse_read_timeout"),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
+                        },
+                    }
+                )
+
+            elif "streamable-http" == server_config.get("type", ""):
+                server_configs.append(
+                    {
+                        "name": "mcp__" + server_name,
+                        "type": "streamable-http",
+                        "params": {
+                            "url": server_config["url"],
+                            "headers": server_config.get("headers"),
+                            "timeout": server_config.get("timeout"),
+                            "sse_read_timeout": server_config.get("sse_read_timeout"),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
+                        },
+                    }
+                )
+            # Handle stdio server
+            else:
+                # elif "stdio" == server_config.get("type", ""):
+                server_configs.append(
+                    {
+                        "name": "mcp__" + server_name,
+                        "type": "stdio",
+                        "params": {
+                            "command": server_config["command"],
+                            "args": server_config.get("args", []),
+                            "env": server_config.get("env", {}),
+                            "cwd": server_config.get("cwd"),
+                            "encoding": server_config.get("encoding", "utf-8"),
+                            "encoding_error_handler": server_config.get(
+                                "encoding_error_handler", "strict"
+                            ),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
+                        },
+                    }
+                )
+
+    if not server_configs:
+        return openai_tools
+
+    async with AsyncExitStack() as stack:
+        servers = []
+        for server_config in server_configs:
+            try:
+                if server_config["type"] == "sse":
+                    params = server_config["params"].copy()
+                    headers = params.get("headers") or {}
+                    if context and context.session_id:
+                        headers["SESSION_ID"] = context.session_id
+                    if context and context.user:
+                        headers["USER_ID"] = context.user
+                    params["headers"] = headers
+
+                    server = MCPServerSse(
+                        name=server_config["name"], params=params
+                    )
+                elif server_config["type"] == "streamable-http":
+                    params = server_config["params"].copy()
+                    headers = params.get("headers") or {}
+                    if context and context.session_id:
+                        headers["SESSION_ID"] = context.session_id
+                    if context and context.user:
+                        headers["USER_ID"] = context.user
+                    params["headers"] = headers
+                    if "timeout" in params and not isinstance(params["timeout"], timedelta):
+                        params["timeout"] = timedelta(seconds=float(params["timeout"]))
+                    if "sse_read_timeout" in params and not isinstance(params["sse_read_timeout"], timedelta):
+                        params["sse_read_timeout"] = timedelta(seconds=float(params["sse_read_timeout"]))
+                    server = MCPServerStreamableHttp(
+                        name=server_config["name"], params=params
+                    )
+                elif server_config["type"] == "stdio":
+                    server = MCPServerStdio(
+                        name=server_config["name"], params=server_config["params"]
+                    )
+                else:
+                    logging.warning(
+                        f"Unsupported MCP server type: {server_config['type']}"
+                    )
+                    continue
+
+                server = await stack.enter_async_context(server)
+                servers.append(server)
+            except BaseException as err:
+                # single
+                logging.error(
+                    f"Failed to get tools for MCP server '{server_config['name']}'.\n"
+                    f"Error: {err}\n"
+                    f"Traceback:\n{traceback.format_exc()}"
+                )
+
+        mcp_openai_tools = await run(servers)
+
+    if mcp_openai_tools:
+        openai_tools.extend(mcp_openai_tools)
 
     return openai_tools
 
 
 async def mcp_tool_desc_transform(
-    tools: List[str] = None, mcp_config: Dict[str, Any] = None
+        tools: List[str] = None, mcp_config: Dict[str, Any] = None
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -400,10 +570,10 @@ async def mcp_tool_desc_transform(
 
 
 async def call_function_tool(
-    server_name: str,
-    tool_name: str,
-    parameter: Dict[str, Any] = None,
-    mcp_config: Dict[str, Any] = None,
+        server_name: str,
+        tool_name: str,
+        parameter: Dict[str, Any] = None,
+        mcp_config: Dict[str, Any] = None,
 ) -> ActionResult:
     """Specifically handle API type server calls
 
@@ -452,10 +622,10 @@ async def call_function_tool(
 
 
 async def call_api(
-    server_name: str,
-    tool_name: str,
-    parameter: Dict[str, Any] = None,
-    mcp_config: Dict[str, Any] = None,
+        server_name: str,
+        tool_name: str,
+        parameter: Dict[str, Any] = None,
+        mcp_config: Dict[str, Any] = None,
 ) -> ActionResult:
     """Specifically handle API type server calls
 
@@ -510,7 +680,8 @@ async def call_api(
 
 
 async def get_server_instance(
-    server_name: str, mcp_config: Dict[str, Any] = None
+        server_name: str, mcp_config: Dict[str, Any] = None,
+        context: Context = None
 ) -> Any:
     """Get server instance, create a new one if it doesn't exist
 
@@ -537,11 +708,16 @@ async def get_server_instance(
             logging.info(f"API server {server_name} doesn't need persistent connection")
             return None
         elif "sse" == server_config.get("type", ""):
+            headers = server_config.get("headers") or {}
+            if context and context.session_id:
+                headers["SESSION_ID"] = context.session_id
+            if context and context.user:
+                headers["USER_ID"] = context.user
             server = MCPServerSse(
                 name=server_name,
                 params={
                     "url": server_config["url"],
-                    "headers": server_config.get("headers"),
+                    "headers": headers,
                     "timeout": server_config.get("timeout", 5.0),
                     "sse_read_timeout": server_config.get("sse_read_timeout", 300.0),
                     "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds", 300.0),
@@ -551,11 +727,16 @@ async def get_server_instance(
             logging.info(f"Successfully connected to SSE server: {server_name}")
             return server
         elif "streamable-http" == server_config.get("type", ""):
+            headers = server_config.get("headers") or {}
+            if context and context.session_id:
+                headers["SESSION_ID"] = context.session_id
+            if context and context.user:
+                headers["USER_ID"] = context.user
             server = MCPServerStreamableHttp(
                 name=server_name,
                 params={
                     "url": server_config["url"],
-                    "headers": server_config.get("headers"),
+                    "headers": headers,
                     "timeout": timedelta(seconds=server_config.get("timeout", 120.0)),
                     "sse_read_timeout": timedelta(seconds=server_config.get("sse_read_timeout", 300.0)),
                 },
