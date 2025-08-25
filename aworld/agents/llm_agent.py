@@ -1,23 +1,22 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import copy
 import json
 import time
 import traceback
 import uuid
-import copy
 from collections import OrderedDict
 from datetime import datetime
-from typing import Dict, Any, List, Union, Callable
+from typing import Dict, Any, List, Callable
 
 import aworld.trace as trace
-from aworld.core.context.prompts import BasePromptTemplate
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
-from aworld.config.conf import ContextRuleConfig, OptimizationConfig, LlmCompressionConfig
 from aworld.core.agent.agent_desc import get_agent_desc
-from aworld.core.agent.base import AgentFactory, BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentStatus
+from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
 from aworld.core.common import ActionResult, Observation, ActionModel, Config
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
+from aworld.core.context.prompts import BasePromptTemplate
+from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType
 from aworld.core.model_output_parser import ModelOutputParser
@@ -32,7 +31,7 @@ from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_st
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
-from aworld.output.base import StepOutput, MessageOutput, Output
+from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
 from aworld.sandbox.base import Sandbox
 from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
@@ -245,9 +244,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def desc_transform(self):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
-        sync_exec(self.async_desc_transform, )
+        sync_exec(self.async_desc_transform)
 
-    async def async_desc_transform(self):
+    async def async_desc_transform(self, message: Message):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
 
         # Stateless tool
@@ -259,7 +258,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                agents=self.handoffs if self.handoffs else []))
         # MCP servers are tools
         if self.sandbox:
-            mcp_tools = await self.sandbox.mcpservers.list_tools(self.context)
+            mcp_tools = await self.sandbox.mcpservers.list_tools(message.context)
             self.tools.extend(mcp_tools)
         else:
             self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
@@ -353,7 +352,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         # truncate and other process
         try:
-            messages = self._process_messages(messages=messages, context=self.context)
+            messages = self._process_messages(messages=messages, context=message.context)
         except Exception as e:
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
@@ -422,7 +421,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                            sender=self.id(),
                            receiver=actions[0].tool_name,
                            category=self.event_handler_name,
-                           session_id=self.context.session_id if self.context else "",
+                           session_id=input_message.context.session_id if input_message.context else "",
                            headers=self._update_headers(input_message))
 
         tools = OrderedDict()
@@ -446,7 +445,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 caller=caller,
                                 sender=self.id(),
                                 receiver=actions[0].tool_name,
-                                session_id=self.context.session_id if self.context else "",
+                                session_id=input_message.context.session_id if input_message.context else "",
                                 group_id=_group_name,
                                 topic=TopicType.GROUP_ACTIONS,
                                 headers=self._update_headers(input_message))
@@ -455,7 +454,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 caller=caller,
                                 sender=self.id(),
                                 receiver=actions[0].tool_name,
-                                session_id=self.context.session_id if self.context else "",
+                                session_id=input_message.context.session_id if input_message.context else "",
                                 headers=self._update_headers(input_message))
 
         else:
@@ -463,7 +462,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                caller=caller,
                                sender=self.id(),
                                receiver=actions[0].tool_name,
-                               session_id=self.context.session_id if self.context else "",
+                               session_id=input_message.context.session_id if input_message.context else "",
                                headers=self._update_headers(input_message))
 
     def post_run(self, policy_result: List[ActionModel], policy_input: Observation, message: Message = None) -> Message:
@@ -515,7 +514,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         try:
             events = []
-            async for event in self.run_hooks(self.context, HookPoint.PRE_LLM_CALL):
+            async for event in self.run_hooks(message.context, HookPoint.PRE_LLM_CALL):
                 events.append(event)
         except Exception:
             logger.debug(traceback.format_exc())
@@ -543,8 +542,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 data=f"llm result error: {llm_response.error}"
                             ),
                             sender=self.id(),
-                            session_id=self.context.session_id if self.context else "",
-                            headers={"context": self.context}
+                            session_id=message.context.session_id if message.context else "",
+                            headers={"context": message.context}
                         )
                         await send_message(output_message)
                 else:
@@ -555,7 +554,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         try:
             events = []
-            async for event in self.run_hooks(self.context, HookPoint.POST_LLM_CALL):
+            async for event in self.run_hooks(message.context, HookPoint.POST_LLM_CALL):
                 events.append(event)
         except Exception as e:
             logger.debug(traceback.format_exc())
@@ -564,7 +563,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                             agent_id=self.id(),
                                                             use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
-        self.agent_result = agent_result
+        # self.agent_result = agent_result
         if not agent_result.is_call_tool:
             self._finished = True
             return agent_result.actions
@@ -593,7 +592,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                          context=message.context.deep_copy(),
                                          sub_task=True,
                                          outputs=message.context.outputs,
-                                         task_group_id=self.context.get_task().group_id or uuid.uuid4().hex)
+                                         task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
             if not act_result.success:
                 color_log(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
                           color=Color.red)
@@ -674,7 +673,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 })
 
     async def _call_llm_model(self, observation: Observation, messages: List[Dict[str, str]] = [],
-                              info: Dict[str, Any] = {}, **kwargs) -> ModelResponse:
+                              info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> ModelResponse:
         """Perform LLM call
         Args:
             observation: The state observed from the environment
@@ -690,7 +689,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         source_span = trace.get_current_span()
         serializable_messages = to_serializable(messages)
-        self.context.context_info["llm_input"] = serializable_messages
+        message.context.context_info["llm_input"] = serializable_messages
 
         if source_span:
             source_span.set_attribute("messages", json.dumps(
@@ -740,8 +739,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=output,
                         sender=self.id(),
-                        session_id=self.context.session_id if self.context else "",
-                        headers={"context": self.context}
+                        session_id=message.context.session_id if message.context else "",
+                        headers={"context": message.context}
                     )
                     await send_message(output_message)
                 elif not self.event_driven and outputs:
@@ -764,8 +763,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         category=Constants.OUTPUT,
                         payload=llm_response,
                         sender=self.id(),
-                        session_id=self.context.session_id if self.context else "",
-                        headers={"context": self.context}
+                        session_id=message.context.session_id if message.context else "",
+                        headers={"context": message.context}
                     ))
                 elif not self.event_driven and outputs:
                     outputs.add_output(MessageOutput(
@@ -783,29 +782,18 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         data=f"Failed to call llm model: {e}"
                     ),
                     sender=self.id(),
-                    session_id=self.context.session_id if self.context else "",
-                    headers={"context": self.context}
+                    session_id=message.context.session_id if message.context else "",
+                    headers={"context": message.context}
                 )
                 await send_message(output_message)
             raise e
         finally:
-            self.context.context_info["llm_output"] = llm_response
+            message.context.context_info["llm_output"] = llm_response
         return llm_response
 
     def _init_context(self, context: Context):
         super()._init_context(context)
-        self.agent_result = AgentResult(current_state=None, is_call_tool=False, actions=[])
-        # Generate default configuration when context_rule is empty
-        if self.conf.context_rule is None:
-            self.conf.context_rule = ContextRuleConfig(
-                optimization_config=OptimizationConfig(
-                    enabled=True,
-                    max_token_budget_ratio=1.0
-                ),
-                llm_compression_config=LlmCompressionConfig(
-                    enabled=False  # Compression disabled by default
-                )
-            )
+        # self.agent_result = AgentResult(current_state=None, is_call_tool=False, actions=[])
         logger.debug(f'init_context llm_agent {self.name()} {self.conf} {self.conf.context_rule}')
 
     async def run_hooks(self, context: Context, hook_point: str):
@@ -826,7 +814,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     sender=self.id(),
                     session_id=context.session_id if hasattr(
                         context, 'session_id') else None,
-                    headers={"context": self.context}
+                    headers={"context": message.context}
                 )
 
                 # Execute hook
@@ -973,7 +961,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _update_headers(self, input_message: Message) -> Dict[str, Any]:
         headers = input_message.headers.copy()
-        headers['context'] = self.context
+        headers['context'] = input_message.context
         headers['level'] = headers.get('level', 0) + 1
         if input_message.group_id:
             headers['parent_group_id'] = input_message.group_id
