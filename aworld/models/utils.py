@@ -35,6 +35,13 @@ def usage_process(usage: Dict[str, Union[int, Dict[str, int]]] = {}, context: Co
     context.add_token(usage)
 
 
+def num_tokens_from_string(string: str, model: str = "gpt-4o"):
+    """Return the number of tokens used by a string."""
+    import_package("tiktoken")
+    import tiktoken
+    encoding = tiktoken.encoding_for_model(model)
+    return len(encoding.encode(string))
+
 def num_tokens_from_messages(messages, model="gpt-4o"):
     """Return the number of tokens used by a list of messages."""
     import_package("tiktoken")
