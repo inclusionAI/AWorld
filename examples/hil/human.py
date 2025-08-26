@@ -7,6 +7,7 @@ import os
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import ModelConfig, AgentConfig
 from aworld.core.agent.swarm import Swarm
+from aworld.logs.util import color_log, Color
 from aworld.runner import Runners
 from aworld.tools.human.human import HUMAN
 
@@ -36,9 +37,8 @@ if __name__ == '__main__':
 
     swarm = Swarm(agent, max_steps=1)
     result = Runners.sync_run(
-        input="use human tool to ask a question, e.g. what is the weather in beijing?",
+        input="use human tool to ask a question, e.g. what is the weather in beijing?" \
+              "please use HUMAN tool only once",
         swarm=swarm
     )
-
-
-
+    color_log(f"agent result:{result.answer}", color=Color.pink)

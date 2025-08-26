@@ -23,6 +23,7 @@ class Constants:
     AGENT_CALLBACK = "agent_callback"
     GROUP = "group"
     HUMAN = "human"
+    HUMAN_RESPONSE = "human_response"
 
 
 class TopicType:

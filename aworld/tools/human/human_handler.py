@@ -7,7 +7,7 @@ from aworld.core.agent.base import AgentFactory
 from aworld.core.event.base import Message, Constants
 from aworld.runners import HandlerFactory
 from aworld.runners.handler import DefaultHandler
-from aworld.runners.state_manager import RuntimeStateManager
+from aworld.runners.state_manager import RuntimeStateManager, HandleResult, RunNodeStatus
 
 
 @HandlerFactory.register(name=f'__{Constants.HUMAN}__')
@@ -34,28 +34,44 @@ class DefaultHumanHandler(DefaultHandler):
             return False
         return True
 
+    async def handle_user_input(self, data):
+        # rewrite this method to handle user input
+        return input(f"Human Confirm Info: {data}\nPlease Input:")
+
     async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
         if not self.is_valid_message(message):
             return
-
         headers = {"context": message.context}
         session_id = message.session_id
         data = message.payload
 
-        human_input = input(f"Human Confirm Info: {data}\nPlease Input:")
-
-        # # mark message node success
-        # state_mng = RuntimeStateManager.instance()
-        # state_mng.run_succeed(node_id=message.id,
-        #                       result_msg="run DefaultHumanHandler succeed",
-        #                       results=[human_input])
+        human_input = await self.handle_user_input(data)
 
         yield Message(
-            category=Constants.HUMAN,
-            sender=self.name,
+            category=Constants.HUMAN_RESPONSE,
+            sender=self.name(),
             receiver=message.sender,
             session_id=session_id,
             payload=human_input,
             headers=headers,
         )
         return
+
+    async def post_handle(self, input:Message, output: Message) -> Message:
+        if not self.is_valid_message(input):
+            return output
+
+        if output.category is not Constants.HUMAN_RESPONSE:
+            return output
+
+        # update handle_result to state manager
+        results = [HandleResult(
+            name = output.category,
+            status = RunNodeStatus.SUCCESS,
+            result = output
+        )]
+        state_mng = RuntimeStateManager.instance()
+        state_mng.run_succeed(node_id=input.id,
+                              result_msg="run DefaultHumanHandler succeed",
+                              results=results)
+        return output
