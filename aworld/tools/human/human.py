@@ -5,17 +5,18 @@ from typing import Any, Dict, Tuple
 
 from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult
-from aworld.core.event.base import Constants, TopicType, HumanMessage
+from aworld.core.event.base import Constants, TopicType, HumanMessage, Message
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.events.util import send_message
 from aworld.logs.util import logger
-from aworld.runners.state_manager import HandleResult
+from aworld.runners.state_manager import HandleResult, RunNodeBusiType
 from aworld.tools.human.actions import HumanExecuteAction
 from aworld.tools.utils import build_observation
 
+HUMAN = "human"
 
-@ToolFactory.register(name="human_confirm",
-                      desc="human confirm",
+@ToolFactory.register(name=HUMAN,
+                      desc=HUMAN,
                       supported_action=HumanExecuteAction)
 class HumanTool(AsyncTool):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
@@ -61,13 +62,13 @@ class HumanTool(AsyncTool):
             if not confirm_content:
                 raise ValueError("content invalid")
             # send human message to read human input
-            message, error = await self.send_human_message(confirm_content)
+            message, error = await self.send_human_message(confirm_content=confirm_content)
             if error:
                 raise ValueError(f"HumanTool|send human message failed: {error}")
 
             # hanging on human message
             logger.info(f"HumanTool|waiting for human input")
-            result = self.long_wait_message_state(message)
+            result = await self.long_wait_message_state(message=message)
             logger.info(f"HumanTool|human input succeed: {message.payload}")
 
             observation.content = result
@@ -80,6 +81,7 @@ class HumanTool(AsyncTool):
             reward = 1.
         except Exception as e:
             fail_error = str(e)
+            logger.warn(f"HumanTool|failed do_step: {traceback.format_exc()}")
         finally:
             self.step_finished = True
         info["exception"] = fail_error
@@ -87,12 +89,20 @@ class HumanTool(AsyncTool):
         return (observation, reward, kwargs.get("terminated", False),
                 kwargs.get("truncated", False), info)
 
-    async def long_wait_message_state(self, message):
+    async def long_wait_message_state(self, message: Message):
         from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
         state_mng = RuntimeStateManager.instance()
         msg_id = message.id
+        # init node
+        state_mng.create_node(
+            node_id=msg_id,
+            busi_type=RunNodeBusiType.from_message_category(Constants.HUMAN),
+            busi_id=message.receiver or "",
+            session_id=message.session_id,
+            msg_id=msg_id,
+            msg_from=message.sender)
         # wait for message node completion
-        res_node = await state_mng.wait_for_node_completion(msg_id)
+        res_node = await state_mng.wait_for_node_completion(node_id=msg_id)
         if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
             # get result and status from node
             handle_result: HandleResult = res_node.results[0]
@@ -110,7 +120,8 @@ class HumanTool(AsyncTool):
                 payload=confirm_content,
                 sender=self.name(),
                 session_id=self.context.session_id,
-                topic=TopicType.HUMAN_CONFIRM
+                topic=TopicType.HUMAN_CONFIRM,
+                headers={"context": self.context}
             )
             await send_message(message)
             return message, error
