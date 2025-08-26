@@ -531,8 +531,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                             agent_id=self.id(),
                                                             use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
-        # self.agent_result = agent_result
-        if not agent_result.is_call_tool:
+        if self.is_agent_finished(llm_response, agent_result):
             self._finished = True
             return agent_result.actions
         else:
@@ -907,6 +906,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ), agent_memory_config=self.memory_config)
+
+    def is_agent_finished(self, llm_response: ModelResponse, agent_result: AgentResult) -> bool:
+        if not agent_result.is_call_tool:
+            return True
+        return False
 
     def _update_headers(self, input_message: Message) -> Dict[str, Any]:
         headers = input_message.headers.copy()
