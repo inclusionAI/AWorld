@@ -523,14 +523,14 @@ class DefaultAgentHandler(AgentHandler):
 
         return agent._finished and agent.id() == event.headers.get('root_agent_id', '')
 
-    async def post_handle(self, message: Message) -> Message:
-        new_context = message.context.deep_copy()
-        new_context._task = message.context.get_task()
-        message.context = new_context
-        if self.is_group_finish(message):
+    async def post_handle(self, input:Message, output: Message) -> Message:
+        new_context = output.context.deep_copy()
+        new_context._task = output.context.get_task()
+        output.context = new_context
+        if self.is_group_finish(output):
             from aworld.runners.state_manager import RuntimeStateManager
             state_mng = RuntimeStateManager.instance()
-            await state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'),
-                                             [message])
+            await state_mng.finish_sub_group(output.group_id, output.headers.get('root_message_id'),
+                                             [output])
             return None
-        return message
+        return output
