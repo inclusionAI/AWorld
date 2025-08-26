@@ -213,14 +213,10 @@ class Fact(MemoryItem):
         content (str): fact.
         metadata (Optional[Dict[str, Any]]): Additional metadata.
     """
-    def __init__(self, user_id: str, content: str, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+    def __init__(self, user_id: str, agent_id: str, content: str, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         meta = metadata.copy() if metadata else {}
         meta['user_id'] = user_id
         super().__init__(content=content, metadata=meta, memory_type="fact", **kwargs)
-
-    @property
-    def user_id(self) -> str:
-        return self.metadata['user_id']
 
     @property
     def key(self) -> str:

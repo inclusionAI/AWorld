@@ -12,7 +12,7 @@ from aworld.config.conf import AgentConfig, ConfigDict, load_config
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event import eventbus
-from aworld.core.event.base import Constants, Message
+from aworld.core.event.base import Constants, Message, AgentMessage
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
 from aworld.logs.util import logger
@@ -167,6 +167,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.sandbox = sandbox or Sandbox(
                 mcp_servers=self.mcp_servers, mcp_config=self.mcp_config
             )
+        self.loop_step = 0
+        self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
 
     def _init_context(self, context: Context):
         self.context = context
@@ -182,6 +184,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
+        caller = message.caller
+        if caller and caller == self.id():
+            self.loop_step += 1
+        else:
+            self.loop_step = 0
+        should_term = self.sync_should_terminate_loop(message)
+        if should_term:
+            return AgentMessage(
+                payload=message.payload,
+                caller=message.sender,
+                sender=self.id(),
+                session_id=message.context.session_id,
+                headers=message.headers
+            )
         observation = message.payload
         sync_exec(
             send_message,
@@ -202,6 +218,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
+        caller = message.caller
+        if caller and caller == self.id():
+            self.loop_step += 1
+        else:
+            self.loop_step = 0
+        should_term = await self.should_terminate_loop(message)
+        if should_term:
+            return AgentMessage(
+                payload=message.payload,
+                caller=message.sender,
+                sender=self.id(),
+                session_id=message.context.session_id,
+                headers=message.headers
+            )
         observation = message.payload
         if eventbus is not None:
             await send_message(
@@ -278,6 +308,12 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
         return policy_result
+
+    def sync_should_terminate_loop(self, message: Message) -> bool:
+        return sync_exec(self.should_terminate_loop, message)
+
+    async def should_terminate_loop(self, message: Message) -> bool:
+        return False
 
 
 class AgentManager(Factory):

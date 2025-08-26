@@ -145,16 +145,6 @@ class McpServers:
 
                 if parameter is None:
                     parameter = {}
-                # if task_id:
-                #     parameter["task_id"] = task_id
-                # if session_id:
-                #     parameter["session_id"] = session_id
-                #
-                # mcp_context.set_state("session_id", "12312")
-                # print(mcp_context.get_state("session_id"))
-
-                # FastMCPContext = FastMCPContext.fastmcp_context.set_state("session_id", "session_id")
-                #
 
                 if not server_name or not tool_name:
                     continue
@@ -239,14 +229,12 @@ class McpServers:
                         call_result_raw = await server.call_tool(tool_name=tool_name, arguments=parameter,
                                                                  progress_callback=progress_callback)
                         break
-                    except Exception as e:
-                        logging.warning(f"Error calling tool error: {e}")
                     except BaseException as e:
                         logging.warning(f"Error calling tool error: {e}")
                 logging.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
                 logging.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
                 if not call_result_raw:
-                    logging.warning(f"Error calling tool with cached server: {e}")
+                    logging.warning(f"Error calling tool with cached server")
 
                     self._update_metadata(result_key, {"error": str(e)}, operation_info)
 
@@ -288,8 +276,7 @@ class McpServers:
                         action_name=tool_name,
                         content=json.dumps(content_list, ensure_ascii=False),
                         keep=True,
-                        metadata=metadata,
-                        parameter=parameter
+                        metadata=metadata
                     )
                     results.append(action_result)
                     self._update_metadata(result_key, action_result, operation_info)
@@ -297,8 +284,6 @@ class McpServers:
         except Exception as e:
             logging.warning(f"Failed to call_tool: {e}")
             return None
-        except BaseException as e:
-            logging.warning(f"Failed to call_tool: {e}")
 
         return results
 
