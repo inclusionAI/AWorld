@@ -92,7 +92,6 @@ class DefaultGroupHandler(GroupHandler):
                     return
 
                 # Create agent copies and execute for each action
-                agent_copies = []
                 for action in actions:
                     msg = await self._build_agent_message(action, message)
                     if msg.category != Constants.AGENT:
@@ -100,7 +99,6 @@ class DefaultGroupHandler(GroupHandler):
                         return
                     self._update_headers(msg, message)
                     agent_copy = self.copy_agent(original_agent)
-                    agent_copies.append(agent_copy)
                     con = action.policy_info
                     if action.params and 'content' in action.params:
                         con = action.params['content']
@@ -220,7 +218,7 @@ class DefaultGroupHandler(GroupHandler):
         Returns:
             Deep copy of the agent
         """
-        return agent.deep_copy()
+        return agent
 
     async def _parallel_exec_agents_actions(self, agent_messages: Dict[str, List[Tuple[str, Agent, Message]]],
                                             message: Message):
