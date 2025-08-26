@@ -1,15 +1,17 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import traceback
 from typing import Any, Dict, Tuple
+
 from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult
-from aworld.events.util import send_message
-from aworld.core.event.base import Message, Constants, TopicType
+from aworld.core.event.base import Constants, TopicType, HumanMessage
 from aworld.core.tool.base import ToolFactory, AsyncTool
+from aworld.events.util import send_message
 from aworld.logs.util import logger
-
-from aworld.tools.utils import build_observation
+from aworld.runners.state_manager import HandleResult
 from aworld.tools.human.actions import HumanExecuteAction
+from aworld.tools.utils import build_observation
 
 
 @ToolFactory.register(name="human_confirm",
@@ -58,12 +60,21 @@ class HumanTool(AsyncTool):
             confirm_content = action.params.get("confirm_content", "")
             if not confirm_content:
                 raise ValueError("content invalid")
-            output, error = await self.human_confirm(confirm_content)
-            observation.content = output
+            # send human message to read human input
+            message, error = await self.send_human_message(confirm_content)
+            if error:
+                raise ValueError(f"HumanTool|send human message failed: {error}")
+
+            # hanging on human message
+            logger.info(f"HumanTool|waiting for human input")
+            result = self.long_wait_message_state(message)
+            logger.info(f"HumanTool|human input succeed: {message.payload}")
+
+            observation.content = result
             observation.action_result.append(
                 ActionResult(is_done=True,
                              success=False if error else True,
-                             content=f"{output}",
+                             content=f"{result}",
                              error=f"{error}",
                              keep=False))
             reward = 1.
@@ -76,23 +87,36 @@ class HumanTool(AsyncTool):
         return (observation, reward, kwargs.get("terminated", False),
                 kwargs.get("truncated", False), info)
 
-    async def human_confirm(self, confirm_content):
+    async def long_wait_message_state(self, message):
+        from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
+        state_mng = RuntimeStateManager.instance()
+        msg_id = message.id
+        # wait for message node completion
+        res_node = await state_mng.wait_for_node_completion(msg_id)
+        if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
+            # get result and status from node
+            handle_result: HandleResult = res_node.results[0]
+            logger.info(f"HumanTool|human input origin result: {res_node.results}")
+            return handle_result.result.payload
+        else:
+            logger.debug(f"HumanTool|tool {self.name()} callback failed with node: {res_node}.")
+            raise ValueError(f"HumanTool|send human message failed: {res_node}")
+
+    async def send_human_message(self, confirm_content):
         error = None
-        self.content = None
         try:
-            self.content = confirm_content
-            await send_message(Message(
-                category=Constants.TASK,
+            message = HumanMessage(
+                category=Constants.HUMAN,
                 payload=confirm_content,
                 sender=self.name(),
                 session_id=self.context.session_id,
                 topic=TopicType.HUMAN_CONFIRM
-            ))
-            return self.content, error
+            )
+            await send_message(message)
+            return message, error
         except Exception as e:
             error = str(e)
-            logger.warning(f"human_confirm error: {str(e)}")
+            logger.warning(f"HumanTool|human_confirm error: {str(e)} {traceback.format_exc()}")
+            return None, error
         finally:
             pass
-
-        return self.content, error

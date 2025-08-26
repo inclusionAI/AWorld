@@ -17,6 +17,7 @@ class Factory(Generic[T]):
         self._desc: Dict[str, str] = {}
         self._asyn: Dict[str, bool] = {}
         self._ext_info: Dict[str, Dict[Any, Any]] = {}
+        self._prio: Dict[str, int] = {}
 
     def __call__(self, name: str, asyn: bool = False, **kwargs):
         """Create the special type object instance by name. If not found, raise ValueError or construct object instance.
@@ -61,7 +62,7 @@ class Factory(Generic[T]):
         name = "async_" + name if asyn else name
         return self._ext_info.get(name, {})
 
-    def register(self, name: str, desc: str = '', **kwargs):
+    def register(self, name: str, desc: str = '', prio: int = 0, **kwargs):
         def func(cls):
             asyn = kwargs.pop("asyn", False)
             prefix = "async_" if asyn else ""
@@ -72,9 +73,12 @@ class Factory(Generic[T]):
                 equal = True
                 if asyn:
                     equal = self._asyn[name] == asyn
-                if equal:
+                    existing_prio = self._prio.get(prefix + name, 0)
+                if equal and prio > existing_prio:
                     logger.warning(f"{name} already in {self._type} factory, will override it.")
-
+                else:
+                    logger.warning(f"{name} already in {self._type} factory, skip register it.")
+                    return self._cls[prefix + name]
             # Add REGISTERED_NAME attribute to the class to save the registered name
             setattr(cls, "REGISTERED_NAME", name)
 
@@ -82,6 +86,7 @@ class Factory(Generic[T]):
             self._cls[prefix + name] = cls
             self._desc[prefix + name] = desc
             self._ext_info[prefix + name] = kwargs
+            self._prio[prefix + name] = prio
             return cls
 
         return func

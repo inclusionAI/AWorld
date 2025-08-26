@@ -22,6 +22,7 @@ class Constants:
     TOOL_CALLBACK = "tool_callback"
     AGENT_CALLBACK = "agent_callback"
     GROUP = "group"
+    HUMAN = "human"
 
 
 class TopicType:
@@ -150,6 +151,16 @@ class GroupMessage(Message[Union[Dict[str, Any], List[ActionModel]]]):
     def __post_init__(self):
         super().__post_init__()
         self.headers['group_id'] = self.group_id
+
+
+@dataclass
+class HumanMessage(Message[Any]):
+    """Human interaction message for human-in-the-loop scenarios.
+    
+    This message type is used to handle human input, confirmations, and responses
+    in interactive AI systems.
+    """
+    category: str = 'human'
 
 
 class Messageable(object):
