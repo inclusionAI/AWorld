@@ -19,6 +19,7 @@ class RunNodeBusiType(Enum):
     TOOL = 'TOOL'
     TASK = 'TASK'
     TOOL_CALLBACK = 'TOOL_CALLBACK'
+    HUMAN = 'HUMAN'
 
     @staticmethod
     def from_message_category(category: str) -> 'RunNodeBusiType':
@@ -30,6 +31,8 @@ class RunNodeBusiType(Enum):
             return RunNodeBusiType.TASK
         if category == Constants.TOOL_CALLBACK:
             return RunNodeBusiType.TOOL_CALLBACK
+        if category == Constants.HUMAN:
+            return RunNodeBusiType.HUMAN
         return None
 
 
@@ -791,3 +794,9 @@ class EventRuntimeStateManager(RuntimeStateManager):
                 self.run_failed(node_id=message.id)
             else:
                 self.run_succeed(node_id=message.id)
+
+    def get_message_node_status(self, message: Message) -> RunNodeStatus:
+        node = self.get_node(node_id = message.id)
+        if not node:
+            return RunNodeStatus.INIT
+        return node.status
