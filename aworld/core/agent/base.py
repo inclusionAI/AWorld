@@ -313,8 +313,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return sync_exec(self.should_terminate_loop, message)
 
     async def should_terminate_loop(self, message: Message) -> bool:
-        if self.loop_step > self.max_loop_steps:
-            return True
         return False
 
 
