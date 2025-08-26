@@ -73,7 +73,7 @@ class Factory(Generic[T]):
                 equal = True
                 if asyn:
                     equal = self._asyn[name] == asyn
-                    existing_prio = self._prio.get(prefix + name, 0)
+                existing_prio = self._prio.get(prefix + name, 0)
                 if equal and prio > existing_prio:
                     logger.warning(f"{name} already in {self._type} factory, will override it.")
                 else:
