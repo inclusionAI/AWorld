@@ -15,11 +15,6 @@ from aworld.tools.human.human import HUMAN
 # os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
 # os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
 
-os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-1.7b"
-os.environ["LLM_BASE_URL"] = "http://localhost:1234/v1"
-os.environ["LLM_API_KEY"] = "lm-studio"
-
-
 if __name__ == '__main__':
     conf = AgentConfig(
         llm_config=ModelConfig(
