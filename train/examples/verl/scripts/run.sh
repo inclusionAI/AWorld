@@ -21,11 +21,11 @@ if [ ! -d "$model_path" ]; then
 fi
 
 # Use the default output directory produced by create_dataset.py
-train_files=$DATA_ROOT/gaia_data/train.parquet
-test_files=$DATA_ROOT/gaia_data/test.parquet
+train_files=$DATA_ROOT/datasets/train.parquet
+test_files=$DATA_ROOT/datasets/test.parquet
 
 # Agent config
-agent_loop_config_path=examples/gaia/rl_training/verl/agent.yaml
+agent_loop_config_path=train/examples/verl/configs/agent.yaml
 
 # =================== wandb ===================
 project_name=math_expression_tool

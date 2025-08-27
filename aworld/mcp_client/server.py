@@ -137,14 +137,16 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             server_result = await session.initialize()
             self.server_initialize_result = server_result
             self.session = session
-        except Exception as e:
-            logging.error(f"Error initializing MCP server: {e}")
+        except asyncio.CancelledError as e:
+            # Re-raise the exception to avoid returning an uninitialized session
+            logging.error(f"Error initializing MCP server (cancelled): {e}")
             await self.cleanup()
-            return
+            raise
         except BaseException as e:
+            # Re-raise the exception to make the caller aware of the failure
             logging.error(f"Error initializing MCP server: {e}")
             await self.cleanup()
-            return
+            raise
 
     async def list_tools(self) -> list[MCPTool]:
         """List the tools available on the server."""
