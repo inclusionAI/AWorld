@@ -5,7 +5,7 @@ from typing import Union
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 
-from train.adapters.verl.core.aworld_agent_loop import AworldAgentLoop
+from train.frameworks.verl.core.aworld_agent_loop import AworldAgentLoop
 
 GAIA_SYSTEM_PROMPT = """
 You are an all-capable AI assistant, aimed at solving any task presented by the user.

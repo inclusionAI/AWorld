@@ -13,7 +13,7 @@ from aworld.runner import Runners
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
-from train.adapters.verl.utils.common import to_agent_loop_output
+from train.frameworks.verl.utils.common import to_agent_loop_output
 
 
 class AworldAgentLoop(AgentLoopBase):

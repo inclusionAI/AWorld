@@ -3,7 +3,7 @@ from typing import List, Dict, Any
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
 
 
-async def to_agent_loop_output(self, messages: List[Dict[str, Any]], response_length: int) -> AgentLoopOutput:
+async def to_agent_loop_output(messages: List[Dict[str, Any]], response_length: int) -> AgentLoopOutput:
     """Convert messages to AgentLoopOutput.
 
     Args:
