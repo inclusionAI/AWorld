@@ -30,6 +30,7 @@ class AworldAgentLoop(AgentLoopBase):
     # release 0.5.0
     async def run(self, messages: list, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         agent = self.build_agents()
+        self.agent = agent
 
         # load mcp tool config
         tool_config_path = os.environ["AGENT_TOOL_CONFIG_PATH"]
@@ -126,7 +127,6 @@ class AworldAgentLoop(AgentLoopBase):
         except Exception as err:
             print(f"Error loading tool config[{config_path}] err is : {err}")
 
-
     def get_num_turns(self, trajectory: List[Dict[str, Any]]):
         return len(trajectory)
 
@@ -177,6 +177,8 @@ class AworldAgentLoop(AgentLoopBase):
             except Exception as e:
                 raise Exception(f"Failed to get last assistant message from last trajectory: {trajectory[-1]}")
 
-        output = await to_agent_loop_output(messages=messages, response_length=response_length)
+        output = await to_agent_loop_output(tokenizer=self.tokenizer,
+                                            messages=messages,
+                                            response_length=response_length,
+                                            tools=self.agent.tools)
         return output
-

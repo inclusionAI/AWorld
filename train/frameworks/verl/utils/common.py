@@ -1,14 +1,22 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
 import asyncio
 from typing import List, Dict, Any
+from transformers import AutoTokenizer
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
 
 
-async def to_agent_loop_output(messages: List[Dict[str, Any]], response_length: int) -> AgentLoopOutput:
+async def to_agent_loop_output(tokenizer: AutoTokenizer,
+                               messages: List[Dict[str, Any]],
+                               response_length: int,
+                               tools: Dict[str, Any] = None) -> AgentLoopOutput:
     """Convert messages to AgentLoopOutput.
 
     Args:
+        tokenizer (AutoTokenizer): Tokenizer for tokenize messages.
         messages (List[Dict[str, Any]]): List of messages in OpenAI request format.
         response_length (int): Max length of response.
+        tools: Tool list used by the agent.
 
     Returns:
         AgentLoopOutput: agent loop output trajectory used for training.
@@ -49,9 +57,9 @@ async def to_agent_loop_output(messages: List[Dict[str, Any]], response_length: 
                     chat_list.append(messages[i])
                     prompt_ids = await loop.run_in_executor(
                         None,
-                        lambda: self.tokenizer.apply_chat_template(
+                        lambda: tokenizer.apply_chat_template(
                             chat_list,
-                            tools=self.agent.tools,
+                            tools=tools,
                             add_generation_prompt=True,
                             tokenize=True,
                         ),
@@ -63,7 +71,7 @@ async def to_agent_loop_output(messages: List[Dict[str, Any]], response_length: 
                     chat_list.append(messages[i])
                     cur_response_ids = await loop.run_in_executor(
                         None,
-                        lambda: self.tokenizer.apply_chat_template(
+                        lambda: tokenizer.apply_chat_template(
                             chat_list,
                             add_generation_prompt=True,
                             tokenize=True,
@@ -79,9 +87,9 @@ async def to_agent_loop_output(messages: List[Dict[str, Any]], response_length: 
                 chat_list.append(messages[i])
                 cur_response_ids = await loop.run_in_executor(
                     None,
-                    lambda: self.tokenizer.apply_chat_template(
+                    lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        tools=self.agent.tools,
+                        tools=tools,
                         add_generation_prompt=True,
                         tokenize=True,
                     ),
@@ -97,9 +105,9 @@ async def to_agent_loop_output(messages: List[Dict[str, Any]], response_length: 
                 chat_list.append(last_assistant_message)
                 token_assistant = await loop.run_in_executor(
                     None,
-                    lambda: self.tokenizer.apply_chat_template(
+                    lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        tools=self.agent.tools,
+                        tools=tools,
                         add_generation_prompt=True,
                         tokenize=True,
                     ),
@@ -109,9 +117,9 @@ async def to_agent_loop_output(messages: List[Dict[str, Any]], response_length: 
                     i += 1
                 token_assistant_tool = await loop.run_in_executor(
                     None,
-                    lambda: self.tokenizer.apply_chat_template(
+                    lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        tools=self.agent.tools,
+                        tools=tools,
                         add_generation_prompt=True,
                         tokenize=True,
                     ),
