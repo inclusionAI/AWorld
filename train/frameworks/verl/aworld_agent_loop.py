@@ -11,6 +11,7 @@ from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.logs.util import logger
+from aworld.sandbox.base import Sandbox
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
@@ -44,6 +45,8 @@ class AworldAgentLoop(AgentLoopBase):
             logger.info(f"tool_config: {tool_config}")
             agent.mcp_config = tool_config
             agent.mcp_servers = list(server_name for server_name in tool_config.get("mcpServers", {}).keys())
+            if not agent.sandbox:
+                agent.sandbox = Sandbox(mcp_servers=agent.mcp_servers, mcp_config=agent.mcp_config)
 
         self.agent = agent
 
