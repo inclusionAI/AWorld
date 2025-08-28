@@ -53,6 +53,10 @@ class GaiaFormat(ORM):
         return reward
 
 
+orms['external_gaia_answer_reward'] = GaiaAnswerMatch
+orms['external_gaia_format_reward'] = GaiaFormat
+
+
 def split_string(
         s: str,
         char_list: list[str] = [",", ";"],
