@@ -12,9 +12,16 @@ os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"  # noqa
 import aworld.trace as trace  # noqa
 from aworld.logs.util import logger, trace_logger
 from aworld.trace.server import get_trace_server
+from aworld.output.artifact import Artifact, ArtifactType
 
 
 trace.configure(trace.ObservabilityConfig(trace_server_enabled=True))
+
+
+class TestClass:
+    @trace.func_span(span_name="test_func_args")
+    def test_func(self, artifact: Artifact = None):
+        logger.info(f"this is a test func, artifact={artifact}")
 
 
 @trace.func_span(span_name="test_func", attributes={"test_attr": "test_value"}, extract_args=["param1"], add_attr="add_attr_value")
@@ -52,6 +59,12 @@ def main():
             current_span = trace.get_current_span()
             logger.info("trace_id=%s", current_span.get_trace_id())
     try:
+        test_class = TestClass()
+        test_class.test_func(artifact=Artifact(
+            artifact_id="123",
+            artifact_type=ArtifactType.IMAGE,
+            content="123",
+        ))
         traced_func(param1="func1_param1_value", param2=111)
     except Exception as e:
         logger.error(f"exception: {e}")
