@@ -255,6 +255,8 @@ async def mcp_tool_desc_transform_v2(
     if not mcp_config:
         return []
     config = mcp_config
+    global MCP_SERVERS_CONFIG
+    MCP_SERVERS_CONFIG = config
     mcp_servers_config = config.get("mcpServers", {})
     server_configs = []
     openai_tools = []
@@ -428,6 +430,8 @@ async def mcp_tool_desc_transform(
     if not mcp_config:
         return []
     config = mcp_config
+    global MCP_SERVERS_CONFIG
+    MCP_SERVERS_CONFIG = config
     mcp_servers_config = config.get("mcpServers", {})
     server_configs = []
     openai_tools = []
