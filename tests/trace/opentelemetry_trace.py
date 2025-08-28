@@ -18,9 +18,10 @@ from aworld.output.artifact import Artifact, ArtifactType
 trace.configure(trace.ObservabilityConfig(trace_server_enabled=True))
 
 
-@trace.func_span(span_name="test_func_args")
-def test_func(artifact: Artifact = None):
-    logger.info(f"this is a test func, artifact={artifact}")
+class TestClass:
+    @trace.func_span(span_name="test_func_args")
+    def test_func(self, artifact: Artifact = None):
+        logger.info(f"this is a test func, artifact={artifact}")
 
 
 @trace.func_span(span_name="test_func", attributes={"test_attr": "test_value"}, extract_args=["param1"], add_attr="add_attr_value")
@@ -58,7 +59,8 @@ def main():
             current_span = trace.get_current_span()
             logger.info("trace_id=%s", current_span.get_trace_id())
     try:
-        test_func(artifact=Artifact(
+        test_class = TestClass()
+        test_class.test_func(artifact=Artifact(
             artifact_id="123",
             artifact_type=ArtifactType.IMAGE,
             content="123",

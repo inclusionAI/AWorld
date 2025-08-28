@@ -116,6 +116,8 @@ def get_func_args(func: Callable,
 def pre_process_func_args(args: dict):
     """Pre process the function arguments.
     """
+    if "self" in args:
+        args.pop("self")
     for k, v in args.items():
         if (v and not isinstance(v, (str, bool, int, float)) and
                 not (isinstance(v, Sequence) and all(isinstance(i, (str, bool, int, float)) for i in v))):
