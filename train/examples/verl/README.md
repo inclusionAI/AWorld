@@ -33,9 +33,3 @@ python create_dataset.py \
 ```bash
 bash scripts/run.sh
 ```
-
-## Importing adapters
-
-```python
-from train.frameworks.verl.core.aworld_agent_loop import AworldAgentLoop
-```
