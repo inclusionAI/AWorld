@@ -9,14 +9,14 @@ train/adapters/verl/
   utils/                # VERL-specific helpers used by core
 ```
 
-- core/aworld_agent_loop.py: Base class bridging VERL AgentLoop with AWorld agents.
-- utils/common.py: Utilities for converting trajectories/messages to VERL AgentLoopOutput.
+- aworld_agent_loop.py: Base class bridging VERL AgentLoop with AWorld agents.
+- common.py: Utilities for converting trajectories/messages to VERL AgentLoopOutput.
 
 ## Usage
 Import adapter entrypoints from your example code:
 
 ```python
-from train.frameworks.verl.core.aworld_agent_loop import AworldAgentLoop
+from train.frameworks.verl.aworld_agent_loop import AworldAgentLoop
 ```
 Then implement your example-specific loop:
 ```python

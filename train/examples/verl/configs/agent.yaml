@@ -1,2 +1,2 @@
 - name: gaia_agent
-  _target_: train.examples.verl.gaia_agent_loop.GaiaAgentLoop
+  _target_: train.examples.verl.agents.gaia_agent_loop.GaiaAgentLoop

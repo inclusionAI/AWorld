@@ -13,14 +13,14 @@ from aworld.runner import Runners
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
-from train.frameworks.verl.utils.common import to_agent_loop_output
+from train.frameworks.verl.common import to_agent_loop_output
 
 
 class AworldAgentLoop(AgentLoopBase):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def build_agents(self) -> Union[Agent, Swarm]:
+    def build_agents(self, model_name: str = "", base_url: str = "", api_key: str = "") -> Union[Agent, Swarm]:
         """Build single- or multi-agent"""
 
     # main branch
@@ -29,27 +29,21 @@ class AworldAgentLoop(AgentLoopBase):
 
     # release 0.5.0
     async def run(self, messages: list, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
-        agent = self.build_agents()
-        self.agent = agent
+        server = self.server_manager._choose_server(uuid.uuid4().hex)
+        base_url = await server.get_server_address.remote()
+        base_url = f"http://{base_url}/v1"
+        model_name = "/".join(self.config.actor_rollout_ref.model.path.split("/")[-2:])
+        print(f"base_url: {base_url}, model_name: {model_name}")
+        agent = self.build_agents(model_name=model_name, base_url=base_url, api_key="dummy")
 
         # load mcp tool config
         tool_config_path = os.environ["AGENT_TOOL_CONFIG_PATH"]
-        if tool_config_path:
+        if isinstance(agent, Agent) and tool_config_path:
             tool_config = await self.get_agent_tool_config(tool_config_path)
             agent.mcp_config = tool_config
             agent.mcp_servers = list(server_name for server_name in tool_config.get("mcpServers", {}).keys())
 
-        # update conf on runtime
-        if not agent.conf.get("llm_config", {}).get("llm_base_url"):
-            server = self.server_manager._choose_server(uuid.uuid4().hex)
-            base_url = await server.get_server_address.remote()
-            base_url = f"http://{base_url}/v1"
-            agent.conf.get("llm_config", {})["llm_base_url"] = base_url
-            agent.conf.get("llm_config", {})["llm_api_key"] = "dummy"
-
-        if not agent.conf.get("llm_config", {}).get("llm_model_name"):
-            model_name = "/".join(self.config.actor_rollout_ref.model.path.split("/")[-2:])
-            agent.conf.get("llm_config", {})["llm_model_name"] = model_name
+        self.agent = agent
 
         result = await self.run_agents(messages[0], agent)
         res = result.trajectory
