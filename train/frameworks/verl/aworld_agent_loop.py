@@ -10,6 +10,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
+from aworld.logs.util import logger
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
@@ -33,13 +34,14 @@ class AworldAgentLoop(AgentLoopBase):
         base_url = await server.get_server_address.remote()
         base_url = f"http://{base_url}/v1"
         model_name = "/".join(self.config.actor_rollout_ref.model.path.split("/")[-2:])
-        print(f"base_url: {base_url}, model_name: {model_name}")
+        logger.info(f"base_url: {base_url}, model_name: {model_name}")
         agent = self.build_agents(model_name=model_name, base_url=base_url, api_key="dummy")
 
         # load mcp tool config
         tool_config_path = os.environ["AGENT_TOOL_CONFIG_PATH"]
         if isinstance(agent, Agent) and tool_config_path:
             tool_config = await self.get_agent_tool_config(tool_config_path)
+            logger.info(f"tool_config: {tool_config}")
             agent.mcp_config = tool_config
             agent.mcp_servers = list(server_name for server_name in tool_config.get("mcpServers", {}).keys())
 
@@ -54,6 +56,8 @@ class AworldAgentLoop(AgentLoopBase):
         return output
 
     async def run_agents(self, input, agent):
+        if isinstance(input, dict):
+            input = input.get("content", "")
         # collect trajectory
         if isinstance(agent, Swarm):
             result = Runners.sync_run(input=input, swarm=agent)
