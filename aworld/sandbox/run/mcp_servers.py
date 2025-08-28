@@ -276,7 +276,8 @@ class McpServers:
                         action_name=tool_name,
                         content=json.dumps(content_list, ensure_ascii=False),
                         keep=True,
-                        metadata=metadata
+                        metadata=metadata,
+                        parameter=parameter
                     )
                     results.append(action_result)
                     self._update_metadata(result_key, action_result, operation_info)
