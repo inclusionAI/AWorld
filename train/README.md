@@ -39,6 +39,25 @@ We recommend starting with the VeRL example.
 
 ### 2.2 Install
 
+#### 2.2.1 Install MCP env (VirtualPC MCP Server)
+
+Step 1: Configure environment
+
+```bash
+cd {path/to/AWorld}/env
+cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
+```
+
+Step 2: Launch locally
+
+```bash
+sh run-local.sh
+```
+
+For Kubernetes deployment, see [env/README.md § 2.2 Kubernetes Cluster Deployment](../env/README.md#22-kubernetes-cluster-deployment).
+
+#### 2.2.2 Install Python packages
+
 ```bash
 # Install Aworld
 pip install aworld
@@ -48,45 +67,8 @@ pip install verl==0.5.0
 ```
 
 ### 2.3 Run the VeRL Example
+Refer to the documentation [VeRL example README](./examples/train_gaia_with_aworld_verl/README.md)
 
-```bash
-cd train/examples/train_gaia_with_aworld_verl
-```
-
-3) Configure `run.sh` (custom section)
-
-Set absolute path to `train/`, reward function file/name, and config paths. Example snippet:
-
-```bash
-# =================== custom ===================
-path_to_train="/abs/path/to/AWorld/train"
-
-reward_fn_name=gaia_reward_func
-reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
-
-# Agent config
-agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/agent.yaml
-export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/tool.yaml
-
-# Optional: enable auto_tool_choice with a dummy tool config
-# dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
-```
-
-4) Launch training
-
-```bash
-bash run.sh
-```
-
-### 2.4 Swift Example (experimental)
-
-This package also contains a Swift adapter and example code.
-
-```bash
-cd train/examples/train_gaia_with_aworld_swift
-```
-
-Refer to the source code under `train/adapter/swift/` and this example to integrate with Swift-based training workflows.
 
 ## 3. Directory Structure
 

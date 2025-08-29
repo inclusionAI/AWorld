@@ -31,6 +31,34 @@ cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.en
 ```
 
 Edit `./gaia-mcp-server/mcp_servers/.env` with your specific configuration values.
+**Step 2: Launch VirtualPC MCP Server locally**
+
+```bash
+sh run-local.sh
+```
+
+Monitor the terminal output for any errors during startup.
+
+Then you use the following configuration to connect to the VirtualPC MCP Server:
+
+```json
+{
+    "virtualpc-mcp-server": {
+        "type": "streamable-http",
+        "url": "http://localhost:8000/mcp",
+        "headers": {
+            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
+            "MCP_SERVERS": "readweb-server,browser-server"
+        },
+        "timeout": 6000,
+        "sse_read_timeout": 6000,
+        "client_session_timeout_seconds": 6000
+    }
+}
+```
+
+**Note**: The Bearer token above is for local testing only. The `MCP_SERVERS` header specifies the MCP server scope for your current connection, which should be a subset of server names defined in `gaia-mcp-server/mcp_servers/mcp_config.py`.\
+If you want to deploy mcp servers on Kubernetes cluster, please refer to the documentation ([env/README.md § 2.2 Kubernetes Cluster Deployment](../../../env/README.md#22-kubernetes-cluster-deployment)).
 
 ### 3. Install Aworld
     ```bash

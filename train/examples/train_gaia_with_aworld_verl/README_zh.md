@@ -31,6 +31,35 @@ cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.en
 
 编辑 `./gaia-mcp-server/mcp_servers/.env`，填入你的本地配置。
 
+**步骤 2：本地启动 VirtualPC MCP Server**
+
+```bash
+sh run-local.sh
+```
+
+监控终端输出，查看启动过程中是否有任何错误。
+
+然后就可以使用以下配置连接到 VirtualPC MCP Server：
+
+```json
+{
+    "virtualpc-mcp-server": {
+        "type": "streamable-http",
+        "url": "http://localhost:8000/mcp",
+        "headers": {
+            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
+            "MCP_SERVERS": "readweb-server,browser-server"
+        },
+        "timeout": 6000,
+        "sse_read_timeout": 6000,
+        "client_session_timeout_seconds": 6000
+    }
+}
+```
+
+**注意**：上述 Bearer token 仅用于本地测试。`MCP_SERVERS` 头部指定了当前连接的 MCP 服务器范围，应该是 `gaia-mcp-server/mcp_servers/mcp_config.py` 中定义的服务器名称的子集。\
+如果想在Kubernetes 集群部署MCP Server，请参考文档([env/README.md § 2.2 Kubernetes Cluster Deployment](../../../env/README.md#22-kubernetes-cluster-deployment))。
+
 ### 3. 安装 AWorld
 ```bash
 pip install aworld
