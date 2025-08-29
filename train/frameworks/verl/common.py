@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import json
 from typing import List, Dict, Any
 from transformers import AutoTokenizer
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
@@ -21,6 +22,37 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
     Returns:
         AgentLoopOutput: agent loop output trajectory used for training.
     """
+    # Ensure tools is iterable for chat templates that iterate over tools
+    if tools is None:
+        tools = []
+
+    # Normalize messages to satisfy chat templates expectations
+    def _normalize_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(msg)
+        # content may be None when assistant only returns tool_calls; make it empty string
+        if normalized.get("content") is None:
+            normalized["content"] = ""
+        # Ensure tool_calls.function.arguments is a string (many templates expect str)
+        if isinstance(normalized.get("tool_calls"), list):
+            fixed_calls = []
+            for call in normalized["tool_calls"]:
+                call_copy = dict(call)
+                func = call_copy.get("function")
+                if isinstance(func, dict):
+                    func_copy = dict(func)
+                    args_val = func_copy.get("arguments")
+                    if not isinstance(args_val, (str, bytes)):
+                        try:
+                            func_copy["arguments"] = json.dumps(args_val, ensure_ascii=False)
+                        except Exception:
+                            func_copy["arguments"] = str(args_val)
+                    call_copy["function"] = func_copy
+                fixed_calls.append(call_copy)
+            normalized["tool_calls"] = fixed_calls
+        return normalized
+
+    messages = [_normalize_message(m) for m in messages]
+
     if not messages:
         return AgentLoopOutput(
             prompt_ids=[],
@@ -73,6 +105,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                         None,
                         lambda: tokenizer.apply_chat_template(
                             chat_list,
+                            tools=tools,
                             add_generation_prompt=True,
                             tokenize=True,
                         ),
