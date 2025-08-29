@@ -27,11 +27,10 @@ test_files=$DATA_ROOT/datasets/test.parquet
 # =================== custom ===================
 path_to_train="/your/path/to/train"
 reward_fn_name=gaia_reward_func
-reward_fn_file_path=${path_to_train}/examples/verl/scripts/gaia_reward_function.py
+reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 
 # Agent config
-agent_loop_config_path=${path_to_train}/examples/verl/configs/agent.yaml
-export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/verl/configs/tool.yaml
+agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/agent.yaml
 
 # set dummy_tool_config_path to enable auto_tool_choice
 dummy_tool_config_path=${path_to_train}/examples/verl/configs/dummy_tool_config.yaml

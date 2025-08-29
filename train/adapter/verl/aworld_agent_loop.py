@@ -15,7 +15,7 @@ from aworld.sandbox.base import Sandbox
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
-from train.frameworks.verl.common import to_agent_loop_output
+from train.adapter.verl.common import to_agent_loop_output
 
 
 class AworldAgentLoop(AgentLoopBase):
@@ -39,14 +39,15 @@ class AworldAgentLoop(AgentLoopBase):
         agent = self.build_agents(model_name=model_name, base_url=base_url, api_key="dummy")
 
         # load mcp tool config
-        tool_config_path = os.environ["AGENT_TOOL_CONFIG_PATH"]
-        if isinstance(agent, Agent) and tool_config_path:
-            tool_config = await self.get_agent_tool_config(tool_config_path)
-            logger.info(f"tool_config: {tool_config}")
-            agent.mcp_config = tool_config
-            agent.mcp_servers = list(server_name for server_name in tool_config.get("mcpServers", {}).keys())
-            if not agent.sandbox:
-                agent.sandbox = Sandbox(mcp_servers=agent.mcp_servers, mcp_config=agent.mcp_config)
+        if not agent.mcp_config or not agent.sandbox:
+            tool_config_path = os.environ["AGENT_TOOL_CONFIG_PATH"]
+            if isinstance(agent, Agent) and tool_config_path:
+                tool_config = await self.get_agent_tool_config(tool_config_path)
+                logger.info(f"tool_config: {tool_config}")
+                agent.mcp_config = tool_config
+                agent.mcp_servers = list(server_name for server_name in tool_config.get("mcpServers", {}).keys())
+                if not agent.sandbox:
+                    agent.sandbox = Sandbox(mcp_servers=agent.mcp_servers, mcp_config=agent.mcp_config)
 
         self.agent = agent
 

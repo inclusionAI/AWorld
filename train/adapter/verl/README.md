@@ -16,7 +16,7 @@ train/adapters/verl/
 Import adapter entrypoints from your example code:
 
 ```python
-from train.frameworks.verl.aworld_agent_loop import AworldAgentLoop
+from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 ```
 Then implement your example-specific loop:
 ```python

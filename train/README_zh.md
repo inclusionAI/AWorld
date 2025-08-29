@@ -40,9 +40,28 @@ AWorld Train 旨在为基于 AWorld 的智能体提供统一的训练运行方�
 
 ### 2.2 安装
 
+#### 2.2.1 安装 MCP 环境（VirtualPC MCP Server）
+
+步骤 1：配置环境
+
 ```bash
-# 在仓库根目录
-pip install -e .
+cd {path/to/AWorld}/env
+cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
+```
+
+步骤 2：本地启动
+
+```bash
+sh run-local.sh
+```
+
+如需 Kubernetes 集群部署，请参考 [env/README.md § 2.2 Kubernetes Cluster Deployment](../env/README.md#22-kubernetes-cluster-deployment)。
+
+#### 2.2.2 安装 Python 依赖
+
+```bash
+# 安装 AWorld
+pip install aworld
 
 # 按需安装框架依赖（以 VeRL 示例为例）
 pip install verl==0.5.0
@@ -50,65 +69,13 @@ pip install verl==0.5.0
 
 ### 2.3 运行 VeRL 示例
 
-```bash
-cd train/examples/verl
-```
-
-1) 准备数据集
-
-```bash
-python datasets/create_dataset.py \
-  --dataset_path ${/path/to/GAIA}/2023 \
-  --output_dir datasets/ \
-  --train_size 300 \
-  --test_size 100
-```
-
-2) 配置
-
-- 编辑 `train/examples/verl/configs/` 下的配置：
-  - `agent.yaml`：智能体 loop 与训练配置
-  - `tool.yaml`：工具/运行时配置
-- 导出工具配置路径
-
-```bash
-export AGENT_TOOL_CONFIG_PATH=$(pwd)/configs/tool.yaml
-```
-
-3) 配置 `scripts/run.sh`（自定义参数设置）
-
-设置 `train/` 绝对路径、奖励函数文件/函数名与配置路径。例如：
-
-```bash
-# =================== custom ===================
-path_to_train="/abs/path/to/AWorld/train"
-
-reward_fn_name=gaia_reward_func
-reward_fn_file_path=${path_to_train}/examples/verl/scripts/gaia_reward_function.py
-
-# Agent 配置
-agent_loop_config_path=${path_to_train}/examples/verl/configs/agent.yaml
-export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/verl/configs/tool.yaml
-
-# 可选：启用 auto_tool_choice（需提供 dummy 工具配置）
-dummy_tool_config_path=${path_to_train}/examples/verl/configs/dummy_tool_config.yaml
-```
-
-4) 启动训练
-
-```bash
-bash scripts/run.sh
-```
-
-### 2.4 其他框架
-
-本目录还包含 `swift` 适配与示例代码（实验性）。可参考 `train/frameworks/swift/` 与 `train/examples/swift/` 将 AWorld 智能体接入基于 Swift 的训练流程。
+参考示例文档 [VeRL 示例 README](./examples/train_gaia_with_aworld_verl/README_zh.md)
 
 ## 3. 目录结构
 
 ```
 train/
-  frameworks/
+  adapter/
     verl/
       aworld_agent_loop.py       # VeRL AgentLoop 与 AWorld 智能体的桥接
       common.py                  # 轨迹/消息到 VeRL 输出的转换工具
@@ -116,32 +83,37 @@ train/
     swift/
       aworld_agent_trainer.py    # Swift 适配（实验性）
   examples/
-    verl/
-      agents/                    # 示例智能体实现
-      configs/                   # agent.yaml, tool.yaml
-      datasets/                  # 数据集脚本
-      scripts/                   # run.sh、奖励函数等
-      README.md
-    swift/
+    train_gaia_with_aworld_verl/
+      agent.yaml                 # 示例智能体 loop 与训练配置
+      configs/
+        tool.yaml                # 工具/运行时配置
+      datasets/
+        create_dataset.py        # GAIA 数据集准备脚本
+      metrics/
+        gaia_reward_function.py  # 示例奖励函数
+      run.sh                     # 示例启动脚本
+      README.md                  # 示例英文文档
+      README_zh.md               # 示例中文文档
+    train_gaia_with_aworld_swift/
       gaia_agent_trainer.py      # Swift 示例整合
       plugin.py                  # 示例插件
-  utils/                         # 通用训练工具
   README.md
+  README_zh.md
 ```
 
 ## 4. 开发
 
 ### 4.1 新增框架适配器
 
-1) 创建 `train/frameworks/<framework_name>/`。
+1) 创建 `train/adapter/<framework_name>/`。
 2) 实现最小适配面（如 loop/trainer 类），对外暴露清晰 API 供示例调用。
 3) 可复用逻辑放在适配层，示例特定逻辑放在 `train/examples/`。
 
 ### 4.2 新增示例
 
-1) 创建 `train/examples/<framework_name>/`。
-2) 按需新增 `agents/`、`configs/`、`datasets/`、`scripts/`。
-3) 提供最小可运行脚本（如 `scripts/run.sh`）。
+1) 创建 `train/examples/<your_example_name>/`。
+2) 按需新增 `configs/`、`datasets/`、`metrics/`，并提供最小可运行 `run.sh`。
+3) 建议脚本中使用绝对路径，便于复现实验。
 
 ### 4.3 奖励函数接口
 
@@ -156,7 +128,7 @@ def my_reward_fn(data_source, solution_str, ground_truth, extra_info=None):
 
 ### 4.4 配置约定
 
-- `agent.yaml`：描述框架侧的智能体 loop/训练设置
+- `agent.yaml`：描述该示例的智能体 loop/训练设置
 - `tool.yaml`：描述工具/运行时配置；常通过 `AGENT_TOOL_CONFIG_PATH` 引用
 
 ## 5. 贡献
