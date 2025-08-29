@@ -36,9 +36,7 @@ logging/
 # Environment and virtual environments
 .venv
 venv/
-ENV/
-env.bak/
-venv.bak/
+**/*.bak/
 .env
 .env.docker
 
