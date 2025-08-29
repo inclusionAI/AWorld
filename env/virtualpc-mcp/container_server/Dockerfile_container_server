@@ -4,8 +4,9 @@ FROM docker:dind
 ARG ENABLE_MIRROR=false
 ENV PIP_INDEX_URL=${ENABLE_MIRROR:+https://mirrors.aliyun.com/pypi/simple}
 
-RUN apk add --no-cache python3 py3-pip curl tini && \
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN apk add --no-cache python3 py3-pip curl tini
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh    
 
 WORKDIR /app/container_server
 

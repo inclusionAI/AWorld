@@ -22,42 +22,43 @@ VirtualPC MCP Server is a comprehensive MCP (Model Context Protocol) tool runtim
 
 ### 1.1 Features
 
-- **Session-Level Environment Isolation**: Each MCP session runs in its own isolated environment
+- **Session-Level Environment Isolation**: Each MCP session operates within its own isolated environment
 - **Multi-Session State Persistence**: Maintains environment state across multiple MCP sessions
 - **Real-Time UI Visualization**: Live monitoring and visualization of Agent MCP operations
 - **Distributed Architecture**: Supports both local Docker and Kubernetes cluster deployments
-- **Extensible Runtime**: Modular design allowing easy integration of new MCP tool servers
-- **Production-Ready**: Suitable for both development/demo and production/RL training scenarios
+- **Extensible Runtime**: Modular design enabling seamless integration of new MCP tool servers
 
 ## 2. Quick Start
 
-We support both local Docker deployment (ideal for demos and debugging) and Kubernetes cluster deployment (recommended for production and RL training).
+This project supports both local Docker deployment (optimal for demos and debugging) and Kubernetes cluster deployment (recommended for production and RL training).
 
 ### 2.1 Local Docker Deployment
 
 #### Prerequisites
 
-Ensure Docker and Docker Compose are properly installed and running:
+Ensure Docker and Docker Compose are properly installed and operational:
 
 ```bash
 # Verify Docker installation
 docker --version
 docker compose --version
 
-# Check if Docker daemon is running
+# Verify Docker daemon is running
 docker ps
 docker compose ps
 ```
 
-**Step 1: Generate Environment Configuration**
+**Step 1: Configure Environment and Prepare Gaia Dataset**
 
-Copy the environment template and configure your settings:
+1. Copy the environment template and configure your settings:
 
 ```bash
 cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
 ```
 
 Edit `./gaia-mcp-server/mcp_servers/.env` with your specific configuration values.
+
+2. Download the [gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA) from Hugging Face and place it in `./gaia-mcp-server/docker/gaia_dataset`
 
 **Step 2: Launch VirtualPC MCP Server**
 
@@ -91,15 +92,15 @@ Use the following configuration to connect to the VirtualPC MCP Server:
 
 ### 2.2 Kubernetes Cluster Deployment
 
-For production deployments and RL training scenarios, we recommend using Kubernetes cluster deployment. Detailed instructions will be provided in future updates.
+For production deployments and RL training scenarios, Kubernetes cluster deployment is recommended. Detailed instructions will be provided in future updates.
 
 ## 3. Development
 
-### 3.1 Adding Your Own MCP Tool to VirtualPC MCP Server
+### 3.1 Adding Custom MCP Tools to VirtualPC MCP Server
 
 **Step 1: Develop MCP Tool (Optional)**
 
-If you need to develop your own MCP Tool and register it with VirtualPC MCP Server, create your MCP Tool project directory under `gaia-mcp-server/mcp_servers` and write the MCP Tool code. Refer to the [hello_world](./gaia-mcp-server/mcp_servers/hello_world/) directory for the project structure.
+If you need to develop a custom MCP Tool and register it with VirtualPC MCP Server, create your MCP Tool project directory under `gaia-mcp-server/mcp_servers` and implement the MCP Tool code. Refer to the [hello_world](./gaia-mcp-server/mcp_servers/hello_world/) directory for the project structure.
 
 Project specifications:
 
@@ -129,9 +130,9 @@ Edit the [MCP Tool registration file](./gaia-mcp-server/mcp_servers/mcp_config.p
 
 **Step 3: Update MCP Tool Schema**
 
-> **Important**: VirtualPC MCP Server uses pre-generated tool schema data for the `list_tools()` function, so you must update [mcp_tool_schema.json](./gaia-mcp-server/mcp_servers/mcp_tool_schema.json) after modifying the MCP server configuration.
+> **Important**: VirtualPC MCP Server utilizes pre-generated tool schema data for the `list_tools()` function, therefore you must update [mcp_tool_schema.json](./gaia-mcp-server/mcp_servers/mcp_tool_schema.json) after modifying the MCP server configuration.
 
-We provide a Python script [build_mcp_tool_schema.py](./gaia-mcp-server/mcp_servers/build_mcp_tool_schema.py) to update `mcp_tool_schema.json`. Before running this script, ensure the MCP server [.env](./gaia-mcp-server/mcp_servers/.env) file is correctly configured.
+A Python script [build_mcp_tool_schema.py](./gaia-mcp-server/mcp_servers/build_mcp_tool_schema.py) is provided to update `mcp_tool_schema.json`. Before executing this script, ensure the MCP server [.env](./gaia-mcp-server/mcp_servers/.env) file is correctly configured.
 
 ```bash
 cd ./gaia-mcp-server/mcp_servers/
@@ -139,9 +140,9 @@ pip install mcp
 python build_mcp_tool_schema.py
 ```
 
-**Step 4: Build Docker Image and Run Service**
+**Step 4: Build Docker Image and Deploy Service**
 
-After completing the above steps, build the Docker image and start the service.
+After completing the above steps, build the Docker image and deploy the service.
 
 ## 4. Contributing
 
