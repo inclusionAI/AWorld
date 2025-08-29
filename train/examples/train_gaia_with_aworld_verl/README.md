@@ -74,17 +74,36 @@ If you want to deploy mcp servers on Kubernetes cluster, please refer to the doc
 cd {path/to/AWorld}/train/examples/train_gaia_with_aworld_verl
 ```
 ### 1. Init env and build your agent
-Example snippet (already provided in this folder):
+The example code is already provided in `custom_agent_loop.py`.
+
+**Step 1: Configure Tool Environment**
+
+First, configure the `TOOL_ENV_CONFIG` dictionary. The parameters for this configuration should come from the VirtualPC MCP Server connection details provided in section "[2. Install mcp env](#2-install-mcp-env)".
+
 ```python
+# Use the connection details from the VirtualPC MCP Server
+# "url" -> "url"
+# "headers.Authorization" -> "authorization"
+# "headers.MCP_SERVERS" -> "mcp_servers"
 TOOL_ENV_CONFIG = {
     "url": "http://localhost:8000/mcp",
-    "authorization": "Bearer dummy",
+    "authorization": "Bearer <YOUR_TOKEN>",
     "mcp_servers": "readweb-server,browser-server",
 }
+```
+**Note**: Please replace `<YOUR_TOKEN>` with the actual Bearer Token you obtained above.
 
+**Step 2: Develop Agent and Pass Configuration**
+
+Next, in your agent development logic, pass the `TOOL_ENV_CONFIG` to the agent's parameters. The `get_agent_tool_env_and_servers` function will process it and return the appropriate `mcp_config` and `mcp_servers` for the `Agent`.
+
+```python
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self, model_name: str = "", base_url: str = "", api_key: str = "") -> Union[Agent, Swarm]:
+        # Process the tool config
         tool_env_config, tool_servers = get_agent_tool_env_and_servers(TOOL_ENV_CONFIG)
+        
+        # Pass the config to the Agent
         return Agent(
             conf=AgentConfig(
                 llm_model_name=model_name,
@@ -95,7 +114,7 @@ class GaiaAgentLoop(AworldAgentLoop):
             name="gaia_super_agent",
             system_prompt=GAIA_SYSTEM_PROMPT,
 
-            // MCP tool configuration for the agent
+            # MCP tool configuration for the agent
             mcp_config=tool_env_config,
             mcp_servers = tool_servers,
         )

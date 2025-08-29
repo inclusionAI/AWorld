@@ -74,17 +74,36 @@ pip install verl==0.5.0
 cd {path/to/AWorld}/train/examples/train_gaia_with_aworld_verl
 ```
 ### 1. 初始化工具环境并构建你的 Agent
-GaiaAgent示例代码（本目录已提供）：
+示例代码已在 `custom_agent_loop.py` 中提供。
+
+**步骤 1: 配置工具环境**
+
+首先，配置 `TOOL_ENV_CONFIG` 。此配置的参数应来自于“[2. 安装 MCP 环境](#2-安装-mcp-环境)”章节中提供的 VirtualPC MCP Server 连接详细信息。
+
 ```python
+# 使用 VirtualPC MCP Server 的连接信息
+# "url" -> "url"
+# "headers.Authorization" -> "authorization"
+# "headers.MCP_SERVERS" -> "mcp_servers"
 TOOL_ENV_CONFIG = {
     "url": "http://localhost:8000/mcp",
-    "authorization": "Bearer dummy",
+    "authorization": "Bearer <YOUR_TOKEN>",
     "mcp_servers": "readweb-server,browser-server",
 }
+```
+**注意**：请将 `<YOUR_TOKEN>` 替换为你在安装-mcp-环境的步骤2中获取的实际 Bearer Token。
 
+**步骤 2: 开发 Agent 并传入配置**
+
+接下来，在你的 Agent 开发逻辑中，将 `TOOL_ENV_CONFIG` 传递给 Agent 的参数。用`get_agent_tool_env_and_servers` 函数处理后，为 `Agent` 返回合适的 `mcp_config` 和 `mcp_servers`。
+
+```python
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self, model_name: str = "", base_url: str = "", api_key: str = "") -> Union[Agent, Swarm]:
+        # 处理工具配置
         tool_env_config, tool_servers = get_agent_tool_env_and_servers(TOOL_ENV_CONFIG)
+        
+        # 将配置传递给 Agent
         return Agent(
             conf=AgentConfig(
                 llm_model_name=model_name,
@@ -95,7 +114,7 @@ class GaiaAgentLoop(AworldAgentLoop):
             name="gaia_super_agent",
             system_prompt="",
 
-            # MCP 工具配置
+            # Agent 的 MCP 工具配置
             mcp_config=tool_env_config,
             mcp_servers = tool_servers,
         )
@@ -129,3 +148,4 @@ export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/train_gaia_with_aworld_v
 # Optional: enable auto_tool_choice with a dummy tool config
 dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
 ```
+
