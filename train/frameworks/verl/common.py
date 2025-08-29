@@ -162,7 +162,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                 response_ids += tool_response_ids
                 response_mask += [0] * len(tool_response_ids)
     except Exception as e:
-        raise Exception(f"Failed to convert messages to agentloop_output: {messages}")
+        raise Exception(f"Failed to convert messages to agentloop_output: {messages}.Exception is: {e}")
 
     max_response_length = min(response_length, len(response_ids))
     output = AgentLoopOutput(

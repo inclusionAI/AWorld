@@ -24,11 +24,20 @@ fi
 train_files=$DATA_ROOT/datasets/train.parquet
 test_files=$DATA_ROOT/datasets/test.parquet
 
+# =================== custom ===================
+path_to_train="/your/path/to/train"
+reward_fn_name=gaia_reward_func
+reward_fn_file_path=${path_to_train}/examples/verl/scripts/gaia_reward_function.py
+
 # Agent config
-agent_loop_config_path=train/examples/verl/configs/agent.yaml
+agent_loop_config_path=${path_to_train}/examples/verl/configs/agent.yaml
+export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/verl/configs/tool.yaml
+
+# set dummy_tool_config_path to enable auto_tool_choice
+dummy_tool_config_path=${path_to_train}/examples/verl/configs/dummy_tool_config.yaml
 
 # =================== wandb ===================
-project_name=math_expression_tool
+project_name=gaia
 experiment_name=qwe3
 default_local_dir=$DATA_ROOT/checkpoint/$experiment_name
 
@@ -115,7 +124,10 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.val_kwargs.top_p=0.6 \
     actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
     actor_rollout_ref.rollout.val_kwargs.n=$n_resp_per_prompt_val \
-    trainer.logger='["console"]' \
+    actor_rollout_ref.rollout.multi_turn.tool_config_path=$dummy_tool_config_path \
+    custom_reward_function.path="${reward_fn_file_path}"\
+    custom_reward_function.name="${reward_fn_name}"\
+    trainer.logger=console \
     trainer.project_name=$project_name \
     trainer.experiment_name=$experiment_name \
     trainer.n_gpus_per_node="$GPUS_PER_NODE" \
