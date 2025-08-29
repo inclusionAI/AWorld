@@ -45,13 +45,13 @@ AWorld Train 旨在为基于 AWorld 的智能体提供统一的训练运行方�
 pip install -e .
 
 # 按需安装框架依赖（以 VeRL 示例为例）
-pip install verl==0.5.0
+pip install train_gaia_with_aworld_verl==0.5.0
 ```
 
 ### 2.3 运行 VeRL 示例
 
 ```bash
-cd train/examples/verl
+cd train/examples/train_gaia_with_aworld_verl
 ```
 
 1) 准备数据集
@@ -84,20 +84,20 @@ export AGENT_TOOL_CONFIG_PATH=$(pwd)/configs/tool.yaml
 path_to_train="/abs/path/to/AWorld/train"
 
 reward_fn_name=gaia_reward_func
-reward_fn_file_path=${path_to_train}/examples/verl/scripts/gaia_reward_function.py
+reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 
 # Agent 配置
-agent_loop_config_path=${path_to_train}/examples/verl/configs/agent.yaml
-export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/verl/configs/tool.yaml
+agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/agent.yaml
+export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/tool.yaml
 
 # 可选：启用 auto_tool_choice（需提供 dummy 工具配置）
-dummy_tool_config_path=${path_to_train}/examples/verl/configs/dummy_tool_config.yaml
+dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
 ```
 
 4) 启动训练
 
 ```bash
-bash scripts/run.sh
+bash run.sh
 ```
 
 ### 2.4 其他框架

@@ -10,12 +10,12 @@
     ```
 3) Install verl
     ```bash
-    pip install verl==0.5.0
+    pip install train_gaia_with_aworld_verl==0.5.0
     ```
 
 ## Quick Start
 ```bash
-cd train/examples/verl
+cd train/examples/train_gaia_with_aworld_verl
 ```
 1) Prepare dataset:
 ```bash
@@ -44,16 +44,16 @@ Example snippet:
 path_to_train="/abs/path/to/AWorld/train"
 
 reward_fn_name=gaia_reward_func
-reward_fn_file_path=${path_to_train}/examples/verl/scripts/gaia_reward_function.py
+reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 
 # Agent config
-agent_loop_config_path=${path_to_train}/examples/verl/configs/agent.yaml
-export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/verl/configs/tool.yaml
+agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/agent.yaml
+export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/tool.yaml
 
 # Optional: enable auto_tool_choice with a dummy tool config
-dummy_tool_config_path=${path_to_train}/examples/verl/configs/dummy_tool_config.yaml
+dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
 ```
 3) Run training:
 ```bash
-bash scripts/run.sh
+bash run.sh
 ```

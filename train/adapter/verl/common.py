@@ -173,3 +173,32 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
         metrics={},
     )
     return output
+
+def get_agent_tool_env_and_servers(tool_config: Dict[str, Any]) -> tuple[Dict[str, Any], List[str]]:
+    url = tool_config.get("url")
+    authorization = tool_config.get("authorization")
+    mcp_servers_str = tool_config.get("mcp_servers", "")
+    if not url or not authorization:
+        raise ValueError("url, Authorization are required in tool config")
+    server_name = tool_config.get('server_name', 'aworld-mcp')
+    server_type = tool_config.get('type', 'streamable-http')
+    timeout = tool_config.get('timeout', 600)
+    sse_read_timeout = tool_config.get('sse_read_timeout', 600)
+    client_session_timeout_seconds = tool_config.get('client_session_timeout_seconds', 600)
+    mcp_config = {
+        "mcpServers": {
+            server_name: {
+                "type": server_type,
+                "url": url,
+                "headers": {
+                    "Authorization": authorization,
+                    "MCP_SERVERS": mcp_servers_str,
+                },
+                "timeout": timeout,
+                "sse_read_timeout": sse_read_timeout,
+                "client_session_timeout_seconds": client_session_timeout_seconds,
+            }
+        }
+    }
+    servers = list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
+    return mcp_config, servers

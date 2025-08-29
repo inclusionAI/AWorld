@@ -12,12 +12,12 @@
     ```
 3) 安装 VeRL
     ```bash
-    pip install verl==0.5.0
+    pip install train_gaia_with_aworld_verl==0.5.0
     ```
 
 ## 快速开始
 ```bash
-cd train/examples/verl
+cd train/examples/train_gaia_with_aworld_verl
 ```
 1) 准备数据集：
 ```bash
@@ -46,14 +46,14 @@ python datasets/create_dataset.py \
 path_to_train="/abs/path/to/AWorld/train"
 
 reward_fn_name=gaia_reward_func
-reward_fn_file_path=${path_to_train}/examples/verl/scripts/gaia_reward_function.py
+reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 
 # Agent config
-agent_loop_config_path=${path_to_train}/examples/verl/configs/agent.yaml
-export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/verl/configs/tool.yaml
+agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/agent.yaml
+export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/tool.yaml
 
 # Optional: enable auto_tool_choice with a dummy tool config
-dummy_tool_config_path=${path_to_train}/examples/verl/configs/dummy_tool_config.yaml
+dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
 ```
 
 > 可选：若你自定义奖励函数，可采用如下函数签名（与训练管线兼容）：
@@ -65,7 +65,7 @@ def my_reward_fn(data_source, solution_str, ground_truth, extra_info=None):
 
 3) 运行训练：
 ```bash
-bash scripts/run.sh
+bash run.sh
 ```
 
 
