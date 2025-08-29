@@ -10,7 +10,7 @@
 
 <div align="center">
 
-[中文版本](./README_zh.md) | [Quick Start](#quick-start) | [Development](#development) | [Contributing](#contributing)
+[中文版本](./README_zh.md) | [Quick Start](#quick-start) | [Directory](#-directory-structure) | [Development](#development) | [Contributing](#contributing)
 
 </div>
 
@@ -24,7 +24,6 @@ AWorld Train provides a unified way to run training pipelines for agents built w
 
 - **Multi-Framework Adapters**: Plug AWorld agents into external frameworks (e.g., VeRL). More can be added via a simple adapter pattern.
 - **Runnable Examples**: End-to-end examples under `train/examples/` to start training immediately.
-- **Config-Driven**: Standardized configs (agent/tool) and script entrypoints for reproducible runs.
 - **Dataset Utilities**: Helper scripts to build datasets for training/evaluation (e.g., GAIA dataset preparation for VeRL example).
 - **Reward Function Hooks**: Easily plug in a custom reward function via file path and function name.
 - **Scalable**: Works on single machine; distributed capabilities depend on the chosen framework.
@@ -41,8 +40,8 @@ We recommend starting with the VeRL example.
 ### 2.2 Install
 
 ```bash
-# In repository root
-pip install -e .
+# Install Aworld
+pip install aworld
 
 # Framework-specific deps (VeRL example)
 pip install verl==0.5.0
@@ -54,28 +53,7 @@ pip install verl==0.5.0
 cd train/examples/train_gaia_with_aworld_verl
 ```
 
-1) Prepare dataset
-
-```bash
-python datasets/create_dataset.py \
-  --dataset_path ${/path/to/GAIA}/2023 \
-  --output_dir datasets/ \
-  --train_size 300 \
-  --test_size 100
-```
-
-2) Configure
-
-- Edit configs under `train/examples/verl/configs/`
-  - `agent.yaml`: Agent loop and training settings
-  - `tool.yaml`: Tool environment configuration
-- Export tool config path
-
-```bash
-export AGENT_TOOL_CONFIG_PATH=$(pwd)/configs/tool.yaml
-```
-
-3) Configure `scripts/run.sh` (custom section)
+3) Configure `run.sh` (custom section)
 
 Set absolute path to `train/`, reward function file/name, and config paths. Example snippet:
 
@@ -87,11 +65,11 @@ reward_fn_name=gaia_reward_func
 reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 
 # Agent config
-agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/agent.yaml
+agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/agent.yaml
 export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/tool.yaml
 
 # Optional: enable auto_tool_choice with a dummy tool config
-dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
+# dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
 ```
 
 4) Launch training
@@ -100,15 +78,21 @@ dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/con
 bash run.sh
 ```
 
-### 2.4 Other Frameworks
+### 2.4 Swift Example (experimental)
 
-This package also contains a `swift` directory with an experimental adapter and example code. Please refer to the source code under `train/frameworks/swift/` and `train/examples/swift/` to integrate with your Swift-based training workflows.
+This package also contains a Swift adapter and example code.
+
+```bash
+cd train/examples/train_gaia_with_aworld_swift
+```
+
+Refer to the source code under `train/adapter/swift/` and this example to integrate with Swift-based training workflows.
 
 ## 3. Directory Structure
 
 ```
 train/
-  frameworks/
+  adapter/
     verl/
       aworld_agent_loop.py       # Core adapter bridging VeRL AgentLoop and AWorld agents
       common.py                  # Utilities for converting trajectories/messages
@@ -116,32 +100,37 @@ train/
     swift/
       aworld_agent_trainer.py    # Experimental Swift adapter
   examples/
-    verl/
-      agents/                    # Example agent code
-      configs/                   # agent.yaml, tool.yaml
-      datasets/                  # dataset scripts
-      scripts/                   # run.sh, reward function, etc.
-      README.md
-    swift/
+    train_gaia_with_aworld_verl/
+      agent.yaml                 # Example agent loop and training settings
+      configs/
+        tool.yaml                # Tool environment configuration
+      datasets/
+        create_dataset.py        # GAIA dataset preparation utility
+      metrics/
+        gaia_reward_function.py  # Example reward function
+      run.sh                     # Example launch script
+      README.md                  # Example-specific docs
+      README_zh.md
+    train_gaia_with_aworld_swift/
       gaia_agent_trainer.py      # Example integration with Swift
       plugin.py                  # Example plugin
-  utils/                         # Shared training utilities
   README.md
+  README_zh.md
 ```
 
 ## 4. Development
 
 ### 4.1 Add a New Framework Adapter
 
-1) Create `train/frameworks/<framework_name>/`.
+1) Create `train/adapter/<framework_name>/`.
 2) Implement the minimal adapter surface (e.g., loop/trainer class) that exposes a clean API to your example code.
 3) Keep reusable logic in the adapter; avoid placing example-specific code here.
 
 ### 4.2 Create a New Example
 
-1) Create `train/examples/<framework_name>/`.
-2) Add `agents/`, `configs/`, `datasets/`, `scripts/` as needed.
-3) Provide a minimal run script (e.g., `scripts/run.sh`).
+1) Create `train/examples/<your_example_name>/`.
+2) Add `configs/`, `datasets/`, `metrics/`, and a minimal `run.sh` as needed.
+3) Prefer absolute paths in scripts for reproducibility.
 
 ### 4.3 Reward Function Interface
 
@@ -156,7 +145,7 @@ def my_reward_fn(data_source, solution_str, ground_truth, extra_info=None):
 
 ### 4.4 Configuration Conventions
 
-- `agent.yaml` describes agent loop/training settings for the framework
+- `agent.yaml` describes agent loop/training settings for the framework/example
 - `tool.yaml` describes tool/runtime configs; often referenced via `AGENT_TOOL_CONFIG_PATH`
 
 ## 5. Contributing

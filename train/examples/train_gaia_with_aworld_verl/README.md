@@ -1,44 +1,93 @@
 # Example: AWorld GAIA Agent + VeRL
 
 ## Installation
-1) Set up environment \
-    We recommend using either conda or venv to create a new virtual environment. \
-    Python 3.10 is recommended.
-2) Install Aworld
+### Set 
+
+### 1. Set up environment
+We recommend using either conda or venv to create a new virtual environment.\
+Python 3.10 is recommended.
+
+### 2. Install mcp env
+#### 2.1 Local Docker Deployment
+##### Prerequisites
+Ensure Docker and Docker Compose are properly installed and operational:
+```bash
+# Verify Docker installation
+docker --version
+docker compose --version
+
+# Verify Docker daemon is running
+docker ps
+docker compose ps
+```
+
+**Step 1: Configure Environment and Prepare Gaia Dataset**
+
+1. Copy the environment template and configure your settings:
+
+```bash
+cd {path/to/AWorld}/env
+cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
+```
+
+Edit `./gaia-mcp-server/mcp_servers/.env` with your specific configuration values.
+
+### 3. Install Aworld
     ```bash
     pip install aworld
     ```
-3) Install verl
+### 4. Install verl
     ```bash
-    pip install train_gaia_with_aworld_verl==0.5.0
+    pip install verl==0.5.0
     ```
 
 ## Quick Start
 ```bash
-cd train/examples/train_gaia_with_aworld_verl
+cd {path/to/AWorld}/train/examples/train_gaia_with_aworld_verl
 ```
-1) Prepare dataset:
+### 1. Init env and build your agent
+Example snippet (already provided in this folder):
+```python
+TOOL_ENV_CONFIG = {
+    "url": "http://localhost:8000/mcp",
+    "authorization": "Bearer dummy",
+    "mcp_servers": "readweb-server,browser-server",
+}
+
+class GaiaAgentLoop(AworldAgentLoop):
+    def build_agents(self, model_name: str = "", base_url: str = "", api_key: str = "") -> Union[Agent, Swarm]:
+        tool_env_config, tool_servers = get_agent_tool_env_and_servers(TOOL_ENV_CONFIG)
+        return Agent(
+            conf=AgentConfig(
+                llm_model_name=model_name,
+                llm_base_url=base_url,
+                llm_api_key=api_key,
+                llm_provider="openai",
+            ),
+            name="gaia_super_agent",
+            system_prompt=GAIA_SYSTEM_PROMPT,
+
+            // MCP tool configuration for the agent
+            mcp_config=tool_env_config,
+            mcp_servers = tool_servers,
+        )
+```
+- Edit `agent.yaml` if needed. By default it points to `custom_agent_loop.GaiaAgentLoop`.
+
+
+### 2. Run training
 ```bash
-python create_dataset.py \
-  --dataset_path ${/path/to/GAIA}/2023 \
-  --output_dir datasets/ \
-  --train_size 300 \
-  --test_size 100
+bash run.sh
 ```
-2) Edit configs under `train/examples/verl/configs/`.
-    - `os.environ["AGENT_TOOL_CONFIG_PATH"]`: Filepath for agent tools config
-    - `agent.yaml`: Specify training agent
-    - `tool.yaml`: Tool environment configuration
-   
-### Configure `scripts/run.sh` (custom section)
 
-Before running training, customize the `custom` section inside `train/examples/verl/scripts/run.sh`:
-- **path_to_train**: Set this to the absolute path of your local `AWorld/train` directory.
-- **reward_fn_file_path** and **reward_fn_name**: Point to your own reward function file and the exported function name. For example, if you implement `gaia_reward_func` in `my_reward_function.py`, set them accordingly.
-- **agent_loop_config_path** and **AGENT_TOOL_CONFIG_PATH**: Provide the paths to your agent loop config (`agent.yaml`) and tool config (`tool.yaml`). Note that `AGENT_TOOL_CONFIG_PATH` is exported as an environment variable.
-- **dummy_tool_config_path** (optional): Set to enable auto tool choice (auto_tool_choice).
 
-Example snippet:
+## Advanced: Customize `run.sh` 
+Before starting the training, you can modify the configuration in `run.sh`:
+- **reward_fn_file_path** and **reward_fn_name**: Point to your reward function file and exported function name (e.g., `gaia_reward_func`).
+- **agent_loop_config_path** and **AGENT_TOOL_CONFIG_PATH**: Paths to your agent loop config (`agent.yaml`) and tool config (`tool.yaml`). Note `AGENT_TOOL_CONFIG_PATH` is exported as an environment variable.
+- **dummy_tool_config_path** (optional): Set to enable auto tool choice.
+
+Example:
 ```bash
 # =================== custom ===================
 path_to_train="/abs/path/to/AWorld/train"
@@ -47,13 +96,9 @@ reward_fn_name=gaia_reward_func
 reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 
 # Agent config
-agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/agent.yaml
+agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/agent.yaml
 export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/tool.yaml
 
 # Optional: enable auto_tool_choice with a dummy tool config
 dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
-```
-3) Run training:
-```bash
-bash run.sh
 ```

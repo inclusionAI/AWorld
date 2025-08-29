@@ -3,44 +3,89 @@
 [English](./README.md)
 
 ## 安装
-1) 准备环境 \
-    建议使用 conda 或 venv 创建全新虚拟环境。 \
-    推荐 Python 3.10。
-2) 安装 AWorld
-    ```bash
-    pip install aworld
-    ```
-3) 安装 VeRL
-    ```bash
-    pip install train_gaia_with_aworld_verl==0.5.0
-    ```
+### 1. 环境准备
+建议使用 conda 或 venv 创建新的虚拟环境。\
+    推荐使用 Python 3.10。
+### 2. 安装 MCP 环境
+#### 2.1 本地 Docker 部署
+##### 先决条件
+确保已正确安装并可正常使用 Docker 与 Docker Compose：
+```bash
+# 验证 Docker 安装
+docker --version
+docker compose --version
+
+# 验证 Docker 守护进程运行状态
+docker ps
+docker compose ps
+```
+
+**步骤 1：配置环境并准备 Gaia 数据集**
+
+1. 复制环境模板并进行配置：
+
+```bash
+cd {path/to/AWorld}/env
+cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
+```
+
+编辑 `./gaia-mcp-server/mcp_servers/.env`，填入你的本地配置。
+
+### 3. 安装 AWorld
+```bash
+pip install aworld
+```
+### 4. 安装 VeRL
+```bash
+pip install verl==0.5.0
+```
 
 ## 快速开始
 ```bash
-cd train/examples/train_gaia_with_aworld_verl
+cd {path/to/AWorld}/train/examples/train_gaia_with_aworld_verl
 ```
-1) 准备数据集：
+### 1. 初始化工具环境并构建你的 Agent
+GaiaAgent示例代码（本目录已提供）：
+```python
+TOOL_ENV_CONFIG = {
+    "url": "http://localhost:8000/mcp",
+    "authorization": "Bearer dummy",
+    "mcp_servers": "readweb-server,browser-server",
+}
+
+class GaiaAgentLoop(AworldAgentLoop):
+    def build_agents(self, model_name: str = "", base_url: str = "", api_key: str = "") -> Union[Agent, Swarm]:
+        tool_env_config, tool_servers = get_agent_tool_env_and_servers(TOOL_ENV_CONFIG)
+        return Agent(
+            conf=AgentConfig(
+                llm_model_name=model_name,
+                llm_base_url=base_url,
+                llm_api_key=api_key,
+                llm_provider="openai",
+            ),
+            name="gaia_super_agent",
+            system_prompt="",
+
+            # MCP 工具配置
+            mcp_config=tool_env_config,
+            mcp_servers = tool_servers,
+        )
+```
+- 如有需要，编辑 `agent.yaml`。agent默认指向 `custom_agent_loop.GaiaAgentLoop`。
+
+### 2. 运行训练
 ```bash
-python datasets/create_dataset.py \
-  --dataset_path ${/path/to/GAIA}/2023 \
-  --output_dir datasets/ \
-  --train_size 300 \
-  --test_size 100
+bash run.sh
 ```
-2) 编辑 `train/examples/verl/configs/` 下的配置。
-    - `os.environ["AGENT_TOOL_CONFIG_PATH"]`：智能体工具配置文件路径
-    - `agent.yaml`：指定训练所用的智能体
-    - `tool.yaml`：工具与环境配置
 
-### 配置 `scripts/run.sh`（自定义参数设置）
+## 进阶：自定义 `run.sh`
 
-在运行训练前，先根据需要修改 `train/examples/verl/scripts/run.sh` 中的 `custom` 区域：
-- **path_to_train**：设置为你本地 `AWorld/train` 的绝对路径。
-- **reward_fn_file_path** 与 **reward_fn_name**：指向你的奖励函数文件与导出函数名。例如如果在 `gaia_reward_function.py` 中实现了 `gaia_reward_func`，则按需设置这两项。
-- **agent_loop_config_path** 与 **AGENT_TOOL_CONFIG_PATH**：分别为智能体 loop 配置（`agent.yaml`）与工具配置（`tool.yaml`）的路径。注意 `AGENT_TOOL_CONFIG_PATH` 需要通过环境变量导出。
-- **dummy_tool_config_path**（可选）：如需启用自动工具选择（auto_tool_choice）可设置该路径。
+在启动训练前，可在 `run.sh` 中修改配置：
+- **reward_fn_file_path** 与 **reward_fn_name**：reward计算函数文件路径与导出函数名（例如 `gaia_reward_func`）。
+- **agent_loop_config_path** 与 **AGENT_TOOL_CONFIG_PATH**：Agent loop 配置（`agent.yaml`）与工具配置（`tool.yaml`）的路径。注意 `AGENT_TOOL_CONFIG_PATH` 通过环境变量导出。
+- **dummy_tool_config_path**（可选）：设置后可启用自动工具选择（auto tool choice）。
 
-示例片段：
+示例：
 ```bash
 # =================== custom ===================
 path_to_train="/abs/path/to/AWorld/train"
@@ -49,23 +94,9 @@ reward_fn_name=gaia_reward_func
 reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 
 # Agent config
-agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/agent.yaml
+agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/agent.yaml
 export AGENT_TOOL_CONFIG_PATH=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/tool.yaml
 
 # Optional: enable auto_tool_choice with a dummy tool config
 dummy_tool_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/configs/dummy_tool_config.yaml
 ```
-
-> 可选：若你自定义奖励函数，可采用如下函数签名（与训练管线兼容）：
-```python
-def my_reward_fn(data_source, solution_str, ground_truth, extra_info=None):
-    # 返回一个数值型奖励
-    return 0.0
-```
-
-3) 运行训练：
-```bash
-bash run.sh
-```
-
-
