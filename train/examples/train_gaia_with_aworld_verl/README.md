@@ -1,7 +1,6 @@
 # Example: AWorld GAIA Agent + VeRL
 
 ## Installation
-### Set 
 
 ### 1. Set up environment
 We recommend using either conda or venv to create a new virtual environment.\
