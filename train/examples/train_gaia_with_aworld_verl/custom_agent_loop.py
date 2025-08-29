@@ -23,6 +23,7 @@ class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self, model_name: str = "", base_url: str = "", api_key: str = "") -> Union[Agent, Swarm]:
         # todo: use env.create() to get env_config
         tool_env_config, tool_servers = get_agent_tool_env_and_servers(TOOL_ENV_CONFIG)
+
         return Agent(
             conf=AgentConfig(
                 llm_model_name=model_name,
@@ -30,8 +31,10 @@ class GaiaAgentLoop(AworldAgentLoop):
                 llm_api_key=api_key,
                 llm_provider="openai",
             ),
-            mcp_config=tool_env_config,
-            mcp_servers = tool_servers,
             name="gaia_super_agent",
             system_prompt=GAIA_SYSTEM_PROMPT,
+
+            # MCP tool configuration for the agent
+            mcp_config=tool_env_config,
+            mcp_servers = tool_servers,
         )
