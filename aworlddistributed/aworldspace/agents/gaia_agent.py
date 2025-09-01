@@ -99,8 +99,13 @@ class Pipeline(AworldBaseAgent):
             llm_api_key=task.llm_api_key if task and task.llm_api_key else llm_api_key,
             llm_base_url=task.llm_base_url if task and task.llm_base_url else llm_base_url,
             max_retries=task.max_retries if task and task.max_retries else 3,
-            timeout=int(task.ext_info.get("llm_timeout")) if task and task.ext_info and task.ext_info.get("llm_timeout")  else 180
+            timeout=int(task.ext_info.get("llm_timeout")) if task and task.ext_info and task.ext_info.get("llm_timeout")  else 180,
+            llm_temperature=float(task.ext_info.get("llm_temperature")) if task and task.ext_info and task.ext_info.get("llm_temperature")  else 0.6,
+            top_p=float(task.ext_info.get("top_p")) if task and task.ext_info and task.ext_info.get("top_p")  else 0.95,
+            top_k=int(task.ext_info.get("top_k")) if task and task.ext_info and task.ext_info.get("top_k")  else 20
         )
+        logging.info(
+            f"task llm config is: {llm_config}")
 
         return AgentConfig(
             name=self.agent_name(),

@@ -12,7 +12,10 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install -y wget unzip openssh-client procps nodejs npm
+# Install Node.js 22 LTS
+RUN apt-get update && apt-get install -y wget unzip openssh-client procps curl && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs
 
 ARG PIP_OPTIONS='-i https://mirrors.aliyun.com/pypi/simple/'
 ARG ENABLE_OSS_MOUNT=""

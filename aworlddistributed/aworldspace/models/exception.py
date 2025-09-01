@@ -1,0 +1,3 @@
+
+class TaskTerminatedException(Exception):
+    pass

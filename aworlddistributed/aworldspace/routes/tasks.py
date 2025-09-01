@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import AsyncGenerator, Optional, List, Dict, Any
 import zipfile
 
+import numpy as np
 import oss2
 
 from aworld.metrics import MetricContext
@@ -25,6 +26,7 @@ from aworld.models.model_response import ModelResponse
 from pydantic import BaseModel, Field, PrivateAttr
 
 from aworldspace.db.db import AworldTaskDB, SqliteTaskDB, PostgresTaskDB
+from aworldspace.models.exception import TaskTerminatedException
 from aworldspace.utils.job import generate_openai_chat_completion, call_pipeline
 from aworldspace.utils.log import task_logger
 from base import AworldTask, AworldTaskResult, OpenAIChatCompletionForm, OpenAIChatMessage, AworldTaskForm
@@ -108,11 +110,11 @@ class AworldTaskExecutor(BaseModel):
                 continue
 
             try:
-                # 使用原子操作获取并标记任务
+                # only get one
                 tasks = await self._task_db.acquire_and_mark_tasks(
                     status="INIT",
                     new_status="RUNNING",
-                    nums=need_load
+                    nums=1
                 )
                 
                 logging.info(f"🔍[task executor] atomically acquired {len(tasks)} tasks from db (need {need_load})")
@@ -122,11 +124,13 @@ class AworldTaskExecutor(BaseModel):
                     await asyncio.sleep(interval)
                     continue
 
-                # 将任务放入队列
+                # add task to queue
                 for task in tasks:
                     await self._tasks.put(task)
                     logging.info(f"✅[task executor] task#{task.task_id} queued for execution")
-                    
+
+                # sleep for reload
+                await asyncio.sleep(np.random.randint(1, 5))
                 return True
             except Exception as e:
                 logging.error(f"❌[task executor] failed to load tasks: {e}")
@@ -147,6 +151,8 @@ class AworldTaskExecutor(BaseModel):
                                 {"agent_name": task.agent_id, "user_id": task.user_id, "pod_id": get_local_ip(), "success": "1"})
             task_logger.log_task_submission(task, "execute_finished", task_result=result)
         except Exception as err:
+            if isinstance(err, TaskTerminatedException):
+                logging.warning(f"task#{task.task_id} is terminated for others process, so not operate")
             task.mark_failed()
             await self._task_db.update_task(task)
 
@@ -240,6 +246,129 @@ class AworldTaskManager(BaseModel):
         task_logger.log_task_submission(task, status="init")
 
         return AworldTaskResult(task = task)
+
+    async def check_task_is_terminated(self, task_id: str):
+        task = await self._task_db.query_task_by_id(task_id)
+        if not task:
+            return False
+        logging.info(f"check_task_is_terminated {task_id} status is {task.status}")
+        return task.status in ["CANCEL", "FAILED", "SUCCESS"]
+
+    async def cancel_tasks(self, task_ids: List[str]):
+        """
+        Cancel multiple tasks by task_ids.
+        Only tasks in INIT/RUNNING status can be cancelled.
+
+        Args:
+            task_ids (List[str]): List of task IDs to cancel
+
+        Returns:
+            Dict: A dictionary containing successful and failed operations
+        """
+        results = {
+            "success": [],
+            "failed": []
+        }
+
+        for task_id in task_ids:
+            try:
+                task = await self.cancel_task(task_id)
+                results["success"].append({
+                    "task_id": task_id,
+                    "status": task.status
+                })
+            except Exception as e:
+                results["failed"].append({
+                    "task_id": task_id,
+                    "error": str(e)
+                })
+                logging.error(f"❌ Failed to cancel task {task_id}: {e}")
+
+        logging.info(f"✅ Batch cancel tasks completed. Success: {len(results['success'])}, Failed: {len(results['failed'])}")
+        return results
+
+    async def cancel_task(self, task_id: str):
+        """
+        Cancel a task by task_id.
+        Only tasks in INIT/RUNNING status can be cancelled.
+
+        Args:
+            task_id (str): The ID of the task to cancel
+
+        Raises:
+            ValueError: If task not found or task status is not INIT/RUNNING
+        """
+        # 1. check task status is INIT/RUNNING
+        task = await self._task_db.query_task_by_id(task_id)
+        if not task:
+            raise ValueError(f"❌ Task {task_id} not found")
+
+        if task.status not in ["INIT", "RUNNING"]:
+            raise ValueError(f"❌ Cannot cancel task {task_id}, current status is {task.status}, only INIT/RUNNING tasks can be cancelled")
+
+        # 2. update task_status = CANCEL
+        task.status = "CANCEL"
+        await self._task_db.update_task(task)
+        logging.info(f"✅ Successfully cancelled task {task_id}")
+        return task
+
+    async def reset_tasks(self, task_ids: List[str]):
+        """
+        Reset multiple tasks by task_ids.
+        Only tasks in CANCEL/FAILED status can be reset.
+
+        Args:
+            task_ids (List[str]): List of task IDs to reset
+
+        Returns:
+            Dict: A dictionary containing successful and failed operations
+        """
+        results = {
+            "success": [],
+            "failed": []
+        }
+
+        for task_id in task_ids:
+            try:
+                task = await self.reset_task(task_id)
+                results["success"].append({
+                    "task_id": task_id,
+                    "status": task.status
+                })
+            except Exception as e:
+                results["failed"].append({
+                    "task_id": task_id,
+                    "error": str(e)
+                })
+                logging.error(f"❌ Failed to reset task {task_id}: {e}")
+
+        logging.info(f"✅ Batch reset tasks completed. Success: {len(results['success'])}, Failed: {len(results['failed'])}")
+        return results
+
+    async def reset_task(self, task_id: str):
+        """
+        Reset a task by task_id.
+        Only tasks in CANCEL/FAILED status can be reset.
+
+        Args:
+            task_id (str): The ID of the task to reset
+
+        Raises:
+            ValueError: If task not found or task status is not CANCEL/FAILED
+        """
+        # 1. check task status is CANCEL/FAILED
+        task = await self._task_db.query_task_by_id(task_id)
+        if not task:
+            raise ValueError(f"❌ Task {task_id} not found")
+
+        if task.status not in ["CANCEL", "FAILED"]:
+            raise ValueError(f"❌ Cannot reset task {task_id}, current status is {task.status}, only CANCEL/FAILED tasks can be reset")
+
+        # 2. update task_status = INIT
+        task.status = "INIT"
+        await self._task_db.update_task(task)
+        logging.info(f"✅ Successfully reset task {task_id}")
+        return task
 
     async def get_task_result(self, task_id: str) -> Optional[AworldTaskResult]:
         task = await self._task_db.query_task_by_id(task_id)
@@ -603,6 +732,42 @@ async def get_task_replays(request: TaskReplayRequest):
             status_code=500,
             content={"status": "error", "error": str(err)}
         )
+
+class BatchTaskRequest(BaseModel):
+    """
+    Request model for task replay download
+    """
+    task_ids: List[str]
+
+
+@router.post("/cancel_tasks")
+async def cancel_tasks(request: BatchTaskRequest):
+    if not request or not request.task_ids or len(request.task_ids) == 0:
+        raise ValueError("❌ task_ids is empty")
+
+    logging.info(f"🚀 cancel_tasks start, task_ids: {request.task_ids}")
+    try:
+        result = await task_manager.cancel_tasks(request.task_ids)
+        logging.info(f"✅ cancel_tasks success, found {len(request.task_ids)} results")
+        return result
+    except Exception as err:
+        logging.error(f"❌ cancel_tasks failed, err is {err}, traceback is {traceback.format_exc()}")
+        raise ValueError("❌ cancel_tasks failed, please see logs for details")
+
+
+@router.post("/reset_tasks")
+async def reset_tasks(request: BatchTaskRequest):
+    if not request or not request.task_ids or len(request.task_ids) == 0:
+        raise ValueError("❌ task_ids is empty")
+
+    logging.info(f"🚀 reset_tasks start, task_ids: {request.task_ids}")
+    try:
+        result = await task_manager.reset_tasks(request.task_ids)
+        logging.info(f"✅ reset_tasks success, found {len(request.task_ids)} results")
+        return result
+    except Exception as err:
+        logging.error(f"❌ reset_tasks failed, err is {err}, traceback is {traceback.format_exc()}")
+        raise ValueError("❌ reset_tasks failed, please see logs for details")
 
 @router.post("/get_batch_task_results")
 async def get_batch_task_results(task_ids: List[str]) -> List[dict]:

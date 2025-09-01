@@ -6,6 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import func
 
+from aworld.utils.common import get_local_ip
 from base import AworldTask, AworldTaskResult
 from aworldspace.db.models import (
     Base, AworldTaskModel, AworldTaskResultModel,
@@ -324,6 +325,7 @@ class PostgresTaskDB(AworldTaskDB):
                 for task in orm_tasks:
                     task.status = new_status
                     task.updated_at = func.now()
+                    task.node_id = get_local_ip()
                 
                 # 提交事务，这会在更新完成后才释放锁
                 session.commit()

@@ -375,4 +375,98 @@ class AworldTaskClient(BaseModel):
         except Exception as e:
             logging.error(f"❌ failed to parse task results file {file_path}: {e}")
             raise ValueError(f"❌ failed to parse task results file: {str(e)}")
+        
+    async def cancel_tasks(self, task_ids: list[str]):
+        """
+        Cancel multiple tasks by task IDs.
+        Only tasks in INIT/RUNNING status can be cancelled.
+
+        Args:
+            task_ids (list[str]): List of task IDs to cancel
+
+        Returns:
+            dict: A dictionary containing successful and failed operations
+        """
+        if not self.know_hosts:
+            raise ValueError("❌ No aworld server hosts configured.")
+
+        # select server
+        if not hasattr(self, '_current_server_index'):
+            self._current_server_index = 0
+        aworld_server = self.know_hosts[self._current_server_index]
+        if not aworld_server.startswith("http"):
+            aworld_server = "http://" + aworld_server
+
+        logging.info(f"🚀 cancelling tasks: {task_ids} on server: {aworld_server}")
+
+        try:
+            import httpx
+
+            # build request data
+            request_data = {
+                "task_ids": task_ids
+            }
+
+            # send cancel request
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{aworld_server}/api/v1/tasks/cancel_tasks",
+                    json=request_data
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                logging.info(f"✅ tasks cancelled successfully: {result}")
+                return result
+
+        except Exception as e:
+            logging.error(f"❌ failed to cancel tasks: {e}")
+            raise ValueError(f"❌ failed to cancel tasks: {str(e)}")
+
+    async def reset_tasks(self, task_ids: list[str]):
+        """
+        Reset multiple tasks by task IDs.
+        Only tasks in CANCEL/FAILED status can be reset.
+
+        Args:
+            task_ids (list[str]): List of task IDs to reset
+
+        Returns:
+            dict: A dictionary containing successful and failed operations
+        """
+        if not self.know_hosts:
+            raise ValueError("❌ No aworld server hosts configured.")
+
+        # select server
+        if not hasattr(self, '_current_server_index'):
+            self._current_server_index = 0
+        aworld_server = self.know_hosts[self._current_server_index]
+        if not aworld_server.startswith("http"):
+            aworld_server = "http://" + aworld_server
+
+        logging.info(f"🚀 resetting tasks: {task_ids} on server: {aworld_server}")
+
+        try:
+            import httpx
+            from base import BatchTaskRequest
+
+            # build request data
+            request_data = BatchTaskRequest(task_id_list=task_ids)
+
+            # send reset request
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{aworld_server}/api/v1/tasks/reset_tasks",
+                    json=request_data.model_dump()
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                logging.info(f"✅ tasks reset successfully: {result}")
+                return result
+
+        except Exception as e:
+            logging.error(f"❌ failed to reset tasks: {e}")
+            raise ValueError(f"❌ failed to reset tasks: {str(e)}")
+
 

@@ -42,3 +42,4 @@ e2b_code_interpreter
 sqlalchemy~=2.0.40
 psycopg2-binary==2.9.9
 bcrypt==4.3.0
+excel-mcp-server~=0.1.5
