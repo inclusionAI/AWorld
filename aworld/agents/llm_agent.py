@@ -258,11 +258,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             Message list for LLM.
         """
         agent_prompt = self.agent_prompt
-        # supported string only
-        if self.task and isinstance(self.task, str) and self.task != observation.content:
-            observation.content = f"{self.task}\n{observation.content}"
-            # `task` only needs to be processed once and reflected in the context
-            self.task = None
+        # observation secondary processing
+        observation = await self._init_observation(observation)
         messages = []
         # append sys_prompt to memory
         await self._add_system_message_to_memory(context=message.context, content=observation.content)
@@ -332,6 +329,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
         return messages
+
+    async def _init_observation(self, observation: Observation):
+        # supported string only
+        if self.task and isinstance(self.task, str) and self.task != observation.content:
+            observation.content = f"{self.task}\n{observation.content}"
+            # `task` only needs to be processed once and reflected in the context
+            self.task = None
+        return observation
 
     def _log_messages(self, messages: List[Dict[str, Any]], **kwargs) -> None:
         """Log the sequence of messages for debugging purposes"""
