@@ -16,9 +16,11 @@ for _ in range(7):
 sys.path.append(__root_path__)
 
 
-from typing import Any
+from typing import Any, Optional
 
-from bfcl_eval.multi_query_agent import MultiQueryAgent
+from bfcl_eval.aworld_agents.multi_query_agent import MultiQueryAgent
+from bfcl_eval.aworld_agents.fc_agent import FCModelAgent
+
 from bfcl_eval.constants.type_mappings import GORILLA_TO_OPENAPI
 from bfcl_eval.constants.default_prompts import DEFAULT_SYSTEM_PROMPT
 from bfcl_eval.model_handler.base_handler import BaseHandler
@@ -44,7 +46,19 @@ from aworld.core.task import Task
 from aworld.runner import Runners
 
 
-def build_aworld_agent(or_model_name, bfcl_prompt):
+
+def read_json_lines(json_file_path):
+    data_lst = []
+    with open(json_file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            data_lst.append(json.loads(line))
+    return data_lst
+
+
+def build_aworld_agent(or_model_name, bfcl_prompt, compiled_tools):
+    # gorilla_file_path = "/Users/jackiezhangant/codes/ACT_LMM/BFCL/AWorld/examples/bfcl_multi_agents/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/multi_turn_func_doc/gorilla_file_system.json"
+    # test_tools = read_json_lines(gorilla_file_path)
+
     try:
         SWARM_MODEL_NAME=or_model_name
         # Get API key from environment variable
@@ -63,6 +77,8 @@ def build_aworld_agent(or_model_name, bfcl_prompt):
             llm_base_url=_base_url,
             llm_temperature=0.001,
             max_retries=10,
+            use_tools_in_prompt=False, 
+            # human_tools=[ _tool['name'] for _tool in test_tools]
         )
 
         # Register the MCP tool here, or create a separate configuration file.
@@ -73,12 +89,13 @@ def build_aworld_agent(or_model_name, bfcl_prompt):
         # sys_prompt has no effect on BFCLAgent
         file_sys_prompt = bfcl_prompt
         
-        exe_agent = MultiQueryAgent(
+        exe_agent = FCModelAgent(
             conf=agent_config,
             name="file_sys_agent",
             system_prompt=file_sys_prompt,
             mcp_servers=mcp_config.get("mcpServers", []).keys(),
             mcp_config=mcp_config,
+            bfcl_tools=compiled_tools,
         )
 
         print(f"===================== Agent initialization completed! =====================")
@@ -110,17 +127,31 @@ class AWorldOpenAICompletionsHandlerXLAM(BaseHandler):
         self.or_model_name = _tmp_res[1][:-1]
 
         self.model_style = ModelStyle.OpenAI_Completions
-        self.aworld_agent = None
+        self.aworld_agent : Optional[FCModelAgent] = None
         self.test_entry_id = None
+
+        self.processed_idx = 0
+
+
+    def compile_tools_for_xlam(self, test_entry: dict) -> dict:
+        functions: list = test_entry["function"]
+        test_category: str = test_entry["id"].rsplit("_", 1)[0]
+
+        functions = func_doc_language_specific_pre_processing(functions, test_category)
+        tools = convert_to_tool(functions, GORILLA_TO_OPENAPI, self.model_style)
+        return tools
 
 
     def inference(self, test_entry: dict, include_input_log: bool, exclude_state_log: bool):
-            # This method is used to retrive model response for each model.
-
+        # This method is used to retrive model response for each model.
+        compiled_tools = self.compile_tools_for_xlam(test_entry)
+        
         self.test_entry_id = test_entry["id"]
-
+        self.processed_idx = 0
+        
         if self.aworld_agent is None:
-            self.aworld_agent = build_aworld_agent(or_model_name=self.or_model_name, bfcl_prompt=aworld_prompt_processing(test_entry['function']))
+            # self.aworld_agent = build_aworld_agent(or_model_name=self.or_model_name, bfcl_prompt=aworld_prompt_processing(test_entry['function']))
+            self.aworld_agent = build_aworld_agent(or_model_name=self.or_model_name, bfcl_prompt=None, compiled_tools=compiled_tools)
 
         # self.client.create_agent(self.test_entry_id)
         try:
@@ -221,33 +252,39 @@ class AWorldOpenAICompletionsHandlerXLAM(BaseHandler):
 
     @override
     def decode_execute(self, result):
-        try:
-            function_calls = json.loads(result)
-            if not isinstance(function_calls, list):
-                function_calls = [function_calls]
-        except json.JSONDecodeError:
-            function_calls = [json.loads(call.strip()) for call in result.split(";")]
+        # try:
+        #     function_calls = json.loads(result)
+        #     if not isinstance(function_calls, list):
+        #         function_calls = [function_calls]
+        # except json.JSONDecodeError:
+        #     function_calls = [json.loads(call.strip()) for call in result.split(";")]
+
+        function_calls = result
 
         execution_list = []
         for func_call in function_calls:
-            name = func_call["name"]
-            arguments = func_call["arguments"]
+            name = list(func_call.keys())[0]
+            arguments = json.loads(list(func_call.values())[0])
             execution_list.append(
                 f"{name}({','.join([f'{k}={repr(v)}' for k,v in arguments.items()])})"
             )
 
         return execution_list
 
-
+    
     @retry_with_backoff(error_type=RateLimitError)
     def generate_with_backoff(self, **kwargs):
+
         messages = kwargs.get("messages")
 
+        wait_to_process_msgs = messages[self.processed_idx:]
+        self.processed_idx = len(messages)
+       
         task_id = self.test_entry_id
         task = Task(
             session_id=task_id,
             name=task_id,
-            input=messages[-1]['content'],
+            input=wait_to_process_msgs,
             agent=self.aworld_agent,
             conf=TaskConfig(system_prompt="You are a helpful assistant.")
         )
@@ -294,6 +331,12 @@ class AWorldOpenAICompletionsHandlerXLAM(BaseHandler):
     #### FC methods ####
 
     def _query_FC(self, inference_data: dict):
+
+        def update_tools_in_fc(inference_data):
+            self.aworld_agent.update_bfcl_tools(new_bfcl_tools=inference_data['tools'])
+
+        update_tools_in_fc(inference_data)
+
         message: list[dict] = inference_data["message"]
         tools = inference_data["tools"]
         inference_data["inference_input_log"] = {"message": repr(message), "tools": tools}
@@ -327,13 +370,9 @@ class AWorldOpenAICompletionsHandlerXLAM(BaseHandler):
 
     def _parse_query_response_FC(self, api_response: any) -> dict:
         try:
-            model_responses = [
-                {func_call.function.name: func_call.function.arguments}
-                for func_call in api_response.choices[0].message.tool_calls
-            ]
-            tool_call_ids = [
-                func_call.id for func_call in api_response.choices[0].message.tool_calls
-            ]
+            response_json = json.loads(api_response.choices[0].message.content)
+            model_responses = response_json['response']
+            tool_call_ids = response_json['id']
         except:
             model_responses = api_response.choices[0].message.content
             tool_call_ids = []
@@ -363,8 +402,12 @@ class AWorldOpenAICompletionsHandlerXLAM(BaseHandler):
     def _add_assistant_message_FC(
         self, inference_data: dict, model_response_data: dict
     ) -> dict:
+        # inference_data["message"].append(
+        #     model_response_data["model_responses_message_for_chat_history"]
+        # )
+        # use a special role to avoid add tool call messages again in agent
         inference_data["message"].append(
-            model_response_data["model_responses_message_for_chat_history"]
+            {'role': 'agent_tool_call', 'content': model_response_data["model_responses"]}
         )
         return inference_data
 
@@ -375,6 +418,7 @@ class AWorldOpenAICompletionsHandlerXLAM(BaseHandler):
         model_response_data: dict,
     ) -> dict:
         # Add the execution results to the current round result, one at a time
+
         for execution_result, tool_call_id in zip(
             execution_results, model_response_data["tool_call_ids"]
         ):
@@ -384,6 +428,13 @@ class AWorldOpenAICompletionsHandlerXLAM(BaseHandler):
                 "tool_call_id": tool_call_id,
             }
             inference_data["message"].append(tool_message)
+
+        # for execution_result in execution_results:
+        #     tool_message = {
+        #         "role": "tool",
+        #         "content": execution_result,
+        #     }
+        #     inference_data["message"].append(tool_message)
 
         return inference_data
 

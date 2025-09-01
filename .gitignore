@@ -177,6 +177,16 @@ goex/docker/misc/images.json
 !**/AWorld/examples/bfcl_multi_agents/gorilla/berkeley-function-call-leaderboard/bfcl_eval/test_case_ids_to_generate.json.example
 
 
+
+**/berkeley-function-call-leaderboard/bash_scripts
+**/berkeley-function-call-leaderboard/dependency_lib/*.png
+**/berkeley-function-call-leaderboard/dependency_lib/*.ipynb
+**/berkeley-function-call-leaderboard/**/*.ipynb
+
+**/berkeley-function-call-leaderboard/visualize_results.py
+
+
+
 .direnv/
 .venv
 **/wandb/

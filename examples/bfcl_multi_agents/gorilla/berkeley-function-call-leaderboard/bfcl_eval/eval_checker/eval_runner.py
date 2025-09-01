@@ -198,7 +198,7 @@ def multi_turn_runner(
         multi_turn_ground_truth_list: list[list[str]] = possible_answer[i]["ground_truth"]
         test_entry: dict = prompt[i]
         
-        assert model_result[i]["id"] == possible_answer[i]["id"] == index
+        assert model_result[i]["id"] == possible_answer[i]["id"] == index, f"{model_result[i]['id']}, {possible_answer[i]['id']}, {index}"
 
         # Remove the function doc from the score file for better readability; they are repeated and way too long
         if "function" in test_entry:
@@ -595,6 +595,26 @@ def evaluate_task(
         # Find the corresponding possible answer file
         possible_answer_file = find_file_with_suffix(POSSIBLE_ANSWER_PATH, test_category) # PosixPath('/Users/jackiezhangant/codes/ACT_LMM/BFCL/AWorld/examples/bfcl_multi_agents/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v3_multi_turn_base.json')
         possible_answer = load_file(possible_answer_file, sort_by_id=True)
+
+        # filter possible answers
+        if len(model_result) < len(possible_answer):
+            print(f"Warning: model_result and possible_answer have different lengths. model_result: {len(model_result)}, possible_answer: {len(possible_answer)}")
+            filtered_possible_answer = []
+            filtered_prompt = []
+            possible_answer_idx = 0
+            for single_result in model_result:
+                _id = single_result["id"]
+
+                for i in range(possible_answer_idx, len(possible_answer)):
+                    if possible_answer[i]["id"] == _id:
+                        filtered_possible_answer.append(possible_answer[i])
+                        filtered_prompt.append(prompt[i])
+                        possible_answer_idx = i + 1
+                        break
+
+            assert len(model_result) == len(filtered_possible_answer) == len(filtered_prompt)
+            possible_answer = filtered_possible_answer
+            prompt = filtered_prompt
 
         if is_multi_turn(test_category):
             accuracy, total_count = multi_turn_runner(

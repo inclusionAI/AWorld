@@ -66,7 +66,7 @@ class XLAMCompletionsHandler(BaseHandler):
             execution_list.append(
                 f"{name}({','.join([f'{k}={repr(v)}' for k,v in arguments.items()])})"
             )
-
+        # exection_list: ["cd(folder='document')", "mkdir(dir_name='temp')", "mv(source='final_report.pdf',destination='temp')"]
         return execution_list
 
     @retry_with_backoff(error_type=RateLimitError)
