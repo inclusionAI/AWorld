@@ -8,141 +8,121 @@
 
 </div>
 
-<div align="center">
-
-[中文版本](./README_zh.md) | [Quick Start](#quick-start) | [Directory](#-directory-structure) | [Development](#development) | [Contributing](#contributing)
-
-</div>
-
 ---
 
-## 1. Overview
+AWorld Train provides a bridge between the AWorld agent ecosystem and various external training frameworks like Reinforcement Learning (RL) libraries. It is designed to be framework-agnostic, allowing you to bring your AWorld agents to your favorite training environments.
 
-AWorld Train provides a unified way to run training pipelines for agents built with the AWorld framework. It includes framework adapters (e.g., VeRL), runnable examples, and shared utilities so you can quickly bring your agent into different training ecosystems.
+## Installation
 
-### 1.1 Features
-
-- **Multi-Framework Adapters**: Plug AWorld agents into external frameworks (e.g., VeRL). More can be added via a simple adapter pattern.
-- **Runnable Examples**: End-to-end examples under `train/examples/` to start training immediately.
-- **Dataset Utilities**: Helper scripts to build datasets for training/evaluation (e.g., GAIA dataset preparation for VeRL example).
-- **Reward Function Hooks**: Easily plug in a custom reward function via file path and function name.
-- **Scalable**: Works on single machine; distributed capabilities depend on the chosen framework.
-
-## 2. Quick Start
-
-We recommend starting with the VeRL example.
-
-### 2.1 Prerequisites
-
-- Python 3.10+ (recommended)
-- A fresh virtual environment (conda or venv)
-
-### 2.2 Install
-
-#### 2.2.1 Install MCP env (VirtualPC MCP Server)
-
-Step 1: Configure environment
+Python>=3.10 is recommended.
 
 ```bash
-cd {path/to/AWorld}/env
-cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
-```
-
-Step 2: Launch locally
-
-```bash
-sh run-local.sh
-```
-
-For Kubernetes deployment, see [env/README.md § 2.2 Kubernetes Cluster Deployment](../env/README.md#22-kubernetes-cluster-deployment).
-
-#### 2.2.2 Install Python packages
-
-```bash
-# Install Aworld
+# Install AWorld
 pip install aworld
 
 # Framework-specific deps (VeRL example)
 pip install verl==0.5.0
 ```
 
-### 2.3 Run the VeRL Example
-Refer to the documentation [VeRL example README](./examples/train_gaia_with_aworld_verl/README.md)
+## Quick Start
+
+Training an AWorld agent with an external framework can be done in 3 steps.
+
+We'll use the GAIA agent with VeRL as an example.
 
 
-## 3. Directory Structure
+### 1. Create an Environment
+First, you need to create a training environment that agents can interact with. 
+When creating an environment, some tools may require you to configure authentication credentials. This can be done by setting environment variables (we recommend managing them in a `.env` file).
 
-```
-train/
-  adapter/
-    verl/
-      aworld_agent_loop.py       # Core adapter bridging VeRL AgentLoop and AWorld agents
-      common.py                  # Utilities for converting trajectories/messages
-      README.md
-    swift/
-      aworld_agent_trainer.py    # Experimental Swift adapter
-  examples/
-    train_gaia_with_aworld_verl/
-      agent.yaml                 # Example agent loop and training settings
-      configs/
-        tool.yaml                # Tool environment configuration
-      datasets/
-        create_dataset.py        # GAIA dataset preparation utility
-      metrics/
-        gaia_reward_function.py  # Example reward function
-      run.sh                     # Example launch script
-      README.md                  # Example-specific docs
-      README_zh.md
-    train_gaia_with_aworld_swift/
-      gaia_agent_trainer.py      # Example integration with Swift
-      plugin.py                  # Example plugin
-  README.md
-  README_zh.md
+For example, to run the GAIA task, you need to set the following variable:
+```bash
+export GOOGLE_API_KEY={YOUR_GOOGLE_API_KEY}
 ```
 
-## 4. Development
+Then use `train_env` utility to create your training environment and get environment configs for agents.
+```python
+from train import train_env
 
-### 4.1 Add a New Framework Adapter
+# For local tool environment
+gaia_env = train_env.create("GAIA", mode="local")
 
-1) Create `train/adapter/<framework_name>/`.
-2) Implement the minimal adapter surface (e.g., loop/trainer class) that exposes a clean API to your example code.
-3) Keep reusable logic in the adapter; avoid placing example-specific code here.
+# The 'gaia_env' object now holds the connection configuration for the MCP server,
+# which can be passed to your agent.
+# For distributed environment creation, please refer to env/README.md.
+```
 
-### 4.2 Create a New Example
-
-1) Create `train/examples/<your_example_name>/`.
-2) Add `configs/`, `datasets/`, `metrics/`, and a minimal `run.sh` as needed.
-3) Prefer absolute paths in scripts for reproducibility.
-
-### 4.3 Reward Function Interface
-
-Pass the reward function via script arguments or environment variables, providing both the file path and exported function name. A minimal example:
+### 2. Create an Agent or Swarm
+Next, define your agent. This is a standard AWorld agent. The key is to pass the environment configuration you created in the previous step to the agent's `mcp_config`.
 
 ```python
-# reward.py
-def my_reward_fn(data_source, solution_str, ground_truth, extra_info=None):
-    # Compute and return a numeric reward
-    return 0.0
+from aworld.agents.llm_agent import Agent
+from aworld.config import AgentConfig
+
+# Assuming 'gaia_env' contains {'mcp_config': {...}, 'mcp_servers': '...'}
+gaia_agent = Agent(
+    conf=AgentConfig(
+        llm_model_name="your-model-name",
+        llm_base_url="your-llm-base-url",
+        llm_api_key="your-llm-api-key",
+        llm_provider="openai",
+    ),
+    name="gaia_super_agent",
+    system_prompt="You are a helpful AI assistant.",
+
+    # Pass the MCP tool configuration from the environment
+    mcp_config=gaia_env.get("mcp_config"),
+    mcp_servers=gaia_env.get("mcp_servers"),
+)
 ```
 
-### 4.4 Configuration Conventions
+### 3. Run Training
+With the environment and agent ready, you can start the training process using your chosen framework's standard procedures.
 
-- `agent.yaml` describes agent loop/training settings for the framework/example
-- `tool.yaml` describes tool/runtime configs; often referenced via `AGENT_TOOL_CONFIG_PATH`
+For the VeRL example, you would run the training script:
+```bash
+cd ./examples/train_gaia_with_aworld_verl
+bash run.sh
+```
+This script handles the training loop, reward calculation, and agent updates, orchestrated by VeRL.
+Please refer to the [VeRL documentation](https://verl.readthedocs.io/en/latest/examples/config.html) for parameter settings in run.sh.
 
-## 5. Contributing
+### A Complete Example
 
-We welcome contributions! Please consider:
+For a full, runnable code example, please refer to the example at [`./examples/train_gaia_with_aworld_verl/`](./examples/train_gaia_with_aworld_verl/).
 
-- Keeping adapters minimal and reusable
-- Placing example-specific logic under `train/examples/`
-- Adding clear docs and runnable scripts for new examples
+## Advanced Tutorial
 
-## 6. References
+### How to Create a Complex Swarm
+Instead of a single agent, you can also train a multi-agent swarm. Simply have your `build_agents` method (or equivalent setup function) return a `Swarm` object instead of a single `Agent`. AWorld and the training adapter will handle the rest.
 
-- AWorld: `https://github.com/alipay/AWorld`
-- VeRL: `https://github.com/OpenGVLab/VeRL`
-- GAIA (dataset reference used by examples)
+```python
+# In your AgentLoop or setup file
+def build_agents(self, ...) -> Union[Agent, Swarm]:
+    # ... (create individual agents)
+    planner_agent = ...
+    worker_agent_1 = ...
+    worker_agent_2 = ...
+
+    # Return a Swarm composed of your agents
+    return Swarm(
+        planner_agent, worker_agent_1, worker_agent_2,
+        # ... other swarm configuration
+    )
+```
+
+### How to Integrate with Other Training Frameworks
+AWorld Train is designed for extensibility. To add support for a new training framework (e.g., "Swift"), you would typically need to:
+
+1.  **Create a new Adapter**: Inside the `train/adapter/` directory, create a new folder for your framework (e.g., `swift/`).
+2.  **Implement the Core Logic**: Create a primary class (e.g., `AworldAgentTrainer`) that inherits from a base class of the target framework. This class will be responsible for:
+    *   Receiving tasks or observations from the framework's environment.
+    *   Run the AWorld agent (`Runners.sync_run(input=input, agent=agent)`) to get an action.
+    *   Returning the agent's response back to the framework.
+    *   Handling rewards and updates.
+3.  **Create an Example**: Add a new example in the `train/examples/` directory to demonstrate how to use the new adapter.
+
+You can refer to the existing `verl` adapter (`train/adapter/verl/`) as a reference implementation.
 
 ---
 
