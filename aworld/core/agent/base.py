@@ -77,6 +77,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         desc: str = None,
         agent_id: str = None,
         *,
+        task: Any = None,
         tool_names: List[str] = None,
         agent_names: List[str] = None,
         mcp_servers: List[str] = None,
@@ -92,6 +93,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             conf: Agent config for internal processes.
             name: Agent name as identifier.
             desc: Agent description as tool description.
+            task: The original task of the agent will be automatically merged into messages after setting.
             tool_names: Tool names of local that agents can use.
             agent_names: Agents as tool name list.
             mcp_servers: Mcp names that the agent can use.
@@ -142,7 +144,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._id = (
             agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
         )
-        self.task = None
+        self.task: Any = task
         # An agent can use the tool list
         self.tool_names: List[str] = tool_names or []
         human_tools = self.conf.get("human_tools", [])
@@ -286,7 +288,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     async def async_reset(self, options: Dict[str, Any]):
         """Clean agent instance state and reset."""
-        self.task = options.get("task")
+        self.reset(options)
 
     @property
     def finished(self) -> bool:

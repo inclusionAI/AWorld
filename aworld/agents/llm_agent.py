@@ -129,6 +129,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  desc: str = None,
                  agent_id: str = None,
                  *,
+                 task: Any = None,
                  tool_names: List[str] = None,
                  agent_names: List[str] = None,
                  mcp_servers: List[str] = None,
@@ -162,6 +163,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             event_handler_name: Custom handlers for certain types of events.
         """
         super(Agent, self).__init__(name, conf, desc, agent_id,
+                                    task=task,
                                     tool_names=tool_names,
                                     agent_names=agent_names,
                                     mcp_servers=mcp_servers,
@@ -256,6 +258,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             Message list for LLM.
         """
         agent_prompt = self.agent_prompt
+        # supported string only
+        if self.task and isinstance(self.task, str) and self.task != observation.content:
+            observation.content = f"{self.task}\n{observation.content}"
+            # `task` only needs to be processed once and reflected in the context
+            self.task = None
         messages = []
         # append sys_prompt to memory
         await self._add_system_message_to_memory(context=message.context, content=observation.content)
@@ -531,8 +538,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                             agent_id=self.id(),
                                                             use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
+        # Revealing the results of the agent
+        self.agent_result = agent_result
         if self.is_agent_finished(llm_response, agent_result):
-            self._finished = True
             return agent_result.actions
         else:
             if not self.wait_tool_result:
@@ -737,8 +745,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     outputs.add_output(MessageOutput(
                         source=llm_response, json_parse=False))
 
-            logger.info(
-                f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
+            logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
 
         except Exception as e:
             logger.warn(traceback.format_exc())
@@ -760,7 +767,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _init_context(self, context: Context):
         super()._init_context(context)
-        # self.agent_result = AgentResult(current_state=None, is_call_tool=False, actions=[])
+        self.agent_result = AgentResult(current_state=None, is_call_tool=False, actions=[])
         logger.debug(f'init_context llm_agent {self.name()} {self.conf} {self.conf.context_rule}')
 
     async def run_hooks(self, context: Context, hook_point: str):
@@ -790,8 +797,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     logger.debug(f"Hook {hook.point()} executed successfully")
                     yield msg
             except Exception as e:
-                logger.warning(
-                    f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
+                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
 
     async def _add_system_message_to_memory(self, context: Context, content: str):
         if not self.system_prompt:
@@ -805,15 +811,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "session_id": session_id,
             "task_id": task_id
         }, agent_memory_config=self.memory_config)
-        if histories and len(histories) > 0:
-            logger.debug(
-                f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
+        if histories:
+            logger.debug(f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
             return
-        if not self.system_prompt:
-            return
-        content = await self.custom_system_prompt(context=context, content=content, tool_list=self.tools)
-        # logger.info(f'system prompt content: {content}')
 
+        content = await self.custom_system_prompt(context=context, content=content, tool_list=self.tools)
         await self.memory.add(MemorySystemMessage(
             content=content,
             metadata=MessageMetadata(
@@ -849,17 +851,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_llm_response_to_memory(self, llm_response, context: Context):
         """Add LLM response to memory"""
-        session_id = context.get_task().session_id
-        user_id = context.get_task().user_id
-        task_id = context.get_task().id
-
         await self.memory.add(MemoryAIMessage(
             content=llm_response.content,
             tool_calls=llm_response.tool_calls,
             metadata=MessageMetadata(
-                session_id=session_id,
-                user_id=user_id,
-                task_id=task_id,
+                session_id=context.get_task().session_id,
+                user_id=context.get_task().user_id,
+                task_id=context.get_task().id,
                 agent_id=self.id(),
                 agent_name=self.name()
             )
@@ -890,18 +888,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
-        session_id = context.get_task().session_id
-        user_id = context.get_task().user_id
-        task_id = context.get_task().id
-
         await self.memory.add(MemoryToolMessage(
             content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
             tool_call_id=tool_call_id,
             status="success",
             metadata=MessageMetadata(
-                session_id=session_id,
-                user_id=user_id,
-                task_id=task_id,
+                session_id=context.get_task().session_id,
+                user_id=context.get_task().user_id,
+                task_id=context.get_task().id,
                 agent_id=self.id(),
                 agent_name=self.name(),
             )
@@ -909,8 +903,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def is_agent_finished(self, llm_response: ModelResponse, agent_result: AgentResult) -> bool:
         if not agent_result.is_call_tool:
-            return True
-        return False
+            self._finished = True
+        return self.finished
 
     def _update_headers(self, input_message: Message) -> Dict[str, Any]:
         headers = input_message.headers.copy()
