@@ -216,7 +216,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
         sync_exec(self.async_desc_transform)
 
-    async def async_desc_transform(self, message: Message):
+    async def async_desc_transform(self):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
 
         # Stateless tool
@@ -228,7 +228,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                agents=self.handoffs if self.handoffs else []))
         # MCP servers are tools
         if self.sandbox:
-            mcp_tools = await self.sandbox.mcpservers.list_tools(message.context)
+            mcp_tools = await self.sandbox.mcpservers.list_tools(self.context)
             self.tools.extend(mcp_tools)
         else:
             self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
@@ -333,7 +333,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     async def _init_observation(self, observation: Observation):
         # supported string only
         if self.task and isinstance(self.task, str) and self.task != observation.content:
-            observation.content = f"{self.task}\n{observation.content}"
+            observation.content = f"base task is: {self.task}\n{observation.content}"
             # `task` only needs to be processed once and reflected in the context
             self.task = None
         return observation

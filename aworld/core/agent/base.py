@@ -93,7 +93,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             conf: Agent config for internal processes.
             name: Agent name as identifier.
             desc: Agent description as tool description.
-            task: The original task of the agent will be automatically merged into messages after setting.
+            task: The original task of the agent, will be automatically merged into messages after setting.
             tool_names: Tool names of local that agents can use.
             agent_names: Agents as tool name list.
             mcp_servers: Mcp names that the agent can use.
@@ -274,14 +274,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             info: Extended information is used to assist the agent to decide a policy.
         """
 
-    def reset(self, options: Dict[str, Any]):
+    def reset(self, options: Dict[str, Any] = None):
         """Clean agent instance state and reset."""
         if options is None:
             options = {}
-        self.task = options.get("task")
-        self.tool_names = options.get("tool_names", [])
-        self.handoffs = options.get("agent_names", [])
-        self.mcp_servers = options.get("mcp_servers", [])
+        self.tool_names = options.get("tool_names", self.tool_names)
+        self.handoffs = options.get("agent_names", self.handoffs)
+        self.mcp_servers = options.get("mcp_servers", self.mcp_servers)
         self.tools = []
         self.trajectory = []
         self._finished = True
