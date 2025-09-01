@@ -1,11 +1,12 @@
 import json
 import os, sys
 import time
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionMessage
 import requests
 import asyncio
 import aiohttp
 import time
+import re
 
 from typing import Any
 
@@ -15,6 +16,8 @@ for _ in range(7):
 sys.path.append(__root_path__)
 
 from bfcl_eval.aworld_agents.multi_query_agent import MultiQueryAgent
+from bfcl_eval.aworld_agents.fc_agent import FCModelAgent
+
 from bfcl_eval.constants.type_mappings import GORILLA_TO_OPENAPI
 from bfcl_eval.constants.default_prompts import DEFAULT_SYSTEM_PROMPT
 from bfcl_eval.constants.aworld_ma_prompts import VERIFY_SYSTEM_PROMPT
@@ -49,35 +52,46 @@ mcp_config = {
     "mcpServers": {}
 }
 
-AT_SYSTEM_PROMPT_WITHOUT_FUNC_DOC = """You are an expert in composing functions. You are given a question and a set of possible functions. Based on the question, you will need to make one or more function/tool calls to achieve the purpose.
-If none of the functions can be used, point it out. If the given question lacks the parameters required by the function, also point it out.
-You should only return the function calls in your response.
+# For multi-step plans, you must consider how the output of one function will be used as an input for a subsequent function (e.g., a user_id from a search_user function is needed for a get_order_history(user_id=...) call).
 
-At each turn, you should try your best to complete the tasks requested by the user within the current turn. Continue to output functions to call until you have fulfilled the user's request to the best of your ability. Once you have no more functions to call, the system will consider the current turn complete and proceed to the next turn or task.
+# If the goal cannot be achieved because no suitable function exists, explain this limitation. If required parameters are missing from the user's request, ask the user for the specific missing information.
+
+PLAN_MAKER_PROMPT_WITHOUT_FUNC_DOC = """
+You are an expert in making plan for composing functions. You are given a question and a set of possible functions. Based on the question, you will need to make a plan containing one or more function/tool calls to achieve the purpose. The plan should be clear and concise, and should not contain any unnecessary steps. 
+The plan you generate will be interpreted by another model to produce a strict function call format (you do not need to consider this part).
+
+At each turn, you must try your best to complete the tasks requested by the user within the current turn. Continue to output functions to call until you have fulfilled the user's request to the best of your ability. Once you have no more functions to call, the system will consider the current turn complete and proceed to the next turn or task.
+
+You must follow these steps to create your plan:
+    1. Analyze the Request: Deeply understand the user's goal and identify the key information provided in their query.
+    2. Assess Available Functions: Review the provided function descriptions. Determine which functions are relevant to the user's goal and whether they can be used to achieve it.
+    3. Verify Parameters and Dependencies in context: In multi-round tasks, parameters may not only appear in the input for the current round. Some parameters may be present in previous conversations or in the tool's execution feedback. Be sure to check carefully. Remember, missing functions or parameters are extremely rare!
+    4. Formulate a Plan or a Response: If a viable sequence of function calls can be constructed, create the plan.
+
+Your plan must meet the following requirements:
+    1. Sequential Order: The plan must be presented in the actual execution order.
+    2. Atomic Steps: Each step in the plan must consist of only a single function call.
+    3. Complete Calls: Each function call must include the function's name and all of its required parameters. 
+
+Your response must adhere to the following format:
+    First, think through your process inside <think></think> tags. This should include your analysis of the user's request, which functions you considered, and how you constructed the final plan.
+    If a plan can be created, present the complete plan inside <plan> tags, for example : 
+        <plan>
+        1. Call function_name_1, the value of required parameter parameter_1 is "value1", which meets the type requirement for parameter_1.
+        2. Call function_name_2, the value of required parameter parameter_2 is "value2", which meets the type requirement for parameter_2, and the value of required parameter parameter_3 is "value3", which meets the type requirement for parameter_3.
+        </plan>
+    Otherwise, use the <response> tag. For example:
+        <response>
+        The plan has been executed successfully!
+        </response>
 """
 
 AT_SYSTEM_PROMPT = (
-    AT_SYSTEM_PROMPT_WITHOUT_FUNC_DOC
+    PLAN_MAKER_PROMPT_WITHOUT_FUNC_DOC
     + """
-Here is a list of functions in JSON format that you can invoke.\n{functions}\n
-
-### If you decide to invoke any of the function(s), you MUST put it in the format of [func_name1(params_name1=params_value1, params_name2=params_value2...), func_name2(params)], You SHOULD NOT include any other text in THIS KIND of response.
-
-We provide you following helper agents to help you with the previous tasks. You can call them in the following ways:
-    1. Call the verifier agent to verify whether the function call you generated meets the documentation requirements. When calling this verifier agent, you need to briefly describe the user's intention and inform the verifier agent of the result of your function call. The verifier agent will return some suggestions, which you can use to modify your function call. You can pass the entire generated function calls as parameters to the verifier agent, instead of making separate calls.
-
-For example, when the user requests to navigate to the 'document' folder and create a file named 'TeamNotes.txt' for tracking ideas, and the function calls you intend to generate are [cd(folder='document'), create_file(file_name='TeamNotes.txt')], you have two options:
-    1.If you are confident enough and believe there are no issues, you can directly output [cd(folder='document'), create_file(file_name='TeamNotes.txt')] instead of calling verifier agent. DO NOT call the verifier agent in this case! DO NOT call any tools! Only output the function calls as strings!!!
-    2.Alternatively, you can ask the verifier agent to help you check whether the function calls comply with the requirements. You can pass both the user's intent—"The user wants to navigate to the 'document' folder and create a file named 'TeamNotes.txt' for tracking ideas."—and your generated function calls [cd(folder='document'), create_file(file_name='TeamNotes.txt')] to the verifier agent. It will return some suggestions, which you can then use to refine your function calls.
-
-Remember that only one helper agent can be called per round! Don't call multiple helper agents in the same round! Don't call the same helper agent multiple times in the same round!
+Here is a list of functions in JSON format for your reference. \n{functions}\n
 """
 )
-
-#  1. Call the helper agent to generate a function call.
-#  - You can call the helper agent to generate a function call by sending a message to the helper agent.
-#  - The helper agent will return a function call in the format of [func_name1(params_name1=params_value1, params_name2=params_value2...), func_name2(params)].
-
 
 
 def aworld_swarm_prompt_processing(function_docs):
@@ -86,102 +100,119 @@ def aworld_swarm_prompt_processing(function_docs):
     If the prompts list already contains a system prompt, append the additional system prompt content to the existing system prompt.
     """
     system_prompt_template = AT_SYSTEM_PROMPT
-    system_prompt = system_prompt_template.format(functions=function_docs)
+    planner_prompt = system_prompt_template.format(functions=function_docs)
 
     verify_system_prompt_template = VERIFY_SYSTEM_PROMPT
     verify_system_prompt = verify_system_prompt_template.format(functions=function_docs)
 
-    return system_prompt, verify_system_prompt
+    return planner_prompt, verify_system_prompt
 
 
-def _build_swarm(or_model_name, bfcl_func_docs):
+def _build_swarm(or_model_name, bfcl_func_docs, compiled_tools):
     SWARM_MODEL_NAME=or_model_name
     # Get API key from environment variable
-
     _base_url = "https://openrouter.ai/api/v1"
-    api_key = OPENROUTE_API_KEY
 
-    if or_model_name in ["xlam-lp-70b"]:
-        _base_url=os.getenv("AGI_BASE_URL")
-        api_key  =os.getenv("AGI_API_KEY")
+    xlam_base_url = os.getenv("AGI_BASE_URL")
+    xlam_api_key  = os.getenv("AGI_API_KEY")
 
-    execute_prompt, verify_system_prompt = aworld_swarm_prompt_processing(function_docs=bfcl_func_docs)
+    plan_maker_prompt, verify_system_prompt = aworld_swarm_prompt_processing(function_docs=bfcl_func_docs)
 
-    agent_config = AgentConfig(
+    plan_agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name=SWARM_MODEL_NAME,
-        llm_api_key=api_key,
-        llm_base_url=_base_url,
+        llm_api_key=OPENROUTE_API_KEY,
+        llm_base_url="https://openrouter.ai/api/v1",
         llm_temperature=0.001,
         max_retries=20,
     )
 
-    exe_agent = MultiQueryAgent(
-        conf=agent_config,
-        name="generate_function_call_agent",
-        system_prompt=execute_prompt,
+    plan_agent = MultiQueryAgent(
+        conf=plan_agent_config,
+        name="generate_function_call_plan_agent",
+        system_prompt=plan_maker_prompt,
         mcp_servers=mcp_config.get("mcpServers", []).keys(),
         mcp_config=mcp_config,
     )
 
-    verify_agent = MultiQueryAgent(
-        conf=agent_config,
-        name="verify_function_call_agent",
-        system_prompt=verify_system_prompt,
-        mcp_servers=mcp_config.get("mcpServers", []).keys(),
-        mcp_config=mcp_config,
-    )
 
-    swarm = Swarm(exe_agent, verify_agent, max_steps=1)
-    return swarm
-
-
-def build_swarm_in_agent_as_tool(or_model_name, bfcl_func_docs):
-    SWARM_MODEL_NAME=or_model_name
-    # Get API key from environment variable
-
-    _base_url = "https://openrouter.ai/api/v1"
-    api_key = OPENROUTE_API_KEY
-
-    if or_model_name in ["xlam-lp-70b"]:
-        _base_url="https://agi.alipay.com/api"
-        api_key="123"
-
-    execute_prompt, verify_system_prompt = aworld_swarm_prompt_processing(function_docs=bfcl_func_docs)
-
-    agent_config = AgentConfig(
+    fc_agent_config = AgentConfig(
         llm_provider="openai",
-        llm_model_name=SWARM_MODEL_NAME,
-        llm_api_key=api_key,
-        llm_base_url=_base_url,
+        llm_model_name="xlam-lp-70b",
+        llm_api_key = xlam_api_key,
+        llm_base_url= xlam_base_url,
         llm_temperature=0.001,
-        max_retries=20,
+        max_retries=10,
+        # human_tools=[ _tool['name'] for _tool in test_tools]
     )
 
-    exe_agent = MultiQueryAgent(
-        conf=agent_config,
-        name="generate_function_call_agent",
-        system_prompt=execute_prompt,
+    fc_agent = FCModelAgent(
+        conf=fc_agent_config,
+        name="file_sys_agent",
+        system_prompt=None,
         mcp_servers=mcp_config.get("mcpServers", []).keys(),
         mcp_config=mcp_config,
-        use_tools_in_prompt=True,
+        bfcl_tools=compiled_tools,
     )
 
-    verify_agent = MultiQueryAgent(
-        conf=agent_config,
-        name="verifier_agent",
-        desc="You can pass the complete function calls along with the purpose of calling them as parameters to the verifier agent, which will return some suggestions that you can use to modify your function calls.",
-        system_prompt=verify_system_prompt,
-        mcp_servers=mcp_config.get("mcpServers", []).keys(),
-        mcp_config=mcp_config,
-    )
+    # verify_agent = MultiQueryAgent(
+    #     conf=agent_config,
+    #     name="verify_function_call_agent",
+    #     system_prompt=verify_system_prompt,
+    #     mcp_servers=mcp_config.get("mcpServers", []).keys(),
+    #     mcp_config=mcp_config,
+    # )
 
-    swarm = Swarm( (exe_agent, verify_agent), max_steps=6, build_type=GraphBuildType.HANDOFF)
-    return swarm
-
+    # swarm = Swarm(exe_agent, verify_agent, max_steps=1)
+    return plan_agent, fc_agent
 
 
-class LocalAWorldSwarmOpenAICompletionsHandler(BaseHandler):
+# def build_swarm_in_agent_as_tool(or_model_name, bfcl_func_docs):
+#     SWARM_MODEL_NAME=or_model_name
+#     # Get API key from environment variable
+
+#     _base_url = "https://openrouter.ai/api/v1"
+#     api_key = OPENROUTE_API_KEY
+
+#     if or_model_name in ["xlam-lp-70b"]:
+#         _base_url="https://agi.alipay.com/api"
+#         api_key="123"
+
+#     execute_prompt, verify_system_prompt = aworld_swarm_prompt_processing(function_docs=bfcl_func_docs)
+
+#     agent_config = AgentConfig(
+#         llm_provider="openai",
+#         llm_model_name=SWARM_MODEL_NAME,
+#         llm_api_key=api_key,
+#         llm_base_url=_base_url,
+#         llm_temperature=0.001,
+#         max_retries=20,
+#     )
+
+#     exe_agent = MultiQueryAgent(
+#         conf=agent_config,
+#         name="generate_function_call_agent",
+#         system_prompt=execute_prompt,
+#         mcp_servers=mcp_config.get("mcpServers", []).keys(),
+#         mcp_config=mcp_config,
+#         use_tools_in_prompt=True,
+#     )
+
+#     verify_agent = MultiQueryAgent(
+#         conf=agent_config,
+#         name="verifier_agent",
+#         desc="You can pass the complete function calls along with the purpose of calling them as parameters to the verifier agent, which will return some suggestions that you can use to modify your function calls.",
+#         system_prompt=verify_system_prompt,
+#         mcp_servers=mcp_config.get("mcpServers", []).keys(),
+#         mcp_config=mcp_config,
+#     )
+
+#     swarm = Swarm( (exe_agent, verify_agent), max_steps=6, build_type=GraphBuildType.HANDOFF)
+#     return swarm
+
+
+
+class BFCLAWorldSwarmFCHandler(BaseHandler):
     def __init__(self, model_name, temperature) -> None:
         super().__init__(model_name, temperature)
 
@@ -190,16 +221,29 @@ class LocalAWorldSwarmOpenAICompletionsHandler(BaseHandler):
         self.or_model_name = _tmp_res[1][:-1]
 
         self.model_style = ModelStyle.OpenAI_Completions
-        self.aworld_swarm = None
+        self.plan_swarm = None
+        self.fc_agent = None
+
         self.test_entry_id = None
 
 
+    def compile_tools_for_xlam(self, test_entry: dict) -> dict:
+        functions: list = test_entry["function"]
+        test_category: str = test_entry["id"].rsplit("_", 1)[0]
+
+        functions = func_doc_language_specific_pre_processing(functions, test_category)
+        tools = convert_to_tool(functions, GORILLA_TO_OPENAPI, self.model_style)
+        return tools
+
+
     def inference(self, test_entry: dict, include_input_log: bool, exclude_state_log: bool):
-            # This method is used to retrive model response for each model.
+        # This method is used to retrive model response for each model.
+        compiled_tools = self.compile_tools_for_xlam(test_entry)
 
         self.test_entry_id = test_entry["id"]
-        if self.aworld_swarm is None:
-            self.aworld_swarm = build_swarm_in_agent_as_tool(or_model_name=self.or_model_name, bfcl_func_docs=test_entry['function'])
+        self.processed_idx = 0
+        if self.plan_swarm is None:
+            self.plan_swarm, self.fc_agent = _build_swarm(or_model_name=self.or_model_name, bfcl_func_docs=test_entry['function'], compiled_tools=compiled_tools)
 
         # self.client.create_agent(self.test_entry_id)
         try:
@@ -232,21 +276,44 @@ class LocalAWorldSwarmOpenAICompletionsHandler(BaseHandler):
 
 
     def decode_ast(self, result, language="Python"):
-        if "FC" in self.model_name or self.is_fc_model:
-            decoded_output = []
-            for invoked_function in result:
-                name = list(invoked_function.keys())[0]
-                params = json.loads(invoked_function[name])
-                decoded_output.append({name: params})
-            return decoded_output
-        else:
-            return default_decode_ast_prompting(result, language)
+        try:
+            # Parse the JSON array of function calls
+            function_calls = json.loads(result)
+            if not isinstance(function_calls, list):
+                function_calls = [function_calls]
+        except json.JSONDecodeError:
+            # Fallback for semicolon-separated format
+            function_calls = [json.loads(call.strip()) for call in result.split(";")]
+
+        decoded_output = []
+        for func_call in function_calls:
+            name = func_call["name"]
+            arguments = func_call["arguments"]
+            decoded_output.append({name: arguments})
+
+        return decoded_output
+
 
     def decode_execute(self, result):
-        if "FC" in self.model_name or self.is_fc_model:
-            return convert_to_function_call(result)
-        else:
-            return default_decode_execute_prompting(result)
+        # try:
+        #     function_calls = json.loads(result)
+        #     if not isinstance(function_calls, list):
+        #         function_calls = [function_calls]
+        # except json.JSONDecodeError:
+        #     function_calls = [json.loads(call.strip()) for call in result.split(";")]
+
+        function_calls = result
+
+        execution_list = []
+        for func_call in function_calls:
+            name = list(func_call.keys())[0]
+            arguments = json.loads(list(func_call.values())[0])
+            execution_list.append(
+                f"{name}({','.join([f'{k}={repr(v)}' for k,v in arguments.items()])})"
+            )
+
+        return execution_list
+
 
     @retry_with_backoff(error_type=RateLimitError)
     def generate_with_backoff(self, **kwargs):
@@ -254,13 +321,37 @@ class LocalAWorldSwarmOpenAICompletionsHandler(BaseHandler):
 
         task_id = self.test_entry_id
 
-        task_input = messages[-1]['content']
+        wait_to_process_msgs = messages[self.processed_idx:]
+        self.processed_idx = len(messages)
+
+        task_input = ''
+        _input_init_flag = True
+        for msg_idx, msg in enumerate(wait_to_process_msgs):
+            try:    
+                if msg['role'] == 'user':
+                    task_input = msg['content']
+                    break 
+                elif msg['role'] == 'tool':
+                    if _input_init_flag:
+                        task_input = f"Plan execution results are shown as follow: {msg['content']}"
+                        _input_init_flag = False
+                    else:
+                        task_input += f"\n{msg['content']}"
+            except:
+                assert isinstance(msg, ChatCompletionMessage)
+                continue
+
+
+        if task_input is None:
+            task_input = "Your plan has been executed successfully with no further feedback. Please continue to finish the task."
+        print(f"{task_input=}")
         task = Task(
             # id=task_id,
             session_id=task_id,
             name=task_id,
             input=task_input,
-            swarm=self.aworld_swarm,
+            # swarm=self.plan_swarm,
+            agent=self.plan_swarm,
             conf=TaskConfig(system_prompt="You are a helpful assistant.")
         )
 
@@ -268,14 +359,58 @@ class LocalAWorldSwarmOpenAICompletionsHandler(BaseHandler):
         result = Runners.sync_run_task(task=task)
         # change to submit task
         
-        response_text=result[task.id].answer
-        response_status=result[task.id].success
-        time_cost=result[task.id].time_cost
-        usage=result[task.id].usage
-        trajectory=result[task.id].trajectory
+        # TODO: prepaer input for fc_agent
+        planner_response = result[task.id].answer
+
+        def post_process_plan_generation(plan_generation):
+            # 使用正则表达式提取 <plan> 和 </plan> 之间的内容
+            plan_pattern = r'<plan>(.*?)</plan>'
+            plan_match = re.search(plan_pattern, plan_generation, re.DOTALL)
+
+            response_pattern = r'<response>(.*?)</response>'
+            response_match = re.search(response_pattern, plan_generation, re.DOTALL)
+
+            if plan_match:
+                plan_content = plan_match.group(1).strip()
+                return plan_content, True
+            elif response_match:
+                response_content = response_match.group(1).strip()
+                return response_content, False
+            else:
+                return None, None
+
+        extract_planner_response, plan_flag = post_process_plan_generation(planner_response)
+        print(f"Planner:{planner_response}")
+        assert extract_planner_response is not None
+
+        if plan_flag:
+            fc_input = [{"role":"user", "content":extract_planner_response}]
+
+            fc_task = Task(
+                session_id=f"fc_{task_id}",
+                name=f"fc_{task_id}",
+                input=fc_input,
+                # swarm=self.plan_swarm,
+                agent=self.fc_agent,
+                conf=TaskConfig(system_prompt="You are a helpful assistant.")
+            )
+
+            fc_result = Runners.sync_run_task(task=fc_task)
+
+            fc_response_text=fc_result[fc_task.id].answer
+            fc_response_status=fc_result[fc_task.id].success
+            fc_time_cost=fc_result[fc_task.id].time_cost
+            fc_usage=fc_result[fc_task.id].usage
+            fc_trajectory=fc_result[fc_task.id].trajectory
+        else:
+            fc_response_text = extract_planner_response
+            fc_response_status = True
+            fc_time_cost = 0
+            fc_usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+            fc_trajectory = []
         
         print(f"{self.test_entry_id}:{task_input}")
-        print(f"{self.test_entry_id}:{response_text}")
+        print(f"{self.test_entry_id}:{fc_response_text}")
 
         result_json = {
             "id": "chatcmpl-local",
@@ -287,15 +422,15 @@ class LocalAWorldSwarmOpenAICompletionsHandler(BaseHandler):
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": response_text,
+                        "content": fc_response_text,
                     },
                     "finish_reason": "stop"
                 }
             ],
             "usage": {
-                "prompt_tokens": usage['prompt_tokens'],
-                "completion_tokens": usage['completion_tokens'],
-                "total_tokens": usage['total_tokens'],
+                "prompt_tokens": fc_usage['prompt_tokens'],
+                "completion_tokens": fc_usage['completion_tokens'],
+                "total_tokens": fc_usage['total_tokens'],
             }
         }
 
@@ -340,15 +475,12 @@ class LocalAWorldSwarmOpenAICompletionsHandler(BaseHandler):
 
         return inference_data
 
+
     def _parse_query_response_FC(self, api_response: any) -> dict:
         try:
-            model_responses = [
-                {func_call.function.name: func_call.function.arguments}
-                for func_call in api_response.choices[0].message.tool_calls
-            ]
-            tool_call_ids = [
-                func_call.id for func_call in api_response.choices[0].message.tool_calls
-            ]
+            response_json = json.loads(api_response.choices[0].message.content)
+            model_responses = response_json['response']
+            tool_call_ids = response_json['id']
         except:
             model_responses = api_response.choices[0].message.content
             tool_call_ids = []
@@ -362,6 +494,7 @@ class LocalAWorldSwarmOpenAICompletionsHandler(BaseHandler):
             "input_token": api_response.usage.prompt_tokens,
             "output_token": api_response.usage.completion_tokens,
         }
+
 
     def add_first_turn_message_FC(
         self, inference_data: dict, first_turn_message: list[dict]

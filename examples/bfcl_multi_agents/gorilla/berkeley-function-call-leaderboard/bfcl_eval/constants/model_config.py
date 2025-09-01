@@ -31,6 +31,8 @@ from bfcl_eval.model_handler.api_inference.aworld_multi_agent import LocalAWorld
 from bfcl_eval.model_handler.api_inference.aworld import LocalAWorldOpenAICompletionsHandler
 from bfcl_eval.model_handler.api_inference.aworld_single_agent_xlam import AWorldOpenAICompletionsHandlerXLAM
 from bfcl_eval.model_handler.api_inference.xlam_chat_completions import XLAMCompletionsHandler
+from bfcl_eval.model_handler.api_inference.gemini_openroute import GeminiOpenRouteHandler
+from bfcl_eval.model_handler.api_inference.aworld_bfcl_swarm import BFCLAWorldSwarmFCHandler
 
 from bfcl_eval.model_handler.api_inference.openai_response import OpenAIResponsesHandler
 from bfcl_eval.model_handler.api_inference.qwen import (
@@ -126,6 +128,73 @@ class ModelConfig:
 
 # Inference through API calls
 api_inference_model_map = {
+    # GeminiOpenRouteHandler
+    "BFCLAWorldSwarmFC[openai/gpt-4o-mini-2024-07-18]": ModelConfig(
+        model_name  ="BFCLAWorldSwarmFC[openai/gpt-4o-mini-2024-07-18]",
+        display_name="BFCLAWorldSwarmFC[openai/gpt-4o-mini-2024-07-18]",
+        url="https://github.com/inclusionAI/AWorld",
+        org="Google",
+        license="Apache 2.0",
+        model_handler=BFCLAWorldSwarmFCHandler,
+        # model_handler=LocalAWorldOpenAICompletionsHandler,
+        input_price=0,
+        output_price=0,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
+
+    "BFCLAWorldSwarmFC[openai/gpt-4o-2024-11-20]": ModelConfig(
+        model_name  ="BFCLAWorldSwarmFC[openai/gpt-4o-2024-11-20]",
+        display_name="BFCLAWorldSwarmFC[openai/gpt-4o-2024-11-20]",
+        url="https://github.com/inclusionAI/AWorld",
+        org="Google",
+        license="Apache 2.0",
+        model_handler=BFCLAWorldSwarmFCHandler,
+        # model_handler=LocalAWorldOpenAICompletionsHandler,
+        input_price=0,
+        output_price=0,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
+    # "openroute/gemini-2.5-pro-fc": ModelConfig(
+    #     model_name="gemini-2.5-pro",
+    #     display_name="openroute/gemini-2.5-pro-fc",
+    #     url="https://deepmind.google/technologies/gemini/pro/",
+    #     org="Google",
+    #     license="Proprietary",
+    #     model_handler=GeminiOpenRouteHandler,
+    #     input_price=1.25,
+    #     output_price=10,
+    #     is_fc_model=True,
+    #     underscore_to_dot=False,
+    # ),
+
+    "AworldLocal/SingleAgent[xlam-lp-70b]": ModelConfig(
+        model_name  ="AworldLocal/SingleAgent[xlam-lp-70b]",
+        display_name="AworldLocal/SingleAgent[xlam-lp-70b]",
+        url="https://github.com/inclusionAI/AWorld",
+        org="Google",
+        license="Apache 2.0",
+        model_handler= AWorldOpenAICompletionsHandlerXLAM,
+        # model_handler=LocalAWorldOpenAICompletionsHandler,
+        input_price=0,
+        output_price=0,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
+    "AworldLocal/SingleAgentFC[xlam-lp-70b]": ModelConfig(
+        model_name  ="AworldLocal/SingleAgentFC[xlam-lp-70b]",
+        display_name="AworldLocal/SingleAgentFC[xlam-lp-70b]",
+        url="https://github.com/inclusionAI/AWorld",
+        org="Google",
+        license="Apache 2.0",
+        model_handler= AWorldOpenAICompletionsHandlerXLAM,
+        # model_handler=LocalAWorldOpenAICompletionsHandler,
+        input_price=0,
+        output_price=0,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
     "AGI/ChatCompletions[xlam-lp-70b]": ModelConfig(
         model_name=  "AGI/ChatCompletions[xlam-lp-70b]",
         display_name="AGI/ChatCompletions[xlam-lp-70b]",
@@ -174,19 +243,6 @@ api_inference_model_map = {
         is_fc_model=False,
         underscore_to_dot=False,
     ),
-    "AworldLocal/SingleAgent[xlam-lp-70b]": ModelConfig(
-        model_name  ="AworldLocal/SingleAgent[xlam-lp-70b]",
-        display_name="AworldLocal/SingleAgent[xlam-lp-70b]",
-        url="https://github.com/inclusionAI/AWorld",
-        org="Google",
-        license="Apache 2.0",
-        # model_handler= AWorldOpenAICompletionsHandlerXLAM,
-        model_handler=LocalAWorldOpenAICompletionsHandler,
-        input_price=0,
-        output_price=0,
-        is_fc_model=False,
-        underscore_to_dot=False,
-    ),
     "AworldLocal/SingleAgent[openai/gpt-4o-2024-11-20]": ModelConfig(
         model_name="AworldLocal/SingleAgent[openai/gpt-4o-2024-11-20]",
         display_name="AworldLocal/SingleAgent[openai/gpt-4o-2024-11-20]",
@@ -225,7 +281,18 @@ api_inference_model_map = {
         is_fc_model=False,
         underscore_to_dot=False,
     ),
-
+    "openroute/openai-gpt-5": ModelConfig(
+        model_name="openai/gpt-5",
+        display_name="openai/gpt-5",
+        url="https://openrouter.ai/openai/gpt-5",
+        org="Google",
+        license="Apache 2.0",
+        model_handler=OpenRouteOpenAICompletionsHandler,
+        input_price=1.25,
+        output_price=10,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
     "openroute/openai_gpt-4o-2024-11-20": ModelConfig(
         model_name="openai/gpt-4o-2024-11-20",
         display_name="openRoute_openai/gpt-4o-2024-11-20",
@@ -235,10 +302,34 @@ api_inference_model_map = {
         model_handler=OpenRouteOpenAICompletionsHandler,
         input_price=2.5,
         output_price=10,
-        is_fc_model=False,
+        is_fc_model=True,
         underscore_to_dot=False,
     ),
-
+    "openroute/claude-opus-4.1": ModelConfig(
+        model_name="anthropic/claude-opus-4.1",
+        display_name="anthropic/claude-opus-4.1",
+        url="https://openrouter.ai/openai/gpt-4o-2024-11-20",
+        org="Google",
+        license="Apache 2.0",
+        model_handler=OpenRouteOpenAICompletionsHandler,
+        input_price=15,
+        output_price=75,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
+    # google/gemini-2.5-pro
+    "openroute/gemini-2.5-pro": ModelConfig(
+        model_name="google/gemini-2.5-pro",
+        display_name="google/gemini-2.5-pro",
+        url="https://openrouter.ai/openai/gpt-4o-2024-11-20",
+        org="Google",
+        license="Apache 2.0",
+        model_handler=OpenRouteOpenAICompletionsHandler,
+        input_price=1.25,
+        output_price=10,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
 
     "openroute/gemini-2.0-flash-lite-001": ModelConfig(
         model_name="google/gemini-2.0-flash-lite-001",

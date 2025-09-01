@@ -54,7 +54,7 @@ class BaseHandler:
             else:
                 return self.inference_single_turn_prompting(test_entry, include_input_log)
 
-    @final
+    # @final
     def inference_multi_turn_FC(
         self, test_entry: dict, include_input_log: bool, exclude_state_log: bool
     ) -> tuple[list[list], dict]:
@@ -210,6 +210,7 @@ class BaseHandler:
                         {
                             "role": "handler_log",
                             "content": "Successfully decoded model response.",
+                            "origin_model_output" : model_responses,
                             "model_response_decoded": decoded_model_responses,
                         }
                     )
@@ -231,6 +232,7 @@ class BaseHandler:
                         {
                             "role": "handler_log",
                             "content": f"Error decoding the model response. Proceed to next turn.",
+                            "origin_model_output" : model_responses,
                             "error": str(e),
                         }
                     )
@@ -376,7 +378,7 @@ class BaseHandler:
                     }
                 )
             all_inference_log.append(state_log)
-
+        # 这里在test_entry 中加了 prompt
         inference_data: dict = self._pre_query_processing_prompting(test_entry)
 
         all_multi_turn_messages: list[list[dict]] = test_entry["question"]

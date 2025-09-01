@@ -1,221 +1,77 @@
-import json
 import os
 import time
-from openai.types.chat import ChatCompletion
-import requests
-import asyncio
-import aiohttp
-import time
-
-import os, sys
-
-__root_path__ = os.path.dirname(os.path.abspath(__file__))
-for _ in range(7):
-    __root_path__ = os.path.dirname(__root_path__)
-sys.path.append(__root_path__)
-
 
 from typing import Any
 
-from bfcl_eval.aworld_agents.multi_query_agent import MultiQueryAgent
-from bfcl_eval.constants.type_mappings import GORILLA_TO_OPENAPI 
-from bfcl_eval.constants.default_prompts import DEFAULT_SYSTEM_PROMPT
+from bfcl_eval.constants.type_mappings import GORILLA_TO_OPENAPI
 from bfcl_eval.model_handler.base_handler import BaseHandler
 from bfcl_eval.model_handler.model_style import ModelStyle
 from bfcl_eval.model_handler.utils import (
-    convert_to_function_call,
     convert_to_tool,
     default_decode_ast_prompting,
     default_decode_execute_prompting,
+    extract_system_prompt,
     format_execution_results_prompting,
     func_doc_language_specific_pre_processing,
     retry_with_backoff,
     system_prompt_pre_processing_chat_model,
 )
+
 from openai import OpenAI, RateLimitError
+from bfcl_eval.model_handler.api_inference.gemini import GeminiHandler
+
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai.types import (
+    AutomaticFunctionCallingConfig,
+    Content,
+    GenerateContentConfig,
+    Part,
+    ThinkingConfig,
+    Tool,
+)
 
 
-from aworld.agents.llm_agent import Agent
-# from aworld.agents.bfcl_agent import BFCLAgent
-from aworld.config.conf import AgentConfig, TaskConfig
-
-from aworld.core.task import Task
-from aworld.runner import Runners
-
-
-def build_aworld_agent(or_model_name, bfcl_prompt):
-    try:
-        SWARM_MODEL_NAME=or_model_name
-        # Get API key from environment variable
-
-        _base_url = "https://openrouter.ai/api/v1"
-        api_key = os.getenv("OPENROUTER_API_KEY")
-
-        if or_model_name in ["xlam-lp-70b"]:
-            _base_url=os.getenv("AGI_BASE_URL")
-            api_key  =os.getenv("AGI_API_KEY")
-
-        agent_config = AgentConfig(
-            llm_provider="openai",
-            llm_model_name=SWARM_MODEL_NAME,
-            llm_api_key=api_key,
-            llm_base_url=_base_url,
-            llm_temperature=0.001,
-            max_retries=10,
-        )
-
-        # Register the MCP tool here, or create a separate configuration file.
-        mcp_config = {
-            "mcpServers": {}
-        }
-
-        # sys_prompt has no effect on BFCLAgent
-        file_sys_prompt = bfcl_prompt
-        
-        exe_agent = MultiQueryAgent(
-            conf=agent_config,
-            name="file_sys_agent",
-            system_prompt=file_sys_prompt,
-            mcp_servers=mcp_config.get("mcpServers", []).keys(),
-            mcp_config=mcp_config,
-        )
-
-        print(f"===================== Agent initialization completed! =====================")
-        return exe_agent
-    
-    except Exception as e:
-        print(f"Error in build_aworld_swarm: {e}")
-        return None
-
-
-def aworld_prompt_processing(function_docs):
-    """
-    Add a system prompt to the chat model to instruct the model on the available functions and the expected response format.
-    If the prompts list already contains a system prompt, append the additional system prompt content to the existing system prompt.
-    """
-    system_prompt_template = DEFAULT_SYSTEM_PROMPT
-    system_prompt = system_prompt_template.format(functions=function_docs)
-
-    return system_prompt
-
-
-
-class LocalAWorldOpenAICompletionsHandler(BaseHandler):
+class GeminiOpenRouteHandler(GeminiHandler):
     def __init__(self, model_name, temperature) -> None:
-        super().__init__(model_name, temperature)
+        BaseHandler.__init__(self, model_name=model_name, temperature=temperature)
 
-        _tmp_res = model_name.split('[')
-        assert len(_tmp_res) == 2, "model_name should be in the format of [model_name]"
-        self.or_model_name = _tmp_res[1][:-1]
+        self.open_route_model_name = "google/gemini-2.5-pro"
+        # self.model_style = ModelStyle.OpenAI_Completions
+        self.model_style = ModelStyle.GOOGLE
 
-        self.model_style = ModelStyle.OpenAI_Completions
-        self.aworld_agent = None
-        self.test_entry_id = None
-
-
-    def inference(self, test_entry: dict, include_input_log: bool, exclude_state_log: bool):
-            # This method is used to retrive model response for each model.
-
-        self.test_entry_id = test_entry["id"]
-
-        if self.aworld_agent is None:
-            self.aworld_agent = build_aworld_agent(or_model_name=self.or_model_name, bfcl_prompt=aworld_prompt_processing(test_entry['function']))
-
-        # self.client.create_agent(self.test_entry_id)
-        try:
-            # FC model
-            if "FC" in self.model_name or self.is_fc_model:
-                if "multi_turn" in test_entry["id"]:
-
-                    exec_result = self.inference_multi_turn_FC(
-                        test_entry, include_input_log, exclude_state_log
-                    )
-                else:
-                    exec_result = self.inference_single_turn_FC(test_entry, include_input_log)
-            # Prompting model
-            else:
-                if "multi_turn" in test_entry["id"]:
-                    exec_result = self.inference_multi_turn_prompting(
-                        test_entry, include_input_log, exclude_state_log
-                    )
-                else:
-                    exec_result = self.inference_single_turn_prompting(test_entry, include_input_log)
-
-        except Exception as e:
-            print(f"Error in inference: {e}")
-            exec_result = None
-        finally:
-            pass
-            # self.client.del_agent(self.test_entry_id)
-        
-        return exec_result
-
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY")
+        )
 
     def decode_ast(self, result, language="Python"):
-        if "FC" in self.model_name or self.is_fc_model:
-            decoded_output = []
-            for invoked_function in result:
-                name = list(invoked_function.keys())[0]
-                params = json.loads(invoked_function[name])
-                decoded_output.append({name: params})
-            return decoded_output
-        else:
+        if "FC" not in self.model_name:
+            result = result.replace("```tool_code\n", "").replace("\n```", "")
             return default_decode_ast_prompting(result, language)
+        else:
+            if type(result) is not list:
+                result = [result]
+            return result
 
     def decode_execute(self, result):
-        if "FC" in self.model_name or self.is_fc_model:
-            return convert_to_function_call(result)
-        else:
+        if "FC" not in self.model_name:
+            result = result.replace("```tool_code\n", "").replace("\n```", "")
             return default_decode_execute_prompting(result)
+        else:
+            func_call_list = []
+            for function_call in result:
+                for func_name, func_args in function_call.items():
+                    func_call_list.append(
+                        f"{func_name}({','.join([f'{k}={repr(v)}' for k, v in func_args.items()])})"
+                    )
+            return func_call_list
+
 
     @retry_with_backoff(error_type=RateLimitError)
     def generate_with_backoff(self, **kwargs):
-        messages = kwargs.get("messages")
-
-        task_id = self.test_entry_id
-        task = Task(
-            session_id=task_id,
-            name=task_id,
-            input=messages[-1]['content'],
-            agent=self.aworld_agent,
-            conf=TaskConfig(system_prompt="You are a helpful assistant.")
-        )
-
         start_time = time.time()
-        result = Runners.sync_run_task(task=task)
-        # change to submit task
-        
-        response_text=result[task.id].answer
-        response_status=result[task.id].success
-        time_cost=result[task.id].time_cost
-        usage=result[task.id].usage
-        trajectory=result[task.id].trajectory
-        
-        result_json = {
-            "id": "chatcmpl-local",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": kwargs.get("model", "unknown"),
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": response_text,
-                    },
-                    "finish_reason": "stop"
-                }
-            ],
-            "usage": {
-                "prompt_tokens": usage['prompt_tokens'],
-                "completion_tokens": usage['completion_tokens'],
-                "total_tokens": usage['total_tokens'],
-            }
-        }
-
-
-        api_response = ChatCompletion.model_validate(result_json)
-        # api_response = self.client.exec_aworld_task(task_id=self.test_entry_id, **kwargs)
+        api_response = self.client.chat.completions.create(**kwargs)
         end_time = time.time()
 
         return api_response, end_time - start_time
@@ -229,7 +85,7 @@ class LocalAWorldOpenAICompletionsHandler(BaseHandler):
 
         kwargs = {
             "messages": message,
-            "model": self.model_name.replace("-FC", ""),
+            "model": self.open_route_model_name,
             "temperature": self.temperature,
             "store": False,
         }
@@ -368,7 +224,7 @@ class LocalAWorldOpenAICompletionsHandler(BaseHandler):
 
         return self.generate_with_backoff(
             messages=inference_data["message"],
-            model=self.model_name,
+            model=self.open_route_model_name,
             temperature=self.temperature,
             store=False,
         )
@@ -404,14 +260,6 @@ class LocalAWorldOpenAICompletionsHandler(BaseHandler):
     ) -> dict:
         inference_data["message"].extend(user_message)
         return inference_data
-
-    # def _add_assistant_message_prompting(
-    #     self, inference_data: dict, model_response_data: dict
-    # ) -> dict:
-    #     inference_data["message"].append(
-    #         model_response_data["model_responses_message_for_chat_history"]
-    #     )
-    #     return inference_data
 
     def _add_assistant_message_prompting(
         self, inference_data: dict, model_response_data: dict
@@ -460,4 +308,3 @@ class LocalAWorldOpenAICompletionsHandler(BaseHandler):
                 "role": "assistant",
                 "content": str(response_data["model_responses"]),
             }
-
