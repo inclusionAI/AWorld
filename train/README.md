@@ -73,7 +73,7 @@ VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 
 Then use `train_env` utility to create your training environment and get environment configs for agents.
 ```python
-from train import train_env
+from train.train_env import TranEnv
 
 # For local tool environment
 gaia_env = TranEnv()
@@ -91,7 +91,8 @@ Next, define your agent. This is a standard AWorld agent. The key is to pass the
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 
-# Assuming 'gaia_env' contains {'mcp_config': {...}, 'mcp_servers': '...'}
+# Assuming 'gaia_env' is the environment you created in the previous step, where
+# 'gaia_env.get_env_config()' contains {'mcp_config': {...}, 'mcp_servers': '...'}
 gaia_agent = Agent(
     conf=AgentConfig(
         llm_model_name="your-model-name",
@@ -103,8 +104,8 @@ gaia_agent = Agent(
     system_prompt="You are a helpful AI assistant.",
 
     # Pass the MCP tool configuration from the environment
-    mcp_config=gaia_env.get("mcp_config"),
-    mcp_servers=gaia_env.get("mcp_servers"),
+    mcp_config=gaia_env.get_env_config().get("mcp_config"),
+    mcp_servers=gaia_env.get_env_config().get("mcp_servers"),
 )
 ```
 

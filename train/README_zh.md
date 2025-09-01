@@ -72,9 +72,9 @@ VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 
 然后使用 `train_env` 工具来创建训练环境，并为智能体获取环境配置。
 ```python
-from train.train_env import TrainEnv
+from train.train_env import TranEnv
 
-gaia_env = TrainEnv()
+gaia_env = TranEnv()
 # 针对本地工具环境
 gaia_env = gaia_env.create_env(name="GAIA", mode="local")
 
@@ -90,7 +90,8 @@ gaia_env = gaia_env.create_env(name="GAIA", mode="local")
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 
-# 假设 'gaia_env' 包含 {'mcp_config': {...}, 'mcp_servers': '...'}
+# 假设已经从上述步骤中创建了 'gaia_env' 
+# 调用'gaia_env.get_env_config()' 获取 {'mcp_config': {...}, 'mcp_servers': '...'}
 gaia_agent = Agent(
     conf=AgentConfig(
         llm_model_name="your-model-name",
@@ -102,8 +103,8 @@ gaia_agent = Agent(
     system_prompt="You are a helpful AI assistant.",
 
     # 传入 MCP 工具配置
-    mcp_config=gaia_env.get("mcp_config"),
-    mcp_servers=gaia_env.get("mcp_servers"),
+    mcp_config=gaia_env.get_env_config().get("mcp_config"),
+    mcp_servers=gaia_env.get_env_config().get("mcp_servers"),
 )
 ```
 
@@ -120,7 +121,7 @@ gaia_agent = Agent(
 class GaiaAgentLoop(AworldAgentLoop):
   def build_agents(self, ...):
       # 创建环境
-      gaia_env = TrainEnv()
+      gaia_env = TranEnv()
       gaia_env.create_env(name="GAIA", mode="local")
 
       # 创建并返回智能体，传入环境配置
