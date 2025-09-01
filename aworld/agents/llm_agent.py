@@ -515,7 +515,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         await send_message(output_message)
                 else:
-                    await self._add_llm_response_to_memory(llm_response, message.context)
+                    await self._add_llm_response_to_memory(llm_response, message.context, history_messages=messages)
             else:
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(f"{self.id()} failed to get LLM response")
@@ -847,13 +847,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             memory_type=memory_type
         ), agent_memory_config=self.memory_config)
 
-    async def _add_llm_response_to_memory(self, llm_response, context: Context):
+    async def _add_llm_response_to_memory(self, llm_response, context: Context, history_messages:list, **kwargs):
         """Add LLM response to memory"""
         session_id = context.get_task().session_id
         user_id = context.get_task().user_id
         task_id = context.get_task().id
 
-        await self.memory.add(MemoryAIMessage(
+        ai_message = MemoryAIMessage(
             content=llm_response.content,
             tool_calls=llm_response.tool_calls,
             metadata=MessageMetadata(
@@ -863,7 +863,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_id=self.id(),
                 agent_name=self.name()
             )
-        ), agent_memory_config=self.memory_config)
+        )
+        await self.memory.add(ai_message, agent_memory_config=self.memory_config)
+
 
     async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
