@@ -212,11 +212,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._llm = get_llm_model(conf)
         return self._llm
 
-    def desc_transform(self):
+    def desc_transform(self, context: Context):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
-        sync_exec(self.async_desc_transform)
+        sync_exec(self.async_desc_transform, context)
 
-    async def async_desc_transform(self):
+    async def async_desc_transform(self, context: Context):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
 
         # Stateless tool
@@ -228,7 +228,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                agents=self.handoffs if self.handoffs else []))
         # MCP servers are tools
         if self.sandbox:
-            mcp_tools = await self.sandbox.mcpservers.list_tools(self.context)
+            mcp_tools = await self.sandbox.mcpservers.list_tools(context)
             self.tools.extend(mcp_tools)
         else:
             self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
@@ -543,8 +543,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                             agent_id=self.id(),
                                                             use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
-        # Revealing the results of the agent
-        self.agent_result = agent_result
         if self.is_agent_finished(llm_response, agent_result):
             return agent_result.actions
         else:
@@ -604,7 +602,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             info: Extended information to assist the agent in decision-making
             **kwargs: Other parameters
         """
-        await self.async_desc_transform()
+        await self.async_desc_transform(message.context)
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
@@ -772,7 +770,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _init_context(self, context: Context):
         super()._init_context(context)
-        self.agent_result = AgentResult(current_state=None, is_call_tool=False, actions=[])
         logger.debug(f'init_context llm_agent {self.name()} {self.conf} {self.conf.context_rule}')
 
     async def run_hooks(self, context: Context, hook_point: str):
