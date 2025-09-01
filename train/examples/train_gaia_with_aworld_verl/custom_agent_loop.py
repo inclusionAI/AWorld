@@ -25,8 +25,8 @@ class GaiaAgentLoop(AworldAgentLoop):
         # # todo: use env.create() to get env_config
         # tool_env_config, tool_servers = get_agent_tool_env_and_servers(TOOL_ENV_CONFIG)
         train_env = TranEnv()
-        env_config = train_env.create_env(name="GAIA", mode="local")
-        if not env_config:
+        env_service = train_env.create_env(name="GAIA", mode="local")
+        if not env_service:
             raise ValueError("Env is not ready!")
 
         return Agent(

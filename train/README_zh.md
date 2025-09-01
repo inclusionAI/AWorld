@@ -43,11 +43,11 @@ export GOOGLE_API_KEY={YOUR_GOOGLE_API_KEY}
 ```python
 from train.train_env import TrainEnv
 
-train_env = TrainEnv()
+gaia_env = TrainEnv()
 # 针对本地工具环境
-gaia_env = train_env.create_env(name="GAIA", mode="local")
+gaia_env = gaia_env.create_env(name="GAIA", mode="local")
 
-# 'gaia_env' 对象现在包含了 MCP 服务器的连接配置，
+# 'gaia_env.get_env_config()' 对象现在包含了 MCP 服务器的连接配置，
 # 可以将其传递给智能体。
 # 关于分布式环境的创建，请参考 env/README.md。
 ```
@@ -89,14 +89,14 @@ gaia_agent = Agent(
 class GaiaAgentLoop(AworldAgentLoop):
   def build_agents(self, ...):
       # 创建环境
-      train_env = TrainEnv()
-      gaia_env = train_env.create_env(name="GAIA", mode="local")
+      gaia_env = TrainEnv()
+      gaia_env.create_env(name="GAIA", mode="local")
 
       # 创建并返回智能体，传入环境配置
       return Agent(
           ...,
-          mcp_config=gaia_env.get("mcp_config"),
-          mcp_servers=gaia_env.get("mcp_servers"),
+          mcp_config=gaia_env.get_env_config().get("mcp_config"),
+          mcp_servers=gaia_env.get_env_config().get("mcp_servers"),
       )
 ```
 

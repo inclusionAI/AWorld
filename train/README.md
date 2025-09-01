@@ -45,9 +45,10 @@ Then use `train_env` utility to create your training environment and get environ
 from train import train_env
 
 # For local tool environment
-gaia_env = train_env.create("GAIA", mode="local")
+gaia_env = TranEnv()
+gaia_env.create_env(name="GAIA", mode="local")
 
-# The 'gaia_env' object now holds the connection configuration for the MCP server,
+# The 'gaia_env.get_env_config()' object now holds the connection configuration for the MCP server,
 # which can be passed to your agent.
 # For distributed environment creation, please refer to env/README.md.
 ```
@@ -89,14 +90,14 @@ You can inherit from the base `AworldAgentLoop` and implement the `build_agents`
 class GaiaAgentLoop(AworldAgentLoop):
   def build_agents(self, ...):
       # Create the environment
-      train_env = TranEnv()
-      gaia_env = train_env.create_env(name="GAIA", mode="local")
+      gaia_env = TranEnv()
+      gaia_env.create_env(name="GAIA", mode="local")
 
       # Create and return the agent, passing in the env config
       return Agent(
           ...,
-          mcp_config=gaia_env.get("mcp_config"),
-          mcp_servers=gaia_env.get("mcp_servers"),
+          mcp_config=gaia_env.get_env_config().get("mcp_config"),
+          mcp_servers=gaia_env.get_env_config().get("mcp_servers"),
       )
 ```
 
