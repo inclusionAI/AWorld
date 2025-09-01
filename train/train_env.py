@@ -1,9 +1,11 @@
+import asyncio
 import logging
 from pathlib import Path
 import shutil
-import subprocess
+import time
 import traceback
 from dotenv import dotenv_values, set_key
+import httpx
 from mcp import ClientSession
 from mcp.types import (
     LoggingMessageNotificationParams,
@@ -21,34 +23,37 @@ class TranEnv:
     def __init__(self):
         self.base_dir = Path(__file__).parent.parent
         self.env_dir = self.base_dir / "env"
+        self.mcp_config = None
 
     def get_env_config(self):
         if self.mcp_config:
             return {
                 "mcp_config": self.mcp_config,
-                "mcp_servers": list(server_name for server_name in self.mcp_config.get("mcpServers", {}).keys())
+                "mcp_servers": list(
+                    server_name
+                    for server_name in self.mcp_config.get("mcpServers", {}).keys()
+                ),
             }
         return None
 
-    def create_env(self, name: str = "mcp_server", mode: str = "local") -> dict:
+    async def create_env(self, name: str = "mcp_server", mode: str = "local") -> bool:
         if mode == "local":
-            image_ready = self._build_image()
+            image_ready = await self._build_image()
             assert image_ready, "Image is not ready!"
 
-            service_config = self._start_service()
-            assert service_config, "Service config is not ready!"
+            service_ready = await self._start_service()
+            assert service_ready, "Service config is not ready!"
 
-            service_ready = self._check_service_ready(service_config)
+            service_ready = await self._check_service_ready()
             assert service_ready, "Service is not ready!"
 
             self.mcp_config = {
                 "mcpServers": {
-                    name: {
+                    "virtualpc-mcp": {
                         "type": "streamable-http",
-                        "url": service_config.get("url", "http://localhost:8000/mcp"),
+                        "url": "http://localhost:8000/mcp",
                         "headers": {
-                            "Authorization": f"Bearer {service_config.get('token')}",
-                            "MCP_SERVERS": "",
+                            "Authorization": f"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
                         },
                         "timeout": 600,
                         "sse_read_timeout": 600,
@@ -56,86 +61,89 @@ class TranEnv:
                     }
                 }
             }
-            return service_config
+            logger.info("✅ Service is ready!")
+            return True
         else:
-            logger.warn(f"Mode {mode} is not supported!")
-            return None
+            logger.warning(f"Mode {mode} is not supported!")
+            return False
 
-    def _build_image(self):
+    async def _build_image(self):
         try:
-            subprocess.check_call(
-                ["sh", "build-image.sh"],
+            # Use asyncio.create_subprocess_exec for async subprocess execution
+            logger.info("Building gaia-mcp-server image...")
+            process1 = await asyncio.create_subprocess_exec(
+                "sh",
+                "build-image.sh",
                 cwd=self.env_dir / "virtualpc-mcp" / "mcp_server",
             )
-            subprocess.check_call(
-                ["sh", "build-image.sh"], cwd=self.env_dir / "gaia-mcp-server"
-            )
+            await process1.wait()
 
+            if process1.returncode != 0:
+                logger.error("Failed to build virtualpc-mcp image")
+                return False
+
+            process2 = await asyncio.create_subprocess_exec(
+                "sh",
+                "build-image.sh",
+                cwd=self.env_dir / "gaia-mcp-server",
+            )
+            await process2.wait()
+
+            if process2.returncode != 0:
+                logger.error("Failed to build gaia-mcp-server image")
+                return False
+
+            logger.info("All images built successfully")
             return True
         except Exception as e:
             logger.error(f"Failed to build image: {traceback.format_exc()}")
             return False
 
-    def _start_service(self):
+    async def _start_service(self):
         try:
-            subprocess.check_call(
-                ["sh", "run-local.sh"],
+            logger.info("Starting virtualpc-mcp service...")
+            process = await asyncio.create_subprocess_exec(
+                "sh",
+                "run-local.sh",
                 cwd=self.env_dir / "virtualpc-mcp",
             )
-            return {
-                "url": "http://localhost:8000/mcp",
-                "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
-            }
+
+            # Wait a bit for the service to start
+            await asyncio.sleep(2)
+
+            return True
         except Exception as e:
             logger.error(f"Failed to start service: {traceback.format_exc()}")
             return None
 
-    async def _check_service_ready(self, service_config: dict):
-        try:
-            url = service_config["url"]
-            headers = {
-                "Authorization": f"Bearer {service_config['token']}",
-            }
+    async def _check_service_ready(self) -> bool:
+        url = "http://localhost:8000/health"
 
-            async with streamablehttp_client(
-                url=url,
-                headers=headers,
-            ) as (
-                read_stream,
-                write_stream,
-                get_session_id,
-            ):
-                async with ClientSession(
-                    read_stream=read_stream,
-                    write_stream=write_stream,
-                ) as session:
-                    logger.info(f"MCP client connected: url={url}")
-                    await session.initialize()
-                    logger.info(
-                        f"MCP client session initialized: url={url}, session_id={get_session_id()}"
-                    )
-
-                    ls = await session.list_tools()
-                    tools = ls.tools
-                    tool_str = "\n  - ".join([t.name for t in tools])
-                    logger.info(f"list_tools return:\n  - {tool_str}")
-
-                    tool_name = "read_url"
-                    args = {
-                        "url": "https://www.alipay.com",
-                    }
-                    result = await session.call_tool(
-                        tool_name,
-                        args,
-                    )
-                    logger.info(f"tool result: {result.content[0].text[:300]}")
+        max_retries = 180
+        for i in range(max_retries):
+            try:
+                # Try to establish MCP connection to check if service is ready
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
                     return True
-        except Exception as e:
-            logger.error(f"Failed to check service ready: {traceback.format_exc()}")
+            except Exception as e:
+                logger.error(
+                    f"Waiting for service ready: {(i+1)}/{max_retries} attempts"
+                )
+                await asyncio.sleep(10)
+        else:
+            logger.error(
+                f"Service at {url} is not reachable after {max_retries} attempts."
+            )
             return False
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    train_env = TranEnv()
-    train_env.create_env()
+
+    async def main():
+        train_env = TranEnv()
+        await train_env.create_env()
+
+    asyncio.run(main())
