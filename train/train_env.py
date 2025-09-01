@@ -1,136 +1,203 @@
-"""
-训练环境工具：提供在本地一键启动 VirtualPC MCP Server，并生成 Agent 需要的
-`mcp_config` 与 `mcp_servers` 配置。
-
-用法示例（参照 train/README.md 55-77 行）：
-
-from train.train_env import create
-
-gaia_env = create(name="GAIA", mode="local")
-
-gaia_agent = Agent(
-    conf=AgentConfig(...),
-    name="gaia_super_agent",
-    system_prompt="...",
-    mcp_config=gaia_env["mcp_config"],
-    mcp_servers=gaia_env["mcp_servers"],
-)
-"""
-
-from __future__ import annotations
-
-import os
-import time
+import logging
+from pathlib import Path
+import shutil
 import subprocess
-from typing import Dict, Any, List, Optional
+import traceback
+from dotenv import dotenv_values, set_key
+from mcp import ClientSession
+from mcp.types import (
+    LoggingMessageNotificationParams,
+    ElicitResult,
+    ElicitRequestParams,
+)
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.shared.context import RequestContext
 
-from train.adapter.verl.common import get_agent_tool_env_and_servers
-
-
-def _project_root() -> str:
-    # train/ -> repo_root
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _env_dir() -> str:
-    return os.path.join(_project_root(), "env")
-
-
-def _run_local_gateway_background() -> None:
-    """后台启动 VirtualPC MCP Server（Docker）。
-
-    等价于在 repo 根目录执行：
-        sh env/run-docker.sh
-
-    注意：该命令会触发镜像构建与 docker compose up，耗时较长。
-    本函数以后台进程方式启动，不阻塞当前进程。
-    """
-    script = os.path.join(_env_dir(), "run-docker.sh")
-    if not os.path.exists(script):
-        raise FileNotFoundError(f"未找到启动脚本: {script}")
-
-    # 后台启动，避免阻塞训练流程
-    subprocess.Popen(
-        ["sh", script],
-        cwd=_env_dir(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+logger = logging.getLogger(__name__)
 
 
-def _generate_bearer_token(secret: str, app: str = "aworldcore-agent") -> str:
-    """使用 HS256 生成与网关一致的 JWT，并返回 Authorization 头值。
+class TranEnv:
 
-    mcp-gateway 在 docker-compose 中使用环境变量 `MCP_GATEWAY_TOKEN_SECRET`
-    作为校验密钥。默认 compose 使用 123321。
-    """
-    try:
-        import jwt  # type: ignore
-    except Exception as e:  # pragma: no cover - 明确提示缺依赖
-        raise RuntimeError(
-            "需要依赖 pyjwt 才能生成本地网关认证 Token，请先安装: pip install pyjwt"
-        ) from e
+    def __init__(self):
+        self.base_dir = Path(__file__).parent.parent
+        self.env_dir = self.base_dir / "env"
 
-    payload = {"app": app, "version": 1, "time": time.time()}
-    token = jwt.encode(payload=payload, key=secret, algorithm="HS256")
-    return f"Bearer {token}"
+    def create_env(
+        self,
+        *,
+        llm_base_url: str,
+        llm_model_name: str,
+        llm_api_key: str,
+        jina_api_key: str,
+        tavily_api_key: str,
+        google_api_key: str,
+        google_cse_id: str,
+        datalab_api_key: str,
+        e2b_api_key: str,
+    ):
+        is_ready = self._ensure_env_file_ready(
+            llm_base_url,
+            llm_model_name,
+            llm_api_key,
+            jina_api_key,
+            tavily_api_key,
+            google_api_key,
+            google_cse_id,
+            datalab_api_key,
+            e2b_api_key,
+        )
+        assert is_ready, "Env file is not ready!"
 
+        image_ready = self._build_image()
+        assert image_ready, "Image is not ready!"
 
-def create(
-    name: str = "GAIA",
-    mode: str = "local",
-    *,
-    url: str = "http://localhost:8000/mcp",
-    scope_servers: str = "readweb-server,browser-server",
-    server_name: str = "aworld-mcp",
-    timeout: int | float = 600,
-    sse_read_timeout: int | float = 600,
-    client_session_timeout_seconds: int | float = 600,
-    token_secret: Optional[str] = None,
-    auto_start: bool = True,
-) -> Dict[str, Any]:
-    """创建训练所需的 MCP 环境配置。
+        service_config = self._start_service()
+        assert service_config, "Service config is not ready!"
 
-    - mode="local": 后台启动本地 VirtualPC MCP Server（docker compose up），并返回连接配置。
-    - 返回值包含：
-        - mcp_config: Agent 需要的 mcpServers 配置
-        - mcp_servers: 供 Agent 选择的 server 列表（与 mcp_config 的 key 对应）
+        service_ready = self._check_service_ready(service_config)
+        assert service_ready, "Service is not ready!"
 
-    Args:
-        name: 逻辑名称（用于区分不同实验，不影响配置结构）
-        mode: "local"/其他（当前仅实现 local）
-        url: MCP 网关地址，默认 http://localhost:8000/mcp
-        scope_servers: 透传到网关的 MCP_SERVERS 作用域（逗号分隔）
-        server_name: 暴露给 Agent 的逻辑 server 名（mcp_config 的 key）
-        timeout: 连接超时（秒）
-        sse_read_timeout: SSE 读取超时（秒）
-        client_session_timeout_seconds: 客户端会话超时（秒）
-        token_secret: JWT 密钥；默认读取环境变量 MCP_GATEWAY_TOKEN_SECRET，否则使用 123321
-        auto_start: 是否自动后台启动本地网关
-    """
+        return service_config
 
-    if mode.lower() == "local":
-        if auto_start:
-            _run_local_gateway_background()
+    def _ensure_env_file_ready(
+        self,
+        llm_base_url: str,
+        llm_model_name: str,
+        llm_api_key: str,
+        jina_api_key: str,
+        tavily_api_key: str,
+        google_api_key: str,
+        google_cse_id: str,
+        datalab_api_key: str,
+        e2b_api_key: str,
+    ):
+        env_template_file = (
+            self.env_dir / "gaia-mcp-server" / "mcp_servers" / ".env_template"
+        )
+        env_file = self.env_dir / "gaia-mcp-server" / "mcp_servers" / ".env"
 
-        # token secret 优先级：入参 > env > 默认 compose 值
-        secret = token_secret or os.getenv("MCP_GATEWAY_TOKEN_SECRET", "123321")
-        authorization = _generate_bearer_token(secret)
+        if env_file.exists():
+            logger.info(f"Env file exists, check empty values: {env_file}")
+        else:
+            logger.info(f"Env file not exists, creating from template: {env_file}")
+            shutil.copy(env_template_file, env_file)
 
-        tool_env_config: Dict[str, Any] = {
-            "url": url,
-            "authorization": authorization,
-            "mcp_servers": scope_servers,
-            "server_name": server_name,
-            "type": "streamable-http",
-            "timeout": timeout,
-            "sse_read_timeout": sse_read_timeout,
-            "client_session_timeout_seconds": client_session_timeout_seconds,
+        def _update_config(key, value):
+            set_key(env_file, key, value, quote_mode="never")
+
+        _update_config("MCP_LLM_BASE_URL", llm_base_url)
+        _update_config("MCP_LLM_MODEL_NAME", llm_model_name)
+        _update_config("MCP_LLM_API_KEY", llm_api_key)
+
+        _update_config("MCP_LLM_BASE_URL", llm_base_url)
+        _update_config("MCP_LLM_MODEL_NAME", llm_model_name)
+        _update_config("MCP_LLM_API_KEY", llm_api_key)
+
+        _update_config("JINA_API_KEY", jina_api_key)
+        _update_config("TAVILY_API_KEY", tavily_api_key)
+        _update_config("GOOGLE_API_KEY", google_api_key)
+        _update_config("GOOGLE_CSE_ID", google_cse_id)
+        _update_config("DATALAB_API_KEY", datalab_api_key)
+        _update_config("E2B_API_KEY", e2b_api_key)
+
+        empty_values = {
+            k: v
+            for k, v in dotenv_values(env_file, interpolate=True).items()
+            if v is None or v == ""
         }
+        if empty_values:
+            empty_values_str = "\n  - " + "\n  - ".join(empty_values.keys())
+            logger.info(
+                f"Empty values found in env file: {env_file}\n{empty_values_str}"
+            )
+            return False
+        return True
 
-        mcp_config, servers = get_agent_tool_env_and_servers(tool_env_config)
-        return {"mcp_config": mcp_config, "mcp_servers": servers}
+    def _build_image(self):
+        try:
+            subprocess.check_call(
+                ["sh", "build-image.sh"],
+                cwd=self.env_dir / "virtualpc-mcp" / "mcp_server",
+            )
+            subprocess.check_call(
+                ["sh", "build-image.sh"], cwd=self.env_dir / "gaia-mcp-server"
+            )
 
-    raise ValueError(f"不支持的 mode: {mode}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to build image: {traceback.format_exc()}")
+            return False
 
+    def _start_service(self):
+        try:
+            subprocess.check_call(
+                ["sh", "run-local.sh"],
+                cwd=self.env_dir / "virtualpc-mcp",
+            )
+            return {
+                "url": "http://localhost:8000/mcp",
+                "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
+            }
+        except Exception as e:
+            logger.error(f"Failed to start service: {traceback.format_exc()}")
+            return None
+
+    async def _check_service_ready(self, service_config: dict):
+        try:
+            url = service_config["url"]
+            headers = {
+                "Authorization": f"Bearer {service_config['token']}",
+            }
+
+            async with streamablehttp_client(
+                url=url,
+                headers=headers,
+            ) as (
+                read_stream,
+                write_stream,
+                get_session_id,
+            ):
+                async with ClientSession(
+                    read_stream=read_stream,
+                    write_stream=write_stream,
+                ) as session:
+                    logger.info(f"MCP client connected: url={url}")
+                    await session.initialize()
+                    logger.info(
+                        f"MCP client session initialized: url={url}, session_id={get_session_id()}"
+                    )
+
+                    ls = await session.list_tools()
+                    tools = ls.tools
+                    tool_str = "\n  - ".join([t.name for t in tools])
+                    logger.info(f"list_tools return:\n  - {tool_str}")
+
+                    tool_name = "read_url"
+                    args = {
+                        "url": "https://www.alipay.com",
+                    }
+                    result = await session.call_tool(
+                        tool_name,
+                        args,
+                    )
+                    logger.info(f"tool result: {result.content[0].text[:300]}")
+                    return True
+        except Exception as e:
+            logger.error(f"Failed to check service ready: {traceback.format_exc()}")
+            return False
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    train_env = TranEnv()
+    train_env.create_env(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model_name="gpt-4o",
+        llm_api_key="sk-proj-1234567890",
+        jina_api_key="sk-proj-1234567890",
+        tavily_api_key="sk-proj-1234567890",
+        google_api_key="sk-proj-1234567890",
+        google_cse_id="sk-proj-1234567890",
+        datalab_api_key="sk-proj-1234567890",
+        e2b_api_key="sk-proj-1234567890",
+    )
