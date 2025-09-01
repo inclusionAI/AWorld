@@ -134,7 +134,7 @@ class GaiaAgentLoop(AworldAgentLoop):
 
 </details>
 
-Next, you must specify your custom `AgentLoop` in the `agent.yaml` configuration file to tell the trainer which loop to use.
+Next, specify your custom `AgentLoop` in the `agent.yaml`:
 
 ```yaml
 # In agent.yaml

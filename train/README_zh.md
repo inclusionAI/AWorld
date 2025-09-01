@@ -133,7 +133,7 @@ class GaiaAgentLoop(AworldAgentLoop):
 
 </details>
 
-接下来，您必须在 `agent.yaml` 配置文件中指定您的自定义 `AgentLoop`，以告知训练器使用哪个循环。
+接下来，在 `agent.yaml` 配置文件中指定您的自定义 `AgentLoop`:
 
 ```yaml
 # 在 agent.yaml 中
