@@ -285,7 +285,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.trajectory = []
         self._finished = True
 
-    async def async_reset(self, options: Dict[str, Any]):
+    async def async_reset(self, options: Dict[str, Any] = None):
         """Clean agent instance state and reset."""
         self.reset(options)
 
