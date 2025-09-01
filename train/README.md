@@ -35,9 +35,40 @@ We'll use the GAIA agent with VeRL as an example.
 First, you need to create a training environment that agents can interact with. 
 When creating an environment, some tools may require you to configure authentication credentials. This can be done by setting environment variables (we recommend managing them in a `.env` file).
 
-For example, to run the GAIA task, you need to set the following variable:
-```bash
-export GOOGLE_API_KEY={YOUR_GOOGLE_API_KEY}
+For example, to run the GAIA task, you need to set the .env file as follows:
+```.env
+JINA_API_KEY=<YOUR_JINA_API_KEY>
+TAVILY_API_KEY=<YOUR_TAVILY_API_KEY>
+GOOGLE_API_KEY=<YOUR_GOOGLE_API_KEY>
+GOOGLE_CSE_ID=<YOUR_GOOGLE_CSE_ID>
+DATALAB_API_KEY=<YOUR_DATALAB_API_KEY>
+E2B_API_KEY=<YOUR_E2B_API_KEY>
+
+MCP_LLM_BASE_URL=<YOUR_MCP_LLM_BASE_URL>
+MCP_LLM_MODEL_NAME=<YOUR_MCP_LLM_MODEL_NAME>
+MCP_LLM_API_KEY=<YOUR_MCP_LLM_API_KEY>
+
+BROWSERUSE_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+BROWSERUSE_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+BROWSERUSE_LLM_API_KEY=${MCP_LLM_API_KEY}
+CODE_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+CODE_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+CODE_LLM_API_KEY=${MCP_LLM_API_KEY}
+THINK_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+THINK_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+THINK_LLM_API_KEY=${MCP_LLM_API_KEY}
+GUARD_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+GUARD_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+GUARD_LLM_API_KEY=${MCP_LLM_API_KEY}
+AUDIO_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+AUDIO_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+AUDIO_LLM_API_KEY=${MCP_LLM_API_KEY}
+IMAGE_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+IMAGE_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+IMAGE_LLM_API_KEY=${MCP_LLM_API_KEY}
+VIDEO_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+VIDEO_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 ```
 
 Then use `train_env` utility to create your training environment and get environment configs for agents.
