@@ -604,7 +604,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             info: Extended information to assist the agent in decision-making
             **kwargs: Other parameters
         """
-        await self.async_desc_transform(message)
+        await self.async_desc_transform()
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
