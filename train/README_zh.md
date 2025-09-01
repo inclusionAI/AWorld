@@ -2,148 +2,161 @@
 
 # AWorld Train
 
-*为使用 AWorld 构建的智能体，提供与外部 RL/训练框架对接的适配层、可运行示例与通用工具*
+*为使用 AWorld 构建的智能体，提供与外部 RL/训练框架对接的、与框架无关的适配层、可运行示例与通用工具*
 
 [![License: MIT][license-image]][license-url]
 
 </div>
 
-<div align="center">
-
-[English](./README.md) | [快速开始](#-快速开始) | [开发](#-开发) | [贡献](#-贡献)
-
-</div>
-
 ---
 
-## 1. 概述
+AWorld Train 为 AWorld 智能体生态系统和各种外部训练框架（如强化学习库）之间提供了一座桥梁。它被设计为框架无关的，可以在你喜欢的训练环境中使用AWorld 智能体。
 
-AWorld Train 旨在为基于 AWorld 的智能体提供统一的训练运行方式。它包含框架适配器（如 VeRL）、可直接运行的示例以及共享工具，帮助你快速在不同训练生态上启动训练流程。
+## 安装
 
-### 1.1 特性
-
-- **多框架适配**：将 AWorld 智能体对接到外部框架（如 VeRL），也可按统一模式扩展更多框架。
-- **可运行示例**：`train/examples/` 下提供端到端示例，可即刻开跑。
-- **配置驱动**：标准化的智能体/工具配置与脚本入口，便于复现实验。
-- **数据集工具**：内置脚本用于构建训练/评测数据集（示例包含 GAIA 数据集处理）。
-- **奖励函数挂钩**：可通过文件路径与函数名注入自定义奖励函数。
-- **可扩展性**：本地单机可用；分布式能力依赖所选训练框架。
-
-## 2. 快速开始
-
-推荐从 VeRL 示例入手。
-
-### 2.1 先决条件
-
-- 建议 Python 3.10+
-- 使用 conda 或 venv 创建全新虚拟环境
-
-### 2.2 安装
-
-#### 2.2.1 安装 MCP 环境（VirtualPC MCP Server）
-
-步骤 1：配置环境
-
-```bash
-cd {path/to/AWorld}/env
-cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
-```
-
-步骤 2：本地启动
-
-```bash
-sh run-local.sh
-```
-
-如需 Kubernetes 集群部署，请参考 [env/README.md § 2.2 Kubernetes Cluster Deployment](../env/README.md#22-kubernetes-cluster-deployment)。
-
-#### 2.2.2 安装 Python 依赖
+推荐使用 Python>=3.10。
 
 ```bash
 # 安装 AWorld
 pip install aworld
 
-# 按需安装框架依赖（以 VeRL 示例为例）
+# 安装特定框架的依赖（以 VeRL 为例）
 pip install verl==0.5.0
 ```
 
-### 2.3 运行 VeRL 示例
+## 快速开始
 
-参考示例文档 [VeRL 示例 README](./examples/train_gaia_with_aworld_verl/README_zh.md)
+使用外部框架训练一个 AWorld 智能体只需 3 个步骤。
 
-## 3. 目录结构
+我们将以 GAIA 智能体和 VeRL 框架为例。
 
-```
-train/
-  adapter/
-    verl/
-      aworld_agent_loop.py       # VeRL AgentLoop 与 AWorld 智能体的桥接
-      common.py                  # 轨迹/消息到 VeRL 输出的转换工具
-      README.md
-    swift/
-      aworld_agent_trainer.py    # Swift 适配（实验性）
-  examples/
-    train_gaia_with_aworld_verl/
-      agent.yaml                 # 示例智能体 loop 与训练配置
-      configs/
-        tool.yaml                # 工具/运行时配置
-      datasets/
-        create_dataset.py        # GAIA 数据集准备脚本
-      metrics/
-        gaia_reward_function.py  # 示例奖励函数
-      run.sh                     # 示例启动脚本
-      README.md                  # 示例英文文档
-      README_zh.md               # 示例中文文档
-    train_gaia_with_aworld_swift/
-      gaia_agent_trainer.py      # Swift 示例整合
-      plugin.py                  # 示例插件
-  README.md
-  README_zh.md
+### 1. 创建环境
+首先，您需要创建一个智能体可以与之交互的训练环境。
+创建环境时，某些工具可能需要您配置身份验证凭据。这可以通过设置环境变量来完成（建议在 `.env` 文件中管理它们）。
+
+例如，要运行 GAIA 任务，需要设置以下变量：
+```bash
+export GOOGLE_API_KEY={YOUR_GOOGLE_API_KEY}
 ```
 
-## 4. 开发
+然后使用 `train_env` 工具来创建训练环境，并为智能体获取环境配置。
+```python
+from train.train_env import TrainEnv
 
-### 4.1 新增框架适配器
+train_env = TrainEnv()
+# 针对本地工具环境
+gaia_env = train_env.create_env(name="GAIA", mode="local")
 
-1) 创建 `train/adapter/<framework_name>/`。
-2) 实现最小适配面（如 loop/trainer 类），对外暴露清晰 API 供示例调用。
-3) 可复用逻辑放在适配层，示例特定逻辑放在 `train/examples/`。
+# 'gaia_env' 对象现在包含了 MCP 服务器的连接配置，
+# 可以将其传递给智能体。
+# 关于分布式环境的创建，请参考 env/README.md。
+```
 
-### 4.2 新增示例
-
-1) 创建 `train/examples/<your_example_name>/`。
-2) 按需新增 `configs/`、`datasets/`、`metrics/`，并提供最小可运行 `run.sh`。
-3) 建议脚本中使用绝对路径，便于复现实验。
-
-### 4.3 奖励函数接口
-
-通过脚本参数或环境变量传入奖励函数的文件路径与函数名。例如：
+### 2. 创建智能体
+接下来，定义您的智能体。这是一个标准的 AWorld Agent。将上一步中创建的环境配置传递给智能体的 `mcp_config`。
 
 ```python
-# reward.py
-def my_reward_fn(data_source, solution_str, ground_truth, extra_info=None):
-    # 返回数值型奖励
-    return 0.0
+from aworld.agents.llm_agent import Agent
+from aworld.config import AgentConfig
+
+# 假设 'gaia_env' 包含 {'mcp_config': {...}, 'mcp_servers': '...'}
+gaia_agent = Agent(
+    conf=AgentConfig(
+        llm_model_name="your-model-name",
+        llm_base_url="your-llm-base-url",
+        llm_api_key="your-llm-api-key",
+        llm_provider="openai",
+    ),
+    name="gaia_super_agent",
+    system_prompt="You are a helpful AI assistant.",
+
+    # 传入 MCP 工具配置
+    mcp_config=gaia_env.get("mcp_config"),
+    mcp_servers=gaia_env.get("mcp_servers"),
+)
 ```
 
-### 4.4 配置约定
+### 3. 开始训练
+环境和智能体准备就绪后，下一步是将其集成到您所选训练框架的循环中。对于 VeRL，这是通过实现一个自定义的 `AgentLoop` 来完成的。
 
-- `agent.yaml`：描述该示例的智能体 loop/训练设置
-- `tool.yaml`：描述工具/运行时配置；常通过 `AGENT_TOOL_CONFIG_PATH` 引用
+您可以继承自基础的 `AworldAgentLoop` 并实现 `build_agents` 方法。在这里您可以创建环境和智能体，并将它们连接在一起。
 
-## 5. 贡献
+<details>
+<summary>Click to expand example code</summary>
 
-欢迎贡献！建议：
+```python
+# 在您的 custom_agent_loop.py 文件中
+class GaiaAgentLoop(AworldAgentLoop):
+  def build_agents(self, ...):
+      # 创建环境
+      train_env = TrainEnv()
+      gaia_env = train_env.create_env(name="GAIA", mode="local")
 
-- 让适配层最小、可复用
-- 示例特定逻辑放在 `train/examples/`
-- 为新示例补充清晰文档与可运行脚本
+      # 创建并返回智能体，传入环境配置
+      return Agent(
+          ...,
+          mcp_config=gaia_env.get("mcp_config"),
+          mcp_servers=gaia_env.get("mcp_servers"),
+      )
+```
 
-## 6. 参考
+</details>
 
-- AWorld：`https://github.com/alipay/AWorld`
-- VeRL：`https://github.com/OpenGVLab/VeRL`
-- GAIA（示例所用的数据集参考）
+接下来，您必须在 `agent.yaml` 配置文件中指定您的自定义 `AgentLoop`，以告知训练器使用哪个循环。
+
+```yaml
+# 在 agent.yaml 中
+- name: gaia_agent
+  _target_: train.examples.train_gaia_with_aworld_verl.custom_agent_loop.GaiaAgentLoop
+```
+
+最后，运行训练脚本：
+```bash
+cd ./examples/train_gaia_with_aworld_verl
+bash run.sh
+```
+该脚本运行 VeRL 中的AgentLoop、奖励计算和模型训练。
+关于 `run.sh` 中的参数设置，请参考 [VeRL 文档](https://verl.readthedocs.io/en/latest/examples/config.html)。
+
+### 完整示例
+
+要获取一个完整的、可运行的代码示例，请参考 [`./examples/train_gaia_with_aworld_verl/`](./examples/train_gaia_with_aworld_verl/) 目录下的示例。
+
+## 进阶教程
+
+### 如何创建复杂的多智能体集群 (Swarm)
+除了单个智能体，您也可以训练一个多智能体集群（Swarm）。只需让您的 `build_agents` 方法（或等效的设置函数）返回一个 `Swarm` 对象而不是单个 `Agent` 对象即可。AWorld 和训练适配器将处理剩下的部分。
+
+```python
+# 在 自定义的AgentLoop 中
+def build_agents(self, ...) -> Union[Agent, Swarm]:
+    # ... (创建单个智能体)
+    # create env
+    train_env = TrainEnv()
+    gaia_env = train_env.create_env(name="GAIA", mode="local")
+    planner_agent = ...
+    worker_agent_1 = ...
+    worker_agent_2 = ...
+
+    # 返回由多个智能体组成的 Swarm
+    return Swarm(
+        planner_agent, worker_agent_1, worker_agent_2,
+        # ... 其他 swarm 配置
+    )
+```
+
+### 如何集成其他训练框架
+AWorld Train 被设计为可扩展的。要为新的训练框架（例如 “Swift”）添加支持，通常需要：
+
+1.  **创建新的适配器**：在 `train/adapter/` 目录内，为您的框架创建一个新文件夹（例如 `swift/`）。
+2.  **实现核心逻辑**：创建一个主类（例如 `AworldAgentTrainer`），它继承自目标框架的某个基类。这个类将负责：
+    *   从框架的环境中接收任务或观察结果。
+    *   运行 AWorld 智能体（`Runners.sync_run(input=input, agent=agent)`）以获取动作。
+    *   将智能体的响应返回给框架。
+    *   处理奖励和更新。
+3.  **创建示例**：在 `train/examples/` 目录中添加一个新示例，以演示如何使用新的适配器。
+
+可以参考现有的 `verl` 适配器（`train/adapter/verl/`）作为参考实现。
 
 ---
 

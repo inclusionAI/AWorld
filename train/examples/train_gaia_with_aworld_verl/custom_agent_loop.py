@@ -8,6 +8,7 @@ from aworld.core.agent.swarm import Swarm
 
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.adapter.verl.common import get_agent_tool_env_and_servers
+from train.train_env import TranEnv
 
 GAIA_SYSTEM_PROMPT = """
 You are an all-capable AI assistant, aimed at solving any task presented by the user.
@@ -21,8 +22,12 @@ TOOL_ENV_CONFIG = {
 
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self, model_name: str = "", base_url: str = "", api_key: str = "") -> Union[Agent, Swarm]:
-        # todo: use env.create() to get env_config
-        tool_env_config, tool_servers = get_agent_tool_env_and_servers(TOOL_ENV_CONFIG)
+        # # todo: use env.create() to get env_config
+        # tool_env_config, tool_servers = get_agent_tool_env_and_servers(TOOL_ENV_CONFIG)
+        train_env = TranEnv()
+        env_config = train_env.create_env(name="GAIA", mode="local")
+        if not env_config:
+            raise ValueError("Env is not ready!")
 
         return Agent(
             conf=AgentConfig(
@@ -35,6 +40,6 @@ class GaiaAgentLoop(AworldAgentLoop):
             system_prompt=GAIA_SYSTEM_PROMPT,
 
             # MCP tool configuration for the agent
-            mcp_config=tool_env_config,
-            mcp_servers = tool_servers,
+            mcp_config=train_env.get_env_config().get("mcp_config"),
+            mcp_servers=train_env.get_env_config().get("mcp_servers"),
         )

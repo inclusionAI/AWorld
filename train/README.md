@@ -77,15 +77,46 @@ gaia_agent = Agent(
 ```
 
 ### 3. Run Training
-With the environment and agent ready, you can start the training process using your chosen framework's standard procedures.
+With the environment and agent ready, the next step is to integrate them into your chosen training framework's loop. For VeRL, this is done by implementing a custom `AgentLoop`.
 
-For the VeRL example, you would run the training script:
+You can inherit from the base `AworldAgentLoop` and implement the `build_agents` method. This is where you create the environment and agent, and link them together.
+
+<details>
+<summary>Click to expand example code</summary>
+
+```python
+# In your custom_agent_loop.py
+class GaiaAgentLoop(AworldAgentLoop):
+  def build_agents(self, ...):
+      # Create the environment
+      train_env = TranEnv()
+      gaia_env = train_env.create_env(name="GAIA", mode="local")
+
+      # Create and return the agent, passing in the env config
+      return Agent(
+          ...,
+          mcp_config=gaia_env.get("mcp_config"),
+          mcp_servers=gaia_env.get("mcp_servers"),
+      )
+```
+
+</details>
+
+Next, you must specify your custom `AgentLoop` in the `agent.yaml` configuration file to tell the trainer which loop to use.
+
+```yaml
+# In agent.yaml
+- name: gaia_agent
+  _target_: train.examples.train_gaia_with_aworld_verl.custom_agent_loop.GaiaAgentLoop
+```
+
+Finally, run the training script:
 ```bash
 cd ./examples/train_gaia_with_aworld_verl
 bash run.sh
 ```
 This script handles the training loop, reward calculation, and agent updates, orchestrated by VeRL.
-Please refer to the [VeRL documentation](https://verl.readthedocs.io/en/latest/examples/config.html) for parameter settings in run.sh.
+Please refer to the [VeRL documentation](https://verl.readthedocs.io/en/latest/examples/config.html) for parameter settings in `run.sh`.
 
 ### A Complete Example
 
