@@ -1,0 +1,7 @@
+site_name: AWorld Docs
+nav:
+    - Home: index.md
+    - Trace: trace.md
+theme:
+    name: readthedocs
+    highlightjs: true
