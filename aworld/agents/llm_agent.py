@@ -144,7 +144,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  step_reset: bool = True,
                  use_tools_in_prompt: bool = False,
                  black_tool_actions: dict = None,
-                 model_output_parser: ModelOutputParser[ModelResponse, AgentResult] = LlmOutputParser(),
+                 model_output_parser: ModelOutputParser[..., AgentResult] = LlmOutputParser(),
                  tool_aggregate_func: Callable[..., Any] = None,
                  event_handler_name: str = None,
                  event_driven: bool = True,

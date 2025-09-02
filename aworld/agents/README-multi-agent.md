@@ -65,6 +65,27 @@ Swarm(B, C, D, root_agent=A, build_type=GraphBuildType.TEAM)
 ```
 The root_agent or first agent A is the leader; other agents interact with the leader A.
 
+### Debate
+TODO
+
+### Hybrid
+Hybrid is not a new type of builder of topology. Due to the use of different builders for the same topology, 
+the execution process varies, so hybrid builder is the fusion of **nested** topologies from different builders. 
+That is, interaction between multi-agents with multi-agents in different build modes.
+For example, in a `WorkflowSwarm`, one node can be a `TeamSwarm`, `HandoffSwarm` or other. Or a node in a 
+`HandoffSwarm` can also be a `WorkflowSwarm` or other.
+
+Example:
+```python
+A1 = Agent(name="A1", conf=agent_conf)
+B1 = Agent(name="B1", conf=agent_conf)
+C1 = Agent(name="C1", conf=agent_conf)
+swarm1 = TeamSwarm(A1, B1, C1, build_type=GraphBuildType.TEAM)
+
+Swarm(A, [B, C, swarm1], D)
+```
+The example shows that workflow swarm. After A completes execution, B, C, and swarm1(TeamSwarm) execute in parallel, 
+swarm1 will run in plan-execute mode until the end of the swarm1, and finally D is executed.
 
 ## Topology
 The topology structure of multi-agent is represented by Swarm, Swarm's topology is built based on 
