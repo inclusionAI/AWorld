@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 import logging
@@ -49,9 +50,13 @@ class TranEnv:
             return self.mcp_config
         return None
 
-    async def create_env(self, name: str = "mcp_server", mode: str = "local") -> bool:
+    async def create_env(self, mode: str = "local", docker_dir: str = None) -> bool:
         if mode == "local":
-            image_ready = await self._build_image()
+            if not docker_dir:
+                logger.error("You must provide --docker_dir to specify the Docker directory to build (relative to env).")
+                return False
+
+            image_ready = await self._build_image(docker_dir)
             assert image_ready, "Image is not ready!"
 
             service_ready = await self._start_service()
@@ -72,10 +77,10 @@ class TranEnv:
             logger.warning(f"Mode {mode} is not supported!")
             return False
 
-    async def _build_image(self):
+    async def _build_image(self, docker_dir: str):
         try:
             # Use asyncio.create_subprocess_exec for async subprocess execution
-            logger.info("Building gaia-mcp-server image...")
+            logger.info(f"Building {docker_dir} image...")
             process1 = await asyncio.create_subprocess_exec(
                 "sh",
                 "build-image.sh",
@@ -87,15 +92,20 @@ class TranEnv:
                 logger.error("Failed to build virtualpc-mcp image")
                 return False
 
+            target_dir = self.env_dir / docker_dir
+            if not target_dir.exists():
+                logger.error(f"Specified Docker directory does not exist: {target_dir}")
+                return False
+
             process2 = await asyncio.create_subprocess_exec(
                 "sh",
                 "build-image.sh",
-                cwd=self.env_dir / "gaia-mcp-server",
+                cwd=target_dir,
             )
             await process2.wait()
 
             if process2.returncode != 0:
-                logger.error("Failed to build gaia-mcp-server image")
+                logger.error(f"Failed to build {docker_dir} image")
                 return False
 
             logger.info("All images built successfully")
@@ -146,11 +156,16 @@ class TranEnv:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser(description="Env construction")
+    parser.add_argument("--docker_dir", help="Docker directory to build (relative to env, e.g., gaia-mcp-server)")
 
     async def main():
         try:
+            args = parser.parse_args()
+            if not args.docker_dir:
+                parser.error("You must use --docker_dir to specify the Docker directory to build (e.g., gaia-mcp-server)")
             train_env = TranEnv()
-            env_started = await train_env.create_env()
+            env_started = await train_env.create_env(docker_dir=args.docker_dir)
             if env_started:
                 mcp_variables = json.dumps(train_env.mcp_variables, ensure_ascii=False, indent=4)
                 print(mcp_variables)
