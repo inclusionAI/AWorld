@@ -15,11 +15,11 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        working-directory: aworld-docs
         run: |
           python -m pip install --upgrade pip==25.0.1
           python -m pip install mkdocs mkdocs-material
       - name: Build and deploy
+        working-directory: aworld-docs
         run: |
           mkdocs build
           mkdocs gh-deploy --force
