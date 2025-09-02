@@ -74,7 +74,9 @@ VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 
 ```bash
 cd /path/to/Aworld
-python -m env.train_env
+# --docker_dir 参数指定需要构建的env对应docker目录
+# e.g., --docker_dir=gaia-mcp-server
+python -m env.train_env --docker_dir=gaia-mcp-server
 ```
 
 MCP 服务器成功启动后，将输出连接详细信息：
