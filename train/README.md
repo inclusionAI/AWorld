@@ -32,7 +32,15 @@ We'll use the GAIA agent with VeRL as an example.
 
 
 ### 1. Create an Environment
-First, you need to set up the environment where the agent's tools will run. On your chosen machine (which can be a training machine), create a `.env` file to configure authentication tokens for any required tools:
+First, you need to set up the environment where the agent's tools will run. 
+
+Choose a machine (which can be a training machine).
+
+Machine sizing recommendation:
+- For capacity planning, allocate roughly **2C4G** per concurrent worker.
+- Example: for concurrency=8, plan for **~16C and ~32G**.
+
+Create a `.env` file to configure authentication tokens for any required tools.
 
 ```.env
 JINA_API_KEY=<YOUR_JINA_API_KEY>
@@ -72,41 +80,36 @@ VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 Next, run the startup script to launch the MCP server locally:
 
 ```bash
-sh start_env.sh
+cd /path/to/Aworld
+python -m env.train_env
 ```
 
 Once the MCP server starts successfully, it will output the connection details:
 ```bash
-{
-    "virtualpc-mcp-server": {
-        "type": "streamable-http",
-        "url": "http://localhost:8000/mcp",
-        "headers": {
-            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
-            "MCP_SERVERS": "readweb-server,browser-server"
-        },
-        "timeout": 6000,
-        "sse_read_timeout": 6000,
-        "client_session_timeout_seconds": 6000
-    }
-}
+  {
+      "ip": "1xx.1xx.x.xx",
+      "port": 8000,
+      "token": "eyJhbGciOi...rYmQ"
+  }
 ```
-You need to capture the URL and token from this output. Export them as environment variables or add them to your `.env` file so your agent can connect to the tool servers:
-```bash
-# export them as environment variables
-export MCP_SERVER_URL=http://<ip>:<port>/mcp
-export MCP_SERVER_TOKEN=<tokenid>
-
-# or add them to `.env` file
-# echo "MCP_SERVER_URL=http://<ip>:<port>/mcp" >> .env
-# echo "MCP_SERVER_TOKEN=<tokenid>" >> .env
-```
+You will need the ip, port and token from this output for the next step, where you'll configure the Agent on your training machine.
 
 For instructions on deploying the environment on Kubernetes, please refer to [`../env/README.md`](../env/README.md).
 
 
 ### 2. Create an Agent or Swarm
-With the environment ready, the next step is to define your custom agent in your chosen training framework's loop. For VeRL, this is done by implementing a custom `AgentLoop`.
+Now, on the training cluster machine (or in your training script), you must make the MCP service credentials available to your agent. Use the ip, port and token from Step 1 and export them as environment variables or add them to a `.env` file:
+```bash
+# export them as environment variables
+# replace <ip>, <port> and <token> with the ip, port and token from Step 1
+export MCP_SERVER_URL=http://<ip>:<port>/mcp
+export MCP_SERVER_TOKEN=<token>
+
+# or add them to `.env` file
+# echo "MCP_SERVER_URL=http://<ip>:<port>/mcp" >> .env
+# echo "MCP_SERVER_TOKEN=<token>" >> .env
+```
+With the connection details configured, you can define your agent within your chosen training framework. For VeRL, this is accomplished by implementing a custom `AgentLoop`.
 
 For example, `GaiaAgentLoop` inherits from `AworldAgentLoop` and implements the `build_agents` method.
 
@@ -119,9 +122,9 @@ from train.adapter.verl.common import get_agent_tool_env_and_servers
 
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self):
-        # Get env config and servers.
-        # Note: You must start the MCP server and set the URL and token
-        # in your environment variables as described in Step 1.
+        # Get the environment configuration and server details.
+        # Note: The MCP server must be running (Step 1) and the
+        # MCP_SERVER_URL/MCP_SERVER_TOKEN environment variables must be set.
         gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
 
         return Agent(

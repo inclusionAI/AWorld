@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from pathlib import Path
 import shutil
@@ -15,6 +16,8 @@ from mcp.types import (
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.context import RequestContext
 
+from aworld.utils.common import get_local_ip
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,16 +27,26 @@ class TranEnv:
         self.base_dir = Path(__file__).parent.parent
         self.env_dir = self.base_dir / "env"
         self.mcp_config = None
+        self.mcp_variables = None
 
     def get_env_config(self):
-        if self.mcp_config:
-            return {
-                "mcp_config": self.mcp_config,
-                "mcp_servers": list(
-                    server_name
-                    for server_name in self.mcp_config.get("mcpServers", {}).keys()
-                ),
+        if self.mcp_variables:
+            url = f"http://{self.mcp_variables['ip']}:{self.mcp_variables['port']}/mcp"
+            self.mcp_config = {
+                "mcpServers": {
+                    "virtualpc-mcp": {
+                        "type": "streamable-http",
+                        "url": url,
+                        "headers": {
+                            "Authorization": f"Bearer {self.mcp_variables['token']}",
+                        },
+                        "timeout": 600,
+                        "sse_read_timeout": 600,
+                        "client_session_timeout_seconds": 600,
+                    }
+                }
             }
+            return self.mcp_config
         return None
 
     async def create_env(self, name: str = "mcp_server", mode: str = "local") -> bool:
@@ -47,20 +60,12 @@ class TranEnv:
             service_ready = await self._check_service_ready()
             assert service_ready, "Service is not ready!"
 
-            self.mcp_config = {
-                "mcpServers": {
-                    "virtualpc-mcp": {
-                        "type": "streamable-http",
-                        "url": "http://localhost:8000/mcp",
-                        "headers": {
-                            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
-                        },
-                        "timeout": 600,
-                        "sse_read_timeout": 600,
-                        "client_session_timeout_seconds": 600,
-                    }
-                }
+            self.mcp_variables = {
+                "ip": get_local_ip(),
+                "port": 8000,
+                "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ"
             }
+
             logger.info("✅ Service is ready!")
             return True
         else:
@@ -143,7 +148,14 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     async def main():
-        train_env = TranEnv()
-        await train_env.create_env()
+        try:
+            train_env = TranEnv()
+            env_started = await train_env.create_env()
+            if env_started:
+                mcp_variables = json.dumps(train_env.mcp_variables, ensure_ascii=False, indent=4)
+                print(mcp_variables)
+        except Exception as e:
+            logger.error(f"Failed to start env: {traceback.format_exc()}")
+
 
     asyncio.run(main())

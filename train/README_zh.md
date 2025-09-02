@@ -32,7 +32,14 @@ pip install verl==0.5.0
 
 
 ### 1. 创建环境
-首先，您需要为智能体的工具创建一个运行环境。选择一台机器（也可以是训练机），创建一个 `.env` 文件来为需要token验证的工具进行配置：
+首先，您需要为智能体的工具创建一个运行环境。选择一台机器（也可以是训练机）。
+
+机器配置建议：
+- **每个并发 2 核 CPU、4 GiB 内存（2C4G）**
+- 例如：并发度为 8，建议预留约 **16 核 CPU、32 GiB 内存**
+
+
+创建一个 `.env` 文件来为需要token验证的工具进行配置。
 
 ```.env
 JINA_API_KEY=<YOUR_JINA_API_KEY>
@@ -72,28 +79,28 @@ VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 接下来，运行启动脚本，在机器本地启动 MCP 服务器：
 
 ```bash
-sh start_env.sh
+cd /path/to/Aworld
+python -m env.train_env
 ```
 
 MCP 服务器成功启动后，它将输出连接详细信息：
 ```bash
-{
-    "virtualpc-mcp-server": {
-        "type": "streamable-http",
-        "url": "http://localhost:8000/mcp",
-        "headers": {
-            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
-            "MCP_SERVERS": "readweb-server,browser-server"
-        },
-        "timeout": 6000,
-        "sse_read_timeout": 6000,
-        "client_session_timeout_seconds": 6000
-    }
-}
+  {
+      "ip": "1xx.1xx.x.xx",
+      "port": 8000,
+      "token": "eyJhbGciOi...rYmQ"
+  }
 ```
-您需要从此输出中获取 URL 和令牌。将它们导出为环境变量或添加到您的 `.env` 文件中，以便您的智能体可以连接到工具服务器：
+您需要从此输出中获取 ip、端口 和令牌，后续在训练集群机器或训练脚本中需要配置到Agent中。
+
+有关在 Kubernetes 上部署环境的说明，请参阅 [`../env/README.md`](../env/README.md)。
+
+
+### 2. 创建智能体或智能体集群
+环境准备就绪后，在训练集群机器或训练脚本中，将步骤1中得到的MCP服务的ip、端口 和令牌导出为环境变量或添加到您的 `.env` 文件中，以便您的智能体可以连接到工具服务器：
 ```bash
 # 导出为环境变量
+# 用步骤1中获取的ip、端口 和令牌替换这里的 <ip>, <port> 和 <token>
 export MCP_SERVER_URL=http://<ip>:<port>/mcp
 export MCP_SERVER_TOKEN=<tokenid>
 
@@ -102,11 +109,7 @@ export MCP_SERVER_TOKEN=<tokenid>
 # echo "MCP_SERVER_TOKEN=<tokenid>" >> .env
 ```
 
-有关在 Kubernetes 上部署环境的说明，请参阅 [`../env/README.md`](../env/README.md)。
-
-
-### 2. 创建智能体或智能体集群
-环境准备就绪后，下一步是在您选择的训练框架的循环中定义您的自定义智能体。对于 VeRL，这是通过实现一个自定义的 `AgentLoop` 来完成的。
+下一步是在您选择的训练框架的循环中定义您的自定义智能体。对于 VeRL，这是通过实现一个自定义的 `AgentLoop` 来完成的。
 
 例如，`GaiaAgentLoop` 继承自 `AworldAgentLoop` 并实现了 `build_agents` 方法。
 
