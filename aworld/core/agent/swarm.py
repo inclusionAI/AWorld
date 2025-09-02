@@ -155,12 +155,11 @@ class Swarm(object):
 
         for agent in agent_graph.agents.values():
             agent.event_driven = self.event_driven
+            if not agent.task:
+                agent.task = self.task
             if hasattr(agent, 'need_reset') and agent.need_reset:
                 agent.context = context
-                agent.reset({"task": content,
-                             "tool_names": agent.tool_names,
-                             "agent_names": agent.handoffs,
-                             "mcp_servers": agent.mcp_servers})
+                agent.reset()
             # global tools
             agent.tool_names.extend(self.tools)
 
