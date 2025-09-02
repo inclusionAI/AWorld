@@ -8,141 +8,227 @@
 
 </div>
 
-<div align="center">
-
-[中文版本](./README_zh.md) | [Quick Start](#quick-start) | [Directory](#-directory-structure) | [Development](#development) | [Contributing](#contributing)
-
-</div>
-
 ---
 
-## 1. Overview
+AWorld Train provides a bridge between the AWorld agent ecosystem and various external training frameworks like Reinforcement Learning (RL) libraries. It is designed to be framework-agnostic, allowing you to bring your AWorld agents to your favorite training environments.
 
-AWorld Train provides a unified way to run training pipelines for agents built with the AWorld framework. It includes framework adapters (e.g., VeRL), runnable examples, and shared utilities so you can quickly bring your agent into different training ecosystems.
+## Installation
 
-### 1.1 Features
-
-- **Multi-Framework Adapters**: Plug AWorld agents into external frameworks (e.g., VeRL). More can be added via a simple adapter pattern.
-- **Runnable Examples**: End-to-end examples under `train/examples/` to start training immediately.
-- **Dataset Utilities**: Helper scripts to build datasets for training/evaluation (e.g., GAIA dataset preparation for VeRL example).
-- **Reward Function Hooks**: Easily plug in a custom reward function via file path and function name.
-- **Scalable**: Works on single machine; distributed capabilities depend on the chosen framework.
-
-## 2. Quick Start
-
-We recommend starting with the VeRL example.
-
-### 2.1 Prerequisites
-
-- Python 3.10+ (recommended)
-- A fresh virtual environment (conda or venv)
-
-### 2.2 Install
-
-#### 2.2.1 Install MCP env (VirtualPC MCP Server)
-
-Step 1: Configure environment
+Python>=3.10 is recommended.
 
 ```bash
-cd {path/to/AWorld}/env
-cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
-```
-
-Step 2: Launch locally
-
-```bash
-sh run-local.sh
-```
-
-For Kubernetes deployment, see [env/README.md § 2.2 Kubernetes Cluster Deployment](../env/README.md#22-kubernetes-cluster-deployment).
-
-#### 2.2.2 Install Python packages
-
-```bash
-# Install Aworld
+# Install AWorld
 pip install aworld
 
 # Framework-specific deps (VeRL example)
 pip install verl==0.5.0
 ```
 
-### 2.3 Run the VeRL Example
-Refer to the documentation [VeRL example README](./examples/train_gaia_with_aworld_verl/README.md)
+## Quick Start
+
+Training an AWorld agent with an external framework can be done in 3 steps.
+
+We'll use the GAIA agent with VeRL as an example.
 
 
-## 3. Directory Structure
+### 1. Create an Environment
+First, you need to set up the environment where the agent's tools will run. 
 
+Choose a machine (which can be a training machine).
+
+Machine sizing recommendation:
+- For capacity planning, allocate roughly **2C4G** per concurrent worker.
+- Example: for concurrency=8, plan for **~16C and ~32G**.
+
+Create a `.env` file to configure authentication tokens for any required tools.
+
+```.env
+JINA_API_KEY=<YOUR_JINA_API_KEY>
+TAVILY_API_KEY=<YOUR_TAVILY_API_KEY>
+GOOGLE_API_KEY=<YOUR_GOOGLE_API_KEY>
+GOOGLE_CSE_ID=<YOUR_GOOGLE_CSE_ID>
+DATALAB_API_KEY=<YOUR_DATALAB_API_KEY>
+E2B_API_KEY=<YOUR_E2B_API_KEY>
+
+MCP_LLM_BASE_URL=<YOUR_MCP_LLM_BASE_URL>
+MCP_LLM_MODEL_NAME=<YOUR_MCP_LLM_MODEL_NAME>
+MCP_LLM_API_KEY=<YOUR_MCP_LLM_API_KEY>
+
+BROWSERUSE_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+BROWSERUSE_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+BROWSERUSE_LLM_API_KEY=${MCP_LLM_API_KEY}
+CODE_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+CODE_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+CODE_LLM_API_KEY=${MCP_LLM_API_KEY}
+THINK_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+THINK_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+THINK_LLM_API_KEY=${MCP_LLM_API_KEY}
+GUARD_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+GUARD_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+GUARD_LLM_API_KEY=${MCP_LLM_API_KEY}
+AUDIO_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+AUDIO_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+AUDIO_LLM_API_KEY=${MCP_LLM_API_KEY}
+IMAGE_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+IMAGE_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+IMAGE_LLM_API_KEY=${MCP_LLM_API_KEY}
+VIDEO_LLM_BASE_URL=${MCP_LLM_BASE_URL}
+VIDEO_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
+VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 ```
-train/
-  adapter/
-    verl/
-      aworld_agent_loop.py       # Core adapter bridging VeRL AgentLoop and AWorld agents
-      common.py                  # Utilities for converting trajectories/messages
-      README.md
-    swift/
-      aworld_agent_trainer.py    # Experimental Swift adapter
-  examples/
-    train_gaia_with_aworld_verl/
-      agent.yaml                 # Example agent loop and training settings
-      configs/
-        tool.yaml                # Tool environment configuration
-      datasets/
-        create_dataset.py        # GAIA dataset preparation utility
-      metrics/
-        gaia_reward_function.py  # Example reward function
-      run.sh                     # Example launch script
-      README.md                  # Example-specific docs
-      README_zh.md
-    train_gaia_with_aworld_swift/
-      gaia_agent_trainer.py      # Example integration with Swift
-      plugin.py                  # Example plugin
-  README.md
-  README_zh.md
+
+Next, run the startup script to launch the MCP server locally:
+
+```bash
+cd /path/to/Aworld
+python -m env.train_env
 ```
 
-## 4. Development
+Once the MCP server starts successfully, it will output the connection details:
+```bash
+  {
+      "ip": "1xx.1xx.x.xx",
+      "port": 8000,
+      "token": "eyJhbGciOi...rYmQ"
+  }
+```
+You will need the ip, port and token from this output for the next step, where you'll configure the Agent on your training machine.
 
-### 4.1 Add a New Framework Adapter
+For instructions on deploying the environment on Kubernetes, please refer to [`../env/README.md`](../env/README.md).
 
-1) Create `train/adapter/<framework_name>/`.
-2) Implement the minimal adapter surface (e.g., loop/trainer class) that exposes a clean API to your example code.
-3) Keep reusable logic in the adapter; avoid placing example-specific code here.
 
-### 4.2 Create a New Example
+### 2. Create an Agent or Swarm
+Now, on the training cluster machine (or in your training script), you must make the MCP service credentials available to your agent. Use the ip, port and token from Step 1 and export them as environment variables or add them to a `.env` file:
+```bash
+# export them as environment variables
+# replace <ip>, <port> and <token> with the ip, port and token from Step 1
+export MCP_SERVER_URL=http://<ip>:<port>/mcp
+export MCP_SERVER_TOKEN=<token>
 
-1) Create `train/examples/<your_example_name>/`.
-2) Add `configs/`, `datasets/`, `metrics/`, and a minimal `run.sh` as needed.
-3) Prefer absolute paths in scripts for reproducibility.
+# or add them to `.env` file
+# echo "MCP_SERVER_URL=http://<ip>:<port>/mcp" >> .env
+# echo "MCP_SERVER_TOKEN=<token>" >> .env
+```
+With the connection details configured, you can define your agent within your chosen training framework. For VeRL, this is accomplished by implementing a custom `AgentLoop`.
 
-### 4.3 Reward Function Interface
-
-Pass the reward function via script arguments or environment variables, providing both the file path and exported function name. A minimal example:
+For example, `GaiaAgentLoop` inherits from `AworldAgentLoop` and implements the `build_agents` method.
 
 ```python
-# reward.py
-def my_reward_fn(data_source, solution_str, ground_truth, extra_info=None):
-    # Compute and return a numeric reward
-    return 0.0
+from aworld.agents.llm_agent import Agent
+from aworld.config import AgentConfig
+
+from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
+from train.adapter.verl.common import get_agent_tool_env_and_servers
+
+class GaiaAgentLoop(AworldAgentLoop):
+    def build_agents(self):
+        # Get the environment configuration and server details.
+        # Note: The MCP server must be running (Step 1) and the
+        # MCP_SERVER_URL/MCP_SERVER_TOKEN environment variables must be set.
+        gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
+
+        return Agent(
+            conf=AgentConfig(
+                # Get the dynamic llm server address from the server manager. 
+                # The llm server is launched within VeRL.
+                llm_base_url=self.get_llm_server_address(),
+                llm_model_name=self.get_llm_server_model_name(),
+            ),
+            name="gaia_super_agent",
+            system_prompt="YOUR SYSTEM PROMPT",
+
+            # MCP tool configuration for the agent
+            mcp_config=gaia_env_config,
+            mcp_servers=gaia_env_servers,
+        )
 ```
 
-### 4.4 Configuration Conventions
+The following diagram illustrates the overall architecture and the interaction between the Agent and the Environment:
 
-- `agent.yaml` describes agent loop/training settings for the framework/example
-- `tool.yaml` describes tool/runtime configs; often referenced via `AGENT_TOOL_CONFIG_PATH`
+![Architecture Diagram](../readme_assets/train_env_agent_architecture.png)
 
-## 5. Contributing
 
-We welcome contributions! Please consider:
+### 3. Run Training
+Before run training, specify your custom `AgentLoop` in the `agent.yaml`:
 
-- Keeping adapters minimal and reusable
-- Placing example-specific logic under `train/examples/`
-- Adding clear docs and runnable scripts for new examples
+```yaml
+# In agent.yaml
+- name: gaia_agent
+  _target_: train.examples.train_gaia_with_aworld_verl.custom_agent_loop.GaiaAgentLoop
+```
 
-## 6. References
+Finally, run the training script. This script is typically a `run.sh` file based on the VeRL example.
+```bash
+bash run.sh
+```
+This script handles the training loop, reward calculation, and agent updates, orchestrated by VeRL.
+Please refer to the [VeRL documentation](https://verl.readthedocs.io/en/latest/examples/config.html) for parameter settings in `run.sh`.
 
-- AWorld: `https://github.com/alipay/AWorld`
-- VeRL: `https://github.com/OpenGVLab/VeRL`
-- GAIA (dataset reference used by examples)
+A complete, runnable example, including a `run.sh` script tailored for `GaiaAgentLoop`, is available in [`./examples/train_gaia_with_aworld_verl/`](./examples/train_gaia_with_aworld_verl/).
+
+## Advanced Tutorial
+
+### How to Create a Complex Swarm
+Instead of a single agent, you can also train a multi-agent swarm. Simply have your `build_agents` method (or equivalent setup function) return a `Swarm` object instead of a single `Agent`. AWorld and the training adapter will handle the rest.
+
+```python
+# In your AgentLoop or setup file
+def build_agents(self, ...) -> Union[Agent, Swarm]:
+    # ... (create individual agents)
+    agent_to_be_train = Agent(
+      conf=AgentConfig(
+          # For the agent to be trained, llm_base_url and llm_model_name are obtained from the services launched by VeRL
+          llm_base_url=self.get_llm_server_address(),
+          llm_model_name=self.get_llm_server_model_name(),
+      ),
+    )
+
+    plan_agent = Agent(
+      conf=AgentConfig(
+          # Provide a ready-to-use OpenAI-compatible llm service address, model name, and api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
+      ),
+    )
+    
+    exe_agent = Agent(
+      conf=AgentConfig(
+          # Provide a ready-to-use OpenAI-compatible llm service address, model name, and api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
+      ),
+    )
+    
+    sum_agent = Agent(
+      conf=AgentConfig(
+          # Provide a ready-to-use OpenAI-compatible llm service address, model name, and api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
+      ),
+    )
+
+    # Return a Swarm composed of your agents
+    return Swarm(
+        agent_to_be_train, plan_agent, exe_agent, sum_agent,
+        # ... other swarm configuration
+    )
+```
+
+### How to Integrate with Other Training Frameworks
+AWorld Train is designed for extensibility. To add support for a new training framework (e.g., "Swift"), you would typically need to:
+
+1.  **Create a new Adapter**: Inside the `train/adapter/` directory, create a new folder for your framework (e.g., `swift/`).
+2.  **Implement the Core Logic**: Create a primary class (e.g., `AworldAgentTrainer`) that inherits from a base class of the target framework. This class will be responsible for:
+    *   Receiving tasks or observations from the framework's environment.
+    *   Run the AWorld agent (`Runners.sync_run(input=input, agent=agent)`) to get an action.
+    *   Returning the agent's response back to the framework.
+    *   Handling rewards and updates.
+3.  **Create an Example**: Add a new example in the `train/examples/` directory to demonstrate how to use the new adapter.
+
+You can refer to the existing `verl` adapter (`train/adapter/verl/`) as a reference implementation.
 
 ---
 

@@ -22,6 +22,9 @@ class SessionRepo:
     def __init__(self):
         self.sessions: List[VpcSession] = []
 
+    async def initialize(self):
+        pass
+
     async def get_bind_session(self, session_id: SessionId) -> VpcSession | None:
         return next(
             (v for v in await self.get_sessions() if v.is_bind(session_id)),
@@ -42,6 +45,9 @@ class SessionRedisRepo(SessionRepo):
     def __init__(self, redis_url: str):
         self._redis_client = redis.Redis.from_url(redis_url)
         self._sessions_key = f"{cluster_name}.vpc_sessions"
+
+    async def initialize(self):
+        await self._redis_client.ping()
 
     async def get_sessions(self) -> List[VpcSession]:
         """Get all VPC sessions from Redis"""
@@ -116,6 +122,10 @@ class SessionConnectionManager:
     ):
         self._session_repo: SessionRepo = session_repo
         self.container_server_manager: ContainerServerManager = container_server_manager
+
+    async def initialize(self):
+        """Initialize the session connection manager"""
+        await self._session_repo.initialize()
 
     async def get_session(self, session_id: SessionId) -> VpcSession | None:
         return await self._session_repo.get_bind_session(session_id)
@@ -275,8 +285,11 @@ async def session_connection_manager_builder(
     container_server_manager: ContainerServerManager,
 ):
     if redis_url:
-        return SessionConnectionManager(
+        session_connection_manager = SessionConnectionManager(
             container_server_manager, SessionRedisRepo(redis_url)
         )
     else:
-        return SessionConnectionManager(container_server_manager)
+        session_connection_manager = SessionConnectionManager(container_server_manager)
+
+    await session_connection_manager.initialize()
+    return session_connection_manager

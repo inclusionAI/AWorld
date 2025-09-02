@@ -63,7 +63,7 @@ cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.en
 **步骤 2：启动 VirtualPC MCP Server**
 
 ```bash
-sh run-local.sh
+sh run-docker.sh
 ```
 
 监控终端输出，查看启动过程中是否有任何错误。
