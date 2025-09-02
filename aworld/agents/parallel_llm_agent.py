@@ -25,7 +25,7 @@ class ParallelizableAgent(Agent):
                  conf: Config,
                  model_output_parser: ModelOutputParser[ModelResponse, AgentResult] = None,
                  agents: List[Agent] = None,
-                 aggregate_func: Callable[..., Any] = None,
+                 aggregate_func: Callable[['ParallelizableAgent',Dict[str, List[ActionModel]]], List[ActionModel]] = None,
                  **kwargs):
         super().__init__(name=name, conf=conf, model_output_parser=model_output_parser, **kwargs)
         self.agents = agents if agents else []

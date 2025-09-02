@@ -201,16 +201,19 @@ class AgentInstrumentor(Instrumentor):
             tracer = tracer_provider.get_tracer(
                 "aworld.trace.instrumentation.agent")
 
-        wrapt.wrap_function_wrapper(
-            "aworld.core.agent.base",
-            "BaseAgent.async_run",
-            _async_run_class_wrapper(tracer=tracer)
-        )
-        wrapt.wrap_function_wrapper(
-            "aworld.agents.llm_agent",
-            "Agent._call_llm_model",
-            _call_llm_model_class_wrapper(tracer=tracer)
-        )
+        try:
+            wrapt.wrap_function_wrapper(
+                "aworld.core.agent.base",
+                "BaseAgent.async_run",
+                _async_run_class_wrapper(tracer=tracer)
+            )
+            wrapt.wrap_function_wrapper(
+                "aworld.agents.llm_agent",
+                "Agent.invoke_llm_model",
+                _call_llm_model_class_wrapper(tracer=tracer)
+            )
+        except Exception as err:
+            logger.warning(f"AgentInstrumentor#_instrument failed ,err is {err}")
 
     def _uninstrument(self, **kwargs: Any):
         pass

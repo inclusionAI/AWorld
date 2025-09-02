@@ -431,7 +431,7 @@ class WorkSpace(BaseModel):
 
     def _append_artifact(self, artifact: Artifact) -> None:
         self.artifacts.append(artifact)
-        logging.info(f"[📂WORKSPACE]🆕 Appending artifact in repository: {artifact.artifact_id}")
+        logging.debug(f"[📂WORKSPACE]🆕 Appending artifact in repository: {artifact.artifact_id}")
 
 
     def _update_artifact(self, artifact: Artifact) -> None:
