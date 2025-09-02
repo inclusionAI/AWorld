@@ -10,36 +10,30 @@
 
 ---
 
-AWorld Train 为 AWorld 智能体生态系统和各种外部训练框架（如强化学习库）之间提供了一座桥梁。它被设计为框架无关的，可以在你喜欢的训练环境中使用AWorld 智能体。
+AWorld Train 为 AWorld 智能体生态系统和各种外部训练框架（如强化学习库）之间提供了一座桥梁。它被设计为框架无关的，可以选择你喜欢的训练环境使用AWorld 智能体。
 
-## 安装
+下图说明了环境和训练集群之间的整体架构和交互：
 
-推荐使用 Python>=3.10。
+![架构示意图](../readme_assets/train_env_agent_architecture.png)
+
+
+## 环境构建
+
+首先，您需要设置智能体工具将要运行的环境。
+
+选择一台机器（也可以是训练机）。
+
+机器规格建议：
+- 为进行容量规划，为每个并发工作进程分配大约 **2C4G**。
+- 示例：对于8个并发，计划需要 **约16C32G**。
 
 ```bash
-# 安装 AWorld
-pip install aworld
-
-# 安装特定框架的依赖（以 VeRL 为例）
-pip install verl==0.5.0
+# 克隆 AWorld 仓库
+git clone git@github.com:inclusionAI/AWorld.git
+cd /path/to/AWorld
+cp ./env/gaia-mcp-server/mcp_servers/.env_template ./env/gaia-mcp-server/mcp_servers/.env
 ```
-
-## 快速开始
-
-使用外部框架训练一个 AWorld 智能体只需 3 个步骤。
-
-我们将以 GAIA 智能体和 VeRL 框架为例。
-
-
-### 1. 创建环境
-首先，您需要为智能体的工具创建一个运行环境。选择一台机器（也可以是训练机）。
-
-机器配置建议：
-- **每个并发 2 核 CPU、4 GiB 内存（2C4G）**
-- 例如：并发度为 8，建议预留约 **16 核 CPU、32 GiB 内存**
-
-
-创建一个 `.env` 文件来为需要token验证的工具进行配置。
+编辑 `./env/gaia-mcp-server/mcp_servers/.env` 以配置任何需要身份验证的工具的令牌。
 
 ```.env
 JINA_API_KEY=<YOUR_JINA_API_KEY>
@@ -76,14 +70,16 @@ VIDEO_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
 VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 ```
 
-接下来，运行启动脚本，在机器本地启动 MCP 服务器：
+接下来，运行启动脚本以在本地启动 MCP 服务器：
 
 ```bash
 cd /path/to/Aworld
-python -m env.train_env
+# --docker_dir 参数指定需要构建的env对应docker目录
+# e.g., --docker_dir=gaia-mcp-server
+python -m env.train_env --docker_dir=gaia-mcp-server
 ```
 
-MCP 服务器成功启动后，它将输出连接详细信息：
+MCP 服务器成功启动后，将输出连接详细信息：
 ```bash
   {
       "ip": "1xx.1xx.x.xx",
@@ -91,25 +87,38 @@ MCP 服务器成功启动后，它将输出连接详细信息：
       "token": "eyJhbGciOi...rYmQ"
   }
 ```
-您需要从此输出中获取 ip、端口 和令牌，后续在训练集群机器或训练脚本中需要配置到Agent中。
+您将需要此输出中的 `ip`、`port` 和 `token`，用于下一步在训练机上配置智能体。
 
 有关在 Kubernetes 上部署环境的说明，请参阅 [`../env/README.md`](../env/README.md)。
 
+## 训练集群设置
 
-### 2. 创建智能体或智能体集群
-环境准备就绪后，在训练集群机器或训练脚本中，将步骤1中得到的MCP服务的ip、端口 和令牌导出为环境变量或添加到您的 `.env` 文件中，以便您的智能体可以连接到工具服务器：
+### 1. 创建智能体或智能体集群
+现在，在训练集群机器上，您必须使 MCP 服务凭据对您的智能体可用。使用[环境构建](#环境构建)部分中的 `ip`、`port` 和 `token`，并将它们导出为环境变量或添加到 `.env` 文件中：
 ```bash
 # 导出为环境变量
-# 用步骤1中获取的ip、端口 和令牌替换这里的 <ip>, <port> 和 <token>
+# 将 <ip>、<port> 和 <token> 替换为环境构建中的 ip、port 和 token
 export MCP_SERVER_URL=http://<ip>:<port>/mcp
-export MCP_SERVER_TOKEN=<tokenid>
+export MCP_SERVER_TOKEN=<token>
 
-# 或者添加到 `.env` 文件中
+# 或将它们添加到 .env 文件中
 # echo "MCP_SERVER_URL=http://<ip>:<port>/mcp" >> .env
-# echo "MCP_SERVER_TOKEN=<tokenid>" >> .env
+# echo "MCP_SERVER_TOKEN=<token>" >> .env
 ```
 
-下一步是在您选择的训练框架的循环中定义您的自定义智能体。对于 VeRL，这是通过实现一个自定义的 `AgentLoop` 来完成的。
+然后安装 `aworld` 和强化学习框架：
+
+```bash
+# 推荐使用 Python>=3.10。
+
+# 安装 AWorld
+pip install aworld
+
+# 安装特定框架的依赖（以 VeRL 为例）
+pip install verl==0.5.0
+```
+
+配置好连接详细信息后，您可以在所选的训练框架内定义您的智能体。对于 VeRL，这是通过实现一个自定义的 `AgentLoop` 来完成的。
 
 例如，`GaiaAgentLoop` 继承自 `AworldAgentLoop` 并实现了 `build_agents` 方法。
 
@@ -122,19 +131,20 @@ from train.adapter.verl.common import get_agent_tool_env_and_servers
 
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self):
-        # 从环境中获取环境配置和服务器。
-        # 注意：您必须先按照步骤1中的说明启动 MCP 服务器
-        # 并在您的环境变量中设置 URL 和令牌。
+        # 获取环境配置和服务器详细信息。
+        # 注意：MCP 服务器必须正在运行（环境构建），并且
+        # MCP_SERVER_URL/MCP_SERVER_TOKEN 环境变量必须已设置。
         gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
 
         return Agent(
             conf=AgentConfig(
-                # verl会启动llm服务并动态分配服务地址，需要从服务管理器中获取服务地址
+                # 从服务管理器获取动态的 llm 服务地址。
+                # llm 服务是在 VeRL 中启动的。
                 llm_base_url=self.get_llm_server_address(),
                 llm_model_name=self.get_llm_server_model_name(),
             ),
             name="gaia_super_agent",
-            system_prompt="YOUR SYSTEM PROMPT",
+            system_prompt="你的系统提示",
 
             # 智能体的 MCP 工具配置
             mcp_config=gaia_env_config,
@@ -142,12 +152,7 @@ class GaiaAgentLoop(AworldAgentLoop):
         )
 ```
 
-下图展示了智能体（Agent）和环境（Environment）的整体架构及两者间的交互关系：
-
-![架构示意图](../readme_assets/train_env_agent_architecture.png)
-
-
-### 3. 运行训练
+### 2. 运行训练
 在运行训练之前，请在 `agent.yaml` 中指定您的自定义 `AgentLoop`：
 
 ```yaml
@@ -176,7 +181,7 @@ def build_agents(self, ...) -> Union[Agent, Swarm]:
     # ... 创建多个agent
     agent_to_be_train = Agent(
       conf=AgentConfig(
-          # 对于要训练的agent，llm_base_url和llm_model_name是从verl启动的服务中获取的
+          # 对于要训练的agent，llm_base_url 和 llm_model_name 是从 VeRL 启动的服务中获取的
           llm_base_url=self.get_llm_server_address(),
           llm_model_name=self.get_llm_server_model_name(),
       ),
@@ -184,28 +189,28 @@ def build_agents(self, ...) -> Union[Agent, Swarm]:
 
     plan_agent = Agent(
       conf=AgentConfig(
-          # 在此提供openai兼容的llm服务的地址、api_key和模型名称
-          llm_base_url="<your llm base url>",
-          llm_api_key="<your llm api key>",
-          llm_model_name="<your llm model name>",
+          # 提供一个即用型的 OpenAI 兼容的 llm 服务地址、模型名称和 api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
       ),
     )
     
     exe_agent = Agent(
       conf=AgentConfig(
-          # 在此提供openai兼容的llm服务的地址、api_key和模型名称
-          llm_base_url="<your llm base url>",
-          llm_api_key="<your llm api key>",
-          llm_model_name="<your llm model name>",
+          # 提供一个即用型的 OpenAI 兼容的 llm 服务地址、模型名称和 api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
       ),
     )
     
     sum_agent = Agent(
       conf=AgentConfig(
-          # 在此提供openai兼容的llm服务的地址、api_key和模型名称
-          llm_base_url="<your llm base url>",
-          llm_api_key="<your llm api key>",
-          llm_model_name="<your llm model name>",
+          # 提供一个即用型的 OpenAI 兼容的 llm 服务地址、模型名称和 api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
       ),
     )
 

@@ -12,26 +12,13 @@
 
 AWorld Train provides a bridge between the AWorld agent ecosystem and various external training frameworks like Reinforcement Learning (RL) libraries. It is designed to be framework-agnostic, allowing you to bring your AWorld agents to your favorite training environments.
 
-## Installation
+The following diagram illustrates the overall architecture and the interaction between the Environment host and Training cluster:
 
-Python>=3.10 is recommended.
-
-```bash
-# Install AWorld
-pip install aworld
-
-# Framework-specific deps (VeRL example)
-pip install verl==0.5.0
-```
-
-## Quick Start
-
-Training an AWorld agent with an external framework can be done in 3 steps.
-
-We'll use the GAIA agent with VeRL as an example.
+![Architecture Diagram](../readme_assets/train_env_agent_architecture.png)
 
 
-### 1. Create an Environment
+## Environment host construction
+
 First, you need to set up the environment where the agent's tools will run. 
 
 Choose a machine (which can be a training machine).
@@ -40,7 +27,13 @@ Machine sizing recommendation:
 - For capacity planning, allocate roughly **2C4G** per concurrent worker.
 - Example: for concurrency=8, plan for **~16C and ~32G**.
 
-Create a `.env` file to configure authentication tokens for any required tools.
+```bash
+# git clone AWorld
+git clone git@github.com:inclusionAI/AWorld.git
+cd /path/to/AWorld
+cp ./env/gaia-mcp-server/mcp_servers/.env_template ./env/gaia-mcp-server/mcp_servers/.env
+```
+Edit ./env/gaia-mcp-server/mcp_servers/.env to configure authentication tokens for any required tools.
 
 ```.env
 JINA_API_KEY=<YOUR_JINA_API_KEY>
@@ -81,7 +74,9 @@ Next, run the startup script to launch the MCP server locally:
 
 ```bash
 cd /path/to/Aworld
-python -m env.train_env
+# use --docker_dir to specify the docker directory to build
+# e.g., --docker_dir=gaia-mcp-server
+python -m env.train_env --docker_dir=gaia-mcp-server
 ```
 
 Once the MCP server starts successfully, it will output the connection details:
@@ -96,9 +91,10 @@ You will need the ip, port and token from this output for the next step, where y
 
 For instructions on deploying the environment on Kubernetes, please refer to [`../env/README.md`](../env/README.md).
 
+## Training cluster Setup
 
-### 2. Create an Agent or Swarm
-Now, on the training cluster machine (or in your training script), you must make the MCP service credentials available to your agent. Use the ip, port and token from Step 1 and export them as environment variables or add them to a `.env` file:
+### 1. Create an Agent or Swarm
+Now, on the training cluster machine, you must make the MCP service credentials available to your agent. Use the ip, port and token from the [Environment host](#environment-host) section and export them as environment variables or add them to a `.env` file:
 ```bash
 # export them as environment variables
 # replace <ip>, <port> and <token> with the ip, port and token from Step 1
@@ -109,6 +105,19 @@ export MCP_SERVER_TOKEN=<token>
 # echo "MCP_SERVER_URL=http://<ip>:<port>/mcp" >> .env
 # echo "MCP_SERVER_TOKEN=<token>" >> .env
 ```
+
+Then install aworld and RL framework:
+
+```bash
+# Python>=3.10 is recommended.
+
+# Install AWorld
+pip install aworld
+
+# Framework-specific deps (VeRL example)
+pip install verl==0.5.0
+```
+
 With the connection details configured, you can define your agent within your chosen training framework. For VeRL, this is accomplished by implementing a custom `AgentLoop`.
 
 For example, `GaiaAgentLoop` inherits from `AworldAgentLoop` and implements the `build_agents` method.
@@ -143,12 +152,7 @@ class GaiaAgentLoop(AworldAgentLoop):
         )
 ```
 
-The following diagram illustrates the overall architecture and the interaction between the Agent and the Environment:
-
-![Architecture Diagram](../readme_assets/train_env_agent_architecture.png)
-
-
-### 3. Run Training
+### 2. Run Training
 Before run training, specify your custom `AgentLoop` in the `agent.yaml`:
 
 ```yaml
