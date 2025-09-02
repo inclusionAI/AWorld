@@ -113,11 +113,9 @@ For example, `GaiaAgentLoop` inherits from `AworldAgentLoop` and implements the 
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
-from aworld.core.agent.swarm import Swarm
 
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.adapter.verl.common import get_agent_tool_env_and_servers
-from env.train_env import TranEnv
 
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self):

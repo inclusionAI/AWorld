@@ -116,12 +116,11 @@ from aworld.config import AgentConfig
 
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.adapter.verl.common import get_agent_tool_env_and_servers
-from env.train_env import TranEnv
 
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self):
         # 从环境中获取环境配置和服务器。
-        # 注意：您必须按照步骤1中的说明启动 MCP 服务器
+        # 注意：您必须先按照步骤1中的说明启动 MCP 服务器
         # 并在您的环境变量中设置 URL 和令牌。
         gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
 
