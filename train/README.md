@@ -32,10 +32,8 @@ We'll use the GAIA agent with VeRL as an example.
 
 
 ### 1. Create an Environment
-First, you need to create a training environment that agents can interact with. 
-When creating an environment, some tools may require you to configure authentication credentials. This can be done by setting environment variables (we recommend managing them in a `.env` file).
+First, you need to set up the environment where the agent's tools will run. On your chosen machine (which can be a training machine), create a `.env` file to configure authentication tokens for any required tools:
 
-For example, to run the GAIA task, you need to set the .env file as follows:
 ```.env
 JINA_API_KEY=<YOUR_JINA_API_KEY>
 TAVILY_API_KEY=<YOUR_TAVILY_API_KEY>
@@ -71,71 +69,86 @@ VIDEO_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
 VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 ```
 
-Then use `train_env` utility to create your training environment and get environment configs for agents.
-```python
-from train.train_env import TranEnv
+Next, run the startup script to launch the MCP server locally:
 
-# For local tool environment
-gaia_env = TranEnv()
-gaia_env.create_env(name="GAIA", mode="local")
-
-# The 'gaia_env.get_env_config()' object now holds the connection configuration for the MCP server,
-# which can be passed to your agent.
-# For distributed environment creation, please refer to env/README.md.
+```bash
+sh start_env.sh
 ```
 
+Once the MCP server starts successfully, it will output the connection details:
+```bash
+{
+    "virtualpc-mcp-server": {
+        "type": "streamable-http",
+        "url": "http://localhost:8000/mcp",
+        "headers": {
+            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
+            "MCP_SERVERS": "readweb-server,browser-server"
+        },
+        "timeout": 6000,
+        "sse_read_timeout": 6000,
+        "client_session_timeout_seconds": 6000
+    }
+}
+```
+You need to capture the URL and token from this output. Export them as environment variables or add them to your `.env` file so your agent can connect to the tool servers:
+```bash
+# export them as environment variables
+export MCP_SERVER_URL=http://<ip>:<port>/mcp
+export MCP_SERVER_TOKEN=<tokenid>
+
+# or add them to `.env` file
+# echo "MCP_SERVER_URL=http://<ip>:<port>/mcp" >> .env
+# echo "MCP_SERVER_TOKEN=<tokenid>" >> .env
+```
+
+For instructions on deploying the environment on Kubernetes, please refer to [`../env/README.md`](../env/README.md).
+
+
 ### 2. Create an Agent or Swarm
-Next, define your agent. This is a standard AWorld agent. The key is to pass the environment configuration you created in the previous step to the agent's `mcp_config`.
+With the environment ready, the next step is to define your custom agent in your chosen training framework's loop. For VeRL, this is done by implementing a custom `AgentLoop`.
+
+For example, `GaiaAgentLoop` inherits from `AworldAgentLoop` and implements the `build_agents` method.
 
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
+from aworld.core.agent.swarm import Swarm
 
-# Assuming 'gaia_env' is the environment you created in the previous step, where
-# 'gaia_env.get_env_config()' contains {'mcp_config': {...}, 'mcp_servers': '...'}
-gaia_agent = Agent(
-    conf=AgentConfig(
-        llm_model_name="your-model-name",
-        llm_base_url="your-llm-base-url",
-        llm_api_key="your-llm-api-key",
-        llm_provider="openai",
-    ),
-    name="gaia_super_agent",
-    system_prompt="You are a helpful AI assistant.",
+from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
+from train.adapter.verl.common import get_agent_tool_env_and_servers
+from env.train_env import TranEnv
 
-    # Pass the MCP tool configuration from the environment
-    mcp_config=gaia_env.get_env_config().get("mcp_config"),
-    mcp_servers=gaia_env.get_env_config().get("mcp_servers"),
-)
+class GaiaAgentLoop(AworldAgentLoop):
+    def build_agents(self):
+        # Get env config and servers.
+        # Note: You must start the MCP server and set the URL and token
+        # in your environment variables as described in Step 1.
+        gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
+
+        return Agent(
+            conf=AgentConfig(
+                # Get the dynamic llm server address from the server manager. 
+                # The llm server is launched within VeRL.
+                llm_base_url=self.get_llm_server_address(),
+                llm_model_name=self.get_llm_server_model_name(),
+            ),
+            name="gaia_super_agent",
+            system_prompt="YOUR SYSTEM PROMPT",
+
+            # MCP tool configuration for the agent
+            mcp_config=gaia_env_config,
+            mcp_servers=gaia_env_servers,
+        )
 ```
+
+The following diagram illustrates the overall architecture and the interaction between the Agent and the Environment:
+
+![Architecture Diagram](../readme_assets/train_env_agent_architecture.png)
+
 
 ### 3. Run Training
-With the environment and agent ready, the next step is to integrate them into your chosen training framework's loop. For VeRL, this is done by implementing a custom `AgentLoop`.
-
-You can inherit from the base `AworldAgentLoop` and implement the `build_agents` method. This is where you create the environment and agent, and link them together.
-
-<details>
-<summary>Click to expand example code</summary>
-
-```python
-# In your custom_agent_loop.py
-class GaiaAgentLoop(AworldAgentLoop):
-  def build_agents(self, ...):
-      # Create the environment
-      gaia_env = TranEnv()
-      gaia_env.create_env(name="GAIA", mode="local")
-
-      # Create and return the agent, passing in the env config
-      return Agent(
-          ...,
-          mcp_config=gaia_env.get_env_config().get("mcp_config"),
-          mcp_servers=gaia_env.get_env_config().get("mcp_servers"),
-      )
-```
-
-</details>
-
-Next, specify your custom `AgentLoop` in the `agent.yaml`:
+Before run training, specify your custom `AgentLoop` in the `agent.yaml`:
 
 ```yaml
 # In agent.yaml
@@ -143,17 +156,14 @@ Next, specify your custom `AgentLoop` in the `agent.yaml`:
   _target_: train.examples.train_gaia_with_aworld_verl.custom_agent_loop.GaiaAgentLoop
 ```
 
-Finally, run the training script:
+Finally, run the training script. This script is typically a `run.sh` file based on the VeRL example.
 ```bash
-cd ./examples/train_gaia_with_aworld_verl
 bash run.sh
 ```
 This script handles the training loop, reward calculation, and agent updates, orchestrated by VeRL.
 Please refer to the [VeRL documentation](https://verl.readthedocs.io/en/latest/examples/config.html) for parameter settings in `run.sh`.
 
-### A Complete Example
-
-For a full, runnable code example, please refer to the example at [`./examples/train_gaia_with_aworld_verl/`](./examples/train_gaia_with_aworld_verl/).
+A complete, runnable example, including a `run.sh` script tailored for `GaiaAgentLoop`, is available in [`./examples/train_gaia_with_aworld_verl/`](./examples/train_gaia_with_aworld_verl/).
 
 ## Advanced Tutorial
 
@@ -164,13 +174,44 @@ Instead of a single agent, you can also train a multi-agent swarm. Simply have y
 # In your AgentLoop or setup file
 def build_agents(self, ...) -> Union[Agent, Swarm]:
     # ... (create individual agents)
-    planner_agent = ...
-    worker_agent_1 = ...
-    worker_agent_2 = ...
+    agent_to_be_train = Agent(
+      conf=AgentConfig(
+          # For the agent to be trained, llm_base_url and llm_model_name are obtained from the services launched by VeRL
+          llm_base_url=self.get_llm_server_address(),
+          llm_model_name=self.get_llm_server_model_name(),
+      ),
+    )
+
+    plan_agent = Agent(
+      conf=AgentConfig(
+          # Provide a ready-to-use OpenAI-compatible llm service address, model name, and api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
+      ),
+    )
+    
+    exe_agent = Agent(
+      conf=AgentConfig(
+          # Provide a ready-to-use OpenAI-compatible llm service address, model name, and api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
+      ),
+    )
+    
+    sum_agent = Agent(
+      conf=AgentConfig(
+          # Provide a ready-to-use OpenAI-compatible llm service address, model name, and api_key
+          llm_base_url="",
+          llm_model_name="",
+          llm_api_key=""
+      ),
+    )
 
     # Return a Swarm composed of your agents
     return Swarm(
-        planner_agent, worker_agent_1, worker_agent_2,
+        agent_to_be_train, plan_agent, exe_agent, sum_agent,
         # ... other swarm configuration
     )
 ```

@@ -30,11 +30,10 @@ pip install verl==0.5.0
 
 我们将以 GAIA 智能体和 VeRL 框架为例。
 
-### 1. 创建环境
-首先，您需要创建一个智能体可以与之交互的训练环境。
-创建环境时，某些工具可能需要您配置身份验证凭据。这可以通过设置环境变量来完成（建议在 `.env` 文件中管理它们）。
 
-例如，要运行 GAIA 任务，需要设置如下.env文件：
+### 1. 创建环境
+首先，您需要为智能体的工具创建一个运行环境。选择一台机器（也可以是训练机），创建一个 `.env` 文件来为需要token验证的工具进行配置：
+
 ```.env
 JINA_API_KEY=<YOUR_JINA_API_KEY>
 TAVILY_API_KEY=<YOUR_TAVILY_API_KEY>
@@ -70,71 +69,84 @@ VIDEO_LLM_MODEL_NAME=${MCP_LLM_MODEL_NAME}
 VIDEO_LLM_API_KEY=${MCP_LLM_API_KEY}
 ```
 
-然后使用 `train_env` 工具来创建训练环境，并为智能体获取环境配置。
-```python
-from train.train_env import TranEnv
+接下来，运行启动脚本，在机器本地启动 MCP 服务器：
 
-gaia_env = TranEnv()
-# 针对本地工具环境
-gaia_env = gaia_env.create_env(name="GAIA", mode="local")
-
-# 'gaia_env.get_env_config()' 对象现在包含了 MCP 服务器的连接配置，
-# 可以将其传递给智能体。
-# 关于分布式环境的创建，请参考 env/README.md。
+```bash
+sh start_env.sh
 ```
 
-### 2. 创建智能体
-接下来，定义您的智能体。这是一个标准的 AWorld Agent。将上一步中创建的环境配置传递给智能体的 `mcp_config`。
+MCP 服务器成功启动后，它将输出连接详细信息：
+```bash
+{
+    "virtualpc-mcp-server": {
+        "type": "streamable-http",
+        "url": "http://localhost:8000/mcp",
+        "headers": {
+            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
+            "MCP_SERVERS": "readweb-server,browser-server"
+        },
+        "timeout": 6000,
+        "sse_read_timeout": 6000,
+        "client_session_timeout_seconds": 6000
+    }
+}
+```
+您需要从此输出中获取 URL 和令牌。将它们导出为环境变量或添加到您的 `.env` 文件中，以便您的智能体可以连接到工具服务器：
+```bash
+# 导出为环境变量
+export MCP_SERVER_URL=http://<ip>:<port>/mcp
+export MCP_SERVER_TOKEN=<tokenid>
+
+# 或者添加到 `.env` 文件中
+# echo "MCP_SERVER_URL=http://<ip>:<port>/mcp" >> .env
+# echo "MCP_SERVER_TOKEN=<tokenid>" >> .env
+```
+
+有关在 Kubernetes 上部署环境的说明，请参阅 [`../env/README.md`](../env/README.md)。
+
+
+### 2. 创建智能体或智能体集群
+环境准备就绪后，下一步是在您选择的训练框架的循环中定义您的自定义智能体。对于 VeRL，这是通过实现一个自定义的 `AgentLoop` 来完成的。
+
+例如，`GaiaAgentLoop` 继承自 `AworldAgentLoop` 并实现了 `build_agents` 方法。
 
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 
-# 假设已经从上述步骤中创建了 'gaia_env' 
-# 调用'gaia_env.get_env_config()' 获取 {'mcp_config': {...}, 'mcp_servers': '...'}
-gaia_agent = Agent(
-    conf=AgentConfig(
-        llm_model_name="your-model-name",
-        llm_base_url="your-llm-base-url",
-        llm_api_key="your-llm-api-key",
-        llm_provider="openai",
-    ),
-    name="gaia_super_agent",
-    system_prompt="You are a helpful AI assistant.",
+from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
+from train.adapter.verl.common import get_agent_tool_env_and_servers
+from env.train_env import TranEnv
 
-    # 传入 MCP 工具配置
-    mcp_config=gaia_env.get_env_config().get("mcp_config"),
-    mcp_servers=gaia_env.get_env_config().get("mcp_servers"),
-)
-```
-
-### 3. 开始训练
-环境和智能体准备就绪后，下一步是将其集成到您所选训练框架的循环中。对于 VeRL，这是通过实现一个自定义的 `AgentLoop` 来完成的。
-
-您可以继承自基础的 `AworldAgentLoop` 并实现 `build_agents` 方法。在这里您可以创建环境和智能体，并将它们连接在一起。
-
-<details>
-<summary>Click to expand example code</summary>
-
-```python
-# 在您的 custom_agent_loop.py 文件中
 class GaiaAgentLoop(AworldAgentLoop):
-  def build_agents(self, ...):
-      # 创建环境
-      gaia_env = TranEnv()
-      gaia_env.create_env(name="GAIA", mode="local")
+    def build_agents(self):
+        # 从环境中获取环境配置和服务器。
+        # 注意：您必须按照步骤1中的说明启动 MCP 服务器
+        # 并在您的环境变量中设置 URL 和令牌。
+        gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
 
-      # 创建并返回智能体，传入环境配置
-      return Agent(
-          ...,
-          mcp_config=gaia_env.get_env_config().get("mcp_config"),
-          mcp_servers=gaia_env.get_env_config().get("mcp_servers"),
-      )
+        return Agent(
+            conf=AgentConfig(
+                # verl会启动llm服务并动态分配服务地址，需要从服务管理器中获取服务地址
+                llm_base_url=self.get_llm_server_address(),
+                llm_model_name=self.get_llm_server_model_name(),
+            ),
+            name="gaia_super_agent",
+            system_prompt="YOUR SYSTEM PROMPT",
+
+            # 智能体的 MCP 工具配置
+            mcp_config=gaia_env_config,
+            mcp_servers=gaia_env_servers,
+        )
 ```
 
-</details>
+下图展示了智能体（Agent）和环境（Environment）的整体架构及两者间的交互关系：
 
-接下来，在 `agent.yaml` 配置文件中指定您的自定义 `AgentLoop`:
+![架构示意图](../readme_assets/train_env_agent_architecture.png)
+
+
+### 3. 运行训练
+在运行训练之前，请在 `agent.yaml` 中指定您的自定义 `AgentLoop`：
 
 ```yaml
 # 在 agent.yaml 中
@@ -142,38 +154,63 @@ class GaiaAgentLoop(AworldAgentLoop):
   _target_: train.examples.train_gaia_with_aworld_verl.custom_agent_loop.GaiaAgentLoop
 ```
 
-最后，运行训练脚本：
+最后，运行训练脚本。该脚本通常是基于 VeRL 示例的 `run.sh` 文件。
 ```bash
-cd ./examples/train_gaia_with_aworld_verl
 bash run.sh
 ```
-该脚本运行 VeRL 中的AgentLoop、奖励计算和模型训练。
-关于 `run.sh` 中的参数设置，请参考 [VeRL 文档](https://verl.readthedocs.io/en/latest/examples/config.html)。
+此脚本处理由 VeRL 编排的AgentLoop、奖励计算函数和训练流程。
+有关 `run.sh` 中的参数设置，请参阅 [VeRL 文档](https://verl.readthedocs.io/en/latest/examples/config.html)。
 
-### 完整示例
-
-要获取一个完整的、可运行的代码示例，请参考 [`./examples/train_gaia_with_aworld_verl/`](./examples/train_gaia_with_aworld_verl/) 目录下的示例。
+一个完整的、可运行的示例，包括为 `GaiaAgentLoop` 定制的 `run.sh` 脚本，可在 [`./examples/train_gaia_with_aworld_verl/`](./examples/train_gaia_with_aworld_verl/) 中找到。
 
 ## 进阶教程
 
 ### 如何创建复杂的多智能体集群 (Swarm)
-除了单个智能体，您也可以训练一个多智能体集群（Swarm）。只需让您的 `build_agents` 方法（或等效的设置函数）返回一个 `Swarm` 对象而不是单个 `Agent` 对象即可。AWorld 和训练适配器将处理剩下的部分。
+除了单个智能体，您还可以训练一个多智能体集群。只需让您的 `build_agents` 方法（或等效的设置函数）返回一个 `Swarm` 对象而不是单个 `Agent` 对象即可。AWorld 和训练适配器将处理剩下的部分。
 
 ```python
-# 在 自定义的AgentLoop 中
+# 在自定义的AgentLoop中
 def build_agents(self, ...) -> Union[Agent, Swarm]:
-    # ... (创建单个智能体)
-    # create env
-    train_env = TrainEnv()
-    gaia_env = train_env.create_env(name="GAIA", mode="local")
-    planner_agent = ...
-    worker_agent_1 = ...
-    worker_agent_2 = ...
+    # ... 创建多个agent
+    agent_to_be_train = Agent(
+      conf=AgentConfig(
+          # 对于要训练的agent，llm_base_url和llm_model_name是从verl启动的服务中获取的
+          llm_base_url=self.get_llm_server_address(),
+          llm_model_name=self.get_llm_server_model_name(),
+      ),
+    )
 
-    # 返回由多个智能体组成的 Swarm
+    plan_agent = Agent(
+      conf=AgentConfig(
+          # 在此提供openai兼容的llm服务的地址、api_key和模型名称
+          llm_base_url="<your llm base url>",
+          llm_api_key="<your llm api key>",
+          llm_model_name="<your llm model name>",
+      ),
+    )
+    
+    exe_agent = Agent(
+      conf=AgentConfig(
+          # 在此提供openai兼容的llm服务的地址、api_key和模型名称
+          llm_base_url="<your llm base url>",
+          llm_api_key="<your llm api key>",
+          llm_model_name="<your llm model name>",
+      ),
+    )
+    
+    sum_agent = Agent(
+      conf=AgentConfig(
+          # 在此提供openai兼容的llm服务的地址、api_key和模型名称
+          llm_base_url="<your llm base url>",
+          llm_api_key="<your llm api key>",
+          llm_model_name="<your llm model name>",
+      ),
+    )
+
+    # 返回由以上定义的智能体组成的Swarm
     return Swarm(
-        planner_agent, worker_agent_1, worker_agent_2,
-        # ... 其他 swarm 配置
+        agent_to_be_train, plan_agent, exe_agent, sum_agent,
+        # ... 其他Swarm配置
     )
 ```
 
