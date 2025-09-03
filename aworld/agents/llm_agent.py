@@ -533,13 +533,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                             agent_id=self.id(),
                                                             use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
+        policy_result: Optional[List[ActionModel]] = None
         if self.is_agent_finished(llm_response, agent_result):
-            return agent_result.actions
+            policy_result = agent_result.actions
         else:
             if not self.wait_tool_result:
-                return agent_result.actions
+                policy_result = agent_result.actions
             else:
-                return await self.execution_tools(agent_result.actions, message)
+                policy_result = await self.execution_tools(agent_result.actions, message)
+        await self.send_llm_response_output(llm_response, agent_result, message.context, kwargs.get("outputs"))
+        return policy_result
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
         """Tool execution operations.
@@ -717,18 +720,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 output, response = await async_call_llm(resp_stream)
                 llm_response = response
 
-                if eventbus is not None and resp_stream:
-                    output_message = Message(
-                        category=Constants.OUTPUT,
-                        payload=output,
-                        sender=self.id(),
-                        session_id=message.context.session_id if message.context else "",
-                        headers={"context": message.context}
-                    )
-                    await send_message(output_message)
-                elif not self.event_driven and outputs:
-                    outputs.add_output(output)
-
             else:
                 llm_response = await acall_llm_model(
                     self.llm,
@@ -738,19 +729,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=kwargs.get("stream", False)
                 )
-                if eventbus is None:
-                    logger.warn("=============== eventbus is none ============")
-                if eventbus is not None and llm_response:
-                    await send_message(Message(
-                        category=Constants.OUTPUT,
-                        payload=llm_response,
-                        sender=self.id(),
-                        session_id=message.context.session_id if message.context else "",
-                        headers={"context": message.context}
-                    ))
-                elif not self.event_driven and outputs:
-                    outputs.add_output(MessageOutput(
-                        source=llm_response, json_parse=False))
 
             logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
         except Exception as e:
@@ -907,6 +885,27 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ), agent_memory_config=self.memory_config)
+
+    async def send_llm_response_output(self, llm_response:ModelResponse, agent_result: AgentResult, context: Context, outputs: Outputs = None):
+        """Send LLM response to output"""
+        if not llm_response or llm_response.error:
+            return
+        if eventbus is None:
+            logger.warn("=============== eventbus is none ============")
+        llm_resp_output = MessageOutput(
+            source=llm_response,
+            metadata={"agent_id": self.id(), "agent_name": self.name(), "is_finished": self.finished}
+        )
+        if eventbus is not None and llm_response:
+            await send_message(Message(
+                category=Constants.OUTPUT,
+                payload=llm_resp_output,
+                sender=self.id(),
+                session_id=context.session_id if context else "",
+                headers={"context": context}
+            ))
+        elif not self.event_driven and outputs:
+            await outputs.add_output(llm_resp_output)
 
     def is_agent_finished(self, llm_response: ModelResponse, agent_result: AgentResult) -> bool:
         if not agent_result.is_call_tool:
