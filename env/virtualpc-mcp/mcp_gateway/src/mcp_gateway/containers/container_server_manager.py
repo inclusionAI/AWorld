@@ -40,6 +40,9 @@ class ContainerServerRepo:
     def __init__(self):
         self._container_servers: List[ContainerServer] = []
 
+    async def initialize(self):
+        pass
+
     async def get_server(self, container_server_id: str) -> ContainerServer | None:
         servers = await self.get_servers()
         return next(
@@ -61,8 +64,11 @@ class ContainerServerRedisRepo(ContainerServerRepo):
 
     def __init__(self, redis_url: str):
         self._redis_client = Redis.from_url(redis_url)
-        self._redis_client.ping()
         self._redis_key = f"{cluster_name}.container_servers"
+
+    async def initialize(self):
+        """Initialize the container server redis repo"""
+        await self._redis_client.ping()
 
     async def get_servers(self) -> List[ContainerServer]:
         """Get all container servers from Redis"""
@@ -250,6 +256,8 @@ class ContainerServerManager:
 
     async def initialize(self):
         """Initialize the container server manager"""
+
+        await self._container_server_repo.initialize()
 
         async def health_check_task():
             while True:

@@ -5,16 +5,19 @@ from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.core.event.base import Constants
-from aworld.planner.plan import PlannerOutputParser
 from aworld.runner import Runners
-
 from examples.common.tools.common import Tools
 from examples.multi_agents.coordination.deepresearch.prompts import *
+from examples.planner.plan import PlannerOutputParser
+from examples.web.agent_deploy.deep_research.agent import BaseDynamicPromptAgent
 
-# os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
+
 # os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
 # os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
 # os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
+
+class PlannerAgent(BaseDynamicPromptAgent):
+    pass
 
 def get_deepresearch_swarm(user_input):
 
@@ -30,12 +33,11 @@ def get_deepresearch_swarm(user_input):
     )
 
     agent_id = "planner_agent"
-    plan_agent = Agent(
+    plan_agent = PlannerAgent(
         agent_id = agent_id,
         name="planner_agent",
         desc="planner_agent",
         conf=agent_config,
-        use_tools_in_prompt=True,
         model_output_parser=PlannerOutputParser(agent_id),
         system_prompt=plan_sys_prompt,
         event_handler_name=Constants.PLAN

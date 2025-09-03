@@ -4,14 +4,12 @@ import json
 import re
 
 from aworld.core.agent.base import AgentResult
-from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.common import ActionModel
-from aworld.core.context.base import Context
+from aworld.core.model_output_parser import ModelOutputParser
 from aworld.logs.util import logger
 from aworld.models.model_response import ModelResponse
-from aworld.planner.base import BasePlanner
-from aworld.planner.models import Plan
-from aworld.planner.parse import parse_step_json
+from examples.planner.models import Plan
+from examples.planner.parse import parse_step_json
 
 # Tags for response structure
 PLANNING_TAG = "<PLANNING_TAG>"
@@ -49,24 +47,6 @@ Available Tools:
 {{{{tool_list}}}}
 
 User Input: {{{{task}}}}"""
-
-
-class DefaultPlanner(BasePlanner):
-    """The LLM model for planning."""
-    plan_system_prompt: str = DEFAULT_SYSTEM_PROMPT
-    replan_system_prompt: str = DEFAULT_SYSTEM_PROMPT
-
-    def __init__(self, plan_system_prompt: str = DEFAULT_SYSTEM_PROMPT, replan_system_prompt: str = DEFAULT_SYSTEM_PROMPT):
-        self.plan_system_prompt = plan_system_prompt
-        self.replan_system_prompt = replan_system_prompt
-
-    def plan(self, context: "Context") -> str:
-        """Build the plan instruction."""
-        return self.plan_system_prompt
-    def replan(self, context: "Context") -> str:
-        """Build the plan instruction."""
-        return self.replan_system_prompt
-
 
 class PlannerOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
     """Parser for responses that include thinking process and planning."""

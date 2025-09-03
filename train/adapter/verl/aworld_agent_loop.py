@@ -22,8 +22,20 @@ class AworldAgentLoop(AgentLoopBase):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def build_agents(self, model_name: str = "", base_url: str = "", api_key: str = "") -> Union[Agent, Swarm]:
+    def build_agents(self) -> Union[Agent, Swarm]:
         """Build single- or multi-agent"""
+
+    def get_llm_server_address(self, server_name: str = None) -> str:
+        server = self.server_manager._choose_server(server_name or uuid.uuid4().hex)
+        base_url = server.get_server_address.remote()
+        base_url = f"http://{base_url}/v1"
+        logger.info(f"get_server_address#base_url: {base_url}")
+        return base_url
+
+    def get_llm_server_model_name(self):
+        model_name = "/".join(self.config.actor_rollout_ref.model.path.split("/")[-2:])
+        logger.info(f"get_server_model_name#model_name: {model_name}")
+        return model_name
 
     # main branch
     # async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
@@ -31,23 +43,7 @@ class AworldAgentLoop(AgentLoopBase):
 
     # release 0.5.0
     async def run(self, messages: list, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
-        server = self.server_manager._choose_server(uuid.uuid4().hex)
-        base_url = await server.get_server_address.remote()
-        base_url = f"http://{base_url}/v1"
-        model_name = "/".join(self.config.actor_rollout_ref.model.path.split("/")[-2:])
-        logger.info(f"base_url: {base_url}, model_name: {model_name}")
-        agent = self.build_agents(model_name=model_name, base_url=base_url, api_key="dummy")
-
-        # load mcp tool config
-        if not agent.mcp_config or not agent.sandbox:
-            tool_config_path = os.environ["AGENT_TOOL_CONFIG_PATH"]
-            if isinstance(agent, Agent) and tool_config_path:
-                tool_config = await self.get_agent_tool_config(tool_config_path)
-                logger.info(f"tool_config: {tool_config}")
-                agent.mcp_config = tool_config
-                agent.mcp_servers = list(server_name for server_name in tool_config.get("mcpServers", {}).keys())
-                if not agent.sandbox:
-                    agent.sandbox = Sandbox(mcp_servers=agent.mcp_servers, mcp_config=agent.mcp_config)
+        agent = self.build_agents()
 
         self.agent = agent
 

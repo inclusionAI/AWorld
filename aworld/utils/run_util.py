@@ -2,14 +2,13 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import uuid
-from typing import Any, List
+from typing import Any, List, Dict
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.task import Task, TaskResponse
-from aworld.logs.util import logger
 from aworld.output.outputs import Outputs
 from aworld.runners.utils import choose_runners, execute_runner
 
@@ -21,7 +20,7 @@ async def exec_tool(tool_name: str,
                     context: Context,
                     sub_task: bool = False,
                     outputs: Outputs = None,
-                    task_group_id: str = None):
+                    task_group_id: str = None) -> TaskResponse:
     """Utility method for executing a tool in a task-oriented manner.
 
     Args:
@@ -48,8 +47,12 @@ async def exec_tool(tool_name: str,
     return resp
 
 
-async def exec_agent(question: Any, agent: Agent, context: Context, sub_task: bool = False, outputs: Outputs = None,
-                     task_group_id: str = None):
+async def exec_agent(question: Any,
+                     agent: Agent,
+                     context: Context,
+                     sub_task: bool = False,
+                     outputs: Outputs = None,
+                     task_group_id: str = None) -> TaskResponse:
     """Utility method for executing an agent in a task-oriented manner.
 
     Args:
@@ -82,7 +85,7 @@ async def exec_agents(questions: List[Any],
                       agents: List[Agent],
                       context: Context,
                       sub_task: bool = False,
-                      task_group_id: str = None):
+                      task_group_id: str = None) -> List[ActionModel]:
     """Execute the agent list with the questions, using asyncio.
 
     Args:
@@ -109,7 +112,7 @@ async def exec_agents(questions: List[Any],
     return res
 
 
-async def exec_process_agents(question: List[Any],
+async def exec_process_agents(question: Any,
                               agents: List[Agent],
                               context: Context,
                               sub_task: bool = False,
@@ -126,10 +129,12 @@ async def exec_process_agents(question: List[Any],
         task_group_id: ID of group of task.
     """
     tasks = []
+    agent_map = {}
     if agents:
         for agent in agents:
-            tasks.append(
-                Task(input=question, agent=agent, context=context, is_sub_task=sub_task, group_id=task_group_id))
+            task = Task(input=question, agent=agent, context=context, is_sub_task=sub_task, group_id=task_group_id)
+            agent_map[task.id] = agent.id()
+            tasks.append(task)
 
     if not tasks:
         raise RuntimeError("no task need to run.")
@@ -138,12 +143,12 @@ async def exec_process_agents(question: List[Any],
     results = await execute_runner(runners, RunConfig(reuse_process=True))
 
     res = []
-    for idx, result in enumerate(results):
-        res.append(ActionModel(agent_name=agents[idx].id(), policy_info=result))
+    for key, result in results.items():
+        res.append(ActionModel(agent_name=agent_map[key], policy_info=result))
     return res
 
 
-async def exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()):
+async def exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()) -> Dict[str, TaskResponse]:
     final_tasks = []
     for task in tasks:
         if not task.group_id:
