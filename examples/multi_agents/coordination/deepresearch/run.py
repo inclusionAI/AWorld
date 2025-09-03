@@ -12,13 +12,10 @@ from examples.planner.plan import PlannerOutputParser
 from examples.web.agent_deploy.deep_research.agent import BaseDynamicPromptAgent
 
 
-# os.environ["LLM_MODEL_NAME"] = "DeepSeek-V3"
 # os.environ["LLM_MODEL_NAME"] = "qwen/qwen3-8b"
 # os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
 # os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
-os.environ['LLM_BASE_URL'] = 'https://antchat.alipay.com/v1'
-os.environ['LLM_MODEL_NAME'] = 'DeepSeek-V3'
-os.environ['LLM_API_KEY'] = 'wRyhVCXm1eBKBgC1jIzXyZchDkMbxWzB'
+
 class PlannerAgent(BaseDynamicPromptAgent):
     pass
 
