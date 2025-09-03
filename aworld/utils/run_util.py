@@ -150,9 +150,28 @@ async def exec_process_agents(question: Any,
 
 async def exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()) -> Dict[str, TaskResponse]:
     final_tasks = []
+    # task list sequence-dependent execution
+    if run_conf.sequence_dependent:
+        return await serial_exec_tasks(tasks=tasks, run_conf=run_conf)
+
     for task in tasks:
         if not task.group_id:
             task.group_id = uuid.uuid4().hex
         final_tasks.append(task)
     runners = await choose_runners(final_tasks)
     return await execute_runner(runners, run_conf)
+
+
+async def serial_exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()) -> Dict[str, TaskResponse]:
+    res = {}
+    task_input = tasks[0].input
+    for task in tasks:
+        task.input = task_input
+        runners = await choose_runners([task])
+        res = await execute_runner(runners, run_conf)
+        result: TaskResponse = res.get(task.id)
+        if result.success:
+            task_input = result.answer
+        else:
+            task_input = result.msg
+    return res

@@ -236,6 +236,7 @@ class RunConfig(BaseConfig):
     name: str = 'local'
     worker_num: int = 1
     reuse_process: bool = True
+    sequence_dependent: bool = False
     cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
