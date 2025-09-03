@@ -15,6 +15,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.task import Task, TaskResponse
 from aworld.events.manager import EventManager
+from aworld.events.cancellation import CancellationRegistry, TaskStatus, build_cancellation_store
 from aworld.logs.util import logger
 from aworld.replay_buffer import EventReplayBuffer
 from aworld.runners import HandlerFactory
@@ -37,12 +38,21 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
         self.replay_buffer = EventReplayBuffer()
+        # cancellation registry hook function, set by external to check task status
+        self._cancellation_checker = None
 
     async def pre_run(self):
         logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
         await super().pre_run()
         self.event_mng.context = self.context
         self.context.event_manager = self.event_mng
+        # 初始化取消存储后端（memory/redis/sqlite），可通过 task.conf['cancellation'] 配置
+        try:
+            cancel_conf = (self.task.conf or {}).get('cancellation')
+            store = build_cancellation_store(cancel_conf)
+            CancellationRegistry.instance().use_store(store)
+        except Exception:
+            pass
 
         if self.swarm and not self.swarm.max_steps:
             self.swarm.max_steps = self.task.conf.get('max_steps', 10)
@@ -72,6 +82,11 @@ class TaskEventRunner(TaskRunner):
                 await self.event_mng.register(Constants.TOOL, Constants.TOOL, tool.step)
 
         self._stopped = asyncio.Event()
+        # 注册到取消中心
+        try:
+            CancellationRegistry.instance().register(self.task.id, TaskStatus.RUNNING)
+        except Exception:
+            pass
 
         # handler of process in framework
         handler_list = self.conf.get("handlers")
@@ -265,9 +280,24 @@ class TaskEventRunner(TaskRunner):
                                                            id=self.task.id,
                                                            time_cost=(
                                                                time.time() - start),
-                                                           usage=self.context.token_usage)
+                                                           usage=self.context.token_usage,
+                                                           status='cancelled' if msg == 'cancelled' else ('success' if not msg else 'failed'))
                     break
                 logger.debug(f"[TaskEventRunner] next snap {self.task.id}")
+                # external cancellation polling before consuming next message
+                try:
+                    cancelled = False
+                    if self._cancellation_checker and callable(self._cancellation_checker):
+                        cancelled = await self._maybe_await(self._cancellation_checker(self.task.id))
+                    else:
+                        cancelled = CancellationRegistry.instance().is_cancelled(self.task.id)
+                    if cancelled:
+                        msg = 'cancelled'
+                        await self.stop()
+                        continue
+                except Exception:
+                    # ignore external checker errors to not break loop
+                    pass
                 # consume message
                 message: Message = await self.event_mng.consume()
                 logger.debug(
@@ -296,6 +326,21 @@ class TaskEventRunner(TaskRunner):
             if await self.is_stopped():
                 logger.info(
                     f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
+                # 写回最终任务状态
+                try:
+                    reg = CancellationRegistry.instance()
+                    info = reg.get(self.task.id)
+                    if info and info.get('status') == TaskStatus.CANCELLED:
+                        if self._task_response:
+                            self._task_response.status = 'cancelled'
+                            self._task_response.msg = self._task_response.msg or 'cancelled'
+                        reg.set_status(self.task.id, TaskStatus.CANCELLED)
+                    else:
+                        if self._task_response:
+                            self._task_response.status = 'success' if self._task_response.success else 'failed'
+                        reg.set_status(self.task.id, TaskStatus.SUCCESS if self._task_response and self._task_response.success else TaskStatus.FAILED)
+                except Exception:
+                    pass
                 await self.context.update_task_after_run(self._task_response)
                 if not self.task.is_sub_task:
                     logger.info(f"FINISHED|TaskEventRunner|outputs|{self.task.id} {self.task.is_sub_task}")
@@ -324,6 +369,18 @@ class TaskEventRunner(TaskRunner):
 
     async def is_stopped(self):
         return self._stopped.is_set()
+
+    def set_cancellation_checker(self, checker: Callable[[str], Any]):
+        """注册外部取消检查函数。
+
+        checker 接收 `task_id` 并返回 bool/awaitable-bool，True 表示应取消。
+        """
+        self._cancellation_checker = checker
+
+    async def _maybe_await(self, value):
+        if asyncio.iscoroutine(value) or isinstance(value, asyncio.Future):
+            return await value
+        return value
 
     def response(self):
         return self._task_response
