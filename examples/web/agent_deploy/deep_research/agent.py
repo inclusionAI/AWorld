@@ -12,7 +12,7 @@ from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from aworld.output.base import MessageOutput
 from aworld.output.ui.base import AworldUI
 from aworld.output.workspace import WorkSpace
-from aworld.planner.plan import PlannerOutputParser
+from examples.planner.plan import PlannerOutputParser
 
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.cmd.data_model import BaseAWorldAgent, ChatCompletionRequest
