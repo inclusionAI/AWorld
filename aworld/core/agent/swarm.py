@@ -84,7 +84,7 @@ class Swarm(object):
             if isinstance(agent, (list, tuple)):
                 if len(agent) != 2:
                     all_pair = False
-            elif isinstance(agent, BaseAgent):
+            elif isinstance(agent, (BaseAgent, Swarm)):
                 all_pair = False
             else:
                 raise AworldException(
@@ -96,6 +96,9 @@ class Swarm(object):
                 'The type of `handoff` requires all pairs to appear.')
 
         for agent in self.agent_list:
+            if isinstance(agent, Swarm):
+                continue
+
             if isinstance(agent, BaseAgent):
                 agent = [agent]
             for a in agent:
@@ -105,7 +108,7 @@ class Swarm(object):
                     self._event_driven = True
                     break
 
-    def reset(self, content: Any, context: Context = None, tools: List[str] = None):
+    def reset(self, content: Any = None, context: Context = None, tools: List[str] = None):
         """Resets the initial internal state, and init supported tools in agent in swarm.
 
         Args:
@@ -595,6 +598,12 @@ class TopologyBuilder:
     def build(self):
         """Build a multi-agent topology diagram using custom build strategies or syntax."""
 
+    def _to_task_agent(self, swarm: Swarm):
+        """Nested swarm wrapped with `TaskAgent`, used to support mixed topology."""
+        from aworld.agents.task_llm_agent import TaskAgent
+
+        return TaskAgent(name=f"swarm_{swarm.build_type}", swarm=swarm)
+
     @staticmethod
     def register_agent(agent: BaseAgent):
         logger.info(f"register_agent: {type(agent)}: {agent.id()}")
@@ -659,7 +668,7 @@ class WorkflowBuilder(TopologyBuilder):
         agent_graph = AgentGraph(GraphBuildType.WORKFLOW.value)
         single_agents = []
         for agent in self.agent_list:
-            if isinstance(agent, (BaseAgent, list)):
+            if isinstance(agent, (BaseAgent, Swarm, list)):
                 single_agents.append(agent)
             elif isinstance(agent, tuple):
                 single_agents.append(agent)
@@ -679,6 +688,11 @@ class WorkflowBuilder(TopologyBuilder):
             if isinstance(agent, BaseAgent):
                 TopologyBuilder.register_agent(agent)
                 agent_graph.add_node(agent)
+            elif isinstance(agent, Swarm):
+                task_agent = self._to_task_agent(agent)
+                TopologyBuilder.register_agent(task_agent)
+                agent_graph.add_node(task_agent)
+                agent = task_agent
             elif isinstance(agent, tuple):
                 agents = self._flatten_agent(agent)
                 name = f"serial_{'_'.join([agent.name() for agent in agents])}"
@@ -707,6 +721,10 @@ class WorkflowBuilder(TopologyBuilder):
             if isinstance(agent, BaseAgent):
                 TopologyBuilder.register_agent(agent)
                 res_agents.append(agent)
+            if isinstance(agent, Swarm):
+                task_agent = self._to_task_agent(agent)
+                TopologyBuilder.register_agent(task_agent)
+                res_agents.append(task_agent)
             elif isinstance(agent, tuple) and len(agent) > 0:
                 flatten_agents = self._flatten_agent(agent)
                 name = f"serial_{'_'.join([agent.name() for agent in flatten_agents])}"
@@ -765,20 +783,27 @@ class HandoffBuilder(TopologyBuilder):
         # agent handoffs graph build.
         agent_graph = AgentGraph(GraphBuildType.HANDOFF.value)
         for pair in valid_agent_pair:
-            TopologyBuilder.register_agent(pair[0])
-            TopologyBuilder.register_agent(pair[1])
+            left_agent = pair[0]
+            right_agent = pair[1]
+            if isinstance(left_agent, Swarm):
+                left_agent = self._to_task_agent(left_agent)
+            if isinstance(right_agent, Swarm):
+                right_agent = self._to_task_agent(right_agent)
+
+            TopologyBuilder.register_agent(left_agent)
+            TopologyBuilder.register_agent(right_agent)
 
             # need feedback
-            pair[0].feedback_tool_result = True
-            pair[1].feedback_tool_result = True
+            left_agent.feedback_tool_result = True
+            right_agent.feedback_tool_result = True
 
-            agent_graph.add_nodes(pair[0], pair[1])
-            agent_graph.add_edge(pair[0], pair[1])
+            agent_graph.add_nodes(left_agent, right_agent)
+            agent_graph.add_edge(left_agent, right_agent)
 
             # explicitly set handoffs in the agent
-            pair[0].handoffs.append(pair[1].id())
-            if pair[1].id() in pair[1].handoffs:
-                pair[1].handoffs.remove(pair[1].id())
+            left_agent.handoffs.append(right_agent.id())
+            if right_agent.id() in right_agent.handoffs:
+                right_agent.handoffs.remove(right_agent.id())
         return agent_graph
 
 
@@ -809,14 +834,15 @@ class TeamBuilder(TopologyBuilder):
         if isinstance(root_agent, tuple):
             valid_agents.append(root_agent)
             root_agent = root_agent[0]
+        if isinstance(root_agent, Swarm):
+            root_agent = self._to_task_agent(root_agent)
         TopologyBuilder.register_agent(root_agent)
-        root_agent.feedback_tool_result = True
         agent_graph.add_node(root_agent)
         root_agent.feedback_tool_result = True
 
         single_agents = []
         for agent in self.agent_list[1:]:
-            if isinstance(agent, BaseAgent):
+            if isinstance(agent, (BaseAgent, Swarm)):
                 single_agents.append(agent)
             elif isinstance(agent, tuple):
                 valid_agents.append(agent)
@@ -827,6 +853,8 @@ class TeamBuilder(TopologyBuilder):
             raise RuntimeError(f"no valid agent in swarm to build execution graph.")
 
         for agent in single_agents:
+            if isinstance(root_agent, Swarm):
+                agent = self._to_task_agent(agent)
             TopologyBuilder.register_agent(agent)
 
             agent.feedback_tool_result = True
@@ -838,23 +866,33 @@ class TeamBuilder(TopologyBuilder):
                 agent.handoffs.remove(agent.id())
 
         for pair in valid_agents:
-            TopologyBuilder.register_agent(pair[0])
-            pair[0].feedback_tool_result = True
-            if len(pair) > 1:
-                TopologyBuilder.register_agent(pair[1])
-                pair[1].feedback_tool_result = True
+            left_agent = pair[0]
+            if isinstance(left_agent, Swarm):
+                left_agent = self._to_task_agent(left_agent)
 
-            agent_graph.add_nodes(pair[0], pair[1])
-            if pair[0] != root_agent:
-                agent_graph.add_edge(root_agent, pair[0])
-                root_agent.handoffs.append(pair[0].id())
-                if pair[0].id() in pair[0].handoffs:
-                    pair[0].handoffs.remove(pair[0].id())
+            TopologyBuilder.register_agent(left_agent)
+            left_agent.feedback_tool_result = True
+            agent_graph.add_nodes(left_agent)
+            if len(pair) > 1:
+                right_agent = pair[1]
+                if isinstance(right_agent, Swarm):
+                    right_agent = self._to_task_agent(right_agent)
+
+                TopologyBuilder.register_agent(right_agent)
+                right_agent.feedback_tool_result = True
+                agent_graph.add_nodes(right_agent)
+
+            if left_agent != root_agent:
+                agent_graph.add_edge(root_agent, left_agent)
+                root_agent.handoffs.append(left_agent.id())
+                if left_agent.id() in left_agent.handoffs:
+                    left_agent.handoffs.remove(left_agent.id())
             else:
-                agent_graph.add_edge(root_agent, pair[1])
-                root_agent.handoffs.append(pair[1].id())
-                if pair[1].id() in pair[1].handoffs:
-                    pair[1].handoffs.remove(pair[1].id())
+                # right agent must not None
+                agent_graph.add_edge(root_agent, right_agent)
+                root_agent.handoffs.append(right_agent.id())
+                if right_agent.id() in right_agent.handoffs:
+                    right_agent.handoffs.remove(right_agent.id())
         return agent_graph
 
 
