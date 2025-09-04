@@ -151,7 +151,7 @@ async def exec_process_agents(question: Any,
 async def exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()) -> Dict[str, TaskResponse]:
     final_tasks = []
     # task list sequence-dependent execution
-    if run_conf.sequence_dependent:
+    if run_conf and run_conf.sequence_dependent:
         return await serial_exec_tasks(tasks=tasks, run_conf=run_conf)
 
     for task in tasks:
