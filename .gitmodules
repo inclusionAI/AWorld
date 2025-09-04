@@ -1,3 +1,3 @@
 [submodule "examples/bfcl_multi_agents/BFCLMultiAgents"]
 	path = examples/bfcl_multi_agents/BFCLMultiAgents
-	url = git@github.com:HongxuanZhang/BFCLMultiAgents.git
+	url = https://code.alipay.com/zhanghongxuan.zhx/BFCL_MultiAgentsV4.git
