@@ -18,12 +18,9 @@ class TaskAgent(Agent):
     """Support for swarm execution of in the hybrid nested swarm."""
 
     def __init__(self,
-                 name: str,
                  swarm: Swarm,
-                 conf: Config = None,
-                 model_output_parser: ModelOutputParser[TaskResponse, AgentResult] = None,
                  **kwargs):
-        super().__init__(name=name, conf=conf, model_output_parser=model_output_parser, **kwargs)
+        super().__init__(**kwargs)
         self.swarm = swarm
         if not self.swarm:
             raise AWorldRuntimeException("no swarm in task agent.")
