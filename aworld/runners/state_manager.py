@@ -55,6 +55,7 @@ class HandleResult(BaseModel):
 class RunNode(BaseModel):
     # {busi_id}_{busi_type}
     node_id: Optional[str] = None
+    task_id: Optional[str] = None
     busi_type: str = None
     busi_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -143,6 +144,10 @@ class StateStorage:
     def query(self, session_id: str) -> List[RunNode]:
         pass
 
+    @abstractmethod
+    def query_by_task_id(self, task_id: str) -> List[RunNode]:
+        pass
+
 
 class NodeGroupStorage:
     __metaclass__ = abc.ABCMeta
@@ -218,6 +223,9 @@ class InMemoryStateStorage(StateStorage, InheritanceSingleton, metaclass=StateSt
             return [node for node in session_nodes if node.msg_id == msg_id]
         return session_nodes
 
+    def query_by_task_id(self, task_id: str) -> List[RunNode]:
+        return [node for node in self._nodes.values() if node.task_id == task_id]
+
 
 class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
     '''
@@ -276,6 +284,7 @@ class RuntimeStateManager(InheritanceSingleton):
                     busi_id: str,
                     session_id: str,
                     node_id: str = None,
+                    task_id: str = None,
                     parent_node_id: str = None,
                     msg_id: str = None,
                     msg_from: str = None,
@@ -299,6 +308,7 @@ class RuntimeStateManager(InheritanceSingleton):
                        busi_type=busi_type.name,
                        busi_id=busi_id,
                        session_id=session_id,
+                       task_id=task_id,
                        msg_id=msg_id,
                        msg_from=msg_from,
                        parent_node_id=parent_node_id,
@@ -509,6 +519,17 @@ class RuntimeStateManager(InheritanceSingleton):
         query group detail info with all sub group info
         '''
         return self.node_group_manager.query_group_detail(group_id)
+
+    def query_by_task(self, task_id: str, busi_typ: RunNodeBusiType = None, busi_id: str = None) -> List[RunNode]:
+        all_task_nodes = self.storage.query_by_task_id(task_id)
+        if (not busi_typ and busi_id) or (busi_typ and not busi_id):
+            raise Exception("busi_typ and busi_id must be both None or not None")
+        if busi_typ and busi_id:
+            result_nodes = [node for node in all_task_nodes if node.busi_type == busi_typ.name and node.busi_id == busi_id]
+        else:
+            result_nodes = all_task_nodes
+        result_nodes.sort(key=lambda x: x.create_time if x.create_time else 0, reverse=True)
+        return result_nodes
 
 
 class NodeGroupManager(InheritanceSingleton):
@@ -750,6 +771,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
                 busi_type=run_node_busi_type,
                 busi_id=message.receiver or "",
                 session_id=message.session_id,
+                task_id=message.task_id,
                 msg_id=message.id,
                 msg_from=message.sender,
                 group_id=metadata.get("group_id") if metadata else None,
@@ -796,7 +818,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
                 self.run_succeed(node_id=message.id)
 
     def get_message_node_status(self, message: Message) -> RunNodeStatus:
-        node = self.get_node(node_id = message.id)
+        node = self.get_node(node_id=message.id)
         if not node:
             return RunNodeStatus.INIT
         return node.status

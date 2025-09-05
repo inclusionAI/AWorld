@@ -99,6 +99,7 @@ class HumanTool(AsyncTool):
             busi_type=RunNodeBusiType.from_message_category(Constants.HUMAN),
             busi_id=message.receiver or "",
             session_id=message.session_id,
+            task_id=message.task_id,
             msg_id=msg_id,
             msg_from=message.sender)
         # wait for message node completion
