@@ -3,13 +3,13 @@
 import os
 import traceback
 import uuid
-import yaml
 from collections import OrderedDict
-from pathlib import Path
-from typing import Optional, List, Dict, Any
-
-from pydantic import BaseModel, Field
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
 
@@ -41,7 +41,7 @@ def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
         configs.update(yaml_data)
     except FileNotFoundError:
         logger.debug(f"Can not find the file: {file_path}")
-    except Exception as e:
+    except Exception:
         logger.warning(f"{file_name} read fail.\n", traceback.format_exc())
     return configs
 
@@ -208,6 +208,14 @@ class AgentConfig(BaseConfig):
         # Reassignment if it has llm config args
         if llm_config_kwargs or not self.llm_config:
             self.llm_config = ModelConfig(**llm_config_kwargs)
+    
+    @property
+    def llm_model_name(self) -> str:
+        return self.llm_config.llm_model_name
+    
+    @property
+    def llm_provider(self) -> str:
+        return self.llm_config.llm_provider
 
 
 class TaskConfig(BaseConfig):
