@@ -323,10 +323,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def init_observation(self, observation: Observation) -> Observation:
         # supported string only
-        if self.task and isinstance(self.task, str) and self.task != observation.content:
-            observation.content = f"base task is: {self.task}\n{observation.content}"
-            # `task` only needs to be processed once and reflected in the context
-            self.task = None
+        # if self.task and isinstance(self.task, str) and self.task != observation.content:
+        #     observation.content = f"base task is: {self.task}\n{observation.content}"
+        #     # `task` only needs to be processed once and reflected in the context
+        #     self.task = None
+
+        # default use origin observation
         return observation
 
     def _log_messages(self, messages: List[Dict[str, Any]], **kwargs) -> None:
