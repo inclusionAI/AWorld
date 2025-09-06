@@ -153,7 +153,7 @@ class Swarm(object):
 
         # Agent that communicate with the outside world, the default is the first if the root agent is None.
         if not self._communicate_agent:
-            self._communicate_agent = agent_graph.ordered_agents[0]
+            self._communicate_agent = agent_graph.root_agent
         self.cur_agent = self.communicate_agent
         self.agent_graph = agent_graph
 
@@ -594,7 +594,7 @@ class TopologyBuilder:
         self.topology = topology
 
         if isinstance(root_agent, list):
-            root_agent = self._to_parallel_agent(root_agent)
+            root_agent = self._normal_agent(root_agent)
         elif isinstance(root_agent, Swarm):
             root_agent = self._to_task_agent(swarm=root_agent)
         self.root_agent = root_agent
@@ -608,9 +608,7 @@ class TopologyBuilder:
     def build(self) -> AgentGraph:
         """Build a multi-agent topology diagram using custom build strategies or syntax."""
 
-    def _to_parallel_agent(self, agents: List):
-        from aworld.agents.parallel_llm_agent import ParallelizableAgent
-
+    def _normal_agent(self, agents: List):
         if not agents:
             raise AworldException("No agents to be the parallel agent.")
 
@@ -620,8 +618,7 @@ class TopologyBuilder:
                 agent = self._to_task_agent(agent)
             single_agents.append(agent)
 
-        return ParallelizableAgent(name=f"parallel_{'_'.join([agent.name() for agent in single_agents])}",
-                                   agents=single_agents)
+        return single_agents
 
     def _to_task_agent(self, swarm: Swarm):
         """Nested swarm wrapped with `TaskAgent`, used to support mixed topology."""
@@ -709,62 +706,7 @@ class WorkflowBuilder(TopologyBuilder):
                 pair.append(agent)
                 agent_graph.add_node(agent)
             agent_graph.add_edge(pair[0], pair[1])
-
-        self._topology_parse(agent_graph)
         return agent_graph
-
-    def _topology_parse(self, agent_graph: AgentGraph) -> Tuple[List[str], bool]:
-        from aworld.agents.parallel_llm_agent import ParallelizableAgent
-
-        in_degree = dict(filter(lambda k: k[1] > 0, agent_graph.in_degree().items()))
-        zero_list = [v[0] for v in list(filter(lambda k: k[1] == 0, agent_graph.in_degree().items()))]
-
-        zero_agents = []
-        for _, node in agent_graph.agents.items():
-            if agent_graph.node_in_degree(node) == 0:
-                zero_agents.append(node)
-
-        # parallel
-        if len(zero_agents) > 1:
-            if self.root_agent and isinstance(self.root_agent, ParallelizableAgent):
-                if zero_agents != self.root_agent.agents:
-                    raise AWorldRuntimeException("Swarm topology and root_agent inconsistent.")
-
-            agent = self._to_parallel_agent(zero_agents)
-            self.root_agent = agent
-
-
-        res = []
-        while zero_list:
-            tmp = zero_list
-            zero_list = []
-            for agent_id in tmp:
-                if agent_id not in agent_graph.agents:
-                    raise RuntimeError("Agent topology changed during iteration")
-
-                for key, _ in agent_graph.successor.get(agent_id).items():
-                    try:
-                        in_degree[key] -= 1
-                    except KeyError as err:
-                        raise RuntimeError("Agent topology changed during iteration")
-
-                    if in_degree[key] == 0:
-                        zero_list.append(key)
-                        in_degree.pop(key, None)
-            res.append(tmp)
-
-        dcg = False
-        if in_degree:
-            logger.info("Agent topology contains cycle!")
-            # sequence may be incomplete
-            res.clear()
-            dcg = True
-
-        if not agent_graph.ordered_agents:
-            for agent_ids in res:
-                for agent_id in agent_ids:
-                    agent_graph.ordered_agents.append(agent_graph.agents[agent_id])
-        return res, dcg
 
     def _opt_build(self):
         from aworld.agents.parallel_llm_agent import ParallelizableAgent
