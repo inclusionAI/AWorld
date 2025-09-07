@@ -53,7 +53,9 @@ class ParallelizableAgent(Agent):
         if not actions:
             raise Exception(f'{self.id()} no action decision has been made.')
 
-        return Message(payload={action.agent_name: action.policy_info for action in actions},
+        action = ActionModel(agent_name=self.id(),
+                             policy_info={action.agent_name: action.policy_info for action in actions})
+        return Message(payload=[action],
                        caller=caller,
                        sender=self.id(),
                        receiver=actions[0].tool_name,
