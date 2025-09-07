@@ -1,8 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import asyncio
-import uuid
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
@@ -10,10 +8,12 @@ from aworld.core.agent.base import is_agent, AgentFactory
 from aworld.core.agent.swarm import GraphBuildType, AgentGraph
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
+from aworld.runners.state_manager import RunNode, RunNodeStatus
 from aworld.runners.utils import endless_detect
 from aworld.output.base import StepOutput
 
@@ -293,48 +293,20 @@ class DefaultAgentHandler(AgentHandler):
             if not agent.finished:
                 receiver = agent.goto
 
-        if not receiver:
-            # 基于agent name获取出度，直至到为0
+        if receiver:
+            yield Message(
+                category=Constants.AGENT,
+                payload=Observation(content=action.policy_info),
+                sender=agent.id(),
+                session_id=session_id,
+                receiver=receiver,
+                headers=message.headers
+            )
+        else:
             agent_graph: AgentGraph = self.swarm.agent_graph
-
+            # next
             successor = agent_graph.successor.get(agent_name)
-            for k, _ in successor.items():
-                # 查看依赖是否均已完成
-                run_node = await self.runner.state_manager.agent_info(message.context.get_task().id, agent_name)
-
-            receiver = self.swarm.ordered_agents[idx + 1].id()
-
-        yield Message(
-            category=Constants.AGENT,
-            payload=Observation(content=action.policy_info),
-            sender=agent.id(),
-            session_id=session_id,
-            receiver=receiver,
-            headers=message.headers
-        )
-
-        # The last agent
-        logger.info(f"_sequence_stop_check idx|{idx}|{len(self.swarm.ordered_agents)}")
-        if idx == len(self.swarm.ordered_agents) - 1:
-            receiver = None
-            # agent loop
-            if isinstance(agent, LoopableAgent):
-                agent.cur_run_times += 1
-                if not agent.finished:
-                    receiver = agent.goto
-
-            if receiver:
-                yield Message(
-                    category=Constants.AGENT,
-                    payload=Observation(content=action.policy_info),
-                    sender=agent.id(),
-                    session_id=session_id,
-                    receiver=receiver,
-                    headers=message.headers
-                )
-            else:
-                logger.info(f"FINISHED|_sequence_stop_check execute loop {self.swarm.cur_step}. "
-                            f"message: {message}. session_id: {session_id}.")
+            if not successor:
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
@@ -343,7 +315,35 @@ class DefaultAgentHandler(AgentHandler):
                     topic=TopicType.FINISHED,
                     headers=message.headers
                 )
-            return
+                return
+
+            for k, _ in successor.items():
+                predecessor = agent_graph.predecessor.get(k)
+                if not predecessor:
+                    raise AWorldRuntimeException(f"{k} has no predecessor {agent_name}, may changed during iteration.")
+
+                pre_finished = True
+                for pre_k, _ in predecessor.items():
+                    if pre_k == agent_name:
+                        continue
+                    # check all predecessor agent finished
+                    run_node: RunNode = await self.runner.state_manager.agent_info(message.context.get_task().id, pre_k)
+                    if run_node.status == RunNodeStatus.RUNNING or run_node.status == RunNodeStatus.INIT:
+                        # mean not finished
+                        pre_finished = False
+                        logger.info(f"{pre_k} not finished, will wait it.")
+                    else:
+                        logger.info(f"{pre_k} finished, result is: {run_node.results}")
+
+                if pre_finished:
+                    yield Message(
+                        category=Constants.AGENT,
+                        payload=Observation(content=action.policy_info),
+                        sender=agent.id(),
+                        session_id=session_id,
+                        receiver=k,
+                        headers=message.headers
+                    )
 
     async def _team_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
         caller = message.caller
