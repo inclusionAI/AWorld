@@ -423,6 +423,7 @@ exec1         exec2
 Each agent communicates with a single supervisor agent, 
 well recognized as Leader-Executor topology, 
 also referred to as a team topology in Aworld.
+We can use this topology to implement paradigms of ReAct and Plan-Execute.
 """
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm, GraphBuildType
@@ -432,14 +433,6 @@ exec1 = Agent(name="exec1", conf=agent_conf)
 exec2 = Agent(name="exec2", conf=agent_conf)
 swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.TEAM)
 ```
-Optionally, you can use `Handsoff` mechanism to customize your own topology.
-
-```python
-from aworld.core.agent.swarm import Swarm, GraphBuildType
-
-swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.HANDOFF)
-```
-
 </details>
 
 # 🏗️ Architecture Design Principles

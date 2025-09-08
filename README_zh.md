@@ -319,7 +319,8 @@ exec1         exec2
 
 每个智能体与单个监督智能体通信，
 被公认为Leader-Executor拓扑，
-在Aworld中也称为团队拓扑。
+在Aworld中也称为团队(Team)拓扑。
+我们可以使用该拓扑实现ReAct和Plan-Execute范式。
 """
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm, GraphBuildType
@@ -328,11 +329,6 @@ plan = Agent(name="plan", conf=agent_conf)
 exec1 = Agent(name="exec1", conf=agent_conf)
 exec2 = Agent(name="exec2", conf=agent_conf)
 swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.TEAM)
-```
-可选地，您可以使用 `Handsoff` 机制来自定义您自己的拓扑。
-```python
-from aworld.core.agent.swarm import Swarm, GraphBuildType
-swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.HANDOFF)
 ```
 
 </details>
