@@ -4,7 +4,7 @@ from typing import List
 import yaml
 
 root = "docs"
-black_keys = ["index"]
+black_keys = ["Index"]
 black_values = ["index.md"]
 
 
@@ -31,7 +31,9 @@ def scan(path: str):
             if children:
                 items[name] = children
         elif name.endswith(".md"):
-            items[os.path.splitext(name)[0]] = os.path.relpath(p, root).replace(os.sep, "/")
+            words = os.path.splitext(name)[0].split('_')
+            key = ' '.join([w.capitalize() for w in words])
+            items[key] = os.path.relpath(p, root).replace(os.sep, "/")
     return items
 
 
