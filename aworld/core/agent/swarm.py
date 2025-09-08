@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+from collections import OrderedDict
 from enum import Enum
 from typing import Dict, List, Any, Callable, Optional, Tuple, Iterator, Union
 
@@ -342,12 +343,14 @@ class WorkflowSwarm(Swarm):
 
     def __init__(self,
                  *args,  # agent
+                 topology: List[tuple] = None,
                  root_agent: BaseAgent = None,
                  max_steps: int = 0,
                  register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
                  event_driven: bool = True):
         super().__init__(*args,
+                         topology=topology,
                          root_agent=root_agent,
                          max_steps=max_steps,
                          register_agents=register_agents,
@@ -361,12 +364,14 @@ class TeamSwarm(Swarm):
 
     def __init__(self,
                  *args,  # agent
+                 topology: List[tuple] = None,
                  root_agent: BaseAgent = None,
                  max_steps: int = 0,
                  register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
                  event_driven: bool = True):
         super().__init__(*args,
+                         topology=topology,
                          root_agent=root_agent,
                          max_steps=max_steps,
                          register_agents=register_agents,
@@ -380,11 +385,13 @@ class HandoffSwarm(Swarm):
 
     def __init__(self,
                  *args,  # agent
+                 topology: List[tuple] = None,
                  max_steps: int = 0,
                  register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
                  event_driven: bool = True):
         super().__init__(*args,
+                         topology=topology,
                          max_steps=max_steps,
                          register_agents=register_agents,
                          build_type=GraphBuildType.HANDOFF,
@@ -420,7 +427,7 @@ class AgentGraph:
         """
         self.build_type = build_type
         self.ordered_agents = ordered_agents if ordered_agents else []
-        self.agents = agents if agents else {}
+        self.agents: OrderedDict = agents if agents else OrderedDict()
         self.predecessor = predecessor if predecessor else {}
         self.successor = successor if successor else {}
         self.has_cycle = False
@@ -464,6 +471,12 @@ class AgentGraph:
             for agent_ids in res:
                 for agent_id in agent_ids:
                     self.ordered_agents.append(self.agents[agent_id])
+
+        if not self.root_agent:
+            if self.ordered_agents:
+                self.root_agent = self.ordered_agents[0]
+            else:
+                self.root_agent = list(self.agents.values())[0]
         return res
 
     def add_node(self, agent: BaseAgent):
@@ -582,10 +595,13 @@ class TopologyBuilder:
                  root_agent: Union[BaseAgent, List[BaseAgent], Swarm] = None,
                  register_agents: List[BaseAgent] = None,
                  keep_build_type: bool = True):
-        self._valid_check(topology, root_agent)
         self.topology = topology
         self.root_agent = self._norm_agent(root_agent)
-        self.keep_type = keep_build_type
+        self.standard_format: bool = self._standard_format(topology)
+        self.keep_type: bool = keep_build_type
+
+        if not self._valid_check():
+            raise AWorldRuntimeException(f"root_agent {self.root_agent} in swarm check is invalid.")
 
         register_agents = register_agents if register_agents else []
         for agent in register_agents:
@@ -595,37 +611,18 @@ class TopologyBuilder:
     def build(self) -> AgentGraph:
         """Build a multi-agent topology diagram using custom build strategies or syntax."""
 
-    def _valid_check(self,
-                     topology: List[Union[BaseAgent, Swarm, list, tuple]],
-                     root_agent: Union[BaseAgent, List[BaseAgent], Swarm] = None) -> bool:
+    def _valid_check(self) -> bool:
         """Check root agent."""
 
-        def __check(verify_agent):
-            for agent in topology:
-                if isinstance(agent, tuple):
-                    if verify_agent == agent[0]:
-                        return True
-                elif isinstance(agent, list):
-                    if verify_agent in agent:
-                        return True
-                elif isinstance(agent, Swarm):
-                    if isinstance(verify_agent, Swarm) and root_agent.topology == agent.topology:
-                        return True
-                else:
-                    if verify_agent == agent:
-                        return True
-            return False
+        return True
 
-        if not root_agent:
-            return True
-
-        if isinstance(root_agent, list):
-            valid_list = []
-            for one_agent in root_agent:
-                valid_list.append(__check(one_agent))
-            return all(valid_list)
-        else:
-            return __check(root_agent)
+    def _standard_format(self, topology: List[Union[BaseAgent, Swarm, list, tuple]]) -> bool:
+        standard = True
+        for agent in topology:
+            if not isinstance(agent, tuple):
+                standard = False
+                break
+        return standard
 
     def _norm_agent(
             self,
@@ -718,6 +715,52 @@ class WorkflowBuilder(TopologyBuilder):
     agent8 is executed after completion.
     """
 
+    def _valid_check(self) -> bool:
+        from aworld.agents.task_llm_agent import TaskAgent
+
+        def __check(verify_agent):
+            for idx, agent in enumerate(self.topology):
+                if isinstance(agent, tuple):
+                    val = isinstance(agent[0], Swarm) and isinstance(verify_agent, TaskAgent)
+                    if verify_agent == agent[0] or (val and verify_agent.swarm.topology == agent[0].topology):
+                        self.topology.__setitem__(idx, (verify_agent, agent[1]))
+                        return True
+                elif isinstance(agent, list):
+                    if verify_agent in agent:
+                        return True
+                elif isinstance(agent, Swarm):
+                    if isinstance(verify_agent, TaskAgent) and verify_agent.swarm.topology == agent.topology:
+                        self.topology.__setitem__(idx, verify_agent)
+                        return True
+                else:
+                    if verify_agent == agent:
+                        return True
+            return False
+
+        if not self.root_agent:
+            return True
+
+        if isinstance(self.root_agent, list):
+            valid_list = []
+            for one_agent in self.root_agent:
+                valid_list.append(__check(one_agent))
+            return all(valid_list)
+        else:
+            return __check(self.root_agent)
+
+    def _secondary_check(self, agent_graph: AgentGraph, agent: Union[BaseAgent, List[BaseAgent]]):
+        def __check(one_agent: BaseAgent):
+            in_degree = agent_graph.node_in_degree(one_agent)
+            if in_degree > 0:
+                raise AWorldRuntimeException(f"{one_agent.id()} is not the start node in agent graph.")
+
+        if not agent:
+            return
+        if isinstance(agent, BaseAgent):
+            __check(agent)
+        else:
+            [__check(one) for one in agent]
+
     def build(self):
         """Built as workflow, different forms will be internally constructed as different agents,
         such as ParallelizableAgent, SerialableAgent or LoopableAgent.
@@ -725,13 +768,7 @@ class WorkflowBuilder(TopologyBuilder):
         Returns:
             Direct topology diagram (AgentGraph) of the agents.
         """
-        standard = True
-        for agent in self.topology:
-            if not isinstance(agent, tuple):
-                standard = False
-                break
-
-        if standard:
+        if self.standard_format:
             # All are node pairs
             return self._standard_build()
         else:
@@ -746,24 +783,12 @@ class WorkflowBuilder(TopologyBuilder):
                     agent = self._to_task_agent(swarm=agent)
                 pair.append(agent)
                 agent_graph.add_node(agent)
+                TopologyBuilder.register_agent(agent)
             agent_graph.add_edge(pair[0], pair[1])
 
         # secondary check，in-degree of all agent in root_agent must be 0.
         self._secondary_check(agent_graph, self.root_agent)
         return agent_graph
-
-    def _secondary_check(self, agent_graph: AgentGraph, agent: Union[BaseAgent, List[BaseAgent]]):
-        def __check(one_agent: BaseAgent):
-            in_degree = agent_graph.node_in_degree(one_agent)
-            if in_degree > 0:
-                raise AWorldRuntimeException(f"{one_agent.id()} is not the start node in agent graph.")
-
-        if not agent:
-            return
-        if isinstance(agent, BaseAgent):
-            __check(agent)
-        else:
-            [__check(one) for one in agent]
 
     def _opt_build(self):
         if isinstance(self.root_agent, list):
@@ -849,6 +874,32 @@ class HandoffBuilder(TopologyBuilder):
     So the star topology will be built and executed in a team swarm.
     """
 
+    def _valid_check(self) -> bool:
+        from aworld.agents.task_llm_agent import TaskAgent
+
+        if isinstance(self.root_agent, list):
+            raise AWorldRuntimeException("`root_agent` can not a list in handoff swarm.")
+
+        if not self.standard_format:
+            logger.warning("Handoff swarm format must is the standard agent pair format")
+            return False
+
+        if not self.root_agent:
+            return True
+
+        if isinstance(self.root_agent, TaskAgent):
+            for idx, agent in enumerate(self.topology):
+                if isinstance(agent[0], Swarm) and self.root_agent.swarm.topology == agent.topology:
+                    self.topology.__setitem__(idx, (self.root_agent, agent[1]))
+                    return True
+        else:
+            for idx, agent in enumerate(self.topology):
+                if self.root_agent == agent[0]:
+                    return True
+
+        logger.warning(f"root agent {self.root_agent.id()} must in the swarm.")
+        return False
+
     def build(self):
         """Build a graph in pairs, with the right agent serving as the tool on the left.
 
@@ -878,28 +929,22 @@ class HandoffBuilder(TopologyBuilder):
 
         # agent handoffs graph build.
         agent_graph = AgentGraph(GraphBuildType.HANDOFF.value, root_agent=self.root_agent)
-        for pair in valid_agent_pair:
-            left_agent = pair[0]
-            right_agent = pair[1]
-            if isinstance(left_agent, Swarm):
-                left_agent = self._to_task_agent(left_agent)
-            if isinstance(right_agent, Swarm):
-                right_agent = self._to_task_agent(right_agent)
+        for agent_pair in valid_agent_pair:
+            pair = []
+            for agent in agent_pair:
+                if isinstance(agent, Swarm):
+                    agent = self._to_task_agent(swarm=agent)
+                agent.feedback_tool_result = True
 
-            TopologyBuilder.register_agent(left_agent)
-            TopologyBuilder.register_agent(right_agent)
-
-            # need feedback
-            left_agent.feedback_tool_result = True
-            right_agent.feedback_tool_result = True
-
-            agent_graph.add_nodes(left_agent, right_agent)
-            agent_graph.add_edge(left_agent, right_agent)
-
+                pair.append(agent)
+                agent_graph.add_node(agent)
+                TopologyBuilder.register_agent(agent)
+            agent_graph.add_edge(pair[0], pair[1])
             # explicitly set handoffs in the agent
-            left_agent.handoffs.append(right_agent.id())
-            if right_agent.id() in right_agent.handoffs:
-                right_agent.handoffs.remove(right_agent.id())
+            pair[0].handoffs.append(pair[1].id())
+            if pair[1].id() in pair[1].handoffs:
+                pair[1].handoffs.remove(pair[1].id())
+
         return agent_graph
 
 
@@ -922,6 +967,38 @@ class TeamBuilder(TopologyBuilder):
     >>> Swarm(agent2, agent3, (agent4, agent5), agent6, root_agent=agent1, build_type=GraphBuildType.TEAM)
     >>> Swarm(agent1, agent2, agent3, (agent4, agent5), agent6, root_agent=agent1, build_type=GraphBuildType.TEAM)
     """
+
+    def _valid_check(self) -> bool:
+        from aworld.agents.task_llm_agent import TaskAgent
+
+        if isinstance(self.root_agent, list):
+            raise AWorldRuntimeException("`root_agent` can not a list in team swarm.")
+
+        if not self.root_agent:
+            return True
+
+        for idx, agent in enumerate(self.topology):
+            if isinstance(agent, Swarm):
+                # agent is Swarm, root agent need is a TaskAgent
+                if isinstance(self.root_agent, TaskAgent) and self.root_agent.swarm.topology == agent.topology:
+                    self.topology.__setitem__(idx, self.root_agent)
+                    return True
+            elif isinstance(agent, tuple):
+                # agent is tuple of agent or swarm, root agent need is an Agent or TaskAgent
+                if self.root_agent == agent[0]:
+                    return True
+
+                val = isinstance(agent[0], Swarm) and isinstance(self.root_agent, TaskAgent)
+                if val and self.root_agent.swarm.topology == agent[0].topology:
+                    self.topology.__setitem__(idx, (self.root_agent, agent[1]))
+                    return True
+            elif self.root_agent == agent:
+                return True
+
+        # root agent not in the topology, add it to the first
+        logger.info(f"root agent not in the swarm, will add it.")
+        self.topology.insert(0, self.root_agent)
+        return True
 
     def build(self):
         agent_graph = AgentGraph(GraphBuildType.TEAM.value, root_agent=self.root_agent)

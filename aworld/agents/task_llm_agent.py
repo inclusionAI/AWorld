@@ -4,14 +4,12 @@ from typing import List, Dict, Any
 
 from aworld.core.exceptions import AWorldRuntimeException
 
-from aworld.core.agent.base import AgentResult
 from aworld.core.agent.swarm import Swarm
-from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.task import Task, TaskResponse
 from aworld.utils.run_util import exec_tasks
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.common import Observation, ActionModel, Config
+from aworld.core.common import Observation, ActionModel
 
 
 class TaskAgent(Agent):

@@ -322,23 +322,30 @@ class DefaultAgentHandler(AgentHandler):
                 if not predecessor:
                     raise AWorldRuntimeException(f"{k} has no predecessor {agent_name}, may changed during iteration.")
 
+                all_input = {}
                 pre_finished = True
                 for pre_k, _ in predecessor.items():
                     if pre_k == agent_name:
+                        all_input[agent_name] = action.policy_info
                         continue
                     # check all predecessor agent finished
-                    run_node: RunNode = await self.runner.state_manager.agent_info(message.context.get_task().id, pre_k)
+                    run_node: RunNode = await self.runner.state_manager.get_agent_node(
+                        message.context.get_task().id,
+                        pre_k
+                    )
                     if run_node.status == RunNodeStatus.RUNNING or run_node.status == RunNodeStatus.INIT:
                         # mean not finished
                         pre_finished = False
                         logger.info(f"{pre_k} not finished, will wait it.")
                     else:
                         logger.info(f"{pre_k} finished, result is: {run_node.results}")
+                        payload = run_node.results[-1].result.payload[0]
+                        all_input[pre_k] = payload.policy_info
 
                 if pre_finished:
                     yield Message(
                         category=Constants.AGENT,
-                        payload=Observation(content=action.policy_info),
+                        payload=Observation(content=all_input if len(all_input) > 1 else all_input.get(agent_name)),
                         sender=agent.id(),
                         session_id=session_id,
                         receiver=k,
