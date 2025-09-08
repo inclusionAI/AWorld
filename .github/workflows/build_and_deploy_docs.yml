@@ -25,7 +25,7 @@ jobs:
           python -m pip install --upgrade pip==25.0.1
           python -m pip install mkdocs mkdocs-material
       - name: Build and deploy
-        working-directory: AWorld
+        working-directory: .
         run: |
           mkdocs build
           mkdocs gh-deploy --force
