@@ -42,18 +42,11 @@ class TaskAgent(Agent):
         res = []
         for key, result in results.items():
             # result is TaskResponse
-            if self.model_output_parser:
-                # use output parser
-                output = await self.model_output_parser.parse(result,
-                                                              agent_id=self.id(),
-                                                              use_tools_in_prompt=self.use_tools_in_prompt)
-                res.extend(output.actions)
+            if result.success:
+                info = result.answer
             else:
-                if result.success:
-                    info = result.answer
-                else:
-                    info = result.msg
-                res.append(ActionModel(agent_name=self.id(), policy_info=info))
+                info = result.msg
+            res.append(ActionModel(agent_name=self.id(), policy_info=info))
 
         self._finished = True
         return res
