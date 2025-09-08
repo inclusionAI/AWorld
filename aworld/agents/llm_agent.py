@@ -277,7 +277,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             for action_item in observation.action_result:
                 tool_call_id = action_item.tool_call_id
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=action_item, context=message.context)
-        elif not self.use_tools_in_prompt and last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
+        elif last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
                 last_history.metadata[
                     'tool_calls']:
             for tool_call in last_history.metadata['tool_calls']:
