@@ -277,7 +277,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             for action_item in observation.action_result:
                 tool_call_id = action_item.tool_call_id
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=action_item, context=message.context)
-        elif not self.use_tools_in_prompt and last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
+        elif last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
                 last_history.metadata[
                     'tool_calls']:
             for tool_call in last_history.metadata['tool_calls']:
@@ -875,6 +875,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
+        tool_use_summary = ""
+        if isinstance(tool_result, ActionResult):
+            tool_use_summary = f"Used MCP tool '{tool_result.action_name}' from {tool_result.tool_name} params is {tool_result.parameter} for solve the problem [{context.task_input}]: "
         await self.memory.add(MemoryToolMessage(
             content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
             tool_call_id=tool_call_id,
@@ -885,6 +888,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 task_id=context.get_task().id,
                 agent_id=self.id(),
                 agent_name=self.name(),
+                tool_use_summary=tool_use_summary
             )
         ), agent_memory_config=self.memory_config)
 
