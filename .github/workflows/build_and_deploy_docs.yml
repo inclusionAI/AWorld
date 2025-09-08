@@ -27,7 +27,6 @@ jobs:
       - name: Build and deploy
         working-directory: readme_assets
         run: |
-          ls -al
           mv ../docs/mkdocs.yml .
           mv ../docs .
           mkdocs build
