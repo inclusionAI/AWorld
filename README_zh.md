@@ -1,6 +1,6 @@
 <div align="center">
 
-# AWorld: 为智能体自我改进提供运行环境
+# AWorld: 为智能体自我演进提供多样化的运行环境
 
 </div>
 
@@ -13,6 +13,7 @@
 [![Discord][discord-image]][discord-url]
 [![License: MIT][license-image]][license-url]
 [![DeepWiki][deepwiki-image]][deepwiki-url]
+[![arXiv][arxiv-image]][arxiv-url]
 <!-- [![arXiv][arxiv-image]][arxiv-url] -->
 
 </h4>
@@ -30,18 +31,18 @@
 
 ![](./readme_assets/heading_banner.png)
 
-**AWorld (Agent World)** 是为大规模智能体自我改进而设计的下一代框架。我们通过综合智能体自身的知识和经验，使AI智能体能够持续进化。这一核心能力由以下三个要素驱动：
+**AWorld (Agent World)** 是一个为大规模智能体自我改进而设计的下一代框架。通过上述功能，我们使AI智能体能够通过从各种环境中的知识和经验中学习来持续进化。使用AWorld，您可以：
 
-1. **多智能体系统 (MAS)**：使用我们的即插即用协议和强大的状态管理构建复杂的、相互作用的智能体社会。
+1. **构建工作流**：设计和实现自动化任务序列
 
-2. **超越单一模型的智能**：生成高质量反馈和多样化的合成训练数据，推动个体智能体进化。
+2. **构建智能体**：创建具有MCP工具的智能AI智能体
 
-3. **云原生支持多样性和规模**：为训练更智能的智能体和实现自我改进提供高并发性和可扩展性。
+3. **构建多智能体系统(MAS)**：编排协作智能体生态系统
 
-AWorld 使您能够快速构建个体工具使用智能体、编排复杂的多智能体系统、有效训练智能体，并综合持续智能体进化所需的高质量数据——所有这些都汇聚于自主自我改进。
+4. **高效训练智能体**：让MAS在各种环境中自我演进和优化
 
 ---
-**集体智能成就展示** 🚀
+**群体智能** 🚀
 
 展示群体智能在不同领域的SOTA效果。欢迎加入我们正在进行中的项目！
 
@@ -60,6 +61,48 @@ AWorld 使您能够快速构建个体工具使用智能体、编排复杂的多�
 | **🔧 工具使用** | 领先的多轮函数调用 | 即将推出 | 影响现实世界 |
 
 </details>
+
+---
+
+**自我改进, 超越群体智能** 🌱
+
+`智能体`可以在各种`环境`中运行，收集正面和负面的`经验`，并通过`训练`进行学习。
+
+<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+  <thead>
+    <tr>
+      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">智能体</th>
+      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">环境</th>
+      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">经验</th>
+      <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">训练</th>
+      <th style="width: 15%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">代码</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">GAIA 智能体</td>
+      <td style="padding: 8px; vertical-align: top;">
+        终端、代码、搜索、playwright 和 4 个额外工具
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        从 GAIA 验证数据集的 165 个样本中收集 <br>
+        <a href="https://huggingface.co/datasets/gaia-benchmark/GAIA/tree/main/2023/validation" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Dataset-Training-8AB07D" alt="训练数据集">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        通过 GRPO 进行 rollout、奖励计算和梯度更新
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        3行代码即可
+         <br>
+            <a href="./train/README_zh.md" target="_blank" style="text-decoration: none;">
+            <img src="https://img.shields.io/badge/Code-README-green" alt="代码">
+        </a>
+      </td>
+    </tr>
+  </tbody>
+</table>
 
 ---
 
@@ -403,14 +446,14 @@ AWorld的即插即用MAS架构支持超越智能体训练的 **真实世界Web�
 对于学术引用或希望联系我们，请使用以下BibTeX条目：
 
 ```bibtex
-@software{aworld2025,
-  author = {Agent Team at InclusionAI},
-  title = {AWorld: Enabling Agent Self-Improvement through Interactive Experience with Dynamic Runtime},
-  year = {2025},
-  url = {https://github.com/inclusionAI/AWorld},
-  version = {0.1.0},
-  publisher = {GitHub},
-  email = {chenyi.zcy at antgroup.com}
+@misc{yu2025aworldorchestratingtrainingrecipe,
+      title={AWorld: Orchestrating the Training Recipe for Agentic AI}, 
+      author={Chengyue Yu and Siyuan Lu and Chenyi Zhuang and Dong Wang and Qintong Wu and Zongyue Li and Runsheng Gan and Chunfeng Wang and Siqi Hou and Gaochi Huang and Wenlong Yan and Lifeng Hong and Aohui Xue and Yanfeng Wang and Jinjie Gu and David Tsai and Tao Lin},
+      year={2025},
+      eprint={2508.20404},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2508.20404}, 
 }
 ```
 
@@ -557,14 +600,14 @@ aworld api
 <!-- image links -->
 [arxiv-image]: https://img.shields.io/badge/Paper-arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white
 [blog-image]: https://img.shields.io/badge/Blog-Coming%20Soon-FF5722?style=for-the-badge&logo=blogger&logoColor=white
-[deepwiki-image]: https://img.shields.io/badge/DeepWiki-Explore-blueviolet?logo=wikipedia&logoColor=white
-[discord-image]: https://img.shields.io/badge/Discord-Join%20us-blue?logo=discord&logoColor=white
+[deepwiki-image]: https://img.shields.io/badge/DeepWiki-Explore-blueviolet?style=for-the-badge&logo=wikipedia&logoColor=white
+[discord-image]: https://img.shields.io/badge/Discord-Join%20us-blue?style=for-the-badge&logo=discord&logoColor=white
 [github-code-image]: https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white
 [huggingface-dataset-image]: https://img.shields.io/badge/Dataset-Coming%20Soon-007ACC?style=for-the-badge&logo=dataset&logoColor=white
 [huggingface-model-image]: https://img.shields.io/badge/Model-Hugging%20Face-FF6B6B?style=for-the-badge&logo=huggingface&logoColor=white
-[license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
-[twitter-image]: https://img.shields.io/twitter/follow/AWorld_AI?style=social
-[wechat-image]: https://img.shields.io/badge/WeChat-Add%20us-green?logo=wechat&logoColor=white
+[license-image]: https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge
+[twitter-image]: https://img.shields.io/badge/Twitter-Follow%20us-1DA1F2?style=for-the-badge&logo=twitter&logoColor=white
+[wechat-image]: https://img.shields.io/badge/WeChat-Add%20us-green?style=for-the-badge&logo=wechat&logoColor=white
 
 <!-- aworld links -->
 [deepwiki-url]: https://deepwiki.com/inclusionAI/AWorld
@@ -572,6 +615,7 @@ aworld api
 [license-url]: https://opensource.org/licenses/MIT
 [twitter-url]: https://x.com/InclusionAI666
 [wechat-url]: https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat.png
+[arxiv-url]: https://arxiv.org/abs/2508.20404
 
 <!-- funreason links -->
 [funreason-code-url]: https://github.com/BingguangHao/FunReason

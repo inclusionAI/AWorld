@@ -322,7 +322,7 @@ class McpServers:
             return
 
         except Exception as e:
-            logging.warning(f"Failed to update sandbox metadata: {e}")
+            logging.debug(f"Failed to update sandbox metadata: {e}")
 
     # Add cleanup method, called when Sandbox is destroyed
     async def cleanup(self):

@@ -2,6 +2,8 @@ from typing import Any, Dict, List, Optional
 import json
 from pydantic import BaseModel
 
+from aworld.logs.util import logger
+
 
 class LLMResponseError(Exception):
     """Represents an error in LLM response.
@@ -232,6 +234,11 @@ class ModelResponse:
         # Process tool calls
         processed_tool_calls = []
         raw_tool_calls = message.tool_calls if hasattr(message, 'tool_calls') else message_dict.get('tool_calls')
+
+        message_content = message.content if hasattr(message, 'content') else message.get('content') or ""
+        if not message_content and not raw_tool_calls:
+            logger.warning(f"No content or tool calls found in response: {response}")
+
         if raw_tool_calls:
             for tool_call in raw_tool_calls:
                 if isinstance(tool_call, dict):
