@@ -334,7 +334,7 @@ class DefaultAgentHandler(AgentHandler):
                         all_input[agent_name] = action.policy_info
                         continue
                     # check all predecessor agent finished
-                    run_node: RunNode = await self.runner.state_manager.query_by_task(
+                    run_node: RunNode = self.runner.state_manager.query_by_task(
                         task_id=message.context.get_task().id,
                         busi_typ=RunNodeBusiType.AGENT,
                         busi_id=pre_k
