@@ -28,6 +28,7 @@ jobs:
         working-directory: .
         run: |
           mkdir aworld-docs
+          ls -al
           mv docs/mkdocs.yml aworld-docs
           mv docs aworld-docs
           mkdocs build
