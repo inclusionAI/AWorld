@@ -29,6 +29,5 @@ jobs:
         run: |
           mv ../docs .
           python docs/outline.py
-          mv docs/mkdocs.yml .
           mkdocs build
           mkdocs gh-deploy --force
