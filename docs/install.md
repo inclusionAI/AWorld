@@ -1,10 +1,10 @@
+# Installation
+## AWorld Agent
 
-# AWorld Agent
-
-# Prerequisites
+### Prerequisites
 - Python 3.10+
 
-# Install
+### Install
 ```shell
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
@@ -15,4 +15,4 @@ pip install .
 pip install aworld
 ```
 
-# AWorld Env
+## AWorld Env

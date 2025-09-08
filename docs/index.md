@@ -1,4 +1,4 @@
-# Welcome to AWorld’s Documentation!
+Welcome to AWorld’s Documentation!
 
 ## Get Started
 
