@@ -477,6 +477,14 @@ class AgentGraph:
                 self.root_agent = self.ordered_agents[0]
             else:
                 self.root_agent = list(self.agents.values())[0]
+
+        # workflow root agent can be a list
+        if self.build_type == GraphBuildType.WORKFLOW.value:
+            zero_list = [v[0] for v in list(filter(lambda k: k[1] == 0, self.in_degree().items()))]
+            agents = []
+            for agent_id in zero_list:
+                agents.append(self.agents.get(agent_id))
+            self.root_agent = agents
         return res
 
     def add_node(self, agent: BaseAgent):
