@@ -91,18 +91,20 @@ class LocalRuntime(RuntimeEngine):
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         # opt of the one task process
         if self.conf.get('reuse_process', True):
-            func = funcs[0]
-            try:
-                if inspect.iscoroutinefunction(func):
-                    res = await func(*args, **kwargs)
-                else:
-                    res = func(*args, **kwargs)
-                if not res:
-                    return {}
-                return {res.id: res}
-            except Exception as e:
-                logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
-                raise
+            results = {}
+            for func in funcs:
+                try:
+                    if inspect.iscoroutinefunction(func):
+                        res = await func(*args, **kwargs)
+                    else:
+                        res = func(*args, **kwargs)
+                    if not res:
+                        logger.warning(f"{func} no result return.")
+                    results[res.id] = res
+                except Exception as e:
+                    logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
+                    raise
+            return results
 
         num_executor = self.conf.get('worker_num', os.cpu_count() - 1)
         num_process = len(funcs)
