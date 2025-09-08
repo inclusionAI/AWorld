@@ -1,15 +1,14 @@
-
-
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import os
 
 from aworld.agents.llm_agent import Agent
-from aworld.config.conf import ModelConfig, AgentConfig
+from aworld.config.conf import AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.logs.util import color_log, Color
 from aworld.runner import Runners
 from aworld.tools.human.human import HUMAN
+import examples
 
 # os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
 # os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
@@ -17,11 +16,10 @@ from aworld.tools.human.human import HUMAN
 
 if __name__ == '__main__':
     conf = AgentConfig(
-        llm_config=ModelConfig(
-            llm_model_name=os.environ["LLM_MODEL_NAME"],
-            llm_base_url=os.environ["LLM_BASE_URL"],
-            llm_api_key=os.environ["LLM_API_KEY"]
-        )
+        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        llm_model_name=os.getenv("LLM_MODEL_NAME"),
+        llm_base_url=os.getenv("LLM_BASE_URL"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
     )
     agent = Agent(
         conf=conf,
