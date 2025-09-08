@@ -1,6 +1,0 @@
-site_name: AWorld Docs
-repo_url: https://github.com/inclusionAI/AWorld
-copyright: inclusionAI
-nav:
-  - usage: install.md
-theme: readthedocs

@@ -1,13 +1,11 @@
-Welcome to AWorld’s Documentation!
+# Welcome to AWorld’s Documentation!
 
-## Get Started
+## Quickstart
 
-[Installation](./index.md)
+[Installation](Quickstart/install.md)
+
+[Workflow Construction](Quickstart/workflow_construction.md)
 
 ## Tutorials
-
-[Workflow Construction](Basic%20usage/workflow_construction.md)
-
-## Advanced Tutorials
 
 ## API
