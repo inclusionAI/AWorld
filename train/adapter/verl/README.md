@@ -2,15 +2,10 @@
 
 This module hosts the VERL integration for AWorld training workflows.
 
-## Layout
-```
-train/adapters/verl/
-  core/                 # Main integration points (entry classes/functions)
-  utils/                # VERL-specific helpers used by core
-```
-
 - aworld_agent_loop.py: Base class bridging VERL AgentLoop with AWorld agents.
-- common.py: Utilities for converting trajectories/messages to VERL AgentLoopOutput.
+- common.py: 
+  - Utilities for converting trajectories/messages to VERL AgentLoopOutput.
+  - Utilities for getting MCP server configuration.
 
 ## Usage
 Import adapter entrypoints from your example code:
@@ -26,7 +21,6 @@ class MyLoop(AworldAgentLoop):
 ```
 
 ## Adding New Features
-- Keep reusable logic in core/ or utils/.
 - Avoid putting example-specific code here; that belongs in train/examples/.
 
 ## Notes

@@ -1,14 +1,17 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-import os
 import time
 import traceback
+
+from aworld.core.agent.base import BaseAgent
+
+from aworld.core.exceptions import AWorldRuntimeException
 
 import aworld.trace as trace
 from typing import List, Callable, Any
 
-from aworld.core.common import TaskItem
+from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
 
 from aworld.agents.llm_agent import Agent
@@ -34,9 +37,23 @@ class TaskEventRunner(TaskRunner):
         self.event_mng = EventManager(self.context)
         self.hooks = {}
         self.handlers = []
+        self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
         self.replay_buffer = EventReplayBuffer()
+
+    async def do_run(self, context: Context = None):
+        if self.swarm and not self.swarm.initialized:
+            raise AWorldRuntimeException("swarm needs to use `reset` to init first.")
+        if not self.init_messages:
+            raise AWorldRuntimeException("no question event to solve.")
+
+        async with trace.task_span(self.init_messages[0].session_id, self.task):
+            for msg in self.init_messages:
+                await self.event_mng.emit_message(msg)
+            await self._do_run()
+            await self._save_trajectories()
+            return self._task_response
 
     async def pre_run(self):
         logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
@@ -87,19 +104,30 @@ class TaskEventRunner(TaskRunner):
     def _build_first_message(self):
         # build the first message
         if self.agent_oriented:
-            self.init_message = AgentMessage(payload=self.observation,
-                                             sender='runner',
-                                             receiver=self.swarm.communicate_agent.id(),
-                                             session_id=self.context.session_id,
-                                             headers={'context': self.context})
+            agents = self.swarm.communicate_agent
+            if isinstance(agents, BaseAgent):
+                agents = [agents]
+
+            for agent in agents:
+                self.init_messages.append(AgentMessage(payload=self.observation,
+                                                       sender='runner',
+                                                       receiver=agent.id(),
+                                                       session_id=self.context.session_id,
+                                                       headers={'context': self.context}))
         else:
-            actions = self.observation.content
-            receiver = actions[0].tool_name
-            self.init_message = ToolMessage(payload=self.observation.content,
-                                            sender='runner',
-                                            receiver=receiver,
-                                            session_id=self.context.session_id,
-                                            headers={'context': self.context})
+            actions: List[ActionModel] = self.observation.content
+            action_dict = {}
+            for action in actions:
+                if action.tool_name not in action_dict:
+                    action_dict[action.tool_name] = []
+                action_dict[action.tool_name].append(action)
+
+            for tool_name, actions in action_dict.items():
+                self.init_messages.append(ToolMessage(payload=actions,
+                                                      sender='runner',
+                                                      receiver=tool_name,
+                                                      session_id=self.context.session_id,
+                                                      headers={'context': self.context}))
 
     async def _common_process(self, message: Message) -> List[Message]:
         logger.debug(
@@ -264,7 +292,7 @@ class TaskEventRunner(TaskRunner):
                                                            success=True if not msg else False,
                                                            id=self.task.id,
                                                            time_cost=(
-                                                               time.time() - start),
+                                                                   time.time() - start),
                                                            usage=self.context.token_usage)
                     break
                 logger.debug(f"[TaskEventRunner] next snap {self.task.id}")
@@ -309,15 +337,6 @@ class TaskEventRunner(TaskRunner):
                         except Exception as e:
                             logger.warning(
                                 f"event_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
-
-    async def do_run(self, context: Context = None):
-        if self.swarm and not self.swarm.initialized:
-            raise RuntimeError("swarm needs to use `reset` to init first.")
-        async with trace.task_span(self.init_message.session_id, self.task):
-            await self.event_mng.emit_message(self.init_message)
-            await self._do_run()
-            await self._save_trajectories()
-            return self._task_response
 
     async def stop(self):
         self._stopped.set()

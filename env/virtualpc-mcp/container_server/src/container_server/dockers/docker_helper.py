@@ -133,6 +133,9 @@ async def build_image_async(image_id: str, dockerfile: str, context_path: str):
 def pull(image_id: str):
     logger.info(f"Pulling image {image_id}")
     try:
+        if client.images.get(image_id):
+            logger.info(f"Image {image_id} already exists, skipping pull")
+            return
         img = client.images.pull(image_id)
         logger.info(f"Pulled image {image_id}, {img}")
     except:

@@ -9,8 +9,10 @@ services:
     environment:
       MCP_GATEWAY_TOKEN_SECRET: 123321
       VNC_AUTH: false
-      REDIS_URL: redis://:redisSrv@123@localhost:6379/0
+      MCP_GATEWAY_REDIS_URL: redis://redis-server:6379/0
     restart: on-failure:3
+    depends_on:
+      - redis-server
     deploy:
       resources:
         limits:
@@ -25,8 +27,9 @@ services:
     privileged: true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    command: ["uv", "run", "--no-sync", "-m", "container_server.main"]
     environment:
-      VIRTUALPC_MCP_SERVER_IMAGE_ID: aworld-mcp-server
+      VIRTUALPC_MCP_SERVER_IMAGE_ID: gaia-mcp-server
       GATEWAY_SERVER_ADDR: http://mcp-gateway:8000
     deploy:
       resources:
@@ -40,8 +43,6 @@ services:
       - 6379:6379
     volumes:
       - ./.data/redis-data:/data
-    environment:
-      - REDIS_PASSWORD=redisSrv@123
     restart: on-failure:3
     deploy:
       resources:

@@ -4,18 +4,19 @@ from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from examples.multi_agents.workflow.search.common import *
 
-# os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
-# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
-# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
-# search and summary
 if __name__ == "__main__":
-    # need to set GOOGLE_API_KEY and GOOGLE_ENGINE_ID to use Google search.
-    # os.environ['GOOGLE_API_KEY'] = ""
-    # os.environ['GOOGLE_ENGINE_ID'] = ""
+    search2 = Agent(
+        conf=agent_config,
+        name="search_agent",
+        system_prompt=search_sys_prompt,
+        agent_prompt=search_prompt,
+        tool_names=[Tools.SEARCH_API.value]
+    )
 
     # default is workflow swarm
-    swarm = Swarm(search, summary, max_steps=1)
-    # swarm = WorkflowSwarm(search, summary, max_steps=1)
+    # search1 and search2 parallel execution and use the same input.
+    swarm = Swarm((search, summary), (search2, summary), max_steps=1)
+    # you also can set root_agent=[search, search2]
 
     prefix = ""
     # can special search google, wiki, duck go, or baidu. such as:
