@@ -10,10 +10,6 @@ from aworld.runner import Runners
 from aworld.tools.human.human import HUMAN
 import examples
 
-# os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
-# os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"
-# os.environ["LLM_API_KEY"] = "YOUR_LLM_API_KEY"
-
 if __name__ == '__main__':
     conf = AgentConfig(
         llm_provider=os.getenv("LLM_PROVIDER", "openai"),
@@ -21,6 +17,7 @@ if __name__ == '__main__':
         llm_base_url=os.getenv("LLM_BASE_URL"),
         llm_api_key=os.getenv("LLM_API_KEY"),
     )
+    # human in the loop
     agent = Agent(
         conf=conf,
         name='human_test',
