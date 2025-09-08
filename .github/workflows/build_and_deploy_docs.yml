@@ -25,10 +25,9 @@ jobs:
           python -m pip install --upgrade pip==25.0.1
           python -m pip install mkdocs mkdocs-material
       - name: Build and deploy
-        working-directory: aworld-docs
+        working-directory: readme_assets
         run: |
-          mkdir aworld-docs
-          mv docs/mkdocs.yml aworld-docs
-          mv docs aworld-docs
+          mv docs/mkdocs.yml readme_assets
+          mv docs readme_assets
           mkdocs build
           mkdocs gh-deploy --force
