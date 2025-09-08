@@ -40,7 +40,7 @@ if __name__ == '__main__':
         "site_name": "AWorld Docs",
         "site_url": "https://github.com/inclusionAI/AWorld",
         "repo_url": "https://github.com/inclusionAI/AWorld",
-        "copyright": "inclusionAI",
+        "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
         "theme": "readthedocs",
         "nav": scan_path(root),
     }
