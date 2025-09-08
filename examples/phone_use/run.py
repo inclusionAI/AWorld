@@ -3,11 +3,11 @@
 import os
 
 from aworld.config import AgentConfig
-from examples.phone_use.agent import AndroidAgent
-from examples.common.tools.common import Agents, Tools
 from aworld.core.task import Task
 from aworld.runner import Runners
+from examples.common.tools.common import Agents, Tools
 from examples.common.tools.conf import AndroidToolConfig
+from examples.phone_use.agent import AndroidAgent
 
 # os.environ["LLM_MODEL_NAME"] = "YOUR_LLM_MODEL_NAME"
 # os.environ["LLM_BASE_URL"] = "YOUR_LLM_BASE_URL"

@@ -1,4 +1,4 @@
-<div align="center">
+from examples.for_test import topology<div align="center">
 
 # AWorld: 为智能体自我演进提供多样化的运行环境
 
@@ -113,13 +113,15 @@
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
-python setup.py install
+pip install .
+
+or 
+# 版本会有一些落后
+pip install aworld
 ```
 ## Hello world 示例
 我们引入 `Agent` 和 `Runners` 的概念来帮助您快速上手。
 ```python
-import os
-
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 
@@ -136,8 +138,6 @@ result = Runners.sync_run(
 
 同时，我们引入 `Swarm` 的概念来构建智能体团队。
 ```python
-import os
-
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from aworld.core.agent.swarm import Swarm
@@ -151,7 +151,7 @@ summarizer = Agent(
     system_prompt="You specialize at summarizing.",
 )
 # 创建具有协作工作流的智能体团队
-team = Swarm(researcher, summarizer)
+team = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
@@ -175,8 +175,6 @@ python /path/to/agents/or/teams
 
 ### 显式传递AgentConfig
 ```python
-import os
-
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from aworld.config.conf import AgentConfig
@@ -207,7 +205,7 @@ summarizer = Agent(
     system_prompt="You specialize at summarizing.",
 )
 # 创建具有协作工作流的智能体团队
-team = Swarm(researcher, summarizer)
+team = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
@@ -217,8 +215,6 @@ result = Runners.sync_run(
 
 ### 配备MCP工具的智能体
 ```python
-import os
-
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 
@@ -326,17 +322,17 @@ exec1         exec2
 在Aworld中也称为团队拓扑。
 """
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import TeamSwarm
+from aworld.core.agent.swarm import Swarm, GraphBuildType
 
 plan = Agent(name="plan", conf=agent_conf)
 exec1 = Agent(name="exec1", conf=agent_conf)
 exec2 = Agent(name="exec2", conf=agent_conf)
-swarm = TeamSwarm(plan, exec1, exec2)
+swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.TEAM)
 ```
 可选地，您可以使用 `Handsoff` 机制来自定义您自己的拓扑。
 ```python
-from aworld.core.agent.swarm import HandoffSwarm
-swarm = HandoffSwarm((plan, exec1), (plan, exec2))
+from aworld.core.agent.swarm import Swarm, GraphBuildType
+swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.HANDOFF)
 ```
 
 </details>

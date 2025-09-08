@@ -210,17 +210,19 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
 # 🏃‍♀️ Quickstart
 ## Prerequisites
 > [!TIP]
-> Python>=3.11
+> Python>=3.10
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
-python setup.py install
+pip install .
+
+or 
+# The version may be slightly outdated
+pip install aworld
 ```
 ## Hello world examples
 We introduce the concepts of `Agent` and `Runners` to help you get started quickly.
 ```python
-import os
-
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 
@@ -237,8 +239,6 @@ result = Runners.sync_run(
 
 In parallel, we introduce the concepts of `Swarm` to construct a team of agents.
 ```python
-import os
-
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from aworld.core.agent.swarm import Swarm
@@ -252,7 +252,7 @@ summarizer = Agent(
     system_prompt="You specialize at summarizing.",
 )
 # Create agent team with collaborative workflow
-team = Swarm(researcher, summarizer)
+team = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
@@ -276,8 +276,6 @@ python /path/to/agents/or/teams
 
 ### Pass AgentConfig Explicitly
 ```python
-import os
-
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from aworld.config.conf import AgentConfig
@@ -308,7 +306,7 @@ summarizer = Agent(
     system_prompt="You specialize at summarizing.",
 )
 # Create agent team with collaborative workflow
-team = Swarm(researcher, summarizer)
+team = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
@@ -427,17 +425,19 @@ well recognized as Leader-Executor topology,
 also referred to as a team topology in Aworld.
 """
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import TeamSwarm
+from aworld.core.agent.swarm import Swarm, GraphBuildType
 
 plan = Agent(name="plan", conf=agent_conf)
 exec1 = Agent(name="exec1", conf=agent_conf)
 exec2 = Agent(name="exec2", conf=agent_conf)
-swarm = TeamSwarm(plan, exec1, exec2)
+swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.TEAM)
 ```
 Optionally, you can use `Handsoff` mechanism to customize your own topology.
+
 ```python
-from aworld.core.agent.swarm import HandoffSwarm
-swarm = HandoffSwarm((plan, exec1), (plan, exec2))
+from aworld.core.agent.swarm import Swarm, GraphBuildType
+
+swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.HANDOFF)
 ```
 
 </details>
