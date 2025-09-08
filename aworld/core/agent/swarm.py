@@ -620,11 +620,12 @@ class TopologyBuilder:
         """Build a multi-agent topology diagram using custom build strategies or syntax."""
 
     def _valid_check(self) -> bool:
-        """Check root agent."""
+        """Validity detection of topology, different build types of topology in generally different detections."""
 
         return True
 
     def _standard_format(self, topology: List[Union[BaseAgent, Swarm, list, tuple]]) -> bool:
+        """Check if the topology is in a standard format, where all agent pairs are in the topology."""
         standard = True
         for agent in topology:
             if not isinstance(agent, tuple):
@@ -636,6 +637,7 @@ class TopologyBuilder:
             self,
             agent: Union[BaseAgent, List[BaseAgent], Swarm] = None
     ) -> Union[BaseAgent, List[BaseAgent], None]:
+        """Standardize the agent, such as use swarm as an agent."""
         if isinstance(agent, list):
             agent = self._to_parallel_agent(agent)
             return agent.agents
@@ -645,6 +647,7 @@ class TopologyBuilder:
             return agent
 
     def _to_parallel_agent(self, agents: list):
+        """Agent wrapped with `ParallelizableAgent`, used to support agents parallel or a mix of serial-parallel."""
         from aworld.agents.parallel_llm_agent import ParallelizableAgent
 
         single_agents = []
@@ -656,6 +659,7 @@ class TopologyBuilder:
                                    agents=single_agents)
 
     def _to_serial_agent(self, agents: list):
+        """Agent wrapped with `SerialableAgent`, used to support a mix of serial-parallel."""
         from aworld.agents.serial_llm_agent import SerialableAgent
 
         single_agents = []

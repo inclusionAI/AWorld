@@ -269,6 +269,7 @@ class DefaultAgentHandler(AgentHandler):
                 yield event
 
     async def _workflow_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
+        # Equivalent to scheduling
         session_id = message.session_id
         agent_name = action.agent_name
         agent = self.swarm.agents.get(agent_name)
