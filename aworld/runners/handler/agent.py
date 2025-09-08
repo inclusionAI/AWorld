@@ -13,7 +13,7 @@ from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.handler.tool import DefaultToolHandler
-from aworld.runners.state_manager import RunNode, RunNodeStatus
+from aworld.runners.state_manager import RunNode, RunNodeStatus, RunNodeBusiType
 from aworld.runners.utils import endless_detect
 from aworld.output.base import StepOutput
 
@@ -99,7 +99,11 @@ class DefaultAgentHandler(AgentHandler):
             # agent + tool completion protocol.
             if agent and agent.finished and data.info.get('done'):
                 self.swarm.cur_step += 1
-                if agent.id() == self.swarm.communicate_agent.id():
+
+                root_agent = self.swarm.communicate_agent
+                if isinstance(root_agent, list):
+                    root_agent = root_agent[0]
+                if agent.id() == root_agent.id():
                     msg = Message(
                         category=Constants.TASK,
                         payload=data.content,
@@ -116,7 +120,7 @@ class DefaultAgentHandler(AgentHandler):
                         payload=Observation(content=data.content),
                         sender=agent.id(),
                         session_id=session_id,
-                        receiver=self.swarm.communicate_agent.id(),
+                        receiver=root_agent.id(),
                         headers=message.headers
                     )
                     logger.info(f"agent handler send agent message: {msg}")
@@ -330,10 +334,15 @@ class DefaultAgentHandler(AgentHandler):
                         all_input[agent_name] = action.policy_info
                         continue
                     # check all predecessor agent finished
-                    run_node: RunNode = await self.runner.state_manager.get_agent_node(
-                        message.context.get_task().id,
-                        pre_k
+                    run_node: RunNode = await self.runner.state_manager.query_by_task(
+                        task_id=message.context.get_task().id,
+                        busi_typ=RunNodeBusiType.AGENT,
+                        busi_id=pre_k
                     )
+                    if run_node:
+                        run_node = run_node[0]
+                    else:
+                        raise AWorldRuntimeException(f"{pre_k} can't find in task: {message.context.get_task().id}.")
                     if run_node.status == RunNodeStatus.RUNNING or run_node.status == RunNodeStatus.INIT:
                         # mean not finished
                         pre_finished = False

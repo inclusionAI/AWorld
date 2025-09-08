@@ -12,8 +12,8 @@ from aworld.output.base import StepOutput
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.agent import AgentHandler
 from aworld.utils.run_util import exec_agent, exec_tool
-from examples.planner.models import StepInfo
-from examples.planner.parse import parse_plan
+from examples.multi_agents.coordination.deepresearch.planner.models import StepInfo
+from examples.multi_agents.coordination.deepresearch.planner.parse import parse_plan
 
 
 @HandlerFactory.register(name=f'__{Constants.PLAN}__')

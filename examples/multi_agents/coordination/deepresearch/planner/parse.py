@@ -4,7 +4,7 @@ import json
 import traceback
 
 from aworld.logs.util import logger
-from examples.planner.models import Plan, StepInfos
+from examples.multi_agents.coordination.deepresearch.planner.models import Plan, StepInfos
 
 
 def parse_step_infos(step_infos: dict) -> StepInfos:
