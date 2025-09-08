@@ -27,7 +27,8 @@ jobs:
       - name: Build and deploy
         working-directory: readme_assets
         run: |
-          mv ../docs/mkdocs.yml .
           mv ../docs .
+          python docs/outline.py
+          mv docs/mkdocs.yml .
           mkdocs build
           mkdocs gh-deploy --force
