@@ -27,5 +27,8 @@ jobs:
       - name: Build and deploy
         working-directory: .
         run: |
+          mkdir aworld-docs
+          mv docs/mkdocs.yml aworld-docs
+          mv docs aworld-docs
           mkdocs build
           mkdocs gh-deploy --force
