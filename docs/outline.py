@@ -3,7 +3,7 @@ from typing import List
 
 import yaml
 
-root = "../docs"
+root = "docs"
 black_keys = ["index"]
 black_values = ["index.md"]
 
