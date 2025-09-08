@@ -4,26 +4,21 @@ from typing import List, Dict, Any
 
 from aworld.core.exceptions import AWorldRuntimeException
 
-from aworld.core.agent.base import AgentResult
 from aworld.core.agent.swarm import Swarm
-from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.task import Task, TaskResponse
 from aworld.utils.run_util import exec_tasks
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.common import Observation, ActionModel, Config
+from aworld.core.common import Observation, ActionModel
 
 
 class TaskAgent(Agent):
     """Support for swarm execution of in the hybrid nested swarm."""
 
     def __init__(self,
-                 name: str,
                  swarm: Swarm,
-                 conf: Config = None,
-                 model_output_parser: ModelOutputParser[TaskResponse, AgentResult] = None,
                  **kwargs):
-        super().__init__(name=name, conf=conf, model_output_parser=model_output_parser, **kwargs)
+        super().__init__(**kwargs)
         self.swarm = swarm
         if not self.swarm:
             raise AWorldRuntimeException("no swarm in task agent.")
