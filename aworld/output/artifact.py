@@ -39,9 +39,9 @@ class ArtifactStatus(Enum):
 
 class ArtifactAttachment(BaseModel):
     filename: str = Field(..., description="Filename")
-    content: str = Field(..., description="Content", exclude=True)
+    content: Any = Field(..., description="Content", exclude=True)
     mime_type: str = Field(..., description="MIME type")
-
+    path: str = Field(..., description="Path")
 
 class Artifact(Output):
     """
