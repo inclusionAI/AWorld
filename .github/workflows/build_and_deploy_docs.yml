@@ -28,7 +28,7 @@ jobs:
         working-directory: readme_assets
         run: |
           ls -al
-          mv ../docs/mkdocs.yml readme_assets
-          mv ../docs readme_assets/
+          mv ../docs/mkdocs.yml .
+          mv ../docs .
           mkdocs build
           mkdocs gh-deploy --force
