@@ -34,9 +34,9 @@ from examples.for_test import topology<div align="center">
 
 **AWorld (Agent World)** 是一个为大规模智能体自我改进而设计的下一代框架。通过上述功能，我们使AI智能体能够通过从各种环境中的知识和经验中学习来持续进化。使用AWorld，您可以：
 
-1. **构建工作流**：设计和实现自动化任务序列
+1. **构建工作流**：设计和实现自动化任务序列 [文档](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
 
-2. **构建智能体**：创建具有MCP工具的智能AI智能体
+2. **构建智能体**：创建具有MCP工具的智能AI智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 
 3. **构建多智能体系统(MAS)**：编排协作智能体生态系统
 

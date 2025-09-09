@@ -42,7 +42,7 @@
 
 1. **Build workflows**: Design and implement automated task sequences. [Docs](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
 
-2. **Build agents**: Create intelligent AI agents with mcp tools
+2. **Build agents**: Create intelligent AI agents with mcp tools. [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 
 3. **Build Multi-Agent Systems (MAS)**: Orchestrate collaborative agent ecosystems
 
