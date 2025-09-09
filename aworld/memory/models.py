@@ -220,7 +220,8 @@ class Fact(MemoryItem):
         elif metadata.get('user_id'):
             meta['user_id'] = metadata.get('user_id')
 
-        kwargs.pop("memory_type")
+        if 'memory_type' in kwargs:
+            kwargs.pop("memory_type")
         super().__init__(content=content, metadata=meta, memory_type="fact", **kwargs)
 
     @property
