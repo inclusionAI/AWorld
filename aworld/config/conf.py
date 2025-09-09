@@ -223,6 +223,7 @@ class TaskConfig(BaseConfig):
     task_name: str | None = None
     max_steps: int = 100
     stream: bool = False
+    resp_carry_context: bool = True
     exit_on_failure: bool = False
     ext: dict = {}
 

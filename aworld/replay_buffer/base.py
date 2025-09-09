@@ -379,7 +379,8 @@ class ReplayBuffer:
         Store batch of data in the replay buffer.
         '''
         if not data_batch:
-            raise ValueError("Data batch is required")
+            logger.warning("Data batch is required")
+            return
         self._storage.add_batch(data_batch)
 
     def sample_task(self,

@@ -53,7 +53,7 @@ class TaskEventRunner(TaskRunner):
                 await self.event_mng.emit_message(msg)
             await self._do_run()
             await self._save_trajectories()
-            return self._task_response
+            return self._response()
 
     async def pre_run(self):
         logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
@@ -345,6 +345,11 @@ class TaskEventRunner(TaskRunner):
         return self._stopped.is_set()
 
     def response(self):
+        return self._task_response
+
+    def _response(self):
+        if self.context.get_task().conf and self.context.get_task().conf.resp_carry_context == False:
+            self._task_response.context = None
         return self._task_response
 
     async def _save_trajectories(self):
