@@ -107,6 +107,7 @@ class MessageMetadata(BaseModel):
     session_id: Optional[str] = Field(default=None,description="The ID of the session")
     task_id: Optional[str] = Field(default=None,description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
+    summary_content: Optional[str] = Field(default=None, description="The summary of the memory item")
 
     model_config = ConfigDict(extra="allow")
 
@@ -247,6 +248,7 @@ class MemorySummary(MemoryItem):
     def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, **kwargs) -> None:
         meta = metadata.to_dict
         meta['item_ids'] = item_ids
+        meta['role'] = "user"
         super().__init__(content=summary, metadata=meta, memory_type="summary", **kwargs)
 
     @property
@@ -255,7 +257,7 @@ class MemorySummary(MemoryItem):
 
     def to_openai_message(self) -> dict:
         return {
-            "role": "assistant",
+            "role": "user",
             "content": self.content
         }
 
