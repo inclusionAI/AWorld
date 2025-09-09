@@ -250,10 +250,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """Transform the original content to LLM messages of native format.
 
         Args:
-            content: User content.
+            observation: Observation by env.
             image_urls: List of images encoded using base64.
-            sys_prompt: Agent system prompt.
-            max_step: The maximum list length obtained from memory.
+            message: Event received by the Agent.
         Returns:
             Message list for LLM.
         """
@@ -499,7 +498,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
         try:
-            llm_response = await self.invoke_llm_model(messages, message=message, **kwargs)
+            llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
@@ -656,7 +655,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     "compress_ratio": round(compressed_len / origin_len, 2)
                 })
 
-    async def invoke_llm_model(self,
+    async def invoke_model(self,
                              messages: List[Dict[str, str]] = [],
                              message: Message = None,
                              **kwargs) -> ModelResponse:
@@ -670,10 +669,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             LLM response
         """
-        outputs = None
-        if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
-            outputs = kwargs.get("outputs")
-
         llm_response = None
         source_span = trace.get_current_span()
         serializable_messages = to_serializable(messages)
