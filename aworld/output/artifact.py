@@ -26,6 +26,7 @@ class ArtifactType(Enum):
     WEB_PAGES = "WEB_PAGES"
     DIR = "DIR"
     CUSTOM = "CUSTOM"
+    PLAYWRIGHT = "PLAYWRIGHT"
 
 
 
@@ -38,9 +39,9 @@ class ArtifactStatus(Enum):
 
 class ArtifactAttachment(BaseModel):
     filename: str = Field(..., description="Filename")
-    content: str = Field(..., description="Content", exclude=True)
+    content: Any = Field(..., description="Content", exclude=True)
     mime_type: str = Field(..., description="MIME type")
-
+    path: str = Field(default="", description="Path")
 
 class Artifact(Output):
     """
@@ -61,6 +62,10 @@ class Artifact(Output):
     version_history: list = Field(default_factory=list, description="History of versions for the artifact")
     create_file: bool = Field(default=False, description="Flag to indicate if a file should be created")
     attachments: Optional[list[ArtifactAttachment]] = Field(default_factory=list, description="Attachments associated with the artifact")
+
+    @staticmethod
+    def create(**kwargs):
+        pass
 
     @property
     def summary(self):
@@ -165,3 +170,7 @@ class Artifact(Output):
     @property
     def embedding_text(self):
         return self.content
+
+    @property
+    def title(self):
+        return self.metadata.get('title')

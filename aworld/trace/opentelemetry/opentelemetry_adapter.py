@@ -432,5 +432,5 @@ def is_valid_attribute_value(k, v):
         (isinstance(v, Sequence) and
             all(isinstance(i, (str, bool, int, float)) for i in v))
     if not valid:
-        logger.warning(f"value of attribute[{k}] is invalid: {v}")
+        logger.debug(f"value of attribute[{k}] is invalid: {v}")
     return valid

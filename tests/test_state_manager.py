@@ -2,7 +2,7 @@ import unittest
 import uuid
 import asyncio
 import random
-import uuid
+import time
 from typing import List
 
 import pytest
@@ -179,3 +179,60 @@ class StateManagerTest(unittest.TestCase):
         assert group_detail is not None
         for subgroup in group_detail.sub_groups:
             assert subgroup.status == RunNodeStatus.SUCCESS
+
+    def test_query_by_task(self):
+        state_manager = RuntimeStateManager()
+        session_id = str(uuid.uuid4())
+        task_id1 = str(uuid.uuid4())
+        task_id2 = str(uuid.uuid4())
+        agent_id1 = str(uuid.uuid4())
+        agent_id2 = str(uuid.uuid4())
+
+        node1 = state_manager.create_node(
+            busi_type=RunNodeBusiType.TASK,
+            busi_id=task_id1,
+            session_id=session_id,
+            task_id=task_id1,
+            msg_id=str(uuid.uuid4())
+        )
+        time.sleep(0.01)
+        node2 = state_manager.create_node(
+            busi_type=RunNodeBusiType.AGENT,
+            busi_id=agent_id1,
+            session_id=session_id,
+            task_id=task_id1,
+            msg_id=str(uuid.uuid4())
+        )
+        time.sleep(0.01)
+        node3 = state_manager.create_node(
+            busi_type=RunNodeBusiType.TASK,
+            busi_id=task_id2,
+            session_id=session_id,
+            task_id=task_id2,
+            msg_id=str(uuid.uuid4())
+        )
+        time.sleep(0.01)
+        node4 = state_manager.create_node(
+            busi_type=RunNodeBusiType.AGENT,
+            busi_id=agent_id2,
+            session_id=session_id,
+            task_id=task_id1,
+            msg_id=str(uuid.uuid4())
+        )
+
+        result1 = state_manager.query_by_task(task_id=task_id1)
+        self.assertEqual(len(result1), 3)
+        self.assertGreater(result1[0].create_time, result1[1].create_time)
+
+        result2 = state_manager.query_by_task(task_id=task_id1, busi_typ=RunNodeBusiType.AGENT, busi_id=agent_id1)
+        self.assertEqual(len(result2), 1)
+        self.assertEqual(result2[0].node_id, node2.node_id)
+
+        result3 = state_manager.query_by_task(task_id=str(uuid.uuid4()))
+        self.assertEqual(len(result3), 0)
+
+        with self.assertRaises(Exception):
+            state_manager.query_by_task(task_id=task_id1, busi_typ=RunNodeBusiType.AGENT)
+
+        with self.assertRaises(Exception):
+            state_manager.query_by_task(task_id=task_id1, busi_id=agent_id1)

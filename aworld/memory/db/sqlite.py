@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
     MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary,
@@ -77,6 +79,8 @@ class SQLiteMemoryStore(MemoryStore):
             return ""
         if isinstance(content, (dict, list, str, int, float, bool)):
             return json.dumps(content, ensure_ascii=False)
+        if isinstance(content, BaseModel):
+            return content.model_dump_json()
         return json.dumps(content, ensure_ascii=False, default=str)
     
     def _deserialize_content(self, content_str: str) -> Any:

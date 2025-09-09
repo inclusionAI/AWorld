@@ -107,7 +107,7 @@ class MessageMetadata(BaseModel):
     session_id: Optional[str] = Field(default=None,description="The ID of the session")
     task_id: Optional[str] = Field(default=None,description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
-    is_use_tool_prompt: Optional[bool] = Field(default=False, description="Whether the agent uses tool prompt")
+    summary_content: Optional[str] = Field(default=None, description="The summary of the memory item")
 
     model_config = ConfigDict(extra="allow")
 
@@ -213,14 +213,16 @@ class Fact(MemoryItem):
         content (str): fact.
         metadata (Optional[Dict[str, Any]]): Additional metadata.
     """
-    def __init__(self, user_id: str, content: str, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+    def __init__(self, user_id: str = None, agent_id: str = None, content: str = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         meta = metadata.copy() if metadata else {}
-        meta['user_id'] = user_id
-        super().__init__(content=content, metadata=meta, memory_type="fact", **kwargs)
+        if user_id:
+            meta['user_id'] = user_id
+        elif metadata.get('user_id'):
+            meta['user_id'] = metadata.get('user_id')
 
-    @property
-    def user_id(self) -> str:
-        return self.metadata['user_id']
+        if 'memory_type' in kwargs:
+            kwargs.pop("memory_type")
+        super().__init__(content=content, metadata=meta, memory_type="fact", **kwargs)
 
     @property
     def key(self) -> str:
@@ -252,6 +254,7 @@ class MemorySummary(MemoryItem):
     def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, **kwargs) -> None:
         meta = metadata.to_dict
         meta['item_ids'] = item_ids
+        meta['role'] = "user"
         super().__init__(content=summary, metadata=meta, memory_type="summary", **kwargs)
 
     @property
@@ -260,7 +263,7 @@ class MemorySummary(MemoryItem):
 
     def to_openai_message(self) -> dict:
         return {
-            "role": "assistant",
+            "role": "user",
             "content": self.content
         }
 

@@ -53,7 +53,7 @@ class Trajectory:
 
 class BrowserAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
-        super(BrowserAgent, self).__init__(conf, name, **kwargs)
+        super(BrowserAgent, self).__init__(conf=conf, name=name, **kwargs)
         self.state = AgentState()
         self.settings = self.conf
         provider = self.conf.llm_config.llm_provider
@@ -69,7 +69,7 @@ class BrowserAgent(Agent):
         self.trajectory = Trajectory()
         self._init = False
 
-    def reset(self, options: Dict[str, Any]):
+    def reset(self, options: Dict[str, Any] = None):
         super(BrowserAgent, self).reset(options)
 
         # Reset trajectory

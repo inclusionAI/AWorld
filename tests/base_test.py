@@ -70,9 +70,9 @@ def init_agent(config_type: str = "1",
     else:
         conf = AgentConfig(
             llm_config=ModelConfig(
-                model_name=os.environ["LLM_MODEL_NAME"],
-                base_url=os.environ["LLM_BASE_URL"],
-                api_key=os.environ["LLM_API_KEY"]
+                llm_model_name=os.environ["LLM_MODEL_NAME"],
+                llm_base_url=os.environ["LLM_BASE_URL"],
+                llm_api_key=os.environ["LLM_API_KEY"]
             )
         )
     return Agent(

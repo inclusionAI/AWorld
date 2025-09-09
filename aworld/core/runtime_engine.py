@@ -82,30 +82,6 @@ class LocalRuntime(RuntimeEngine):
                 res = sync_exec(func, *args, **kwargs)
             else:
                 res = func(*args, **kwargs)
-            # Sanitize result to ensure it's picklable in ProcessPoolExecutor
-            try:
-                from aworld.core.task import TaskResponse
-                if isinstance(res, TaskResponse):
-                    # Avoid returning heavy/non-picklable fields (e.g., Context with queues/tasks)
-                    usage_value = {}
-                    if getattr(res, 'usage', None):
-                        usage_value = dict(res.usage) if isinstance(res.usage, dict) else {}
-                    trajectory_value = []
-                    if getattr(res, 'trajectory', None):
-                        trajectory_value = list(res.trajectory)
-                    res = TaskResponse(
-                        id=getattr(res, 'id', None),
-                        answer=getattr(res, 'answer', None),
-                        context=None,  # drop context to avoid non-picklable refs
-                        usage=usage_value,
-                        time_cost=getattr(res, 'time_cost', 0.0),
-                        success=getattr(res, 'success', False),
-                        msg=getattr(res, 'msg', None),
-                        trajectory=trajectory_value,
-                    )
-            except Exception:
-                # Best-effort sanitization; if anything fails, proceed with original result
-                pass
             return res
         except Exception as e:
             logger.error(f"⚠️ Function {getattr(func, '__name__', 'unknown')} execution failed: {e}")
@@ -113,44 +89,21 @@ class LocalRuntime(RuntimeEngine):
             raise
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
-        # opt of the one task process (reuse current process, but run tasks concurrently)
+        # opt of the one task process
         if self.conf.get('reuse_process', True):
-            timeout: float = self.conf.get('timeout', 300)
-            max_workers = self.conf.get('worker_num', os.cpu_count() - 1)
-            if not max_workers or max_workers <= 0:
-                max_workers = 1
-            max_workers = min(max_workers, len(funcs))
-
-            semaphore = asyncio.Semaphore(max_workers)
-
-            async def _invoke(func: Callable[..., Any], *args, **kwargs):
-                async with semaphore:
-                    try:
-                        async def _call(f, *a, **kw):
-                            if inspect.iscoroutinefunction(f):
-                                return await f(*a, **kw)
-                            # run sync call in thread to avoid blocking loop
-                            return await asyncio.to_thread(f, *a, **kw)
-
-                        return await asyncio.wait_for(_call(func, *args, **kwargs), timeout=timeout)
-                    except asyncio.TimeoutError:
-                        logger.error(f"Task execution timed out after {timeout} seconds: {getattr(func, '__name__', 'unknown')}")
-                        return None
-                    except Exception as e:
-                        logger.error(f"Task execution failed: {e}, traceback: {traceback.format_exc()}")
-                        return None
-
-            tasks = [asyncio.create_task(_invoke(func, *args, **kwargs)) for func in funcs]
-            results: Dict[str, Any] = {}
-            for res in await asyncio.gather(*tasks, return_exceptions=False):
-                if res is None:
-                    continue
+            results = {}
+            for func in funcs:
                 try:
-                    if hasattr(res, 'id') and getattr(res, 'id') is not None:
-                        results[res.id] = res
-                except Exception:
-                    # Ignore invalid result shapes
-                    continue
+                    if inspect.iscoroutinefunction(func):
+                        res = await func(*args, **kwargs)
+                    else:
+                        res = func(*args, **kwargs)
+                    if not res:
+                        logger.warning(f"{func} no result return.")
+                    results[res.id] = res
+                except Exception as e:
+                    logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
+                    raise
             return results
 
         num_executor = self.conf.get('worker_num', os.cpu_count() - 1)
