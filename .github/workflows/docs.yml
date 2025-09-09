@@ -3,7 +3,7 @@ name: AWorld docs deploy
 on:
   push:
     branches:
-      - docs-main
+      - main
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
