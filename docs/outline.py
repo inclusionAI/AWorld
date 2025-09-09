@@ -3,9 +3,10 @@ from typing import List
 
 import yaml
 
-root = "docs"
+docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
+dir_order = ["Quickstart", "Tutorials"]
 
 
 def scan_path(path: str) -> List[dict]:
@@ -33,19 +34,31 @@ def scan(path: str):
         elif name.endswith(".md"):
             words = os.path.splitext(name)[0].split('_')
             key = ' '.join([w.capitalize() for w in words])
-            items[key] = os.path.relpath(p, root).replace(os.sep, "/")
+            items[key] = os.path.relpath(p, docs).replace(os.sep, "/")
     return items
 
 
 if __name__ == '__main__':
+    outline = scan_path(docs)
     cfg = {
         "site_name": "AWorld Docs",
         "site_url": "https://github.com/inclusionAI/AWorld",
         "repo_url": "https://github.com/inclusionAI/AWorld",
         "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
         "theme": "readthedocs",
-        "nav": scan_path(root),
+        "nav": outline,
     }
+
+    index_content = ["# Welcome to AWorld’s Documentation!"]
+    # standard structure
+    for line in outline:
+        for k, v in line.items():
+            index_content.append(f"## {k}")
+            for s_k, s_v in v.items():
+                index_content.append(f"[{s_k}]({s_v})")
+
+    with open("index.md", 'w') as index_file:
+        index_file.write("\n\n".join(index_content))
 
     with open('mkdocs.yml', 'w') as outfile:
         yaml.safe_dump(cfg, outfile, sort_keys=False, allow_unicode=True)

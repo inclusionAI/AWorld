@@ -9,10 +9,10 @@
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
 pip install .
-
-# or 
-# The version may be slightly outdated
-pip install aworld
 ```
 
 ## AWorld Env
+TODO
+
+## AWorld Train
+TODO
