@@ -3,6 +3,7 @@ name: AWorld docs deploy
 on:
   push:
     branches:
+      - main
       - docs-main
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -29,6 +30,6 @@ jobs:
         run: |
           mv ../docs .
           python docs/outline.py
-          ls -al
+          mv index.md docs/
           mkdocs build
           mkdocs gh-deploy --force
