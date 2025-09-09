@@ -883,7 +883,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 task_id=context.get_task().id,
                 agent_id=self.id(),
                 agent_name=self.name(),
-                tool_use_summary=tool_use_summary
+                summary_content=tool_use_summary
             )
         ), agent_memory_config=self.memory_config)
 
