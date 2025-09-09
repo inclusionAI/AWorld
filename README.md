@@ -14,6 +14,7 @@
 [![License: MIT][license-image]][license-url]
 [![DeepWiki][deepwiki-image]][deepwiki-url]
 [![arXiv][arxiv-image]][arxiv-url]
+[![Tutorial][tutorial-image]][tutorial-url]
 <!-- [![arXiv][arxiv-image]][arxiv-url] -->
 
 </h4>
@@ -39,7 +40,7 @@
 
 **AWorld (Agent World)** is a next-generation framework engineered for agent self-improvement at scale. Powered by the capabilities above, we enable AI agents to continuously evolve by learning from their own knowledge and experiences across various environments. Using AWorld, you can:
 
-1. **Build workflows**: Design and implement automated task sequences
+1. **Build workflows**: Design and implement automated task sequences. [Docs](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
 
 2. **Build agents**: Create intelligent AI agents with mcp tools
 
@@ -215,10 +216,6 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
 pip install .
-
-or 
-# The version may be slightly outdated
-pip install aworld
 ```
 ## Hello world examples
 We introduce the concepts of `Agent` and `Runners` to help you get started quickly.
@@ -492,59 +489,39 @@ Here is a forward illustration to collect BFCL forward trajectories: [`tutorial`
 
 ![](readme_assets/agent_training2.jpg)
 
-> [!NOTE]
-> An illustration of training code that seamlessly integrates the RL learning framework (Swift, in this example) with AWorld as the environment is shown below. This integration enables scalable and efficient agent training through distributed environment execution. (To run high-concurrency rollouts, you need to deploy an online distributed environment. Please contact [chenyi.zcy@antgroup.com](mailto:chenyi.zcy@antgroup.com) if assistance is needed.)
+Here is an illustration of AWorld-training with various frameworks, like AReal, Verl and Swift. [`tutorial`](./train/README.md).
 
-<details>
-<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 Click to View Tutorial Example</summary>
-To apply and use this integration:
-
-1. Clone AWorld's `agent_training_server` branch:
-```bash
-git clone -b agent_training_server --single-branch https://github.com/inclusionAI/AWorld.git
-```
-
-2. Clone ms-swift's v3.5.2 branch (shallow clone):
-```bash
-git clone -b v3.5.2 --depth=1 https://github.com/modelscope/ms-swift.git ms-swift
-```
-
-3. Copy patch files from AWorld to ms-swift:
-```bash
-cp -r AWorld/patches ms-swift/
-```
-
-4. Enter the patches directory and apply the patch:
-```bash
-cd ms-swift/patches
-git apply 0001-feat-add-agent-training-support-with-aworld-server.patch
-```
-</details>
-
-# 🧩 Applications
-AWorld allows you to construct **agents** and **multi-agent systems** with ease. 
-
-## Multi-Agent Systems for Model Evolutions
-AWorld aims to reach the limitations of models and continuously push intelligence forward by constructing diverse runtime environments, such as tools, agents, and models, 
-
-The following is a list of successful proposal (with open-source models, technical reports, and code):
-
-| Category | Runtime | <div style="width:400px">Performance</div> | <div style="width:100px;">Key Information</div> |
-| --------------- | --------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------- |
-| **Tool Use**    | Function call runtime construction [`tutorial`][funreason-model-url] | Competitive on BFCL benchmark  <br> ![Agent Framework](readme_assets/bfclv2_leaderboard.png) | ![Dataset][huggingface-dataset-image] <br> [![Model][huggingface-model-image]][funreason-model-url] <br> [![Paper][arxiv-image]][funreason-paper-url] <br> ![Blog][blog-image] <br> [![Code][github-code-image]][funreason-code-url] |
-| **Deep Search** | Search runtime to be released           | SOTA on HotpotQA benchmark  <br> ![Agent Framework](readme_assets/hotpotqa_benchmark.png)    | [![Dataset][huggingface-dataset-image]][deepsearch-dataset-url] <br> [![Model][huggingface-model-image]][deepsearch-model-url] <br> [![Paper][arxiv-image]][deepsearch-paper-url] <br> [![Code][github-code-image]][deepsearch-code-url]      |
+# 🧩 Technical Report
+This section showcases novel research papers developed using AWorld, demonstrating its capacity to incubate cutting-edge multi-agent systems that advance toward Artificial General Intelligence (AGI).
 
 
-## Multi-Agent Systems for Applications
-AWorld's plug-and-play MAS architecture enables **real-world web application development** beyond agent training. 
+#### Multi-Agent-System (MAS) Meta Learning
 
-Build production-ready systems that handle complex tasks through:
-- **Code generation & execution**  
-- **Browser automation & tool use**  
-- **Multimodal understanding & generation**  
-- And many more to emerge!
+1. **Profile-Aware Maneuvering: A Dynamic Multi-Agent System for Robust GAIA Problem Solving by AWorld.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.09889), [code](https://github.com/inclusionAI/AWorld/blob/main/examples/gaia/README_GUARD.md)
 
-See [Appendix: Web Client Usage](#appendix-web-client-usage) for GAIA implementation examples.
+    *Zhitian Xie, Qintong Wu, Chengyue Yu, Chenyi Zhuang, Jinjie Gu*
+
+#### Model Training
+
+1. **AWorld: Orchestrating the Training Recipe for Agentic AI.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.20404), [code](https://github.com/inclusionAI/AWorld/tree/main/train), [model](https://huggingface.co/inclusionAI/Qwen3-32B-AWorld)
+
+    *Chengyue Yu, Siyuan Lu, Chenyi Zhuang, Dong Wang, Qintong Wu, etc.*
+
+2. **FunReason: Enhancing Large Language Models' Function Calling via Self-Refinement Multiscale Loss and Automated Data Refinement.** arxiv, 2025. [paper](https://arxiv.org/abs/2505.20192), [model](https://huggingface.co/Bingguang/FunReason)
+
+    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Cunyin Peng, etc.*
+
+3. **Exploring Superior Function Calls via Reinforcement Learning.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.05118), [code](https://github.com/BingguangHao/RLFC)
+
+    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Yicheng Chen, etc.*
+
+4. **RAG-R1 : Incentivize the Search and Reasoning Capabilities of LLMs through Multi-query Parallelism.** arxiv, 2025. [paper](https://arxiv.org/abs/2507.02962), [code](https://github.com/inclusionAI/AgenticLearning), [model](https://huggingface.co/collections/endertzw/rag-r1-68481d7694b3fca8b809aa29)
+
+    *Zhiwen Tan, Jiaming Huang, Qintong Wu, Hongxuan Zhang, Chenyi Zhuang, Jinjie Gu*
+
+5. **V2P: From Background Suppression to Center Peaking for Robust GUI Grounding Task.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.13634), [code](https://github.com/inclusionAI/AgenticLearning/tree/main/V2P)
+
+    *Jikai Chen, Long Chen, Dong Wang, Leilei Gan, Chenyi Zhuang, Jinjie Gu*
 
 
 # Contributing
@@ -714,6 +691,7 @@ Success! Your agent is now running and ready to chat!
 [license-image]: https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge
 [twitter-image]: https://img.shields.io/badge/Twitter-Follow%20us-1DA1F2?style=for-the-badge&logo=twitter&logoColor=white
 [wechat-image]: https://img.shields.io/badge/WeChat-Add%20us-green?style=for-the-badge&logo=wechat&logoColor=white
+[tutorial-image]: https://img.shields.io/badge/Tutorial-Get%20Started-FF6B35?style=for-the-badge&logo=book&logoColor=white
 
 <!-- aworld links -->
 [deepwiki-url]: https://deepwiki.com/inclusionAI/AWorld
@@ -721,7 +699,8 @@ Success! Your agent is now running and ready to chat!
 [license-url]: https://opensource.org/licenses/MIT
 [twitter-url]: https://x.com/InclusionAI666
 [wechat-url]: https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat.png
-[arxiv-url]: https://arxiv.org/abs/2508.20404
+[arxiv-url]: https://arxiv.org/abs/2508.
+[tutorial-url]: https://inclusionai.github.io/AWorld/
 
 <!-- funreason links -->
 [funreason-code-url]: https://github.com/BingguangHao/FunReason
