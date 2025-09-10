@@ -162,7 +162,7 @@ class AgentMemoryConfig(BaseConfig):
     )
     # short-term config
     history_rounds: int = Field(default=100,
-                             description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
+                                description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
@@ -208,11 +208,11 @@ class AgentConfig(BaseConfig):
         # Reassignment if it has llm config args
         if llm_config_kwargs or not self.llm_config:
             self.llm_config = ModelConfig(**llm_config_kwargs)
-    
+
     @property
     def llm_model_name(self) -> str:
         return self.llm_config.llm_model_name
-    
+
     @property
     def llm_provider(self) -> str:
         return self.llm_config.llm_provider
@@ -223,6 +223,7 @@ class TaskConfig(BaseConfig):
     task_name: str | None = None
     max_steps: int = 100
     stream: bool = False
+    resp_carry_context: bool = True
     exit_on_failure: bool = False
     ext: dict = {}
 
@@ -240,8 +241,17 @@ class ToolConfig(BaseConfig):
     ext: dict = {}
 
 
+class EngineName:
+    # Use asyncio or MultiProcess run in local
+    LOCAL = "local"
+    # Stateless(task) run in ray. Ray actor will use a new name
+    RAY = "ray"
+    SPARK = "spark"
+
+
 class RunConfig(BaseConfig):
-    name: str = 'local'
+    job_name: str = "aworld_job"
+    engine_name: str = EngineName.LOCAL
     worker_num: int = 1
     reuse_process: bool = True
     sequence_dependent: bool = False

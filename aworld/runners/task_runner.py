@@ -55,6 +55,7 @@ class TaskRunner(Runner):
             task.conf = dict()
         if isinstance(task.conf, BaseModel):
             task.conf = task.conf.model_dump()
+        task.conf = ConfigDict(task.conf)
         check_input = task.conf.get("check_input", False)
         if check_input and not task.input:
             raise ValueError("task no input")
