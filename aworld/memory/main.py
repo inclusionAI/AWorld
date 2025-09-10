@@ -98,6 +98,11 @@ class InMemoryMemoryStore(MemoryStore):
                 return False
             if memory_item.session_id != filters['session_id']:
                 return False
+        if filters.get('tool_call_id') is not None:
+            if memory_item.metadata.get("tool_call_id") is None:
+                return False
+            if memory_item.metadata.get("tool_call_id") != filters['tool_call_id']:
+                return False
         if filters.get('memory_type') is not None:
             if memory_item.memory_type is None:
                 return False
@@ -576,7 +581,7 @@ class AworldMemory(Memory):
         if len(to_be_summary_items) <= 0:
             return False, "EMPTY"
         if isinstance(to_be_summary_items[-1], MemoryAIMessage):
-            if len(to_be_summary_items[-1].tool_calls) > 0:
+            if to_be_summary_items[-1].tool_calls and len(to_be_summary_items[-1].tool_calls) > 0:
                 return False,"last message has tool_calls"
         if len(to_be_summary_items) == 0:
             return False, "items is empty"
