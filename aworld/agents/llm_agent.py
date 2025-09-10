@@ -875,9 +875,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
-        tool_use_summary = ""
+        tool_use_summary = None
         if isinstance(tool_result, ActionResult):
-            tool_use_summary = f"Used MCP tool '{tool_result.action_name}' from {tool_result.tool_name} params is {tool_result.parameter} for solve the problem [{context.task_input}]: "
+             tool_use_summary = tool_result.metadata.get("tool_use_summary")
         await self.memory.add(MemoryToolMessage(
             content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
             tool_call_id=tool_call_id,
