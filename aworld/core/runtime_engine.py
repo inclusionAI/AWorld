@@ -93,18 +93,28 @@ class LocalRuntime(RuntimeEngine):
         # opt of the one task process
         if self.conf.get('reuse_process', True):
             results = {}
+            coroutine_funcs = []
+            sync_funcs = []
             for func in funcs:
+                if inspect.iscoroutinefunction(func):
+                    coroutine_funcs.append(func(*args, **kwargs))
+                else:
+                    sync_funcs.append(func)
+
+            for func in sync_funcs:
                 try:
-                    if inspect.iscoroutinefunction(func):
-                        res = await func(*args, **kwargs)
-                    else:
-                        res = func(*args, **kwargs)
-                    if not res:
-                        logger.warning(f"{func} no result return.")
+                    res = func(*args, **kwargs)
                     results[res.id] = res
                 except Exception as e:
                     logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
                     raise
+
+            try:
+                for result in await asyncio.gather(*coroutine_funcs):
+                    results[result.id] = result
+            except Exception as e:
+                logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
+                raise
             return results
 
         num_executor = self.conf.get('worker_num', os.cpu_count() - 1)
