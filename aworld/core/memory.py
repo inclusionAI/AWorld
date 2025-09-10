@@ -416,18 +416,18 @@ class LongTermConfig(BaseModel):
 
 class EmbeddingsConfig(BaseModel):
     provider: str = "openai"
-    api_key: str = ""
+    api_key: Optional[str] = ""
     model_name: str = "text-embedding-3-small"
-    base_url: str = "https://api.openai.com/v1"
+    base_url: Optional[str] = "https://api.openai.com/v1"
     context_length: int = 8191
     dimensions: int = 512
     timeout: int = 60
 
 class MemoryLLMConfig(BaseModel):
     provider: str = "openai"
-    api_key: str
-    base_url: str
-    model_name: str
+    api_key: Optional[str]
+    base_url: Optional[str]
+    model_name: Optional[str]
     temperature: float = 1.0
 
     model_config = ConfigDict(
@@ -570,7 +570,7 @@ class MemoryBase(ABC):
         pass
 
     @abstractmethod
-    async def retrival_user_facts(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[Fact]]:
+    async def retrival_facts(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[Fact]]:
         """
         Retrival user profile by user_id.
 

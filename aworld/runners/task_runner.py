@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import time
 import uuid
 from typing import Callable, Any
@@ -58,9 +59,10 @@ class TaskRunner(Runner):
         if check_input and not task.input:
             raise ValueError("task no input")
 
-        self.context = task.context if task.context else Context()
+        if not task.is_sub_task:
+            self.context = task.context if task.context else Context()
+            self.context.set_task(task)
         self.task = task
-        self.context.set_task(task)
         self.agent_oriented = agent_oriented
         self.daemon_target = daemon_target
         self._use_demon = False if not task.conf else task.conf.get(
@@ -71,6 +73,11 @@ class TaskRunner(Runner):
 
     async def pre_run(self):
         task = self.task
+        # copy context from parent_task(if exists)
+        if task.is_sub_task:
+            task.context = await task.context.build_sub_context(task.input, task.id, agents=task.swarm.agents if task.swarm and task.swarm.agents else None)
+            self.context = task.context
+            self.context.set_task(task)
         self.swarm = task.swarm
         self.input = task.input
         self.outputs = task.outputs

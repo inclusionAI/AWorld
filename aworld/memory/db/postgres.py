@@ -7,8 +7,9 @@ from pydantic import BaseModel
 
 from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
-    MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary, MemorySystemMessage, MemoryToolMessage, MessageMetadata,
-    UserProfile, AgentExperience
+    MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary, MemorySystemMessage, MemoryToolMessage,
+    MessageMetadata,
+    UserProfile, AgentExperience, ConversationSummary
 )
 from aworld.models.model_response import ToolCall
 
@@ -170,6 +171,20 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
             item_ids=item_ids,
             summary=orm_item.content,
             metadata=summary_metadata,
+            **base_data
+        )
+    elif message_type == 'conversation_summary':
+        if not orm_item.content:
+            return None
+        if not isinstance(orm_item.content, str):
+            return None
+        # Preserve all custom metadata attributes
+        conversation_summary_metadata = MessageMetadata(**memory_meta)
+        return ConversationSummary(
+            user_id=memory_meta.get('user_id'),
+            session_id=memory_meta.get('session_id'),
+            summary=orm_item.content,
+            metadata=conversation_summary_metadata,
             **base_data
         )
     else:

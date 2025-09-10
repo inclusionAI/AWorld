@@ -22,6 +22,8 @@ class Constants:
     TOOL_CALLBACK = "tool_callback"
     AGENT_CALLBACK = "agent_callback"
     GROUP = "group"
+    HUMAN = "human"
+    HUMAN_RESPONSE = "human_response"
 
 
 class TopicType:
@@ -54,7 +56,7 @@ class Message(Generic[DataType]):
     or by extending `Message`.
     """
     session_id: str = field(default_factory=str)
-    payload: Optional[DataType] = field(default_factory=object)
+    payload: Optional[DataType] = field(default_factory=object, repr=False)
     # Current caller
     sender: str = field(default_factory=str)
     # event type
@@ -112,13 +114,13 @@ class Message(Generic[DataType]):
 
 
 @dataclass
-class TaskEvent(Message[TaskItem]):
+class TaskMessage(Message[TaskItem]):
     """Task message is oriented towards applications, can interact with third-party entities independently."""
     category: str = 'task'
 
 
 @dataclass
-class AgentEvent(Message[Observation]):
+class AgentMessage(Message[Observation]):
     """Agent event is oriented towards applications, can interact with third-party entities independently.
 
     For example, `agent` event can interact with other agents through the A2A protocol.
@@ -127,7 +129,7 @@ class AgentEvent(Message[Observation]):
 
 
 @dataclass
-class ToolEvent(Message[List[ActionModel]]):
+class ToolMessage(Message[List[ActionModel]]):
     """Tool event is oriented towards applications, can interact with third-party entities independently.
 
     For example, `tool` event can interact with other tools through the MCP protocol.
@@ -136,7 +138,7 @@ class ToolEvent(Message[List[ActionModel]]):
 
 
 @dataclass
-class CancelEvent(Message[TaskItem]):
+class CancelMessage(Message[TaskItem]):
     """Cancel event of the task, has higher priority."""
     category: str = 'task'
     priority: int = -1
@@ -144,13 +146,23 @@ class CancelEvent(Message[TaskItem]):
 
 
 @dataclass
-class GroupEvent(Message[Union[Dict[str, Any], List[ActionModel]]]):
+class GroupMessage(Message[Union[Dict[str, Any], List[ActionModel]]]):
     category: str = 'group'
     group_id: str = None
 
     def __post_init__(self):
         super().__post_init__()
         self.headers['group_id'] = self.group_id
+
+
+@dataclass
+class HumanMessage(Message[Any]):
+    """Human interaction message for human-in-the-loop scenarios.
+    
+    This message type is used to handle human input, confirmations, and responses
+    in interactive AI systems.
+    """
+    category: str = 'human'
 
 
 class Messageable(object):
@@ -188,4 +200,29 @@ class Messageable(object):
 
         Args:
             message: Message structure that carries the data that needs to be processed.
+        """
+
+class Recordable(Messageable):
+    """Top-level API for recording data."""
+
+    async def send(self, message: Message, **kwargs):
+        return await self.write(message, **kwargs)
+
+    async def receive(self, message: Message, **kwargs):
+        return await self.read(message, **kwargs)
+
+    @abc.abstractmethod
+    async def read(self, message: Message, **kwargs):
+        """Read a message from the store.
+
+        Args:
+            message: Message structure that carries the data that needs to be read.
+        """
+
+    @abc.abstractmethod
+    async def write(self, message: Message, **kwargs):
+        """Write a message to the store.
+
+        Args:
+            message: Message structure that carries the data that needs to be write.
         """

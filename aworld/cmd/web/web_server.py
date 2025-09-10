@@ -18,11 +18,6 @@ app = FastAPI()
 async def root():
     return RedirectResponse("/index.html")
 
-
-def get_user_id_from_jwt(request: Request) -> str:
-    return f"default_user_001"
-
-
 agent_server = AgentServer(
     server_id="default_server",
     server_name="default_server",

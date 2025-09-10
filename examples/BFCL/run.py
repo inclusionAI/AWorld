@@ -9,14 +9,12 @@ import json
 
 
 if __name__ == "__main__":
-    # Get API key from environment variable
-    api_key = os.getenv("OPENROUTER_API_KEY")
-
     agent_config = AgentConfig(
-        llm_provider="openai",
-        llm_model_name="openai/gpt-4o",
-        llm_api_key=api_key,
-        llm_base_url="https://openrouter.ai/api/v1",
+        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+        llm_model_name=os.getenv("LLM_MODEL_NAME"),
+        llm_base_url=os.getenv("LLM_BASE_URL"),
+        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_temperature=os.getenv("LLM_TEMPERATURE", 0.0)
     )
 
     # Register the MCP tool here, or create a separate configuration file.

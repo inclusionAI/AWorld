@@ -216,3 +216,11 @@ conda env remove -n aworld_imo_env
 3. IMO dataset is pre-configured in the imo folder
 4. Recommended to start testing with test problem
 5. The system focuses on solution quality and reasoning process rather than exact answer matching
+
+
+
+## Acknowledgements
+
+The IMO-related prompt code in this repository is adapted from the work of Lin Yang and Yichen Huang. We are grateful for their original implementation.
+
+- Original Repository: [https://github.com/lyang36/IMO25](https://github.com/lyang36/IMO25)

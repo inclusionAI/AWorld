@@ -197,7 +197,7 @@ def get_install_requires(extra, requirements):
 
 
 def get_python_requires():
-    return ">=3.11"
+    return ">=3.10"
 
 
 class BinaryDistribution(Distribution):
@@ -263,6 +263,7 @@ setup(
         # Indicate who your project is intended for
         "Intended Audience :: Developers",
         "Topic :: Software Development :: Build Tools",
+        "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
     ],

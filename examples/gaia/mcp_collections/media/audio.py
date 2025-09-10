@@ -550,5 +550,6 @@ if __name__ == "__main__":
     try:
         service = AudioCollection(args)
         service.run()
+        print("Audio processing service started")
     except Exception as e:
         print(f"An error occurred: {e}: {traceback.format_exc()}")

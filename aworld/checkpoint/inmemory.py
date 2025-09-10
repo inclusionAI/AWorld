@@ -99,3 +99,18 @@ class InMemoryCheckpointRepository(BaseCheckpointRepository):
         ids = self._session_index.pop(session_id, [])
         for cid in ids:
             self._checkpoints.pop(cid, None)
+
+    async def alist(self, params: Dict[str, Any]) -> List[Checkpoint]:
+        return self.list(params)
+
+    async def aget(self, checkpoint_id: str) -> Optional[Checkpoint]:
+        return self.get(checkpoint_id)
+
+    async def aput(self, checkpoint: Checkpoint) -> None:
+        self.put(checkpoint)
+
+    async def aget_by_session(self, session_id: str) -> Optional[Checkpoint]:
+        return self.get_by_session(session_id)
+
+    async def adelete_by_session(self, session_id: str) -> None:
+        self.delete_by_session(session_id)

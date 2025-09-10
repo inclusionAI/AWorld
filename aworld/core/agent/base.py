@@ -12,7 +12,7 @@ from aworld.config.conf import AgentConfig, ConfigDict, load_config
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event import eventbus
-from aworld.core.event.base import Constants, Message
+from aworld.core.event.base import Constants, Message, AgentMessage
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
 from aworld.logs.util import logger
@@ -73,10 +73,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def __init__(
         self,
         name: str,
-        conf: Union[Dict[str, Any], ConfigDict, AgentConfig, None],
+        conf: Union[Dict[str, Any], ConfigDict, AgentConfig, None] = None,
         desc: str = None,
         agent_id: str = None,
         *,
+        task: Any = None,
         tool_names: List[str] = None,
         agent_names: List[str] = None,
         mcp_servers: List[str] = None,
@@ -92,6 +93,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             conf: Agent config for internal processes.
             name: Agent name as identifier.
             desc: Agent description as tool description.
+            task: The original task of the agent, will be automatically merged into messages after setting.
             tool_names: Tool names of local that agents can use.
             agent_names: Agents as tool name list.
             mcp_servers: Mcp names that the agent can use.
@@ -142,7 +144,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._id = (
             agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
         )
-        self.task = None
+        self.task: Any = task
         # An agent can use the tool list
         self.tool_names: List[str] = tool_names or []
         human_tools = self.conf.get("human_tools", [])
@@ -167,6 +169,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.sandbox = sandbox or Sandbox(
                 mcp_servers=self.mcp_servers, mcp_config=self.mcp_config
             )
+        self.loop_step = 0
+        self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
 
     def _init_context(self, context: Context):
         self.context = context
@@ -182,6 +186,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
+        caller = message.caller
+        if caller and caller == self.id():
+            self.loop_step += 1
+        else:
+            self.loop_step = 0
+        should_term = self.sync_should_terminate_loop(message)
+        if should_term:
+            return AgentMessage(
+                payload=message.payload,
+                caller=message.sender,
+                sender=self.id(),
+                session_id=message.context.session_id,
+                headers=message.headers
+            )
         observation = message.payload
         sync_exec(
             send_message,
@@ -202,6 +220,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
+        caller = message.caller
+        if caller and caller == self.id():
+            self.loop_step += 1
+        else:
+            self.loop_step = 0
+        should_term = await self.should_terminate_loop(message)
+        if should_term:
+            return AgentMessage(
+                payload=message.payload,
+                caller=message.sender,
+                sender=self.id(),
+                session_id=message.context.session_id,
+                headers=message.headers
+            )
         observation = message.payload
         if eventbus is not None:
             await send_message(
@@ -242,21 +274,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             info: Extended information is used to assist the agent to decide a policy.
         """
 
-    def reset(self, options: Dict[str, Any]):
+    def reset(self, options: Dict[str, Any] = None):
         """Clean agent instance state and reset."""
         if options is None:
             options = {}
-        self.task = options.get("task")
-        self.tool_names = options.get("tool_names", [])
-        self.handoffs = options.get("agent_names", [])
-        self.mcp_servers = options.get("mcp_servers", [])
+        self.tool_names = options.get("tool_names", self.tool_names)
+        self.handoffs = options.get("agent_names", self.handoffs)
+        self.mcp_servers = options.get("mcp_servers", self.mcp_servers)
         self.tools = []
         self.trajectory = []
         self._finished = True
 
-    async def async_reset(self, options: Dict[str, Any]):
+    async def async_reset(self, options: Dict[str, Any] = None):
         """Clean agent instance state and reset."""
-        self.task = options.get("task")
+        self.reset(options)
 
     @property
     def finished(self) -> bool:
@@ -278,6 +309,12 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
         return policy_result
+
+    def sync_should_terminate_loop(self, message: Message) -> bool:
+        return sync_exec(self.should_terminate_loop, message)
+
+    async def should_terminate_loop(self, message: Message) -> bool:
+        return False
 
 
 class AgentManager(Factory):

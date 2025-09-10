@@ -23,6 +23,7 @@ class ActionResult(BaseModel):
     # llm tool call id
     tool_call_id: str = None
     metadata: Optional[Dict[str, Any]] = {}
+    parameter: Optional[Dict[str, Any]] = {}
 
 
 class Observation(BaseModel):

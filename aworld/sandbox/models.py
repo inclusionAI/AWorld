@@ -1,12 +1,12 @@
 import uuid
 from dataclasses import dataclass
-from enum import IntEnum, StrEnum
+from enum import Enum
 
 from pydantic import BaseModel
 from typing_extensions import Optional, Dict,Any
 
 
-class SandboxStatus(StrEnum):
+class SandboxStatus(Enum):
     """Sandbox status enumeration."""
     INIT = 'Pending'       # Initialization state
     RUNNING = 'Running'    # Running
@@ -15,7 +15,7 @@ class SandboxStatus(StrEnum):
     REMOVED = 'Removed'    # Removed
     UNKNOWN = 'Unknown'  # Removed
 
-class SandboxEnvType(IntEnum):
+class SandboxEnvType(Enum):
     """Sandbox env type enumeration."""
     LOCAL = 1
     K8S = 2

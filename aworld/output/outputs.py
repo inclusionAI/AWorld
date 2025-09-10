@@ -135,8 +135,9 @@ class StreamingOutputs(AsyncOutputs):
             output (Output): The output to be added to the queue
         """
         logger.info(f"StreamingOutputs|add_output|{self.task_id}|{output}")
-        if self.task_id != output.task_id:
-            logger.warning(f"{self.task_id} unequals {output.task_id}, add ignored.")
+        # if different task take same Output instance, they will output to the same queue
+        # if self.task_id != output.task_id:
+        #     logger.warning(f"{self.task_id} unequals {output.task_id}, add ignored.")
         self._output_queue.put_nowait(output)
 
     async def stream_events(self) -> AsyncIterator[Output]:
@@ -173,7 +174,7 @@ class StreamingOutputs(AsyncOutputs):
 
             try:
                 output = await self._output_queue.get()
-                logger.debug("Outputs got output: {}".format(output.output_type()))
+                logger.info("Outputs got output: {}".format(output.output_type()))
                 self._visited_outputs.append(output)
 
             except asyncio.CancelledError as err:
