@@ -17,7 +17,7 @@ class MemoryItem(BaseModel):
     tags: list[str] = Field(description="tags")
     histories: list["MemoryItem"] = Field(default_factory=list)
     deleted: bool = Field(default=False)
-    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile", "fact"] = Field(default="message")
+    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile", "fact", "conversation_summary"] = Field(default="message")
     version: int = Field(description="version")
 
     def __init__(self, **data):
@@ -107,7 +107,7 @@ class MessageMetadata(BaseModel):
     session_id: Optional[str] = Field(default=None,description="The ID of the session")
     task_id: Optional[str] = Field(default=None,description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
-    is_use_tool_prompt: Optional[bool] = Field(default=False, description="Whether the agent uses tool prompt")
+    summary_content: Optional[str] = Field(default=None, description="The summary of the memory item")
 
     model_config = ConfigDict(extra="allow")
 
@@ -213,14 +213,16 @@ class Fact(MemoryItem):
         content (str): fact.
         metadata (Optional[Dict[str, Any]]): Additional metadata.
     """
-    def __init__(self, user_id: str, content: str, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+    def __init__(self, user_id: str = None, agent_id: str = None, content: str = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         meta = metadata.copy() if metadata else {}
-        meta['user_id'] = user_id
-        super().__init__(content=content, metadata=meta, memory_type="fact", **kwargs)
+        if user_id:
+            meta['user_id'] = user_id
+        elif metadata.get('user_id'):
+            meta['user_id'] = metadata.get('user_id')
 
-    @property
-    def user_id(self) -> str:
-        return self.metadata['user_id']
+        if 'memory_type' in kwargs:
+            kwargs.pop("memory_type")
+        super().__init__(content=content, metadata=meta, memory_type="fact", **kwargs)
 
     @property
     def key(self) -> str:
@@ -252,6 +254,7 @@ class MemorySummary(MemoryItem):
     def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, **kwargs) -> None:
         meta = metadata.to_dict
         meta['item_ids'] = item_ids
+        meta['role'] = "user"
         super().__init__(content=summary, metadata=meta, memory_type="summary", **kwargs)
 
     @property
@@ -260,9 +263,34 @@ class MemorySummary(MemoryItem):
 
     def to_openai_message(self) -> dict:
         return {
+            "role": "user",
+            "content": self.content
+        }
+
+
+class ConversationSummary(MemoryItem):
+    """
+    Represents a conversation summary.
+    All custom attributes are stored in content and metadata.
+    Args:
+        user_id (str): The ID of the user.
+        session_id (str): The ID of the session.
+        summary (str): The summary text of the conversation.
+        metadata (MessageMetadata): Metadata object containing additional information.
+    """
+
+    def __init__(self, user_id: str, session_id: str, summary: str, metadata: MessageMetadata, **kwargs) -> None:
+        meta = metadata.to_dict
+        meta['user_id'] = user_id
+        meta['session_id'] = session_id
+        super().__init__(content=summary, metadata=meta, memory_type="conversation_summary", **kwargs)
+
+    def to_openai_message(self) -> dict:
+        return {
             "role": "assistant",
             "content": self.content
         }
+
 
 class MemoryMessage(MemoryItem):
     """

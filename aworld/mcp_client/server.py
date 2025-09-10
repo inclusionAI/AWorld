@@ -12,6 +12,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from mcp import ClientSession, StdioServerParameters, Tool as MCPTool, stdio_client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import GetSessionIdCallback, streamablehttp_client
+from mcp.shared.session import ProgressFnT
 from mcp.types import CallToolResult, JSONRPCMessage, InitializeResult
 from mcp.shared.message import SessionMessage
 from typing_extensions import NotRequired, TypedDict
@@ -139,7 +140,11 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         except Exception as e:
             logging.error(f"Error initializing MCP server: {e}")
             await self.cleanup()
-            raise
+            return
+        except BaseException as e:
+            logging.error(f"Error initializing MCP server: {e}")
+            await self.cleanup()
+            return
 
     async def list_tools(self) -> list[MCPTool]:
         """List the tools available on the server."""
@@ -157,12 +162,18 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         self._tools_list = (await self.session.list_tools()).tools
         return self._tools_list
 
-    async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None) -> CallToolResult:
+    # async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None) -> CallToolResult:
+    #     """Invoke a tool on the server."""
+    #     if not self.session:
+    #         raise RuntimeError("Server not initialized. Make sure you call `connect()` first.")
+    #
+    #     return await self.session.call_tool(tool_name, arguments)
+
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None,read_timeout_seconds: timedelta | None = None,progress_callback: ProgressFnT | None = None) -> CallToolResult:
         """Invoke a tool on the server."""
         if not self.session:
             raise RuntimeError("Server not initialized. Make sure you call `connect()` first.")
-
-        return await self.session.call_tool(tool_name, arguments)
+        return await self.session.call_tool(name=tool_name, arguments=arguments,read_timeout_seconds=read_timeout_seconds,progress_callback=progress_callback)
 
     async def cleanup(self):
         """Cleanup the server."""

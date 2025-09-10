@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-from asyncio import Queue, PriorityQueue
+from asyncio import Queue, PriorityQueue, QueueEmpty
 from inspect import isfunction
 from typing import Callable, Any, Dict, List
 
@@ -102,9 +102,17 @@ class InMemoryEventbus(Eventbus):
         return self._message_queue.get(message.task_id, PriorityQueue()).get_nowait()
 
     async def done(self, id: str):
-        while not self._message_queue.get(id, PriorityQueue()).empty():
-            self._message_queue.get(id, PriorityQueue()).get_nowait()
-        self._message_queue.get(id, PriorityQueue()).task_done()
+        # Only operate on an existing queue; avoid creating a new temporary queue via dict.get default
+        queue = self._message_queue.get(id)
+        if not queue:
+            return
+        # Drain all remaining items and mark them done to balance unfinished_tasks
+        while True:
+            try:
+                queue.get_nowait()
+                queue.task_done()
+            except QueueEmpty:
+                break
 
     async def subscribe(self, task_id: str, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):

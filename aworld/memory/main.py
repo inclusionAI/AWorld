@@ -248,7 +248,7 @@ class Memory(MemoryBase):
         llm_response = await acall_llm_model(
             self.default_llm_instance,
             messages=summary_messages,
-            model_name=agent_memory_config.summary_model,
+            # model_name=agent_memory_config.summary_model,
             stream=False,
         )
         logger.debug(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages: {summary_messages}")
@@ -437,7 +437,7 @@ class Memory(MemoryBase):
             **filters
         })
 
-    async def retrival_user_facts(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[Fact]]:
+    async def retrival_facts(self, user_id: str, user_input: str, threshold: float = 0.5, limit: int = 3, filters: dict = None) -> Optional[list[Fact]]:
         if not filters:
             filters = {}
 
@@ -476,6 +476,38 @@ class AworldMemory(Memory):
         super().__init__(memory_store=memory_store, config=config, **kwargs)
         self.summary = {}
 
+    def _filter_incomplete_message_pairs(self, message_items: list[MemoryItem]) -> list[MemoryItem]:
+        """
+        Filter out incomplete message pairs to ensure only complete [ai, tool] message pair sequences are retained.
+        
+        For sequence [ai,tool,ai,tool,ai,tool,ai,tool,tool,ai,tool,tool,tool],
+        identify the complete subsequence [ai,tool,ai,tool,ai,tool,ai,tool,tool],
+        i.e., remove the incomplete part in the last group [ai,tool,tool,tool].
+
+        Args:
+            message_items: List of message items
+
+        Returns:
+            Filtered message items list, retaining only complete [ai, tool] pairs
+        """
+        if len(message_items) < 2:
+            return message_items
+
+        # Find the last AI message in the sequence
+        last_ai_index = -1
+        for i in range(len(message_items) - 1, -1, -1):
+            if isinstance(message_items[i], MemoryAIMessage):
+                last_ai_index = i
+                break
+        
+        # If no AI message found, return empty list
+        if last_ai_index == -1:
+            return []
+        
+        # Remove everything from the last AI message onwards
+        # This removes the last incomplete [ai, tool, tool, ...] group
+        return message_items[:last_ai_index]
+
     async def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         self.memory_store.add(memory_item)
 
@@ -501,8 +533,11 @@ class AworldMemory(Memory):
         )
         to_be_summary_items = [item for item in agent_task_total_message if item.memory_type == "message" and not item.has_summary]
 
+        # 序列中删除最后一组完整的 [ai,tool] 组合
+        to_be_summary_items = self._filter_incomplete_message_pairs(to_be_summary_items)
+
         check_need_summary,trigger_reason = self._check_need_summary(to_be_summary_items, agent_memory_config)
-        logger.debug(f"🧠 [MEMORY:short-term] [Summary] check_need_summary: {check_need_summary}, trigger_reason: {trigger_reason}")
+        logger.info(f"🧠 [MEMORY:short-term] [Summary] check_need_summary: {check_need_summary}, trigger_reason: {trigger_reason}")
 
         if not check_need_summary:
             return
@@ -523,7 +558,8 @@ class AworldMemory(Memory):
         summary_memory = MemorySummary(
             item_ids=[item.id for item in to_be_summary_items],
             summary=summary_content,
-            metadata=summary_metadata
+            metadata=summary_metadata,
+            created_at=to_be_summary_items[0].created_at
         )
 
         # add summary to memory
@@ -572,37 +608,44 @@ class AworldMemory(Memory):
                 )
             }
         ]
+        llm_summary = await self._call_llm_summary(summary_messages, agent_memory_config)
+        tool_use_content = "\n\n the following is the tool use history:\n"
+        for item in to_be_summary_items:
+            if item.metadata.get('summary_content'):
+                tool_use_content += f"{item.metadata.get('summary_content', '')}\n"
 
-        return await self._call_llm_summary(summary_messages, agent_memory_config)
+        return f"{llm_summary}{tool_use_content}"
 
 
 
 
     def _save_to_vector_db(self, memory_item: MemoryItem):
-        if not memory_item.embedding_text:
-            logger.debug(f"memory_item.embedding_text is None, skip save to vector store")
-            return
-        if self._vector_db and self._embedder:
-            embedding = self._embedder.embed_query(memory_item.embedding_text)
-            # save to vector store
-            embedding_meta = EmbeddingsMetadata(
-                memory_id=memory_item.id,
-                agent_id = memory_item.agent_id,
-                session_id = memory_item.session_id,
-                task_id = memory_item.task_id,
-                user_id = memory_item.user_id,
-                application_id = memory_item.application_id,
-                memory_type=memory_item.memory_type,
-                created_at=memory_item.created_at,
-                updated_at=memory_item.updated_at,
-                embedding_model=self.config.embedding_config.model_name,
-            )
-            embedding_item= EmbeddingsResult(embedding = embedding, content=memory_item.embedding_text, metadata=embedding_meta)
+        try:
+            if not memory_item.embedding_text:
+                logger.debug(f"memory_item.embedding_text is None, skip save to vector store")
+                return
+            if self._vector_db and self._embedder:
+                embedding = self._embedder.embed_query(memory_item.embedding_text)
+                # save to vector store
+                embedding_meta = EmbeddingsMetadata(
+                    memory_id=memory_item.id,
+                    agent_id = memory_item.agent_id,
+                    session_id = memory_item.session_id,
+                    task_id = memory_item.task_id,
+                    user_id = memory_item.user_id,
+                    application_id = memory_item.application_id,
+                    memory_type=memory_item.memory_type,
+                    created_at=memory_item.created_at,
+                    updated_at=memory_item.updated_at,
+                    embedding_model=self.config.embedding_config.model_name,
+                )
+                embedding_item= EmbeddingsResult(embedding = embedding, content=memory_item.embedding_text, metadata=embedding_meta)
 
-            self._vector_db.insert(self.config.vector_store_config.config['collection_name'], [embedding_item])
-        else:
-            logger.warning(f"memory_store or embedder is None, skip save to vector store")
-
+                self._vector_db.insert(self.config.vector_store_config.config['collection_name'], [embedding_item])
+            else:
+                logger.warning(f"memory_store or embedder is None, skip save to vector store")
+        except Exception as err:
+            logger.warning(f"save_to_vector, failed is {err}")
 
     def update(self, memory_item: MemoryItem):
         self.memory_store.update(memory_item)
@@ -672,14 +715,18 @@ class AworldMemory(Memory):
 
         # if total messages <= requested rounds, return all messages
         if len(result_items) <= last_rounds:
-            return init_items + result_items
+            result_items =  init_items + result_items
         else:
             # Ensure tool message completeness: LLM API requires the preceding tool_calls message 
             # to be included when processing a tool message. If the first message in our window 
             # is a tool message, we need to expand the window to include its associated tool_calls.
             while isinstance(result_items[-last_rounds], MemoryToolMessage):
                 last_rounds = last_rounds + 1
-            return init_items + result_items[-last_rounds:]
+            result_items = init_items + result_items[-last_rounds:]
+
+        result_items.sort(key=lambda x: x.created_at, reverse=False)
+        return result_items
+
 
 
     def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[list[MemoryItem]]:

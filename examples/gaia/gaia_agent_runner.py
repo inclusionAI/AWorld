@@ -181,7 +181,7 @@ class GaiaAgentRunner:
             system_prompt=system_prompt,
             mcp_config=mcp_config,
             mcp_servers=(
-                os.getenv("GAIA_MCP_SERVERS", "").split(",")
+                os.getenv("GAIA_MCP_SERVERS", "").split(",") if os.getenv("GAIA_MCP_SERVERS", "") else ""
                 or mcp_config.get("mcpServers", {}).keys()
             ),
         )

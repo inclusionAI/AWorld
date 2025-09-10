@@ -26,7 +26,7 @@ def get_current_time() -> str:
         return datetime.now().strftime("%H:%M:%S")
     except Exception as e:
         logger.warning(f"Error getting current time: {e}")
-        return "unknown time"
+        return ""
 
 
 def get_current_date() -> str:
@@ -35,7 +35,7 @@ def get_current_date() -> str:
         return datetime.now().strftime("%Y-%m-%d")
     except Exception as e:
         logger.warning(f"Error getting current date: {e}")
-        return "unknown date"
+        return ""
 
 
 def get_current_datetime() -> str:
@@ -44,7 +44,7 @@ def get_current_datetime() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     except Exception as e:
         logger.warning(f"Error getting current datetime: {e}")
-        return "unknown datetime"
+        return ""
 
 
 def get_current_timestamp() -> str:
@@ -53,7 +53,7 @@ def get_current_timestamp() -> str:
         return str(int(datetime.now().timestamp()))
     except Exception as e:
         logger.warning(f"Error getting current timestamp: {e}")
-        return "unknown timestamp"
+        return ""
 
 
 def get_current_weekday() -> str:
@@ -62,7 +62,7 @@ def get_current_weekday() -> str:
         return datetime.now().strftime("%A")
     except Exception as e:
         logger.warning(f"Error getting current weekday: {e}")
-        return "unknown weekday"
+        return ""
 
 
 def get_current_month() -> str:
@@ -70,7 +70,7 @@ def get_current_month() -> str:
         return datetime.now().strftime("%B")
     except Exception as e:
         logger.warning(f"Error getting current month: {e}")
-        return "unknown month"
+        return ""
 
 
 def get_current_year() -> str:
@@ -78,7 +78,7 @@ def get_current_year() -> str:
         return str(datetime.now().year)
     except Exception as e:
         logger.warning(f"Error getting current year: {e}")
-        return "unknown year"
+        return ""
 
 # ==================== System Information Functions ====================
 
@@ -87,7 +87,7 @@ def get_system_platform() -> str:
         return platform.platform()
     except Exception as e:
         logger.warning(f"Error getting system platform: {e}")
-        return "unknown platform"
+        return ""
 
 
 def get_system_os() -> str:
@@ -96,7 +96,7 @@ def get_system_os() -> str:
         return platform.system()
     except Exception as e:
         logger.warning(f"Error getting system OS: {e}")
-        return "unknown OS"
+        return ""
 
 
 def get_python_version() -> str:
@@ -105,7 +105,7 @@ def get_python_version() -> str:
         return platform.python_version()
     except Exception as e:
         logger.warning(f"Error getting Python version: {e}")
-        return "unknown Python version"
+        return ""
 
 
 def get_hostname() -> str:
@@ -114,7 +114,7 @@ def get_hostname() -> str:
         return platform.node()
     except Exception as e:
         logger.warning(f"Error getting hostname: {e}")
-        return "unknown hostname"
+        return ""
 
 
 def get_username() -> str:
@@ -123,7 +123,7 @@ def get_username() -> str:
         return os.getlogin()
     except Exception as e:
         logger.warning(f"Error getting username: {e}")
-        return "unknown user"
+        return ""
 
 
 def get_working_directory() -> str:
@@ -132,7 +132,7 @@ def get_working_directory() -> str:
         return os.getcwd()
     except Exception as e:
         logger.warning(f"Error getting working directory: {e}")
-        return "unknown directory"
+        return ""
 
 
 def get_random_uuid() -> str:
@@ -141,7 +141,7 @@ def get_random_uuid() -> str:
         return str(uuid.uuid4())
     except Exception as e:
         logger.warning(f"Error generating UUID: {e}")
-        return "unknown uuid"
+        return ""
 
 
 def get_short_uuid() -> str:
@@ -150,7 +150,7 @@ def get_short_uuid() -> str:
         return str(uuid.uuid4())[:8]
     except Exception as e:
         logger.warning(f"Error generating short UUID: {e}")
-        return "unknown uuid"
+        return ""
 
 # ==================== Predefined Dynamic Variable Collections ====================
 
@@ -224,7 +224,7 @@ def get_value_by_path(obj: Any, field_path: str) -> Any:
 
 def create_context_field_getter(
     field_path: str, 
-    default_value: str = "unknown",
+    default_value: str = "",
     processor: Optional[Callable[[Any], str]] = None,
     fallback_getter: Optional[Callable[["Context"], Any]] = None
 ) -> Callable[["Context"], str]:
@@ -245,10 +245,10 @@ def create_context_field_getter(
         get_agent_name = create_context_field_getter("agent_name", "Assistant")
         
         # Nested field with dot separator
-        get_model = create_context_field_getter("model_config.llm_model_name", "unknown_model")
+        get_model = create_context_field_getter("model_config.llm_model_name", "")
         
         # Nested field with slash separator
-        get_user_name = create_context_field_getter("user/profile/name", "unknown_user")
+        get_user_name = create_context_field_getter("user/profile/name", "")
         
         # Mixed separators
         get_api_version = create_context_field_getter("config.api/version", "v1.0")

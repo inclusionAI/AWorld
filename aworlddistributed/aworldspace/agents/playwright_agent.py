@@ -4,6 +4,7 @@ import traceback
 from typing import Dict, Any, List, Union
 from typing import Optional
 
+from aworld.core.event.base import Message
 from aworldspace.base_agent import AworldBaseAgent
 from pydantic import BaseModel, Field
 
@@ -390,7 +391,8 @@ class PlayWrightAgent(Agent):
         self.success = False
         super().__init__(conf, **kwargs)
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
+    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
+                           **kwargs) -> Union[
         List[ActionModel], None]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
@@ -414,7 +416,7 @@ class PlayWrightAgent(Agent):
             self.task_histories = observation.context
 
         self._finished = False
-        await self.async_desc_transform()
+        await self.async_desc_transform(message.context)
 
         self.tools = None
         if "data:image/jpeg;base64," in observation.content:

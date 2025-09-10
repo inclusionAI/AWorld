@@ -9,7 +9,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, Constants, TopicType, GroupEvent
+from aworld.core.event.base import Message, Constants, TopicType, GroupMessage
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.runners import HandlerFactory
@@ -42,7 +42,7 @@ class DefaultGroupHandler(GroupHandler):
             return False
         return True
 
-    async def _do_handle(self, message: GroupEvent) -> AsyncGenerator[Message, None]:
+    async def _do_handle(self, message: GroupMessage) -> AsyncGenerator[Message, None]:
         if not self.is_valid_message(message):
             return
 
@@ -92,7 +92,6 @@ class DefaultGroupHandler(GroupHandler):
                     return
 
                 # Create agent copies and execute for each action
-                agent_copies = []
                 for action in actions:
                     msg = await self._build_agent_message(action, message)
                     if msg.category != Constants.AGENT:
@@ -100,7 +99,6 @@ class DefaultGroupHandler(GroupHandler):
                         return
                     self._update_headers(msg, message)
                     agent_copy = self.copy_agent(original_agent)
-                    agent_copies.append(agent_copy)
                     con = action.policy_info
                     if action.params and 'content' in action.params:
                         con = action.params['content']
@@ -220,7 +218,7 @@ class DefaultGroupHandler(GroupHandler):
         Returns:
             Deep copy of the agent
         """
-        return agent.deep_copy()
+        return agent
 
     async def _parallel_exec_agents_actions(self, agent_messages: Dict[str, List[Tuple[str, Agent, Message]]],
                                             message: Message):
@@ -256,7 +254,7 @@ class DefaultGroupHandler(GroupHandler):
                 return
             root_agent_id = node.metadata.get('root_agent_id')
             root_agent_set.add(root_agent_id)
-            self.context.merge_context(res.context)
+            self.context.merge_sub_context(res.context)
             msg = Message(
                 category=Constants.AGENT,
                 payload=[ActionModel(policy_info=res.answer, agent_name=root_agent_id)],

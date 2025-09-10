@@ -7,11 +7,9 @@ from typing import Dict, List, Any
 from aworld import import_package
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.event.base import Message, Constants
-from aworld.core.storage.base import Storage
-from aworld.core.storage.inmemory import InMemoryStorage
 from aworld.logs.util import logger
-from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience
-from aworld.runners.state_manager import RuntimeStateManager
+from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience, InMemoryStorage, Storage
+from aworld.runners.state_manager import RuntimeStateManager, EventRuntimeStateManager
 from aworld.utils.serialized_util import to_serializable
 from aworld.utils.common import get_local_ip
 
@@ -28,7 +26,7 @@ class EventReplayBuffer(ReplayBuffer):
         super().__init__(storage)
         self.task_agent_map = {}
 
-    async def get_trajectory(self, messages: List[Message], task_id: str) -> List[Dict[str, Any]] | None:
+    async def get_trajectory(self, messages: List[Message], task_id: str, state_mng: RuntimeStateManager = None) -> List[Dict[str, Any]] | None:
         if not messages:
             return None
         valid_agent_messages = await self._filter_replay_messages(messages, task_id)
@@ -37,9 +35,12 @@ class EventReplayBuffer(ReplayBuffer):
         data_rows = []
         try:
             for msg in valid_agent_messages:
-                data_row = self.build_data_row_from_message(msg)
+                data_row = self.build_data_row_from_message(msg, state_mng)
                 if data_row:
                     data_rows.append(data_row)
+            if not data_rows:
+                logger.warn(f"No valid agent messages found for task: {task_id}")
+                return None
 
             self.store_batch(data_rows)
             trajectory = [to_serializable(data_row) for data_row in data_rows]
@@ -67,7 +68,7 @@ class EventReplayBuffer(ReplayBuffer):
             results.append(message)
         return results
 
-    def build_data_row_from_message(self, message: Message) -> DataRow:
+    def build_data_row_from_message(self, message: Message, state_manager: RuntimeStateManager = None) -> DataRow:
         '''
         Build DataRow from a message.
         
@@ -103,7 +104,8 @@ class EventReplayBuffer(ReplayBuffer):
             pre_agent=pre_agent
         )
 
-        state_manager = RuntimeStateManager.instance()
+        if not state_manager:
+            state_manager = EventRuntimeStateManager.instance()
         observation = message.payload
         node = state_manager._find_node(message.id)
         if node is None or not node.results:

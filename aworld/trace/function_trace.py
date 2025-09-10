@@ -1,7 +1,8 @@
 import inspect
 import contextlib
 import functools
-from typing import TYPE_CHECKING, Callable, Any, Union, Iterable
+import json
+from typing import TYPE_CHECKING, Callable, Any, Union, Iterable, Sequence
 from aworld.trace.base import (
     AttributeValueType
 )
@@ -10,6 +11,7 @@ from aworld.trace.stack_info import get_filepath_attribute
 from aworld.trace.constants import (
     ATTRIBUTES_MESSAGE_TEMPLATE_KEY
 )
+from aworld.utils.serialized_util import to_serializable
 
 if TYPE_CHECKING:
     from aworld.trace.context_manager import TraceManager, ContextSpan
@@ -106,8 +108,20 @@ def get_func_args(func: Callable,
             if isinstance(extract_args, bool):
                 extract_args = func_sig.parameters.keys()
             func_args = {k: v for k, v in func_args.items() if k in extract_args}
+        pre_process_func_args(func_args)
         return func_args
     return {}
+
+
+def pre_process_func_args(args: dict):
+    """Pre process the function arguments.
+    """
+    if "self" in args:
+        args.pop("self")
+    for k, v in args.items():
+        if (v and not isinstance(v, (str, bool, int, float)) and
+                not (isinstance(v, Sequence) and all(isinstance(i, (str, bool, int, float)) for i in v))):
+            args[k] = json.dumps(to_serializable(v), ensure_ascii=False)
 
 
 def get_function_meta(func: Any,

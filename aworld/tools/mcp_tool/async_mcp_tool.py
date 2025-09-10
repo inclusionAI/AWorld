@@ -106,7 +106,7 @@ class McpTool(AsyncTool):
         try:
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
-                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions, task_id=task_id, session_id=session_id)
+                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions, task_id=task_id, session_id=session_id,context=self.context)
             else:
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1

@@ -86,7 +86,7 @@ class DefaultTaskHandler(TaskHandler):
             async for event in self.run_hooks(message, HookPoint.FINISHED):
                 yield event
 
-            self.runner._task_response = TaskResponse(answer=str(message.payload),
+            self.runner._task_response = TaskResponse(answer=message.payload,
                                                       success=True,
                                                       context=message.context,
                                                       id=self.runner.task.id,
@@ -113,7 +113,7 @@ class DefaultTaskHandler(TaskHandler):
             logger.warn("=============== Get human confirm, pause execution ===============")
             if self.runner.task.outputs and message.payload:
                 await self.runner.task.outputs.add_output(Output(data=message.payload))
-            self.runner._task_response = TaskResponse(answer=str(message.payload),
+            self.runner._task_response = TaskResponse(answer=message.payload,
                                                       success=True,
                                                       context=message.context,
                                                       id=self.runner.task.id,
