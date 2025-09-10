@@ -29,7 +29,7 @@ class RuntimeEngine(object):
         """Engine runtime instance initialize."""
         self.conf = ConfigDict(conf.model_dump())
         self.runtime = None
-        register(conf.name, self)
+        register(conf.engine_name, self)
 
         # Initialize clients running on top of distributed computing engines
         pass
@@ -65,17 +65,8 @@ class RuntimeEngine(object):
         """Define the post execution logic."""
         pass
 
-
-class LocalRuntime(RuntimeEngine):
-    """Local runtime key is 'local', and execute tasks in local machine.
-
-    Local runtime is used to verify or test locally.
-    """
-
-    def _build_engine(self):
-        self.runtime = self
-
-    def func_wrapper(self, func: Callable[..., Any], *args, **kwargs) -> Any:
+    @staticmethod
+    def func_wrapper(func: Callable[..., Any], *args, **kwargs) -> Any:
         """Function is used to adapter computing form."""
         try:
             if inspect.iscoroutinefunction(func):
@@ -87,6 +78,16 @@ class LocalRuntime(RuntimeEngine):
             logger.error(f"⚠️ Function {getattr(func, '__name__', 'unknown')} execution failed: {e}")
             # Re-raise the exception to be handled by the executor
             raise
+
+
+class LocalRuntime(RuntimeEngine):
+    """Local runtime key is 'local', and execute tasks in local machine.
+
+    Local runtime is used to verify or test locally.
+    """
+
+    def _build_engine(self):
+        self.runtime = self
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         # opt of the one task process
@@ -116,12 +117,12 @@ class LocalRuntime(RuntimeEngine):
 
         futures = []
         results = {}
-        
+
         try:
             with ProcessPoolExecutor(num_process) as pool:
                 for func in funcs:
-                    futures.append(pool.submit(self.func_wrapper, func, *args, **kwargs))
-                
+                    futures.append(pool.submit(RuntimeEngine.func_wrapper, func, *args, **kwargs))
+
                 # Wait for all futures to complete with timeout
                 timeout = self.conf.get('timeout', 300)
                 for future in futures:
@@ -138,7 +139,7 @@ class LocalRuntime(RuntimeEngine):
         except Exception as e:
             logger.error(f"ProcessPoolExecutor failed: {e}, traceback: {traceback.format_exc()}")
             raise
-            
+
         return results
 
 
@@ -171,7 +172,8 @@ class SparkRuntime(RuntimeEngine):
                 import sys
                 os.environ['PYSPARK_PYTHON'] = sys.executable
 
-            spark_builder = spark_builder.master('local[1]').config('spark.executor.instances', '1')
+            spark_builder = spark_builder.master('local[1]').config('spark.executor.instances',
+                                                                    f'{self.conf.get("worker_num", 1)}')
 
         self.runtime = spark_builder.appName(conf.get('job_name', 'aworld_spark_job')).getOrCreate()
 
@@ -187,7 +189,7 @@ class SparkRuntime(RuntimeEngine):
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
         re_args = self.args_process(*args)
         res_rdd = self.runtime.sparkContext.parallelize(funcs, len(funcs)).map(
-            lambda func: func(*re_args, **kwargs))
+            lambda func: RuntimeEngine.func_wrapper(func, *re_args, **kwargs))
 
         res_list = res_rdd.collect()
         results = {res.id: res for res in res_list}
@@ -197,7 +199,7 @@ class SparkRuntime(RuntimeEngine):
 class RayRuntime(RuntimeEngine):
     """Ray runtime key is 'ray', and execute tasks in ray cluster.
 
-    Ray runtime in TaskRuntimeBackend only execute function (stateless), can be used to custom
+    Ray runtime in RuntimeEngine only execute function (stateless), can be used to custom
     resource allocation and communication etc. advanced features.
     """
 
@@ -211,7 +213,7 @@ class RayRuntime(RuntimeEngine):
             ray.init()
 
         self.runtime = ray
-        self.num_executors = self.conf.get('num_executors', 1)
+        self.num_executors = self.conf.get('worker_num', 1)
         logger.info("ray init finished, executor number {}".format(str(self.num_executors)))
 
     async def execute(self, funcs: List[Callable[..., Any]], *args, **kwargs) -> Dict[str, Any]:
@@ -227,7 +229,7 @@ class RayRuntime(RuntimeEngine):
         for arg in args:
             params.append([arg] * len(funcs))
 
-        def ray_map(func, fn): return [func.remote(x, *y) for x, *y in zip(fn, *params)]
+        ray_map = lambda func, fn: [func.remote(x, *y) for x, *y in zip(fn, *params)]
         res_list = self.runtime.get(ray_map(fn_wrapper, funcs))
         return {res.id: res for res in res_list}
 

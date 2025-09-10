@@ -57,7 +57,7 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
     if not run_conf:
         run_conf = RunConfig()
 
-    name = run_conf.name
+    name = run_conf.engine_name
     if run_conf.cls:
         runtime_backend = new_instance(run_conf.cls, run_conf)
     else:
