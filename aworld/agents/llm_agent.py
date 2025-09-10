@@ -1141,11 +1141,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             ),
             memory_type=memory_type
         ), agent_memory_config=self.memory_config)
-        logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: "
-                    f"User#{user_id}, "
-                    f"Session#{session_id}, "
-                    f"Task#{task_id}, "
-                    f"Agent#{self.id()}, 💬 {content[:100]}...")
+        # logger.info(f"🧠 [MEMORY:short-term] Added human input to task memory: "
+        #             f"User#{user_id}, "
+        #             f"Session#{session_id}, "
+        #             f"Task#{task_id}, "
+        #             f"Agent#{self.id()}, 💬 {content[:100]}...")
 
     async def _add_llm_response_to_memory(self, llm_response, context: Context):
         """Add LLM response to memory"""
@@ -1169,13 +1169,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name()
             )
         ), agent_memory_config=self.memory_config)
-        logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: "
-                    f"User#{user_id}, "
-                    f"Session#{session_id}, "
-                    f"Task#{task_id}, "
-                    f"Agent#{self.id()},"
-                    f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
-                    f" content: {llm_response.content[:100] if llm_response.content else ''}... ")
+        # logger.info(f"🧠 [MEMORY:short-term] Added LLM response to task memory: "
+        #             f"User#{user_id}, "
+        #             f"Session#{session_id}, "
+        #             f"Task#{task_id}, "
+        #             f"Agent#{self.id()},"
+        #             f" 💬 tool_calls size: {len(llm_response.tool_calls) if llm_response.tool_calls else 0},"
+        #             f" content: {llm_response.content[:100] if llm_response.content else ''}... ")
 
     async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
@@ -1218,11 +1218,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 agent_name=self.name(),
             )
         ), agent_memory_config=self.memory_config)
-        logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory:"
-                    f" User#{user_id}, "
-                    f"Session#{session_id}, "
-                    f"Task#{task_id}, "
-                    f"Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
+        # logger.info(f"🧠 [MEMORY:short-term] Added tool result to task memory:"
+        #             f" User#{user_id}, "
+        #             f"Session#{session_id}, "
+        #             f"Task#{task_id}, "
+        #             f"Agent#{self.id()}, 💬 tool_call_id: {tool_call_id} ")
 
     def _update_headers(self, input_message: Message) -> Dict[str, Any]:
         headers = input_message.headers.copy()
