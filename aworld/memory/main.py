@@ -19,8 +19,23 @@ from aworld.models.utils import num_tokens_from_messages
 
 AWORLD_MEMORY_EXTRACT_NEW_SUMMARY = """
 You are presented with a user task, a conversion that may contain the answer, and a previous conversation summary. 
-Please read the conversation carefully and extract new information from the conversation that helps to solve user task,
- 
+Please read the conversation carefully and extract new information from the conversation that helps to solve user task
+<guide>
+1. if current conversion contain answer of task or related information, must include it in the summary.
+2. record key step of current conversion. such visited web page, use tools information, etc. example:
+    - step_info:
+       - step_content: the description of step, must be a complete sentence and keep information params of step.
+        - use tools information:
+         - tool_name: search
+         - tool_input: {{
+            "query": "python"
+          }}
+       - step_result: the result of step and evidence information, such link of visited web page for slove task
+
+3. In your summary, aim to reduce unnecessary information, but make sure your summarized content still provides enough details for the task and does not lose any important information.
+<guide>
+
+
 <user_task> {user_task} </user_task>
 <existed_summary> {existed_summary} </existed_summary>
 <conversation> {to_be_summary} </conversation>
