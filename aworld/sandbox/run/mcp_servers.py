@@ -223,7 +223,8 @@ class McpServers:
                                 sync_exec(send_message, tool_output_message)
                             except BaseException as e:
                                 logging.warning(f"Error calling progress callback: {e}")
-
+                        if not parameter:
+                            parameter = {}
                         await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
                                                      parameter=parameter)
                         call_result_raw = await server.call_tool(tool_name=tool_name, arguments=parameter,
