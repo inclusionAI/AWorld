@@ -332,23 +332,36 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
     async def step(self, message: Message, **kwargs) -> Message:
         self._init_context(message.context)
         action = message.payload
-        tool_id_mapping = {}
-        for act in action:
-            tool_id = act.tool_call_id
-            tool_name = act.tool_name
-            tool_id_mapping[tool_id] = tool_name
-        await self.pre_step(action, **kwargs)
-        res = await self.do_step(action, **kwargs)
-        final_res = await self.post_step(res, action, **kwargs)
-        await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
-        if isinstance(final_res, Message):
-            self._update_headers(final_res, message)
-        if message.group_id and message.headers.get('level', 0) == 0:
-            from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
-            state_mng = RuntimeStateManager.instance()
-            state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
-            final_res.headers['_tool_finished'] = True
-        return final_res
+        try:
+            tool_id_mapping = {}
+            for act in action:
+                tool_id = act.tool_call_id
+                tool_name = act.tool_name
+                tool_id_mapping[tool_id] = tool_name
+            await self.pre_step(action, **kwargs)
+            res = await self.do_step(action, **kwargs)
+            final_res = await self.post_step(res, action, **kwargs)
+            await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
+            if isinstance(final_res, Message):
+                self._update_headers(final_res, message)
+            if message.group_id and message.headers.get('level', 0) == 0:
+                from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
+                state_mng = RuntimeStateManager.instance()
+                state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
+                final_res.headers['_tool_finished'] = True
+            return final_res
+        except Exception as e:
+            err_msg = f"tool {self.name()} step error: {e}"
+            logger.error(err_msg)
+            obs = Observation(content=err_msg,
+                              observer=action[0].agent_name,
+                              action_result=[ActionResult(success=False, content=err_msg, error=err_msg)])
+            return AgentMessage(payload=Tuple([obs, 0, True, True, {}]),
+                                caller=action[0].agent_name,
+                                sender=self.name(),
+                                receiver=action[0].agent_name,
+                                session_id=self.context.session_id,
+                                headers={"context": self.context})
 
     async def post_step(self,
                         step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
