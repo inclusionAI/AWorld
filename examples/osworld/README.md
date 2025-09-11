@@ -10,12 +10,12 @@ Our agent demonstrates leading performance on the OSWorld-verified benchmark (`m
 
 ### OSWorld-Verified Leaderboard Comparison
 
-| Agent                  | Score (pass@1)    | Success/Total | chrome      | gimp  | libreoffice_calc | libreoffice_impress | libreoffice_writer | multi_apps  | os    | thunderbird | vlc         | vs_code |
-| ---------------------- | ----------------- | ------------- | ----------- | ----- | ---------------- | ------------------- | ------------------ | ----------- | ----- | ----------- | ----------- | ------- |
-| **aworldAgent (ours)** | **58.04% (Top 1)**| **209.55/361**| 22.96/46    | 19/26 | 33/47            | 28.39/47            | 13/23              | 40.41/93    | 16/24 | 11/15       | 9.79/17     | 16/23   |
-| Agentic-Lybic-Maestro  | 57.1%             | 205.47/360    | 27.96/46    | 22/26 | 24/47            | 27.96/47            | 16/23              | 32.71/92    | 16/24 | 11/15       | 10.84/17    | 17/23   |
-| CoACT-1                | 56.4%             | 203.55/361    | 20.96/46    | 16/26 | 32/47            | 21.96/47            | 17/23              | 39.40/93    | 17/24 | 10/15       | 11.23/17    | 18/23   |
-| agent s2.5 w/ o3       | 54.2%             | 200.02/369    | 23.96/46    | 20/26 | 26/47            | 25.99/47            | 11/23              | 39.93/101   | 18/24 | 11/15       | 7.14/17     | 17/23   |
+| Agent                  | Score (pass@1)  | Success/Total | chrome      | gimp  | libreoffice_calc | libreoffice_impress | libreoffice_writer | multi_apps  | os    | thunderbird | vlc         | vs_code |
+| ---------------------- | --------------- | ------------- | ----------- | ----- | ---------------- | ------------------- | ------------------ | ----------- | ----- | ----------- | ----------- | ------- |
+| **aworldAgent (ours)** | **58.04%**| **209.55/361**| 22.96/46    | 19/26 | 33/47            | 28.39/47            | 13/23              | 40.41/93    | 16/24 | 11/15       | 9.79/17     | 16/23   |
+| Agentic-Lybic-Maestro  | 57.1%           | 205.47/360    | 27.96/46    | 22/26 | 24/47            | 27.96/47            | 16/23              | 32.71/92    | 16/24 | 11/15       | 10.84/17    | 17/23   |
+| CoACT-1                | 56.4%           | 203.55/361    | 20.96/46    | 16/26 | 32/47            | 21.96/47            | 17/23              | 39.40/93    | 17/24 | 10/15       | 11.23/17    | 18/23   |
+| agent s2.5 w/ o3       | 54.2%           | 200.02/369    | 23.96/46    | 20/26 | 26/47            | 25.99/47            | 11/23              | 39.93/101   | 18/24 | 11/15       | 7.14/17     | 17/23   |
 
 ## ⚡️ Quick Start
 
@@ -27,7 +27,10 @@ Follow these steps to set up the environment and reproduce our results.
 2.  **Install AWorld Framework**:
     *   Install the specific version of `aworld` used in our experiments.
     ```bash
-    pip install aworld==0.2.6
+    git clone https://github.com/inclusionAI/AWorld.git
+    cd AWorld
+    git checkout osworld_benchmark
+    python setup.py install
     ```
 
 3.  **Deploy Agent Code**:
