@@ -81,7 +81,7 @@ osworld/
 
 ## ⚙️ Parameter Descriptions
 
-The `run_multienv_s2_5_test.py` script is configured via command-line arguments. Key parameters are explained below:
+The `run_multienv_aworldAgent.py` script is configured via command-line arguments. Key parameters are explained below:
 
 | Argument              | Type  | Description                                                         | Example                               |
 | --------------------- | ----- | ------------------------------------------------------------------- | ------------------------------------- |
