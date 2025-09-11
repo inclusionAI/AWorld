@@ -50,5 +50,5 @@ from aworld.core.tool.action import ToolAction
 
 class {name}Action(ToolAction):
     '''{name} action enum.'''
-    # ERROR = ToolActionInfo(name="error", desc="action error")
+    {action_name_upper} = ToolActionInfo(name="{action_name}", desc="{desc}", input_params={params})
 """

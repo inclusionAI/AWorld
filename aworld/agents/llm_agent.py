@@ -333,6 +333,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def _log_messages(self, messages: List[Dict[str, Any]], **kwargs) -> None:
         """Log the sequence of messages for debugging purposes"""
         logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
+        logger.debug(f"[agent] use tools: {self.tools}")
         for i, msg in enumerate(messages):
             prefix = msg.get('role')
             logger.info(
