@@ -165,8 +165,11 @@ class TaskRunner(Runner):
                     continue
                 tool_file = action_file.replace("_action.py", ".py")
                 logger.debug(f"will del {action_file}, {tool_file}")
-                os.remove(action_file)
-                os.remove(tool_file)
+                try:
+                    os.remove(action_file)
+                    os.remove(tool_file)
+                except:
+                    pass
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:
