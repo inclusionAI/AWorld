@@ -47,7 +47,7 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List
     return runners
 
 
-async def execute_runner(runners: List[TaskRunner], run_conf: RunConfig) -> Dict[str, TaskResponse]:
+async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str, TaskResponse]:
     """Execute runner in the runtime engine.
 
     Args:
@@ -68,6 +68,9 @@ async def execute_runner(runners: List[TaskRunner], run_conf: RunConfig) -> Dict
     if run_conf.engine_name != EngineName.LOCAL or run_conf.reuse_process == False:
         # distributed in AWorld, the `context` can't carry by response
         for runner in runners:
+            if not isinstance(runner, TaskRunner):
+                logger.info("not task runner in AWorld, skip...")
+                continue
             if runner.task.conf:
                 runner.task.conf.resp_carry_context = False
             else:
