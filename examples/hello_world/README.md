@@ -27,7 +27,16 @@ os.environ["LLM_API_KEY"] = "your key"
 
 ```shell
 python run.py
-# Run more tasks faster, allowing for parallel or distributed, can start an independent ray/spark cluster
+```
+
+## Parallel or distributed run
+Run more tasks faster, allowing for parallel or distributed running tasks.
+
+```shell
+cd parallel_or_distributed
+
+python run_on_multiprocess.py
+# can start an independent ray/spark cluster first
 python run_on_ray.py
 python run_on_spark.py
 ```
