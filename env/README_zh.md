@@ -1,8 +1,8 @@
 <div align="center">
 
-# VirtualPC MCP Server (孵化中)
+# VirtualPC MCP Server
 
-*基于 Debian 的统一 MCP 工具运行时环境，具有会话级环境隔离、环境状态持久化、实时 UI 可视化、分布式架构和可扩展性*
+*一个基于 Docker 的统一 MCP 工具运行时，具备实时 UI 可视化、分布式架构及高可扩展性*
 
 [![License: MIT][license-image]][license-url]
 
@@ -10,77 +10,70 @@
 
 <div align="center">
 
-[English](./README.md) | [快速开始](#快速开始) | [开发](#开发) | [贡献](#贡献)
+[English](./README.md) | [快速入门](#快速入门) | [开发指南](#开发指南) | [参与贡献](#参与贡献)
 
 </div>
 
 ---
 
-## 1. 概述
+## 1. 项目概述
 
-VirtualPC MCP Server 是一个综合性的 MCP（模型上下文协议）工具运行时环境，旨在为 AI 代理提供统一、隔离和可扩展的执行环境。基于 Debian 构建，它提供会话级环境隔离、跨多个会话的持久状态管理以及实时可视化功能。
+VirtualPC MCP Server 是一个统一的 MCP 工具运行时环境，专为 AI 代理提供统一、隔离且可扩展的执行环境而设计。它构建于 Docker 之上，提供了一致的 MCP 工具运行能力，集成了实时可视化界面。
 
-### 1.1 特性
+### 1.1 核心特性
 
-- **会话级环境隔离**：每个 MCP 会话在其独立的隔离环境中运行
-- **多会话状态持久化**：在多个 MCP 会话之间维护环境状态
-- **实时 UI 可视化**：Agent MCP 操作的实时监控和可视化
-- **分布式架构**：支持本地 Docker 和 Kubernetes 集群部署
-- **可扩展运行时**：模块化设计，支持无缝集成新的 MCP 工具服务器
+- **统一的 MCP 工具运行环境**：确保在多个 MCP Server 实例上提供一致且标准的工具执行环境。
+- **实时 UI 可视化**：通过直观的用户界面，实时监控和可视化 Agent 的 MCP 操作。
+- **分布式架构**：原生支持本地 Docker 及 Kubernetes 集群部署，满足不同规模的应用场景。
+- **可扩展的运行时**：采用模块化设计，允许开发者无缝集成新的 MCP 工具服务，增强系统功能。
 
-## 2. 快速开始
+## 2. 快速入门
 
-本项目支持本地 Docker 部署（适用于演示和调试）和 Kubernetes 集群部署（推荐用于生产和强化学习训练）。
+本项目依赖 Docker 进行部署。
 
-### 2.1 本地 Docker 部署
+#### 环境要求
 
-#### 前置要求
-
-确保 Docker 和 Docker Compose 已正确安装并正常运行：
+请确保您的环境中已正确安装并运行 Docker 和 Docker Compose：
 
 ```bash
-# 验证 Docker 安装
+# 验证 Docker 版本
 docker --version
 docker compose --version
 
-# 验证 Docker 守护进程是否运行
+# 确认 Docker 守护进程正在运行
 docker ps
 docker compose ps
 ```
 
-**步骤 1：配置环境并准备 Gaia 数据集**
+**步骤 1：环境配置与 Gaia 数据集准备**
 
-1. 复制环境模板并配置您的设置：
+1.  复制环境配置文件模板，并根据您的需求进行修改：
 
-```bash
-cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
-```
+    ```bash
+    cp ./gaia-mcp-server/mcp_servers/.env_template ./gaia-mcp-server/mcp_servers/.env
+    ```
 
-编辑 `./gaia-mcp-server/mcp_servers/.env` 文件，填入您的具体配置值。
+    请编辑 `./gaia-mcp-server/mcp_servers/.env` 文件，填入您的具体配置信息。
 
-2. 从 Hugging Face 下载 [gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA) 并放置到 `./gaia-mcp-server/docker/gaia_dataset`
+2.  从 Hugging Face 下载 [gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA) 数据集，并将其存放至 `./gaia-mcp-server/docker/gaia_dataset` 目录下。
 
 **步骤 2：启动 VirtualPC MCP Server**
 
 ```bash
-sh run-docker.sh
+sh run-local.sh
 ```
 
-监控终端输出，查看启动过程中是否有任何错误。
+请监控终端输出，确保启动过程中没有错误信息。
 
 **步骤 3：连接到 VirtualPC MCP Server**
 
-使用以下配置连接到 VirtualPC MCP Server：
+使用以下配置信息连接到您的 VirtualPC MCP Server 实例：
 
 ```json
 {
     "virtualpc-mcp-server": {
         "type": "streamable-http",
         "url": "http://localhost:8000/mcp",
-        "headers": {
-            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
-            "MCP_SERVERS": "readweb-server,browser-server"
-        },
         "timeout": 6000,
         "sse_read_timeout": 6000,
         "client_session_timeout_seconds": 6000
@@ -88,27 +81,21 @@ sh run-docker.sh
 }
 ```
 
-**注意**：上述 Bearer token 仅用于本地测试。`MCP_SERVERS` 头部指定了当前连接的 MCP 服务器范围，应该是 `gaia-mcp-server/mcp_servers/mcp_config.py` 中定义的服务器名称的子集。
+## 3. 开发指南
 
-### 2.2 Kubernetes 集群部署
+### 3.1 添加自定义 MCP 工具
 
-对于生产部署和强化学习训练场景，推荐使用 Kubernetes 集群部署。详细说明将在后续更新中提供。
+**步骤 1：开发 MCP 工具 (可选)**
 
-## 3. 开发
-
-### 3.1 向 VirtualPC MCP Server 添加自定义 MCP 工具
-
-**步骤 1：开发 MCP 工具（可选）**
-
-如果您需要开发自定义 MCP 工具并将其注册到 VirtualPC MCP Server，请在 `gaia-mcp-server/mcp_servers` 下创建您的 MCP 工具项目目录并实现 MCP 工具代码。参考 [hello_world](./gaia-mcp-server/mcp_servers/hello_world/) 目录的项目结构。
+如果您需要开发自定义的 MCP 工具并将其集成到 VirtualPC MCP Server 中，请在 `gaia-mcp-server/mcp_servers` 目录下创建您的项目，并实现工具代码。项目结构可参考 [hello_world](./gaia-mcp-server/mcp_servers/hello_world/) 示例。
 
 项目规范：
 
-1. 使用 `pyproject.toml` 管理项目依赖，用于 Docker 镜像构建
+1.  项目依赖应通过 `pyproject.toml` 文件进行管理，以便于 Docker 镜像的构建。
 
 **步骤 2：注册 MCP 工具**
 
-将您开发的 MCP 工具或第三方 MCP 工具注册到 VirtualPC MCP Server。
+将您开发的或第三方的 MCP 工具注册到 VirtualPC MCP Server。
 
 编辑 [MCP 工具注册文件](./gaia-mcp-server/mcp_servers/mcp_config.py)：
 
@@ -128,11 +115,11 @@ sh run-docker.sh
 },
 ```
 
-**步骤 3：更新 MCP 工具模式**
+**步骤 3：更新 MCP 工具模式 (Schema)**
 
-> **重要**：VirtualPC MCP Server 使用预生成的工具模式数据用于 `list_tools()` 函数，因此您必须在修改 MCP 服务器配置后更新 [mcp_tool_schema.json](./gaia-mcp-server/mcp_servers/mcp_tool_schema.json)。
+> **重要提示**：VirtualPC MCP Server 使用预生成的工具模式数据来响应 `list_tools()` 函数的调用。因此，在修改 MCP 服务器配置后，您必须更新 [mcp_tool_schema.json](./gaia-mcp-server/mcp_servers/mcp_tool_schema.json) 文件。
 
-我们提供了一个 Python 脚本 [build_mcp_tool_schema.py](./gaia-mcp-server/mcp_servers/build_mcp_tool_schema.py) 来更新 `mcp_tool_schema.json`。在执行此脚本之前，请确保 MCP 服务器 [.env](./gaia-mcp-server/mcp_servers/.env) 文件已正确配置。
+我们提供了一个 Python 脚本 [build_mcp_tool_schema.py](./gaia-mcp-server/mcp_servers/build_mcp_tool_schema.py) 来帮助您更新 `mcp_tool_schema.json`。在运行此脚本前，请确保 MCP 服务器的 [.env](./gaia-mcp-server/mcp_servers/.env) 文件已正确配置。
 
 ```bash
 cd ./gaia-mcp-server/mcp_servers/
@@ -140,36 +127,35 @@ pip install mcp
 python build_mcp_tool_schema.py
 ```
 
-**步骤 4：构建 Docker 镜像并部署服务**
+**步骤 4：构建 Docker 镜像并部署**
 
-完成上述步骤后，构建 Docker 镜像并部署服务。
+完成以上步骤后，请重新构建 Docker 镜像并部署服务。
 
-## 4. 贡献
+## 4. 参与贡献
 
-我们欢迎社区的贡献！请参考我们的贡献指南：
+我们非常欢迎社区的贡献！如果您希望参与本项目，请遵循我们的贡献指南。我们鼓励您通过以下方式参与：
 
-- 代码风格和标准
-- 拉取请求流程
-- 问题报告
-- 开发设置说明
+-   **报告问题**：发现 Bug 或有功能建议，请通过 [Issues](https://github.com/your-repo/issues) 提交。
+-   **代码贡献**：请遵循标准的 Fork & Pull Request 流程。我们推荐您在提交前遵循项目既有的代码风格和标准。
+-   **文档完善**：如果您发现文档中有任何遗漏或错误，欢迎提交修正。
 
-## 5. 参考资料
+## 5. 参考信息
 
 ### 致谢
 
-- **Magentic-UI 项目**：我们已整合来自 [magentic-ui](https://github.com/microsoft/magentic-ui) 项目的 Docker Browser 源代码。特别感谢 magentic-ui 项目团队的出色工作。
+-   **Magentic-UI 项目**：本项目集成了 [magentic-ui](https://github.com/microsoft/magentic-ui) 项目中的 Docker Browser 源代码。在此，我们向 magentic-ui 项目团队的卓越工作表示诚挚的感谢。
 
 ### 相关项目
 
-- [模型上下文协议 (MCP)](https://modelcontextprotocol.io/)
-- [Magentic-UI](https://github.com/microsoft/magentic-ui)
-- [Debian](https://www.debian.org/)
+-   [模型上下文协议 (MCP)](https://modelcontextprotocol.io/)
+-   [Magentic-UI](https://github.com/microsoft/magentic-ui)
+-   [Debian](https://www.debian.org/)
 
 ---
 
 <div align="center">
 
-**VirtualPC MCP Server** - 为 AI Agent 提供强大、可扩展的运行时环境
+**VirtualPC MCP Server** - 为 AI Agent 提供强大且可扩展的运行时环境
 
 [license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
 [license-url]: https://opensource.org/licenses/MIT
