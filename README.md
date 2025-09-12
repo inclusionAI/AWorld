@@ -211,7 +211,7 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
 # 🏃‍♀️ Quickstart
 ## Prerequisites
 > [!TIP]
-> Python>=3.10
+> Python>=3.11
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 

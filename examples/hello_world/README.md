@@ -13,7 +13,7 @@ please enjoy the abilities of **AWorld**.
 
 - Python 3.11 or higher
 - Set `LLM_MODEL_NAME`, `LLM_BASE_URL`, `LLM_API_KEY` etc. environment variables.
-- Ray and Pyspark require separate installation, such as `pip install ray` or `pip install pyspark==3.5.0` (JDK 1.8.0_441)
+- Ray and Pyspark require separate installation, `pip install ray` or `pip install pyspark==3.5.0` (JDK 1.8.0_441)
 
 ```python
 import os
@@ -27,6 +27,7 @@ os.environ["LLM_API_KEY"] = "your key"
 
 ```shell
 python run.py
+# Run more tasks faster, allowing for parallel or distributed, can start an independent ray/spark cluster
 python run_on_ray.py
 python run_on_spark.py
 ```
