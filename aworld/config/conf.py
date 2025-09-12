@@ -253,8 +253,13 @@ class RunConfig(BaseConfig):
     job_name: str = "aworld_job"
     engine_name: str = EngineName.LOCAL
     worker_num: int = 1
+    # engine whether to run in local
+    in_local: bool = True
+    # run in local whether to use the same process
     reuse_process: bool = True
+    # Is the task sequence dependent
     sequence_dependent: bool = False
+    # The custom implement of RuntimeEngine
     cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
