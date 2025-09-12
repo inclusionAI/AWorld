@@ -63,6 +63,7 @@ class Swarm(object):
         logger.debug(f"{type(self)}Swarm Agent List is : {[type(agent) for agent in self.topology]}")
 
         self.setting_build_type(build_type)
+        self.register_agents = register_agents
         self.max_steps = max_steps
         self._cur_step = 0
         self._event_driven = event_driven
@@ -293,7 +294,12 @@ class Swarm(object):
     @property
     def agents(self):
         self._check()
-        return self.agent_graph.agents
+
+        agents = self.agent_graph.agents
+        if self.register_agents:
+            for agent in self.register_agents:
+                agents[agent.id()] = agent
+        return agents
 
     @property
     def ordered_agents(self):
