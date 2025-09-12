@@ -2,7 +2,6 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import os
-import re
 import time
 import uuid
 from typing import Callable, Any
@@ -19,7 +18,7 @@ from aworld.core.context.session import Session
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.logs.util import logger
-from aworld import trace
+from aworld import trace, cleanup
 from aworld.utils.common import load_module_by_path
 
 
@@ -157,19 +156,7 @@ class TaskRunner(Runner):
         if self.task.is_sub_task:
             return
 
-        value = os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')
-        if value:
-            for action_file in value.split(";"):
-                v = re.split(r"\w{6}__tmp", action_file)[0]
-                if v == action_file:
-                    continue
-                tool_file = action_file.replace("_action.py", ".py")
-                logger.debug(f"will del {action_file}, {tool_file}")
-                try:
-                    os.remove(action_file)
-                    os.remove(tool_file)
-                except:
-                    pass
+        cleanup()
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:
