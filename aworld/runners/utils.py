@@ -2,12 +2,12 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import List, Dict
 
-from aworld.config import RunConfig
+from aworld.config import RunConfig, EngineName, ConfigDict
 from aworld.core.agent.swarm import GraphBuildType
-from aworld.core.common import Config
 
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.logs.util import logger
+from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import new_instance, snake_to_camel
 
 
@@ -64,6 +64,17 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
         runtime_backend = new_instance(
             f"aworld.core.runtime_engine.{snake_to_camel(name)}Runtime", run_conf)
     runtime_engine = runtime_backend.build_engine()
+
+    if run_conf.engine_name != EngineName.LOCAL or run_conf.reuse_process == False:
+        # distributed in AWorld, the `context` can't carry by response
+        for runner in runners:
+            if not isinstance(runner, TaskRunner):
+                logger.info("not task runner in AWorld, skip...")
+                continue
+            if runner.task.conf:
+                runner.task.conf.resp_carry_context = False
+            else:
+                runner.task.conf = ConfigDict(resp_carry_context=False)
     return await runtime_engine.execute([runner.run for runner in runners])
 
 

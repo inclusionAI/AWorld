@@ -11,7 +11,6 @@ from aworld.core.tool.base import Tool, AsyncTool, ToolFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
 from aworld.tools.utils import build_observation
-{action_import}
 
 
 @ToolFactory.register(name="{name}", desc="{desc}", supported_action={action})

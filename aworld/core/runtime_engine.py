@@ -174,7 +174,7 @@ class SparkRuntime(RuntimeEngine):
         from pyspark.sql import SparkSession
 
         conf = self.conf
-        is_local = conf.get('is_local', True)
+        is_local = conf.get('in_local', True)
         logger.info('build runtime is_local:{}'.format(is_local))
         spark_builder = SparkSession.builder
         if is_local:
