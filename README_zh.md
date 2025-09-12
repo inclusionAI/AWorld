@@ -118,6 +118,9 @@ pip install .
 ```
 ## Hello world 示例
 我们引入 `Agent` 和 `Runners` 的概念来帮助您快速上手。
+
+为帮助您快速理解AWorld,我们提供了更多上手[示例](examples/hello_world)。
+
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
@@ -147,12 +150,12 @@ summarizer = Agent(
     name="Summary Agent", 
     system_prompt="You specialize at summarizing.",
 )
-# 创建具有协作工作流的智能体团队
-team = Swarm(topology=[(researcher, summarizer)])
+# 创建具有协作工作流的智能体组 (multi-agent)
+group = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
-    swarm=team,
+    swarm=group,
 )
 ```
 
@@ -201,12 +204,12 @@ summarizer = Agent(
     conf=openrouter_conf,
     system_prompt="You specialize at summarizing.",
 )
-# 创建具有协作工作流的智能体团队
-team = Swarm(topology=[(researcher, summarizer)])
+# 创建具有协作工作流的智能体组 (multi-agent)
+group = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
-    swarm=team,
+    swarm=group,
 )
 ```
 

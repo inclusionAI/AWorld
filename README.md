@@ -219,6 +219,9 @@ pip install .
 ```
 ## Hello world examples
 We introduce the concepts of `Agent` and `Runners` to help you get started quickly.
+
+More hello world [examples](examples/hello_world) help you to understand AWorld quickly.
+
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
@@ -234,7 +237,7 @@ result = Runners.sync_run(
 )
 ```
 
-In parallel, we introduce the concepts of `Swarm` to construct a team of agents.
+In parallel, we introduce the concepts of `Swarm` to construct a group of agents.
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
@@ -248,12 +251,12 @@ summarizer = Agent(
     name="Summary Agent", 
     system_prompt="You specialize at summarizing.",
 )
-# Create agent team with collaborative workflow
-team = Swarm(topology=[(researcher, summarizer)])
+# Create agent group with collaborative workflow
+group = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
-    swarm=team,
+    swarm=group,
 )
 ```
 
@@ -302,12 +305,12 @@ summarizer = Agent(
     conf=openrouter_conf,
     system_prompt="You specialize at summarizing.",
 )
-# Create agent team with collaborative workflow
-team = Swarm(topology=[(researcher, summarizer)])
+# Create agent group with collaborative workflow
+group = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
-    swarm=team,
+    swarm=group,
 )
 ```
 

@@ -13,6 +13,7 @@ please enjoy the abilities of **AWorld**.
 
 - Python 3.11 or higher
 - Set `LLM_MODEL_NAME`, `LLM_BASE_URL`, `LLM_API_KEY` etc. environment variables.
+- Ray and Pyspark require separate installation, such as `pip install ray` or `pip install pyspark==3.5.0` (JDK 1.8.0_441)
 
 ```python
 import os
@@ -22,7 +23,7 @@ os.environ["LLM_BASE_URL"] = "your url"
 os.environ["LLM_API_KEY"] = "your key"
 ```
 
-- Run any one of `run*.py` script, and will get the answer 'hello world'.
+- Run any one of `run*.py` script, and will get the answer 'Hello world!'.
 
 ```shell
 python run.py
