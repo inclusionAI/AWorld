@@ -153,10 +153,7 @@ class TaskRunner(Runner):
             logger.warning(f"{os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')} tools load fail, can't use them!!")
 
     async def post_run(self):
-        if self.task.is_sub_task:
-            return
-
-        cleanup()
+        pass
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:

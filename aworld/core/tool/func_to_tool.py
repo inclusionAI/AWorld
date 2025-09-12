@@ -174,6 +174,7 @@ def function_to_tool(
         if val:
             val = val + ";"
         os.environ[LOCAL_TOOLS_ENV_VAR] = val + sys.modules[f"{tool_name}{postfix}_action"].__file__
+        logger.debug(f'add {sys.modules[f"{tool_name}{postfix}_action"].__file__}')
 
 
 def func_params(func: Callable[..., Any]):

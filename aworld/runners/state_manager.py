@@ -327,7 +327,7 @@ class RuntimeStateManager(InheritanceSingleton):
         '''
             set node status to RUNNING and update to storage
         '''
-        logger.info(f"====== set node {node_id} running =======")
+        logger.debug(f"====== set node {node_id} running =======")
         node = self._node_exist(node_id)
         node.status = RunNodeStatus.RUNNING
         node.execute_time = time.time()
@@ -763,7 +763,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
         metadata = message.headers
         run_node_busi_type = RunNodeBusiType.from_message_category(
             message.category)
-        logger.info(
+        logger.debug(
             f"start message node: {message.receiver}, busi_type={run_node_busi_type}, node_id={message.id}")
         if run_node_busi_type:
             self.create_node(

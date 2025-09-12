@@ -34,6 +34,7 @@ def cleanup():
                     pass
     except:
         pass
+    os.environ["LOCAL_TOOLS_ENV_VAR"] = ''
 
 
 atexit.register(cleanup, )
