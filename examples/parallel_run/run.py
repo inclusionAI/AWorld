@@ -5,16 +5,18 @@ from aworld.core.task import Task
 from aworld.runner import Runners
 from aworld.config import RunConfig, EngineName
 
-# Setup
+# Setup, need modify
 os.environ["LLM_PROVIDER"] = "openai"
-os.environ["LLM_MODEL_NAME"] = "gpt-4"
+os.environ["LLM_MODEL_NAME"] = "gpt-4o"
 os.environ["LLM_API_KEY"] = "your-api-key"
+# os.environ["LLM_BASE_URL"] = "https://api.openai.com/v1"
 
 # Create agent
 agent_config = AgentConfig(
     llm_provider=os.getenv("LLM_PROVIDER", "openai"),
     llm_model_name=os.getenv("LLM_MODEL_NAME"),
     llm_api_key=os.getenv("LLM_API_KEY"),
+    # llm_base_url=os.getenv("LLM_BASE_URL")
 )
 my_agent = Agent(name="my_agent", conf=agent_config)
 
@@ -25,7 +27,8 @@ tasks = [
     Task(input="What is deep learning?", agent=my_agent, id="task3")
 ]
 
-# Run in parallel
+# Run in parallel (default local run).
+# If you want to run in a distributed environment, you need to submit a job to the Ray cluster.
 results = Runners.sync_run_task(
     task=tasks,
     run_conf=RunConfig(
@@ -35,5 +38,5 @@ results = Runners.sync_run_task(
 )
 
 # Process results
-for result in results:
-    print(f"Task {result.task_id}: {result.answer}")
+for task_id, result in results.items():
+    print(f"Task {task_id}: {result.answer}")
