@@ -220,7 +220,7 @@ pip install .
 ## Hello world examples
 We introduce the concepts of `Agent` and `Runners` to help you get started quickly.
 
-More hello world [examples](examples/hello_world) help you to understand AWorld quickly.
+More hello world [examples](examples/tutorials) help you to understand AWorld quickly.
 
 ```python
 from aworld.agents.llm_agent import Agent

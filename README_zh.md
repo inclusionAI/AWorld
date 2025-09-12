@@ -119,7 +119,7 @@ pip install .
 ## Hello world 示例
 我们引入 `Agent` 和 `Runners` 的概念来帮助您快速上手。
 
-为帮助您快速理解AWorld,我们提供了更多上手[示例](examples/hello_world)。
+为帮助您快速理解AWorld,我们提供了更多上手[示例](examples/tutorials)。
 
 ```python
 from aworld.agents.llm_agent import Agent

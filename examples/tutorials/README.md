@@ -29,7 +29,7 @@ os.environ["LLM_API_KEY"] = "your key"
 python run.py
 ```
 
-## Parallel or distributed run
+### Parallel or distributed run
 Run more tasks faster, allowing for parallel or distributed running tasks.
 
 ```shell

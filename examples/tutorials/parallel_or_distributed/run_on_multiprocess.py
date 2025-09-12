@@ -4,7 +4,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig, EngineName
 from aworld.core.task import Task
 from aworld.runner import Runners
-from examples.hello_world.run import swarm, question
+from examples.tutorials.run import swarm, question
 
 
 def build_agent():
@@ -22,6 +22,9 @@ if __name__ == "__main__":
              Task(input=question, agent=build_agent(), id="efgh"),
              Task(input=question, agent=build_agent(), id="ijkl")]
     res = Runners.sync_run_task(task=tasks,
-                                run_conf=RunConfig(engine_name=EngineName.RAY, worker_num=len(tasks)))
+                                run_conf=RunConfig(engine_name=EngineName.LOCAL,
+                                                   worker_num=len(tasks),
+                                                   reuse_process=False)
+                                )
     # Hello world!
     [print(k, ": ", v.answer) for k, v in res.items()]
