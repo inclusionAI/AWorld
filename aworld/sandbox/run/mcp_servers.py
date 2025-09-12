@@ -71,9 +71,6 @@ class McpServers:
         if not self.mcp_servers or not self.mcp_config:
             return False
 
-        if not parameter:
-            parameter = {}
-
         try:
             # Build unique identifier for the tool
             tool_identifier = f"mcp__{server_name}__{tool_name}"
@@ -99,13 +96,13 @@ class McpServers:
             if "session_id" in properties:
                 if hasattr(context, 'session_id') and context.session_id:
                     parameter["session_id"] = context.session_id
-                    logging.debug(f"Auto-added session_id: {context.session_id}")
+                    logging.info(f"Auto-added session_id: {context.session_id}")
 
             # Check if task_id is needed
             if "task_id" in properties:
                 if hasattr(context, 'task_id') and context.task_id:
                     parameter["task_id"] = context.task_id
-                    logging.debug(f"Auto-added task_id: {context.task_id}")
+                    logging.info(f"Auto-added task_id: {context.task_id}")
 
             return True
 
@@ -134,7 +131,7 @@ class McpServers:
                 # Get values from dictionary
                 server_name = action_dict.get("tool_name")
                 tool_name = action_dict.get("action_name")
-                parameter = action_dict.get("params")
+                parameter = action_dict.get("params", {})
                 result_key = f"{server_name}__{tool_name}"
 
                 operation_info = {
@@ -142,9 +139,6 @@ class McpServers:
                     "tool_name": tool_name,
                     "params": parameter
                 }
-
-                if parameter is None:
-                    parameter = {}
 
                 if not server_name or not tool_name:
                     continue
@@ -223,8 +217,7 @@ class McpServers:
                                 sync_exec(send_message, tool_output_message)
                             except BaseException as e:
                                 logging.warning(f"Error calling progress callback: {e}")
-                        if not parameter:
-                            parameter = {}
+
                         await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
                                                      parameter=parameter)
                         call_result_raw = await server.call_tool(tool_name=tool_name, arguments=parameter,
