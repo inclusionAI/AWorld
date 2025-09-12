@@ -220,7 +220,7 @@ pip install .
 ## Hello world examples
 We introduce the concepts of `Agent` and `Runners` to help you get started quickly.
 
-More hello world [examples](examples/tutorials) help you to understand AWorld quickly.
+For parallel task execution, see the [parallel run examples](examples/parallel_run/README.md).
 
 ```python
 from aworld.agents.llm_agent import Agent
