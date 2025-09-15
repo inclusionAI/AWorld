@@ -28,6 +28,7 @@ class McpServers:
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Dict[str, Any] = None,
             sandbox=None,
+            black_tool_actions: Dict[str, List[str]] = None,
     ) -> None:
         self.mcp_servers = mcp_servers
         self.mcp_config = mcp_config
@@ -35,6 +36,7 @@ class McpServers:
         # Dictionary to store server instances {server_name: server_instance}
         self.server_instances = {}
         self.tool_list = None
+        self.black_tool_actions = black_tool_actions or {}
 
     async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
         if self.tool_list:
@@ -43,7 +45,7 @@ class McpServers:
             return []
         try:
             #self.tool_list = await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
-            self.tool_list = await mcp_tool_desc_transform_v2(self.mcp_servers, self.mcp_config,context,self.server_instances)
+            self.tool_list = await mcp_tool_desc_transform_v2(self.mcp_servers, self.mcp_config,context,self.server_instances,self.black_tool_actions)
             return self.tool_list
         except Exception as e:
             traceback.print_exc()
