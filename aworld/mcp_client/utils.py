@@ -251,7 +251,10 @@ async def run(mcp_servers: list[MCPServer],black_tool_actions: Dict[str, List[st
             )
 
         except Exception as e:
-            logging.error(f"❌ server #{i + 1} ({server.name}) connect fail: {e}")
+            logging.warning(
+                f"❌ server #{i + 1} ({server.name}) connect fail: {e}\n"
+                f"Traceback:\n{traceback.format_exc()}"
+            )
             continue
 
     return openai_tools
@@ -420,9 +423,6 @@ async def mcp_tool_desc_transform_v2(
         except BaseException as err:
             # single
             logging.warning(
-                f"Failed to get tools for MCP server '{server_config['name']}'.\n"
-            )
-            logging.debug(
                 f"Failed to get tools for MCP server '{server_config['name']}'.\n"
                 f"Error: {err}\n"
                 f"Traceback:\n{traceback.format_exc()}"

@@ -226,7 +226,10 @@ class McpServers:
                                                                  progress_callback=progress_callback)
                         break
                     except BaseException as e:
-                        logging.warning(f"Error calling tool error: {e}")
+                        logging.warning(
+                            f"Error calling tool error: {e}"
+                            f"Traceback:\n{traceback.format_exc()}"
+                        )
                 logging.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
                 logging.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
                 if not call_result_raw:
