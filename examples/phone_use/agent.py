@@ -29,7 +29,7 @@ from examples.common.tools.tool_action import AndroidAction
 
 class AndroidAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
-        super(AndroidAgent, self).__init__(conf, name, **kwargs)
+        super(AndroidAgent, self).__init__(conf=conf, name=name, **kwargs)
         provider = self.conf.llm_config.llm_provider
         if self.conf.llm_config.llm_provider:
             self.conf.llm_config.llm_provider = "chat" + provider
@@ -39,7 +39,7 @@ class AndroidAgent(Agent):
         # Settings
         self.settings = self.conf
 
-    def reset(self, options: Dict[str, Any]):
+    def reset(self, options: Dict[str, Any] = None):
         super(AndroidAgent, self).reset(options)
         # State
         self.state = AgentState()

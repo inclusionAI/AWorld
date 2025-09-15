@@ -7,20 +7,19 @@ ACTION_TEMPLATE = """
 import traceback
 from typing import Tuple, Any, List, Dict
 
-from aworld.core.envs.action_factory import ActionFactory
 from aworld.core.common import ActionModel, ActionResult
+from aworld.core.tool.action import ExecutableAction
+from aworld.core.tool.action_factory import ActionFactory
 from aworld.logs.util import logger
 from aworld.utils.async_func import async_func
-from aworld.virtual_environments.action import ExecutableAction
 
 
 @ActionFactory.register(name="{name}",
                         desc="{desc}",
                         tool_name="{tool_name}")
-class {name}(ExecutableAction):
+class {name}Act(ExecutableAction):
     # only for function to tool.
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
-        {func_import}import {func}
         try:
             res = {func}(**action.params)
             if not res:
@@ -32,8 +31,6 @@ class {name}(ExecutableAction):
         
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
-        {func_import}import {func}
-        
         try:
             res = await {call_func}(**action.params)
             if not res:

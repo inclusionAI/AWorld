@@ -2,7 +2,7 @@ import os
 
 import dotenv
 
-dotenv.load_dotenv(verbose=True, override=True)
+dotenv.load_dotenv(verbose=True, override=True, interpolate=True)
 
 mcp_config = {
     "mcpServers": {
@@ -178,42 +178,30 @@ mcp_config = {
         "filesystem-server": {
             "type": "stdio",
             "command": "npx",
-            "args": [
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                "~/workspace"
-            ]
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "~/workspace"],
         },
         "terminal-controller": {
             "command": "uvx",
-            "args": [
-                "terminal_controller"
-            ],
-            "env": {
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "300"
-            }
+            "args": ["terminal_controller"],
+            "env": {"SESSION_REQUEST_CONNECT_TIMEOUT": "300"},
         },
         "excel": {
             "command": "uvx",
             "args": ["excel-mcp-server", "stdio"],
             "env": {
                 "EXCEL_MCP_PAGING_CELLS_LIMIT": "4000",
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-            }
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "120",
+            },
         },
         "google-search": {
             "command": "npx",
-            "args": [
-                "-y",
-                "@adenot/mcp-google-search"
-            ],
+            "args": ["-y", "@adenot/mcp-google-search"],
             "env": {
                 "GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"],
                 "GOOGLE_SEARCH_ENGINE_ID": os.environ["GOOGLE_CSE_ID"],
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
-            }
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "60",
+            },
         },
-
         "audio-server": {
             "type": "stdio",
             "command": "uv",
@@ -223,8 +211,8 @@ mcp_config = {
                 "AUDIO_LLM_API_KEY": os.environ["AUDIO_LLM_API_KEY"],
                 "AUDIO_LLM_BASE_URL": os.environ["AUDIO_LLM_BASE_URL"],
                 "AUDIO_LLM_MODEL_NAME": os.environ["AUDIO_LLM_MODEL_NAME"],
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
-            }
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "60",
+            },
         },
         "image-server": {
             "type": "stdio",
@@ -235,8 +223,8 @@ mcp_config = {
                 "IMAGE_LLM_API_KEY": os.environ.get("IMAGE_LLM_API_KEY"),
                 "IMAGE_LLM_MODEL_NAME": os.environ.get("IMAGE_LLM_MODEL_NAME"),
                 "IMAGE_LLM_BASE_URL": os.environ.get("IMAGE_LLM_BASE_URL"),
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
-            }
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "60",
+            },
         },
         "e2b-code-server": {
             "type": "stdio",
@@ -245,8 +233,8 @@ mcp_config = {
             "cwd": "e2b_code_server",
             "env": {
                 "E2B_API_KEY": os.environ["E2B_API_KEY"],
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-            }
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "120",
+            },
         },
         "ms-playwright": {
             "command": "npx",
@@ -254,12 +242,12 @@ mcp_config = {
                 "@playwright/mcp@latest",
                 "--no-sandbox",
                 "--headless",
-                "--isolated"
+                "--isolated",
             ],
             "env": {
                 "PLAYWRIGHT_TIMEOUT": "120000",
-                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-            }
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "120",
+            },
         },
         # "calculator": {
         #     "command": "uvx",
@@ -270,6 +258,5 @@ mcp_config = {
         #         "SESSION_REQUEST_CONNECT_TIMEOUT": "20"
         #     }
         # },
-
     }
 }

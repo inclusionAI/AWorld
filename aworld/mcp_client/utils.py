@@ -357,11 +357,11 @@ async def mcp_tool_desc_transform_v2(
 
     if not server_configs:
         return openai_tools
-
-    async with AsyncExitStack() as stack:
-        servers = []
-        for server_config in server_configs:
-            try:
+    servers = []
+    for server_config in server_configs:
+        try:
+            _mcp_openai_tools = []
+            async with AsyncExitStack() as stack:
                 if server_config["type"] == "sse":
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
@@ -401,16 +401,25 @@ async def mcp_tool_desc_transform_v2(
                     continue
 
                 server = await stack.enter_async_context(server)
-                servers.append(server)
-            except BaseException as err:
-                # single
-                logging.error(
-                    f"Failed to get tools for MCP server '{server_config['name']}'.\n"
-                    f"Error: {err}\n"
-                    f"Traceback:\n{traceback.format_exc()}"
-                )
+                #servers.append(server)
+                _mcp_openai_tools = await run([server])
+            if _mcp_openai_tools:
+                mcp_openai_tools.extend(_mcp_openai_tools)
+        except BaseException as err:
+            # single
+            logging.warning(
+                f"Failed to get tools for MCP server '{server_config['name']}'.\n"
+            )
+            logging.debug(
+                f"Failed to get tools for MCP server '{server_config['name']}'.\n"
+                f"Error: {err}\n"
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            continue
 
-        mcp_openai_tools = await run(servers)
+    #async with AsyncExitStack() as stack:
+
+        #mcp_openai_tools = await run(servers)
 
     if mcp_openai_tools:
         openai_tools.extend(mcp_openai_tools)

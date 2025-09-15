@@ -5,6 +5,7 @@ import json
 import traceback
 from typing import Dict, Any, List, Union
 
+from aworld.core.event.base import Message
 from aworld.utils.common import sync_exec
 from examples.multi_agents.coordination.custom_agent.prompts import execute_system_prompt, plan_system_prompt, plan_done_prompt, \
     plan_postfix_prompt, init_prompt
@@ -20,28 +21,29 @@ from examples.multi_agents.coordination.custom_agent.utils import extract_patter
 
 class ExecuteAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
-        super(ExecuteAgent, self).__init__(conf, name, **kwargs)
+        super(ExecuteAgent, self).__init__(conf=conf, name=name, **kwargs)
 
     def id(self) -> str:
         return Agents.EXECUTE.value
 
-    def reset(self, options: Dict[str, Any]):
+    def reset(self, options: Dict[str, Any] = None):
         """Execute agent reset need query task as input."""
         super().reset(options)
 
         self.system_prompt = execute_system_prompt.format(task=self.task)
         self.step_reset = False
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
-        List[ActionModel], None]:
-        await self.async_desc_transform()
+    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
+                           **kwargs) -> Union[List[ActionModel], None]:
+        await self.async_desc_transform(message.context)
         return self._common(observation, info)
 
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None,
+               message: Message = None,
                **kwargs) -> List[ActionModel] | None:
-        self.desc_transform()
+        self.desc_transform(message.context)
         return self._common(observation, info)
 
     def _common(self, observation, info):
@@ -170,12 +172,12 @@ class ExecuteAgent(Agent):
 
 class PlanAgent(Agent):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, AgentConfig], name: str, **kwargs):
-        super(PlanAgent, self).__init__(conf, name, **kwargs)
+        super(PlanAgent, self).__init__(name=name, conf=conf, **kwargs)
 
     def id(self) -> str:
         return Agents.PLAN.value
 
-    def reset(self, options: Dict[str, Any]):
+    def reset(self, options: Dict[str, Any] = None):
         """Execute agent reset need query task as input."""
         super().reset(options)
 
@@ -186,17 +188,18 @@ class PlanAgent(Agent):
         self.first = True
         self.step_reset = False
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> Union[
-        List[ActionModel], None]:
-        await self.async_desc_transform()
+    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
+                           **kwargs) -> Union[List[ActionModel], None]:
+        await self.async_desc_transform(message.context)
         return self._common(observation, info)
 
     def policy(self,
                observation: Observation,
                info: Dict[str, Any] = None,
+               message: Message = None,
                **kwargs) -> List[ActionModel] | None:
         self._finished = False
-        self.desc_transform()
+        self.desc_transform(message.context)
         return self._common(observation, info)
 
     def _common(self, observation, info):

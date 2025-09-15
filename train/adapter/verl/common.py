@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import json
+import os
 from typing import List, Dict, Any
 from transformers import AutoTokenizer
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
@@ -174,12 +175,16 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
     )
     return output
 
-def get_agent_tool_env_and_servers(tool_config: Dict[str, Any]) -> tuple[Dict[str, Any], List[str]]:
+def get_agent_tool_env_and_servers(tool_config: Dict[str, Any] = None) -> tuple[Dict[str, Any], List[str]]:
+    if not tool_config or not tool_config.get("url") or not tool_config.get("authorization"):
+        tool_config["url"] = os.getenv("MCP_SERVER_URL")
+        tool_config["authorization"] = f"Bearer {os.getenv('MCP_SERVER_TOKEN')}"
     url = tool_config.get("url")
     authorization = tool_config.get("authorization")
     mcp_servers_str = tool_config.get("mcp_servers", "")
     if not url or not authorization:
-        raise ValueError("url, Authorization are required in tool config")
+        raise ValueError("url, Authorization are required. Please set MCP_SERVER_URL and MCP_SERVER_TOKEN environment variable \
+            or provide them in tool_config parameter.")
     server_name = tool_config.get('server_name', 'aworld-mcp')
     server_type = tool_config.get('type', 'streamable-http')
     timeout = tool_config.get('timeout', 600)

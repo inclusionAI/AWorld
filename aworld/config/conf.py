@@ -3,13 +3,13 @@
 import os
 import traceback
 import uuid
-import yaml
 from collections import OrderedDict
-from pathlib import Path
-from typing import Optional, List, Dict, Any
-
-from pydantic import BaseModel, Field
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
 
@@ -41,7 +41,7 @@ def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
         configs.update(yaml_data)
     except FileNotFoundError:
         logger.debug(f"Can not find the file: {file_path}")
-    except Exception as e:
+    except Exception:
         logger.warning(f"{file_name} read fail.\n", traceback.format_exc())
     return configs
 
@@ -160,8 +160,9 @@ class AgentMemoryConfig(BaseConfig):
         from_attributes=True, validate_default=True, revalidate_instances='always', validate_assignment=True,
         arbitrary_types_allowed=True
     )
-    history_number: int = Field(default=100)
     # short-term config
+    history_rounds: int = Field(default=100,
+                                description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
@@ -170,8 +171,6 @@ class AgentMemoryConfig(BaseConfig):
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
     # summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
-    trim_rounds: int = Field(default=5,
-                             description="rounds of message msg; when the number of messages is greater than the trim_rounds, the memory will be trimmed")
 
     # Long-term memory config
     enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
@@ -210,12 +209,21 @@ class AgentConfig(BaseConfig):
         if llm_config_kwargs or not self.llm_config:
             self.llm_config = ModelConfig(**llm_config_kwargs)
 
+    @property
+    def llm_model_name(self) -> str:
+        return self.llm_config.llm_model_name
+
+    @property
+    def llm_provider(self) -> str:
+        return self.llm_config.llm_provider
+
 
 class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
     stream: bool = False
+    resp_carry_context: bool = True
     exit_on_failure: bool = False
     ext: dict = {}
 
@@ -233,10 +241,25 @@ class ToolConfig(BaseConfig):
     ext: dict = {}
 
 
+class EngineName:
+    # Use asyncio or MultiProcess run in local
+    LOCAL = "local"
+    # Stateless(task) run in ray. Ray actor will use a new name
+    RAY = "ray"
+    SPARK = "spark"
+
+
 class RunConfig(BaseConfig):
-    name: str = 'local'
+    job_name: str = "aworld_job"
+    engine_name: str = EngineName.LOCAL
     worker_num: int = 1
+    # engine whether to run in local
+    in_local: bool = True
+    # run in local whether to use the same process
     reuse_process: bool = True
+    # Is the task sequence dependent
+    sequence_dependent: bool = False
+    # The custom implement of RuntimeEngine
     cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None

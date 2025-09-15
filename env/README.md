@@ -63,7 +63,7 @@ Edit `./gaia-mcp-server/mcp_servers/.env` with your specific configuration value
 **Step 2: Launch VirtualPC MCP Server**
 
 ```bash
-sh run-local.sh
+sh run-docker.sh
 ```
 
 Monitor the terminal output for any errors during startup.

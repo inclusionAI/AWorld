@@ -19,8 +19,23 @@ from aworld.models.utils import num_tokens_from_messages
 
 AWORLD_MEMORY_EXTRACT_NEW_SUMMARY = """
 You are presented with a user task, a conversion that may contain the answer, and a previous conversation summary. 
-Please read the conversation carefully and extract new information from the conversation that helps to solve user task,
- 
+Please read the conversation carefully and extract new information from the conversation that helps to solve user task
+<guide>
+1. if current conversion contain answer of task or related information, must include it in the summary.
+2. record key step of current conversion. such visited web page, use tools information, etc. example:
+    - step_info:
+       - step_content: the description of step, must be a complete sentence and keep information params of step.
+        - use tools information:
+         - tool_name: search
+         - tool_input: {{
+            "query": "python"
+          }}
+       - step_result: the result of step and evidence information, such link of visited web page for slove task
+
+3. In your summary, aim to reduce unnecessary information, but make sure your summarized content still provides enough details for the task and does not lose any important information.
+<guide>
+
+
 <user_task> {user_task} </user_task>
 <existed_summary> {existed_summary} </existed_summary>
 <conversation> {to_be_summary} </conversation>
@@ -97,6 +112,11 @@ class InMemoryMemoryStore(MemoryStore):
             if memory_item.session_id is None:
                 return False
             if memory_item.session_id != filters['session_id']:
+                return False
+        if filters.get('tool_call_id') is not None:
+            if memory_item.metadata.get("tool_call_id") is None:
+                return False
+            if memory_item.metadata.get("tool_call_id") != filters['tool_call_id']:
                 return False
         if filters.get('memory_type') is not None:
             if memory_item.memory_type is None:
@@ -248,7 +268,7 @@ class Memory(MemoryBase):
         llm_response = await acall_llm_model(
             self.default_llm_instance,
             messages=summary_messages,
-            model_name=agent_memory_config.summary_model,
+            # model_name=agent_memory_config.summary_model,
             stream=False,
         )
         logger.debug(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages: {summary_messages}")
@@ -476,6 +496,38 @@ class AworldMemory(Memory):
         super().__init__(memory_store=memory_store, config=config, **kwargs)
         self.summary = {}
 
+    def _filter_incomplete_message_pairs(self, message_items: list[MemoryItem]) -> list[MemoryItem]:
+        """
+        Filter out incomplete message pairs to ensure only complete [ai, tool] message pair sequences are retained.
+        
+        For sequence [ai,tool,ai,tool,ai,tool,ai,tool,tool,ai,tool,tool,tool],
+        identify the complete subsequence [ai,tool,ai,tool,ai,tool,ai,tool,tool],
+        i.e., remove the incomplete part in the last group [ai,tool,tool,tool].
+
+        Args:
+            message_items: List of message items
+
+        Returns:
+            Filtered message items list, retaining only complete [ai, tool] pairs
+        """
+        if len(message_items) < 2:
+            return message_items
+
+        # Find the last AI message in the sequence
+        last_ai_index = -1
+        for i in range(len(message_items) - 1, -1, -1):
+            if isinstance(message_items[i], MemoryAIMessage):
+                last_ai_index = i
+                break
+        
+        # If no AI message found, return empty list
+        if last_ai_index == -1:
+            return []
+        
+        # Remove everything from the last AI message onwards
+        # This removes the last incomplete [ai, tool, tool, ...] group
+        return message_items[:last_ai_index]
+
     async def _add(self, memory_item: MemoryItem, filters: dict = None, agent_memory_config: AgentMemoryConfig = None):
         self.memory_store.add(memory_item)
 
@@ -501,8 +553,11 @@ class AworldMemory(Memory):
         )
         to_be_summary_items = [item for item in agent_task_total_message if item.memory_type == "message" and not item.has_summary]
 
+        # 序列中删除最后一组完整的 [ai,tool] 组合
+        to_be_summary_items = self._filter_incomplete_message_pairs(to_be_summary_items)
+
         check_need_summary,trigger_reason = self._check_need_summary(to_be_summary_items, agent_memory_config)
-        logger.debug(f"🧠 [MEMORY:short-term] [Summary] check_need_summary: {check_need_summary}, trigger_reason: {trigger_reason}")
+        logger.info(f"🧠 [MEMORY:short-term] [Summary] check_need_summary: {check_need_summary}, trigger_reason: {trigger_reason}")
 
         if not check_need_summary:
             return
@@ -523,7 +578,8 @@ class AworldMemory(Memory):
         summary_memory = MemorySummary(
             item_ids=[item.id for item in to_be_summary_items],
             summary=summary_content,
-            metadata=summary_metadata
+            metadata=summary_metadata,
+            created_at=to_be_summary_items[0].created_at
         )
 
         # add summary to memory
@@ -540,7 +596,7 @@ class AworldMemory(Memory):
         if len(to_be_summary_items) <= 0:
             return False, "EMPTY"
         if isinstance(to_be_summary_items[-1], MemoryAIMessage):
-            if len(to_be_summary_items[-1].tool_calls) > 0:
+            if to_be_summary_items[-1].tool_calls and len(to_be_summary_items[-1].tool_calls) > 0:
                 return False,"last message has tool_calls"
         if len(to_be_summary_items) == 0:
             return False, "items is empty"
@@ -572,8 +628,13 @@ class AworldMemory(Memory):
                 )
             }
         ]
+        llm_summary = await self._call_llm_summary(summary_messages, agent_memory_config)
+        tool_use_content = "\n\n the following is the tool use history:\n"
+        for item in to_be_summary_items:
+            if item.metadata.get('summary_content'):
+                tool_use_content += f"{item.metadata.get('summary_content', '')}\n"
 
-        return await self._call_llm_summary(summary_messages, agent_memory_config)
+        return f"{llm_summary}{tool_use_content}"
 
 
 
