@@ -47,12 +47,12 @@ Follow these steps to set up the environment and reproduce our results.
     # Run the evaluation with the recommended settings
     python run_multienv_aworldAgent.py \
         --headless \
-        --ground_url https://openrouter.ai/api/v1 \
-        --ground_api_key your_api_key \
+        --ground_url YOUR_BASE_URL \
+        --ground_api_key YOUR_API_KEY \
         --ground_model bytedance/ui-tars-1.5-7b \
         --ground_provider open_router \
-        --model_url https://openrouter.ai/api/v1 \
-        --model_api_key your_api_key \
+        --model_url YOUR_BASE_URL \
+        --model_api_key YOUR_API_KEY \
         --model_temperature 1.0 \
         --provider_name aws \
         --max_steps 50 \
