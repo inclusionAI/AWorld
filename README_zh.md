@@ -38,7 +38,7 @@ from examples.for_test import topology<div align="center">
 
 2. **构建智能体**：创建具有MCP工具的智能AI智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 
-3. **构建多智能体系统(MAS)**：编排协作智能体生态系统
+3. **构建多智能体系统(MAS)**：编排协作智能体生态系统 [文档](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system%28MAS%29_construction/)
 
 4. **高效训练智能体**：让MAS在各种环境中自我演进和优化
 

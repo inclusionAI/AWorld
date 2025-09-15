@@ -11,7 +11,6 @@ from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.logs.util import logger
-from aworld.sandbox.base import Sandbox
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 

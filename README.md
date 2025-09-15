@@ -44,7 +44,7 @@
 
 2. **Build agents**: Create intelligent AI agents with mcp tools. [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 
-3. **Build Multi-Agent Systems (MAS)**: Orchestrate collaborative agent ecosystems
+3. **Build Multi-Agent Systems (MAS)**: Orchestrate collaborative agent ecosystems. [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system%28MAS%29_construction/)
 
 4. **Train agents efficiently**: Optimize performance within MAS across various environments
 
