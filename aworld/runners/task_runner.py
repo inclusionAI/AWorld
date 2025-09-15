@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import asyncio
+import os
 import time
 import uuid
 from typing import Callable, Any
@@ -18,7 +18,8 @@ from aworld.core.context.session import Session
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.logs.util import logger
-from aworld import trace
+from aworld import trace, cleanup
+from aworld.utils.common import load_module_by_path
 
 
 class TaskRunner(Runner):
@@ -55,6 +56,7 @@ class TaskRunner(Runner):
             task.conf = dict()
         if isinstance(task.conf, BaseModel):
             task.conf = task.conf.model_dump()
+        task.conf = ConfigDict(task.conf)
         check_input = task.conf.get("check_input", False)
         if check_input and not task.input:
             raise ValueError("task no input")
@@ -75,7 +77,10 @@ class TaskRunner(Runner):
         task = self.task
         # copy context from parent_task(if exists)
         if task.is_sub_task:
-            task.context = await task.context.build_sub_context(task.input, task.id, agents=task.swarm.agents if task.swarm and task.swarm.agents else None)
+            task.context = await task.context.build_sub_context(
+                task.input, task.id,
+                agents=task.swarm.agents if task.swarm and task.swarm.agents else None
+            )
             self.context = task.context
             self.context.set_task(task)
         self.swarm = task.swarm
@@ -131,7 +136,21 @@ class TaskRunner(Runner):
             self.swarm.event_driven = task.event_driven
             self.swarm.reset(observation.content,
                              context=self.context, tools=self.tool_names)
+
+        self._load_tool_module()
         logger.info(f'{"sub task: " if self.task.is_sub_task else "main task: "}{self.task.id} started...')
+
+    def _load_tool_module(self):
+        # used to distributed running local tools
+        try:
+            value = os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')
+            if value:
+                for val in value.split(";"):
+                    load_module_by_path(os.path.basename(val).replace("_action", ""),
+                                        val.replace("_action.py", ".py"))
+                    load_module_by_path(os.path.basename(val), val)
+        except:
+            logger.warning(f"{os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')} tools load fail, can't use them!!")
 
     async def post_run(self):
         pass

@@ -77,6 +77,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         desc: str = None,
         agent_id: str = None,
         *,
+        task: Any = None,
         tool_names: List[str] = None,
         agent_names: List[str] = None,
         mcp_servers: List[str] = None,
@@ -92,6 +93,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             conf: Agent config for internal processes.
             name: Agent name as identifier.
             desc: Agent description as tool description.
+            task: The original task of the agent, will be automatically merged into messages after setting.
             tool_names: Tool names of local that agents can use.
             agent_names: Agents as tool name list.
             mcp_servers: Mcp names that the agent can use.
@@ -142,7 +144,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self._id = (
             agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
         )
-        self.task = None
+        self.task: Any = task
         # An agent can use the tool list
         self.tool_names: List[str] = tool_names or []
         human_tools = self.conf.get("human_tools", [])
@@ -272,21 +274,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             info: Extended information is used to assist the agent to decide a policy.
         """
 
-    def reset(self, options: Dict[str, Any]):
+    def reset(self, options: Dict[str, Any] = None):
         """Clean agent instance state and reset."""
         if options is None:
             options = {}
-        self.task = options.get("task")
-        self.tool_names = options.get("tool_names", [])
-        self.handoffs = options.get("agent_names", [])
-        self.mcp_servers = options.get("mcp_servers", [])
+        self.tool_names = options.get("tool_names", self.tool_names)
+        self.handoffs = options.get("agent_names", self.handoffs)
+        self.mcp_servers = options.get("mcp_servers", self.mcp_servers)
         self.tools = []
         self.trajectory = []
         self._finished = True
 
-    async def async_reset(self, options: Dict[str, Any]):
+    async def async_reset(self, options: Dict[str, Any] = None):
         """Clean agent instance state and reset."""
-        self.task = options.get("task")
+        self.reset(options)
 
     @property
     def finished(self) -> bool:

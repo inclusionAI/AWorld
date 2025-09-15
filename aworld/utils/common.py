@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import importlib.util
 import inspect
 import json
 import os
@@ -10,8 +11,10 @@ import socket
 import sys
 import threading
 import time
+import traceback
 
 from functools import wraps
+from pathlib import Path
 from types import FunctionType
 from typing import Callable, Any, Tuple, List, Iterator, Dict, Union
 
@@ -250,6 +253,18 @@ def new_instance(module_class: str, *args, **kwargs):
     return get_class(module_class)(*args, **kwargs)
 
 
+def load_module_by_path(module_name: str, file_path: str):
+    """Load python module from the file path."""
+    file_path = str(Path(file_path).resolve())
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except:
+        logger.info(f"loading {module_name} fail from {file_path}, {traceback.format_exc()}")
+
+
 def retryable(tries: int = 3, delay: int = 1):
     def inner_retry(f):
         @wraps(f)
@@ -342,9 +357,10 @@ def get_local_hostname():
         # Final fallback strategy
         return "localhost"
 
+
 def load_mcp_config():
     """Load MCP server configurations from config file."""
-    
+
     path_cwd = os.getcwd()
     mcp_path = os.path.join(path_cwd, "mcp.json")
     try:
