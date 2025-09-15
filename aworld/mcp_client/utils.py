@@ -137,12 +137,23 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
         return openai_tools
 
 
-async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
+async def run(mcp_servers: list[MCPServer],black_tool_actions: Dict[str, List[str]] = None) -> List[Dict[str, Any]]:
     openai_tools = []
     for i, server in enumerate(mcp_servers):
         try:
             tools = await server.list_tools()
             for tool in tools:
+                balck_server = server.name
+                if server.name.startswith("mcp__"):
+                    balck_server = server.name[5:] if len(server.name) > 5 else server.name
+                if (black_tool_actions and
+                        balck_server in black_tool_actions and
+                        black_tool_actions[balck_server] and
+                        tool.name in black_tool_actions[balck_server]):
+                    logging.info(
+                        f"server #{i + 1} ({balck_server}) black_tool_actions: {tool.name}"
+                    )
+                    continue
                 required = []
                 properties = {}
                 if tool.inputSchema and tool.inputSchema.get("properties"):
@@ -248,7 +259,8 @@ async def run(mcp_servers: list[MCPServer]) -> List[Dict[str, Any]]:
 
 async def mcp_tool_desc_transform_v2(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
-        server_instances: Dict[str, Any] = None
+        server_instances: Dict[str, Any] = None,
+        black_tool_actions: Dict[str, List[str]] = None
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -402,7 +414,7 @@ async def mcp_tool_desc_transform_v2(
 
                 server = await stack.enter_async_context(server)
                 #servers.append(server)
-                _mcp_openai_tools = await run([server])
+                _mcp_openai_tools = await run([server],black_tool_actions)
             if _mcp_openai_tools:
                 mcp_openai_tools.extend(_mcp_openai_tools)
         except BaseException as err:

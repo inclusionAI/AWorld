@@ -143,7 +143,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  need_reset: bool = True,
                  step_reset: bool = True,
                  use_tools_in_prompt: bool = False,
-                 black_tool_actions: dict = None,
+                 black_tool_actions: Dict[str, List[str]] = None,
                  model_output_parser: ModelOutputParser[..., AgentResult] = LlmOutputParser(),
                  tool_aggregate_func: Callable[..., Any] = None,
                  event_handler_name: str = None,
@@ -168,6 +168,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                     agent_names=agent_names,
                                     mcp_servers=mcp_servers,
                                     mcp_config=mcp_config,
+                                    black_tool_actions = black_tool_actions,
                                     feedback_tool_result=feedback_tool_result,
                                     wait_tool_result=wait_tool_result,
                                     sandbox=sandbox,
@@ -195,8 +196,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = step_reset
         # tool_name: [tool_action1, tool_action2, ...]
-        self.black_tool_actions: Dict[str, List[str]] = black_tool_actions if black_tool_actions \
-            else conf.get('black_tool_actions', {})
+        # self.black_tool_actions: Dict[str, List[str]] = black_tool_actions if black_tool_actions \
+        #     else conf.get('black_tool_actions', {})
         self.model_output_parser = model_output_parser
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
