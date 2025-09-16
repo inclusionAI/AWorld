@@ -46,23 +46,26 @@ Follow these steps to set up the environment and reproduce our results.
 
     # Run the evaluation with the recommended settings
     python run_multienv_aworldAgent.py \
-        --model "openai/o3" \
-        --model_provider "open_router" \
-        --model_url "https://openrouter.ai/api/v1" \
-        --model_api_key "YOUR_OPENROUTER_API_KEY" \
-        --ground_model "bytedance/ui-tars-1.5-7b" \
-        --ground_provider "open_router" \
-        --ground_url "https://openrouter.ai/api/v1" \
-        --ground_api_key "YOUR_OPENROUTER_API_KEY" \
+        --headless \
+        --ground_url YOUR_BASE_URL \
+        --ground_api_key YOUR_API_KEY \
+        --ground_model bytedance/ui-tars-1.5-7b \
+        --ground_provider open_router \
+        --model_url YOUR_BASE_URL \
+        --model_api_key YOUR_API_KEY \
+        --model_temperature 1.0 \
+        --provider_name aws \
+        --max_steps 50 \
+        --model_provider open_router \
+        --model openai/o3 \
         --grounding_width 1920 \
         --grounding_height 1080 \
-        --provider_name "vmware" \
-        --path_to_vm "/path/to/your/vm/Ubuntu.vmx" \
-        --client_password "password" \
-        --max_steps 50 \
+        --test_all_meta_path evaluation_examples/test_all.json \
+        --result_dir ./results \
+        --observation_type screenshot \
         --num_envs 1 \
-        --observation_type "screenshot" \
-        --result_dir "./results_aworld_agent_run"
+        --region us-east-1 \
+        --client_password osworld-public-evaluation 
     ```
 
 ## 📂 File Structure
