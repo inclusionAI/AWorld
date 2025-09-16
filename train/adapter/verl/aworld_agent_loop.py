@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import json
+import logging
 import os
 import uuid
 from typing import Any, List, Dict, Union
@@ -15,6 +16,15 @@ from aworld.logs.util import logger
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
 from train.adapter.verl.common import to_agent_loop_output
+
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 
 class AworldAgentLoop(AgentLoopBase):
