@@ -61,7 +61,10 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
         if not self.is_valid_message(message):
             return
         timeout = message.context.get_task().timeout
-        if timeout > 0 and time.time() - self.runner.start_time > timeout:
+        time_cost = time.time() - self.runner.start_time
+        if timeout > 0 and time_cost > timeout:
+            logger.warn(
+                f"[{self.name()}] {message.context.get_task().id} task timeout after {time_cost} seconds.")
             yield Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg="task timeout.", data=message, stop=True),

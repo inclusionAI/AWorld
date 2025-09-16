@@ -66,8 +66,7 @@ class TaskEventRunner(TaskRunner):
         self.context.event_manager = self.event_mng
         # Initialize the cancellation storage backend, configurable via task.conf['cancellation_store']
         try:
-            cancel_conf = (self.task.conf or {}).get('cancellation_store')
-            store = build_cancellation_store(cancel_conf)
+            store = build_cancellation_store(self.task.conf.get('cancellation_store'))
             CancellationRegistry.instance().use_store(store)
         except Exception:
             pass
@@ -295,6 +294,7 @@ class TaskEventRunner(TaskRunner):
         try:
             while True:
                 if self.task.timeout > 0 and time.time() - self.start_time > self.task.timeout:
+                    logger.warn(f"[TaskEventRunner] {self.task.id} task timeout after {time.time() - self.start_time} seconds.")
                     self._task_response = TaskResponse(answer='',
                                                        success=False,
                                                        context=message.context,
@@ -332,6 +332,8 @@ class TaskEventRunner(TaskRunner):
                         cancelled = CancellationRegistry.instance().is_cancelled(self.task.id)
                     if cancelled:
                         msg = 'Task cancelled.'
+                        logger.warn(
+                            f"[TaskEventRunner] {self.task.id} task is cancelled.")
                         await self.stop()
                         continue
                 except Exception:
