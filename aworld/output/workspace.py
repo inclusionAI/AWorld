@@ -64,15 +64,7 @@ class WorkSpace(BaseModel):
             self.metadata = {}
         else:
             # Try to load existing workspace data
-            workspace_data = self._load_workspace_data()
-            if workspace_data:
-                self.artifacts = workspace_data.get('artifacts', [])
-                self.metadata = workspace_data.get('metadata', {})
-                self.created_at = workspace_data.get('created_at', self.created_at)
-                self.updated_at = workspace_data.get('updated_at', self.updated_at)
-            else:
-                self.artifacts = []
-                self.metadata = {}
+            self._load_workspace_data()
 
         # Build artifact_id_index after loading artifacts
         self._rebuild_artifact_id_index()
@@ -113,12 +105,21 @@ class WorkSpace(BaseModel):
                     if artifact_data:
                         artifacts.append(Artifact.from_dict(artifact_data))
 
-            return {
+            # Try to load existing workspace data
+            workspace_data = {
                 "artifacts": artifacts,
                 "metadata": workspace_data.get("metadata", {}),
                 "created_at": workspace_data.get("created_at"),
                 "updated_at": workspace_data.get("updated_at")
             }
+            if workspace_data:
+                self.artifacts = workspace_data.get('artifacts', [])
+                self.metadata = workspace_data.get('metadata', {})
+                self.created_at = workspace_data.get('created_at', self.created_at)
+                self.updated_at = workspace_data.get('updated_at', self.updated_at)
+            else:
+                self.artifacts = []
+                self.metadata = {}
         except Exception as e:
             traceback.print_exc()
             print(f"Error loading workspace data: {e}")

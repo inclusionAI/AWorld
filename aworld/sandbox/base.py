@@ -65,6 +65,13 @@ class Sandbox(SandboxSetup):
         Returns the list of MCP servers.
         """
         return self._mcp_servers
+
+    @property
+    def black_tool_actions(self) -> Dict[str, List[str]]:
+        """
+        Returns the list of black-listed tools.
+        """
+        return self._black_tool_actions
     
     @property
     @abc.abstractmethod
@@ -77,6 +84,7 @@ class Sandbox(SandboxSetup):
         """
         pass
 
+
     def __init__(
             self,
             sandbox_id: Optional[str] = None,
@@ -85,6 +93,7 @@ class Sandbox(SandboxSetup):
             timeout: Optional[int] = None,
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Optional[Any] = None,
+            black_tool_actions: Optional[Dict[str, List[str]]] = None
     ):
         """
         Initialize a new Sandbox instance.
@@ -105,6 +114,7 @@ class Sandbox(SandboxSetup):
         self._env_type = env_type or SandboxEnvType.LOCAL
         self._mcp_servers = mcp_servers or []
         self._mcp_config = mcp_config or {}
+        self._black_tool_actions = black_tool_actions or {}
         
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:

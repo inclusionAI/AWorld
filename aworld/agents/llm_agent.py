@@ -143,7 +143,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  need_reset: bool = True,
                  step_reset: bool = True,
                  use_tools_in_prompt: bool = False,
-                 black_tool_actions: dict = None,
+                 black_tool_actions: Dict[str, List[str]] = None,
                  model_output_parser: ModelOutputParser[..., AgentResult] = LlmOutputParser(),
                  tool_aggregate_func: Callable[..., Any] = None,
                  event_handler_name: str = None,
@@ -168,6 +168,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                     agent_names=agent_names,
                                     mcp_servers=mcp_servers,
                                     mcp_config=mcp_config,
+                                    black_tool_actions = black_tool_actions,
                                     feedback_tool_result=feedback_tool_result,
                                     wait_tool_result=wait_tool_result,
                                     sandbox=sandbox,
@@ -195,8 +196,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = step_reset
         # tool_name: [tool_action1, tool_action2, ...]
-        self.black_tool_actions: Dict[str, List[str]] = black_tool_actions if black_tool_actions \
-            else conf.get('black_tool_actions', {})
+        # self.black_tool_actions: Dict[str, List[str]] = black_tool_actions if black_tool_actions \
+        #     else conf.get('black_tool_actions', {})
         self.model_output_parser = model_output_parser
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
@@ -250,10 +251,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """Transform the original content to LLM messages of native format.
 
         Args:
-            content: User content.
+            observation: Observation by env.
             image_urls: List of images encoded using base64.
-            sys_prompt: Agent system prompt.
-            max_step: The maximum list length obtained from memory.
+            message: Event received by the Agent.
         Returns:
             Message list for LLM.
         """
@@ -277,7 +277,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             for action_item in observation.action_result:
                 tool_call_id = action_item.tool_call_id
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=action_item, context=message.context)
-        elif not self.use_tools_in_prompt and last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
+        elif last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
                 last_history.metadata[
                     'tool_calls']:
             for tool_call in last_history.metadata['tool_calls']:
@@ -323,15 +323,18 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def init_observation(self, observation: Observation) -> Observation:
         # supported string only
-        if self.task and isinstance(self.task, str) and self.task != observation.content:
-            observation.content = f"base task is: {self.task}\n{observation.content}"
-            # `task` only needs to be processed once and reflected in the context
-            self.task = None
+        # if self.task and isinstance(self.task, str) and self.task != observation.content:
+        #     observation.content = f"base task is: {self.task}\n{observation.content}"
+        #     # `task` only needs to be processed once and reflected in the context
+        #     self.task = None
+
+        # default use origin observation
         return observation
 
     def _log_messages(self, messages: List[Dict[str, Any]], **kwargs) -> None:
         """Log the sequence of messages for debugging purposes"""
         logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
+        logger.debug(f"[agent] use tools: {self.tools}")
         for i, msg in enumerate(messages):
             prefix = msg.get('role')
             logger.info(
@@ -497,7 +500,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
         try:
-            llm_response = await self.invoke_llm_model(messages, message=message, **kwargs)
+            llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
@@ -654,7 +657,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     "compress_ratio": round(compressed_len / origin_len, 2)
                 })
 
-    async def invoke_llm_model(self,
+    async def invoke_model(self,
                              messages: List[Dict[str, str]] = [],
                              message: Message = None,
                              **kwargs) -> ModelResponse:
@@ -668,10 +671,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             LLM response
         """
-        outputs = None
-        if kwargs.get("outputs") and isinstance(kwargs.get("outputs"), Outputs):
-            outputs = kwargs.get("outputs")
-
         llm_response = None
         source_span = trace.get_current_span()
         serializable_messages = to_serializable(messages)
@@ -873,6 +872,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
+        tool_use_summary = None
+        if isinstance(tool_result, ActionResult):
+             tool_use_summary = tool_result.metadata.get("tool_use_summary")
         await self.memory.add(MemoryToolMessage(
             content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
             tool_call_id=tool_call_id,
@@ -883,6 +885,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 task_id=context.get_task().id,
                 agent_id=self.id(),
                 agent_name=self.name(),
+                summary_content=tool_use_summary
             )
         ), agent_memory_config=self.memory_config)
 

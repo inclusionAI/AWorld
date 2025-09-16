@@ -8,7 +8,7 @@ from aworld.core.event.base import Constants
 from aworld.runner import Runners
 from examples.common.tools.common import Tools
 from examples.multi_agents.coordination.deepresearch.prompts import *
-from examples.planner.plan import PlannerOutputParser
+from examples.multi_agents.coordination.deepresearch.planner.plan import PlannerOutputParser
 from examples.web.agent_deploy.deep_research.agent import BaseDynamicPromptAgent
 
 

@@ -7,15 +7,14 @@ import json
 from typing import List, Tuple, Dict, Any, Union
 
 from aworld.config.conf import ToolConfig, ConfigDict
-from aworld.core.envs.tool import Tool, AsyncTool, ToolFactory
+from aworld.core.tool.base import Tool, AsyncTool, ToolFactory
 from aworld.core.common import Observation, ActionModel, ActionResult
 from aworld.logs.util import logger
-from aworld.virtual_environments.utils import build_observation
-{action_import}
+from aworld.tools.utils import build_observation
 
 
 @ToolFactory.register(name="{name}", desc="{desc}", supported_action={action})
-class {name}Tool({cls}[Observation, List[ActionModel]]):
+class {name}Tool({cls}):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         super().__init__(conf, **kwargs)
 
@@ -25,7 +24,7 @@ class {name}Tool({cls}[Observation, List[ActionModel]]):
         return build_observation(observer=self.name(),
                                  ability=''), dict()
 
-    {async_flag}def step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+    {async_flag}def do_step(self, action: List[ActionModel], **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
         reward = 0
         fail_error = ""
         action_result = None

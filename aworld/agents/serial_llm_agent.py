@@ -2,9 +2,8 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import List, Dict, Any, Callable
 
-from aworld.core.agent.base import AgentResult
-from aworld.core.model_output_parser import ModelOutputParser
-from aworld.models.model_response import ModelResponse
+from aworld.core.event.base import Message
+
 from aworld.utils.run_util import exec_agent
 
 from aworld.agents.llm_agent import Agent
@@ -17,28 +16,26 @@ class SerialableAgent(Agent):
 
     The parameters of the extension function are the agent itself, which can obtain internal information of the agent.
     `aggregate_func` function example:
-    >>> def agg(agent: SerialableAgent, res: List[Observation]):
+    >>> def agg(agent: SerialableAgent, res: Dict[str, Any]) -> ActionModel:
     >>>     ...
-    >>>     return ActionModel(agent_name=agent.id(), policy_info='')
+    >>>     return ActionModel(agent_name=agent.id(), policy_info='...')
     """
 
     def __init__(self,
-                 name: str,
-                 conf: Config,
-                 model_output_parser: ModelOutputParser[ModelResponse, AgentResult] = None,
                  agents: List[Agent] = None,
-                 aggregate_func: Callable[['SerialableAgent', List[Observation]], ActionModel] = None,
+                 aggregate_func: Callable[['SerialableAgent', Dict[str, Any]], ActionModel] = None,
                  **kwargs):
-        super().__init__(name=name, conf=conf, model_output_parser=model_output_parser, **kwargs)
+        super().__init__(**kwargs)
         self.agents = agents if agents else []
         self.aggregate_func = aggregate_func
+        self.results = None
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
-        observations = []
+        self.results = None
+        results = {}
         action = ActionModel(agent_name=self.id(), policy_info=observation.content)
         if self.agents:
             for agent in self.agents:
-                observations.append(observation)
                 result = await exec_agent(observation.content, agent, self.context, sub_task=True)
                 if result:
                     if result.success:
@@ -46,13 +43,31 @@ class SerialableAgent(Agent):
                     else:
                         con = result.msg
                     action = ActionModel(agent_name=agent.id(), policy_info=con)
-                    observation = self._action_to_observation(action, agent.name())
+                    observation = self._action_to_observation(action, agent.id())
+                    results[agent.id()] = con
                 else:
                     raise Exception(f"{agent.id()} execute fail.")
 
         if self.aggregate_func:
-            action = self.aggregate_func(self, observations)
+            return [self.aggregate_func(self, results)]
+
+        self.results = results
         return [action]
+
+    async def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
+        if self.aggregate_func or not self.results:
+            return super()._agent_result(actions, caller, input_message)
+
+        if not actions:
+            raise Exception(f'{self.id()} no action decision has been made.')
+
+        return Message(payload=[ActionModel(agent_name=self.id(), policy_info=self.results)],
+                       caller=caller,
+                       sender=self.id(),
+                       receiver=actions[0].tool_name,
+                       category=self.event_handler_name,
+                       session_id=input_message.context.session_id if input_message.context else "",
+                       headers=self._update_headers(input_message))
 
     def _action_to_observation(self, policy: ActionModel, agent_name: str):
         if not policy:
@@ -60,7 +75,7 @@ class SerialableAgent(Agent):
             return Observation(content=f"{agent_name} no policy")
 
         logger.debug(f"{policy.policy_info}")
-        return Observation(content=policy.policy_info)
+        return Observation(content=policy.policy_info, observer=agent_name)
 
     def finished(self) -> bool:
         return all([agent.finished for agent in self.agents])

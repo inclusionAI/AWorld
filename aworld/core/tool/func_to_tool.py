@@ -4,19 +4,21 @@ import importlib
 import inspect
 import os
 import sys
+import uuid
 
 from typing import Callable, Any, get_type_hints, get_origin, get_args
 
 from pydantic import create_model, Field, BaseModel
 from pydantic.fields import FieldInfo
 
-from aworld.core.common import ToolActionInfo, ParamInfo
+from aworld.core.common import ParamInfo
 from aworld.core.tool.action import TOOL_ACTION
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.tool.action_template import ACTION_TEMPLATE
 from aworld.core.tool.base import ToolFactory
 from aworld.core.tool.tool_template import TOOL_TEMPLATE
 from aworld.logs.util import logger
+from aworld.tools import LOCAL_TOOLS_ENV_VAR
 
 
 def be_tool(
@@ -89,6 +91,11 @@ def function_to_tool(
     tool_name = tool_name or name or func.__name__
     action_name = name or func.__name__
 
+    postfix = f"{uuid.uuid4().hex[0:6]}__tmp"
+
+    with open(f"{tool_name}{postfix}_action.py", 'w') as write:
+        write.writelines("".join(inspect.getsourcelines(func)[0][1:]))
+
     if tool_name == "<lambda>" or action_name == "<lambda>":
         raise ValueError("You must provide a name for lambda functions")
 
@@ -116,13 +123,10 @@ def function_to_tool(
                                      func_import=func_import,
                                      func=func.__name__,
                                      call_func=name)
-        with open(f"{action_name}.py", 'w+') as write:
+        with open(f"{tool_name}{postfix}_action.py", 'a+') as write:
             write.writelines(con)
-        module = importlib.import_module(action_name)
-        getattr(module, action_name)
-
-        if not kwargs.get('keep_file', False):
-            os.remove(f"{action_name}.py")
+        module = importlib.import_module(f"{action_name}{postfix}_action")
+        getattr(module, f"{action_name}Act")
     else:
         logger.warning(f"{action_name} already register to the tool.")
         raise ValueError(f"{action_name} already register to a tool.")
@@ -130,56 +134,47 @@ def function_to_tool(
     # build params info
     parameters = func_params(func)
 
-    module_name = f'{tool_name}_action'
+    module_name = f'{tool_name}'
     if module_name not in sys.modules:
+        params = {}
+        if parameters:
+            for k, v in parameters['properties'].items():
+                params[k] = ParamInfo(name=k,
+                                      type=v.get('type', 'string'),
+                                      required=False if v.get('default') else True,
+                                      default_value=v.get('default'),
+                                      desc=v.get('description', k))
+
         # ToolAction process
-        with open(f"{module_name}.py", 'w+') as write:
-            write.writelines(TOOL_ACTION.format(name=tool_name))
-        module = importlib.import_module(module_name)
-        if not kwargs.get('keep_file', False):
-            os.remove(f"{module_name}.py")
-        tool_action_cls = getattr(module, f"{tool_name}Action")
+        with open(f"{module_name}{postfix}.py", 'w') as write:
+            write.writelines(TOOL_ACTION.format(name=tool_name,
+                                                action_name_upper=action_name.upper(),
+                                                action_name=action_name,
+                                                desc=desc if desc else action_name,
+                                                params=params))
     else:
         logger.info(f"{module_name} already exists in modules, reuse the tool action.")
-        tool_action_cls = getattr(sys.modules[module_name], f"{tool_name}Action")
-
-    params = {}
-    if parameters:
-        for k, v in parameters['properties'].items():
-            params[k] = ParamInfo(name=k,
-                                  type=v.get('type', 'string'),
-                                  required=False if v.get('default') else True,
-                                  default_value=v.get('default'),
-                                  desc=v.get('description', k))
-
-    setattr(tool_action_cls,
-            action_name.upper(),
-            ToolActionInfo(
-                name=action_name,
-                desc=desc if desc else action_name,
-                input_params=params
-            ))
 
     # build tool
     if tool_name not in ToolFactory:
         con = TOOL_TEMPLATE.format(name=tool_name,
                                    desc=tool_desc if tool_desc else tool_name,
                                    action=f"{tool_name}Action",
-                                   action_import=f"from {tool_action_cls.__module__} import {tool_name}Action",
                                    cls='AsyncTool' if is_async else 'Tool',
                                    async_flag='async ' if is_async else '',
                                    async_underline='async_' if is_async else '',
                                    await_flag='await ' if is_async else '')
 
-        if tool_name == action_name:
-            tool_name += '_tool'
-
-        with open(f"{tool_name}.py", 'w+') as write:
+        with open(f"{tool_name}{postfix}.py", 'a+') as write:
             write.writelines(con)
-        importlib.import_module(tool_name)
+        importlib.import_module(f"{tool_name}{postfix}")
 
-        if not kwargs.get('keep_file', False):
-            os.remove(f"{tool_name}.py")
+        # write to AWorld environ variables,
+        val = os.environ.get(LOCAL_TOOLS_ENV_VAR, "")
+        if val:
+            val = val + ";"
+        os.environ[LOCAL_TOOLS_ENV_VAR] = val + sys.modules[f"{tool_name}{postfix}_action"].__file__
+        logger.debug(f'add {sys.modules[f"{tool_name}{postfix}_action"].__file__}')
 
 
 def func_params(func: Callable[..., Any]):

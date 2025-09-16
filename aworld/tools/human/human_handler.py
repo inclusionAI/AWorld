@@ -44,7 +44,7 @@ class DefaultHumanHandler(DefaultHandler):
         headers = {"context": message.context}
         session_id = message.session_id
 
-        human_input = await self.handle_user_input(message=message)
+        human_input = await self.handle_user_input(message)
 
         yield Message(
             category=Constants.HUMAN_RESPONSE,

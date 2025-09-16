@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import json
+import logging
 import os
 import uuid
 from typing import Any, List, Dict, Union
@@ -11,28 +12,36 @@ from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.logs.util import logger
-from aworld.sandbox.base import Sandbox
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
 from train.adapter.verl.common import to_agent_loop_output
+
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 
 class AworldAgentLoop(AgentLoopBase):
     __metaclass__ = abc.ABCMeta
 
     @abc.abstractmethod
-    def build_agents(self) -> Union[Agent, Swarm]:
+    async def build_agents(self) -> Union[Agent, Swarm]:
         """Build single- or multi-agent"""
 
-    def get_llm_server_address(self, server_name: str = None) -> str:
+    async def get_llm_server_address(self, server_name: str = None) -> str:
         server = self.server_manager._choose_server(server_name or uuid.uuid4().hex)
-        base_url = server.get_server_address.remote()
+        base_url = await server.get_server_address.remote()
         base_url = f"http://{base_url}/v1"
         logger.info(f"get_server_address#base_url: {base_url}")
         return base_url
 
-    def get_llm_server_model_name(self):
+    async def get_llm_server_model_name(self):
         model_name = "/".join(self.config.actor_rollout_ref.model.path.split("/")[-2:])
         logger.info(f"get_server_model_name#model_name: {model_name}")
         return model_name
@@ -43,7 +52,7 @@ class AworldAgentLoop(AgentLoopBase):
 
     # release 0.5.0
     async def run(self, messages: list, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
-        agent = self.build_agents()
+        agent = await self.build_agents()
 
         self.agent = agent
 
