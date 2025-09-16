@@ -25,7 +25,7 @@ class TaskHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
-        super().__init__()
+        super().__init__(runner)
         self.runner = runner
         self.retry_count = runner.task.max_retry_count
         self.hooks = {}
