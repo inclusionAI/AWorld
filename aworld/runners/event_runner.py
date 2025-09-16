@@ -44,7 +44,7 @@ class TaskEventRunner(TaskRunner):
         self.state_manager = EventRuntimeStateManager.instance()
         self.replay_buffer = EventReplayBuffer()
         # cancellation registry hook function, set by external to check task status
-        self._cancellation_checker = None
+        self._cancellation_checker = kwargs.get('cancellation_checker', None)
 
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
@@ -64,9 +64,9 @@ class TaskEventRunner(TaskRunner):
         await super().pre_run()
         self.event_mng.context = self.context
         self.context.event_manager = self.event_mng
-        # 初始化取消存储后端（memory/redis/sqlite），可通过 task.conf['cancellation'] 配置
+        # Initialize the cancellation storage backend, configurable via task.conf['cancellation_store']
         try:
-            cancel_conf = (self.task.conf or {}).get('cancellation')
+            cancel_conf = (self.task.conf or {}).get('cancellation_store')
             store = build_cancellation_store(cancel_conf)
             CancellationRegistry.instance().use_store(store)
         except Exception:
@@ -100,7 +100,7 @@ class TaskEventRunner(TaskRunner):
                 await self.event_mng.register(Constants.TOOL, Constants.TOOL, tool.step)
 
         self._stopped = asyncio.Event()
-        # 注册到取消中心
+        # register to cancellation center
         try:
             CancellationRegistry.instance().register(self.task.id, TaskStatus.RUNNING)
         except Exception:
@@ -294,6 +294,16 @@ class TaskEventRunner(TaskRunner):
         message = None
         try:
             while True:
+                if self.task.timeout > 0 and time.time() - self.start_time > self.task.timeout:
+                    self._task_response = TaskResponse(answer='',
+                                                       success=False,
+                                                       context=message.context,
+                                                       id=self.task.id,
+                                                       time_cost=(time.time() - self.start_time),
+                                                       usage=self.context.token_usage,
+                                                       msg='cancellation: task timeout',
+                                                       status='cancelled')
+                    await self.stop()
                 if await self.is_stopped():
                     logger.debug(
                         f"[TaskEventRunner] break snap {self.task.id}")
@@ -321,7 +331,7 @@ class TaskEventRunner(TaskRunner):
                     else:
                         cancelled = CancellationRegistry.instance().is_cancelled(self.task.id)
                     if cancelled:
-                        msg = 'cancelled'
+                        msg = 'Task cancelled.'
                         await self.stop()
                         continue
                 except Exception:
@@ -355,7 +365,7 @@ class TaskEventRunner(TaskRunner):
             if await self.is_stopped():
                 logger.info(
                     f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
-                # 写回最终任务状态
+                # Update task status
                 try:
                     reg = CancellationRegistry.instance()
                     info = reg.get(self.task.id)
@@ -391,9 +401,9 @@ class TaskEventRunner(TaskRunner):
         return self._stopped.is_set()
 
     def set_cancellation_checker(self, checker: Callable[[str], Any]):
-        """注册外部取消检查函数。
+        """register external cancellation checker.
 
-        checker 接收 `task_id` 并返回 bool/awaitable-bool，True 表示应取消。
+        checker receives `task_id` and returns bool/awaitable-bool, True means should cancel.
         """
         self._cancellation_checker = checker
 

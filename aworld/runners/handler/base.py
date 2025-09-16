@@ -1,10 +1,13 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import time
 
 from typing import TypeVar, Generic, AsyncGenerator
 
-from aworld.core.event.base import Message, Constants
+from aworld.core.common import TaskItem
+
+from aworld.core.event.base import Message, Constants, TopicType
 from aworld.logs.util import logger
 
 IN = TypeVar('IN')
@@ -31,7 +34,8 @@ class Handler(Generic[IN, OUT]):
 class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
     """Default handler."""
 
-    def __init__(self):
+    def __init__(self, runner: 'TaskEventRunner'):
+        self.runner = runner
         self.hooks = None
 
     def get_registered_name(self):
@@ -55,6 +59,17 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
 
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
         if not self.is_valid_message(message):
+            return
+        timeout = message.context.get_task().timeout
+        if timeout > 0 and time.time() - self.runner.start_time > timeout:
+            yield Message(
+                category=Constants.TASK,
+                payload=TaskItem(msg="task timeout.", data=message, stop=True),
+                sender=self.name(),
+                session_id=self.runner.context.session_id,
+                topic=TopicType.CANCEL,
+                headers={"context": message.context}
+            )
             return
         async for event in self._do_handle(message):
             msg = await self.post_handle(input=message, output=event)

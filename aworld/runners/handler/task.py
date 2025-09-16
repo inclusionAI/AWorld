@@ -126,13 +126,13 @@ class DefaultTaskHandler(TaskHandler):
         elif topic == TopicType.CANCEL:
             # Avoid waiting to receive events and send a mock event for quick cancel
             yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock')
-            # 标记 TaskResponse 为取消
+            # mark task response as cancelled
             self.runner._task_response = TaskResponse(answer='',
                                                       success=False,
                                                       context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
-                                                      msg='cancelled',
+                                                      msg=f'cancellation message received: {task_item.msg}',
                                                       status='cancelled')
             await self.runner.stop()
