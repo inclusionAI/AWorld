@@ -96,6 +96,8 @@ class TaskResponse:
     success: bool = field(default=False)
     msg: str | None = field(default=None)
     trajectory: List[Dict[str, Any]] = field(default_factory=list)
+    # task final status, e.g. success/failed/cancelled
+    status: str | None = field(default=None)
 
 
 class Runner(object):
