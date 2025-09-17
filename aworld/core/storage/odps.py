@@ -9,12 +9,14 @@ from aworld.core.storage.condition import ConditionBuilder, Condition
 from aworld.replay_buffer.base import Storage
 from aworld.logs.util import logger
 from aworld.utils.import_package import import_package
+
 import_package("odps")  # noqa
 from odps import ODPS  # noqa
 from odps.models.record import Record  # noqa
 
 
 class OdpsConfig(StorageConfig):
+    name = "odps"
     table_name: str
     project: str
     endpoint: str
@@ -121,6 +123,7 @@ class OdpsStorage(Storage):
 
     async def create_data(self, data: DataItem, block_id: str = None, overwrite: bool = True) -> bool:
         block_id = data.block_id if data.block_id else block_id
+        block_id = str(block_id)
         if not self._get_table().exist_partition(block_id):
             await self.create_block(block_id)
 
@@ -129,6 +132,7 @@ class OdpsStorage(Storage):
 
     async def create_datas(self, data: List[DataItem], block_id: str = None, overwrite: bool = True) -> bool:
         block_id = data[0].block_id if data[0].block_id else block_id
+        block_id = str(block_id)
         if not self._get_table().exist_partition(block_id):
             await self.create_block(block_id)
 
@@ -142,6 +146,7 @@ class OdpsStorage(Storage):
         pass
 
     async def get_data(self, block_id: str = None) -> List[DataItem]:
+        block_id = str(block_id)
         df = self._get_table().get_partition(block_id).to_df()
         return df
 
@@ -157,3 +162,7 @@ class OdpsStorage(Storage):
         sql = self._build_sql(condition, count=True)
         with self.odps.execute_sql(sql).open_reader() as reader:
             return reader[0]["count"]
+
+    async def delete_all(self):
+        # unsupported
+        return

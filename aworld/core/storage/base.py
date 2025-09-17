@@ -1,39 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import time
-import uuid
 from abc import abstractmethod, ABCMeta
-from dataclasses import dataclass, field
-from dataclasses_json import dataclass_json
-from typing import Generic, TypeVar, List, Dict, Union, Any
+from typing import Generic, TypeVar, List
 
 from aworld.config import StorageConfig
 from aworld.core.storage.condition import Condition
-
-
-@dataclass
-class DataBlock:
-    """The base definition structure of AWorld data block."""
-    id: str = field(default=None)
-    create_at: float = field(default=time.time())
-    meta_info: dict = field(default_factory=dict)
-
-
-@dataclass_json
-@dataclass
-class Data:
-    """The base definition structure of AWorld data storage."""
-    block_id: str = field(default=None)
-    id: str = field(default=uuid.uuid4().hex)
-    value: Any = field(default=None)
-    create_at: float = field(default=time.time())
-    update_at: float = field(default=time.time())
-    expires_at: float = field(default=0)
-    meta_info: dict = field(default_factory=dict)
-
-    def __eq__(self, other: 'Data'):
-        return self.id == other.id
-
+from aworld.core.storage.data import Data, DataBlock
+from aworld.logs.util import logger
 
 DataItem = TypeVar('DataItem', bound=Data)
 
@@ -81,6 +54,10 @@ class Storage(Generic[DataItem]):
 
     async def create_datas(self, data: List[DataItem], block_id: str = None, overwrite: bool = True) -> bool:
         res = True
+        if not data:
+            logger.warning("no data to store.")
+            return res
+
         for d in data:
             res = res & await self.create_data(d, block_id, overwrite)
         return res
@@ -97,6 +74,10 @@ class Storage(Generic[DataItem]):
 
     async def update_datas(self, data: List[DataItem], block_id: str = None, exists: bool = False) -> bool:
         res = True
+        if not data:
+            logger.warning("no data to update.")
+            return res
+
         for d in data:
             res = res & await self.update_data(d, block_id, exists)
         return res
@@ -111,9 +92,12 @@ class Storage(Generic[DataItem]):
             exists: Whether the data must exist, True is yes.
         """
 
-    @abstractmethod
     async def delete_datas(self, data: List[DataItem], block_id: str = None, exists: bool = False) -> bool:
         res = True
+        if not data:
+            logger.warning("no data to delete.")
+            return res
+
         for d in data:
             res = res & await self.delete_data(d, block_id, exists)
         return res
@@ -148,5 +132,5 @@ class Storage(Generic[DataItem]):
             condition: Query condition.
 
         Returns:
-            int: Size of the storage.
+            int: Size of data item in the storage.
         """

@@ -5,6 +5,7 @@ from typing import Dict, List
 from aworld.config import StorageConfig
 from aworld.core.storage.base import DataItem, Storage
 from aworld.core.storage.condition import Condition, ConditionBuilder
+from aworld.core.storage.data import DataBlock
 from aworld.logs.util import logger
 from aworld.utils.import_package import import_package
 
@@ -17,6 +18,7 @@ from redis.commands.search.query import Query
 
 
 class RedisConfig(StorageConfig):
+    name: str = "redis"
     host: str = 'localhost'
     port: int = 6379
     db: int = 0
@@ -175,3 +177,15 @@ class RedisStorage(Storage):
         keys = await self.backend().keys(f"{self._key_prefix}*")
         if keys:
             await self.backend().delete(*keys)
+
+    async def create_block(self, block_id: str, overwrite: bool = True) -> bool:
+        # unsupported
+        return False
+
+    async def delete_block(self, block_id: str, exists: bool = False) -> bool:
+        # unsupported
+        return False
+
+    async def get_block(self, block_id: str) -> DataBlock:
+        # unsupported
+        return None
