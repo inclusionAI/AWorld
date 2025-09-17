@@ -187,7 +187,7 @@ class McpServers:
                         self.server_instances[server_name] = server
                         logging.info(f"Created and cached new server instance for {server_name}")
                     else:
-                        logging.warning(f"Created new server failed: {server_name}")
+                        logging.warning(f"Created new server failed: {server_name}, session_id: {session_id}, tool_name: {tool_name}")
 
                         self._update_metadata(result_key, {"error": "Failed to create server instance"}, operation_info)
                         continue
@@ -227,7 +227,7 @@ class McpServers:
                         break
                     except BaseException as e:
                         logging.warning(
-                            f"Error calling tool error: {e}"
+                            f"Error calling tool error: {e}. Extra info: session_id = {session_id}, tool_name = {tool_name}."
                             f"Traceback:\n{traceback.format_exc()}"
                         )
                 logging.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
@@ -282,7 +282,7 @@ class McpServers:
                     self._update_metadata(result_key, action_result, operation_info)
 
         except Exception as e:
-            logging.warning(f"Failed to call_tool: {e}")
+            logging.warning(f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}")
             return None
 
         return results

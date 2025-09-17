@@ -102,7 +102,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                         None,
                         lambda: tokenizer.apply_chat_template(
                             chat_list,
-                            add_generation_prompt=True,
+                            add_generation_prompt=False,
                             tokenize=True,
                         ),
                     )
@@ -118,7 +118,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                     None,
                     lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        add_generation_prompt=True,
+                        add_generation_prompt=False,
                         tokenize=True,
                     ),
                 )
@@ -135,7 +135,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                     None,
                     lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        add_generation_prompt=True,
+                        add_generation_prompt=False,
                         tokenize=True,
                     ),
                 )
@@ -146,7 +146,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                     None,
                     lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        add_generation_prompt=True,
+                        add_generation_prompt=False,
                         tokenize=True,
                     ),
                 )
