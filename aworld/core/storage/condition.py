@@ -4,7 +4,7 @@ import abc
 from typing import Any, Literal, TypedDict, List, Union, Dict
 
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.storage.base import DataItem
+from aworld.core.storage.data import Data as DataItem
 
 
 class BaseCondition(TypedDict):

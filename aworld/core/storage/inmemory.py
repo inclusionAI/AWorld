@@ -11,6 +11,7 @@ from aworld.utils.serialized_util import to_serializable
 
 
 class InmemoryConfig(StorageConfig):
+    name: str = "memory"
     max_capacity: int = 10000
 
 
@@ -59,7 +60,7 @@ class InmemoryConditionBuilder(ConditionBuilder):
         return to_serializable(result)
 
 
-class InMemoryStorage(Storage[DataItem]):
+class InmemoryStorage(Storage[DataItem]):
     """In-memory storage."""
 
     def __init__(self, conf: InmemoryConfig = None):
@@ -96,6 +97,7 @@ class InMemoryStorage(Storage[DataItem]):
 
     async def create_data(self, data: DataItem, block_id: str = None, overwrite: bool = True) -> bool:
         block_id = data.block_id if data.block_id else block_id
+        block_id = str(block_id)
         if block_id not in self.blocks:
             await self.create_block(block_id)
 
@@ -113,6 +115,7 @@ class InMemoryStorage(Storage[DataItem]):
 
     async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
         block_id = data.block_id if data.block_id else block_id
+        block_id = str(block_id)
         block_data = await self.get_data(block_id)
         if data in block_data:
             idx = block_data.index(data)
@@ -124,6 +127,7 @@ class InMemoryStorage(Storage[DataItem]):
 
     async def delete_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
         block_id = data.block_id if data.block_id else block_id
+        block_id = str(block_id)
         block_data = await self.get_data(block_id)
         if data in block_data:
             block_data.remove(data)
@@ -141,7 +145,10 @@ class InMemoryStorage(Storage[DataItem]):
         return datas
 
     async def get_data(self, block_id: str = None) -> List[DataItem]:
-        return self.datas.get(block_id, [])
+        block_id = str(block_id)
+        if block_id not in self.datas:
+            self.datas[block_id] = []
+        return self.datas.get(block_id)
 
     async def delete_all(self):
         self.blocks.clear()
