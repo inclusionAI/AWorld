@@ -8,7 +8,7 @@ from math import ceil
 from aworld.core.common import ActionModel, Observation
 from aworld.core.storage.base import Storage
 from aworld.core.storage.condition import Condition
-from aworld.core.storage.inmemory import InMemoryStorage
+from aworld.core.storage.inmemory_store import InmemoryStorage
 from aworld.logs.util import logger
 from aworld.utils.serialized_util import to_serializable
 
@@ -223,7 +223,7 @@ class ReplayBuffer:
 
     def __init__(
         self,
-        storage: Storage = InMemoryStorage()
+        storage: Storage = InmemoryStorage()
     ):
         self._storage = storage
 

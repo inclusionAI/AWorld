@@ -11,7 +11,7 @@ from aworld.utils.serialized_util import to_serializable
 
 
 class InmemoryConfig(StorageConfig):
-    name: str = "memory"
+    name: str = "inmemory"
     max_capacity: int = 10000
 
 
@@ -125,14 +125,19 @@ class InmemoryStorage(Storage[DataItem]):
             return False
         return True
 
-    async def delete_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
-        block_id = data.block_id if data.block_id else block_id
+    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
         block_id = str(block_id)
         block_data = await self.get_data(block_id)
-        if data in block_data:
-            block_data.remove(data)
+        del_data = None
+        for data in block_data:
+            if data.id == data_id:
+                del_data = data
+                break
+
+        if del_data:
+            block_data.remove(del_data)
         elif exists:
-            logger.warning(f"Data {data.id} not exists to delete.")
+            logger.warning(f"Data {data_id} not exists to delete.")
             return False
         return True
 
