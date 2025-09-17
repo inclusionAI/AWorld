@@ -47,7 +47,7 @@ class OssStorage(Storage):
         self._get_bucket().delete_object(f"{block_id}_{data_id}")
         return True
 
-    async def get_data(self, block_id: str = None) -> List[DataItem]:
+    async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         block_id = str(block_id)
         return self._get_bucket().list_objects(block_id)
 

@@ -86,7 +86,7 @@ class EventManager:
 
     async def messages_by_key(self, key: str) -> List[Message]:
         # key is task_id
-        results = await self.store.get_data(key)
+        results = await self.store.get_data_items(key)
         if not results:
             return []
 

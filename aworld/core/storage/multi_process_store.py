@@ -124,7 +124,7 @@ class MultiProcessStorage(Storage):
                 datas = ConditionFilter(condition).filter(datas)
             return datas
 
-    async def get_data(self, block_id: str = None) -> List[DataItem]:
+    async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         with self._lock:
             return self._load_from_shared_memory(block_id)
 
