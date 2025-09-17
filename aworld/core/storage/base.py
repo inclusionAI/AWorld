@@ -58,7 +58,7 @@ class Storage(Generic[DataItem]):
         return self.conf.name
 
     @abstractmethod
-    async def create_block(self, block_id: str, overwrite: bool = True) -> bool:
+    async def create_block(self, data: DataItem, block_id: str, overwrite: bool = True) -> bool:
         """"""
 
     @abstractmethod
