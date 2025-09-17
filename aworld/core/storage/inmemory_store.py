@@ -149,7 +149,7 @@ class InmemoryStorage(Storage[DataItem]):
             datas = ConditionFilter(condition).filter(datas)
         return datas
 
-    async def get_data(self, block_id: str = None) -> List[DataItem]:
+    async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         block_id = str(block_id)
         if block_id not in self.datas:
             self.datas[block_id] = []

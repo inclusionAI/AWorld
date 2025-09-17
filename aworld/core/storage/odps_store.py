@@ -139,7 +139,7 @@ class OdpsStorage(Storage):
         self.backend().write_table(block_id, [d.value for d in data], partition_cols=[block_id], create_partition=True)
         return True
 
-    async def get_data(self, block_id: str = None) -> List[DataItem]:
+    async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         block_id = str(block_id)
         df = self._get_table().get_partition(block_id).to_df()
         return df

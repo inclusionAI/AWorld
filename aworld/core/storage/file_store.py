@@ -193,7 +193,7 @@ class FileStorage(Storage[DataItem]):
             items.extend(self._load_all_data_in_block(block_id))
         return ConditionFilter(condition).filter(items, condition)
 
-    async def get_data(self, block_id: str = None) -> List[DataItem]:
+    async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         block_id = str(block_id)
         return self._load_all_data_in_block(block_id)
 

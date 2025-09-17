@@ -53,7 +53,7 @@ class Storage(Generic[DataItem]):
         """
 
     async def add_data(self, data: Any, block_id: str = None, overwrite: bool = True) -> bool:
-        """Adding arbitrary serializable data to the storage.
+        """Adding arbitrary serializable data to the storage, corresponding to `get_data`.
 
         Args:
             data: Arbitrary serializable data.
@@ -125,7 +125,7 @@ class Storage(Generic[DataItem]):
         """
 
     @abstractmethod
-    async def get_data(self, block_id: str = None) -> List[DataItem]:
+    async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         """Get the data list of block from the storage.
 
         Args:
@@ -134,6 +134,14 @@ class Storage(Generic[DataItem]):
         Returns:
             List of data.
         """
+
+    async def get_data(self, block_id: str = None) -> List[Any]:
+        """Get raw data from the storage, corresponding to `add_data`."""
+        results = await self.get_data_items(block_id=block_id)
+        if not results:
+            return []
+
+        return [result.value for result in results]
 
     @abstractmethod
     async def size(self, condition: Condition = None) -> int:

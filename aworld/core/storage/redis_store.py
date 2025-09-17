@@ -151,7 +151,7 @@ class RedisStorage(Storage):
         pipeline.execute()
         return True
 
-    async def get_data(self, block_id: str = None) -> List[DataItem]:
+    async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         return self._redis.ft(self._index_name).search(Query("*")).docs
 
     async def select_data(self, condition: Condition = None) -> List[DataItem]:
