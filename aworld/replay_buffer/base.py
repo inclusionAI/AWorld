@@ -227,22 +227,22 @@ class ReplayBuffer:
     ):
         self._storage = storage
 
-    def store(self, data: DataRow):
+    async def store(self, data: DataRow):
         '''
         Store data in the replay buffer.
         '''
         if not data:
             raise ValueError("Data is required")
-        self._storage.add(data)
+        await self._storage.add_data(data)
 
-    def store_batch(self, data_batch: List[DataRow]):
+    async def store_batch(self, data_batch: List[DataRow]):
         '''
         Store batch of data in the replay buffer.
         '''
         if not data_batch:
             logger.warning("Data batch is required")
             return
-        self._storage.add_batch(data_batch)
+        await self._storage.add_data(data_batch)
 
     def sample_task(self,
                     sampler: TaskSampler = RandomTaskSample(),
