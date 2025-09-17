@@ -197,7 +197,7 @@ def get_install_requires(extra, requirements):
 
 
 def get_python_requires():
-    return ">=3.10"
+    return ">=3.11"
 
 
 class BinaryDistribution(Distribution):

@@ -51,6 +51,7 @@ class Task:
     # parent task reference
     parent_task: Optional['Task'] = field(default=None, repr=False)
     max_retry_count: int = 0
+    timeout: int = field(default=0)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.
@@ -80,6 +81,7 @@ class Task:
             "is_sub_task": self.is_sub_task,
             "group_id": self.group_id,
             "max_retry_count": self.max_retry_count,
+            "timeout": self.timeout,
             "parent_task_id": self.parent_task.id if self.parent_task else None,
         }
 
@@ -94,6 +96,8 @@ class TaskResponse:
     success: bool = field(default=False)
     msg: str | None = field(default=None)
     trajectory: List[Dict[str, Any]] = field(default_factory=list)
+    # task final status, e.g. success/failed/cancelled
+    status: str | None = field(default=None)
 
 
 class Runner(object):

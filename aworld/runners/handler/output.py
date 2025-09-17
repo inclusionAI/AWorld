@@ -16,7 +16,7 @@ from aworld.runners.hook.hooks import HookPoint
 @HandlerFactory.register(name=f'__{Constants.OUTPUT}__')
 class DefaultOutputHandler(DefaultHandler):
     def __init__(self, runner):
-        super().__init__()
+        super().__init__(runner)
         self.runner = runner
         self.hooks = {}
         if runner.task.hooks:

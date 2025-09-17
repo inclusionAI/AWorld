@@ -38,7 +38,7 @@ from examples.for_test import topology<div align="center">
 
 2. **构建智能体**：创建具有MCP工具的智能AI智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 
-3. **构建多智能体系统(MAS)**：编排协作智能体生态系统
+3. **构建多智能体系统(MAS)**：编排协作智能体生态系统 [文档](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
 4. **高效训练智能体**：让MAS在各种环境中自我演进和优化
 
@@ -118,6 +118,9 @@ pip install .
 ```
 ## Hello world 示例
 我们引入 `Agent` 和 `Runners` 的概念来帮助您快速上手。
+
+关于并行任务执行，请参考[并行运行示例](examples/parallel_run/README.md)。
+
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
@@ -147,12 +150,12 @@ summarizer = Agent(
     name="Summary Agent", 
     system_prompt="You specialize at summarizing.",
 )
-# 创建具有协作工作流的智能体团队
-team = Swarm(topology=[(researcher, summarizer)])
+# 创建具有协作工作流的智能体组 (multi-agent)
+group = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
-    swarm=team,
+    swarm=group,
 )
 ```
 
@@ -201,12 +204,12 @@ summarizer = Agent(
     conf=openrouter_conf,
     system_prompt="You specialize at summarizing.",
 )
-# 创建具有协作工作流的智能体团队
-team = Swarm(topology=[(researcher, summarizer)])
+# 创建具有协作工作流的智能体组 (multi-agent)
+group = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
-    swarm=team,
+    swarm=group,
 )
 ```
 

@@ -44,7 +44,7 @@
 
 2. **Build agents**: Create intelligent AI agents with mcp tools. [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 
-3. **Build Multi-Agent Systems (MAS)**: Orchestrate collaborative agent ecosystems
+3. **Build Multi-Agent Systems (MAS)**: Orchestrate collaborative agent ecosystems. [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
 4. **Train agents efficiently**: Optimize performance within MAS across various environments
 
@@ -211,7 +211,7 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
 # 🏃‍♀️ Quickstart
 ## Prerequisites
 > [!TIP]
-> Python>=3.10
+> Python>=3.11
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
@@ -219,6 +219,9 @@ pip install .
 ```
 ## Hello world examples
 We introduce the concepts of `Agent` and `Runners` to help you get started quickly.
+
+For parallel task execution, see the [parallel run examples](examples/parallel_run/README.md).
+
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
@@ -234,7 +237,7 @@ result = Runners.sync_run(
 )
 ```
 
-In parallel, we introduce the concepts of `Swarm` to construct a team of agents.
+In parallel, we introduce the concepts of `Swarm` to construct a group of agents.
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
@@ -248,12 +251,12 @@ summarizer = Agent(
     name="Summary Agent", 
     system_prompt="You specialize at summarizing.",
 )
-# Create agent team with collaborative workflow
-team = Swarm(topology=[(researcher, summarizer)])
+# Create agent group with collaborative workflow
+group = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
-    swarm=team,
+    swarm=group,
 )
 ```
 
@@ -302,12 +305,12 @@ summarizer = Agent(
     conf=openrouter_conf,
     system_prompt="You specialize at summarizing.",
 )
-# Create agent team with collaborative workflow
-team = Swarm(topology=[(researcher, summarizer)])
+# Create agent group with collaborative workflow
+group = Swarm(topology=[(researcher, summarizer)])
 
 result = Runners.sync_run(
     input="Tell me a complete history about the universe", 
-    swarm=team,
+    swarm=group,
 )
 ```
 

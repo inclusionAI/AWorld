@@ -52,8 +52,6 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
             normalized["tool_calls"] = fixed_calls
         return normalized
 
-    messages = [_normalize_message(m) for m in messages]
-
     if not messages:
         return AgentLoopOutput(
             prompt_ids=[],
@@ -63,6 +61,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
             metrics={},
         )
 
+    messages = [_normalize_message(m) for m in messages]
     num_turns = 0
     for i in range(len(messages)):
         if messages[i].get("role") == "system":
@@ -86,7 +85,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                 continue
             # initial chat completion
             if messages[i].get("role") == "user":
-                if (i == 0 or messages[i - 1].get("role") == "system"):
+                if i == 0 or messages[i - 1].get("role") == "system":
                     chat_list.append(messages[i])
                     prompt_ids = await loop.run_in_executor(
                         None,
@@ -97,25 +96,21 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                             tokenize=True,
                         ),
                     )
-                    chat_list = []
-                    i += 1
-                    continue
                 else:
                     chat_list.append(messages[i])
                     cur_response_ids = await loop.run_in_executor(
                         None,
                         lambda: tokenizer.apply_chat_template(
                             chat_list,
-                            tools=tools,
                             add_generation_prompt=True,
                             tokenize=True,
                         ),
                     )
-                    chat_list = []
                     response_ids += cur_response_ids
                     response_mask += [0] * len(cur_response_ids)
-                    i += 1
-                    continue
+                chat_list = []
+                i += 1
+                continue
             # assistant message
             if messages[i].get("role") == "assistant":
                 chat_list.append(messages[i])
@@ -123,7 +118,6 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                     None,
                     lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        tools=tools,
                         add_generation_prompt=True,
                         tokenize=True,
                     ),
@@ -141,7 +135,6 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                     None,
                     lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        tools=tools,
                         add_generation_prompt=True,
                         tokenize=True,
                     ),
@@ -153,7 +146,6 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                     None,
                     lambda: tokenizer.apply_chat_template(
                         chat_list,
-                        tools=tools,
                         add_generation_prompt=True,
                         tokenize=True,
                     ),
@@ -174,6 +166,7 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
         metrics={},
     )
     return output
+
 
 def get_agent_tool_env_and_servers(tool_config: Dict[str, Any] = None) -> tuple[Dict[str, Any], List[str]]:
     if not tool_config or not tool_config.get("url") or not tool_config.get("authorization"):

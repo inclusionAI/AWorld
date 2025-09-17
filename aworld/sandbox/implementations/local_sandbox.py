@@ -22,6 +22,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             timeout: Optional[int] = None,
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Optional[Any] = None,
+            black_tool_actions: Optional[Dict[str, List[str]]] = None,
             **kwargs
     ):
         """
@@ -41,7 +42,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             metadata=metadata,
             timeout=timeout,
             mcp_servers=mcp_servers,
-            mcp_config=mcp_config
+            mcp_config=mcp_config,
+            black_tool_actions=black_tool_actions
         )
 
         if sandbox_id:
@@ -57,6 +59,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         self._env_type = SandboxEnvType.LOCAL
         self._mcp_servers = mcp_servers
         self._mcp_config = mcp_config
+        self._black_tool_actions = black_tool_actions or {}
         
         # Ensure sandbox_id has a value in all cases
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -68,6 +71,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 env_config=None,
                 mcp_servers=mcp_servers,
                 mcp_config=mcp_config,
+                black_tool_actions=black_tool_actions
             )
             
             if not response:
@@ -88,7 +92,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         self._mcpservers = McpServers(
             mcp_servers,
             self._mcp_config,
-            sandbox=self
+            sandbox=self,
+            black_tool_actions=self._black_tool_actions
         )
 
     async def remove(self) -> None:

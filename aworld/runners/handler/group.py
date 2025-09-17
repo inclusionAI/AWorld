@@ -24,7 +24,7 @@ class GroupHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
-        super().__init__()
+        super().__init__(runner)
         self.runner = runner
         self.swarm = runner.swarm
         self.endless_threshold = runner.endless_threshold
