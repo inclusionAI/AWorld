@@ -17,7 +17,7 @@ class ToolHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
-        super().__init__()
+        super().__init__(runner)
         self.tools = runner.tools
         self.tools_conf = runner.tools_conf
 
