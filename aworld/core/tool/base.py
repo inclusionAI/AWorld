@@ -229,19 +229,32 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 sync_exec(send_message, tool_output_message)
 
     def step(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
-        action = message.payload
-        tool_id_mapping = {}
-        for act in action:
-            tool_id = act.tool_call_id
-            tool_name = act.tool_name
-            tool_id_mapping[tool_id] = tool_name
-        self.pre_step(action, **kwargs)
-        res = self.do_step(action, **kwargs)
-        final_res = self.post_step(res, action, **kwargs)
-        self._internal_process(
-            res, action, tool_id_mapping=tool_id_mapping, **kwargs)
-        return final_res
+        final_res = None
+        try:
+            self._init_context(message.context)
+            action = message.payload
+            tool_id_mapping = {}
+            for act in action:
+                tool_id = act.tool_call_id
+                tool_name = act.tool_name
+                tool_id_mapping[tool_id] = tool_name
+            self.pre_step(action, **kwargs)
+            res = self.do_step(action, **kwargs)
+            final_res = self.post_step(res, action, **kwargs)
+            self._internal_process(
+                res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+            return final_res
+        except Exception as e:
+            logger.error(
+                f"Failed to execute {self.name()}: {e}."
+                f"Debug info: session_id = {message.session_id}, action = {message.payload}."
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            raise e
+        finally:
+            logger.warning(
+                f"Tool {self.name()} result: {final_res}, session_id: {message.session_id}, task_id: {message.context.task_id}"
+            )
 
     def post_step(self,
                   step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
@@ -330,25 +343,38 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                        **kwargs)
 
     async def step(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
-        action = message.payload
-        tool_id_mapping = {}
-        for act in action:
-            tool_id = act.tool_call_id
-            tool_name = act.tool_name
-            tool_id_mapping[tool_id] = tool_name
-        await self.pre_step(action, **kwargs)
-        res = await self.do_step(action, **kwargs)
-        final_res = await self.post_step(res, action, **kwargs)
-        await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
-        if isinstance(final_res, Message):
-            self._update_headers(final_res, message)
-        if message.group_id and message.headers.get('level', 0) == 0:
-            from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
-            state_mng = RuntimeStateManager.instance()
-            state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
-            final_res.headers['_tool_finished'] = True
-        return final_res
+        final_res = None
+        try:
+            self._init_context(message.context)
+            action = message.payload
+            tool_id_mapping = {}
+            for act in action:
+                tool_id = act.tool_call_id
+                tool_name = act.tool_name
+                tool_id_mapping[tool_id] = tool_name
+            await self.pre_step(action, **kwargs)
+            res = await self.do_step(action, **kwargs)
+            final_res = await self.post_step(res, action, **kwargs)
+            await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
+            if isinstance(final_res, Message):
+                self._update_headers(final_res, message)
+            if message.group_id and message.headers.get('level', 0) == 0:
+                from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
+                state_mng = RuntimeStateManager.instance()
+                state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
+                final_res.headers['_tool_finished'] = True
+            return final_res
+        except Exception as e:
+            logger.error(
+                f"Failed to execute {self.name()}: {e}."
+                f"Debug info: session_id = {message.session_id}, action = {message.payload}."
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            raise e
+        finally:
+            logger.warning(
+                f"Tool {self.name()} result: {final_res}, session_id: {message.session_id}, task_id: {message.context.task_id}"
+            )
 
     async def post_step(self,
                         step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
