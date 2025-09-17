@@ -161,28 +161,16 @@ class AworldAgentLoop(AgentLoopBase):
                 metrics={},
             )
         if messages[-1].get("role") != "assistant":
-            try:
-                actions = trajectory[-1].get("exp_data", {}).get("actions", [])
-                assert len(actions) >= 1, f"Last action must not be empty, but got {actions}"
-                agent_resp_content = str(actions[0].get("policy_info"))
-                last_assistant_message = {
-                    "role": "assistant",
-                    "content": agent_resp_content
-                }
-                tool_calls = []
-                for action in actions:
-                    tool_calls.append({
-                        "id": action.get("tool_call_id"),
-                        "type": "function",
-                        "function": {
-                            "name": action.get("tool_name"),
-                            "arguments": json.dumps(action.get("params"), ensure_ascii=False),
-                        }
-                    })
-                last_assistant_message["tool_calls"] = tool_calls
-                messages.append(last_assistant_message)
-            except Exception as e:
-                raise Exception(f"Failed to get last assistant message from last trajectory: {trajectory[-1]}")
+            logger.warning(f"Found last message with role '{messages[-1].get('role')}', but expected 'assistant'. Truncating trailing 'tool' messages.")
+            last_non_tool_index = -1
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") != "tool":
+                    last_non_tool_index = i
+                    break 
+            if last_non_tool_index != -1:
+                messages = messages[:last_non_tool_index + 1]
+            else:
+                messages = []
 
         output = await to_agent_loop_output(tokenizer=self.tokenizer,
                                             messages=messages,
