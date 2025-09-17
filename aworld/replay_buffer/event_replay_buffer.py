@@ -8,7 +8,7 @@ from aworld import import_package
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.event.base import Message, Constants
 from aworld.logs.util import logger
-from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience, InMemoryStorage, Storage
+from aworld.replay_buffer.base import ReplayBuffer, DataRow, ExpMeta, Experience, InmemoryStorage, Storage
 from aworld.runners.state_manager import RuntimeStateManager, EventRuntimeStateManager
 from aworld.utils.serialized_util import to_serializable
 from aworld.utils.common import get_local_ip
@@ -21,7 +21,7 @@ class EventReplayBuffer(ReplayBuffer):
     '''
     def __init__(
         self,
-        storage: Storage = InMemoryStorage()
+        storage: Storage = InmemoryStorage()
     ):
         super().__init__(storage)
         self.task_agent_map = {}
@@ -42,7 +42,7 @@ class EventReplayBuffer(ReplayBuffer):
                 logger.warn(f"No valid agent messages found for task: {task_id}")
                 return None
 
-            self.store_batch(data_rows)
+            await self.store_batch(data_rows)
             trajectory = [to_serializable(data_row) for data_row in data_rows]
 
             self.export(data_rows, task_id)

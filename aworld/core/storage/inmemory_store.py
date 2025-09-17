@@ -153,7 +153,7 @@ class InmemoryStorage(Storage[DataItem]):
         block_id = str(block_id)
         if block_id not in self.datas:
             self.datas[block_id] = []
-        return self.datas.get(block_id)
+        return self.datas.get(block_id, [])
 
     async def delete_all(self):
         self.blocks.clear()

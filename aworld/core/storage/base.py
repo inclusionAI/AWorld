@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from abc import abstractmethod, ABCMeta
-from typing import Generic, TypeVar, List
+from typing import Generic, TypeVar, List, Any
 
 from aworld.config import StorageConfig
 from aworld.core.storage.condition import Condition
@@ -51,6 +51,17 @@ class Storage(Generic[DataItem]):
             block_id: The block id of data, analogous to a dir for storing files.
             overwrite: Can the same data be overwritten, True is yes.
         """
+
+    async def add_data(self, data: Any, block_id: str = None, overwrite: bool = True) -> bool:
+        """Adding arbitrary serializable data to the storage.
+
+        Args:
+            data: Arbitrary serializable data.
+            block_id: The block id of data, analogous to a dir for storing files.
+            overwrite: Can the same data be overwritten, True is yes.
+        """
+        data_in_store = Data(value=data, block_id=block_id)
+        return await self.create_data(data=data_in_store, block_id=block_id, overwrite=overwrite)
 
     async def create_datas(self, data: List[DataItem], block_id: str = None, overwrite: bool = True) -> bool:
         res = True
