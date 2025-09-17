@@ -23,6 +23,7 @@ class GaiaAgentLoop(AworldAgentLoop):
             conf=AgentConfig(
                 llm_model_name=await self.get_llm_server_model_name(),
                 llm_base_url=await self.get_llm_server_address(),
+                llm_api_key="",
             ),
             name="gaia_super_agent",
             system_prompt=GAIA_SYSTEM_PROMPT,
