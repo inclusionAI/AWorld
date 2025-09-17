@@ -139,12 +139,6 @@ class OdpsStorage(Storage):
         self.backend().write_table(block_id, [d.value for d in data], partition_cols=[block_id], create_partition=True)
         return True
 
-    async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
-        pass
-
-    async def delete_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
-        pass
-
     async def get_data(self, block_id: str = None) -> List[DataItem]:
         block_id = str(block_id)
         df = self._get_table().get_partition(block_id).to_df()
@@ -162,6 +156,14 @@ class OdpsStorage(Storage):
         sql = self._build_sql(condition, count=True)
         with self.odps.execute_sql(sql).open_reader() as reader:
             return reader[0]["count"]
+
+    async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
+        # unsupported
+        return False
+
+    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
+        # unsupported
+        return False
 
     async def delete_all(self):
         # unsupported

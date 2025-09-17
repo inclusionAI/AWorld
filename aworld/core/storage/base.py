@@ -12,7 +12,7 @@ DataItem = TypeVar('DataItem', bound=Data)
 
 
 class Storage(Generic[DataItem]):
-    """Storage client."""
+    """Storage with client."""
     __metaclass__ = ABCMeta
 
     def __init__(self, conf: StorageConfig):
@@ -83,16 +83,16 @@ class Storage(Generic[DataItem]):
         return res
 
     @abstractmethod
-    async def delete_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
+    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
         """Delete data of the block of the storage.
 
         Args:
-            data: Data item or data item list to add the storage.
+            data_id: Data item id.
             block_id: The block of data, analogous to a dir for storing datas.
             exists: Whether the data must exist, True is yes.
         """
 
-    async def delete_datas(self, data: List[DataItem], block_id: str = None, exists: bool = False) -> bool:
+    async def delete_datas(self, data: List[str], block_id: str = None, exists: bool = False) -> bool:
         res = True
         if not data:
             logger.warning("no data to delete.")
