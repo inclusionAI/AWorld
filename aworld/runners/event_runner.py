@@ -53,7 +53,7 @@ class TaskEventRunner(TaskRunner):
                 await self.event_mng.emit_message(msg)
             await self._do_run()
             await self._save_trajectories()
-            return self._task_response
+            return self._response()
 
     async def pre_run(self):
         logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
@@ -278,6 +278,18 @@ class TaskEventRunner(TaskRunner):
         message = None
         try:
             while True:
+                if self.task.timeout > 0 and time.time() - self.start_time > self.task.timeout:
+                    logger.warn(
+                        f"[TaskEventRunner] {self.task.id} task timeout after {time.time() - self.start_time} seconds.")
+                    self._task_response = TaskResponse(answer='',
+                                                       success=False,
+                                                       context=message.context,
+                                                       id=self.task.id,
+                                                       time_cost=(time.time() - self.start_time),
+                                                       usage=self.context.token_usage,
+                                                       msg='cancellation: task timeout',
+                                                       status='cancelled')
+                    await self.stop()
                 if await self.is_stopped():
                     logger.debug(
                         f"[TaskEventRunner] break snap {self.task.id}")
@@ -293,7 +305,8 @@ class TaskEventRunner(TaskRunner):
                                                            id=self.task.id,
                                                            time_cost=(
                                                                    time.time() - start),
-                                                           usage=self.context.token_usage)
+                                                           usage=self.context.token_usage,
+                                                           status='success' if not msg else 'failed')
                     break
                 logger.debug(f"[TaskEventRunner] next snap {self.task.id}")
                 # consume message
@@ -345,6 +358,11 @@ class TaskEventRunner(TaskRunner):
         return self._stopped.is_set()
 
     def response(self):
+        return self._task_response
+
+    def _response(self):
+        if self.context.get_task().conf and self.context.get_task().conf.resp_carry_context == False:
+            self._task_response.context = None
         return self._task_response
 
     async def _save_trajectories(self):

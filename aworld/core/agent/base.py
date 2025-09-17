@@ -82,6 +82,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         agent_names: List[str] = None,
         mcp_servers: List[str] = None,
         mcp_config: Dict[str, Any] = None,
+        black_tool_actions: Dict[str, List[str]] = None,
         feedback_tool_result: bool = True,
         wait_tool_result: bool = False,
         sandbox: Sandbox = None,
@@ -155,6 +156,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # Supported MCP server
         self.mcp_servers: List[str] = mcp_servers or []
         self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
+        self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
@@ -167,7 +169,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.sandbox = None
         if self.mcp_servers or self.tool_names:
             self.sandbox = sandbox or Sandbox(
-                mcp_servers=self.mcp_servers, mcp_config=self.mcp_config
+                mcp_servers=self.mcp_servers, mcp_config=self.mcp_config,
+                black_tool_actions = self.black_tool_actions
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)

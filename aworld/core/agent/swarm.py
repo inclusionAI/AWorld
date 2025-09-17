@@ -63,6 +63,7 @@ class Swarm(object):
         logger.debug(f"{type(self)}Swarm Agent List is : {[type(agent) for agent in self.topology]}")
 
         self.setting_build_type(build_type)
+        self.register_agents = register_agents
         self.max_steps = max_steps
         self._cur_step = 0
         self._event_driven = event_driven
@@ -72,7 +73,6 @@ class Swarm(object):
         else:
             self.builder = BUILD_CLS.get(self.build_type)(topology=self.topology,
                                                           root_agent=root_agent,
-                                                          register_agents=register_agents,
                                                           keep_build_type=keep_build_type)
 
         self.agent_graph: AgentGraph = None
@@ -171,8 +171,29 @@ class Swarm(object):
             # global tools
             agent.tool_names.extend(self.tools)
 
+        Swarm.register_agent(list(self.agent_graph.agents.values()))
+        Swarm.register_agent(self.register_agents)
         self.cur_step = 1
         self.initialized = True
+
+    @staticmethod
+    def register_agent(agents: List[BaseAgent]) -> None:
+        """Agent list register to the AgentFactory."""
+        if not agents:
+            return
+
+        for agent in agents:
+            logger.info(f"register_agent: {type(agent)}: {agent.id()}")
+            if agent.id() not in AgentFactory:
+                AgentFactory._cls[agent.id()] = agent.__class__
+                AgentFactory._desc[agent.id()] = agent.desc()
+                AgentFactory._agent_conf[agent.id()] = agent.conf
+                AgentFactory._agent_instance[agent.id()] = agent
+            else:
+                if agent.id() not in AgentFactory._agent_instance:
+                    AgentFactory._agent_instance[agent.id()] = agent
+                if agent.desc():
+                    AgentFactory._desc[agent.id()] = agent.desc()
 
     def find_agents_by_prefix(self, name, find_all=False):
         """Fild the agent list by the prefix name.
@@ -293,7 +314,12 @@ class Swarm(object):
     @property
     def agents(self):
         self._check()
-        return self.agent_graph.agents
+
+        agents = self.agent_graph.agents
+        if self.register_agents:
+            for agent in self.register_agents:
+                agents[agent.id()] = agent
+        return agents
 
     @property
     def ordered_agents(self):
@@ -601,7 +627,6 @@ class TopologyBuilder:
     def __init__(self,
                  topology: List[Union[BaseAgent, Swarm, list, tuple]],
                  root_agent: Union[BaseAgent, List[BaseAgent], Swarm] = None,
-                 register_agents: List[BaseAgent] = None,
                  keep_build_type: bool = True):
         self.topology = topology
         self.root_agent = self._norm_agent(root_agent)
@@ -610,10 +635,6 @@ class TopologyBuilder:
 
         if not self._valid_check():
             raise AWorldRuntimeException(f"root_agent {self.root_agent} in swarm check is invalid.")
-
-        register_agents = register_agents if register_agents else []
-        for agent in register_agents:
-            TopologyBuilder.register_agent(agent)
 
     @abc.abstractmethod
     def build(self) -> AgentGraph:
@@ -675,20 +696,6 @@ class TopologyBuilder:
         from aworld.agents.task_llm_agent import TaskAgent
 
         return TaskAgent(name=f"swarm_{swarm.build_type}", swarm=swarm)
-
-    @staticmethod
-    def register_agent(agent: BaseAgent):
-        logger.info(f"register_agent: {type(agent)}: {agent.id()}")
-        if agent.id() not in AgentFactory:
-            AgentFactory._cls[agent.id()] = agent.__class__
-            AgentFactory._desc[agent.id()] = agent.desc()
-            AgentFactory._agent_conf[agent.id()] = agent.conf
-            AgentFactory._agent_instance[agent.id()] = agent
-        else:
-            if agent.id() not in AgentFactory._agent_instance:
-                AgentFactory._agent_instance[agent.id()] = agent
-            if agent.desc():
-                AgentFactory._desc[agent.id()] = agent.desc()
 
     def _is_star(self, single_agents: list) -> bool:
         # special process, identify whether it is a star topology
@@ -795,7 +802,6 @@ class WorkflowBuilder(TopologyBuilder):
                     agent = self._to_task_agent(swarm=agent)
                 pair.append(agent)
                 agent_graph.add_node(agent)
-                TopologyBuilder.register_agent(agent)
             agent_graph.add_edge(pair[0], pair[1])
 
         # secondary check，in-degree of all agent in root_agent must be 0.
@@ -825,11 +831,9 @@ class WorkflowBuilder(TopologyBuilder):
         last_agent = None
         for agent in single_agents:
             if isinstance(agent, BaseAgent):
-                TopologyBuilder.register_agent(agent)
                 agent_graph.add_node(agent)
             elif isinstance(agent, Swarm):
                 task_agent = self._to_task_agent(agent)
-                TopologyBuilder.register_agent(task_agent)
                 agent_graph.add_node(task_agent)
                 agent = task_agent
             elif isinstance(agent, tuple):
@@ -854,11 +858,9 @@ class WorkflowBuilder(TopologyBuilder):
         res_agents = []
         for agent in agents:
             if isinstance(agent, BaseAgent):
-                TopologyBuilder.register_agent(agent)
                 res_agents.append(agent)
             if isinstance(agent, Swarm):
                 task_agent = self._to_task_agent(agent)
-                TopologyBuilder.register_agent(task_agent)
                 res_agents.append(task_agent)
             elif isinstance(agent, tuple) and len(agent) > 0:
                 flatten_agents = self._flatten_agent(agent)
@@ -950,7 +952,6 @@ class HandoffBuilder(TopologyBuilder):
 
                 pair.append(agent)
                 agent_graph.add_node(agent)
-                TopologyBuilder.register_agent(agent)
             agent_graph.add_edge(pair[0], pair[1])
             # explicitly set handoffs in the agent
             pair[0].handoffs.append(pair[1].id())
@@ -1021,7 +1022,6 @@ class TeamBuilder(TopologyBuilder):
             root_agent = root_agent[0]
         if isinstance(root_agent, Swarm):
             root_agent = self._to_task_agent(root_agent)
-        TopologyBuilder.register_agent(root_agent)
         agent_graph.add_node(root_agent)
         root_agent.feedback_tool_result = True
 
@@ -1040,7 +1040,6 @@ class TeamBuilder(TopologyBuilder):
         for agent in single_agents:
             if isinstance(root_agent, Swarm):
                 agent = self._to_task_agent(agent)
-            TopologyBuilder.register_agent(agent)
 
             agent.feedback_tool_result = True
             agent_graph.add_node(agent)
@@ -1055,7 +1054,6 @@ class TeamBuilder(TopologyBuilder):
             if isinstance(left_agent, Swarm):
                 left_agent = self._to_task_agent(left_agent)
 
-            TopologyBuilder.register_agent(left_agent)
             left_agent.feedback_tool_result = True
             agent_graph.add_nodes(left_agent)
             if len(pair) > 1:
@@ -1063,7 +1061,6 @@ class TeamBuilder(TopologyBuilder):
                 if isinstance(right_agent, Swarm):
                     right_agent = self._to_task_agent(right_agent)
 
-                TopologyBuilder.register_agent(right_agent)
                 right_agent.feedback_tool_result = True
                 agent_graph.add_nodes(right_agent)
 

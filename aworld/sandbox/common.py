@@ -22,6 +22,7 @@ class BaseSandbox(Sandbox):
             timeout: Optional[int] = None,
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Optional[Any] = None,
+            black_tool_actions: Optional[Dict[str, List[str]]] = None
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -40,7 +41,8 @@ class BaseSandbox(Sandbox):
             metadata=metadata,
             timeout=timeout,
             mcp_servers=mcp_servers,
-            mcp_config=mcp_config
+            mcp_config=mcp_config,
+            black_tool_actions=black_tool_actions
         )
         self._logger = self._setup_logger()
         

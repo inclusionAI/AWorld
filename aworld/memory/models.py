@@ -88,6 +88,14 @@ class MemoryItem(BaseModel):
     def content_length(self) -> int:
         return len(self.content)
 
+    @property
+    def status(self) -> str:
+        return self.metadata.get('status', 'ACCEPTED')
+
+    @status.setter
+    def status(self, value: Literal["DRAFT", "ACCEPTED", "DISCARD"]) -> None:
+        self.metadata['status'] = value
+
     @abstractmethod
     def to_openai_message(self) -> dict:
         pass

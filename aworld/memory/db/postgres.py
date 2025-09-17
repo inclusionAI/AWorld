@@ -252,7 +252,7 @@ class PostgresMemoryStore(MemoryStore):
         query = query.filter(MemoryItemModel.deleted == False)
         for key, value in filters.items():
             if value is not None:
-                if key in ['user_id', 'agent_id', 'session_id', 'task_id', 'agent_name']:
+                if key in ['user_id', 'agent_id', 'session_id', 'task_id', 'agent_name', 'tool_call_id']:
                     query = query.filter(MemoryItemModel.memory_meta[key].astext == value)
                 elif key == 'memory_type':
                     # Handle memory_type as a list or single value

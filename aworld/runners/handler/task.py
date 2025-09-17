@@ -3,7 +3,7 @@
 import abc
 import time
 
-from typing import AsyncGenerator
+from typing import AsyncGenerator, TYPE_CHECKING
 
 from aworld.core.common import TaskItem
 from aworld.core.tool.base import Tool, AsyncTool
@@ -17,12 +17,15 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint
 
+if TYPE_CHECKING:
+    from aworld.runners.event_runner import TaskEventRunner
+
 
 class TaskHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
-        super().__init__()
+        super().__init__(runner)
         self.runner = runner
         self.retry_count = runner.task.max_retry_count
         self.hooks = {}
@@ -122,5 +125,14 @@ class DefaultTaskHandler(TaskHandler):
             await self.runner.stop()
         elif topic == TopicType.CANCEL:
             # Avoid waiting to receive events and send a mock event for quick cancel
-            yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock')
+            yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock', headers={"context": message.context})
+            # mark task response as cancelled
+            self.runner._task_response = TaskResponse(answer='',
+                                                      success=False,
+                                                      context=message.context,
+                                                      id=self.runner.task.id,
+                                                      time_cost=(time.time() - self.runner.start_time),
+                                                      usage=self.runner.context.token_usage,
+                                                      msg=f'cancellation message received: {task_item.msg}',
+                                                      status='cancelled')
             await self.runner.stop()

@@ -162,7 +162,7 @@ class AgentMemoryConfig(BaseConfig):
     )
     # short-term config
     history_rounds: int = Field(default=100,
-                             description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
+                                description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
@@ -223,6 +223,7 @@ class TaskConfig(BaseConfig):
     task_name: str | None = None
     max_steps: int = 100
     stream: bool = False
+    resp_carry_context: bool = True
     exit_on_failure: bool = False
     ext: dict = {}
 
@@ -240,11 +241,25 @@ class ToolConfig(BaseConfig):
     ext: dict = {}
 
 
+class EngineName:
+    # Use asyncio or MultiProcess run in local
+    LOCAL = "local"
+    # Stateless(task) run in ray. Ray actor will use a new name
+    RAY = "ray"
+    SPARK = "spark"
+
+
 class RunConfig(BaseConfig):
-    name: str = 'local'
+    job_name: str = "aworld_job"
+    engine_name: str = EngineName.LOCAL
     worker_num: int = 1
+    # engine whether to run in local
+    in_local: bool = True
+    # run in local whether to use the same process
     reuse_process: bool = True
+    # Is the task sequence dependent
     sequence_dependent: bool = False
+    # The custom implement of RuntimeEngine
     cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None

@@ -9,11 +9,11 @@ from aworld.core.event.base import Constants, TopicType, HumanMessage, Message
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.events.util import send_message
 from aworld.logs.util import logger
-from aworld.runners.state_manager import HandleResult, RunNodeBusiType
 from aworld.tools.human.actions import HumanExecuteAction
 from aworld.tools.utils import build_observation
 
 HUMAN = "human"
+
 
 @ToolFactory.register(name=HUMAN,
                       desc=HUMAN,
@@ -29,7 +29,7 @@ class HumanTool(AsyncTool):
         self.step_finished = True
 
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
-            Observation, dict[str, Any]]:
+        Observation, dict[str, Any]]:
         await super().reset(seed=seed, options=options)
 
         await self.close()
@@ -47,7 +47,7 @@ class HumanTool(AsyncTool):
         return self.step_finished
 
     async def do_step(self, actions: list[ActionModel], **kwargs) -> Tuple[
-            Observation, float, bool, bool, Dict[str, Any]]:
+        Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
         fail_error = ""
@@ -90,7 +90,9 @@ class HumanTool(AsyncTool):
                 kwargs.get("truncated", False), info)
 
     async def long_wait_message_state(self, message: Message):
+        from aworld.runners.state_manager import HandleResult, RunNodeBusiType
         from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
+
         state_mng = RuntimeStateManager.instance()
         msg_id = message.id
         # init node
