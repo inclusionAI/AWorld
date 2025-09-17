@@ -124,7 +124,8 @@ class ModelResponse:
             usage: Dict[str, int] = None,
             error: str = None,
             raw_response: Any = None,
-            message: Dict[str, Any] = None
+            message: Dict[str, Any] = None,
+            reasoning_content: str = None
     ):
         """
         Initialize ModelResponse object
@@ -162,6 +163,16 @@ class ModelResponse:
                 self.message["tool_calls"] = [tool_call.to_dict() for tool_call in tool_calls]
         else:
             self.message = message
+
+        self.reasoning_content = reasoning_content
+
+    @classmethod
+    def _get_item_from_openai_message(cls, message:Any, key: str, default_value: Any = None) -> Any:
+        if hasattr(message, key):
+            return getattr(message, key, default_value)
+        elif isinstance(message, dict):
+            return message.get(key, default_value)
+        return None
 
     @classmethod
     def from_openai_response(cls, response: Any) -> 'ModelResponse':
@@ -230,12 +241,16 @@ class ModelResponse:
             }
 
         message_dict["content"] = '' if message_dict.get('content') is None else message_dict.get('content', '')
+        reasoning_content = cls._get_item_from_openai_message(message, 'reasoning_content')
+        if not reasoning_content:
+            model_extra = cls._get_item_from_openai_message(message, 'model_extra', {})
+            reasoning_content = model_extra.get('reasoning', "")
 
         # Process tool calls
         processed_tool_calls = []
         raw_tool_calls = message.tool_calls if hasattr(message, 'tool_calls') else message_dict.get('tool_calls')
 
-        message_content = message.content if hasattr(message, 'content') else message.get('content') or ""
+        message_content = cls._get_item_from_openai_message(message, 'content', "")
         if not message_content and not raw_tool_calls:
             logger.warning(f"No content or tool calls found in response: {response}")
 
@@ -266,11 +281,12 @@ class ModelResponse:
         return cls(
             id=response.id if hasattr(response, 'id') else response.get('id', 'unknown'),
             model=response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
-            content=message.content if hasattr(message, 'content') else message.get('content') or "",
+            content=cls._get_item_from_openai_message(message, 'content', ""),
             tool_calls=processed_tool_calls or None,
             usage=usage,
             raw_response=response,
-            message=message_dict
+            message=message_dict,
+            reasoning_content=reasoning_content
         )
 
     @classmethod
@@ -579,7 +595,8 @@ class ModelResponse:
             "tool_calls": tool_calls_dict,
             "usage": self.usage,
             "error": self.error,
-            "message": self.message
+            "message": self.message,
+            "reasoning_content": self.reasoning_content
         }
 
     def get_message(self) -> Dict[str, Any]:
