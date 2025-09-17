@@ -1,37 +1,117 @@
 import abc
+import time
+import uuid
 from ast import Set
 import statistics
 import asyncio
-from typing import Any, Iterable, Optional, List, Callable, Awaitable
+from typing import Any, Iterable, Optional, List, Callable, Awaitable, TypeVar, Generic
+from enum import Enum
 from dataclasses import dataclass, field
 from itertools import chain, repeat
 from aworld.logs.util import logger
 
+EvalCaseDataType = TypeVar('EvalCaseDataType')
+
 
 @dataclass
-class EvaluationResultRow:
+class EvalCriteria:
+    '''
+    Evaluation criteria.
+    '''
+    mettric_name: str = field(default_factory=str)
+    prompt: str = field(default_factory=str)
+    max_value: float = field(default=float('inf'))
+    min_value: float = field(default=-float('inf'))
+    threshold: float = field(default=0.0)
+
+
+@dataclass
+class EvalRunConfig:
+    '''
+    Evaluation run config.
+    '''
+    eval_target_module: str = field(default_factory=str)
+    eval_target_config: dict = field(default_factory=dict)
+    eval_criterias: list[EvalCriteria] = field(default_factory=list)
+    # eval dataset id or file path, file path should be a jsonl file
+    eval_dataset_id_or_file_path: str = field(default_factory=str)
+    repeat_times: int = field(default=1)
+    eval_parallelism: int = field(default=1)
+
+
+@dataclass
+class EvalRun:
+    '''
+    Evaluation run.
+    '''
+    run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    run_name: str = field(default_factory=str)
+    create_time: float = field(default_factory=lambda: time.time())
+    config: EvalRunConfig = field(default=None)
+
+
+@dataclass
+class EvalDataCase(Generic[EvalCaseDataType]):
+    '''
+    Evaluation data case.
+    '''
+    eval_case_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    eval_dataset_id: str = field(default_factory=str)
+    run_id: str = field(default_factory=str)
+    case_data: list[EvalCaseDataType] = field(default_factory=list)
+    create_time: float = field(default_factory=lambda: time.time())
+
+
+@dataclass
+class EvalDataset:
+    '''
+    Evaluation dataset.
+    '''
+    eval_dataset_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    eval_dataset_name: str = field(default_factory=str)
+    run_id: str = field(default_factory=str)
+    create_time: float = field(default_factory=lambda: time.time())
+    eval_cases: list[EvalDataCase] = field(default_factory=list)
+
+
+class EvalStatus(Enum):
+    PASSED = 1
+    FAILED = 2
+    NOT_EVALUATED = 3
+
+
+@dataclass
+class EvalCaseResult:
     index: int = 0
+    eval_case_id: str = field(default_factory=str)
+    eval_dataset_id: str = field(default_factory=str)
     input: dict = field(default_factory=dict)
     output: dict = field(default_factory=dict)
+    eval_status: EvalStatus = field(default_factory=EvalStatus.NOT_EVALUATED)
     score_rows: dict = field(default_factory=dict)
+    create_time: float = field(default_factory=lambda: time.time())
 
 
 @dataclass
-class EvaluationResult:
+class EvalResult:
     '''
     Evaluation result.
     '''
+    eval_result_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    eval_dataset_id: str = field(default_factory=str)
+    run_id: str = field(default_factory=str)
+    create_time: float = field(default_factory=lambda: time.time())
     summary: dict = field(default_factory=dict)
-    details: list[EvaluationResultRow] = field(default_factory=list)
+    eval_case_results: list[EvalCaseResult] = field(default_factory=list)
 
 
-class Evaluatable(abc.ABC):
+class EvalTarget(abc.ABC):
     '''
     The base class of evaluated object.
     '''
 
     @abc.abstractmethod
-    async def predict(self, input: dict) -> dict:
+    async def predict(self, input: EvalDataCase[EvalCaseDataType]) -> dict:
         """execute the llm/agent.
 
         Returns:
@@ -40,8 +120,8 @@ class Evaluatable(abc.ABC):
         raise NotImplementedError
 
 
-class NoActionEvaluatable(Evaluatable):
-    async def predict(self, input: dict) -> dict:
+class NoActionEvalTarget(EvalTarget):
+    async def predict(self, input: EvalDataCase[EvalCaseDataType]) -> dict:
         return {}
 
 
@@ -89,7 +169,7 @@ class Scorer(abc.ABC):
                 score_dict[k] = self._do_summarize([score[k] for score in scores if k in score])
         return score_dict
 
-    def summarize(self, result_rows: list[EvaluationResultRow]) -> Optional[dict]:
+    def summarize(self, result_rows: list[EvalCaseResult]) -> Optional[dict]:
         '''
             summarize the score rows.
         '''
@@ -100,14 +180,6 @@ class Scorer(abc.ABC):
         return self._do_summarize(my_scores)
 
 
-@dataclass
-class Dataset(abc.ABC):
-    '''
-    The base class of dataset.
-    '''
-    rows: List[dict] = field(default_factory=list)
-
-
 class Evaluator(abc.ABC):
     '''
     The base class of evaluator.
@@ -115,7 +187,7 @@ class Evaluator(abc.ABC):
 
     def __init__(self,
                  scorers: list[Scorer],
-                 prepare_dataset: Optional[Callable[[Dataset], List[dict]]] = None,
+                 prepare_dataset: Optional[Callable[[EvalDataset], List[dict]]] = None,
                  repeat_times: int = 1,
                  eval_parallelism: int = 1):
         self.scorers = scorers
@@ -126,19 +198,19 @@ class Evaluator(abc.ABC):
         # evaluate parallelism
         self.eval_parallelism = eval_parallelism
 
-    def _default_prepare_dataset(self, dataset: Dataset) -> List[dict]:
-        return dataset.rows
+    def _default_prepare_dataset(self, dataset: EvalDataset) -> List[EvalDataCase[EvalCaseDataType]]:
+        return dataset.eval_cases
 
-    async def _evaluate_in_task(self, evaluatable: Evaluatable, dataset: Iterable[dict], evaluate_fun: Callable[[int, Evaluatable, dict], Awaitable[dict]]):
+    async def _evaluate_in_task(self, eval_target: EvalTarget, dataset: Iterable[EvalDataCase[EvalCaseDataType]], evaluate_fun: Callable[[int, EvalTarget, dict], Awaitable[dict]]):
         # create a semaphore to limit the parallelism
         semaphore: asyncio.Semaphore = asyncio.Semaphore(self.eval_parallelism)
         dataset_iter = iter(dataset)
         running_tasks: Set[asyncio.Task] = set()
         index = 0
 
-        async def __evaluate_fun(index: int, evaluatable: Evaluatable, input: dict) -> dict:
+        async def __evaluate_fun(index: int, eval_target: EvalTarget, input: EvalDataCase[EvalCaseDataType]) -> dict:
             async with semaphore:
-                return await evaluate_fun(index, evaluatable, input)
+                return await evaluate_fun(index, eval_target, input)
 
         def __create_eval_task():
             nonlocal dataset_iter
@@ -146,7 +218,7 @@ class Evaluator(abc.ABC):
             nonlocal running_tasks
             try:
                 input = next(dataset_iter)
-                running_tasks.add(asyncio.create_task(__evaluate_fun(index, evaluatable, input)))
+                running_tasks.add(asyncio.create_task(__evaluate_fun(index, eval_target, input)))
                 index += 1
             except StopIteration:
                 return None
@@ -166,23 +238,23 @@ class Evaluator(abc.ABC):
                 task.cancel()
             raise e
 
-    async def run_single_case(self, index: int, evaluatable: Evaluatable, input: dict) -> EvaluationResultRow:
+    async def run_single_case(self, index: int, eval_target: EvalTarget, input: dict) -> EvalCaseResult:
         """Run a single case.
 
         Args:
-            evaluatable: the evaluated object.
+            eval_target: the evaluated object.
             input: the input data.
 
         Returns:
             execute result
         """
-        output = await evaluatable.predict(input)
+        output = await eval_target.predict(input)
         score_rows = {}
         for scorer in self.scorers:
             score_rows[scorer.name] = await scorer.score(index, input, output)
-        return EvaluationResultRow(index=index, input=input, output=output, score_rows=score_rows)
+        return EvalCaseResult(index=index, input=input, output=output, score_rows=score_rows)
 
-    async def evaluate(self, dataset: Dataset, evaluatable: Evaluatable = NoActionEvaluatable()) -> EvaluationResult:
+    async def evaluate(self, dataset: EvalDataset, eval_target: EvalTarget = NoActionEvalTarget()) -> EvalResult:
         """Evaluate the dataset/llm/agent.
 
         Returns:
@@ -195,11 +267,28 @@ class Evaluator(abc.ABC):
 
         input_dataset_chain = chain.from_iterable(repeat(input_dataset, self.repeat_times))
         details = []
-        async for result_row in self._evaluate_in_task(evaluatable, input_dataset_chain, self.run_single_case):
+        async for result_row in self._evaluate_in_task(eval_target, input_dataset_chain, self.run_single_case):
             details.append(result_row)
 
         details.sort(key=lambda x: x.index)
         summary = {}
         for scorer in self.scorers:
             summary[scorer.name] = scorer.summarize(details)
-        return EvaluationResult(summary=summary, details=details)
+        return EvalResult(
+            eval_dataset_id=dataset.eval_dataset_id,
+            run_id=dataset.run_id,
+            summary=summary,
+            eval_case_results=details,
+        )
+
+
+class EvaluateRunner(abc.ABC):
+
+    @abc.abstractmethod
+    async def eval_run(self, eval_config: EvalRunConfig) -> EvalResult:
+        """Run the evaluation.
+
+        Returns:
+            EvaluationResult
+        """
+        raise NotImplementedError("run method not implemented")
