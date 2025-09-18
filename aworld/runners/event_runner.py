@@ -278,6 +278,18 @@ class TaskEventRunner(TaskRunner):
         message = None
         try:
             while True:
+                if self.task.timeout > 0 and time.time() - self.start_time > self.task.timeout:
+                    logger.warn(
+                        f"[TaskEventRunner] {self.task.id} task timeout after {time.time() - self.start_time} seconds.")
+                    self._task_response = TaskResponse(answer='',
+                                                       success=False,
+                                                       context=message.context,
+                                                       id=self.task.id,
+                                                       time_cost=(time.time() - self.start_time),
+                                                       usage=self.context.token_usage,
+                                                       msg='cancellation: task timeout',
+                                                       status='cancelled')
+                    await self.stop()
                 if await self.is_stopped():
                     logger.debug(
                         f"[TaskEventRunner] break snap {self.task.id}")
@@ -293,7 +305,8 @@ class TaskEventRunner(TaskRunner):
                                                            id=self.task.id,
                                                            time_cost=(
                                                                    time.time() - start),
-                                                           usage=self.context.token_usage)
+                                                           usage=self.context.token_usage,
+                                                           status='success' if not msg else 'failed')
                     break
                 logger.debug(f"[TaskEventRunner] next snap {self.task.id}")
                 # consume message
