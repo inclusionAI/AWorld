@@ -8,11 +8,6 @@ from aworld.core.storage.base import DataBlock, DataItem
 from aworld.core.storage.condition import ConditionBuilder, Condition
 from aworld.replay_buffer.base import Storage
 from aworld.logs.util import logger
-from aworld.utils.import_package import import_package
-
-import_package("odps")  # noqa
-from odps import ODPS  # noqa
-from odps.models.record import Record  # noqa
 
 
 class OdpsConfig(StorageConfig):
@@ -79,6 +74,10 @@ class OdpsSQLBuilder(ConditionBuilder):
 
 class OdpsStorage(Storage):
     def __init__(self, conf: OdpsConfig):
+        from aworld.utils.import_package import import_package
+        import_package("odps")
+        from odps import ODPS
+
         super().__init__(conf)
         self.odps = ODPS(conf.access_id, conf.access_key, conf.project, conf.endpoint)
         self.table_name = conf.table_name
@@ -161,7 +160,11 @@ class OdpsStorage(Storage):
         # unsupported
         return False
 
-    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
+    async def delete_data(self,
+                          data_id: str = None,
+                          data: DataItem = None,
+                          block_id: str = None,
+                          exists: bool = False) -> bool:
         # unsupported
         return False
 

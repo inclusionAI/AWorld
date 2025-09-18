@@ -96,8 +96,7 @@ class InmemoryStorage(Storage[DataItem]):
         return self.blocks.get(block_id)
 
     async def create_data(self, data: DataItem, block_id: str = None, overwrite: bool = True) -> bool:
-        block_id = data.block_id if data.block_id else block_id
-        block_id = str(block_id)
+        block_id = str(data.block_id if hasattr(data, "block_id") and data.block_id else block_id)
         if block_id not in self.blocks:
             await self.create_block(block_id)
 
@@ -114,8 +113,7 @@ class InmemoryStorage(Storage[DataItem]):
         return True
 
     async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
-        block_id = data.block_id if data.block_id else block_id
-        block_id = str(block_id)
+        block_id = str(data.block_id if hasattr(data, "block_id") and data.block_id else block_id)
         block_data = await self.get_data(block_id)
         if data in block_data:
             idx = block_data.index(data)
@@ -125,13 +123,21 @@ class InmemoryStorage(Storage[DataItem]):
             return False
         return True
 
-    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
+    async def delete_data(self,
+                          data_id: str = None,
+                          data: DataItem = None,
+                          block_id: str = None,
+                          exists: bool = False) -> bool:
         block_id = str(block_id)
-        block_data = await self.get_data(block_id)
+        block_data = await self.get_data_items(block_id)
         del_data = None
-        for data in block_data:
-            if data.id == data_id:
-                del_data = data
+        for data_item in block_data:
+            if hasattr(data_item, "id"):
+                if data_item.id == data_id:
+                    del_data = data_item
+                    break
+            elif data == data_item:
+                del_data = data_item
                 break
 
         if del_data:
@@ -143,7 +149,8 @@ class InmemoryStorage(Storage[DataItem]):
 
     async def select_data(self, condition: Condition = None) -> List[DataItem]:
         datas = []
-        datas.extend(data for _, data in self.datas.items())
+        for _, data in self.datas.items():
+            datas.extend(data)
 
         if condition:
             datas = ConditionFilter(condition).filter(datas)

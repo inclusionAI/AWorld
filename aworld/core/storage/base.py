@@ -3,12 +3,14 @@
 from abc import abstractmethod, ABCMeta
 from typing import Generic, TypeVar, List, Any
 
+from pydantic import BaseModel
+
 from aworld.config import StorageConfig
 from aworld.core.storage.condition import Condition
 from aworld.core.storage.data import Data, DataBlock
 from aworld.logs.util import logger
 
-DataItem = TypeVar('DataItem', bound=Data)
+DataItem = TypeVar('DataItem', bound=[Data, BaseModel])
 
 
 class Storage(Generic[DataItem]):
@@ -94,23 +96,35 @@ class Storage(Generic[DataItem]):
         return res
 
     @abstractmethod
-    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
+    async def delete_data(self,
+                          data_id: str,
+                          data: DataItem = None,
+                          block_id: str = None,
+                          exists: bool = False) -> bool:
         """Delete data of the block of the storage.
 
         Args:
             data_id: Data item id.
+            data: Data item in the storage.
             block_id: The block of data, analogous to a dir for storing datas.
             exists: Whether the data must exist, True is yes.
         """
 
-    async def delete_datas(self, data: List[str], block_id: str = None, exists: bool = False) -> bool:
+    async def delete_datas(self, data_ids: List[str], block_id: str = None, exists: bool = False) -> bool:
+        """Delete data list of the block of the storage.
+
+        Args:
+            data_ids: Data item id list.
+            block_id: The block of data, analogous to a dir for storing datas.
+            exists: Whether the data must exist, True is yes.
+        """
         res = True
-        if not data:
+        if not data_ids:
             logger.warning("no data to delete.")
             return res
 
-        for d in data:
-            res = res & await self.delete_data(d, block_id, exists)
+        for d in data_ids:
+            res = res & await self.delete_data(data_id=d, data=None, block_id=block_id, exists=exists)
         return res
 
     @abstractmethod

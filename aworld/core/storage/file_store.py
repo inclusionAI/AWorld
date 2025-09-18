@@ -154,7 +154,13 @@ class FileStorage(Storage[DataItem]):
             logger.warning(f"update_data: failed for block={block_id}, id={data.id}, err={e}")
             return False
 
-    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
+    async def delete_data(self,
+                          data_id: str = None,
+                          data: DataItem = None,
+                          block_id: str = None,
+                          exists: bool = False) -> bool:
+        # data_id can not None
+        assert data_id, "file name can not empty."
         block_id = str(block_id)
         path = self._data_path(block_id, data_id)
         if not path.exists():

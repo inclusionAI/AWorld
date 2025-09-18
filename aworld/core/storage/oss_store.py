@@ -1,10 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import List, Union
+from typing import List
 
 from aworld.config import StorageConfig
 from aworld.core.storage.base import Storage, DataItem, DataBlock
-from aworld.core.storage.condition import Condition
+from aworld.core.storage.condition import Condition, ConditionFilter
 
 
 class OssConfig(StorageConfig):
@@ -17,6 +17,8 @@ class OssConfig(StorageConfig):
 
 class OssStorage(Storage):
     def __init__(self, conf: OssConfig):
+        from aworld.utils.import_package import import_package
+        import_package("oss2")
         import oss2
 
         super().__init__(conf)
@@ -42,7 +44,11 @@ class OssStorage(Storage):
         self._get_bucket().put_object(f"{block_id}_{data.id}", data)
         return True
 
-    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
+    async def delete_data(self,
+                          data_id: str = None,
+                          data: DataItem = None,
+                          block_id: str = None,
+                          exists: bool = False) -> bool:
         block_id = str(block_id)
         self._get_bucket().delete_object(f"{block_id}_{data_id}")
         return True
@@ -52,7 +58,8 @@ class OssStorage(Storage):
         return self._get_bucket().list_objects(block_id)
 
     async def select_data(self, condition: Condition = None) -> List[DataItem]:
-        pass
+        res = self._get_bucket().list_objects()
+        return ConditionFilter(condition).filter(res, condition)
 
     async def size(self, condition: Condition = None) -> int:
         return len(await self.select_data(condition))
