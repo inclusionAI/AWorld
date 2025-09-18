@@ -1,6 +1,6 @@
 import unittest
-from aworld.evaluations.sorers.label_distribution import LabelDistributionScorer
-from aworld.evaluations.base import Dataset, Evaluator
+from aworld.evaluations.scorers.label_distribution import LabelDistributionScorer
+from aworld.evaluations.base import EvalDataset, EvalDataCase, Evaluator
 
 
 class DatesetEvaluationTest(unittest.IsolatedAsyncioTestCase):
@@ -8,7 +8,11 @@ class DatesetEvaluationTest(unittest.IsolatedAsyncioTestCase):
     async def test_label_distribution(self):
 
         data = [{"label": "a"}, {"label": "b"}, {"label": "c"}, {"label": "a"}]
-        dataset = Dataset(rows=data)
+        eval_dataset_id = "test_dataset"
+
+        data_cases = [EvalDataCase(eval_dataset_id=eval_dataset_id, case_data=d) for d in data]
+
+        dataset = EvalDataset(eval_dataset_id=eval_dataset_id, eval_cases=data_cases)
 
         evaluator = Evaluator(scorers=[LabelDistributionScorer(dataset_column="label")])
         result = await evaluator.evaluate(dataset)
