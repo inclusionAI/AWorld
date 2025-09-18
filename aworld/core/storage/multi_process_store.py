@@ -74,18 +74,22 @@ class MultiProcessStorage(Storage):
             logger.error(f"_load_from_shared_memory error: {e}\nStack trace:\n{stack_trace}")
             return []
 
-    def _delete_from_shared_memory(self, block_id: str, data_id: str = None):
+    def _delete_from_shared_memory(self, block_id: str, data_id: str = None, data: DataItem = None):
         if block_id not in self._data:
             logger.warning(f"{block_id} not in datas")
             return
 
         try:
             shm = multiprocessing.shared_memory.SharedMemory(name=block_id)
-            if data_id:
+            if data_id or data:
                 datas = pickle.loads(shm.buf.tobytes())
-                for data in datas:
-                    if data.id == data_id:
-                        datas.remove(data)
+                for data_item in datas:
+                    if hasattr(data_item, "id"):
+                        if data_item.id == data_id:
+                            datas.remove(data_item)
+                            break
+                    elif data == data_item:
+                        datas.remove(data_item)
                         break
 
                 shm.close()
@@ -106,10 +110,14 @@ class MultiProcessStorage(Storage):
             self._fifo_queue.append(block_id)
         return True
 
-    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
+    async def delete_data(self,
+                          data_id: str = None,
+                          data: DataItem = None,
+                          block_id: str = None,
+                          exists: bool = False) -> bool:
         block_id = str(block_id)
         with self._lock:
-            self._delete_from_shared_memory(block_id, data_id)
+            self._delete_from_shared_memory(block_id, data_id=data_id, data=data)
             return True
 
     async def size(self, condition: Condition = None) -> int:
@@ -130,8 +138,11 @@ class MultiProcessStorage(Storage):
 
     async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
         block_id = str(data.block_id or block_id)
+        data_id = None
+        if hasattr(data, "id"):
+            data_id = data.id
         with self._lock:
-            self._delete_from_shared_memory(block_id, data.id)
+            self._delete_from_shared_memory(block_id, data_id=data_id, data=data)
             self._save_to_shared_memory([data], block_id)
         return True
 

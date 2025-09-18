@@ -138,7 +138,11 @@ class RedisStorage(Storage):
     async def update_datas(self, data: List[DataItem], block_id: str = None, exists: bool = False) -> bool:
         return await self.create_datas(data, block_id, exists)
 
-    async def delete_data(self, data_id: str, block_id: str = None, exists: bool = False) -> bool:
+    async def delete_data(self,
+                          data_id: str = None,
+                          data: DataItem = None,
+                          block_id: str = None,
+                          exists: bool = False) -> bool:
         key = self._get_object_key(data_id)
         await self.backend().delete(key)
         return True
