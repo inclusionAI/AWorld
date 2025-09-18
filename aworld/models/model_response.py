@@ -168,11 +168,13 @@ class ModelResponse:
 
     @classmethod
     def _get_item_from_openai_message(cls, message:Any, key: str, default_value: Any = None) -> Any:
+        if not message:
+            return default_value
         if hasattr(message, key):
             return getattr(message, key, default_value)
         elif isinstance(message, dict):
             return message.get(key, default_value)
-        return None
+        return default_value
 
     @classmethod
     def from_openai_response(cls, response: Any) -> 'ModelResponse':
@@ -215,10 +217,9 @@ class ModelResponse:
         usage = {}
         if hasattr(response, 'usage'):
             usage = {
-                "completion_tokens": response.usage.completion_tokens if hasattr(response.usage,
-                                                                                 'completion_tokens') else 0,
-                "prompt_tokens": response.usage.prompt_tokens if hasattr(response.usage, 'prompt_tokens') else 0,
-                "total_tokens": response.usage.total_tokens if hasattr(response.usage, 'total_tokens') else 0
+                "completion_tokens": cls._get_item_from_openai_message(response.usage, 'completion_tokens', 0),
+                "prompt_tokens": cls._get_item_from_openai_message(response.usage, 'prompt_tokens', 0),
+                "total_tokens": cls._get_item_from_openai_message(response.usage, 'total_tokens', 0)
             }
         elif isinstance(response, dict) and response.get('usage'):
             usage = response['usage']
@@ -311,7 +312,7 @@ class ModelResponse:
                 chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
                 chunk
             )
-
+        logger.warn(f"*** chunk: {chunk}")
         # Handle finish reason chunk (end of stream)
         if hasattr(chunk, 'choices') and chunk.choices and chunk.choices[0].finish_reason:
             return cls(
@@ -363,11 +364,11 @@ class ModelResponse:
 
         # Extract usage information
         usage = {}
-        if hasattr(chunk, 'usage'):
+        if hasattr(chunk, 'usage') and chunk.usage:
             usage = {
-                "completion_tokens": chunk.usage.completion_tokens if hasattr(chunk.usage, 'completion_tokens') else 0,
-                "prompt_tokens": chunk.usage.prompt_tokens if hasattr(chunk.usage, 'prompt_tokens') else 0,
-                "total_tokens": chunk.usage.total_tokens if hasattr(chunk.usage, 'total_tokens') else 0
+                "completion_tokens": cls._get_item_from_openai_message(chunk.usage, 'completion_tokens', 0),
+                "prompt_tokens": cls._get_item_from_openai_message(chunk.usage, 'prompt_tokens', 0),
+                "total_tokens": cls._get_item_from_openai_message(chunk.usage, 'total_tokens', 0)
             }
         elif isinstance(chunk, dict) and chunk.get('usage'):
             usage = chunk['usage']
