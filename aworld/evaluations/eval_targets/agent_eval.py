@@ -1,9 +1,9 @@
-from aworld.evaluations.base import Evaluatable
+from aworld.evaluations.base import EvalTarget
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 
 
-class AgentEvaluatable(Evaluatable):
+class AgentEvalTarget(EvalTarget):
 
     def __init__(self, agent: Agent, query_column: str = 'query'):
         self.agent = agent
