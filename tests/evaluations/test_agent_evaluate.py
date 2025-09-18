@@ -1,7 +1,7 @@
 import unittest
 import os
 from aworld.agents.llm_agent import Agent
-from aworld.evaluations.sorers.summarize_quality import SummarizeQualityScorer
+from aworld.evaluations.scorers.summarize_quality import SummarizeQualityScorer
 from aworld.evaluations.eval_targets.agent_eval import AgentEvaluatable
 from aworld.evaluations.base import Dataset, Evaluator
 from aworld.config.conf import AgentConfig, ModelConfig
