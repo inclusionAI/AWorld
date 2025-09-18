@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import List
 
+import aiofiles
+
 from aworld.config import StorageConfig
 from aworld.core.storage.base import Storage, DataItem, DataBlock
 from aworld.core.storage.condition import Condition, ConditionFilter
@@ -19,6 +21,7 @@ class FileConfig(StorageConfig):
 
 class FileStorage(Storage[DataItem]):
     """Simple local file-based storage.
+    TODO: add index
 
     Layout: root_dir/ -> block_id/ -> meta.json
                                    -> data/ -> data_id.json
@@ -73,9 +76,11 @@ class FileStorage(Storage[DataItem]):
 
         meta = DataBlock(id=block_id)
         try:
-            with open(block_meta, "w", encoding="utf-8") as f:
-                json.dump({"id": meta.id, "create_at": meta.create_at, "meta_info": meta.meta_info}, f,
-                          ensure_ascii=False)
+            async with aiofiles.open(block_meta, "w", encoding="utf-8") as f:
+                await f.write(
+                    json.dumps(obj={"id": meta.id, "create_at": meta.create_at, "meta_info": meta.meta_info},
+                               ensure_ascii=False)
+                )
             return True
         except Exception as e:
             logger.error(f"create_block: failed to write meta for {block_id}: {e}")
@@ -130,8 +135,8 @@ class FileStorage(Storage[DataItem]):
             return False
 
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data.model_dump(), f, ensure_ascii=False)
+            async with aiofiles.open(path, "w", encoding="utf-8") as f:
+                await f.write(json.dumps(data.model_dump(), ensure_ascii=False))
             logger.info(f"create_data: {data_id} store to the {path}")
             return True
         except Exception as e:
@@ -146,8 +151,8 @@ class FileStorage(Storage[DataItem]):
             return await self.create_data(data, block_id=block_id, overwrite=True)
 
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data.model_dump(), f, ensure_ascii=False)
+            async with aiofiles.open(path, "w", encoding="utf-8") as f:
+                await f.write(json.dumps(data.model_dump(), ensure_ascii=False))
             logger.info(f"update_data: {data_id} overwrite store to the {path}")
             return True
         except Exception as e:
@@ -165,6 +170,7 @@ class FileStorage(Storage[DataItem]):
         path = self._data_path(block_id, data_id)
         if not path.exists():
             return exists
+
         try:
             path.unlink(missing_ok=True)
             logger.info(f"delete_data: {path} deleted")
