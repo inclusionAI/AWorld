@@ -155,7 +155,10 @@ class Storage(Generic[DataItem]):
         if not results:
             return []
 
-        return [result.value for result in results]
+        if hasattr(results[0], "value"):
+            return [result.value for result in results]
+        else:
+            return results
 
     @abstractmethod
     async def size(self, condition: Condition = None) -> int:

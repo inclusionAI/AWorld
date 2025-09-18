@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
+import hashlib
 import json
 from pathlib import Path
 from typing import List
@@ -121,37 +121,37 @@ class FileStorage(Storage[DataItem]):
         return self._data_dir(block_id) / f"{data_id}.json"
 
     async def create_data(self, data: DataItem, block_id: str = None, overwrite: bool = True) -> bool:
-        block_id = data.block_id if data.block_id else block_id
-        block_id = str(block_id)
+        block_id = str(data.block_id if hasattr(data, "block_id") and data.block_id else block_id)
+        data_id = data.id if hasattr(data, "id") else hashlib.md5(data.model_dump_json().encode()).hexdigest()
         await self.create_block(block_id, overwrite=False)
-        path = self._data_path(block_id, data.id)
+        path = self._data_path(block_id, data_id)
         if path.exists() and not overwrite:
-            logger.warning(f"create_data: exists and overwrite=False, block_id={block_id}, id={data.id}")
+            logger.warning(f"create_data: exists and overwrite=False, block_id={block_id}, id={data_id}")
             return False
 
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(data.to_dict(), f, ensure_ascii=False)
-            logger.info(f"create_data: {data.id} store to the {path}")
+                json.dump(data.model_dump(), f, ensure_ascii=False)
+            logger.info(f"create_data: {data_id} store to the {path}")
             return True
         except Exception as e:
-            logger.warning(f"create_data: failed for block={block_id}, id={data.id}, err={e}")
+            logger.warning(f"create_data: failed for block={block_id}, id={data_id}, err={e}")
             return False
 
     async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
-        block_id = data.block_id if data.block_id else block_id
-        block_id = str(block_id)
-        path = self._data_path(block_id, data.id)
+        block_id = str(data.block_id if hasattr(data, "block_id") and data.block_id else block_id)
+        data_id = data.id if hasattr(data, "id") else hashlib.md5(data.model_dump_json().encode()).hexdigest()
+        path = self._data_path(block_id, data_id)
         if not path.exists() and not exists:
             return await self.create_data(data, block_id=block_id, overwrite=True)
 
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(data.to_dict(), f, ensure_ascii=False)
-            logger.info(f"update_data: {data.id} overwrite store to the {path}")
+                json.dump(data.model_dump(), f, ensure_ascii=False)
+            logger.info(f"update_data: {data_id} overwrite store to the {path}")
             return True
         except Exception as e:
-            logger.warning(f"update_data: failed for block={block_id}, id={data.id}, err={e}")
+            logger.warning(f"update_data: failed for block={block_id}, id={data_id}, err={e}")
             return False
 
     async def delete_data(self,
@@ -160,7 +160,7 @@ class FileStorage(Storage[DataItem]):
                           block_id: str = None,
                           exists: bool = False) -> bool:
         # data_id can not None
-        assert data_id, "file name can not empty."
+        data_id = data_id if data_id else hashlib.md5(data.model_dump_json().encode()).hexdigest()
         block_id = str(block_id)
         path = self._data_path(block_id, data_id)
         if not path.exists():
@@ -184,7 +184,10 @@ class FileStorage(Storage[DataItem]):
                 with open(fp, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 item = Data.from_dict(data)
-                if not item.block_id:
+                # BaseModel
+                if not item.value:
+                    item = data
+                elif not item.block_id:
                     item.block_id = block_id
                 items.append(item)
             except Exception as e:

@@ -30,3 +30,6 @@ class Data:
 
     def __eq__(self, other: 'Data'):
         return self.id == other.id
+
+    def model_dump(self):
+        return self.to_dict()
