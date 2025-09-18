@@ -102,7 +102,7 @@ class MultiProcessStorage(Storage):
             print(traceback.format_exc())
 
     async def create_data(self, data: DataItem, block_id: str = None, overwrite: bool = True) -> bool:
-        block_id = str(data.block_id or block_id)
+        block_id = str(data.block_id if hasattr(data, "block_id") and data.block_id else block_id)
         with self._lock:
             existing_data = self._load_from_shared_memory(block_id)
             existing_data.append(data)
@@ -133,11 +133,12 @@ class MultiProcessStorage(Storage):
             return datas
 
     async def get_data_items(self, block_id: str = None) -> List[DataItem]:
+        block_id = str(block_id)
         with self._lock:
             return self._load_from_shared_memory(block_id)
 
     async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
-        block_id = str(data.block_id or block_id)
+        block_id = str(data.block_id if hasattr(data, "block_id") and data.block_id else block_id)
         data_id = None
         if hasattr(data, "id"):
             data_id = data.id
@@ -148,16 +149,18 @@ class MultiProcessStorage(Storage):
 
     async def get_block(self, block_id: str) -> DataBlock:
         # unsupported
-        return DataBlock(id=block_id)
+        return DataBlock(id=str(block_id))
 
     async def delete_block(self, block_id: str, exists: bool = False) -> bool:
         with self._lock:
-            self._delete_from_shared_memory(str(block_id))
+            shm = multiprocessing.shared_memory.SharedMemory(name=str(block_id), create=False)
+            shm.close()
+            shm.unlink()
             return True
 
     async def create_block(self, block_id: str, overwrite: bool = True) -> bool:
         try:
-            shm = multiprocessing.shared_memory.SharedMemory(name=block_id, create=False)
+            shm = multiprocessing.shared_memory.SharedMemory(name=str(block_id), create=False)
             if overwrite:
                 shm.close()
                 shm.unlink()

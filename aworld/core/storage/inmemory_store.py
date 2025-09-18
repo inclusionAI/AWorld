@@ -100,11 +100,11 @@ class InmemoryStorage(Storage[DataItem]):
         if block_id not in self.blocks:
             await self.create_block(block_id)
 
-        block_data = await self.get_data(block_id)
+        block_data = await self.get_data_items(block_id)
         if data in block_data:
             if overwrite:
                 idx = block_data.index(data)
-                block_data.insert(idx, data)
+                block_data.__setitem__(idx, data)
             else:
                 logger.warning(f"Data {data.id} has exists.")
                 return False
@@ -114,10 +114,10 @@ class InmemoryStorage(Storage[DataItem]):
 
     async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
         block_id = str(data.block_id if hasattr(data, "block_id") and data.block_id else block_id)
-        block_data = await self.get_data(block_id)
+        block_data = await self.get_data_items(block_id)
         if data in block_data:
             idx = block_data.index(data)
-            block_data.insert(idx, data)
+            block_data.__setitem__(idx, data)
         elif exists:
             logger.warning(f"Data {data.id} not exists to update.")
             return False
