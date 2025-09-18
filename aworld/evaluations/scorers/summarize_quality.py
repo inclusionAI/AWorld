@@ -1,4 +1,3 @@
-from aworld.core import task
 from aworld.evaluations.base import Scorer
 from aworld.config.conf import ModelConfig, AgentConfig
 from typing import Any

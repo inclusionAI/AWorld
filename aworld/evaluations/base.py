@@ -18,7 +18,10 @@ class EvalCriteria:
     '''
     Evaluation criteria.
     '''
-    mettric_name: str = field(default_factory=str)
+    metric_name: str = field(default_factory=str)
+    # full class name of scorer class, e.g. aworld.evaluations.scorers.label_distribution.LabelDistributionScorer
+    # if not specified, will use the first scorer class in the registry for the metric name
+    scorer_class: Optional[str] = field(default_factory=str)
     prompt: str = field(default_factory=str)
     max_value: float = field(default=float('inf'))
     min_value: float = field(default=-float('inf'))
@@ -30,7 +33,8 @@ class EvalRunConfig:
     '''
     Evaluation run config.
     '''
-    eval_target_module: str = field(default_factory=str)
+    # full class name of eval target, e.g. aworld.evaluations.base.EvalTarget
+    eval_target_full_class_name: str = field(default_factory=str)
     eval_target_config: dict = field(default_factory=dict)
     eval_criterias: list[EvalCriteria] = field(default_factory=list)
     # eval dataset id or file path, file path should be a jsonl file
@@ -57,8 +61,8 @@ class EvalDataCase(Generic[EvalCaseDataType]):
     '''
     eval_case_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     eval_dataset_id: str = field(default_factory=str)
-    run_id: str = field(default_factory=str)
-    case_data: list[EvalCaseDataType] = field(default_factory=list)
+    run_id: Optional[str] = field(default_factory=str)
+    case_data: EvalCaseDataType = field(default_factory=dict)
     create_time: float = field(default_factory=lambda: time.time())
 
 
@@ -68,8 +72,8 @@ class EvalDataset:
     Evaluation dataset.
     '''
     eval_dataset_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    eval_dataset_name: str = field(default_factory=str)
-    run_id: str = field(default_factory=str)
+    eval_dataset_name: Optional[str] = field(default_factory=str)
+    run_id: Optional[str] = field(default_factory=str)
     create_time: float = field(default_factory=lambda: time.time())
     eval_cases: list[EvalDataCase] = field(default_factory=list)
 
@@ -87,7 +91,7 @@ class EvalCaseResult:
     eval_dataset_id: str = field(default_factory=str)
     input: dict = field(default_factory=dict)
     output: dict = field(default_factory=dict)
-    eval_status: EvalStatus = field(default_factory=EvalStatus.NOT_EVALUATED)
+    eval_status: EvalStatus = field(default_factory=lambda: EvalStatus.NOT_EVALUATED)
     score_rows: dict = field(default_factory=dict)
     create_time: float = field(default_factory=lambda: time.time())
 
@@ -105,7 +109,7 @@ class EvalResult:
     eval_case_results: list[EvalCaseResult] = field(default_factory=list)
 
 
-class EvalTarget(abc.ABC):
+class EvalTarget(abc.ABC, Generic[EvalCaseDataType]):
     '''
     The base class of evaluated object.
     '''
@@ -120,24 +124,31 @@ class EvalTarget(abc.ABC):
         raise NotImplementedError
 
 
-class NoActionEvalTarget(EvalTarget):
+class NoActionEvalTarget(EvalTarget[EvalCaseDataType]):
     async def predict(self, input: EvalDataCase[EvalCaseDataType]) -> dict:
         return {}
 
 
-class Scorer(abc.ABC):
+class Scorer(abc.ABC, Generic[EvalCaseDataType]):
     '''
     The base class of scorer.
     '''
 
     def __init__(self, name: str = None):
         self.name = name or self.__class__.__name__
+        self.eval_criterias = {}
 
     def __str__(self) -> str:
         return self.name
 
+    def add_eval_criteria(self, eval_criteria: EvalCriteria) -> None:
+        '''
+            Add eval criteria.
+        '''
+        self.eval_criterias[eval_criteria.metric_name] = eval_criteria
+
     @abc.abstractmethod
-    async def score(self, index: int, input: dict, output: dict) -> Any:
+    async def score(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> Any:
         """score the execute result.
 
         Args:
@@ -180,17 +191,17 @@ class Scorer(abc.ABC):
         return self._do_summarize(my_scores)
 
 
-class Evaluator(abc.ABC):
+class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
     '''
     The base class of evaluator.
     '''
 
     def __init__(self,
-                 scorers: list[Scorer],
+                 scorers: list[Scorer] = None,
                  prepare_dataset: Optional[Callable[[EvalDataset], List[dict]]] = None,
                  repeat_times: int = 1,
                  eval_parallelism: int = 1):
-        self.scorers = scorers
+        self.scorers = scorers or []
         # preprocess the dataset
         self.prepare_dataset = prepare_dataset
         # repeat run example times
@@ -201,14 +212,14 @@ class Evaluator(abc.ABC):
     def _default_prepare_dataset(self, dataset: EvalDataset) -> List[EvalDataCase[EvalCaseDataType]]:
         return dataset.eval_cases
 
-    async def _evaluate_in_task(self, eval_target: EvalTarget, dataset: Iterable[EvalDataCase[EvalCaseDataType]], evaluate_fun: Callable[[int, EvalTarget, dict], Awaitable[dict]]):
+    async def _evaluate_in_task(self, eval_target: EvalTarget[EvalCaseDataType], dataset: Iterable[EvalDataCase[EvalCaseDataType]], evaluate_fun: Callable[[int, EvalTarget[EvalCaseDataType], EvalDataCase[EvalCaseDataType]], Awaitable[dict]]):
         # create a semaphore to limit the parallelism
         semaphore: asyncio.Semaphore = asyncio.Semaphore(self.eval_parallelism)
         dataset_iter = iter(dataset)
         running_tasks: Set[asyncio.Task] = set()
         index = 0
 
-        async def __evaluate_fun(index: int, eval_target: EvalTarget, input: EvalDataCase[EvalCaseDataType]) -> dict:
+        async def __evaluate_fun(index: int, eval_target: EvalTarget[EvalCaseDataType], input: EvalDataCase[EvalCaseDataType]) -> dict:
             async with semaphore:
                 return await evaluate_fun(index, eval_target, input)
 
@@ -238,7 +249,7 @@ class Evaluator(abc.ABC):
                 task.cancel()
             raise e
 
-    async def run_single_case(self, index: int, eval_target: EvalTarget, input: dict) -> EvalCaseResult:
+    async def run_single_case(self, index: int, eval_target: EvalTarget[EvalCaseDataType], input: EvalDataCase[EvalCaseDataType]) -> EvalCaseResult:
         """Run a single case.
 
         Args:
@@ -254,7 +265,7 @@ class Evaluator(abc.ABC):
             score_rows[scorer.name] = await scorer.score(index, input, output)
         return EvalCaseResult(index=index, input=input, output=output, score_rows=score_rows)
 
-    async def evaluate(self, dataset: EvalDataset, eval_target: EvalTarget = NoActionEvalTarget()) -> EvalResult:
+    async def evaluate(self, dataset: EvalDataset, eval_target: EvalTarget[EvalCaseDataType] = NoActionEvalTarget()) -> EvalResult:
         """Evaluate the dataset/llm/agent.
 
         Returns:
