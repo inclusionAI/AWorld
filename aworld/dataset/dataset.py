@@ -1,3 +1,4 @@
+import traceback
 import uuid
 import random
 import os
@@ -9,6 +10,7 @@ from typing import TypeVar, Generic, Dict, List, Any, Iterator, Optional, Iterab
 from pydantic import BaseModel, Field
 
 from aworld.dataset.sampler import Sampler
+from aworld.logs.util import logger
 
 _T_co = TypeVar("_T_co", covariant=True)
 
@@ -36,7 +38,8 @@ class Dataset(BaseModel, Generic[_T_co]):
         parquet_columns: Optional[List[str]] = None,
         encoding: str = "utf-8",
         limit: Optional[int] = None,
-    ) -> "Dataset[_T_co]":
+        transform: Optional[Callable[[_T_co], _T_co]] = None,
+    ):
         """Load data into `data` from a local path or Hugging Face Hub.
 
         Args:
@@ -51,6 +54,8 @@ class Dataset(BaseModel, Generic[_T_co]):
             parquet_columns: Optional column whitelist when reading parquet.
             encoding: Text encoding for csv/json/txt.
             limit: Max number of rows/items to load (useful to cap memory).
+            transform: Optional callable to transform each data item after loading.
+                If provided, data will be transformed before being stored in self.data.
 
         Returns:
             self (with `data` replaced by the loaded records/items).
@@ -66,6 +71,11 @@ class Dataset(BaseModel, Generic[_T_co]):
                 out.append(item)
             return out
 
+        def _apply_transform(data: List[Any], transform_func: Optional[Callable[[_T_co], _T_co]]) -> List[_T_co]:
+            if transform_func is None:
+                return data  # type: ignore[return-value]
+            return [transform_func(item) for item in data]  # type: ignore[misc]
+
         # Local path branch
         if os.path.exists(source):
             path = Path(source)
@@ -77,9 +87,9 @@ class Dataset(BaseModel, Generic[_T_co]):
                 with open(path, "r", encoding=encoding, newline="") as f:
                     reader = csv.DictReader(f)
                     records = _apply_limit(reader, limit)
-                self.data = list(records)  # type: ignore[assignment]
+                self.data = _apply_transform(list(records), transform)  # type: ignore[assignment]
                 self.metadata.update({"source": str(path), "format": "csv"})
-                return self
+                return
 
             if fmt == "json":
                 with open(path, "r", encoding=encoding) as f:
@@ -101,16 +111,16 @@ class Dataset(BaseModel, Generic[_T_co]):
                     obj = obj.get(json_field, [])
                 if not isinstance(obj, list):
                     raise ValueError("JSON content must be a list or specify json_field to extract a list.")
-                self.data = _apply_limit(obj, limit)  # type: ignore[assignment]
+                self.data = _apply_transform(_apply_limit(obj, limit), transform)  # type: ignore[assignment]
                 self.metadata.update({"source": str(path), "format": "json"})
-                return self
+                return
 
             if fmt == "txt":
                 with open(path, "r", encoding=encoding) as f:
                     lines = (line.rstrip("\n") for line in f)
-                    self.data = _apply_limit(lines, limit)  # type: ignore[assignment]
+                    self.data = _apply_transform(_apply_limit(lines, limit), transform)  # type: ignore[assignment]
                 self.metadata.update({"source": str(path), "format": "txt"})
-                return self
+                return
 
             if fmt == "parquet":
                 # Prefer pandas if available, otherwise try pyarrow directly
@@ -118,17 +128,17 @@ class Dataset(BaseModel, Generic[_T_co]):
                     import pandas as pd  # type: ignore
                     df = pd.read_parquet(path, columns=parquet_columns)
                     records = df.to_dict(orient="records")
-                    self.data = _apply_limit(records, limit)  # type: ignore[assignment]
+                    self.data = _apply_transform(_apply_limit(records, limit), transform)  # type: ignore[assignment]
                     self.metadata.update({"source": str(path), "format": "parquet"})
-                    return self
+                    return
                 except Exception:
                     try:
                         import pyarrow.parquet as pq  # type: ignore
                         table = pq.read_table(path, columns=parquet_columns)
                         records = table.to_pylist()
-                        self.data = _apply_limit(records, limit)  # type: ignore[assignment]
+                        self.data = _apply_transform(_apply_limit(records, limit), transform)  # type: ignore[assignment]
                         self.metadata.update({"source": str(path), "format": "parquet"})
-                        return self
+                        return
                     except Exception as e:  # pragma: no cover - environment dependent
                         raise RuntimeError(
                             "Failed to read parquet file. Ensure pandas or pyarrow is installed."
@@ -145,17 +155,20 @@ class Dataset(BaseModel, Generic[_T_co]):
         if split is None:
             split = "train"
 
-        ds = load_dataset(source, subset, split=split, streaming=False)  # type: ignore[call-arg]
-        # Convert to list of dicts/records
-        iterator: Iterable[Any]
         try:
-            iterator = ds  # pyright: ignore[reportGeneralTypeIssues]
-        except Exception:
-            iterator = list(ds)
+            ds = load_dataset(source, subset, split=split, streaming=False)  # type: ignore[call-arg]
+            # Convert to list of dicts/records
+            iterator: Iterable[Any]
+            try:
+                iterator = ds  # pyright: ignore[reportGeneralTypeIssues]
+            except Exception:
+                iterator = list(ds)
 
-        self.data = _apply_limit(iterator, limit)  # type: ignore[assignment]
-        self.metadata.update({"source": source, "format": "huggingface", "split": split, "subset": subset})
-        return self
+            self.data = _apply_transform(_apply_limit(iterator, limit), transform)  # type: ignore[assignment]
+            self.metadata.update({"source": source, "format": "huggingface", "split": split, "subset": subset})
+            return
+        except Exception as e:
+            logger.warn(f"Failed to load dataset from {source}: {str(e)}.\n{traceback.format_exc()}")
 
     def to_dataloader(
         self,
