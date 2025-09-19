@@ -110,9 +110,7 @@ class LLMModel:
             return {}
 
         # Get all parameters from conf
-        if type(conf).__name__ == 'AgentConfig':
-            conf_dict = conf.model_dump()
-        elif type(conf).__name__ == 'ModelConfig':
+        if type(conf).__name__ == 'ModelConfig':
             conf_dict = conf.model_dump()
         else:  # ConfigDict
             conf_dict = conf
