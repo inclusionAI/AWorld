@@ -118,6 +118,7 @@ class ModelConfig(BaseConfig):
     max_retries: int = 3
     max_model_len: Optional[int] = None  # Maximum model context length
     model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
+    params: Optional[Dict[str, Any]] = {}
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
