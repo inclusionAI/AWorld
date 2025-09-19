@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import uuid
 from typing import List, Dict, Any
 
 from aworld.core.llm_provider import LLMProviderBase
@@ -78,11 +79,13 @@ class VerlProvider(LLMProviderBase):
 
         tool_parser = ToolParserManager.get_tool_parser(self.tool_parser)
         res: ExtractedToolCallInformation = tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
+
+        rid = uuid.uuid4().hex
         if res.tools_called:
             tool_calls = [ToolCall(**tool_call.model_dump()) for tool_call in res.tool_calls]
-            return ModelResponse(id="", tool_calls=tool_calls, model=self.model_name, raw_response=content)
+            return ModelResponse(id=rid, tool_calls=tool_calls, model=self.model_name, raw_response=content)
         else:
-            return ModelResponse(id="", content=res.content, model=self.model_name, raw_response=content)
+            return ModelResponse(id=rid, content=res.content, model=self.model_name, raw_response=content)
 
 
 register_llm_provider("verl", VerlProvider)
