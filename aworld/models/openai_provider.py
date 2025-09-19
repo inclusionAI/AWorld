@@ -1,3 +1,4 @@
+import json
 import os
 import traceback
 from typing import Any, Dict, List, Generator, AsyncGenerator
@@ -49,8 +50,9 @@ class OpenAIProvider(LLMProviderBase):
             return OpenAI(
                 api_key=api_key,
                 base_url=base_url,
-                timeout=self.kwargs.get("timeout", 180),
-                max_retries=self.kwargs.get("max_retries", 3)
+                timeout=self.kwargs.get("timeout", 600),
+                max_retries=self.kwargs.get("max_retries", 3),
+                http_client=self.kwargs.get("http_client", None),
             )
 
     def _init_async_provider(self):
@@ -74,8 +76,9 @@ class OpenAIProvider(LLMProviderBase):
         return AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=self.kwargs.get("timeout", 180),
-            max_retries=self.kwargs.get("max_retries", 3)
+            timeout=self.kwargs.get("timeout", 600),
+            max_retries=self.kwargs.get("max_retries", 3),
+            http_client=self.kwargs.get("http_client", None),
         )
 
     @classmethod
@@ -397,6 +400,7 @@ class OpenAIProvider(LLMProviderBase):
 
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            logger.debug(f"openai_params: {json.dumps(openai_params)}")
             if self.is_http_provider:
                 response = await self.http_provider.async_call(openai_params)
             else:
