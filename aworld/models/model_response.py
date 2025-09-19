@@ -312,7 +312,6 @@ class ModelResponse:
                 chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
                 chunk
             )
-        logger.warn(f"*** chunk: {chunk}")
         # Handle finish reason chunk (end of stream)
         if hasattr(chunk, 'choices') and chunk.choices and chunk.choices[0].finish_reason:
             return cls(
