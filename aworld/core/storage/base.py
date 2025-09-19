@@ -8,7 +8,6 @@ from dataclasses_json import dataclass_json
 from typing import Generic, TypeVar, List, Dict, Union, Any
 
 from aworld.config import StorageConfig
-from aworld.core.storage.condition import Condition
 
 
 @dataclass
@@ -119,7 +118,7 @@ class Storage(Generic[DataItem]):
         return res
 
     @abstractmethod
-    async def select_data(self, condition: Condition = None) -> List[DataItem]:
+    async def select_data(self, condition: 'Condition' = None) -> List[DataItem]:
         """Get the data list by condition from the storage.
 
         Args:
@@ -141,7 +140,7 @@ class Storage(Generic[DataItem]):
         """
 
     @abstractmethod
-    async def size(self, condition: Condition = None) -> int:
+    async def size(self, condition: 'Condition' = None) -> int:
         """Get the size of the storage by the condition.
 
         Args:
