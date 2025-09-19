@@ -10,6 +10,7 @@ from typing import TypeVar, Generic, Dict, List, Any, Iterator, Optional, Iterab
 from pydantic import BaseModel, Field
 
 from aworld.dataset.sampler import Sampler
+from aworld.dataset.dataloader import DataLoader
 from aworld.logs.util import logger
 
 _T_co = TypeVar("_T_co", covariant=True)
@@ -19,13 +20,27 @@ class Dataset(BaseModel, Generic[_T_co]):
     name: str
     data: List[_T_co]
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    transform: Optional[Callable[[_T_co], _T_co]] = None
+    transforms: List[Callable[[_T_co], _T_co]] = Field(default_factory=list)
+
+    def transform(self, fn: Callable[[_T_co], _T_co]) -> "Dataset[_T_co]":
+        """Register a transform step to be applied in order and return self for chaining."""
+        self.transforms.append(fn)
+        return self
+
+    def clear_transforms(self) -> None:
+        """Clear all registered transforms."""
+        self.transforms.clear()
 
     def __getitem__(self, index) -> _T_co:
         item = self.data[index]
-        if self.transform is not None:
-            return self.transform(item)
+        if not self.transforms:
+            return item
+        for fn in self.transforms:
+            item = fn(item)
         return item
+
+    def __len__(self) -> int:
+        return len(self.data)
 
     def load_from(
         self,
@@ -38,7 +53,7 @@ class Dataset(BaseModel, Generic[_T_co]):
         parquet_columns: Optional[List[str]] = None,
         encoding: str = "utf-8",
         limit: Optional[int] = None,
-        transform: Optional[Callable[[_T_co], _T_co]] = None,
+        preload_transform: Optional[Callable[[_T_co], _T_co]] = None,
     ):
         """Load data into `data` from a local path or Hugging Face Hub.
 
@@ -54,8 +69,9 @@ class Dataset(BaseModel, Generic[_T_co]):
             parquet_columns: Optional column whitelist when reading parquet.
             encoding: Text encoding for csv/json/txt.
             limit: Max number of rows/items to load (useful to cap memory).
-            transform: Optional callable to transform each data item after loading.
-                If provided, data will be transformed before being stored in self.data.
+            preload_transform: Optional callable to transform each data item while
+                loading. This materializes transformed data into
+                `self.data`. 
 
         Returns:
             self (with `data` replaced by the loaded records/items).
@@ -71,7 +87,7 @@ class Dataset(BaseModel, Generic[_T_co]):
                 out.append(item)
             return out
 
-        def _apply_transform(data: List[Any], transform_func: Optional[Callable[[_T_co], _T_co]]) -> List[_T_co]:
+        def _apply_preload_transform(data: List[Any], transform_func: Optional[Callable[[_T_co], _T_co]]) -> List[_T_co]:
             if transform_func is None:
                 return data  # type: ignore[return-value]
             return [transform_func(item) for item in data]  # type: ignore[misc]
@@ -87,7 +103,7 @@ class Dataset(BaseModel, Generic[_T_co]):
                 with open(path, "r", encoding=encoding, newline="") as f:
                     reader = csv.DictReader(f)
                     records = _apply_limit(reader, limit)
-                self.data = _apply_transform(list(records), transform)  # type: ignore[assignment]
+                self.data = _apply_preload_transform(list(records), preload_transform)  # type: ignore[assignment]
                 self.metadata.update({"source": str(path), "format": "csv"})
                 return
 
@@ -111,14 +127,14 @@ class Dataset(BaseModel, Generic[_T_co]):
                     obj = obj.get(json_field, [])
                 if not isinstance(obj, list):
                     raise ValueError("JSON content must be a list or specify json_field to extract a list.")
-                self.data = _apply_transform(_apply_limit(obj, limit), transform)  # type: ignore[assignment]
+                self.data = _apply_preload_transform(_apply_limit(obj, limit), preload_transform)  # type: ignore[assignment]
                 self.metadata.update({"source": str(path), "format": "json"})
                 return
 
             if fmt == "txt":
                 with open(path, "r", encoding=encoding) as f:
                     lines = (line.rstrip("\n") for line in f)
-                    self.data = _apply_transform(_apply_limit(lines, limit), transform)  # type: ignore[assignment]
+                    self.data = _apply_preload_transform(_apply_limit(lines, limit), preload_transform)  # type: ignore[assignment]
                 self.metadata.update({"source": str(path), "format": "txt"})
                 return
 
@@ -128,7 +144,7 @@ class Dataset(BaseModel, Generic[_T_co]):
                     import pandas as pd  # type: ignore
                     df = pd.read_parquet(path, columns=parquet_columns)
                     records = df.to_dict(orient="records")
-                    self.data = _apply_transform(_apply_limit(records, limit), transform)  # type: ignore[assignment]
+                    self.data = _apply_preload_transform(_apply_limit(records, limit), preload_transform)  # type: ignore[assignment]
                     self.metadata.update({"source": str(path), "format": "parquet"})
                     return
                 except Exception:
@@ -136,7 +152,7 @@ class Dataset(BaseModel, Generic[_T_co]):
                         import pyarrow.parquet as pq  # type: ignore
                         table = pq.read_table(path, columns=parquet_columns)
                         records = table.to_pylist()
-                        self.data = _apply_transform(_apply_limit(records, limit), transform)  # type: ignore[assignment]
+                        self.data = _apply_preload_transform(_apply_limit(records, limit), preload_transform)  # type: ignore[assignment]
                         self.metadata.update({"source": str(path), "format": "parquet"})
                         return
                     except Exception as e:  # pragma: no cover - environment dependent
@@ -164,7 +180,7 @@ class Dataset(BaseModel, Generic[_T_co]):
             except Exception:
                 iterator = list(ds)
 
-            self.data = _apply_transform(_apply_limit(iterator, limit), transform)  # type: ignore[assignment]
+            self.data = _apply_preload_transform(_apply_limit(iterator, limit), preload_transform)  # type: ignore[assignment]
             self.metadata.update({"source": source, "format": "huggingface", "split": split, "subset": subset})
             return
         except Exception as e:
@@ -197,54 +213,17 @@ class Dataset(BaseModel, Generic[_T_co]):
             List of samples of length `batch_size` (except possibly the last one
             when `drop_last` is False).
         """
-        # Validate mutual exclusivity for batch_sampler branch
-        if batch_sampler is not None:
-            if batch_size is not None or shuffle or sampler is not None or drop_last:
-                raise ValueError(
-                    "batch_sampler is mutually exclusive with batch_size, shuffle, sampler, and drop_last"
-                )
-        else:
-            if batch_size is None or batch_size <= 0:
-                raise ValueError("batch_size must be a positive integer")
-
-        num_items = len(self.data)
-
-        # If batch_sampler is provided, yield batches directly according to it
-        if batch_sampler is not None:
-            for batch_indices in batch_sampler:
-                batch: List[_T_co] = []
-                for idx in batch_indices:
-                    try:
-                        item = self.__getitem__(idx)
-                    except NotImplementedError:
-                        item = self.data[idx]
-                    batch.append(item)
-                yield batch
-            return
-
-        # Resolve indices via sampler when provided; otherwise build from range
-        if sampler is not None:
-            indices = list(iter(sampler))
-        else:
-            indices = list(range(num_items))
-            if shuffle and num_items > 1:
-                rng = random.Random(seed)
-                rng.shuffle(indices)
-
-        # Batch iteration
-        batch: List[_T_co] = []
-        for idx in indices:
-            try:
-                item = self.__getitem__(idx)
-            except NotImplementedError:
-                item = self.data[idx]
-            batch.append(item)
-            if len(batch) == batch_size:
-                yield batch
-                batch = []
-
-        if batch and not drop_last:
-            yield batch
+        loader: DataLoader[_T_co] = DataLoader(
+            self,
+            batch_size=batch_size,
+            sampler=sampler,  # type: ignore[arg-type]
+            shuffle=shuffle,
+            drop_last=drop_last,
+            seed=seed,
+            batch_sampler=batch_sampler,
+            collate_fn=None,
+        )
+        return iter(loader)
 
 
 

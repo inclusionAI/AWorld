@@ -5,8 +5,9 @@ Demonstrates how to load local CSV files and showcase various Dataset functional
 """
 
 import os
-from dataset import Dataset
-from sampler import SequentialSampler, RandomSampler, BatchSampler
+from aworld.dataset.dataset import Dataset
+from aworld.dataset.dataloader import DataLoader
+from aworld.dataset.sampler import SequentialSampler, RandomSampler, BatchSampler
 from typing import Dict, Any
 
 
@@ -102,7 +103,7 @@ def main():
     hotpot_qa_dataset_transform.load_from(
         source=csv_path,
         format="csv",
-        transform=rewrite_type,
+        preload_transform=rewrite_type,
         limit=10  # Limit to first 10 records for demonstration
     )
 
@@ -158,8 +159,20 @@ def main():
     batch_count = 0
     for batch in hotpot_qa_dataset.to_dataloader(batch_size=3, shuffle=True, seed=123):
         batch_count += 1
-        print(f"  Batch {batch_count}|{len(batch)} samples: {batch[0]['id']}, {batch[1]['id']}, {batch[2]['id']}")
+        sample_ids = [b.get('id', 'N/A') if isinstance(b, dict) else str(b) for b in batch[:3]]
+        print(f"  Batch {batch_count}|{len(batch)} samples: {', '.join(sample_ids)}")
         if batch_count >= 3:  # Only show first 3 batches
+            break
+    print()
+
+    # Use standalone DataLoader class (recommended)
+    print("Using standalone DataLoader (batch_size=3, shuffle=True):")
+    batch_count = 0
+    for batch in DataLoader(hotpot_qa_dataset, batch_size=3, shuffle=True, seed=123):
+        batch_count += 1
+        sample_ids = [b.get('id', 'N/A') if isinstance(b, dict) else str(b) for b in batch[:3]]
+        print(f"  Batch {batch_count}|{len(batch)} samples: {', '.join(sample_ids)}")
+        if batch_count >= 3:
             break
     print()
 
@@ -191,7 +204,7 @@ def main():
     transformed_dataset = Dataset[Dict[str, Any]](
         name="transformed_hotpot_qa",
         data=hotpot_qa_dataset.data.copy(),
-        transform=add_prefix
+        transforms=[add_prefix]
     )
 
     print("Original data vs Transformed data:")
