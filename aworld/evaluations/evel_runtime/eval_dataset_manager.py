@@ -2,7 +2,7 @@ import abc
 
 from aworld.evaluations.base import EvalDataset, EvalDataCase
 from aworld.core.storage.base import Storage
-from aworld.core.storage.inmemory import InMemoryStorage
+from aworld.core.storage.inmemory_store import InmemoryStorage
 
 
 class EvalDatasetManager(abc.ABC):
@@ -33,7 +33,7 @@ class EvalDatasetManager(abc.ABC):
 class DefaultEvalDatasetManager(EvalDatasetManager):
     """Default eval dataset manager."""
 
-    def __init__(self, storage: Storage[EvalDataset] = InMemoryStorage):
+    def __init__(self, storage: Storage[EvalDataset] = InmemoryStorage()):
         self.storage = storage
 
     async def create_eval_dataset(self, run_id: str, dataset_name: str, data_cases: list[EvalDataCase]) -> EvalDataset:
@@ -47,7 +47,10 @@ class DefaultEvalDatasetManager(EvalDatasetManager):
         """
 
         eval_dataset = EvalDataset(eval_dataset_name=dataset_name, eval_cases=data_cases, run_id=run_id)
-        self.storage.create_block(eval_dataset.eval_dataset_id, eval_dataset)
+        for data_case in eval_dataset.eval_cases:
+            data_case.eval_dataset_id = eval_dataset.eval_dataset_id
+            data_case.run_id = run_id
+        await self.storage.create_data(eval_dataset.eval_dataset_id, eval_dataset)
         return eval_dataset
 
     async def get_eval_dataset(self, dataset_id: str) -> EvalDataset:
@@ -59,4 +62,4 @@ class DefaultEvalDatasetManager(EvalDatasetManager):
         Returns:
             EvalDataset: the eval dataset.
         """
-        return self.storage.get_block(dataset_id)
+        return await self.storage.get_data(dataset_id)

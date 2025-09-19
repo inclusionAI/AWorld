@@ -2,7 +2,7 @@
 import abc
 from aworld.evaluations.base import EvalResult
 from aworld.core.storage.base import Storage
-from aworld.core.storage.inmemory import InMemoryStorage
+from aworld.core.storage.inmemory_store import InmemoryStorage
 
 
 class EvalResultManager(abc.ABC):
@@ -38,7 +38,7 @@ class DefaultEvalResultManager(EvalResultManager):
     '''
 
     def __init__(self, storage: Storage = None):
-        self.storage = storage or InMemoryStorage()
+        self.storage = storage or InmemoryStorage()
 
     async def save_eval_result(self, eval_result: EvalResult) -> None:
         """save the evaluation result.
@@ -46,7 +46,7 @@ class DefaultEvalResultManager(EvalResultManager):
         Args:
             eval_result: the evaluation result.
         """
-        await self.storage.put(eval_result.eval_result_id, eval_result)
+        await self.storage.create_data(block_id=eval_result.eval_result_id, data=eval_result, overwrite=False)
         return eval_result
 
     async def get_eval_result(self, eval_result_id: str) -> EvalResult:
@@ -58,4 +58,4 @@ class DefaultEvalResultManager(EvalResultManager):
         Returns:
             eval_result: the evaluation result.
         """
-        return await self.storage.get(eval_result_id)
+        return await self.storage.get_data(eval_result_id)
