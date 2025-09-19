@@ -1,7 +1,7 @@
 from collections import Counter
-from aworld.evaluations.base import Scorer, EvalCaseResult, EvalDataCase
-from typing import Any, Optional
-from aworld.evaluations.scorers.scorer_registry import score_register
+from aworld.evaluations.base import Scorer, ScorerResult, EvalDataCase, EvalCaseResult
+from typing import Optional
+from aworld.evaluations.scorers.scorer_registry import scorer_register
 from aworld.evaluations.scorers.metrics import MetricNames
 
 from aworld.utils.import_package import import_package
@@ -9,20 +9,20 @@ from aworld.utils.import_package import import_package
 import_package('scipy')
 
 
-@score_register(MetricNames.LABEL_DISTRIBUTION)
+@scorer_register(MetricNames.LABEL_DISTRIBUTION)
 class LabelDistributionScorer(Scorer[dict]):
 
     def __init__(self, name: str = None, dataset_column: str = None):
         super().__init__(name)
         self.dataset_column = dataset_column
 
-    async def score(self, index: int, input: EvalDataCase[dict], output: dict) -> EvalCaseResult:
+    async def score(self, index: int, input: EvalDataCase[dict], output: dict) -> ScorerResult:
         """score the execute result.
 
         Returns:
             score
         """
-        return EvalCaseResult(index=index, eval_case_id=input.eval_case_id, eval_dataset_id=input.eval_dataset_id, input=input.case_data, output=output)
+        return ScorerResult(scorer_name=self.name, metric_results={MetricNames.LABEL_DISTRIBUTION: {"value": 0.0}})
 
     def summarize(self, result_rows: list[EvalCaseResult]) -> Optional[dict]:
         '''

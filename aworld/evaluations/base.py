@@ -4,7 +4,7 @@ import uuid
 from ast import Set
 import statistics
 import asyncio
-from typing import Any, Iterable, Optional, List, Callable, Awaitable, TypeVar, Generic
+from typing import Any, Iterable, Optional, List, Callable, Awaitable, TypeVar, Generic, TypedDict
 from enum import Enum
 from dataclasses import dataclass, field
 from itertools import chain, repeat
@@ -22,10 +22,17 @@ class EvalCriteria:
     # full class name of scorer class, e.g. aworld.evaluations.scorers.label_distribution.LabelDistributionScorer
     # if not specified, will use the first scorer class in the registry for the metric name
     scorer_class: Optional[str] = field(default_factory=str)
+    scorer_params: Optional[dict] = field(default_factory=dict)
     prompt: str = field(default_factory=str)
     max_value: float = field(default=float('inf'))
     min_value: float = field(default=-float('inf'))
     threshold: float = field(default=0.0)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'EvalCriteria':
+        valid_fields = {field.name for field in cls.__dataclass_fields__.values()}
+        filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered_data)
 
 
 @dataclass
@@ -36,7 +43,7 @@ class EvalRunConfig:
     # full class name of eval target, e.g. aworld.evaluations.base.EvalTarget
     eval_target_full_class_name: str = field(default_factory=str)
     eval_target_config: dict = field(default_factory=dict)
-    eval_criterias: list[EvalCriteria] = field(default_factory=list)
+    eval_criterias: list[EvalCriteria | dict] = field(default_factory=list)
     # eval dataset id or file path, file path should be a jsonl file
     eval_dataset_id_or_file_path: str = field(default_factory=str)
     repeat_times: int = field(default=1)
@@ -82,6 +89,24 @@ class EvalStatus(Enum):
     PASSED = 1
     FAILED = 2
     NOT_EVALUATED = 3
+
+
+class MetricResult(TypedDict, total=False):
+    '''
+    Metric result.
+    '''
+    value: float
+    eval_status: EvalStatus
+
+
+@dataclass
+class ScorerResult:
+    '''
+    Scorer result. One scorer result contains multiple metric results.
+    '''
+    scorer_name: str = field(default_factory=str)
+    # metric results, key is metric name, value is metric result or float
+    metric_results: dict[str, MetricResult] = field(default_factory=dict)
 
 
 @dataclass
@@ -148,7 +173,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         self.eval_criterias[eval_criteria.metric_name] = eval_criteria
 
     @abc.abstractmethod
-    async def score(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> EvalCaseResult:
+    async def score(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> ScorerResult:
         """score the execute result.
 
         Args:
@@ -263,7 +288,12 @@ class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
         score_rows = {}
         for scorer in self.scorers:
             score_rows[scorer.name] = await scorer.score(index, input, output)
-        return EvalCaseResult(index=index, input=input, output=output, score_rows=score_rows)
+        return EvalCaseResult(index=index,
+                              input=input,
+                              eval_case_id=input.eval_case_id,
+                              eval_dataset_id=input.eval_dataset_id,
+                              output=output,
+                              score_rows=score_rows)
 
     async def evaluate(self, dataset: EvalDataset, eval_target: EvalTarget[EvalCaseDataType] = NoActionEvalTarget()) -> EvalResult:
         """Evaluate the dataset/llm/agent.

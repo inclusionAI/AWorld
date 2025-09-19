@@ -2,7 +2,7 @@ import unittest
 import os
 from aworld.agents.llm_agent import Agent
 from aworld.evaluations.scorers.summarize_quality import SummarizeQualityScorer
-from aworld.evaluations.eval_targets.agent_eval import AgentEvalTarget
+from aworld.evaluations.eval_targets.agent_eval import AworldAgentEvalTarget
 from aworld.evaluations.base import EvalDataset, EvalDataCase, Evaluator
 from aworld.config.conf import AgentConfig, ModelConfig
 from dotenv import load_dotenv
@@ -46,7 +46,7 @@ class AgentEvaluationTest(unittest.IsolatedAsyncioTestCase):
             llm_api_key=os.getenv("LLM_API_KEY_SCORE"),
         )
 
-        evaluatable = AgentEvalTarget(agent=summarize_agent)
+        evaluatable = AworldAgentEvalTarget(agent=summarize_agent)
         evaluator = Evaluator(scorers=[SummarizeQualityScorer(model_config=score_llm_config)])
 
         result = await evaluator.evaluate(dataset, evaluatable)

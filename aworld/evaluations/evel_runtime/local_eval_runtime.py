@@ -4,7 +4,7 @@ import os
 import json
 import importlib
 from aworld.evaluations.base import (
-    EvalDataCase, EvalRunConfig, EvalResult, EvaluateRunner, EvalDataset, EvalRun, Scorer, EvalTarget, Evaluator
+    EvalDataCase, EvalRunConfig, EvalResult, EvaluateRunner, EvalDataset, EvalRun, Scorer, EvalTarget, Evaluator, EvalCriteria
 )
 from aworld.evaluations.evel_runtime.eval_run_manager import EvalRunManager, DefaultEvalRunManager
 from aworld.evaluations.evel_runtime.eval_dataset_manager import EvalDatasetManager, DefaultEvalDatasetManager
@@ -88,7 +88,13 @@ class LocalEvaluateRunner(EvaluateRunner):
         '''
         Get scorer instances for evaluation.
         '''
-        return get_scorer_instances_for_criterias(eval_config.eval_criterias)
+        converted_criterias = []
+        for criteria in eval_config.eval_criterias:
+            if isinstance(criteria, dict):
+                converted_criterias.append(EvalCriteria.from_dict(criteria))
+            else:
+                converted_criterias.append(criteria)
+        return get_scorer_instances_for_criterias(converted_criterias)
 
     def _is_file_path(self, eval_dataset_id_or_file_path: str) -> bool:
         if not eval_dataset_id_or_file_path:

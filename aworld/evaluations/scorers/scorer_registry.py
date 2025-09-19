@@ -1,4 +1,3 @@
-import imp
 from typing import Dict, List, Set, Optional, Type, Any
 from aworld.evaluations.base import Scorer, EvalCriteria
 from aworld.logs.util import logger
@@ -190,7 +189,7 @@ def get_scorer_instances_for_criterias(criterias: List[EvalCriteria]) -> List[Sc
     return global_scorer_registry.get_scorer_instances_for_criterias(criterias)
 
 
-def score_register(*metric_names: str, **default_params):
+def scorer_register(*metric_names: str, **default_params):
     '''
     A decorator to register scorer classes automatically.
 
