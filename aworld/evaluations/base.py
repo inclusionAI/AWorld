@@ -148,7 +148,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         self.eval_criterias[eval_criteria.metric_name] = eval_criteria
 
     @abc.abstractmethod
-    async def score(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> Any:
+    async def score(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> EvalCaseResult:
         """score the execute result.
 
         Args:

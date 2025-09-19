@@ -16,13 +16,13 @@ class LabelDistributionScorer(Scorer[dict]):
         super().__init__(name)
         self.dataset_column = dataset_column
 
-    async def score(self, index: int, input: EvalDataCase[dict], output: dict) -> Any:
+    async def score(self, index: int, input: EvalDataCase[dict], output: dict) -> EvalCaseResult:
         """score the execute result.
 
         Returns:
             score
         """
-        return {}
+        return EvalCaseResult(index=index, eval_case_id=input.eval_case_id, eval_dataset_id=input.eval_dataset_id, input=input.case_data, output=output)
 
     def summarize(self, result_rows: list[EvalCaseResult]) -> Optional[dict]:
         '''

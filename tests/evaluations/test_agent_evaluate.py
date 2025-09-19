@@ -2,8 +2,8 @@ import unittest
 import os
 from aworld.agents.llm_agent import Agent
 from aworld.evaluations.scorers.summarize_quality import SummarizeQualityScorer
-from aworld.evaluations.eval_targets.agent_eval import AgentEvaluatable
-from aworld.evaluations.base import Dataset, Evaluator
+from aworld.evaluations.eval_targets.agent_eval import AgentEvalTarget
+from aworld.evaluations.base import EvalDataset, EvalDataCase, Evaluator
 from aworld.config.conf import AgentConfig, ModelConfig
 from dotenv import load_dotenv
 
@@ -12,15 +12,18 @@ class AgentEvaluationTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_summarize_quality(self):
         load_dotenv()
-        dataset = Dataset(
-            rows=[
-                {
-                    "query": "Several multilingual benchmark datasets have been developed in a semi-automatic manner in the recent past to measure progress and understand the state-of-the-art in the multilingual capabilities of Large Language Models. However, there is not a lot of attention paid to the quality of the datasets themselves, despite the existence of previous work in identifying errors in even fully human-annotated test sets. In this paper, we manually analyze recent multilingual evaluation sets in two languages - French and Telugu, identifying several errors in the process."
-                }, {
-                    "query": "Achieving multilingual fairness in AI systems thatincorporate large language models (LLMs) re-quires not only careful curation of pre-training dataand post-training data, but also (and perhaps moreimportantly) evaluation data, as only the latter canenable us to accurately track progress of these sys-tems on the various tasks they perform."
-                }
-            ]
-        )
+        eval_dataset_id = "test_dataset"
+        data = [
+            {
+                "query": "Several multilingual benchmark datasets have been developed in a semi-automatic manner in the recent past to measure progress and understand the state-of-the-art in the multilingual capabilities of Large Language Models. However, there is not a lot of attention paid to the quality of the datasets themselves, despite the existence of previous work in identifying errors in even fully human-annotated test sets. In this paper, we manually analyze recent multilingual evaluation sets in two languages - French and Telugu, identifying several errors in the process."
+            }, {
+                "query": "Achieving multilingual fairness in AI systems thatincorporate large language models (LLMs) re-quires not only careful curation of pre-training dataand post-training data, but also (and perhaps moreimportantly) evaluation data, as only the latter canenable us to accurately track progress of these sys-tems on the various tasks they perform."
+            }
+        ]
+
+        data_cases = [EvalDataCase(eval_dataset_id=eval_dataset_id, case_data=d) for d in data]
+        dataset = EvalDataset(eval_dataset_id=eval_dataset_id, eval_cases=data_cases)
+        
         summarize_agent_config = AgentConfig(
             llm_provider=os.getenv("LLM_PROVIDER"),
             llm_model_name=os.getenv("LLM_MODEL_NAME"),
@@ -43,7 +46,7 @@ class AgentEvaluationTest(unittest.IsolatedAsyncioTestCase):
             llm_api_key=os.getenv("LLM_API_KEY_SCORE"),
         )
 
-        evaluatable = AgentEvaluatable(agent=summarize_agent)
+        evaluatable = AgentEvalTarget(agent=summarize_agent)
         evaluator = Evaluator(scorers=[SummarizeQualityScorer(model_config=score_llm_config)])
 
         result = await evaluator.evaluate(dataset, evaluatable)

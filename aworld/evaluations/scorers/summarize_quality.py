@@ -1,11 +1,14 @@
-from aworld.evaluations.base import Scorer
+from aworld.evaluations.base import EvalDataCase, Scorer, EvalCaseResult
 from aworld.config.conf import ModelConfig, AgentConfig
-from typing import Any
+from aworld.evaluations.base import EvalStatus
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 from aworld.logs.util import logger
 import json
 import re
+from aworld.evaluations.scorers.metrics import MetricNames
+from aworld.evaluations.scorers.scorer_registry import score_register
+
 
 DEFAULT_SUMMARIZE_QUALITY_SYSTEM_PROMPT = """
 Given an <input> and a <summary>, evaluate the quality of the <summary>.
@@ -45,6 +48,7 @@ Please output in the following standard JSON format without any additional expla
 summarize_quality_score_mapping = {"poor": 0.0, "ok": 0.5, "excellent": 1.0}
 
 
+@score_register(MetricNames.SUMMARIZE_QUALITY)
 class SummarizeQualityScorer(Scorer):
 
     def __init__(self, model_config: ModelConfig, query_column: str = 'query', answer_column: str = 'answer'):
@@ -70,7 +74,7 @@ class SummarizeQualityScorer(Scorer):
                 logger.warning(f"_fetch_json_from_result json_str: {json_str} error: {e}")
         return ""
 
-    async def score(self, index: int, input: dict, output: dict) -> Any:
+    async def score(self, index: int, input: EvalDataCase[dict], output: dict) -> EvalCaseResult:
         """Score the quality of the summary.
 
         Args:
@@ -81,7 +85,7 @@ class SummarizeQualityScorer(Scorer):
         Returns:
             The score of the summary.
         """
-        query = input[self.query_column]
+        query = input.case_data[self.query_column]
         answer = output[self.answer_column]
         task_input = TASK_TEMPLATE.format(input=query, summary=answer)
 
@@ -92,5 +96,15 @@ class SummarizeQualityScorer(Scorer):
         response = await Runners.run(task_input, agent=score_agent)
         jsonObj = self._fetch_json_from_result(response.answer)
         if jsonObj:
-            return {"summary_quality_score": summarize_quality_score_mapping[jsonObj["quality"]], "score_reasoning": jsonObj["score_reasoning"]}
-        return {"summary_quality_score": 0.0, "score_reasoning": "score response error"}
+            scorer_rows = {MetricNames.SUMMARIZE_QUALITY: summarize_quality_score_mapping[jsonObj["quality"]], "score_reasoning": jsonObj["score_reasoning"]}
+            return EvalCaseResult(index=index, 
+                                  eval_case_id=input.eval_case_id,
+                                  eval_dataset_id=input.eval_dataset_id,
+                                  input=input.case_data,
+                                  output=output,
+                                  score_rows=scorer_rows,
+                                  eval_status=EvalStatus.SUCCESS,
+                                  )
+        else:
+            scorer_rows = {MetricNames.SUMMARIZE_QUALITY: 0.0, "score_reasoning": "score response error"}
+        
