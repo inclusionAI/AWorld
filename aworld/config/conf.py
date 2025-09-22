@@ -6,11 +6,12 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable
 
 import yaml
 from pydantic import BaseModel, Field
 
+from aworld.dataset.sampler import Sampler
 from aworld.logs.util import logger
 
 
@@ -272,3 +273,33 @@ class EvaluationConfig(BaseConfig):
 
 class StorageConfig(BaseConfig):
     name: str = "inmemory"
+
+
+class DataLoaderConfig(BaseConfig):
+    batch_size: Optional[int] = 1
+    sampler: Any = None
+    shuffle: bool = False
+    drop_last: bool = False
+    seed: Optional[int] = None
+    batch_sampler: Optional[Iterable[List[int]]] = None
+    collate_fn: Optional[Callable[..., Any]] = None
+
+class DatasetConfig(BaseConfig):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    transforms: List[Callable[..., Any]] = Field(default_factory=list)
+
+    # Config for loading dataset from source
+    format: Optional[str] = None
+    split: Optional[str] = None
+    subset: Optional[str] = None
+    json_field: Optional[str] = None
+    parquet_columns: Optional[List[str]] = None
+    encoding: str = "utf-8"
+    limit: Optional[int] = None
+    preload_transform: Optional[Callable[..., Any]] = None
+
+    # Config for dataloader
+    dataloader_config: DataLoaderConfig = DataLoaderConfig()
+
