@@ -44,7 +44,7 @@ class Dataset(BaseModel, Generic[_T_co]):
 
     def load_from(
         self,
-        source: str,
+        source: Union[str, List[str]],
         *,
         format: Optional[str] = None,
         split: Optional[str] = None,
@@ -55,11 +55,12 @@ class Dataset(BaseModel, Generic[_T_co]):
         limit: Optional[int] = None,
         preload_transform: Optional[Callable[[_T_co], _T_co]] = None,
     ):
-        """Load data into `data` from a local path or Hugging Face Hub.
+        """Load data into `data` from a local path(s) or Hugging Face Hub.
 
         Args:
-            source: Local file path (csv/json/txt/parquet) or a Hugging Face repo id
-                when the path does not exist locally (e.g. "imdb", "glue").
+            source: Local file path (csv/json/txt/parquet), a list of local file paths
+                to be loaded in order, or a Hugging Face repo id when the local path
+                does not exist (e.g. "imdb", "glue").
             format: Explicit format override for local files: "csv", "json",
                 "txt", or "parquet". If omitted, inferred from file suffix.
             split: Dataset split when loading from Hugging Face (e.g. "train").
@@ -92,73 +93,99 @@ class Dataset(BaseModel, Generic[_T_co]):
                 return data  # type: ignore[return-value]
             return [transform_func(item) for item in data]  # type: ignore[misc]
 
-        # Local path branch
-        if os.path.exists(source):
-            path = Path(source)
-            fmt = (format or path.suffix.lstrip(".")).lower()
-            if fmt not in {"csv", "json", "txt", "parquet"}:
-                raise ValueError(f"Unsupported file format: {fmt!r}")
+        # Local path branch (single path or list of paths)
+        if isinstance(source, list) or (isinstance(source, str) and os.path.exists(source)):
+            paths: List[Path]
+            if isinstance(source, list):
+                paths = [Path(p) for p in source]
+            else:
+                paths = [Path(source)]
 
-            if fmt == "csv":
-                with open(path, "r", encoding=encoding, newline="") as f:
-                    reader = csv.DictReader(f)
-                    records = _apply_limit(reader, limit)
-                self.data = _apply_preload_transform(list(records), preload_transform)  # type: ignore[assignment]
-                self.metadata.update({"source": str(path), "format": "csv"})
-                return
+            # Validate existence when list provided
+            for p in paths:
+                if not p.exists():
+                    raise FileNotFoundError(f"File not found: {str(p)}")
 
-            if fmt == "json":
-                with open(path, "r", encoding=encoding) as f:
+            loaded_items: List[Any] = []
+            formats_seen: List[str] = []
+            remaining = limit
+
+            def _read_single_file(file_path: Path, fmt_override: Optional[str], max_items: Optional[int]) -> List[Any]:
+                fmt_local = (fmt_override or file_path.suffix.lstrip(".")).lower()
+                if fmt_local not in {"csv", "json", "txt", "parquet"}:
+                    raise ValueError(f"Unsupported file format: {fmt_local!r}")
+
+                if fmt_local == "csv":
+                    with open(file_path, "r", encoding=encoding, newline="") as f:
+                        reader = csv.DictReader(f)
+                        return _apply_limit(reader, max_items)
+
+                if fmt_local == "json":
+                    with open(file_path, "r", encoding=encoding) as f:
+                        try:
+                            obj = json.load(f)
+                        except json.JSONDecodeError:
+                            f.seek(0)
+                            items_local: List[Any] = []
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                items_local.append(json.loads(line))
+                            obj = items_local
+
+                    if isinstance(obj, dict) and json_field is not None:
+                        obj = obj.get(json_field, [])
+                    if not isinstance(obj, list):
+                        raise ValueError("JSON content must be a list or specify json_field to extract a list.")
+                    return _apply_limit(obj, max_items)
+
+                if fmt_local == "txt":
+                    with open(file_path, "r", encoding=encoding) as f:
+                        lines_iter = (line.rstrip("\n") for line in f)
+                        return _apply_limit(lines_iter, max_items)
+
+                if fmt_local == "parquet":
                     try:
-                        obj = json.load(f)
-                    except json.JSONDecodeError:
-                        # Fallback: newline-delimited JSON
-                        f.seek(0)
-                        items: List[Any] = []
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            items.append(json.loads(line))
-                        obj = items
+                        import pandas as pd  # type: ignore
+                        df = pd.read_parquet(file_path, columns=parquet_columns)
+                        records_local = df.to_dict(orient="records")
+                        return _apply_limit(records_local, max_items)
+                    except Exception:
+                        try:
+                            import pyarrow.parquet as pq  # type: ignore
+                            table = pq.read_table(file_path, columns=parquet_columns)
+                            records_local = table.to_pylist()
+                            return _apply_limit(records_local, max_items)
+                        except Exception as e:  # pragma: no cover - environment dependent
+                            raise RuntimeError(
+                                "Failed to read parquet file. Ensure pandas or pyarrow is installed."
+                            ) from e
 
-                # If a field is specified, extract it when a dict is loaded
-                if isinstance(obj, dict) and json_field is not None:
-                    obj = obj.get(json_field, [])
-                if not isinstance(obj, list):
-                    raise ValueError("JSON content must be a list or specify json_field to extract a list.")
-                self.data = _apply_preload_transform(_apply_limit(obj, limit), preload_transform)  # type: ignore[assignment]
-                self.metadata.update({"source": str(path), "format": "json"})
-                return
+                # Unreachable
+                return []
 
-            if fmt == "txt":
-                with open(path, "r", encoding=encoding) as f:
-                    lines = (line.rstrip("\n") for line in f)
-                    self.data = _apply_preload_transform(_apply_limit(lines, limit), preload_transform)  # type: ignore[assignment]
-                self.metadata.update({"source": str(path), "format": "txt"})
-                return
+            for p in paths:
+                fmt_this = (format or p.suffix.lstrip(".")).lower()
+                formats_seen.append(fmt_this if fmt_this else "")
+                max_items_for_this = remaining
+                items_this = _read_single_file(p, format, max_items_for_this)
+                if preload_transform is not None:
+                    items_this = [preload_transform(it) for it in items_this]  # type: ignore[misc]
+                loaded_items.extend(items_this)
+                if limit is not None:
+                    remaining = max(0, limit - len(loaded_items))
+                    if remaining == 0:
+                        break
 
-            if fmt == "parquet":
-                # Prefer pandas if available, otherwise try pyarrow directly
-                try:
-                    import pandas as pd  # type: ignore
-                    df = pd.read_parquet(path, columns=parquet_columns)
-                    records = df.to_dict(orient="records")
-                    self.data = _apply_preload_transform(_apply_limit(records, limit), preload_transform)  # type: ignore[assignment]
-                    self.metadata.update({"source": str(path), "format": "parquet"})
-                    return
-                except Exception:
-                    try:
-                        import pyarrow.parquet as pq  # type: ignore
-                        table = pq.read_table(path, columns=parquet_columns)
-                        records = table.to_pylist()
-                        self.data = _apply_preload_transform(_apply_limit(records, limit), preload_transform)  # type: ignore[assignment]
-                        self.metadata.update({"source": str(path), "format": "parquet"})
-                        return
-                    except Exception as e:  # pragma: no cover - environment dependent
-                        raise RuntimeError(
-                            "Failed to read parquet file. Ensure pandas or pyarrow is installed."
-                        ) from e
+            self.data = loaded_items  # type: ignore[assignment]
+            meta: Dict[str, Any] = {"format": "multiple" if len(set(formats_seen)) > 1 else (formats_seen[0] or "")}
+            if len(paths) == 1:
+                meta.update({"source": str(paths[0])})
+            else:
+                meta.update({"sources": [str(p) for p in paths]})
+            self.metadata.update(meta)
+            return
 
         # Hugging Face Hub branch (requires `datasets` library)
         try:
