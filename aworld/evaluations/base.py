@@ -4,13 +4,22 @@ import uuid
 from ast import Set
 import statistics
 import asyncio
-from typing import Any, Iterable, Optional, List, Callable, Awaitable, TypeVar, Generic, TypedDict
+from typing import Any, Iterable, Optional, List, Callable, Awaitable, TypeVar, Generic, TypedDict, Union
 from enum import Enum
 from dataclasses import dataclass, field
 from itertools import chain, repeat
 from aworld.logs.util import logger
 
 EvalCaseDataType = TypeVar('EvalCaseDataType')
+
+
+class EvalStatus(Enum):
+    PASSED = 1
+    FAILED = 2
+    NOT_EVALUATED = 3
+
+
+MetricValueType = Union[int, float, bool]
 
 
 @dataclass
@@ -33,6 +42,17 @@ class EvalCriteria:
         valid_fields = {field.name for field in cls.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
         return cls(**filtered_data)
+
+    def judge(self, value: float) -> EvalStatus:
+        '''
+        Judge the value against the threshold.
+        '''
+        if value > self.max_value or value < self.min_value:
+            return EvalStatus.FAILED
+        if value >= self.threshold:
+            return EvalStatus.PASSED
+        else:
+            return EvalStatus.FAILED
 
 
 @dataclass
@@ -85,17 +105,11 @@ class EvalDataset:
     eval_cases: list[EvalDataCase] = field(default_factory=list)
 
 
-class EvalStatus(Enum):
-    PASSED = 1
-    FAILED = 2
-    NOT_EVALUATED = 3
-
-
 class MetricResult(TypedDict, total=False):
     '''
     Metric result.
     '''
-    value: float
+    value: MetricValueType
     eval_status: EvalStatus
 
 
@@ -116,8 +130,8 @@ class EvalCaseResult:
     eval_dataset_id: str = field(default_factory=str)
     input: dict = field(default_factory=dict)
     output: dict = field(default_factory=dict)
-    eval_status: EvalStatus = field(default_factory=lambda: EvalStatus.NOT_EVALUATED)
-    score_rows: dict = field(default_factory=dict)
+    # score results, key is scorer name, value is ScorerResult obj
+    score_rows: dict[str, ScorerResult] = field(default_factory=dict)
     create_time: float = field(default_factory=lambda: time.time())
 
 
@@ -172,6 +186,16 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         '''
         self.eval_criterias[eval_criteria.metric_name] = eval_criteria
 
+    async def scorer_and_judge(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> ScorerResult:
+        '''
+            Judge the status.
+        '''
+        scorer_result = await self.score(index, input, output)
+        for metric_name, metric_result in scorer_result.metric_results.items():
+            if metric_name in self.eval_criterias:
+                metric_result['eval_status'] = self.eval_criterias[metric_name].judge(metric_result['value'])
+        return scorer_result
+
     @abc.abstractmethod
     async def score(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> ScorerResult:
         """score the execute result.
@@ -205,15 +229,40 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
                 score_dict[k] = self._do_summarize([score[k] for score in scores if k in score])
         return score_dict
 
-    def summarize(self, result_rows: list[EvalCaseResult]) -> Optional[dict]:
+    def summarize(self, eval_case_results: list[EvalCaseResult]) -> Optional[dict]:
         '''
-            summarize the score rows.
+        Summarize the scores for all metrics.
         '''
-        logger.info(f"result_rows: {result_rows}")
-        if not result_rows or not result_rows[0].score_rows or self.name not in result_rows[0].score_rows:
+        logger.info(f"eval_case_results: {eval_case_results}")
+        if not eval_case_results or not eval_case_results[0].score_rows or self.name not in eval_case_results[0].score_rows:
             return {}
-        my_scores = [result.score_rows[self.name] for result in result_rows]
-        return self._do_summarize(my_scores)
+
+        # my all metric score results of all cases
+        metric_scores = {}
+        for result in eval_case_results:
+            scorer_result = result.score_rows.get(self.name)
+            if not scorer_result or not hasattr(scorer_result, 'metric_results'):
+                continue
+            for metric_name, metric_result in scorer_result.metric_results.items():
+                if metric_name not in metric_scores:
+                    metric_scores[metric_name] = []
+                if isinstance(metric_result, dict) and 'value' in metric_result:
+                    metric_scores[metric_name].append(metric_result['value'])
+                elif isinstance(metric_result, MetricValueType):
+                    metric_scores[metric_name].append(metric_result)
+
+        summary = {}
+        for metric_name, scores in metric_scores.items():
+            if scores:
+                metric_summary = self._do_summarize(scores)
+                if metric_name in self.eval_criterias:
+                    eval_criteria = self.eval_criterias[metric_name]
+                    if 'mean' in metric_summary:
+                        metric_summary['eval_status'] = eval_criteria.judge(metric_summary['mean']).name
+                    elif 'true_rate' in metric_summary:
+                        metric_summary['eval_status'] = eval_criteria.judge(metric_summary['true_rate']).name
+                summary[metric_name] = metric_summary
+        return summary
 
 
 class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
@@ -287,7 +336,7 @@ class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
         output = await eval_target.predict(input)
         score_rows = {}
         for scorer in self.scorers:
-            score_rows[scorer.name] = await scorer.score(index, input, output)
+            score_rows[scorer.name] = await scorer.scorer_and_judge(index, input, output)
         return EvalCaseResult(index=index,
                               input=input,
                               eval_case_id=input.eval_case_id,
