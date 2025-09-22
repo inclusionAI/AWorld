@@ -1,14 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import uuid
+import asyncio
 from typing import List, Dict, Any
 
 from aworld.core.llm_provider import LLMProviderBase
-from aworld.logs.util import logger
 from aworld.models.llm import register_llm_provider
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.utils.common import sync_exec
-from train.adapter.verl.common import encode_messages
 
 from vllm.entrypoints.openai.protocol import ExtractedToolCallInformation
 from vllm.entrypoints.openai.tool_parsers import ToolParserManager, ToolParser
@@ -36,7 +34,7 @@ class VerlProvider(LLMProviderBase):
         self.provider = params.get("client")
         self.tokenizer = params.get("tokenizer")
         self.sampling_params = params.get("sampling_params", {})
-        self.request_id = params.get("task_id")
+        self.request_id = params.get("request_id")
         self.tool_parser = params.get("tool_parser")
 
     def _init_provider(self):
@@ -65,27 +63,38 @@ class VerlProvider(LLMProviderBase):
         sampling_params = {
             "temperature": temperature,
             "top_p": kwargs.get('top_p', 1.0),
+            "top_k": kwargs.get('top_k', 80),
             "repetition_penalty": kwargs.get('repetition_penalty', 1.0),
         }
         sampling_params.update(self.sampling_params)
 
-        prompt_ids, _, response_mask = await encode_messages(self.tokenizer, messages, tools=kwargs.get("tools"))
-        response_ids = await self.provider.generate(
-            request_id=self.request_id, prompt_ids=prompt_ids, sampling_params=sampling_params
+        loop = asyncio.get_running_loop()
+        prompt_ids = await loop.run_in_executor(
+            None,
+            lambda: self.tokenizer.apply_chat_template(
+                messages,
+                tools=kwargs.get("tools"),
+                add_generation_prompt=True,
+                tokenize=True,
+            ),
         )
-        content = self.tokenizer.decode(response_ids, skip_special_tokens=True)
-
-        logger.warning(f"content: {content}")
+        rid = self.request_id
+        response_output = await self.provider.generate(
+            request_id=rid, prompt_ids=prompt_ids, sampling_params=sampling_params
+        )
+        content = self.tokenizer.decode(response_output.token_ids, skip_special_tokens=True)
 
         tool_parser = ToolParserManager.get_tool_parser(self.tool_parser)
         res: ExtractedToolCallInformation = tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
 
-        rid = uuid.uuid4().hex
+        tool_calls = []
         if res.tools_called:
             tool_calls = [ToolCall(**tool_call.model_dump()) for tool_call in res.tool_calls]
-            return ModelResponse(id=rid, tool_calls=tool_calls, model=self.model_name, raw_response=content)
-        else:
-            return ModelResponse(id=rid, content=res.content, model=self.model_name, raw_response=content)
+        return ModelResponse(id=rid,
+                             content=res.content,
+                             tool_calls=tool_calls,
+                             model=self.model_name,
+                             raw_response=content)
 
 
 register_llm_provider("verl", VerlProvider)

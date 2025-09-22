@@ -27,7 +27,7 @@ class GaiaAgentLoop(AworldAgentLoop):
                 llm_provider="verl",
                 params={"client": self.server_manager,
                         "tokenizer": self.tokenizer,
-                        "task_id": uuid.uuid4().hex,
+                        "request_id": uuid.uuid4().hex,
                         "tool_parser": "hermes"}
             ),
             name="gaia_super_agent",

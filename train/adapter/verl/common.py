@@ -4,7 +4,8 @@ import asyncio
 import json
 import os
 import traceback
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
+
 from transformers import AutoTokenizer
 
 
@@ -48,7 +49,7 @@ def turns_num(messages: List[Dict[str, Any]]) -> int:
 async def encode_messages(tokenizer: AutoTokenizer,
                           messages: List[Dict[str, Any]],
                           response_length: int = 128000,
-                          tools: Dict[str, Any] = None):
+                          tools: Dict[str, Any] = None) -> Tuple[List[int], List[int], List[int]]:
     """Encode messages to IDs.
 
     Args:
