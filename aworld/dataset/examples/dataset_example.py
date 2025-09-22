@@ -87,6 +87,25 @@ def main():
     print(f"Metadata: {hotpot_qa_dataset.metadata}")
     print()
 
+    # 1.1 Load multiple local files in order (List[str])
+    print("     === 1.1 Loading Multiple Local Files in Order (List[str]) ===")
+    multi_files_dataset = Dataset[Dict[str, Any]](
+        name="multi_files_dataset",
+        data=[]
+    )
+
+    # Demo purpose: reuse the same file twice; in real use, provide different file paths
+    multi_files_dataset.load_from(
+        source=[csv_path, csv_path],
+        format="csv",
+        limit=15  # Accumulates across files; stops when limit reached
+    )
+
+    print(f"       Dataset name: {multi_files_dataset.name}")
+    print(f"       Number of records: {len(multi_files_dataset.data)}")
+    print(f"       Metadata: {multi_files_dataset.metadata}")
+    print()
+
     print("     === Loading Local CSV File with Transformation ===")
     # Load CSV data with transformation
     hotpot_qa_dataset_transform = Dataset[Dict[str, Any]](
