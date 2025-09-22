@@ -18,6 +18,7 @@ from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutp
 from train.adapter.verl.common import encode_messages, turns_num
 from train.adapter.verl.verl_provider import VerlProvider
 
+# show aworld log on ray
 logger.setLevel(logging.INFO)
 logger.propagate = False
 if not logger.handlers:
@@ -137,7 +138,7 @@ class AworldAgentLoop(AgentLoopBase):
     def get_num_turns(self, trajectory: List[Dict[str, Any]]):
         return len(trajectory)
 
-    async def convert_agent_output(self, trajectory: List[Dict[str, Any]], response_length: int) -> AgentLoopOutput:
+    async def convert_agent_output(self, trajectory: List[Dict[str, Any]]) -> AgentLoopOutput:
         """Convert trajectory to AgentLoopOutput.
 
         Args:

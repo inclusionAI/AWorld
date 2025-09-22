@@ -13,8 +13,7 @@ from vllm.entrypoints.openai.tool_parsers import ToolParserManager, ToolParser
 
 
 class VerlProvider(LLMProviderBase):
-    """Verl vllm provider implementation.
-    """
+    """Verl vllm provider implementation."""
 
     def __init__(self,
                  api_key: str = None,
@@ -30,7 +29,6 @@ class VerlProvider(LLMProviderBase):
                          async_enabled=async_enabled, **kwargs)
 
         params = kwargs.get("params")
-        print("provider params: ", params)
         self.provider = params.get("client")
         self.tokenizer = params.get("tokenizer")
         self.sampling_params = params.get("sampling_params", {})
