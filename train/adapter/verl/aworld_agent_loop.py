@@ -161,17 +161,36 @@ class AworldAgentLoop(AgentLoopBase):
                 metrics={},
             )
         if messages[-1].get("role") != "assistant":
-            logger.warning(
-                f"Found last message with role '{messages[-1].get('role')}', but expected 'assistant'. Truncating trailing 'tool' messages.")
-            last_non_tool_index = -1
-            for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get("role") != "tool":
-                    last_non_tool_index = i
-                    break
-            if last_non_tool_index != -1:
-                messages = messages[:last_non_tool_index + 1]
+            actions = trajectory[-1].get("exp_data", {}).get("actions", [])
+            if len(actions) < 1:
+                logger.warning(f"Found last message actions empty.")
+                last_non_tool_index = -1
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get("role") != "tool":
+                        last_non_tool_index = i
+                        break
+                if last_non_tool_index != -1:
+                    messages = messages[:last_non_tool_index + 1]
+                else:
+                    messages = []
             else:
-                messages = []
+                agent_resp_content = str(actions[0].get("policy_info"))
+                last_assistant_message = {
+                    "role": "assistant",
+                    "content": agent_resp_content
+                }
+                tool_calls = []
+                for action in actions:
+                    tool_calls.append({
+                        "id": action.get("tool_call_id"),
+                        "type": "function",
+                        "function": {
+                            "name": action.get("tool_name"),
+                            "arguments": json.dumps(action.get("params"), ensure_ascii=False),
+                        }
+                    })
+                last_assistant_message["tool_calls"] = tool_calls
+                messages.append(last_assistant_message)
 
         output = await self.to_agent_loop_output(messages=messages)
         return output
