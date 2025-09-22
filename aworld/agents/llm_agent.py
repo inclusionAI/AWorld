@@ -298,7 +298,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     urls.append(
                         {'type': 'image_url', 'image_url': {"url": image_url}})
                 content = urls
-            await self._add_human_input_to_memory(content, message.context, memory_type="message")
+            await self._add_human_input_to_memory(content, message.context)
 
         # from memory get last n messages
         histories = self.memory.get_last_n(self.memory_config.history_rounds, filters={
