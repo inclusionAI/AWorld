@@ -8,7 +8,7 @@ import os
 from aworld.dataset.dataset import Dataset
 from aworld.dataset.dataloader import DataLoader
 from aworld.dataset.sampler import SequentialSampler, RandomSampler, BatchSampler
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 
 def test_load_hf_dataset(name: str, split: str = None):
@@ -245,6 +245,119 @@ def main():
 
     print()
 
+    # 9. Demonstrate collate_fn functionality
+    print("=== 9. DataLoader collate_fn Demo ===")
+    
+    # Define custom collate functions
+    def simple_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, List[Any]]:
+        """Simple collate function that groups fields by key"""
+        if not batch:
+            return {}
+        
+        # Get all unique keys from the batch
+        all_keys = set()
+        for item in batch:
+            if isinstance(item, dict):
+                all_keys.update(item.keys())
+        
+        # Group values by key
+        result = {}
+        for key in all_keys:
+            result[key] = [item.get(key, None) for item in batch]
+        
+        return result
+    
+    def advanced_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Advanced collate function with statistics and metadata"""
+        if not batch:
+            return {"batch_size": 0, "data": []}
+        
+        # Calculate batch statistics
+        batch_size = len(batch)
+        all_keys = set()
+        for item in batch:
+            if isinstance(item, dict):
+                all_keys.update(item.keys())
+        
+        # Group data and add statistics
+        grouped_data = {}
+        for key in all_keys:
+            values = [item.get(key, None) for item in batch]
+            grouped_data[key] = values
+            
+            # Add statistics for string fields
+            if values and all(isinstance(v, str) for v in values if v is not None):
+                non_null_values = [v for v in values if v is not None]
+                grouped_data[f"{key}_stats"] = {
+                    "count": len(non_null_values),
+                    "avg_length": sum(len(v) for v in non_null_values) / len(non_null_values) if non_null_values else 0,
+                    "max_length": max(len(v) for v in non_null_values) if non_null_values else 0,
+                    "min_length": min(len(v) for v in non_null_values) if non_null_values else 0
+                }
+        
+        return {
+            "batch_size": batch_size,
+            "data": grouped_data,
+            "metadata": {
+                "total_fields": len(all_keys),
+                "field_names": list(all_keys)
+            }
+        }
+    
+    # Test simple collate function
+    print("Using simple collate_fn (groups fields by key):")
+    batch_count = 0
+    for batch in DataLoader(hotpot_qa_dataset, batch_size=3, shuffle=False, collate_fn=simple_collate_fn):
+        batch_count += 1
+        print(f"  Batch {batch_count}:")
+        if isinstance(batch, dict):
+            for key, values in list(batch.items())[:3]:  # Show first 3 fields
+                print(f"    {key}: {len(values)} values")
+                for i in range(len(values)):
+                    print(f"        {i}: {str(values[i])[:50] if values else 'None'}...")
+        if batch_count >= 2:
+            break
+    print()
+    
+    # Test advanced collate function
+    print("Using advanced collate_fn (with statistics):")
+    batch_count = 0
+    for batch in DataLoader(hotpot_qa_dataset, batch_size=3, shuffle=False, collate_fn=advanced_collate_fn):
+        batch_count += 1
+        print(f"  Batch {batch_count}:")
+        if isinstance(batch, dict) and "data" in batch:
+            print(f"    Batch size: {batch['batch_size']}")
+            print(f"    Total fields: {batch['metadata']['total_fields']}")
+            print(f"    Field names: {batch['metadata']['field_names']}")
+            
+            # Show statistics for first string field
+            data = batch["data"]
+            cnt = 0
+            for key, values in data.items():
+                if key.endswith("_stats") and isinstance(values, dict):
+                    cnt += 1
+                    print(f"    {key}: avg_length={values['avg_length']:.1f}, max_length={values['max_length']}")
+                    if cnt >= 3:
+                        break
+        if batch_count >= 2:
+            break
+    print()
+    
+    # Test without collate_fn (default behavior)
+    print("Using DataLoader without collate_fn (default behavior):")
+    batch_count = 0
+    for batch in DataLoader(hotpot_qa_dataset, batch_size=3, shuffle=False):
+        batch_count += 1
+        print(f"  Batch {batch_count}: {len(batch)} samples")
+        if isinstance(batch, list) and batch:
+            first_item = batch[0]
+            if isinstance(first_item, dict):
+                print(f"    First item type: dict with {len(first_item)} fields")
+                print(f"    First item keys: {list(first_item.keys())}")
+        if batch_count >= 2:
+            break
+    print()
+
     print("=== Example Complete ===")
     print("This example demonstrates the main features of the Dataset class:")
     print("- Loading data from local CSV files")
@@ -254,6 +367,7 @@ def main():
     print("- Data transformation")
     print("- Metadata management")
     print("- Dataset length and iteration")
+    print("- DataLoader collate_fn functionality")
 
 
 if __name__ == "__main__":
