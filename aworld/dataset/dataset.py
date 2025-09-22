@@ -144,6 +144,25 @@ class Dataset(BaseModel, Generic[_T_co]):
                         raise ValueError("JSON content must be a list or specify json_field to extract a list.")
                     return _apply_limit(obj, max_items)
 
+                if fmt_local == "jsonl":
+                    with open(file_path, "r", encoding=encoding) as f:
+                        try:
+                            items_local: List[Any] = []
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                items_local.append(json.loads(line))
+                            obj = items_local
+                        except json.JSONDecodeError:
+                            raise ValueError(f"Failed to parse {file_path}.")
+
+                    if isinstance(obj, dict) and json_field is not None:
+                        obj = obj.get(json_field, [])
+                    if not isinstance(obj, list):
+                        raise ValueError("JSON content must be a list or specify json_field to extract a list.")
+                    return _apply_limit(obj, max_items)
+
                 if fmt_local == "txt":
                     with open(file_path, "r", encoding=encoding) as f:
                         lines_iter = (line.rstrip("\n") for line in f)
