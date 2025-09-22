@@ -5,13 +5,17 @@ import os
 import json
 import csv
 from pathlib import Path
-from typing import TypeVar, Generic, Dict, List, Any, Iterator, Optional, Iterable, Sized, Callable, Union
+from typing import TypeVar, Generic, Dict, List, Any, Iterator, Optional, Iterable, Sized, Callable, Union, Tuple
 
 from pydantic import BaseModel, Field
 
+from aworld.config import ConfigDict
 from aworld.dataset.sampler import Sampler
 from aworld.dataset.dataloader import DataLoader
 from aworld.logs.util import logger
+from aworld.config.conf import ConfigDict
+from aworld.config.conf import DatasetConfig
+from aworld.config.conf import DataLoaderConfig
 
 _T_co = TypeVar("_T_co", covariant=True)
 
@@ -88,10 +92,10 @@ class Dataset(BaseModel, Generic[_T_co]):
                 out.append(item)
             return out
 
-        def _apply_preload_transform(data: List[Any], transform_func: Optional[Callable[[_T_co], _T_co]]) -> List[_T_co]:
+        def _apply_preload_transform(data: List[Any], transform_func: Optional[Callable[[Any], Any]]) -> List[Any]:
             if transform_func is None:
-                return data  # type: ignore[return-value]
-            return [transform_func(item) for item in data]  # type: ignore[misc]
+                return data
+            return [transform_func(item) for item in data]
 
         # Local path branch (single path or list of paths)
         if isinstance(source, list) or (isinstance(source, str) and os.path.exists(source)):
@@ -221,6 +225,7 @@ class Dataset(BaseModel, Generic[_T_co]):
         drop_last: bool = False,
         seed: Optional[int] = None,
         batch_sampler: Optional[Iterable[List[int]]] = None,
+        collate_fn: Optional[Callable[[List[_T_co]], Any]] = None,
     ) -> Iterator[List[_T_co]]:
         """A lightweight DataLoader-like iterator.
 
@@ -248,13 +253,98 @@ class Dataset(BaseModel, Generic[_T_co]):
             drop_last=drop_last,
             seed=seed,
             batch_sampler=batch_sampler,
-            collate_fn=None,
+            collate_fn=collate_fn,
         )
         return iter(loader)
 
 
+def create_dataset(config: Union[DatasetConfig, ConfigDict, Dict[str, Any]]) -> Tuple[Dataset, Iterator[List[Any]]]:
+    """Create a Dataset and its DataLoader from DatasetConfig/DataLoaderConfig.
 
+    - Preferred input is `DatasetConfig`. `ConfigDict`/plain `dict` with the same
+      field names are also supported for backward compatibility.
+    - If `source` is present (pass-through, not a strict `DatasetConfig` field),
+      call `load_from` with available arguments.
+    - DataLoader parameters are taken from `DatasetConfig.dataloader_config` or
+      from a `dataloader_config` mapping when using dict-like configs.
+    """
 
+    def _as_plain_dict(cfg: Union[DatasetConfig, DataLoaderConfig, ConfigDict, Dict[str, Any]]) -> Dict[str, Any]:
+        if isinstance(cfg, DatasetConfig) or isinstance(cfg, DataLoaderConfig):
+            return cfg.model_dump()
+        if isinstance(cfg, ConfigDict):
+            return dict(cfg)
+        return dict(cfg)
 
+    conf_dict = _as_plain_dict(config)
+
+    # Basic fields
+    dataset_id: Optional[str] = conf_dict.get("id") if isinstance(conf_dict.get("id"), str) else str(uuid.uuid4())
+    name: str = conf_dict.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("`name` must be provided and be a non-empty string")
+    init_data: List[Any] = conf_dict.get("data") or []
+
+    # Transforms applied at __getitem__ time
+    transforms: List[Callable] = []
+    raw_transforms = conf_dict.get("transforms") or []
+    if raw_transforms:
+        if not isinstance(raw_transforms, list):
+            raise ValueError("`transforms` must be a list of callables")
+        for t in raw_transforms:
+            if not callable(t):
+                raise ValueError("All items in `transforms` must be callable")
+            transforms.append(t)
+
+    ds: Dataset = Dataset(  # type: ignore[call-arg]
+        id=dataset_id or str(uuid.uuid4()),
+        name=name,
+        data=init_data,
+        transforms=transforms,
+    )
+
+    # Collect fields for `load_from` (from DatasetConfig-like mapping)
+    load_kwargs: Dict[str, Any] = {}
+    possible_keys = [
+        "source",
+        "format",
+        "split",
+        "subset",
+        "json_field",
+        "parquet_columns",
+        "encoding",
+        "limit",
+        "preload_transform",
+    ]
+    for k in possible_keys:
+        if k in conf_dict and conf_dict[k] is not None:
+            load_kwargs[k] = conf_dict[k]
+
+    if load_kwargs.get("preload_transform") is not None and not callable(load_kwargs.get("preload_transform")):
+        raise ValueError("`preload_transform` must be callable")
+
+    # Only load when `source` is present
+    if "source" in load_kwargs:
+        ds.load_from(**load_kwargs)  # type: ignore[arg-type]
+
+    # Build DataLoader: prefer `DatasetConfig.dataloader_config` when available
+    dl_conf: Dict[str, Any] = {}
+    if isinstance(config, DatasetConfig) and isinstance(config.dataloader_config, DataLoaderConfig):
+        dl_conf = _as_plain_dict(config.dataloader_config)
+    else:
+        dl_conf = conf_dict.get("dataloader_config") or {}
+    if not dl_conf:
+        logger.warning(f"No DataLoaderConfig found for dataset {dataset_id}. Using default DataLoader.")
+        return ds, ds.to_dataloader()
+    dl_iter = ds.to_dataloader(
+        batch_size=dl_conf.get("batch_size"),
+        sampler=dl_conf.get("sampler"),  # type: ignore[arg-type]
+        shuffle=bool(dl_conf.get("shuffle", False)),
+        drop_last=bool(dl_conf.get("drop_last", False)),
+        seed=dl_conf.get("seed"),
+        batch_sampler=dl_conf.get("batch_sampler"),
+        collate_fn=dl_conf.get("collate_fn")
+    )
+    return ds, dl_iter
 
 
