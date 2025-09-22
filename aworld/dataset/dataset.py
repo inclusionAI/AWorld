@@ -116,7 +116,7 @@ class Dataset(BaseModel, Generic[_T_co]):
 
             def _read_single_file(file_path: Path, fmt_override: Optional[str], max_items: Optional[int]) -> List[Any]:
                 fmt_local = (fmt_override or file_path.suffix.lstrip(".")).lower()
-                if fmt_local not in {"csv", "json", "txt", "parquet"}:
+                if fmt_local not in {"csv", "json", "jsonl", "txt", "parquet"}:
                     raise ValueError(f"Unsupported file format: {fmt_local!r}")
 
                 if fmt_local == "csv":
@@ -131,11 +131,19 @@ class Dataset(BaseModel, Generic[_T_co]):
                         except json.JSONDecodeError:
                             f.seek(0)
                             items_local: List[Any] = []
-                            for line in f:
+                            count_remain = max_items if isinstance(max_items, int) else None
+                            for idx, line in enumerate(f, start=1):
+                                if count_remain is not None and count_remain <= 0:
+                                    break
                                 line = line.strip()
                                 if not line:
                                     continue
-                                items_local.append(json.loads(line))
+                                try:
+                                    items_local.append(json.loads(line))
+                                except json.JSONDecodeError as e:
+                                    raise ValueError(f"NDJSON parse error at line {idx} in {file_path}: {e}") from e
+                                if count_remain is not None:
+                                    count_remain -= 1
                             obj = items_local
 
                     if isinstance(obj, dict) and json_field is not None:
@@ -146,22 +154,21 @@ class Dataset(BaseModel, Generic[_T_co]):
 
                 if fmt_local == "jsonl":
                     with open(file_path, "r", encoding=encoding) as f:
-                        try:
-                            items_local: List[Any] = []
-                            for line in f:
-                                line = line.strip()
-                                if not line:
-                                    continue
+                        items_local: List[Any] = []
+                        count_remain = max_items if isinstance(max_items, int) else None
+                        for idx, line in enumerate(f, start=1):
+                            if count_remain is not None and count_remain <= 0:
+                                break
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
                                 items_local.append(json.loads(line))
-                            obj = items_local
-                        except json.JSONDecodeError:
-                            raise ValueError(f"Failed to parse {file_path}.")
-
-                    if isinstance(obj, dict) and json_field is not None:
-                        obj = obj.get(json_field, [])
-                    if not isinstance(obj, list):
-                        raise ValueError("JSON content must be a list or specify json_field to extract a list.")
-                    return _apply_limit(obj, max_items)
+                            except json.JSONDecodeError as e:
+                                raise ValueError(f"JSONL parse error at line {idx} in {file_path}: {e}") from e
+                            if count_remain is not None:
+                                count_remain -= 1
+                        return items_local
 
                 if fmt_local == "txt":
                     with open(file_path, "r", encoding=encoding) as f:
