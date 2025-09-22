@@ -9,6 +9,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from itertools import chain, repeat
 from aworld.logs.util import logger
+from aworld.dataset.sampler import Sampler
 
 EvalCaseDataType = TypeVar('EvalCaseDataType')
 
@@ -66,6 +67,13 @@ class EvalRunConfig:
     eval_criterias: list[EvalCriteria | dict] = field(default_factory=list)
     # eval dataset id or file path, file path should be a jsonl file
     eval_dataset_id_or_file_path: str = field(default_factory=str)
+    eval_dataset_shuffle: Optional[bool] = field(default=False)
+    eval_dataset_drop_last: Optional[bool] = field(default=False)
+    eval_dataset_seed: Optional[int] = field(default=None)
+    eval_dataset_sampler: Union[Sampler, Iterable, None] = None
+    # preload transform function or function name, e.g. aworld.evaluations.base.preload_transform
+    eval_dataset_preload_transform: Optional[Callable[[any], EvalCaseDataType] | str] = None
+
     repeat_times: int = field(default=1)
     eval_parallelism: int = field(default=1)
 
@@ -370,15 +378,3 @@ class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
             summary=summary,
             eval_case_results=details,
         )
-
-
-class EvaluateRunner(abc.ABC):
-
-    @abc.abstractmethod
-    async def eval_run(self, eval_config: EvalRunConfig) -> EvalResult:
-        """Run the evaluation.
-
-        Returns:
-            EvaluationResult
-        """
-        raise NotImplementedError("run method not implemented")

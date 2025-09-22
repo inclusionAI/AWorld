@@ -1,5 +1,5 @@
 import unittest
-from aworld.evaluations.evel_runtime.local_eval_runtime import LocalEvaluateRunner
+from aworld.evaluations.evel_runtime.eval_runner import EvaluateRunner
 from aworld.evaluations.base import EvalRunConfig
 
 from dotenv import load_dotenv
@@ -27,8 +27,8 @@ class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "threshold": 0.5,
                 }
             ],
-            eval_dataset_id_or_file_path="tests/evaluations/agent_eval_data.jsonl",
+            eval_dataset_id_or_file_path="tests/evaluations/agent_eval_data.json",
         )
 
-        results = await LocalEvaluateRunner().eval_run(eval_config=eval_config)
+        results = await EvaluateRunner().eval_run(eval_config=eval_config)
         print(results)

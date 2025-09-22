@@ -1,0 +1,140 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
+import abc
+import os
+import uuid
+import importlib
+from typing import Dict, Any, List, Optional, Callable
+from aworld.evaluations.base import (
+    EvalDataCase, EvalDataset, EvalResult, EvalRunConfig, Scorer, EvalCriteria, EvalTarget, EvalRun, Evaluator
+)
+from aworld.evaluations.evel_runtime.eval_run_manager import EvalRunManager, DefaultEvalRunManager
+from aworld.evaluations.evel_runtime.eval_dataset_manager import EvalDatasetManager, DefaultEvalDatasetManager
+from aworld.evaluations.evel_runtime.eval_result_manager import EvalResultManager, DefaultEvalResultManager
+from aworld.dataset.dataset import Dataset
+from aworld.logs.util import logger
+from aworld.evaluations.scorers.scorer_registry import get_scorer_instances_for_criterias
+
+
+class EvaluateRunner(abc.ABC):
+
+    def __init__(self,
+                 eval_run_manager: EvalRunManager = DefaultEvalRunManager(),
+                 eval_dataset_manager: EvalDatasetManager = DefaultEvalDatasetManager(),
+                 eval_result_manager: EvalResultManager = DefaultEvalResultManager(),
+                 ):
+        self.eval_dataset_manager = eval_dataset_manager
+        self.eval_result_manager = eval_result_manager
+        self.eval_run_manager = eval_run_manager
+
+    async def eval_run(self, eval_config: EvalRunConfig) -> EvalResult:
+        """Run the evaluation.
+
+        Returns:
+            EvaluationResult
+        """
+        try:
+            eval_run: EvalRun = await self.eval_run_manager.create_eval_run(eval_config)
+            eval_dataset: EvalDataset = await self.load_dataset(eval_config)
+            scorers = self.get_scorers(eval_config)
+            eval_target = self.get_target_for_eval(eval_config)
+            evaluator = Evaluator(
+                scorers=scorers,
+                repeat_times=eval_config.repeat_times,
+                eval_parallelism=eval_config.eval_parallelism
+            )
+            result = await evaluator.evaluate(eval_dataset, eval_target)
+            await self.eval_result_manager.save_eval_result(result)
+            return result
+        except Exception as e:
+            logger.error(f"eval run {eval_run.run_id} failed: {str(e)}")
+            raise e
+
+    def get_scorers(self, eval_config: EvalRunConfig) -> list[Scorer]:
+        '''
+        Get scorer instances for evaluation.
+        '''
+        converted_criterias = []
+        for criteria in eval_config.eval_criterias:
+            if isinstance(criteria, dict):
+                converted_criterias.append(EvalCriteria.from_dict(criteria))
+            else:
+                converted_criterias.append(criteria)
+        return get_scorer_instances_for_criterias(converted_criterias)
+
+    def get_target_for_eval(self, eval_config: EvalRunConfig) -> EvalTarget:
+        '''
+        Get eval target instance for evaluation.
+        '''
+
+        if not eval_config.eval_target_full_class_name:
+            raise ValueError("eval_target_full_class_name must be specified in EvalRunConfig")
+        try:
+            if '.' in eval_config.eval_target_full_class_name:
+                module_path, class_name = eval_config.eval_target_full_class_name.rsplit('.', 1)
+            else:
+                raise ValueError(f"Invalid full class name format: {eval_config.eval_target_full_class_name}. It should include module path.")
+            module = importlib.import_module(module_path)
+            eval_target_class = getattr(module, class_name)
+            if not issubclass(eval_target_class, EvalTarget):
+                raise ValueError(f"Class {eval_config.eval_target_full_class_name} is not a subclass of EvalTarget")
+            eval_target_config = eval_config.eval_target_config or {}
+            eval_target_instance = eval_target_class(**eval_target_config)
+
+            return eval_target_instance
+        except (ImportError, AttributeError, TypeError) as e:
+            logger.error(f"Failed to create EvalTarget instance: {str(e)}")
+            raise ValueError(f"Failed to create EvalTarget instance from {eval_config.eval_target_full_class_name}: {str(e)}")
+
+    async def load_dataset(self, eval_config: EvalRunConfig) -> EvalDataset:
+        """Load the dataset.
+
+        Args:
+            eval_config: the evaluation config.
+
+        Returns:
+            EvalDataset
+        """
+        if self._is_file_path(eval_config.eval_dataset_id_or_file_path):
+            dataset = Dataset[Dict[str, Any]](name="my_dataset", data=[])
+            preload_transform = None
+            if eval_config.eval_dataset_preload_transform:
+                preload_transform = self._load_preload_transform(eval_config.eval_dataset_preload_transform)
+            dataset.load_from(eval_config.eval_dataset_id_or_file_path, preload_transform=preload_transform)
+            eval_cases: List[EvalDataCase] = []
+            eval_dataset_id = uuid.uuid4().hex
+            for data_row in dataset.to_dataloader(batch_size=1,
+                                                  shuffle=eval_config.eval_dataset_shuffle,
+                                                  drop_last=eval_config.eval_dataset_drop_last,
+                                                  seed=eval_config.eval_dataset_seed,
+                                                  sampler=eval_config.eval_dataset_sampler):
+                if data_row:
+                    eval_cases.append(EvalDataCase(eval_dataset_id=eval_dataset_id, case_data=data_row[0]))
+
+            return EvalDataset(eval_dataset_id=eval_dataset_id, eval_cases=eval_cases)
+        else:
+            eval_dataset = await self.eval_dataset_manager.get_eval_dataset(eval_config.eval_dataset_id_or_file_path)
+
+        if not eval_dataset:
+            logger.error(f"eval dataset {eval_config.eval_dataset_id_or_file_path} not exists.")
+            raise FileNotFoundError(f"eval dataset {eval_config.eval_dataset_id_or_file_path} not exists.")
+
+    def _is_file_path(self, eval_dataset_id_or_file_path: str) -> bool:
+        if not eval_dataset_id_or_file_path:
+            raise ValueError(f"eval_dataset_id_or_file_path is empty.")
+        has_path_separator = '/' in eval_dataset_id_or_file_path
+        _, ext = os.path.splitext(eval_dataset_id_or_file_path)
+        has_extension = bool(ext)
+        return has_path_separator or has_extension
+
+    def _load_preload_transform(self, preload_transform: Optional[str | Callable]) -> Optional[Callable]:
+        if isinstance(preload_transform, str):
+            try:
+                module_path, function_name = preload_transform.rsplit('.', 1)
+                module = importlib.import_module(module_path)
+                preload_transform = getattr(module, function_name)
+            except (ImportError, AttributeError) as e:
+                logger.error(f"Failed to load preload transform {preload_transform}: {str(e)}")
+                raise ValueError(f"Failed to load preload transform {preload_transform}: {str(e)}")
+        elif isinstance(preload_transform, Callable):
+            return preload_transform
