@@ -159,16 +159,60 @@ async def encode_messages(tokenizer: AutoTokenizer,
     return prompt_ids, response_ids[:max_response_length], response_mask[:max_response_length]
 
 
-def get_agent_tool_env_and_servers(tool_config: Dict[str, Any] = None) -> tuple[Dict[str, Any], List[str]]:
-    if not tool_config or not tool_config.get("url") or not tool_config.get("authorization"):
-        tool_config["url"] = os.getenv("MCP_SERVER_URL")
-        tool_config["authorization"] = f"Bearer {os.getenv('MCP_SERVER_TOKEN')}"
-    url = tool_config.get("url")
-    authorization = tool_config.get("authorization")
-    mcp_servers_str = tool_config.get("mcp_servers", "")
-    if not url or not authorization:
-        raise ValueError("url, Authorization are required. Please set MCP_SERVER_URL and MCP_SERVER_TOKEN environment variable \
-            or provide them in tool_config parameter.")
+def get_agent_tool_env_and_servers(
+        url: str = None,
+        mcp_server_list: str = "",
+        tool_config: Dict[str, Any] = None
+) -> tuple[Dict[str, Any], List[str]]:
+    """Build MCP client config and server list from inputs and environment.
+
+    Args:
+        url (str, optional):
+            Base URL of the MCP server. If not provided, it tries
+            to read from environment variable `MCP_SERVER_URL` or
+            from `tool_config["url"]`. This parameter is required
+            effectively; if it cannot be resolved, a ValueError is raised.
+        mcp_server_list (str, optional):
+            Comma-separated server identifiers to pass through header
+            `MCP_SERVERS`. Defaults to an empty string. Can also be
+            provided via `tool_config["mcp_servers"]`.
+        tool_config (Dict[str, Any], optional):
+            Extra configuration overrides:
+            - `url` (str): same as `url` argument.
+            - `mcp_servers` (str): same as `mcp_server_list` argument.
+            - `server_name` (str): logical name of the MCP server. Default: "aworld-mcp".
+            - `type` (str): server type, e.g., "streamable-http". Default: "streamable-http".
+            - `timeout` (int): request timeout seconds. Default: 600.
+            - `sse_read_timeout` (int): SSE read timeout seconds. Default: 600.
+            - `client_session_timeout_seconds` (int): client session timeout seconds. Default: 600.
+
+    Returns:
+        tuple[Dict[str, Any], List[str]]: A tuple `(mcp_config, servers)` where
+            - `mcp_config` is a dict compatible with MCP client configuration schema.
+            - `servers` is a list of server names (keys of `mcp_config["mcpServers"]`).
+
+    Example:
+        >>> mcp_config, servers = get_agent_tool_env_and_servers(
+        ...     url="http://localhost:8080/mcp",
+        ...     mcp_server_list="serverA,serverB",
+        ...     tool_config={
+        ...         "server_name": "aworld-mcp",
+        ...         "type": "streamable-http",
+        ...         "timeout": 600,
+        ...     },
+        ... )
+        >>> servers
+        ['aworld-mcp']
+        >>> mcp_config["mcpServers"]["aworld-mcp"]["url"]
+        'http://localhost:8080/mcp'
+    """
+    if tool_config is None:
+        tool_config = {}
+    server_url = url or tool_config.get("url", os.getenv("MCP_SERVER_URL"))
+    mcp_servers_str = mcp_server_list or tool_config.get("mcp_servers", mcp_server_list)
+    if not server_url:
+        raise ValueError("url is required. Please set MCP_SERVER_URL environment variable \
+            or provide 'url' in tool_config parameter.")
     server_name = tool_config.get('server_name', 'aworld-mcp')
     server_type = tool_config.get('type', 'streamable-http')
     timeout = tool_config.get('timeout', 600)
@@ -178,9 +222,8 @@ def get_agent_tool_env_and_servers(tool_config: Dict[str, Any] = None) -> tuple[
         "mcpServers": {
             server_name: {
                 "type": server_type,
-                "url": url,
+                "url": server_url,
                 "headers": {
-                    "Authorization": authorization,
                     "MCP_SERVERS": mcp_servers_str,
                 },
                 "timeout": timeout,
