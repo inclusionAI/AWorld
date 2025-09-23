@@ -8,7 +8,7 @@ from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
 
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
-from train.adapter.verl.common import get_agent_tool_env_and_servers
+from train.adapter.common import get_agent_tool_env_and_servers
 
 GAIA_SYSTEM_PROMPT = """
 You are an all-capable AI assistant, aimed at solving any task presented by the user.
