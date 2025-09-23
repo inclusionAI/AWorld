@@ -120,7 +120,9 @@ class LLMModel:
         args = {}
         # Filter out used parameters and add remaining parameters to args
         for key, value in conf_dict.items():
-            if key not in ignored_keys and value is not None:
+            if key == "ext_config" and value is not None:
+                args.update(value)
+            elif key not in ignored_keys and value is not None:
                 args[key] = value
 
         return args

@@ -692,32 +692,22 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     model=self.model_name,
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
-                    stream=True
+                    stream=True,
+                    **kwargs
                 )
 
-                async def async_call_llm(resp_stream, json_parse=False):
-                    llm_resp = ModelResponse(
-                        id="", model="", content="", tool_calls=[])
-
-                    # Async streaming with acall_llm_model
-                    async def async_generator():
-                        async for chunk in resp_stream:
-                            if chunk.content:
-                                llm_resp.content += chunk.content
-                                yield chunk.content
-                            if chunk.tool_calls:
-                                llm_resp.tool_calls.extend(chunk.tool_calls)
-                            if chunk.error:
-                                llm_resp.error = chunk.error
-                            llm_resp.id = chunk.id
-                            llm_resp.model = chunk.model
-                            llm_resp.usage = nest_dict_counter(
-                                llm_resp.usage, chunk.usage)
-
-                    return MessageOutput(source=async_generator(), json_parse=json_parse), llm_resp
-
-                output, response = await async_call_llm(resp_stream)
-                llm_response = response
+                async for chunk in resp_stream:
+                    if chunk.content:
+                        llm_response.content += chunk.content
+                    if chunk.tool_calls:
+                        llm_response.tool_calls.extend(chunk.tool_calls)
+                    if chunk.error:
+                        llm_response.error = chunk.error
+                    llm_response.id = chunk.id
+                    llm_response.model = chunk.model
+                    llm_response.usage = nest_dict_counter(
+                        llm_response.usage, chunk.usage, ignore_zero=False)
+                    llm_response.message.update(chunk.message)
 
             else:
                 llm_response = await acall_llm_model(
@@ -726,7 +716,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     model=self.model_name,
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
-                    stream=kwargs.get("stream", False)
+                    stream=kwargs.get("stream", False),
+                    **kwargs
                 )
 
             logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
