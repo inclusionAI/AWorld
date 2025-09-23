@@ -3,30 +3,13 @@
 import asyncio
 import json
 import os
-from typing import List, Dict, Any
+import traceback
+from typing import List, Dict, Any, Tuple
+
 from transformers import AutoTokenizer
-from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
 
 
-async def to_agent_loop_output(tokenizer: AutoTokenizer,
-                               messages: List[Dict[str, Any]],
-                               response_length: int,
-                               tools: Dict[str, Any] = None) -> AgentLoopOutput:
-    """Convert messages to AgentLoopOutput.
-
-    Args:
-        tokenizer (AutoTokenizer): Tokenizer for tokenize messages.
-        messages (List[Dict[str, Any]]): List of messages in OpenAI request format.
-        response_length (int): Max length of response.
-        tools: Tool list used by the agent.
-
-    Returns:
-        AgentLoopOutput: agent loop output trajectory used for training.
-    """
-    # Ensure tools is iterable for chat templates that iterate over tools
-    if tools is None:
-        tools = []
-
+def turns_num(messages: List[Dict[str, Any]]) -> int:
     # Normalize messages to satisfy chat templates expectations
     def _normalize_message(msg: Dict[str, Any]) -> Dict[str, Any]:
         normalized = dict(msg)
@@ -52,15 +35,6 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
             normalized["tool_calls"] = fixed_calls
         return normalized
 
-    if not messages:
-        return AgentLoopOutput(
-            prompt_ids=[],
-            response_ids=[],
-            response_mask=[],
-            num_turns=0,
-            metrics={},
-        )
-
     messages = [_normalize_message(m) for m in messages]
     num_turns = 0
     for i in range(len(messages)):
@@ -69,6 +43,30 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
         # parallel tool calls are in single turn
         if i == 0 or messages[i].get("role") != messages[i - 1].get("role"):
             num_turns += 1
+    return num_turns
+
+
+async def encode_messages(tokenizer: AutoTokenizer,
+                          messages: List[Dict[str, Any]],
+                          response_length: int = 128000,
+                          tools: Dict[str, Any] = None) -> Tuple[List[int], List[int], List[int]]:
+    """Encode messages to IDs.
+
+    Args:
+        tokenizer (AutoTokenizer): Tokenizer for tokenize messages.
+        messages (List[Dict[str, Any]]): List of messages in OpenAI request format.
+        response_length (int): Max length of response.
+        tools: Tool list used by the agent.
+
+    Returns:
+        prompt_ids, response_ids, response_mask.
+    """
+    # Ensure tools is iterable for chat templates that iterate over tools
+    if tools is None:
+        tools = []
+
+    if not messages:
+        return [], [], []
 
     prompt_ids = []
     response_ids = []
@@ -155,17 +153,10 @@ async def to_agent_loop_output(tokenizer: AutoTokenizer,
                 response_ids += tool_response_ids
                 response_mask += [0] * len(tool_response_ids)
     except Exception as e:
-        raise Exception(f"Failed to convert messages to agentloop_output: {messages}.Exception is: {e}")
+        raise Exception(f"Failed to convert messages to agentloop_output: {messages}. {traceback.format_exc()}")
 
     max_response_length = min(response_length, len(response_ids))
-    output = AgentLoopOutput(
-        prompt_ids=prompt_ids,
-        response_ids=response_ids[:max_response_length],
-        response_mask=response_mask[:max_response_length],
-        num_turns=num_turns,
-        metrics={},
-    )
-    return output
+    return prompt_ids, response_ids[:max_response_length], response_mask[:max_response_length]
 
 
 def get_agent_tool_env_and_servers(tool_config: Dict[str, Any] = None) -> tuple[Dict[str, Any], List[str]]:
