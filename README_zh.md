@@ -51,6 +51,7 @@ from examples.for_test import topology<div align="center">
 |:-------------|:----------------|:----------------|:-------------------|:----------|
 | **🤖 智能体** | **GAIA基准测试卓越表现** [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) | Pass@1: **67.89**, Pass@3: **83.49** (109个任务) [![][Code]](./examples/gaia/README_GUARD.md)  | 多智能体系统稳定性与编排 [![][Paper]](https://arxiv.org/abs/2508.09889) | 2025/08/06 |
 | **🧠 推理能力** | **IMO 2025问题求解** [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) | 6小时内解决5/6道题 [![][Code]](examples/imo/README.md) | 多智能体协作超越单一模型 | 2025/07/25 |
+| **🖼️ 多模态** | **OSWorld榜单第一** [![][OSWorld]](https://os-world.github.io/) | 成功率=58.0% [![][Code]](examples/osworld/README.md) | 工具越多越好？ | 2025/09/18 |
 
 <details>
 <summary style="font-size: 1.2em;font-weight: bold;"> 🌏 查看进行中的项目 </summary>
@@ -614,6 +615,7 @@ aworld api
 [Cloud-Native]: https://img.shields.io/badge/Cloud--Native-B19CD7
 [Code]: https://img.shields.io/badge/Code-FF6B6B
 [Paper]: https://img.shields.io/badge/Paper-4ECDC4
+[OSWorld]: https://img.shields.io/badge/OSWorld-E66F51
 
 
 

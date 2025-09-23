@@ -116,6 +116,25 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
       <td style="padding: 8px; vertical-align: top;">Multi-agent collaboration <br>beats solo models</td>
       <td style="padding: 8px; vertical-align: top;">2025/07/25</td>
     </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>OSWorld <br>Rank 1st</strong>
+        <br>
+        <a href="https://os-world.github.io/" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/OSWorld-Leaderboard-green" alt="OSWorld">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>58.0%</strong> <br> Success Rate
+        <br>
+        <a href="examples/osworld/README.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">The more tools the better?</td>
+      <td style="padding: 8px; vertical-align: top;">2025/09/18</td>
+    </tr>
   </tbody>
 </table>
 

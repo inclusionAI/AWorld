@@ -3,21 +3,9 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-import shutil
-import time
+import socket
 import traceback
-from dotenv import dotenv_values, set_key
 import httpx
-from mcp import ClientSession
-from mcp.types import (
-    LoggingMessageNotificationParams,
-    ElicitResult,
-    ElicitRequestParams,
-)
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.shared.context import RequestContext
-
-from aworld.utils.common import get_local_ip
 
 logger = logging.getLogger(__name__)
 
@@ -50,32 +38,32 @@ class TranEnv:
             return self.mcp_config
         return None
 
-    async def create_env(self, mode: str = "local", docker_dir: str = None) -> bool:
-        if mode == "local":
-            if not docker_dir:
-                logger.error("You must provide --docker_dir to specify the Docker directory to build (relative to env).")
-                return False
-
-            image_ready = await self._build_image(docker_dir)
-            assert image_ready, "Image is not ready!"
-
-            service_ready = await self._start_service()
-            assert service_ready, "Service config is not ready!"
-
-            service_ready = await self._check_service_ready()
-            assert service_ready, "Service is not ready!"
-
-            self.mcp_variables = {
-                "ip": get_local_ip(),
-                "port": 8000,
-                "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ"
-            }
-
-            logger.info("✅ Service is ready!")
-            return True
-        else:
-            logger.warning(f"Mode {mode} is not supported!")
+    async def create_env(self, docker_dir: str = None) -> bool:
+        if not docker_dir:
+            logger.error(
+                "You must provide --docker_dir to specify the Docker directory to build (relative to env)."
+            )
             return False
+
+        self.docker_dir = docker_dir
+
+        image_ready = await self._build_image(docker_dir)
+        assert image_ready, "Image is not ready!"
+
+        service_ready = await self._start_service()
+        assert service_ready, "Service config is not ready!"
+
+        service_ready = await self._check_service_ready()
+        assert service_ready, "Service is not ready!"
+
+        self.mcp_variables = {
+            "ip": self.get_local_ip(),
+            "port": 8000,
+            "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJsb2NhbF9kZWJ1ZyIsInZlcnNpb24iOjEsInRpbWUiOjE3NTYzOTUzNzIuMTg0MDc0NH0.SALKn1dxEzsdX82-e3jAJANAo_kE4NO4192Epw5rYmQ",
+        }
+
+        logger.info("✅ Service is ready!")
+        return True
 
     async def _build_image(self, docker_dir: str):
         try:
@@ -84,12 +72,12 @@ class TranEnv:
             process1 = await asyncio.create_subprocess_exec(
                 "sh",
                 "build-image.sh",
-                cwd=self.env_dir / "virtualpc-mcp" / "mcp_server",
+                cwd=self.env_dir / "mcp-server-base",
             )
             await process1.wait()
 
             if process1.returncode != 0:
-                logger.error("Failed to build virtualpc-mcp image")
+                logger.error("Failed to build mcp-server-base image")
                 return False
 
             target_dir = self.env_dir / docker_dir
@@ -119,8 +107,8 @@ class TranEnv:
             logger.info("Starting virtualpc-mcp service...")
             process = await asyncio.create_subprocess_exec(
                 "sh",
-                "run-local.sh",
-                cwd=self.env_dir / "virtualpc-mcp",
+                "run.sh",
+                cwd=self.env_dir / self.docker_dir,
             )
 
             # Wait a bit for the service to start
@@ -153,24 +141,44 @@ class TranEnv:
             )
             return False
 
+    def get_local_ip(self):
+        try:
+            # build UDP socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # connect to an external address (no need to connect)
+            s.connect(("223.5.5.5", 80))
+            # get local IP
+            local_ip = s.getsockname()[0]
+            s.close()
+            return local_ip
+        except Exception:
+            return "127.0.0.1"
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Env construction")
-    parser.add_argument("--docker_dir", help="Docker directory to build (relative to env, e.g., gaia-mcp-server)")
+    parser.add_argument(
+        "--docker_dir",
+        default="gaia-mcp-server",
+        help="Docker directory to build (relative to env, e.g., gaia-mcp-server)",
+    )
 
     async def main():
         try:
             args = parser.parse_args()
             if not args.docker_dir:
-                parser.error("You must use --docker_dir to specify the Docker directory to build (e.g., gaia-mcp-server)")
+                parser.error(
+                    "You must use --docker_dir to specify the Docker directory to build (e.g., gaia-mcp-server)"
+                )
             train_env = TranEnv()
             env_started = await train_env.create_env(docker_dir=args.docker_dir)
             if env_started:
-                mcp_variables = json.dumps(train_env.mcp_variables, ensure_ascii=False, indent=4)
+                mcp_variables = json.dumps(
+                    train_env.mcp_variables, ensure_ascii=False, indent=4
+                )
                 print(mcp_variables)
         except Exception as e:
             logger.error(f"Failed to start env: {traceback.format_exc()}")
-
 
     asyncio.run(main())
