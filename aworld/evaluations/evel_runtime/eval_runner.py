@@ -64,7 +64,10 @@ class EvaluateRunner(abc.ABC):
                 converted_criterias.append(EvalCriteria.from_dict(criteria))
             else:
                 converted_criterias.append(criteria)
-        return get_scorer_instances_for_criterias(converted_criterias)
+        scorers = get_scorer_instances_for_criterias(converted_criterias)
+        for scorer in scorers:
+            scorer.set_eval_config(eval_config)
+        return scorers
 
     def get_target_for_eval(self, eval_config: EvaluationConfig) -> EvalTarget:
         '''
@@ -85,7 +88,7 @@ class EvaluateRunner(abc.ABC):
                 raise ValueError(f"Class {eval_config.eval_target_full_class_name} is not a subclass of EvalTarget")
             eval_target_config = eval_config.eval_target_config or {}
             eval_target_instance = eval_target_class(**eval_target_config)
-
+            eval_target_instance.set_eval_config(eval_config)
             return eval_target_instance
         except (ImportError, AttributeError, TypeError) as e:
             logger.error(f"Failed to create EvalTarget instance: {str(e)}")

@@ -1,13 +1,12 @@
-from aworld.evaluations.base import EvalDataCase, Scorer, EvalCaseResult, ScorerResult
-from aworld.config.conf import ModelConfig, AgentConfig
-from aworld.evaluations.base import EvalStatus
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
+from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult
+from aworld.config.conf import ModelConfig
 from aworld.logs.util import logger
 import json
 import re
+from typing import Optional
 from aworld.evaluations.scorers.metrics import MetricNames
 from aworld.evaluations.scorers.scorer_registry import scorer_register
+from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
 
 
 DEFAULT_SUMMARIZE_QUALITY_SYSTEM_PROMPT = """
@@ -49,20 +48,28 @@ summarize_quality_score_mapping = {"poor": 0.0, "ok": 0.5, "excellent": 1.0}
 
 
 @scorer_register(MetricNames.SUMMARIZE_QUALITY)
-class SummarizeQualityScorer(Scorer):
+class SummarizeQualityScorer(LLMAsJudgeScorer):
+    """Scorer that uses an LLM agent as a judge to evaluate the quality of the response.
 
-    def __init__(self, model_config: ModelConfig, query_column: str = 'query', answer_column: str = 'answer'):
-        super().__init__()
-        self.model_config = model_config
-        self.query_column = query_column
-        self.answer_column = answer_column
-        self.agent_config = AgentConfig(
-            llm_provider=model_config.llm_provider,
-            llm_model_name=model_config.llm_model_name,
-            llm_temperature=model_config.llm_temperature,
-            llm_base_url=model_config.llm_base_url,
-            llm_api_key=model_config.llm_api_key,
-        )
+    Args:
+        model_config (ModelConfig): Model configuration.
+    """
+
+    def build_judge_system_prompt(self) -> str:
+        return DEFAULT_SUMMARIZE_QUALITY_SYSTEM_PROMPT
+
+    def build_judge_agent_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+        return DEFAULT_SUMMARIZE_QUALITY_USER_PROMPT
+
+    def build_judge_agent_task_input(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+        query_column = self.eval_config.eval_dataset_query_column or "query"
+        output_answer_column = self.eval_config.eval_output_answer_column or "answer"
+        return TASK_TEMPLATE.format(input=input.case_data[query_column], summary=output.get(output_answer_column, ''))
+
+    def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
+        jsonObj = self._fetch_json_from_result(judge_response)
+        if jsonObj:
+            return {MetricNames.SUMMARIZE_QUALITY: {"value": summarize_quality_score_mapping[jsonObj["quality"]], "score_reasoning": jsonObj["score_reasoning"]}}
 
     def _fetch_json_from_result(self, input_str):
         json_match = re.search(r'\{[^{}]*\}', input_str, re.DOTALL)
@@ -73,33 +80,3 @@ class SummarizeQualityScorer(Scorer):
             except json.JSONDecodeError as e:
                 logger.warning(f"_fetch_json_from_result json_str: {json_str} error: {e}")
         return ""
-
-    async def score(self, index: int, input: EvalDataCase[dict], output: dict) -> ScorerResult:
-        """Score the quality of the summary.
-
-        Args:
-            index: The index of the input.
-            input: The input dict.
-            output: The output dict.
-
-        Returns:
-            The score of the summary.
-        """
-        query = input.case_data[self.query_column]
-        answer = output[self.answer_column]
-        task_input = TASK_TEMPLATE.format(input=query, summary=answer)
-
-        score_agent = Agent(conf=self.agent_config, name='score_agent',
-                            system_prompt=DEFAULT_SUMMARIZE_QUALITY_SYSTEM_PROMPT,
-                            agent_prompt=DEFAULT_SUMMARIZE_QUALITY_USER_PROMPT)
-
-        response = await Runners.run(task_input, agent=score_agent)
-        jsonObj = self._fetch_json_from_result(response.answer)
-        if jsonObj:
-            metric_results = {
-                MetricNames.SUMMARIZE_QUALITY: {"value": summarize_quality_score_mapping[jsonObj["quality"]], "score_reasoning": jsonObj["score_reasoning"]}
-            }
-            return ScorerResult(scorer_name=self.name, metric_results=metric_results)
-        else:
-            metric_results = {MetricNames.SUMMARIZE_QUALITY: {"value": 0.0, "score_reasoning": "score response error"}}
-            return ScorerResult(scorer_name=self.name, metric_results=metric_results)
