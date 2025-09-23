@@ -11,7 +11,7 @@
 ---
 
 AWorld Training 旨在将 AWorld Agent 与外部训练框架（如强化学习库）进行连接。它采用与框架无关的设计，让您可以将 AWorld Agent 或 Swarm（智能体集群）集成到您偏好的训练环境中。
-![架构图](https://github.com/inclusionAI/AWorld/blob/main/readme_assets/train_env_agent_architecture.png)
+![架构图](../docs/imgs/train_env_agent_architecture.png)
 该工作流包含以下四个关键步骤：
 
 1.  **环境设置 (`env`):** 搭建并配置环境，定义状态/动作空间以及交互机制。
@@ -93,7 +93,7 @@ cd ~/AWorld/env
 sh run-local.sh
 ```
 
-![launch_gaia_env](https://github.com/inclusionAI/AWorld/blob/yuchengyue-patch-4-1/readme_assets/launch_gaia_env.jpg)
+![launch_gaia_env](../docs/imgs/launch_gaia_env.jpg)
 
 **d. 连接并测试 Gaia Environment。**
 

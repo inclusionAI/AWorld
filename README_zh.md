@@ -40,7 +40,7 @@ from examples.for_test import topology<div align="center">
 
 3. **构建多智能体系统(MAS)**：编排协作智能体生态系统 [文档](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
-4. **高效训练智能体**：让MAS在各种环境中自我演进和优化
+4. **高效训练智能体**：让MAS在各种环境中自我演进和优化 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_training/)
 
 ---
 **群体智能** 🚀

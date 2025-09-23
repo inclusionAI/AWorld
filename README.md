@@ -46,7 +46,7 @@
 
 3. **Build Multi-Agent Systems (MAS)**: Orchestrate collaborative agent ecosystems. [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
-4. **Train agents efficiently**: Optimize performance within MAS across various environments
+4. **Train agents efficiently**: Optimize performance within MAS across various environments. [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_training/)
 
 ---
 **Collective Intelligence** 🚀
