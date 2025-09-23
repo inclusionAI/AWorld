@@ -329,6 +329,8 @@ reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metric
 
 所有参数的详细解释，均可在 [VeRL 官方文档](https://verl.readthedocs.io/en/latest/examples/config.html)中查阅。
 
+<summary>点击查看完整 <code>run.sh</code> 脚本</summary>
+
 ```shell
 #!/usr/bin/env bash
 
@@ -471,6 +473,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.total_epochs=1 "$@"
 ```
 
+</details>
 ### 启动训练
 完成所有配置后，即可通过`run.sh` 脚本启动训练：
 
