@@ -15,7 +15,7 @@ from aworld.logs.util import logger
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
 
-from train.adapter.verl.common import encode_messages, turns_num
+from train.adapter.common import encode_messages, turns_num
 from train.adapter.verl.verl_provider import VerlProvider
 
 # show aworld log on ray
