@@ -1,109 +1,94 @@
-<div align="center">
-
 # AWorld Train
 
-*为使用 AWorld 构建的智能体，提供与外部 RL/训练框架对接的、与框架无关的适配层、可运行示例与通用工具*
+AWorld Training bridges AWorld Agents with external training frameworks (e.g., Reinforcement Learning libraries). It is framework-agnostic, enabling you to bring AWorld Agents or Swarms into your preferred training environment.
+![Architecture Diagram](https://github.com/inclusionAI/AWorld/blob/main/readme_assets/train_env_agent_architecture.png)
+The pipeline involves four key steps:
 
-[![License: MIT][license-image]][license-url]
+1.  **Environment Setup (`env`):** Set up the environment, defining the state/action spaces and interaction dynamics.
+2.  **Agent Construction (`agent`):** Build the agent's core logic, policy, and decision-making capabilities.
+3.  **Framework Adaptation (`adapter`):** Utilize an adapter to standardize the agent's interface, ensuring compatibility with any RL training frameworks (e.g., Verl).
+4.  **Training Execution (`verl`):** Configure the reward function and hyperparameters, then submit the training job via a run script.
 
-</div>
+## Installation (Example with Verl)
 
----
+Follow these steps to set up your training environment.
 
-AWorld Training 旨在将 AWorld Agent 与外部训练框架（如强化学习库）进行连接。它采用与框架无关的设计，让您可以将 AWorld Agent 或 Swarm（智能体集群）集成到您偏好的训练环境中。
-![架构图](https://github.com/inclusionAI/AWorld/blob/main/readme_assets/train_env_agent_architecture.png)
-该工作流包含以下四个关键步骤：
+1.  **Install System-level Prerequisites**:
+    -   Install a compatible **NVIDIA Driver**.
+    -   Install the **CUDA Toolkit**.
+2.  **Manually Install PyTorch**:
+    -   Install a PyTorch version that matches your CUDA version. You can find the command on the [PyTorch website](https://pytorch.org/get-started/locally/).
+3.  **Install Verl and Dependencies**:
+    -   When you install Verl (e.g., via `pip install -e .`), other Python packages like `transformers`, `deepspeed`, and `vllm` will be installed automatically.
+    -   **Important**: This step requires the prerequisites from steps 1 and 2 to succeed, as some packages need to be compiled against CUDA. See `setup.py` for a full dependency list.
 
-1.  **环境设置 (`env`):** 搭建并配置环境，定义状态/动作空间以及交互机制。
-2.  **Agent 构建 (`agent`):** 构建 Agent 的核心逻辑、策略和决策能力。
-3.  **框架适配 (`adapter`):** 利用适配器（Adapter）对 Agent 接口进行标准化，以确保其与任何强化学习（RL）训练框架（如 Verl）的兼容性。
-4.  **训练执行 (`verl`):** 配置奖励函数和超参数，然后通过运行脚本提交训练任务。
+## Setting Up the Remote Environment
 
+Follow these steps to prepare your remote server and launch the environment.
 
+### System Requirements
 
-## 安装训练所需依赖 (以结合Verl为例)
-**前置条件：** 在安装 Verl 之前，请确保系统中已正确安装了与硬件兼容的 **NVIDIA 驱动**和 **CUDA 工具包**。此外，需要根据 CUDA 版本**手动安装 PyTorch**。
+#### Operating System
 
-**自动安装：** Verl 的其他依赖项（如 `transformers`、`deepspeed`、`vllm` 等）将通过 `pip` 在安装 Verl 时自动处理。请注意，`deepspeed` 和 `vllm` 等库的安装过程会依赖于您已装好的 CUDA 和 PyTorch 环境，具体请参考 Verl 的 `setup.py` 文件。
+-   The setup is compatible with Windows, macOS, and Linux.
+-   For best performance, a **Linux** system is highly recommended.
+-   **Note**: Using a server located in regions such as Singapore or North America is also advised to minimize latency.
 
-```bash
-# recommend Python>=3.10
+#### Hardware
 
-# install AWorld
-pip install aworld
+-   **Minimum**: 4 CPU Cores and 8GB of RAM.
 
-# install train framework (VeRL example)
-# Note: verl version 0.5.0.dev0 is required for agent training support.
-git clone https://github.com/volcengine/verl.git
-cd verl && pip install -e.
-```
+#### Software
 
-## 准备远程环境
+-   **Docker**: Docker must be installed on your machine.
+    -   **Important for Mac Users**: If you are using a Mac with Apple Silicon (M-series), you must enable Rosetta for x86/64 emulation. Please follow the official instructions at: [Docker for Mac Installation](https://docs.docker.com/desktop/setup/install/mac-install/).
 
-请遵循以下步骤准备您的远程服务器并启动环境。
+### Login and Install the Environment
 
-### 系统要求
+Log into your server and follow these steps.
 
-#### 操作系统
-
--   兼容 Windows、macOS 和 Linux。
--   为获得最佳性能，强烈推荐使用 **Linux** 系统。
--   **注意**：建议使用新加坡或北美等地区的服务器以减少延迟。
-
-#### 硬件要求
-
--   **最低配置**：4 CPU 核心 和 8GB 内存。
-
-#### 软件要求
-
--   **Docker**：您的机器上必须安装 Docker。
-    -   **Mac 用户注意**：如果您使用的是配备 Apple Silicon（M系列）的 Mac，必须启用 Rosetta 以进行 x86/64 仿真。请遵循官方指南：[Docker for Mac 安装](https://docs.docker.com/desktop/setup/install/mac-install/)。
-
-### 登录并安装环境
-
-登录到您的服务器并按以下步骤操作。
-
-**a. Clone AWorld 代码到服务器目录。**
+**a. Clone the AWorld code to a server directory.**
 
 ```bash
 git clone https://github.com/inclusionAI/AWorld ~/AWorld
 ```
 
-**b. 配置环境参数并下载 Gaia 数据集。**
+**b. Configure environment parameters and download the Gaia dataset.**
 
--   **配置参数**：编辑 `~/AWorld/env/gaia-mcp-server/mcp_servers/.env` 文件并填入您的具体配置值。
+-   **Configure parameters**: Edit the `~/AWorld/env/gaia-mcp-server/mcp_servers/.env` file and enter your specific configuration values.
 
     ```bash
     cd ~/AWorld/env/gaia-mcp-server/mcp_servers
     cp .env_template .env
     ```
 
--   **下载数据集**：从 Hugging Face 下载 [gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA) 并放置到 `~/AWorld/env/gaia-mcp-server/docker/gaia_dataset`。
+-   **Download dataset**: Download the [gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA) from Hugging Face and place it in `~/AWorld/env/gaia-mcp-server/docker/gaia_dataset`.
 
-**c. 启动 Gaia Environment。**
+**c. Launch the Gaia Environment.**
 
-运行下面的命令，在 Docker 环境中启动 Gaia Environment 实例。实例将提供：
--   一个位于 `8000` 端口的 MCP 服务（端点：`http://localhost:8000/mcp`）。
--   一个位于 `5901` 端口的 VNC 服务。您可以通过 `http://localhost:5901/vnc.html?autoconnect=true` 查看实时界面。
+Run the command below to start the Gaia Environment instance in Docker. The instance will provide:
+
+-   An MCP service on port `8000` (endpoint: `http://localhost:8000/mcp`).
+-   A VNC service on port `5901`. You can view the live interface at `http://localhost:5901/vnc.html?autoconnect=true`.
 
 ```bash
 cd ~/AWorld/env
-# 构建 Docker 镜像并启动容器实例。此过程大约需要 5 分钟。
-# 成功后，将显示以下日志消息：Start mcp server success。
+# Build the Docker image and start the container instance. This process will take approximately 5 minutes.
+# Upon success, the following log message will be displayed: Start mcp server success.
 sh run-local.sh
 ```
 
 ![launch_gaia_env](https://github.com/inclusionAI/AWorld/blob/yuchengyue-patch-4-1/readme_assets/launch_gaia_env.jpg)
 
-**d. 连接并测试 Gaia Environment。**
+**d. Connecting and Testing the Gaia Environment**
 
-Gaia Environment 的 MCP 服务 URL 已自动配置为环境变量，无需手动设置端点。
+The URL for the Gaia Environment's MCP service is automatically configured as an environment variable, so no manual endpoint setup is required.
 
 ```bash
 export MCP_SERVER_URL=http://localhost:8080/mcp
 ```
 
-在构建 Agent 时，您可以使用 `get_agent_tool_env_and_servers` 函数来配置 MCP 请求参数并提供 MCP 服务器列表。如果无参数调用此函数，它将自动使用默认值。
+When building an Agent, you use the `get_agent_tool_env_and_servers` function to configure parameters for making MCP requests and to provide the list of MCP Servers. If this function is called without any arguments, it will automatically use default values.
 
 ```python
 gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
@@ -126,23 +111,30 @@ print(f"gaia_env_config: {gaia_env_config}\ngaia_env_servers: {gaia_env_servers}
 # }
 # gaia_env_servers: ['readweb-server', 'browser-server', ...]
 ```
-## 自定义 Agent
-AWorld 框架提供了 adapter 模块，用于实现 Agent 与外部强化学习（RL）训练框架的集成。
 
-具体而言，adapter 模块通过向 AWorld 框架提供 LLM 模型的服务地址（`llm_base_url`）和模型名称（`llm_model_name`）建立关联。在实现上，这些值由以下方法动态获取：
+## Building a Custom Agent
+
+The AWorld framework is designed for flexibility, allowing you to integrate custom agents with external Reinforcement Learning (RL) frameworks (e.g., Verl). This is primarily handled by the `adapter` module.
+
+The `adapter` module works by providing the AWorld framework with the LLM's service URL (`llm_base_url`) and model name (`llm_model_name`), treating the LLM as a remote service.
 
 ```python
 llm_base_url=self.get_llm_server_address(),
 llm_model_name=self.get_llm_server_model_name(),
 ```
 
-若要训练一个 Agent 模型，核心步骤是继承 `AWorldAgentLoop` 类以实现一个自定义的 `CustomAgentLoop`。以下示例以 Verl 框架为例，展示了一个针对 single-agent 的自定义 `AgentLoop` 实现 (`[custom_agent_loop.py](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/custom_agent_loop.py)`)，该示例中的环境配置了5个可用工具。
+### Implementing a Custom AgentLoop
+
+To train a custom agent, the primary task is to implement a `CustomAgentLoop` by inheriting from the `AWorldAgentLoop` base class.
+
+The following example file, [`custom_agent_loop.py`](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/custom_agent_loop.py), demonstrates how to create a custom loop for a single agent using the Verl framework and an environment with five available tools.
 
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.adapter.verl.common import get_agent_tool_env_and_servers
+
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self):
         # Get the environment configuration and server details.
@@ -152,7 +144,7 @@ class GaiaAgentLoop(AworldAgentLoop):
 
         return Agent(
             conf=AgentConfig(
-                # Get the dynamic llm server address from the server manager. 
+                # Get the dynamic llm server address from the server manager.
                 # The llm server is launched within VeRL.
                 llm_base_url=self.get_llm_server_address(),
                 llm_model_name=self.get_llm_server_model_name(),
@@ -167,33 +159,43 @@ class GaiaAgentLoop(AworldAgentLoop):
         )
 ```
 
-完成自定义 `AgentLoop` 的实现后，需要修改 `agent.yaml` 配置文件，并将其路径更新到训练启动脚本 `run.sh` 中：
+### Configuration and Launch
+
+Once you have implemented your custom `AgentLoop`, you need to:
+
+1.  **Modify the `agent.yaml` configuration file** to use your new custom loop.
+2.  **Update the `run.sh` launch script** to point to your modified `agent.yaml` file.
 
 ```yaml
 - name: gaia_agent
   _target_: train.examples.train_gaia_with_aworld_verl.custom_agent_loop.GaiaAgentLoop
 ```
 
-```python
+```bash
 # Agent config
 agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/agent.yaml
 ```
 
-对于更复杂的场景，AWorld 也支持训练复杂的单智能体或多智能体系统：
+### Advanced Scenarios
 
-+ Agent构建：关于如何构建单智能体和多智能体，请分别参考 [构建与运行Agent](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/#)，[构建与运行Multi-agent](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)。
-+ MCP 工具配置：若 Agent 需要使用 MCP 工具，则必须配置相应的 `mcp_config` 文件。具体方法请参考 [构建与运行Agent](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/#configuring-tools)。
+AWorld also supports more complex single-agent or multi-agent systems.
 
+-   **Agent Construction**: For details on building single-agent or multi-agent systems, please refer to the [_Building and Running an Agent_](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/#) and [_Building and Running a Multi-Agent System_](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/) guides.
+-   **MCP Tools**: If your agent requires MCP tools, you must configure the corresponding `mcp_config` file. Instructions can be found in the [_Building and Running an Agent_]() guide.
 
+## Prepare for Training
 
-## 准备训练
-在完成环境（`env`）和智能体（`agent`）的构建之后，即可通过 `run.sh` 脚本启动 Verl 训练流程。在启动之前，还需要完成以下两个关键配置步骤：
+After the environment (`env`) and agent have been set up, the `run.sh` script is used to initiate the Verl training process. Prior to execution, two final configuration steps are required:
 
-1. 配置奖励函数 (Reward Function)：根据具体的任务目标，定义或调整用于评估智能体行为的奖励函数。
-2. 修改启动脚本 (run.sh)：更新 `run.sh` 脚本中的相关参数，例如配置文件路径、超参数等，以匹配当前的训练任务。
+1.  **Configure the Reward:** Define the reward function according to the specific objectives of the task.
+2.  **Modify the Launch Script:** Update the `run.sh` script to set the correct training parameters, such as configuration paths and hyperparameters.
 
-### 配置奖励函数
-以训练 gaia 为例，以下代码实现了 gaia 所需要的 reward function 逻辑，具体代码位置：`[gaia_reward_function.py](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py)`。
+### Configuring the Reward Function
+
+As an example, here is the reward function used for training the **Gaia** agent. The full code is located in `gaia_reward_function.py`.
+
+<details>
+<summary>Click to view the <code>gaia_reward_function.py</code> implementation</summary>
 
 ```python
 import re
@@ -251,7 +253,7 @@ def question_scorer(
             return True
         except ValueError:
             return False
-        
+
     if model_answer is None:
         model_answer = "None"
 
@@ -311,26 +313,29 @@ def gaia_reward_func(data_source, solution_str, ground_truth, extra_info=None):
           return 0.0
 ```
 
-完成自定义 `Reward` 的实现后，需要将其路径更新到训练启动脚本 `run.sh` 中：
+</details>
 
-```yaml
+After implementing your custom reward function, you must update the `run.sh` script to point to it:
+
+```bash
 reward_fn_name=gaia_reward_func
 reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 ```
 
-### 修改启动脚本
-以下是在 AWorld 环境下训练 GaiaAgent 的 `run.sh` 脚本示例。
+### Modifying the Launch Script
 
-在该示例中，请特别关注以下几个核心配置项，它们是连接 AWorld 与训练框架的关键：
+Below is an example of the `run.sh` script for training a GaiaAgent in the AWorld environment.
 
-+ `agent_loop_config_path` (位于第 3 节): 用于指定自定义 AgentLoop 的配置文件。
-+ `reward_fn_file_path` (位于第 4.1 节): 定义了奖励函数所在的文件路径。
-+ `reward_fn_name` (位于第 4.1 节): 指定了要使用的奖励函数名称。
+In this script, pay close attention to the following key configurations, which are crucial for connecting AWorld to the training framework:
 
-所有参数的详细解释，均可在 [VeRL 官方文档](https://verl.readthedocs.io/en/latest/examples/config.html)中查阅。
+-   `agent_loop_config_path` (Section 3): Specifies the configuration file for your custom AgentLoop.
+-   `reward_fn_file_path` (Section 4.1): Defines the file path where the reward function is located.
+-   `reward_fn_name` (Section 4.1): Specifies the name of the reward function to use.
+
+For a detailed explanation of all parameters, please refer to the [**official VeRL documentation**](https://verl.readthedocs.io/en/latest/examples/config.html).
 
 <details>
-<summary>点击查看完整 <code>run.sh</code> 脚本</summary>
+<summary>Click to view the full <code>run.sh</code> script</summary>
 
 ```shell
 #!/usr/bin/env bash
@@ -475,8 +480,10 @@ python3 -m verl.trainer.main_ppo \
 ```
 
 </details>
-### 启动训练
-完成所有配置后，即可通过`run.sh` 脚本启动训练：
+
+## Launching the Training
+
+After all configurations are complete, you can start the training by running:
 
 ```bash
 bash run.sh
@@ -486,11 +493,9 @@ bash run.sh
 
 <div align="center">
 
-**AWorld Train** — 让你的 AWorld 智能体快速接入主流训练框架
-
-[license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
-[license-url]: https://opensource.org/licenses/MIT
+**AWorld Train** — Bring your AWorld agents to your favorite training frameworks
 
 </div>
 
-
+[license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
+[license-url]: https://opensource.org/licenses/MIT
