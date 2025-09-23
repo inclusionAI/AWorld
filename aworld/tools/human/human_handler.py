@@ -15,7 +15,7 @@ class DefaultHumanHandler(DefaultHandler):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, runner: 'TaskEventRunner'):
-        super().__init__()
+        super().__init__(runner)
         self.runner = runner
         self.swarm = runner.swarm
         self.endless_threshold = runner.endless_threshold
@@ -44,7 +44,7 @@ class DefaultHumanHandler(DefaultHandler):
         headers = {"context": message.context}
         session_id = message.session_id
 
-        human_input = await self.handle_user_input(message=message)
+        human_input = await self.handle_user_input(message)
 
         yield Message(
             category=Constants.HUMAN_RESPONSE,

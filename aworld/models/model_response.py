@@ -2,6 +2,8 @@ from typing import Any, Dict, List, Optional
 import json
 from pydantic import BaseModel
 
+from aworld.logs.util import logger
+
 
 class LLMResponseError(Exception):
     """Represents an error in LLM response.
@@ -122,7 +124,8 @@ class ModelResponse:
             usage: Dict[str, int] = None,
             error: str = None,
             raw_response: Any = None,
-            message: Dict[str, Any] = None
+            message: Dict[str, Any] = None,
+            reasoning_content: str = None
     ):
         """
         Initialize ModelResponse object
@@ -160,6 +163,18 @@ class ModelResponse:
                 self.message["tool_calls"] = [tool_call.to_dict() for tool_call in tool_calls]
         else:
             self.message = message
+
+        self.reasoning_content = reasoning_content
+
+    @classmethod
+    def _get_item_from_openai_message(cls, message:Any, key: str, default_value: Any = None) -> Any:
+        if not message:
+            return default_value
+        if hasattr(message, key):
+            return getattr(message, key, default_value)
+        elif isinstance(message, dict):
+            return message.get(key, default_value)
+        return default_value
 
     @classmethod
     def from_openai_response(cls, response: Any) -> 'ModelResponse':
@@ -202,10 +217,9 @@ class ModelResponse:
         usage = {}
         if hasattr(response, 'usage'):
             usage = {
-                "completion_tokens": response.usage.completion_tokens if hasattr(response.usage,
-                                                                                 'completion_tokens') else 0,
-                "prompt_tokens": response.usage.prompt_tokens if hasattr(response.usage, 'prompt_tokens') else 0,
-                "total_tokens": response.usage.total_tokens if hasattr(response.usage, 'total_tokens') else 0
+                "completion_tokens": cls._get_item_from_openai_message(response.usage, 'completion_tokens', 0),
+                "prompt_tokens": cls._get_item_from_openai_message(response.usage, 'prompt_tokens', 0),
+                "total_tokens": cls._get_item_from_openai_message(response.usage, 'total_tokens', 0)
             }
         elif isinstance(response, dict) and response.get('usage'):
             usage = response['usage']
@@ -228,10 +242,19 @@ class ModelResponse:
             }
 
         message_dict["content"] = '' if message_dict.get('content') is None else message_dict.get('content', '')
+        reasoning_content = cls._get_item_from_openai_message(message, 'reasoning_content')
+        if not reasoning_content:
+            model_extra = cls._get_item_from_openai_message(message, 'model_extra', {})
+            reasoning_content = model_extra.get('reasoning', "")
 
         # Process tool calls
         processed_tool_calls = []
         raw_tool_calls = message.tool_calls if hasattr(message, 'tool_calls') else message_dict.get('tool_calls')
+
+        message_content = cls._get_item_from_openai_message(message, 'content', "")
+        if not message_content and not raw_tool_calls:
+            logger.warning(f"No content or tool calls found in response: {response}")
+
         if raw_tool_calls:
             for tool_call in raw_tool_calls:
                 if isinstance(tool_call, dict):
@@ -259,11 +282,12 @@ class ModelResponse:
         return cls(
             id=response.id if hasattr(response, 'id') else response.get('id', 'unknown'),
             model=response.model if hasattr(response, 'model') else response.get('model', 'unknown'),
-            content=message.content if hasattr(message, 'content') else message.get('content') or "",
+            content=cls._get_item_from_openai_message(message, 'content', ""),
             tool_calls=processed_tool_calls or None,
             usage=usage,
             raw_response=response,
-            message=message_dict
+            message=message_dict,
+            reasoning_content=reasoning_content
         )
 
     @classmethod
@@ -288,7 +312,6 @@ class ModelResponse:
                 chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
                 chunk
             )
-
         # Handle finish reason chunk (end of stream)
         if hasattr(chunk, 'choices') and chunk.choices and chunk.choices[0].finish_reason:
             return cls(
@@ -340,11 +363,11 @@ class ModelResponse:
 
         # Extract usage information
         usage = {}
-        if hasattr(chunk, 'usage'):
+        if hasattr(chunk, 'usage') and chunk.usage:
             usage = {
-                "completion_tokens": chunk.usage.completion_tokens if hasattr(chunk.usage, 'completion_tokens') else 0,
-                "prompt_tokens": chunk.usage.prompt_tokens if hasattr(chunk.usage, 'prompt_tokens') else 0,
-                "total_tokens": chunk.usage.total_tokens if hasattr(chunk.usage, 'total_tokens') else 0
+                "completion_tokens": cls._get_item_from_openai_message(chunk.usage, 'completion_tokens', 0),
+                "prompt_tokens": cls._get_item_from_openai_message(chunk.usage, 'prompt_tokens', 0),
+                "total_tokens": cls._get_item_from_openai_message(chunk.usage, 'total_tokens', 0)
             }
         elif isinstance(chunk, dict) and chunk.get('usage'):
             usage = chunk['usage']
@@ -572,7 +595,8 @@ class ModelResponse:
             "tool_calls": tool_calls_dict,
             "usage": self.usage,
             "error": self.error,
-            "message": self.message
+            "message": self.message,
+            "reasoning_content": self.reasoning_content
         }
 
     def get_message(self) -> Dict[str, Any]:

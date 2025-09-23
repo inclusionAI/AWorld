@@ -66,7 +66,8 @@ class Runners:
             agent: Agent = None,
             swarm: Swarm = None,
             tool_names: List[str] = [],
-            session_id: str = None
+            session_id: str = None,
+            run_conf: RunConfig = None
     ) -> TaskResponse:
         return sync_exec(
             Runners.run,
@@ -74,7 +75,8 @@ class Runners:
             agent=agent,
             swarm=swarm,
             tool_names=tool_names,
-            session_id=session_id
+            session_id=session_id,
+            run_conf=run_conf
         )
 
     @staticmethod
@@ -83,7 +85,8 @@ class Runners:
             agent: Agent = None,
             swarm: Swarm = None,
             tool_names: List[str] = [],
-            session_id: str = None
+            session_id: str = None,
+            run_conf: RunConfig = None
     ) -> TaskResponse:
         """Run agent directly with input and tool names.
 
@@ -109,5 +112,5 @@ class Runners:
 
         task = Task(input=input, swarm=swarm, tool_names=tool_names,
                     event_driven=swarm.event_driven, session_id=session_id)
-        res = await Runners.run_task(task)
+        res = await Runners.run_task(task, run_conf=run_conf)
         return res.get(task.id)

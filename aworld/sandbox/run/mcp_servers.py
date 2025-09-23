@@ -28,6 +28,7 @@ class McpServers:
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Dict[str, Any] = None,
             sandbox=None,
+            black_tool_actions: Dict[str, List[str]] = None,
     ) -> None:
         self.mcp_servers = mcp_servers
         self.mcp_config = mcp_config
@@ -35,6 +36,7 @@ class McpServers:
         # Dictionary to store server instances {server_name: server_instance}
         self.server_instances = {}
         self.tool_list = None
+        self.black_tool_actions = black_tool_actions or {}
 
     async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
         if self.tool_list:
@@ -43,7 +45,7 @@ class McpServers:
             return []
         try:
             #self.tool_list = await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
-            self.tool_list = await mcp_tool_desc_transform_v2(self.mcp_servers, self.mcp_config,context,self.server_instances)
+            self.tool_list = await mcp_tool_desc_transform_v2(self.mcp_servers, self.mcp_config,context,self.server_instances,self.black_tool_actions)
             return self.tool_list
         except Exception as e:
             traceback.print_exc()
@@ -71,9 +73,6 @@ class McpServers:
         if not self.mcp_servers or not self.mcp_config:
             return False
 
-        if not parameter:
-            parameter = {}
-
         try:
             # Build unique identifier for the tool
             tool_identifier = f"mcp__{server_name}__{tool_name}"
@@ -99,13 +98,13 @@ class McpServers:
             if "session_id" in properties:
                 if hasattr(context, 'session_id') and context.session_id:
                     parameter["session_id"] = context.session_id
-                    logging.debug(f"Auto-added session_id: {context.session_id}")
+                    logging.info(f"Auto-added session_id: {context.session_id}")
 
             # Check if task_id is needed
             if "task_id" in properties:
                 if hasattr(context, 'task_id') and context.task_id:
                     parameter["task_id"] = context.task_id
-                    logging.debug(f"Auto-added task_id: {context.task_id}")
+                    logging.info(f"Auto-added task_id: {context.task_id}")
 
             return True
 
@@ -134,7 +133,7 @@ class McpServers:
                 # Get values from dictionary
                 server_name = action_dict.get("tool_name")
                 tool_name = action_dict.get("action_name")
-                parameter = action_dict.get("params")
+                parameter = action_dict.get("params", {})
                 result_key = f"{server_name}__{tool_name}"
 
                 operation_info = {
@@ -142,9 +141,6 @@ class McpServers:
                     "tool_name": tool_name,
                     "params": parameter
                 }
-
-                if parameter is None:
-                    parameter = {}
 
                 if not server_name or not tool_name:
                     continue
@@ -191,7 +187,7 @@ class McpServers:
                         self.server_instances[server_name] = server
                         logging.info(f"Created and cached new server instance for {server_name}")
                     else:
-                        logging.warning(f"Created new server failed: {server_name}")
+                        logging.warning(f"Created new server failed: {server_name}, session_id: {session_id}, tool_name: {tool_name}")
 
                         self._update_metadata(result_key, {"error": "Failed to create server instance"}, operation_info)
                         continue
@@ -230,7 +226,10 @@ class McpServers:
                                                                  progress_callback=progress_callback)
                         break
                     except BaseException as e:
-                        logging.warning(f"Error calling tool error: {e}")
+                        logging.warning(
+                            f"Error calling tool error: {e}. Extra info: session_id = {session_id}, tool_name = {tool_name}."
+                            f"Traceback:\n{traceback.format_exc()}"
+                        )
                 logging.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
                 logging.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
                 if not call_result_raw:
@@ -283,7 +282,7 @@ class McpServers:
                     self._update_metadata(result_key, action_result, operation_info)
 
         except Exception as e:
-            logging.warning(f"Failed to call_tool: {e}")
+            logging.warning(f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}")
             return None
 
         return results
@@ -322,7 +321,7 @@ class McpServers:
             return
 
         except Exception as e:
-            logging.warning(f"Failed to update sandbox metadata: {e}")
+            logging.debug(f"Failed to update sandbox metadata: {e}")
 
     # Add cleanup method, called when Sandbox is destroyed
     async def cleanup(self):

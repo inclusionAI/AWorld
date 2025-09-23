@@ -263,7 +263,7 @@ class SQLiteMemoryStore(MemoryStore):
         
         for key, value in filters.items():
             if value is not None:
-                if key in ['user_id', 'agent_id', 'session_id', 'task_id', 'agent_name']:
+                if key in ['user_id', 'agent_id', 'session_id', 'task_id', 'agent_name', 'tool_call_id']:
                     conditions.append(f"json_extract(memory_meta, '$.{key}') = ?")
                     params.append(value)
                 elif key == 'memory_type':

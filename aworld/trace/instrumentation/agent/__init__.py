@@ -209,7 +209,7 @@ class AgentInstrumentor(Instrumentor):
             )
             wrapt.wrap_function_wrapper(
                 "aworld.agents.llm_agent",
-                "Agent.invoke_llm_model",
+                "Agent.invoke_model",
                 _call_llm_model_class_wrapper(tracer=tracer)
             )
         except Exception as err:

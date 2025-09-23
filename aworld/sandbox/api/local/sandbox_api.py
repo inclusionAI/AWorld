@@ -18,6 +18,7 @@ class LocalSandboxApi(BaseSandboxApi):
         env_config: Any,
         mcp_servers: Optional[List[str]] = None,
         mcp_config: Optional[Any] = None,
+        black_tool_actions: Optional[Dict[str, List[str]]] = None
     ) -> SandboxLocalResponse:
         """
         Create a local sandbox based on the reference implementation.

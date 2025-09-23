@@ -9,11 +9,11 @@ from aworld.core.event.base import Constants, TopicType, HumanMessage, Message
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.events.util import send_message
 from aworld.logs.util import logger
-from aworld.runners.state_manager import HandleResult, RunNodeBusiType
 from aworld.tools.human.actions import HumanExecuteAction
 from aworld.tools.utils import build_observation
 
 HUMAN = "human"
+
 
 @ToolFactory.register(name=HUMAN,
                       desc=HUMAN,
@@ -29,7 +29,7 @@ class HumanTool(AsyncTool):
         self.step_finished = True
 
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
-            Observation, dict[str, Any]]:
+        Observation, dict[str, Any]]:
         await super().reset(seed=seed, options=options)
 
         await self.close()
@@ -47,7 +47,7 @@ class HumanTool(AsyncTool):
         return self.step_finished
 
     async def do_step(self, actions: list[ActionModel], **kwargs) -> Tuple[
-            Observation, float, bool, bool, Dict[str, Any]]:
+        Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
         fail_error = ""
@@ -62,7 +62,7 @@ class HumanTool(AsyncTool):
             if not confirm_content:
                 raise ValueError("content invalid")
             # send human message to read human input
-            message, error = await self.send_human_message(confirm_content=confirm_content)
+            message, error = await self.send_human_message(action=action, confirm_content=confirm_content)
             if error:
                 raise ValueError(f"HumanTool|send human message failed: {error}")
 
@@ -90,7 +90,9 @@ class HumanTool(AsyncTool):
                 kwargs.get("truncated", False), info)
 
     async def long_wait_message_state(self, message: Message):
+        from aworld.runners.state_manager import HandleResult, RunNodeBusiType
         from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
+
         state_mng = RuntimeStateManager.instance()
         msg_id = message.id
         # init node
@@ -99,6 +101,7 @@ class HumanTool(AsyncTool):
             busi_type=RunNodeBusiType.from_message_category(Constants.HUMAN),
             busi_id=message.receiver or "",
             session_id=message.session_id,
+            task_id=message.task_id,
             msg_id=msg_id,
             msg_from=message.sender)
         # wait for message node completion
@@ -112,13 +115,14 @@ class HumanTool(AsyncTool):
             logger.debug(f"HumanTool|tool {self.name()} callback failed with node: {res_node}.")
             raise ValueError(f"HumanTool|send human message failed: {res_node}")
 
-    async def send_human_message(self, confirm_content):
+    async def send_human_message(self, action: ActionModel, confirm_content):
         error = None
         try:
             message = HumanMessage(
                 category=Constants.HUMAN,
                 payload=confirm_content,
                 sender=self.name(),
+                receiver=action.agent_name,
                 session_id=self.context.session_id,
                 topic=TopicType.HUMAN_CONFIRM,
                 headers={"context": self.context}

@@ -140,6 +140,9 @@ class MessageOutput(Output):
             self.reason_generator, self.response_generator = self.__split_reasoning_and_response__()
         elif source is not None and isinstance(source, str):
             self.reasoning, self.response = self.__resolve_think__(source)
+
+        if not self.reasoning and isinstance(self.source, ModelResponse) and self.source.reasoning_content:
+            self.reasoning = self.source.reasoning_content
         return self
 
     async def get_finished_reasoning(self):

@@ -3,13 +3,13 @@
 import os
 import traceback
 import uuid
-import yaml
 from collections import OrderedDict
-from pathlib import Path
-from typing import Optional, List, Dict, Any
-
-from pydantic import BaseModel, Field
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
 
@@ -41,7 +41,7 @@ def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
         configs.update(yaml_data)
     except FileNotFoundError:
         logger.debug(f"Can not find the file: {file_path}")
-    except Exception as e:
+    except Exception:
         logger.warning(f"{file_name} read fail.\n", traceback.format_exc())
     return configs
 
@@ -118,6 +118,8 @@ class ModelConfig(BaseConfig):
     max_retries: int = 3
     max_model_len: Optional[int] = None  # Maximum model context length
     model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
+    params: Optional[Dict[str, Any]] = {}
+    ext_config: Optional[Dict[str, Any]] = {}
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -162,7 +164,7 @@ class AgentMemoryConfig(BaseConfig):
     )
     # short-term config
     history_rounds: int = Field(default=100,
-                             description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
+                                description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
@@ -198,16 +200,32 @@ class AgentConfig(BaseConfig):
     enable_recording: bool = False
     use_tools_in_prompt: bool = False
     exit_on_failure: bool = False
-    ext: dict = {}
     human_tools: List[str] = []
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # Initialize llm_config with relevant kwargs
-        llm_config_kwargs = {k: v for k, v in kwargs.items() if k in ModelConfig.model_fields}
+        llm_config_kwargs = {}
+        llm_config_ext = {}
+        for k, v in kwargs.items():
+            if k in ModelConfig.model_fields:
+                llm_config_kwargs[k] = v
+            elif k not in self.model_fields:
+                llm_config_ext[k] = v
+
         # Reassignment if it has llm config args
         if llm_config_kwargs or not self.llm_config:
             self.llm_config = ModelConfig(**llm_config_kwargs)
+
+        self.llm_config.ext_config.update(llm_config_ext)
+
+    @property
+    def llm_model_name(self) -> str:
+        return self.llm_config.llm_model_name
+
+    @property
+    def llm_provider(self) -> str:
+        return self.llm_config.llm_provider
 
 
 class TaskConfig(BaseConfig):
@@ -215,6 +233,7 @@ class TaskConfig(BaseConfig):
     task_name: str | None = None
     max_steps: int = 100
     stream: bool = False
+    resp_carry_context: bool = True
     exit_on_failure: bool = False
     ext: dict = {}
 
@@ -232,10 +251,25 @@ class ToolConfig(BaseConfig):
     ext: dict = {}
 
 
+class EngineName:
+    # Use asyncio or MultiProcess run in local
+    LOCAL = "local"
+    # Stateless(task) run in ray. Ray actor will use a new name
+    RAY = "ray"
+    SPARK = "spark"
+
+
 class RunConfig(BaseConfig):
-    name: str = 'local'
+    job_name: str = "aworld_job"
+    engine_name: str = EngineName.LOCAL
     worker_num: int = 1
+    # engine whether to run in local
+    in_local: bool = True
+    # run in local whether to use the same process
     reuse_process: bool = True
+    # Is the task sequence dependent
+    sequence_dependent: bool = False
+    # The custom implement of RuntimeEngine
     cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
