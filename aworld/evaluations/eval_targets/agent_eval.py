@@ -1,13 +1,37 @@
+import abc
+
 from aworld.evaluations.base import EvalTarget, EvalDataCase
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.runner import Runners
 from typing import Optional
+from aworld.core.task import Task, TaskResponse
 
 import os
 
 
 class AworldAgentEvalTarget(EvalTarget[dict]):
+    """
+    Evaluation target for AWorld agents.
+
+    Args:
+        agent (Optional[Agent]): The agent to be evaluated.
+        agent_config (Optional[dict | str]): The configuration of the agent to be created.
+            example:
+            {
+                "name": "plan_execute_agent",
+                "conf": {
+                    "llm_provider": "openai",
+                    "llm_model_name": "gpt-3.5-turbo",
+                    "llm_temperature": 0.3,
+                    "llm_base_url": "https://api.openai.com/v1",
+                    "llm_api_key": "sk-xxx"
+                },
+                "system_prompt": "You are a helpful assistant.",
+                "agent_prompt": "You are a helpful assistant.",
+            }
+        query_column (str): The column name in the dataset that contains the input queries. Defaults to 'query'.
+    """
 
     def __init__(self, agent: Optional[Agent] = None, agent_config: Optional[dict | str] = None, query_column: str = 'query'):
         self.query_column = query_column
@@ -44,6 +68,33 @@ class AworldAgentEvalTarget(EvalTarget[dict]):
 
         raise ValueError(f"Invalid agent_config type: {type(agent_config)}")
 
-    async def predict(self, input: EvalDataCase[dict]) -> dict:
+    async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
         response = await Runners.run(input.case_data[self.query_column], agent=self.agent)
         return {"answer": response.answer}
+
+
+class AworldTaskEvalTarget(EvalTarget[dict]):
+
+    @abc.abstractmethod
+    async def build_task(self, index: int, input: EvalDataCase[dict]) -> Task:
+        """
+        Build a task for evaluation.
+
+        Args:
+            index (int): The index of the data case.
+            input (EvalDataCase[dict]): The input data case for the task.
+
+        Returns:
+            Task: The built task.
+        """
+        raise NotImplementedError
+
+    async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
+        task = await self.build_task(index, input)
+        result = await Runners.run_task(task=task)
+        if isinstance(result, TaskResponse):
+            return {"answer": result.answer}
+        if isinstance(result, dict):
+            return {"answer": result[task.id].answer}
+        else:
+            return {"answer": result}

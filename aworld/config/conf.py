@@ -266,11 +266,6 @@ class RunConfig(BaseConfig):
     tracer: Optional[Dict[str, Any]] = None
 
 
-class EvaluationConfig(BaseConfig):
-    work_dir: Optional[str] = None
-    run_times: int = 1
-
-
 class StorageConfig(BaseConfig):
     name: str = "inmemory"
 
@@ -283,6 +278,7 @@ class DataLoaderConfig(BaseConfig):
     seed: Optional[int] = None
     batch_sampler: Optional[Iterable[List[int]]] = None
     collate_fn: Optional[Callable[..., Any]] = None
+
 
 class DatasetConfig(BaseConfig):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -303,3 +299,20 @@ class DatasetConfig(BaseConfig):
     # Config for dataloader
     dataloader_config: DataLoaderConfig = DataLoaderConfig()
 
+
+class EvaluationConfig(BaseConfig):
+    '''
+    Evaluation run config.
+    '''
+    # full class name of eval target, e.g. aworld.evaluations.base.EvalTarget
+    eval_target: Any = None
+    eval_target_full_class_name: str = None
+    eval_target_config: dict = None
+    eval_criterias: List[Union[dict]] = None
+    # eval dataset id or file path, file path should be a jsonl file
+    eval_dataset_id_or_file_path: str = None
+    eval_dataset_load_config: Optional[DataLoaderConfig] = DataLoaderConfig()
+    # preload transform function or function name, e.g. aworld.evaluations.base.preload_transform
+    eval_dataset_preload_transform: Optional[Union[Callable[[any], Any], str]] = None
+    repeat_times: int = 1
+    eval_parallelism: int = 1
