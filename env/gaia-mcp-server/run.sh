@@ -22,3 +22,5 @@ Please using the following config to connect to the mcp server:
 }
 ```
 EOF
+
+sh -c "cd mcp_servers && python mcp_config.py"
