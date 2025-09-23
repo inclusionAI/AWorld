@@ -10,88 +10,93 @@
 
 ---
 
-AWorld Training bridges AWorld Agents with external training frameworks (e.g., Reinforcement Learning libraries). It is framework-agnostic, enabling you to bring AWorld Agents or Swarms into your preferred training environment. 
+AWorld Training bridges AWorld Agents with external training frameworks (e.g., Reinforcement Learning libraries). It is framework-agnostic, enabling you to bring AWorld Agents or Swarms into your preferred training environment.
 
 ![Architecture Diagram](https://github.com/inclusionAI/AWorld/blob/main/readme_assets/train_env_agent_architecture.png)
 
 The pipeline involves four key steps:
 
-1. **<font style="color:rgb(13, 18, 57);">Environment Setup (</font>**`**<font style="color:rgb(13, 18, 57);">env</font>**`**<font style="color:rgb(13, 18, 57);">):</font>**<font style="color:rgb(13, 18, 57);"> Set up the environment, defining the state/action spaces and interaction dynamics.</font>
-2. **<font style="color:rgb(13, 18, 57);">Agent Construction (</font>**`**<font style="color:rgb(13, 18, 57);">agent</font>**`**<font style="color:rgb(13, 18, 57);">):</font>**<font style="color:rgb(13, 18, 57);"> Build the agent's core logic, policy, and decision-making capabilities.</font>
-3. **<font style="color:rgb(13, 18, 57);">Framework Adaptation (</font>**`**<font style="color:rgb(13, 18, 57);">adapter</font>**`**<font style="color:rgb(13, 18, 57);">):</font>**<font style="color:rgb(13, 18, 57);"> Utilize an adapter to standardize the agent's interface, ensuring compatibility with any RL training frameworks (e.g., Verl).</font>
-4. **<font style="color:rgb(13, 18, 57);">Training Execution (</font>**`**<font style="color:rgb(13, 18, 57);">verl</font>**`**<font style="color:rgb(13, 18, 57);">):</font>**<font style="color:rgb(13, 18, 57);"> Configure the reward function and hyperparameters, then submit the training job via a run script.</font>
-
-
+1.  **Environment Setup (`env`):** Set up the environment, defining the state/action spaces and interaction dynamics.
+2.  **Agent Construction (`agent`):** Build the agent's core logic, policy, and decision-making capabilities.
+3.  **Framework Adaptation (`adapter`):** Utilize an adapter to standardize the agent's interface, ensuring compatibility with any RL training frameworks (e.g., Verl).
+4.  **Training Execution (`verl`):** Configure the reward function and hyperparameters, then submit the training job via a run script.
 
 ## Installation (Example with Verl)
+
 Follow these steps to set up your training environment.
 
-1. **Install System-level Prerequisites**:
-    - Install a compatible **NVIDIA Driver**.
-    - Install the **CUDA Toolkit**.
-2. **Manually Install PyTorch**:
-    - Install a PyTorch version that matches your CUDA version. You can find the command on the [PyTorch website](https://pytorch.org/get-started/locally/).
-3. **Install Verl and Dependencies**:
-    - When you install Verl (e.g., via `pip install e.`), other Python packages like `transformers`, `deepspeed`, and `vllm` will be installed automatically.
-    - **Important**: This step requires the prerequisites from steps 1 and 2 to succeed, as some packages need to be compiled against CUDA. See `setup.py` for a full dependency list.
+1.  **Install System-level Prerequisites**:
+    -   Install a compatible **NVIDIA Driver**.
+    -   Install the **CUDA Toolkit**.
+2.  **Manually Install PyTorch**:
+    -   Install a PyTorch version that matches your CUDA version. You can find the command on the [PyTorch website](https://pytorch.org/get-started/locally/).
+3.  **Install Verl and Dependencies**:
+    -   When you install Verl (e.g., via `pip install -e .`), other Python packages like `transformers`, `deepspeed`, and `vllm` will be installed automatically.
+    -   **Important**: This step requires the prerequisites from steps 1 and 2 to succeed, as some packages need to be compiled against CUDA. See `setup.py` for a full dependency list.
 
+## Setting Up the Remote Environment
 
+Follow these steps to prepare your remote server and launch the environment.
 
-## <font style="color:rgb(13, 18, 57);">Setting Up the Remote Environment</font>
-<font style="color:rgb(13, 18, 57);">Follow these steps to prepare your remote server and launch the environment.</font>
+### System Requirements
 
-### <font style="color:rgb(13, 18, 57);">System Requirements</font>
-#### <font style="color:rgb(13, 18, 57);">Operating System</font>
-+ <font style="color:rgb(13, 18, 57);">The setup is compatible with Windows, macOS, and Linux.</font>
-+ <font style="color:rgb(13, 18, 57);">For best performance, a</font><font style="color:rgb(13, 18, 57);"> </font>**<font style="color:rgb(13, 18, 57);">Linux</font>**<font style="color:rgb(13, 18, 57);"> </font><font style="color:rgb(13, 18, 57);">system is highly recommended.</font>
-+ **<font style="color:rgb(13, 18, 57);">Note</font>**<font style="color:rgb(13, 18, 57);">: Using a server located in regions such as Singapore or North America is also advised to minimize latency.</font>
+#### Operating System
 
-#### <font style="color:rgb(13, 18, 57);">Hardware</font>
-+ **<font style="color:rgb(13, 18, 57);">Minimum</font>**<font style="color:rgb(13, 18, 57);">: 4 CPU Cores and 8GB of RAM.</font>
+-   The setup is compatible with Windows, macOS, and Linux.
+-   For best performance, a **Linux** system is highly recommended.
+-   **Note**: Using a server located in regions such as Singapore or North America is also advised to minimize latency.
 
-#### <font style="color:rgb(13, 18, 57);">Software</font>
-+ **<font style="color:rgb(13, 18, 57);">Docker</font>**<font style="color:rgb(13, 18, 57);">: Docker must be installed on your machine.</font>
-    - **<font style="color:rgb(13, 18, 57);">Important for Mac Users</font>**<font style="color:rgb(13, 18, 57);">: If you are using a Mac with Apple Silicon (M-series), you must enable Rosetta for x86/64 emulation. Please follow the official instructions at: </font>[Docker for Mac Installation]( https://docs.docker.com/desktop/setup/install/mac-install/)<font style="color:rgb(13, 18, 57);">.</font>
+#### Hardware
 
-### <font style="color:rgb(13, 18, 57);">Login and Install the Environment</font>
-<font style="color:rgb(13, 18, 57);">Log into your server and follow these steps.</font>
+-   **Minimum**: 4 CPU Cores and 8GB of RAM.
 
-**<font style="color:rgb(13, 18, 57);">a. Clone the AWorld code to a server directory.</font>**
+#### Software
+
+-   **Docker**: Docker must be installed on your machine.
+    -   **Important for Mac Users**: If you are using a Mac with Apple Silicon (M-series), you must enable Rosetta for x86/64 emulation. Please follow the official instructions at: [Docker for Mac Installation](https://docs.docker.com/desktop/setup/install/mac-install/).
+
+### Login and Install the Environment
+
+Log into your server and follow these steps.
+
+**a. Clone the AWorld code to a server directory.**
 
 ```bash
 git clone https://github.com/inclusionAI/AWorld ~/AWorld
 ```
 
-**<font style="color:rgb(13, 18, 57);">b. Configure environment parameters and download the Gaia dataset.</font>**
+**b. Configure environment parameters and download the Gaia dataset.**
 
-+ **<font style="color:rgb(13, 18, 57);">Configure parameters</font>**<font style="color:rgb(13, 18, 57);">: Edit the</font><font style="color:rgb(13, 18, 57);"> </font>`<font style="color:rgb(13, 18, 57);">~/AWorld/env/gaia-mcp-server/mcp_servers/.env</font>`<font style="color:rgb(13, 18, 57);"> </font><font style="color:rgb(13, 18, 57);">file and enter your specific configuration values.</font>
+-   **Configure parameters**: Edit the `~/AWorld/env/gaia-mcp-server/mcp_servers/.env` file and enter your specific configuration values.
 
-```bash
-cd ~/AWorld/env/gaia-mcp-server/mcp_servers
-cp .env_template .env
-```
+    ```bash
+    cd ~/AWorld/env/gaia-mcp-server/mcp_servers
+    cp .env_template .env
+    ```
 
-+ **<font style="color:rgb(13, 18, 57);">Download dataset</font>**<font style="color:rgb(13, 18, 57);">: Download the </font>`[gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA)`<font style="color:rgb(13, 18, 57);"> from Hugging Face and place it in </font>`<font style="color:rgb(13, 18, 57);">~/AWorld/env/gaia-mcp-server/docker/gaia_dataset</font>`<font style="color:rgb(13, 18, 57);">.</font>
+-   **Download dataset**: Download the [gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA) from Hugging Face and place it in `~/AWorld/env/gaia-mcp-server/docker/gaia_dataset`.
 
-**<font style="color:rgb(13, 18, 57);">c. Launch the Gaia Environment.</font>**
+**c. Launch the Gaia Environment.**
 
 Run the command below to start the Gaia Environment instance in Docker. The instance will provide:
 
-+ An MCP service on port `8000` (endpoint: `http://localhost:8000/mcp`).
-+ A VNC service on port `5901`. You can view the live interface at `http://localhost:5901/vnc.html?autoconnect=true`.
+-   An MCP service on port `8000` (endpoint: `http://localhost:8000/mcp`).
+-   A VNC service on port `5901`. You can view the live interface at `http://localhost:5901/vnc.html?autoconnect=true`.
 
 ```bash
 cd ~/AWorld/env
-sh run-local.sh   # Build the Docker image and start the container instance. This process will take approximately 5 minutes. Upon success, the following log message will be displayed: Start mcp server success.
+# Build the Docker image and start the container instance. This process will take approximately 5 minutes.
+# Upon success, the following log message will be displayed: Start mcp server success.
+sh run-local.sh
 ```
 
 ![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/10119/1758629968770-115c472e-fa41-491d-9045-34194bf5c205.png)
 
-**d. ****<font style="color:rgb(13, 18, 57);">Connecting and Testing the Gaia Environment</font>**
+**d. Connecting and Testing the Gaia Environment**
 
 The URL for the Gaia Environment's MCP service is automatically configured as an environment variable, so no manual endpoint setup is required.
 
-```python
+```bash
 export MCP_SERVER_URL=http://localhost:8080/mcp
 ```
 
@@ -119,9 +124,8 @@ print(f"gaia_env_config: {gaia_env_config}\ngaia_env_servers: {gaia_env_servers}
 # gaia_env_servers: ['readweb-server', 'browser-server', ...]
 ```
 
-
-
 ## Building a Custom Agent
+
 The AWorld framework is designed for flexibility, allowing you to integrate custom agents with external Reinforcement Learning (RL) frameworks (e.g., Verl). This is primarily handled by the `adapter` module.
 
 The `adapter` module works by providing the AWorld framework with the LLM's service URL (`llm_base_url`) and model name (`llm_model_name`), treating the LLM as a remote service.
@@ -132,15 +136,17 @@ llm_model_name=self.get_llm_server_model_name(),
 ```
 
 ### Implementing a Custom AgentLoop
+
 To train a custom agent, the primary task is to implement a `CustomAgentLoop` by inheriting from the `AWorldAgentLoop` base class.
 
-The following example file, `[custom_agent_loop.py](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/custom_agent_loop.py)`, demonstrates how to create a custom loop for a single agent using the Verl framework and an environment with five available tools.
+The following example file, [`custom_agent_loop.py`](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/custom_agent_loop.py), demonstrates how to create a custom loop for a single agent using the Verl framework and an environment with five available tools.
 
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.adapter.verl.common import get_agent_tool_env_and_servers
+
 class GaiaAgentLoop(AworldAgentLoop):
     def build_agents(self):
         # Get the environment configuration and server details.
@@ -150,7 +156,7 @@ class GaiaAgentLoop(AworldAgentLoop):
 
         return Agent(
             conf=AgentConfig(
-                # Get the dynamic llm server address from the server manager. 
+                # Get the dynamic llm server address from the server manager.
                 # The llm server is launched within VeRL.
                 llm_base_url=self.get_llm_server_address(),
                 llm_model_name=self.get_llm_server_model_name(),
@@ -166,37 +172,42 @@ class GaiaAgentLoop(AworldAgentLoop):
 ```
 
 ### Configuration and Launch
+
 Once you have implemented your custom `AgentLoop`, you need to:
 
-1. **Modify the **`agent.yaml`** configuration file** to use your new custom loop.
-2. **Update the **`run.sh`** launch script** to point to your modified `agent.yaml` file.
+1.  **Modify the `agent.yaml` configuration file** to use your new custom loop.
+2.  **Update the `run.sh` launch script** to point to your modified `agent.yaml` file.
 
 ```yaml
 - name: gaia_agent
   _target_: train.examples.train_gaia_with_aworld_verl.custom_agent_loop.GaiaAgentLoop
 ```
 
-```python
+```bash
 # Agent config
 agent_loop_config_path=${path_to_train}/examples/train_gaia_with_aworld_verl/agent.yaml
 ```
 
 ### Advanced Scenarios
+
 AWorld also supports more complex single-agent or multi-agent systems.
 
-+ **Agent Construction**: For details on building single-agent or multi-agent systems, please refer to the [_Building and Running an Agent_ ](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/#)and [_Building and Running a Multi-Agent System_](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)_ _guides.
-+ **MCP Tools**: If your agent requires MCP tools, you must configure the corresponding `mcp_config` file. Instructions can be found in the [_Building and Running an Agent_](about:blank) guide.
-
-
+-   **Agent Construction**: For details on building single-agent or multi-agent systems, please refer to the [_Building and Running an Agent_](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/#) and [_Building and Running a Multi-Agent System_](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/) guides.
+-   **MCP Tools**: If your agent requires MCP tools, you must configure the corresponding `mcp_config` file. Instructions can be found in the [_Building and Running an Agent_]() guide.
 
 ## Prepare for Training
-<font style="color:rgb(13, 18, 57);">After the environment (</font>`<font style="color:rgb(13, 18, 57);">env</font>`<font style="color:rgb(13, 18, 57);">) and agent have been set up, the </font>`<font style="color:rgb(13, 18, 57);">run.sh</font>`<font style="color:rgb(13, 18, 57);"> script is used to initiate the Verl training process. Prior to execution, two final configuration steps are required:</font>
 
-1. **<font style="color:rgb(13, 18, 57);">Configure the Reward:</font>**<font style="color:rgb(13, 18, 57);"> </font><font style="color:rgb(13, 18, 57);">Define the reward function according to the specific objectives of the task.</font>
-2. **<font style="color:rgb(13, 18, 57);">Modify the Launch Script:</font>**<font style="color:rgb(13, 18, 57);"> Update the </font>`<font style="color:rgb(13, 18, 57);">run.sh</font>`<font style="color:rgb(13, 18, 57);"> script to set the correct training parameters, such as configuration paths and hyperparameters.</font>
+After the environment (`env`) and agent have been set up, the `run.sh` script is used to initiate the Verl training process. Prior to execution, two final configuration steps are required:
+
+1.  **Configure the Reward:** Define the reward function according to the specific objectives of the task.
+2.  **Modify the Launch Script:** Update the `run.sh` script to set the correct training parameters, such as configuration paths and hyperparameters.
 
 ### Configuring the Reward Function
-As an example, here is the reward function used for training the **Gaia** agent. The full code is located in `gaia_reward_function.py`. Click to see the `[gaia_reward_function.py](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py)` implementation.
+
+As an example, here is the reward function used for training the **Gaia** agent. The full code is located in `gaia_reward_function.py`.
+
+<details>
+<summary>Click to view the <code>gaia_reward_function.py</code> implementation</summary>
 
 ```python
 import re
@@ -254,7 +265,7 @@ def question_scorer(
             return True
         except ValueError:
             return False
-        
+
     if model_answer is None:
         model_answer = "None"
 
@@ -314,23 +325,29 @@ def gaia_reward_func(data_source, solution_str, ground_truth, extra_info=None):
           return 0.0
 ```
 
+</details>
+
 After implementing your custom reward function, you must update the `run.sh` script to point to it:
 
-```yaml
+```bash
 reward_fn_name=gaia_reward_func
 reward_fn_file_path=${path_to_train}/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
 ```
 
 ### Modifying the Launch Script
+
 Below is an example of the `run.sh` script for training a GaiaAgent in the AWorld environment.
 
 In this script, pay close attention to the following key configurations, which are crucial for connecting AWorld to the training framework:
 
-+ `agent_loop_config_path` (Section 3): Specifies the configuration file for your custom AgentLoop.
-+ `reward_fn_file_path` (Section 4.1): Defines the file path where the reward function is located.
-+ `reward_fn_name` (Section 4.1): Specifies the name of the reward function to use.
+-   `agent_loop_config_path` (Section 3): Specifies the configuration file for your custom AgentLoop.
+-   `reward_fn_file_path` (Section 4.1): Defines the file path where the reward function is located.
+-   `reward_fn_name` (Section 4.1): Specifies the name of the reward function to use.
 
 For a detailed explanation of all parameters, please refer to the [**official VeRL documentation**](https://verl.readthedocs.io/en/latest/examples/config.html).
+
+<details>
+<summary>Click to view the full <code>run.sh</code> script</summary>
 
 ```shell
 #!/usr/bin/env bash
@@ -474,7 +491,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.total_epochs=1 "$@"
 ```
 
-### Launching the Training
+</details>
+
+## Launching the Training
+
 After all configurations are complete, you can start the training by running:
 
 ```bash
@@ -487,7 +507,7 @@ bash run.sh
 
 **AWorld Train** — Bring your AWorld agents to your favorite training frameworks
 
+</div>
+
 [license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
 [license-url]: https://opensource.org/licenses/MIT
-
-</div>
