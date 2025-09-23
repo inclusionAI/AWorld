@@ -72,9 +72,7 @@ cd verl && pip install -e.
         cd ~/AWorld/env
         sh run-local.sh    # Build Docker镜像，启动Docker Pod实例，预计5分钟，成功后输出日志：Start mcp server success
         ```
-
         ![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/10119/1758629968770-115c472e-fa41-491d-9045-34194bf5c205.png)
-
     4.  连接并测试 Gaia Environment
 
         Gaia Environment MCP 服务的 url 已经自动配置在环境变量中：
