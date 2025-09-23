@@ -21,6 +21,8 @@ AWorld Training 旨在将 AWorld Agent 与外部训练框架（如强化学习�
 3.  **框架适配 (`adapter`):** 利用适配器（Adapter）对 Agent 接口进行标准化，以确保其与任何强化学习（RL）训练框架（如 Verl）的兼容性。
 4.  **训练执行 (`verl`):** 配置奖励函数和超参数，然后通过运行脚本提交训练任务。
 
+
+
 ## 安装训练所需依赖 (以结合Verl为例)
 **前置条件：** 在安装 Verl 之前，请确保系统中已正确安装了与硬件兼容的 **NVIDIA 驱动**和 **CUDA 工具包**。此外，需要根据 CUDA 版本**手动安装 PyTorch**。
 
@@ -38,73 +40,75 @@ git clone https://github.com/volcengine/verl.git
 cd verl && pip install -e.
 ```
 
-
-
 ## 准备远程环境
 1. 系统要求（windows、linux、mac 系统均可，建议 Linux 系统，建议使用新加坡、北美等服务器）
     - 本地配置要求（至少 4c8g）
     - 安装docker环境等（本机安装 Docker，注意：如果是 Mac M 系列 CPU 需要开启 Rosetta 以兼容 x86/64 指令集，详见 [https://docs.docker.com/desktop/setup/install/mac-install/](https://docs.docker.com/desktop/setup/install/mac-install/)）
-2. 登入到服务器，安装env
-    1. Clone AWorld 代码到服务器目录
+好的，我已经帮你将 Markdown 的缩进调整为标准格式，使其在各种编辑器中都能正确渲染层级关系。同时，为了提高可读性，我还为文件路径、URL 和函数名等添加了行内代码格式。
 
-```bash
-git clone https://github.com/inclusionAI/AWorld ~/AWorld
-```
+---
 
-    2. 配置环境参数 以及 下载 Gaia 数据集
-        * 配置环境参数：
+2.  登入到服务器，安装env
+    1.  Clone AWorld 代码到服务器目录
 
-```bash
-cd ~/AWorld/env/gaia-mcp-server/mcp_servers
-cp .env_template .env
-```
+        ```bash
+        git clone https://github.com/inclusionAI/AWorld ~/AWorld
+        ```
 
-编辑 ~/AWorld/env/gaia-mcp-server/mcp_servers/.env 文件，填入您的具体配置值。
+    2.  配置环境参数以及下载 Gaia 数据集
+        *   配置环境参数：
 
-        * 下载 Gaia 数据集：从 Hugging Face 下载 [gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA) 并放置到 ~/AWorld/env/gaia-mcp-server/docker/gaia_dataset
-    3. 启动 Gaia Environment
+            ```bash
+            cd ~/AWorld/env/gaia-mcp-server/mcp_servers
+            cp .env_template .env
+            ```
 
-运行下面的命令，在 Docker 环境中启动 Gaia Environment 实例。实例在 8000 端口提供 MCP 服务，endpoint 地址是 http://localhost:8000/mcp，在 5901 端口提供 VNC 服务，可通过浏览访问 http://localhost:5901/vnc.html?autoconnect=true 查看 Environment 实时界面。 
+            编辑 `~/AWorld/env/gaia-mcp-server/mcp_servers/.env` 文件，填入您的具体配置值。
 
-```bash
-cd ~/AWorld/env
-sh run-local.sh    # Build Docker镜像，启动Docker Pod实例，预计5分钟，成功后输出日志：Start mcp server success
-```
+        *   下载 Gaia 数据集：从 Hugging Face 下载 [gaia_dataset](https://huggingface.co/datasets/gaia-benchmark/GAIA) 并放置到 `~/AWorld/env/gaia-mcp-server/docker/gaia_dataset`
 
-![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/10119/1758629968770-115c472e-fa41-491d-9045-34194bf5c205.png)
+    3.  启动 Gaia Environment
 
-    4. 连接并测试 Gaia Environment
+        运行下面的命令，在 Docker 环境中启动 Gaia Environment 实例。实例在 8000 端口提供 MCP 服务，endpoint 地址是 `http://localhost:8000/mcp`，在 5901 端口提供 VNC 服务，可通过浏览访问 `http://localhost:5901/vnc.html?autoconnect=true` 查看 Environment 实时界面。
 
-Gaia Environment MCP 服务的 url 已经自动配置在环境变量中：
+        ```bash
+        cd ~/AWorld/env
+        sh run-local.sh    # Build Docker镜像，启动Docker Pod实例，预计5分钟，成功后输出日志：Start mcp server success
+        ```
 
-```python
-export MCP_SERVER_URL=http://localhost:8080/mcp
-```
+        ![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/10119/1758629968770-115c472e-fa41-491d-9045-34194bf5c205.png)
 
-在构建 Agent 时，可以使用 get_agent_tool_env_and_servers 设置请求 MCP 的相关参数和 MCP Servers 列表。若不传入参，即使用默认值：
+    4.  连接并测试 Gaia Environment
 
-```python
-gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
-print(f"gaia_env_config: {gaia_env_config}\ngaia_env_servers: {gaia_env_servers}")
+        Gaia Environment MCP 服务的 url 已经自动配置在环境变量中：
 
-# output
-# gaia_env_config: {
-#   "mcpServers": {
-#     "aworld-mcp": {
-#       "type": "streamable-http",
-#       "url": "http://localhost:8080/mcp",
-#       "headers": {
-#         "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
-#       },
-#       "timeout": 600,
-#       "sse_read_timeout": 600,
-#       "client_session_timeout_seconds": 600,
-#     }
-#   }
-# }
-# gaia_env_servers: ['readweb-server', 'browser-server', ...]
-```
+        ```python
+        export MCP_SERVER_URL=http://localhost:8080/mcp
+        ```
 
+        在构建 Agent 时，可以使用 `get_agent_tool_env_and_servers` 设置请求 MCP 的相关参数和 MCP Servers 列表。若不传入参，即使用默认值：
+
+        ```python
+        gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
+        print(f"gaia_env_config: {gaia_env_config}\ngaia_env_servers: {gaia_env_servers}")
+
+        # output
+        # gaia_env_config: {
+        #   "mcpServers": {
+        #     "aworld-mcp": {
+        #       "type": "streamable-http",
+        #       "url": "http://localhost:8080/mcp",
+        #       "headers": {
+        #         "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
+        #       },
+        #       "timeout": 600,
+        #       "sse_read_timeout": 600,
+        #       "client_session_timeout_seconds": 600,
+        #     }
+        #   }
+        # }
+        # gaia_env_servers: ['readweb-server', 'browser-server', ...]
+        ```
 ## 自定义 Agent
 AWorld 框架提供了 adapter 模块，用于实现 Agent 与外部强化学习（RL）训练框架的集成。
 
