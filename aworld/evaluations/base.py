@@ -9,7 +9,14 @@ from enum import Enum
 from dataclasses import dataclass, field
 from itertools import chain, repeat
 from aworld.logs.util import logger
-from aworld.dataset.sampler import Sampler
+from aworld.config.conf import EvaluationConfig
+
+# Try to import tqdm
+try:
+    from tqdm.asyncio import tqdm_asyncio as tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
 
 EvalCaseDataType = TypeVar('EvalCaseDataType')
 
@@ -57,28 +64,6 @@ class EvalCriteria:
 
 
 @dataclass
-class EvalRunConfig:
-    '''
-    Evaluation run config.
-    '''
-    # full class name of eval target, e.g. aworld.evaluations.base.EvalTarget
-    eval_target_full_class_name: str = field(default_factory=str)
-    eval_target_config: dict = field(default_factory=dict)
-    eval_criterias: list[EvalCriteria | dict] = field(default_factory=list)
-    # eval dataset id or file path, file path should be a jsonl file
-    eval_dataset_id_or_file_path: str = field(default_factory=str)
-    eval_dataset_shuffle: Optional[bool] = field(default=False)
-    eval_dataset_drop_last: Optional[bool] = field(default=False)
-    eval_dataset_seed: Optional[int] = field(default=None)
-    eval_dataset_sampler: Union[Sampler, Iterable, None] = None
-    # preload transform function or function name, e.g. aworld.evaluations.base.preload_transform
-    eval_dataset_preload_transform: Optional[Callable[[any], EvalCaseDataType] | str] = None
-
-    repeat_times: int = field(default=1)
-    eval_parallelism: int = field(default=1)
-
-
-@dataclass
 class EvalRun:
     '''
     Evaluation run.
@@ -86,7 +71,7 @@ class EvalRun:
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     run_name: str = field(default_factory=str)
     create_time: float = field(default_factory=lambda: time.time())
-    config: EvalRunConfig = field(default=None)
+    config: EvaluationConfig = field(default=None)
 
 
 @dataclass
@@ -162,7 +147,7 @@ class EvalTarget(abc.ABC, Generic[EvalCaseDataType]):
     '''
 
     @abc.abstractmethod
-    async def predict(self, input: EvalDataCase[EvalCaseDataType]) -> dict:
+    async def predict(self, index: int, input: EvalDataCase[EvalCaseDataType]) -> dict:
         """execute the llm/agent.
 
         Returns:
@@ -172,7 +157,7 @@ class EvalTarget(abc.ABC, Generic[EvalCaseDataType]):
 
 
 class NoActionEvalTarget(EvalTarget[EvalCaseDataType]):
-    async def predict(self, input: EvalDataCase[EvalCaseDataType]) -> dict:
+    async def predict(self, index: int, input: EvalDataCase[EvalCaseDataType]) -> dict:
         return {}
 
 
@@ -237,7 +222,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
                 score_dict[k] = self._do_summarize([score[k] for score in scores if k in score])
         return score_dict
 
-    def summarize(self, eval_case_results: list[EvalCaseResult]) -> Optional[dict]:
+    def summarize(self, eval_case_results: list[EvalCaseResult], repeat_times: int) -> Optional[dict]:
         '''
         Summarize the scores for all metrics.
         '''
@@ -247,7 +232,11 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
 
         # my all metric score results of all cases
         metric_scores = {}
+        # group eval case results by eval_case_id
+        case_groups = {}
         for result in eval_case_results:
+            case_groups.setdefault(result.eval_case_id, []).append(result)
+
             scorer_result = result.score_rows.get(self.name)
             if not scorer_result or not hasattr(scorer_result, 'metric_results'):
                 continue
@@ -269,6 +258,34 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
                         metric_summary['eval_status'] = eval_criteria.judge(metric_summary['mean']).name
                     elif 'true_rate' in metric_summary:
                         metric_summary['eval_status'] = eval_criteria.judge(metric_summary['true_rate']).name
+
+                # If there are repeated cases (same eval_case_id appears multiple times), calculate pass@k
+                if repeat_times > 1:
+                    # For each k value between 2 and repeat_times
+                    for k in range(2, repeat_times + 1):
+                        # Calculate pass@k
+                        passed_count = 0
+                        for _, results in case_groups.items():
+                            # Check if any of the first k runs passed
+                            if len(results) >= k:
+                                # Take the first k runs
+                                k_results = results[:k]
+                                # Check if any of them passed
+                                for result in k_results:
+                                    scorer_result = result.score_rows.get(self.name)
+                                    if scorer_result and hasattr(scorer_result, 'metric_results'):
+                                        metric_result = scorer_result.metric_results.get(metric_name)
+                                        if isinstance(metric_result, dict) and 'eval_status' in metric_result:
+                                            if metric_result['eval_status'] == EvalStatus.PASSED:
+                                                passed_count += 1
+                                                break
+
+                        # Add pass@k to the summary
+                        print(f"pass@{k} of {metric_name}: passed_count={passed_count}, total_case_groups={len(case_groups)}")
+
+                        pass_at_k = passed_count / len(case_groups) if case_groups else 0
+                        metric_summary[f'pass@{k}'] = pass_at_k
+
                 summary[metric_name] = metric_summary
         return summary
 
@@ -341,7 +358,7 @@ class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
         Returns:
             execute result
         """
-        output = await eval_target.predict(input)
+        output = await eval_target.predict(index, input)
         score_rows = {}
         for scorer in self.scorers:
             score_rows[scorer.name] = await scorer.scorer_and_judge(index, input, output)
@@ -365,13 +382,26 @@ class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
 
         input_dataset_chain = chain.from_iterable(repeat(input_dataset, self.repeat_times))
         details = []
-        async for result_row in self._evaluate_in_task(eval_target, input_dataset_chain, self.run_single_case):
-            details.append(result_row)
+
+        # Calculate total number of cases for progress bar
+        total_cases = len(input_dataset) * self.repeat_times
+
+        # Use tqdm if available
+        if HAS_TQDM:
+            progress_bar = tqdm(total=total_cases, desc="Evaluating", unit="case")
+            async for result_row in self._evaluate_in_task(eval_target, input_dataset_chain, self.run_single_case):
+                details.append(result_row)
+                progress_bar.update(1)
+            progress_bar.close()
+        else:
+            # Fallback without progress bar
+            async for result_row in self._evaluate_in_task(eval_target, input_dataset_chain, self.run_single_case):
+                details.append(result_row)
 
         details.sort(key=lambda x: x.index)
         summary = {}
         for scorer in self.scorers:
-            summary[scorer.name] = scorer.summarize(details)
+            summary[scorer.name] = scorer.summarize(details, self.repeat_times)
         return EvalResult(
             eval_dataset_id=dataset.eval_dataset_id,
             run_id=dataset.run_id,

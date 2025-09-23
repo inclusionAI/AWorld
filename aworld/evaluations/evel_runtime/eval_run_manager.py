@@ -1,7 +1,8 @@
 import abc
 from aworld.core.storage.base import Storage
 from aworld.core.storage.inmemory_store import InmemoryStorage
-from aworld.evaluations.base import EvalRunConfig, EvalRun
+from aworld.evaluations.base import EvalRun
+from aworld.config.conf import EvaluationConfig
 
 
 class EvalRunManager(abc.ABC):
@@ -10,7 +11,7 @@ class EvalRunManager(abc.ABC):
     '''
 
     @abc.abstractmethod
-    async def create_eval_run(self, eval_config: EvalRunConfig, eval_run_name: str = None) -> EvalRun:
+    async def create_eval_run(self, eval_config: EvaluationConfig, eval_run_name: str = None) -> EvalRun:
         """Create an evaluation run.
 
         Returns:
@@ -34,7 +35,7 @@ class DefaultEvalRunManager(EvalRunManager):
     def __init__(self, storage: Storage[EvalRun] = InmemoryStorage()):
         self.storage = storage
 
-    async def create_eval_run(self, eval_config: EvalRunConfig, eval_run_name: str = None) -> EvalRun:
+    async def create_eval_run(self, eval_config: EvaluationConfig, eval_run_name: str = None) -> EvalRun:
         if not eval_run_name:
             eval_run_name = f"EvalRun_{eval_config.eval_dataset_id_or_file_path}"
         eval_run = EvalRun(config=eval_config, run_name=eval_run_name)

@@ -1,6 +1,6 @@
 import unittest
 from aworld.evaluations.evel_runtime.eval_runner import EvaluateRunner
-from aworld.evaluations.base import EvalRunConfig
+from aworld.config.conf import EvaluationConfig
 
 from dotenv import load_dotenv
 
@@ -10,7 +10,7 @@ class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
     async def test_agent_evaluation(self):
         load_dotenv()
 
-        eval_config = EvalRunConfig(
+        eval_config = EvaluationConfig(
             eval_target_full_class_name="aworld.evaluations.eval_targets.agent_eval.AworldAgentEvalTarget",
             eval_target_config={
                 "agent_config": {
@@ -27,7 +27,7 @@ class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "threshold": 0.5,
                 }
             ],
-            eval_dataset_id_or_file_path="tests/evaluations/agent_eval_data.json",
+            eval_dataset_id_or_file_path="tests/evaluations/agent_eval_data.jsonl",
         )
 
         results = await EvaluateRunner().eval_run(eval_config=eval_config)

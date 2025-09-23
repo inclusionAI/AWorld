@@ -5,8 +5,9 @@ import os
 import uuid
 import importlib
 from typing import Dict, Any, List, Optional, Callable
+from aworld.config.conf import EvaluationConfig
 from aworld.evaluations.base import (
-    EvalDataCase, EvalDataset, EvalResult, EvalRunConfig, Scorer, EvalCriteria, EvalTarget, EvalRun, Evaluator
+    EvalDataCase, EvalDataset, EvalResult, Scorer, EvalCriteria, EvalTarget, EvalRun, Evaluator
 )
 from aworld.evaluations.evel_runtime.eval_run_manager import EvalRunManager, DefaultEvalRunManager
 from aworld.evaluations.evel_runtime.eval_dataset_manager import EvalDatasetManager, DefaultEvalDatasetManager
@@ -27,7 +28,7 @@ class EvaluateRunner(abc.ABC):
         self.eval_result_manager = eval_result_manager
         self.eval_run_manager = eval_run_manager
 
-    async def eval_run(self, eval_config: EvalRunConfig) -> EvalResult:
+    async def eval_run(self, eval_config: EvaluationConfig) -> EvalResult:
         """Run the evaluation.
 
         Returns:
@@ -35,7 +36,10 @@ class EvaluateRunner(abc.ABC):
         """
         try:
             eval_run: EvalRun = await self.eval_run_manager.create_eval_run(eval_config)
-            eval_dataset: EvalDataset = await self.load_dataset(eval_config)
+            loaded_dataset: EvalDataset = await self.load_dataset(eval_config)
+            eval_dataset: EvalDataset = await self.eval_dataset_manager.create_eval_dataset(run_id=eval_run.run_id,
+                                                                                            dataset_name=f"Dataset_{eval_run.run_id}",
+                                                                                            data_cases=loaded_dataset.eval_cases)
             scorers = self.get_scorers(eval_config)
             eval_target = self.get_target_for_eval(eval_config)
             evaluator = Evaluator(
@@ -50,7 +54,7 @@ class EvaluateRunner(abc.ABC):
             logger.error(f"eval run {eval_run.run_id} failed: {str(e)}")
             raise e
 
-    def get_scorers(self, eval_config: EvalRunConfig) -> list[Scorer]:
+    def get_scorers(self, eval_config: EvaluationConfig) -> list[Scorer]:
         '''
         Get scorer instances for evaluation.
         '''
@@ -62,13 +66,14 @@ class EvaluateRunner(abc.ABC):
                 converted_criterias.append(criteria)
         return get_scorer_instances_for_criterias(converted_criterias)
 
-    def get_target_for_eval(self, eval_config: EvalRunConfig) -> EvalTarget:
+    def get_target_for_eval(self, eval_config: EvaluationConfig) -> EvalTarget:
         '''
         Get eval target instance for evaluation.
         '''
-
+        if eval_config.eval_target:
+            return eval_config.eval_target
         if not eval_config.eval_target_full_class_name:
-            raise ValueError("eval_target_full_class_name must be specified in EvalRunConfig")
+            raise ValueError("eval_target_full_class_name must be specified in EvaluationConfig")
         try:
             if '.' in eval_config.eval_target_full_class_name:
                 module_path, class_name = eval_config.eval_target_full_class_name.rsplit('.', 1)
@@ -86,7 +91,7 @@ class EvaluateRunner(abc.ABC):
             logger.error(f"Failed to create EvalTarget instance: {str(e)}")
             raise ValueError(f"Failed to create EvalTarget instance from {eval_config.eval_target_full_class_name}: {str(e)}")
 
-    async def load_dataset(self, eval_config: EvalRunConfig) -> EvalDataset:
+    async def load_dataset(self, eval_config: EvaluationConfig) -> EvalDataset:
         """Load the dataset.
 
         Args:
@@ -104,10 +109,10 @@ class EvaluateRunner(abc.ABC):
             eval_cases: List[EvalDataCase] = []
             eval_dataset_id = uuid.uuid4().hex
             for data_row in dataset.to_dataloader(batch_size=1,
-                                                  shuffle=eval_config.eval_dataset_shuffle,
-                                                  drop_last=eval_config.eval_dataset_drop_last,
-                                                  seed=eval_config.eval_dataset_seed,
-                                                  sampler=eval_config.eval_dataset_sampler):
+                                                  shuffle=eval_config.eval_dataset_load_config.shuffle,
+                                                  drop_last=eval_config.eval_dataset_load_config.drop_last,
+                                                  seed=eval_config.eval_dataset_load_config.seed,
+                                                  sampler=eval_config.eval_dataset_load_config.sampler):
                 if data_row:
                     eval_cases.append(EvalDataCase(eval_dataset_id=eval_dataset_id, case_data=data_row[0]))
 
