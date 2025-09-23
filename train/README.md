@@ -90,7 +90,7 @@ cd ~/AWorld/env
 sh run-local.sh
 ```
 
-![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/10119/1758629968770-115c472e-fa41-491d-9045-34194bf5c205.png)
+![launch_gaia_env](https://github.com/inclusionAI/AWorld/blob/yuchengyue-patch-4-1/readme_assets/launch_gaia_env.jpg)
 
 **d. Connecting and Testing the Gaia Environment**
 
