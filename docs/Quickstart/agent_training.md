@@ -1,7 +1,7 @@
 # AWorld Train
 
 AWorld Training bridges AWorld Agents with external training frameworks (e.g., Reinforcement Learning libraries). It is framework-agnostic, enabling you to bring AWorld Agents or Swarms into your preferred training environment.
-![Architecture Diagram](https://github.com/inclusionAI/AWorld/blob/main/readme_assets/train_env_agent_architecture.png)
+![Architecture Diagram](../imgs/train_env_agent_architecture.png)
 The pipeline involves four key steps:
 
 1.  **Environment Setup (`env`):** Set up the environment, defining the state/action spaces and interaction dynamics.
@@ -78,7 +78,7 @@ cd ~/AWorld/env
 sh run-local.sh
 ```
 
-![launch_gaia_env](https://github.com/inclusionAI/AWorld/blob/yuchengyue-patch-4-1/readme_assets/launch_gaia_env.jpg)
+![launch_gaia_env](../imgs/launch_gaia_env.jpg)
 
 **d. Connecting and Testing the Gaia Environment**
 
@@ -488,14 +488,3 @@ After all configurations are complete, you can start the training by running:
 ```bash
 bash run.sh
 ```
-
----
-
-<div align="center">
-
-**AWorld Train** — Bring your AWorld agents to your favorite training frameworks
-
-</div>
-
-[license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
-[license-url]: https://opensource.org/licenses/MIT
