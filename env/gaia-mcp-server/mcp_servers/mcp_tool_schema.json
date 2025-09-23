@@ -1,140 +1,5 @@
 {
-    "readweb-server": [
-        {
-            "name": "read_url",
-            "title": null,
-            "description": "提取并将网页内容转换为清晰、可读的markdown格式。非常适合阅读文章、文档、博客文章或任何网页内容。当您需要分析网站的文本内容、绕过付费墙或获取结构化数据时，请使用此工具。",
-            "inputSchema": {
-                "properties": {
-                    "url": {
-                        "description": "一个强大的网页内容提取工具，可以从指定URL检索和处理原始内容，非常适合数据收集、内容分析和研究任务。",
-                        "title": "Url",
-                        "type": "string"
-                    },
-                    "include_images": {
-                        "default": false,
-                        "description": "在响应中包含从URL提取的图片列表",
-                        "title": "Include Images",
-                        "type": "boolean"
-                    }
-                },
-                "required": [
-                    "url"
-                ],
-                "title": "read_urlArguments",
-                "type": "object"
-            },
-            "outputSchema": {
-                "$defs": {
-                    "Annotations": {
-                        "additionalProperties": true,
-                        "properties": {
-                            "audience": {
-                                "anyOf": [
-                                    {
-                                        "items": {
-                                            "enum": [
-                                                "user",
-                                                "assistant"
-                                            ],
-                                            "type": "string"
-                                        },
-                                        "type": "array"
-                                    },
-                                    {
-                                        "type": "null"
-                                    }
-                                ],
-                                "default": null,
-                                "title": "Audience"
-                            },
-                            "priority": {
-                                "anyOf": [
-                                    {
-                                        "maximum": 1.0,
-                                        "minimum": 0.0,
-                                        "type": "number"
-                                    },
-                                    {
-                                        "type": "null"
-                                    }
-                                ],
-                                "default": null,
-                                "title": "Priority"
-                            }
-                        },
-                        "title": "Annotations",
-                        "type": "object"
-                    },
-                    "TextContent": {
-                        "additionalProperties": true,
-                        "description": "Text content for a message.",
-                        "properties": {
-                            "type": {
-                                "const": "text",
-                                "title": "Type",
-                                "type": "string"
-                            },
-                            "text": {
-                                "title": "Text",
-                                "type": "string"
-                            },
-                            "annotations": {
-                                "anyOf": [
-                                    {
-                                        "$ref": "#/$defs/Annotations"
-                                    },
-                                    {
-                                        "type": "null"
-                                    }
-                                ],
-                                "default": null
-                            },
-                            "_meta": {
-                                "anyOf": [
-                                    {
-                                        "additionalProperties": true,
-                                        "type": "object"
-                                    },
-                                    {
-                                        "type": "null"
-                                    }
-                                ],
-                                "default": null,
-                                "title": "Meta"
-                            }
-                        },
-                        "required": [
-                            "type",
-                            "text"
-                        ],
-                        "title": "TextContent",
-                        "type": "object"
-                    }
-                },
-                "properties": {
-                    "result": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "$ref": "#/$defs/TextContent"
-                            }
-                        ],
-                        "title": "Result"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "title": "read_urlOutput",
-                "type": "object"
-            },
-            "annotations": null,
-            "meta": null
-        }
-    ],
+    "readweb-server": [],
     "browser-server": [
         {
             "name": "get_browser_capabilities",
@@ -9185,7 +9050,54 @@
             "meta": null
         }
     ],
-    "google-search": [],
+    "google-search": [
+        {
+            "name": "search",
+            "title": null,
+            "description": "Perform a web search query",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "num": {
+                        "type": "number",
+                        "description": "Number of results (1-10)",
+                        "minimum": 1,
+                        "maximum": 10
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            },
+            "outputSchema": null,
+            "annotations": null,
+            "meta": null
+        },
+        {
+            "name": "read_webpage",
+            "title": null,
+            "description": "Fetch and extract text content from a webpage",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL of the webpage to read"
+                    }
+                },
+                "required": [
+                    "url"
+                ]
+            },
+            "outputSchema": null,
+            "annotations": null,
+            "meta": null
+        }
+    ],
     "audio-server": [
         {
             "name": "mcp_transcribe_audio",
@@ -9498,12 +9410,9 @@
                         "items": {
                             "type": "string"
                         },
-                        "description": "The absolute paths to the files to upload. Can be a single file or multiple files."
+                        "description": "The absolute paths to the files to upload. Can be single file or multiple files. If omitted, file chooser is cancelled."
                     }
                 },
-                "required": [
-                    "paths"
-                ],
                 "additionalProperties": false,
                 "$schema": "http://json-schema.org/draft-07/schema#"
             },
@@ -9835,6 +9744,20 @@
                             "middle"
                         ],
                         "description": "Button to click, defaults to left"
+                    },
+                    "modifiers": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "Alt",
+                                "Control",
+                                "ControlOrMeta",
+                                "Meta",
+                                "Shift"
+                            ]
+                        },
+                        "description": "Modifier keys to press"
                     }
                 },
                 "required": [

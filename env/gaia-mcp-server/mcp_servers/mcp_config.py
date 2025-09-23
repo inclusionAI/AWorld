@@ -197,8 +197,8 @@ mcp_config = {
             "command": "npx",
             "args": ["-y", "@adenot/mcp-google-search"],
             "env": {
-                "GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"],
-                "GOOGLE_SEARCH_ENGINE_ID": os.environ["GOOGLE_CSE_ID"],
+                "GOOGLE_API_KEY": os.getenv("GOOGLE_API_KEY"),
+                "GOOGLE_SEARCH_ENGINE_ID": os.getenv("GOOGLE_CSE_ID"),
                 "SESSION_REQUEST_CONNECT_TIMEOUT": "60",
             },
         },
@@ -208,9 +208,9 @@ mcp_config = {
             "args": ["run", "src/main.py"],
             "cwd": "audio_server",
             "env": {
-                "AUDIO_LLM_API_KEY": os.environ["AUDIO_LLM_API_KEY"],
-                "AUDIO_LLM_BASE_URL": os.environ["AUDIO_LLM_BASE_URL"],
-                "AUDIO_LLM_MODEL_NAME": os.environ["AUDIO_LLM_MODEL_NAME"],
+                "AUDIO_LLM_API_KEY": os.getenv("AUDIO_LLM_API_KEY"),
+                "AUDIO_LLM_BASE_URL": os.getenv("AUDIO_LLM_BASE_URL"),
+                "AUDIO_LLM_MODEL_NAME": os.getenv("AUDIO_LLM_MODEL_NAME"),
                 "SESSION_REQUEST_CONNECT_TIMEOUT": "60",
             },
         },
@@ -220,9 +220,9 @@ mcp_config = {
             "args": ["run", "src/main.py"],
             "cwd": "image_server",
             "env": {
-                "IMAGE_LLM_API_KEY": os.environ.get("IMAGE_LLM_API_KEY"),
-                "IMAGE_LLM_MODEL_NAME": os.environ.get("IMAGE_LLM_MODEL_NAME"),
-                "IMAGE_LLM_BASE_URL": os.environ.get("IMAGE_LLM_BASE_URL"),
+                "IMAGE_LLM_API_KEY": os.getenv("IMAGE_LLM_API_KEY"),
+                "IMAGE_LLM_MODEL_NAME": os.getenv("IMAGE_LLM_MODEL_NAME"),
+                "IMAGE_LLM_BASE_URL": os.getenv("IMAGE_LLM_BASE_URL"),
                 "SESSION_REQUEST_CONNECT_TIMEOUT": "60",
             },
         },
@@ -232,7 +232,7 @@ mcp_config = {
             "args": ["run", "src/main.py"],
             "cwd": "e2b_code_server",
             "env": {
-                "E2B_API_KEY": os.environ["E2B_API_KEY"],
+                "E2B_API_KEY": os.getenv("E2B_API_KEY"),
                 "SESSION_REQUEST_CONNECT_TIMEOUT": "120",
             },
         },
@@ -260,3 +260,8 @@ mcp_config = {
         # },
     }
 }
+
+
+if __name__ == "__main__":
+    print("✅ MCP Server list:")
+    print(list(mcp_config.get("mcpServers").keys()))
