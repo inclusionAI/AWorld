@@ -119,7 +119,7 @@ class ModelConfig(BaseConfig):
     max_model_len: Optional[int] = None  # Maximum model context length
     model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
     params: Optional[Dict[str, Any]] = {}
-    ext: dict = {}
+    ext_config: Optional[Dict[str, Any]] = {}
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -200,7 +200,6 @@ class AgentConfig(BaseConfig):
     enable_recording: bool = False
     use_tools_in_prompt: bool = False
     exit_on_failure: bool = False
-    ext: dict = {}
     human_tools: List[str] = []
 
     def __init__(self, **kwargs):
@@ -218,7 +217,7 @@ class AgentConfig(BaseConfig):
         if llm_config_kwargs or not self.llm_config:
             self.llm_config = ModelConfig(**llm_config_kwargs)
 
-        self.llm_config.ext.update(llm_config_ext)
+        self.llm_config.ext_config.update(llm_config_ext)
 
     @property
     def llm_model_name(self) -> str:

@@ -692,7 +692,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     model=self.model_name,
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
-                    stream=True
+                    stream=True,
+                    **kwargs
                 )
 
                 async for chunk in resp_stream:
@@ -717,7 +718,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     model=self.model_name,
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
-                    stream=kwargs.get("stream", False)
+                    stream=kwargs.get("stream", False),
+                    **kwargs
                 )
 
             logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
