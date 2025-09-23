@@ -876,7 +876,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     }
                 }
             ]
-            await self._add_human_input_to_memory(image_content, context, "message")
+            await self._add_human_input_to_memory(image_content, context)
         else:
             await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
 
