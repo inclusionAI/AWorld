@@ -454,8 +454,6 @@ class OpenAIProvider(LLMProviderBase):
             if param in llm_params and llm_params[param] is not None:
                 openai_params[param] = llm_params[param]
 
-        logger.debug(f"get openai params: {openai_params}")
-
         return openai_params
 
     def speech_to_text(self,

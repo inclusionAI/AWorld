@@ -707,8 +707,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.model = chunk.model
                     llm_response.usage = nest_dict_counter(
                         llm_response.usage, chunk.usage, ignore_zero=False)
-                    if chunk.usage.get("completion_tokens") > 0:
-                        logger.warn(f"***** llm_response.usage: {llm_response.usage}")
                     llm_response.message.update(chunk.message)
 
             else:
