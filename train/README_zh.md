@@ -44,9 +44,6 @@ cd verl && pip install -e.
 1. 系统要求（windows、linux、mac 系统均可，建议 Linux 系统，建议使用新加坡、北美等服务器）
     - 本地配置要求（至少 4c8g）
     - 安装docker环境等（本机安装 Docker，注意：如果是 Mac M 系列 CPU 需要开启 Rosetta 以兼容 x86/64 指令集，详见 [https://docs.docker.com/desktop/setup/install/mac-install/](https://docs.docker.com/desktop/setup/install/mac-install/)）
-好的，我已经帮你将 Markdown 的缩进调整为标准格式，使其在各种编辑器中都能正确渲染层级关系。同时，为了提高可读性，我还为文件路径、URL 和函数名等添加了行内代码格式。
-
----
 
 2.  登入到服务器，安装env
     1.  Clone AWorld 代码到服务器目录
