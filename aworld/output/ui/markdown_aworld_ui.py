@@ -147,7 +147,7 @@ class MarkdownAworldUI(AworldUI):
             for index, screenshot in enumerate(metadata.get('screenshots')):
                 image_artifact = Artifact(artifact_id=str(uuid.uuid4()), artifact_type=ArtifactType.IMAGE,
                                           content=screenshot.get('ossPath'))
-                await self.workspace.add_artifact(image_artifact)
+                await self.workspace.add_artifact(image_artifact, index=False)
                 result.append({
                     "artifact_type": "IMAGE",
                     "artifact_id": image_artifact.artifact_id
