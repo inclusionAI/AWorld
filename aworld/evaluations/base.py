@@ -146,6 +146,12 @@ class EvalTarget(abc.ABC, Generic[EvalCaseDataType]):
     The base class of evaluated object.
     '''
 
+    def __init__(self):
+        self.eval_config = EvaluationConfig()
+
+    def set_eval_config(self, eval_config: EvaluationConfig):
+        self.eval_config = eval_config
+
     @abc.abstractmethod
     async def predict(self, index: int, input: EvalDataCase[EvalCaseDataType]) -> dict:
         """execute the llm/agent.
@@ -169,9 +175,13 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
     def __init__(self, name: str = None):
         self.name = name or self.__class__.__name__
         self.eval_criterias = {}
+        self.eval_config = EvaluationConfig()
 
     def __str__(self) -> str:
         return self.name
+
+    def set_eval_config(self, eval_config: EvaluationConfig):
+        self.eval_config = eval_config
 
     def add_eval_criteria(self, eval_criteria: EvalCriteria) -> None:
         '''

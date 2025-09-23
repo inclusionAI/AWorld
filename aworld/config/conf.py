@@ -314,5 +314,8 @@ class EvaluationConfig(BaseConfig):
     eval_dataset_load_config: Optional[DataLoaderConfig] = DataLoaderConfig()
     # preload transform function or function name, e.g. aworld.evaluations.base.preload_transform
     eval_dataset_preload_transform: Optional[Union[Callable[[any], Any], str]] = None
+    eval_dataset_query_column: Optional[str] = "query"
+    eval_dataset_answer_column: Optional[str] = "answer"
+    eval_output_answer_column: Optional[str] = "answer"
     repeat_times: int = 1
     eval_parallelism: int = 1

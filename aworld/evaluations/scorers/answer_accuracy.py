@@ -1,18 +1,25 @@
-from aworld.evaluations.base import Scorer, ScorerResult, EvalDataCase
+from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult
+from aworld.config.conf import ModelConfig
+from aworld.logs.util import logger
+import json
+import re
+from typing import Optional
 from aworld.evaluations.scorers.metrics import MetricNames
 from aworld.evaluations.scorers.scorer_registry import scorer_register
+from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
 
 
 @scorer_register(MetricNames.ANSWER_ACCURACY)
-class AnswerAccuracyScorer(Scorer):
+class AnswerAccuracyLLMScorer(LLMAsJudgeScorer):
 
-    def __init__(self, query_column: str = 'query', answer_column: str = 'answer'):
-        super().__init__()
-        self.query_column = query_column
-        self.answer_column = answer_column
+    def build_judge_agent_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+        return ""
 
-    async def score(self, index: int, input: EvalDataCase[dict], output: dict) -> ScorerResult:
-        answer_except = input.case_data[self.answer_column]
-        answer_actual = output.get(self.answer_column, '')
-        value = 1.0 if answer_except.strip() == answer_actual.strip() else 0.0
-        return ScorerResult(scorer_name=self.name, metric_results={MetricNames.ANSWER_ACCURACY: {"value": value}})
+    def build_judge_system_prompt(self) -> str:
+        return "You are a mathematical calculation agent."
+
+    def build_judge_agent_task_input(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+        return super().build_judge_agent_task_input(index, input, output)
+
+    def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
+        return super().convert_judge_response_to_score(judge_response)
