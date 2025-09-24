@@ -1,6 +1,5 @@
 from datetime import datetime
 from typing import Optional
-from typing import Optional
 
 import pytz  # Add pytz for timezone handling
 from pydantic import BaseModel
@@ -9,7 +8,7 @@ from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
     MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary, MemorySystemMessage, MemoryToolMessage,
     MessageMetadata,
-    UserProfile, AgentExperience, ConversationSummary
+    UserProfile, AgentExperience, ConversationSummary, Fact
 )
 from aworld.models.model_response import ToolCall
 
