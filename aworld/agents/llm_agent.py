@@ -12,7 +12,7 @@ from typing import Dict, Any, List, Callable, Optional
 import aworld.trace as trace
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
-from aworld.core.common import ActionResult, Observation, ActionModel, Config
+from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.context.prompts import BasePromptTemplate
@@ -28,7 +28,7 @@ from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MessageMetadata, MemoryAIMessage, MemoryToolMessage, MemoryHumanMessage, \
     MemorySystemMessage, MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream
-from aworld.models.model_response import ModelResponse, ToolCall
+from aworld.models.model_response import ModelResponse, ToolCall, LLMResponseError
 from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
@@ -177,7 +177,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                     agent_names=agent_names,
                                     mcp_servers=mcp_servers,
                                     mcp_config=mcp_config,
-                                    black_tool_actions = black_tool_actions,
+                                    black_tool_actions=black_tool_actions,
                                     feedback_tool_result=feedback_tool_result,
                                     wait_tool_result=wait_tool_result,
                                     sandbox=sandbox,
@@ -307,7 +307,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     urls.append(
                         {'type': 'image_url', 'image_url': {"url": image_url}})
                 content = urls
-            await self._add_human_input_to_memory(content, message.context, memory_type="message")
+            await self._add_human_input_to_memory(content, message.context)
 
         # from memory get last n messages
         histories = self.memory.get_last_n(self.memory_config.history_rounds, filters={
@@ -667,9 +667,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 })
 
     async def invoke_model(self,
-                             messages: List[Dict[str, str]] = [],
-                             message: Message = None,
-                             **kwargs) -> ModelResponse:
+                           messages: List[Dict[str, str]] = [],
+                           message: Message = None,
+                           **kwargs) -> ModelResponse:
         """Perform LLM call.
 
         Args:
@@ -701,32 +701,22 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     model=self.model_name,
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
-                    stream=True
+                    stream=True,
+                    **kwargs
                 )
 
-                async def async_call_llm(resp_stream, json_parse=False):
-                    llm_resp = ModelResponse(
-                        id="", model="", content="", tool_calls=[])
-
-                    # Async streaming with acall_llm_model
-                    async def async_generator():
-                        async for chunk in resp_stream:
-                            if chunk.content:
-                                llm_resp.content += chunk.content
-                                yield chunk.content
-                            if chunk.tool_calls:
-                                llm_resp.tool_calls.extend(chunk.tool_calls)
-                            if chunk.error:
-                                llm_resp.error = chunk.error
-                            llm_resp.id = chunk.id
-                            llm_resp.model = chunk.model
-                            llm_resp.usage = nest_dict_counter(
-                                llm_resp.usage, chunk.usage)
-
-                    return MessageOutput(source=async_generator(), json_parse=json_parse), llm_resp
-
-                output, response = await async_call_llm(resp_stream)
-                llm_response = response
+                async for chunk in resp_stream:
+                    if chunk.content:
+                        llm_response.content += chunk.content
+                    if chunk.tool_calls:
+                        llm_response.tool_calls.extend(chunk.tool_calls)
+                    if chunk.error:
+                        llm_response.error = chunk.error
+                    llm_response.id = chunk.id
+                    llm_response.model = chunk.model
+                    llm_response.usage = nest_dict_counter(
+                        llm_response.usage, chunk.usage, ignore_zero=False)
+                    llm_response.message.update(chunk.message)
 
             else:
                 llm_response = await acall_llm_model(
@@ -735,23 +725,35 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     model=self.model_name,
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
-                    stream=kwargs.get("stream", False)
+                    stream=kwargs.get("stream", False),
+                    **kwargs
                 )
 
             logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
         except Exception as e:
             logger.warn(traceback.format_exc())
-            if eventbus is not None:
-                output_message = Message(
-                    category=Constants.OUTPUT,
-                    payload=Output(
-                        data=f"Failed to call llm model: {e}"
-                    ),
+            await send_message(Message(
+                category=Constants.OUTPUT,
+                payload=Output(
+                    data=f"Failed to call llm model: {e}"
+                ),
+                sender=self.id(),
+                session_id=message.context.session_id if message.context else "",
+                headers={"context": message.context}
+            ))
+
+            if "Please reduce the length of the messages" in str(e):
+                # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.
+                await send_message(Message(
+                    category=Constants.TASK,
+                    topic=TopicType.CANCEL,
+                    payload=TaskItem(data=messages, msg=str(e)),
                     sender=self.id(),
+                    priority=-1,
                     session_id=message.context.session_id if message.context else "",
                     headers={"context": message.context}
-                )
-                await send_message(output_message)
+                ))
+                return ModelResponse(id=uuid.uuid4().hex, model=self.model_name, content=to_serializable(messages))
             raise e
         finally:
             message.context.context_info["llm_output"] = llm_response
@@ -840,7 +842,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             memory_type=memory_type
         ), agent_memory_config=self.memory_config)
 
-    async def _add_llm_response_to_memory(self, llm_response, context: Context, history_messages:list, **kwargs):
+    async def _add_llm_response_to_memory(self, llm_response, context: Context, history_messages: list, **kwargs):
         """Add LLM response to memory"""
         ai_message = MemoryAIMessage(
             content=llm_response.content,
@@ -854,7 +856,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             )
         )
         await self.memory.add(ai_message, agent_memory_config=self.memory_config)
-
 
     async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
@@ -875,7 +876,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     }
                 }
             ]
-            await self._add_human_input_to_memory(image_content, context, "message")
+            await self._add_human_input_to_memory(image_content, context)
         else:
             await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
 
@@ -883,7 +884,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """Add tool result to memory"""
         tool_use_summary = None
         if isinstance(tool_result, ActionResult):
-             tool_use_summary = tool_result.metadata.get("tool_use_summary")
+            tool_use_summary = tool_result.metadata.get("tool_use_summary")
         await self.memory.add(MemoryToolMessage(
             content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
             tool_call_id=tool_call_id,
@@ -898,7 +899,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             )
         ), agent_memory_config=self.memory_config)
 
-    async def send_llm_response_output(self, llm_response:ModelResponse, agent_result: AgentResult, context: Context, outputs: Outputs = None):
+    async def send_llm_response_output(self, llm_response: ModelResponse, agent_result: AgentResult, context: Context,
+                                       outputs: Outputs = None):
         """Send LLM response to output"""
         if not llm_response or llm_response.error:
             return

@@ -7,15 +7,17 @@ import os
 import sys
 import signal
 import time
-from typing import List, Dict
+from typing import List, Dict, Any, Optional
 import math
 from tqdm import tqdm
 from multiprocessing import Process, Manager
 from multiprocessing import current_process
 import lib_run_single
-from desktop_env.desktop_env import DesktopEnv
+from desktop_env.desktop_env import DesktopEnv, _fix_pyautogui_less_than_bug
 from aworldAgent.agent import AworldGUIAgent
 from aworldAgent.grounding import OSWorldACI
+
+MAX_RETRIES = 5  # Maximum retries for environment setup
 
 # Global variables for signal handling
 active_environments = []
@@ -174,6 +176,137 @@ logger.addHandler(stdout_handler)
 logger = logging.getLogger("desktopenv.experiment")
 
 
+class CustomDesktopEnv(DesktopEnv):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        logger.info("CustomDesktopEnv class initialized.")
+
+    def reset(self, task_config: Optional[Dict[str, Any]] = None, seed=None, options=None) -> Dict[str, Any]:
+
+        # Reset to certain task in OSWorld
+        logger.info("Resetting environment...")
+        logger.info("Switching task...")
+        logger.info("Setting counters...")
+        self._traj_no += 1
+        self._step_no = 0
+        self.action_history.clear()
+
+        for attempt in range(MAX_RETRIES):
+            # Only revert to snapshot if environment has been used (step/setup)
+            # This optimization is especially important for cloud providers like AWS
+            # where unnecessary snapshot operations are costly and time-consuming
+
+            if task_config is not None:
+                # Only consider task proxy requirement if proxy is enabled at system level
+                task_use_proxy = task_config.get("proxy", False) and self.enable_proxy
+                if not self.enable_proxy and task_config.get("proxy", False):
+                    logger.info(
+                        "Task requires proxy but proxy is disabled at system level, ignoring proxy requirement.")
+
+                if task_use_proxy != self.current_use_proxy:
+                    # keep because get_info_from_website depend on this
+                    self.current_use_proxy = task_use_proxy
+
+            if self.is_environment_used:
+                logger.info("Environment has been used, reverting to snapshot {}...".format(self.snapshot_name))
+                self._revert_to_snapshot()
+                logger.info("Starting emulator...")
+                self._start_emulator()
+                logger.info("Emulator started.")
+                # Reset the usage flag after reverting
+                self.is_environment_used = False
+            else:
+                logger.info("Environment is clean, skipping snapshot revert (provider: {}).".format(self.provider_name))
+
+            if task_config is not None:
+                if task_config.get("proxy", False) and self.enable_proxy:
+                    # If using proxy and proxy is enabled, set up the proxy configuration
+                    self.setup_controller._proxy_setup(self.client_password)
+                self._set_task_info(task_config)
+                self.setup_controller.reset_cache_dir(self.cache_dir)
+                logger.info("Clearing browser cache and browsing data...")
+                try:
+                    self.setup_controller._delete_all_browsing_data_chromium_setup()
+                    logger.info("Browser cache cleared successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to clear browser cache: {e}")
+                logger.info("Setting up environment...")
+                success = self.setup_controller.setup(self.config,
+                                                      task_config.get("proxy", False) and self.enable_proxy)
+                if success:
+                    # Mark environment as used when setup is successfully executed
+                    if self.config:  # Only mark as used if there were actual setup operations
+                        self.is_environment_used = True
+                    break
+                else:
+                    logger.error(
+                        "Environment setup failed, retrying (%d/%d)...",
+                        attempt + 1,
+                        MAX_RETRIES,
+                    )
+                    time.sleep(5)
+            else:
+                break
+
+        logger.info("Environment setup complete.")
+
+        # start soffice service for office tools
+        self.setup_controller._launch_setup(
+            'soffice --headless --accept="socket,host=localhost,port=2002;urp;" --norestore --nologo --nodefault', shell=True)
+        time.sleep(5)
+
+        observation = self._get_obs()
+        return observation
+
+    def step(self, action, pause=2):
+        self._step_no += 1
+        self.action_history.append(action)
+
+        # Mark environment as used when step is called
+        self.is_environment_used = True
+
+        reward = 0  # todo: Define reward calculation for each example
+        done = False  # todo: Define episode termination condition for each example
+        response = None
+        info = {}
+        logger.info(f"Step {self._step_no} in trajectory {self._traj_no} with action: {action}")
+        # handle the special actions
+        if action in ['WAIT', 'FAIL', 'DONE'] or (
+                type(action) == dict and action['action_type'] in ['WAIT', 'FAIL', 'DONE']):
+            if action == 'WAIT':
+                time.sleep(pause)
+            elif action == 'FAIL':
+                done = True
+                info = {"fail": True}
+            elif action == 'DONE':
+                done = True
+                info = {"done": True}
+
+        if self.action_space == "computer_13":
+            # the set of all possible actions defined in the action representation
+            self.controller.execute_action(action)
+        elif self.action_space == "pyautogui" or self.action_space == "claude_computer_use":
+            if action in ['WAIT', 'FAIL', 'DONE']:
+                self.controller.execute_action(action)
+            else:
+                # the set of all possible python commands insides `pyautogui`
+                if type(action) == str:
+                    # Fix PyAutoGUI '<' character bug before execution
+                    fixed_command = _fix_pyautogui_less_than_bug(action)
+                    response = self.controller.execute_python_command(fixed_command)
+
+                elif type(action) == dict:
+                    # Fix PyAutoGUI '<' character bug before execution
+                    fixed_command = _fix_pyautogui_less_than_bug(action['command'])
+                    response = self.controller.execute_python_command(fixed_command)
+
+        time.sleep(pause)
+        observation = self._get_obs()
+        observation["action_response"] = response
+        return observation, reward, done, info
+
+
 def distribute_tasks(test_all_meta: dict) -> List[tuple]:
     all_tasks = []
     for domain, examples in test_all_meta.items():
@@ -208,11 +341,11 @@ def run_env_tasks(task_queue: Queue, args: argparse.Namespace, shared_scores: li
     active_environments = []
     env = None
     try:
-        # from desktop_env.providers.aws.manager import IMAGE_ID_MAP
+        from desktop_env.providers.aws.manager import IMAGE_ID_MAP
         REGION = args.region
         screen_size = (args.screen_width, args.screen_height)
-        # ami_id = IMAGE_ID_MAP[REGION].get(screen_size, IMAGE_ID_MAP[REGION][(1920, 1080)])
-        env = DesktopEnv(
+        ami_id = IMAGE_ID_MAP[REGION].get(screen_size, IMAGE_ID_MAP[REGION][(1920, 1080)])
+        env = CustomDesktopEnv(
             path_to_vm=args.path_to_vm,
             action_space=args.action_space,
             provider_name=args.provider_name,
@@ -227,7 +360,7 @@ def run_env_tasks(task_queue: Queue, args: argparse.Namespace, shared_scores: li
         )
         active_environments.append(env)
 
-        # Agent configuration
+        # AgentS2 configuration
         engine_params = {
             "engine_type": args.model_provider,
             "model": args.model,
@@ -235,6 +368,7 @@ def run_env_tasks(task_queue: Queue, args: argparse.Namespace, shared_scores: li
             "api_key": getattr(args, 'model_api_key', ''),
             "temperature": getattr(args, 'model_temperature', None),
         }
+
 
         engine_params_for_grounding = {
             "engine_type": args.ground_provider,
@@ -254,6 +388,7 @@ def run_env_tasks(task_queue: Queue, args: argparse.Namespace, shared_scores: li
             height=args.screen_height,
         )
 
+        # Create AgentS2 worker
         agent = AworldGUIAgent(
             engine_params,
             grounding_agent,
@@ -603,6 +738,3 @@ if __name__ == "__main__":
                     logger.info(f"Process {p.name} force killed")
                 except Exception as e:
                     logger.error(f"Error force killing process: {e}")
-
-
-

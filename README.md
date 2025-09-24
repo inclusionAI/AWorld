@@ -44,9 +44,9 @@
 
 2. **Build agents**: Create intelligent AI agents with mcp tools. [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 
-3. **Build Multi-Agent Systems (MAS)**: Orchestrate collaborative agent ecosystems
+3. **Build Multi-Agent Systems (MAS)**: Orchestrate collaborative agent ecosystems. [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
-4. **Train agents efficiently**: Optimize performance within MAS across various environments
+4. **Train agents efficiently**: Optimize performance within MAS across various environments. [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_training/)
 
 ---
 **Collective Intelligence** 🚀
@@ -115,6 +115,25 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
       </td>
       <td style="padding: 8px; vertical-align: top;">Multi-agent collaboration <br>beats solo models</td>
       <td style="padding: 8px; vertical-align: top;">2025/07/25</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>OSWorld <br>Rank 1st</strong>
+        <br>
+        <a href="https://os-world.github.io/" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/OSWorld-Leaderboard-green" alt="OSWorld">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>58.0%</strong> <br> Success Rate
+        <br>
+        <a href="examples/osworld/README.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">The more tools the better?</td>
+      <td style="padding: 8px; vertical-align: top;">2025/09/18</td>
     </tr>
   </tbody>
 </table>
