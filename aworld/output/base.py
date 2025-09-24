@@ -66,6 +66,8 @@ class ToolResultOutput(Output):
 
     tool_name: str = Field(default=None)
 
+    action_name: str = Field(default=None)
+
     def output_type(self):
         return "tool_call_result"
 

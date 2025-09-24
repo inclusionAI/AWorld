@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
 from aworld.core.agent.agent_desc import get_agent_desc
-from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
+from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
@@ -82,6 +82,15 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     logger.warning(f"{tool_call.function.arguments} parse to json fail.")
                     params = {}
                 # format in framework
+                agent_info = AgentFactory.agent_instance(agent_id)
+                if full_name and not full_name.startswith(
+                        "mcp__") and agent_info and agent_info.sandbox and agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers and len(
+                        agent_info.sandbox.mcpservers.mcp_servers) > 0:
+                    tmp_names = full_name.split("__")
+                    tmp_tool_name = tmp_names[0]
+                    if tmp_tool_name in agent_info.sandbox.mcpservers.mcp_servers:
+                        full_name = f"mcp__{full_name}"
+
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(full_name):

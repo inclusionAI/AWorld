@@ -209,6 +209,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                     tool_type=kwargs.get("tool_id_mapping", {}).get(
                         act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
+                    action_name=act.action_name,
                     data=step_res[0].content,
                     origin_tool_call=ToolCall.from_dict({
                         "function": {
@@ -285,6 +286,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     tool_type=kwargs.get("tool_id_mapping", {}).get(
                         act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
+                    action_name=act.action_name,
                     data=step_res[0].content,
                     origin_tool_call=ToolCall.from_dict({
                         "function": {

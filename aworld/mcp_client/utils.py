@@ -110,7 +110,8 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
                         }
 
             openai_function_schema = {
-                "name": f"mcp__{sever_name}__{tool.name}",
+                #"name": f"mcp__{sever_name}__{tool.name}",
+                "name": f"{sever_name}__{tool.name}",
                 "description": tool.description,
                 "parameters": {
                     "type": "object",
@@ -303,7 +304,8 @@ async def mcp_tool_desc_transform_v2(
                         tmp_function = {
                             "type": "function",
                             "function": {
-                                "name": "mcp__" + server_name + "__" + item["name"],
+                                #"name": "mcp__" + server_name + "__" + item["name"],
+                                "name": server_name + "__" + item["name"],
                                 "description": item["description"],
                                 "parameters": {
                                     **item["parameters"],
@@ -323,7 +325,8 @@ async def mcp_tool_desc_transform_v2(
             elif "sse" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        "name": "mcp__" + server_name,
+                       # "name": "mcp__" + server_name,
+                        "name": server_name,
                         "type": "sse",
                         "params": {
                             "url": server_config["url"],
@@ -338,7 +341,8 @@ async def mcp_tool_desc_transform_v2(
             elif "streamable-http" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        "name": "mcp__" + server_name,
+                        #"name": "mcp__" + server_name,
+                        "name":server_name,
                         "type": "streamable-http",
                         "params": {
                             "url": server_config["url"],
@@ -354,7 +358,8 @@ async def mcp_tool_desc_transform_v2(
                 # elif "stdio" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        "name": "mcp__" + server_name,
+                        #"name": "mcp__" + server_name,
+                        "name": server_name,
                         "type": "stdio",
                         "params": {
                             "command": server_config["command"],
@@ -480,7 +485,8 @@ async def mcp_tool_desc_transform(
                         tmp_function = {
                             "type": "function",
                             "function": {
-                                "name": "mcp__" + server_name + "__" + item["name"],
+                                #"name": "mcp__" + server_name + "__" + item["name"],
+                                "name": server_name + "__" + item["name"],
                                 "description": item["description"],
                                 "parameters": {
                                     **item["parameters"],
@@ -500,7 +506,8 @@ async def mcp_tool_desc_transform(
             elif "sse" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        "name": "mcp__" + server_name,
+                        #"name": "mcp__" + server_name,
+                        "name": server_name,
                         "type": "sse",
                         "params": {
                             "url": server_config["url"],
@@ -515,7 +522,8 @@ async def mcp_tool_desc_transform(
             elif "streamable-http" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        "name": "mcp__" + server_name,
+                        #"name": "mcp__" + server_name,
+                        "name": server_name,
                         "type": "streamable-http",
                         "params": {
                             "url": server_config["url"],
@@ -531,7 +539,8 @@ async def mcp_tool_desc_transform(
                 # elif "stdio" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        "name": "mcp__" + server_name,
+                        #"name": "mcp__" + server_name,
+                        "name": server_name,
                         "type": "stdio",
                         "params": {
                             "command": server_config["command"],
