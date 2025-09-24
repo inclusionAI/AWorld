@@ -318,4 +318,4 @@ class EvaluationConfig(BaseConfig):
     eval_dataset_answer_column: Optional[str] = "answer"
     eval_output_answer_column: Optional[str] = "answer"
     repeat_times: int = 1
-    eval_parallelism: int = 1
+    parallel_num: int = 1

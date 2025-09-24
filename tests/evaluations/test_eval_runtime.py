@@ -19,7 +19,6 @@ class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "agent_prompt": "Please provide the calculation results directly without any other explanatory text. Here are the content: {task}",
                     "conf": {}
                 },
-                "query_column": "question",
             },
             eval_criterias=[
                 {
@@ -28,6 +27,7 @@ class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 }
             ],
             eval_dataset_id_or_file_path="tests/evaluations/agent_eval_data.jsonl",
+            eval_dataset_query_column="question",
         )
 
         results = await EvaluateRunner().eval_run(eval_config=eval_config)

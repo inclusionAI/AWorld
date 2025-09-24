@@ -146,11 +146,8 @@ class EvalTarget(abc.ABC, Generic[EvalCaseDataType]):
     The base class of evaluated object.
     '''
 
-    def __init__(self):
-        self.eval_config = EvaluationConfig()
-
-    def set_eval_config(self, eval_config: EvaluationConfig):
-        self.eval_config = eval_config
+    def __init__(self, eval_config: EvaluationConfig = None):
+        self.eval_config = eval_config or EvaluationConfig()
 
     @abc.abstractmethod
     async def predict(self, index: int, input: EvalDataCase[EvalCaseDataType]) -> dict:
@@ -172,16 +169,13 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
     The base class of scorer.
     '''
 
-    def __init__(self, name: str = None):
+    def __init__(self, name: str = None, eval_config: EvaluationConfig = None):
         self.name = name or self.__class__.__name__
         self.eval_criterias = {}
-        self.eval_config = EvaluationConfig()
+        self.eval_config = eval_config or EvaluationConfig()
 
     def __str__(self) -> str:
         return self.name
-
-    def set_eval_config(self, eval_config: EvaluationConfig):
-        self.eval_config = eval_config
 
     def add_eval_criteria(self, eval_criteria: EvalCriteria) -> None:
         '''
@@ -291,8 +285,6 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
                                                 break
 
                         # Add pass@k to the summary
-                        print(f"pass@{k} of {metric_name}: passed_count={passed_count}, total_case_groups={len(case_groups)}")
-
                         pass_at_k = passed_count / len(case_groups) if case_groups else 0
                         metric_summary[f'pass@{k}'] = pass_at_k
 
@@ -300,7 +292,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         return summary
 
 
-class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
+class Evaluator(Generic[EvalCaseDataType]):
     '''
     The base class of evaluator.
     '''
@@ -309,21 +301,21 @@ class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
                  scorers: list[Scorer] = None,
                  prepare_dataset: Optional[Callable[[EvalDataset], List[dict]]] = None,
                  repeat_times: int = 1,
-                 eval_parallelism: int = 1):
+                 parallel_num: int = 1):
         self.scorers = scorers or []
         # preprocess the dataset
         self.prepare_dataset = prepare_dataset
         # repeat run example times
         self.repeat_times = repeat_times
         # evaluate parallelism
-        self.eval_parallelism = eval_parallelism
+        self.parallel_num = parallel_num
 
     def _default_prepare_dataset(self, dataset: EvalDataset) -> List[EvalDataCase[EvalCaseDataType]]:
         return dataset.eval_cases
 
     async def _evaluate_in_task(self, eval_target: EvalTarget[EvalCaseDataType], dataset: Iterable[EvalDataCase[EvalCaseDataType]], evaluate_fun: Callable[[int, EvalTarget[EvalCaseDataType], EvalDataCase[EvalCaseDataType]], Awaitable[dict]]):
         # create a semaphore to limit the parallelism
-        semaphore: asyncio.Semaphore = asyncio.Semaphore(self.eval_parallelism)
+        semaphore: asyncio.Semaphore = asyncio.Semaphore(self.parallel_num)
         dataset_iter = iter(dataset)
         running_tasks: Set[asyncio.Task] = set()
         index = 0
@@ -344,7 +336,7 @@ class Evaluator(abc.ABC, Generic[EvalCaseDataType]):
                 return None
 
         try:
-            for _ in range(self.eval_parallelism):
+            for _ in range(self.parallel_num):
                 __create_eval_task()
 
             while running_tasks:
