@@ -47,7 +47,8 @@ class EvalCriteria:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'EvalCriteria':
-        valid_fields = {field.name for field in cls.__dataclass_fields__.values()}
+        from dataclasses import fields
+        valid_fields = {field.name for field in fields(cls)}
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
         return cls(**filtered_data)
 
@@ -217,7 +218,11 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
             score_dict['mean'] = sum(scores) / len(scores)
             score_dict['min'] = min(scores)
             score_dict['max'] = max(scores)
-            score_dict['std'] = statistics.stdev(scores)
+            # Only calculate standard deviation if there are at least 2 data points
+            if len(scores) >= 2:
+                score_dict['std'] = statistics.stdev(scores)
+            else:
+                score_dict['std'] = 0.0
         elif isinstance(score, dict):
             all_keys = list(
                 dict.fromkeys([k for score in scores if isinstance(score, dict) for k in score.keys()])
