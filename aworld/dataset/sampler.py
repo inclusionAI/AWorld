@@ -56,6 +56,43 @@ class RandomSampler(Sampler):
         return self.length
 
 
+class RangeSampler(Sampler):
+    """Samples elements from a specified range of indices."""
+
+    def __init__(self, length: int, start_index: int, end_index: int = None, 
+                 shuffle: bool = False, seed: Optional[int] = None) -> None:
+        if length < 0:
+            raise ValueError("length must be non-negative")
+        if start_index < 0:
+            raise ValueError("start_index must be non-negative")
+        if start_index >= length:
+            raise ValueError("start_index must be < length")
+        if end_index is None:
+            end_index = length
+        if end_index < start_index:
+            raise ValueError("end_index must be >= start_index")
+        if not isinstance(shuffle, bool):
+            raise ValueError("shuffle must be a boolean")
+            
+        self.length = length
+        self.start_index = start_index
+        self.end_index = min(end_index, length)
+        self.shuffle = shuffle
+        self.seed = seed
+
+    def __iter__(self) -> Iterator[int]:
+        indices = list(range(self.start_index, self.end_index))
+        
+        if self.shuffle:
+            rng = random.Random(self.seed)
+            rng.shuffle(indices)
+            
+        return iter(indices)
+
+    def __len__(self) -> int:
+        return self.end_index - self.start_index
+
+
 class BatchSampler(Sampler):
     """Wraps another sampler to yield batches of indices.
 
