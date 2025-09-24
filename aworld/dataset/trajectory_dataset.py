@@ -8,6 +8,7 @@ from pydantic import Field
 
 from aworld import import_package
 from aworld.core.agent.base import is_agent_by_name
+from aworld.core.common import ActionModel
 from aworld.core.event.base import Message, Constants
 from aworld.dataset.dataset import Dataset
 from aworld.dataset.types import DataRow, Experience, ExpMeta
@@ -75,6 +76,36 @@ class TrajectoryDataset(Dataset[DataRow]):
             else:
                 ext_info["agent_results"] = ext_info.get("agent_results", []).append(handle_result)
         messages = self._get_llm_messages_from_memory(message)
+
+        def _get_attr_from_action(obj, attr, default=None):
+            if isinstance(obj, ActionModel):
+                return getattr(obj, attr)
+            elif isinstance(obj, dict) and attr in obj:
+                return obj[attr]
+            return default
+
+        # append assistant message to messages
+        if agent_results:
+            agent_result = agent_results[0]
+            content = _get_attr_from_action(agent_result, "policy_info", "")
+            last_assistant_message = {
+                "role": "assistant",
+                "content": content
+            }
+            tool_calls = []
+            for action in agent_results:
+                tool_call_id = _get_attr_from_action(action, "tool_call_id")
+                if tool_call_id:
+                    tool_calls.append({
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": _get_attr_from_action(action, "tool_name"),
+                            "arguments": json.dumps(_get_attr_from_action(action, "params"), ensure_ascii=False),
+                        }
+                    })
+            last_assistant_message["tool_calls"] = tool_calls
+            messages.append(last_assistant_message)
 
         # Build Experience
         exp_data = Experience(
