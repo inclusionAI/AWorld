@@ -26,7 +26,7 @@ class Dataset(BaseModel, Generic[_T_co]):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     transforms: List[Callable[[_T_co], _T_co]] = Field(default_factory=list)
 
-    def transform(self, fn: Callable[[_T_co], _T_co]) -> "Dataset[_T_co]":
+    def transform(self, fn: Callable[[Any], _T_co]) -> "Dataset[_T_co]":
         """Register a transform step to be applied in order and return self for chaining."""
         self.transforms.append(fn)
         return self
