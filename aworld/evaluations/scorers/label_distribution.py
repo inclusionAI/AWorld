@@ -24,7 +24,7 @@ class LabelDistributionScorer(Scorer[dict]):
         """
         return ScorerResult(scorer_name=self.name, metric_results={MetricNames.LABEL_DISTRIBUTION: {"value": 0.0}})
 
-    def summarize(self, result_rows: list[EvalCaseResult]) -> Optional[dict]:
+    def summarize(self, result_rows: list[EvalCaseResult], repeat_times: int) -> Optional[dict]:
         '''
             summarize the score rows.
         '''

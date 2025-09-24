@@ -34,6 +34,7 @@ class AworldAgentEvalTarget(EvalTarget[dict]):
     """
 
     def __init__(self, agent: Optional[Agent] = None, agent_config: Optional[dict | str] = None, query_column: str = 'query'):
+        super().__init__()
         self.query_column = query_column
 
         if agent is not None:
@@ -68,7 +69,7 @@ class AworldAgentEvalTarget(EvalTarget[dict]):
 
         raise ValueError(f"Invalid agent_config type: {type(agent_config)}")
 
-    async def predict(self, input: EvalDataCase[dict]) -> dict:
+    async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
         query_column = self.eval_config.eval_dataset_query_column or self.query_column
         response = await Runners.run(input.case_data[query_column], agent=self.agent)
         return {"answer": response.answer}
