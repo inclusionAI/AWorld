@@ -13,10 +13,12 @@ from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.logs.util import logger
 
-from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
+from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
 
-from train.adapter.verl.common import to_agent_loop_output
+from train.adapter.common import encode_messages, turns_num
+from train.adapter.verl.verl_provider import VerlProvider
 
+# show aworld log on ray
 logger.setLevel(logging.INFO)
 logger.propagate = False
 if not logger.handlers:
@@ -60,8 +62,7 @@ class AworldAgentLoop(AgentLoopBase):
         res = result.trajectory
 
         # build agent loop output
-        output = await self.convert_agent_output(trajectory=res,
-                                                 response_length=self.config.actor_rollout_ref.rollout.response_length)
+        output = await self.convert_agent_output(trajectory=res)
         return output
 
     async def run_agents(self, input, agent):
@@ -137,7 +138,7 @@ class AworldAgentLoop(AgentLoopBase):
     def get_num_turns(self, trajectory: List[Dict[str, Any]]):
         return len(trajectory)
 
-    async def convert_agent_output(self, trajectory: List[Dict[str, Any]], response_length: int) -> AgentLoopOutput:
+    async def convert_agent_output(self, trajectory: List[Dict[str, Any]]) -> AgentLoopOutput:
         """Convert trajectory to AgentLoopOutput.
 
         Args:
@@ -161,19 +162,61 @@ class AworldAgentLoop(AgentLoopBase):
                 metrics={},
             )
         if messages[-1].get("role") != "assistant":
-            logger.warning(f"Found last message with role '{messages[-1].get('role')}', but expected 'assistant'. Truncating trailing 'tool' messages.")
-            last_non_tool_index = -1
-            for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get("role") != "tool":
-                    last_non_tool_index = i
-                    break 
-            if last_non_tool_index != -1:
-                messages = messages[:last_non_tool_index + 1]
+            actions = trajectory[-1].get("exp_data", {}).get("actions", [])
+            if len(actions) < 1:
+                logger.warning(f"Found last message actions empty.")
+                last_non_tool_index = -1
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get("role") != "tool":
+                        last_non_tool_index = i
+                        break
+                if last_non_tool_index != -1:
+                    messages = messages[:last_non_tool_index + 1]
+                else:
+                    messages = []
             else:
-                messages = []
+                agent_resp_content = str(actions[0].get("policy_info"))
+                last_assistant_message = {
+                    "role": "assistant",
+                    "content": agent_resp_content
+                }
+                tool_calls = []
+                for action in actions:
+                    tool_calls.append({
+                        "id": action.get("tool_call_id"),
+                        "type": "function",
+                        "function": {
+                            "name": action.get("tool_name"),
+                            "arguments": json.dumps(action.get("params"), ensure_ascii=False),
+                        }
+                    })
+                last_assistant_message["tool_calls"] = tool_calls
+                messages.append(last_assistant_message)
 
-        output = await to_agent_loop_output(tokenizer=self.tokenizer,
-                                            messages=messages,
-                                            response_length=response_length,
-                                            tools=self.agent.tools)
+        output = await self.to_agent_loop_output(messages=messages)
+        return output
+
+    async def to_agent_loop_output(self, messages: List[Dict[str, Any]]) -> AgentLoopOutput:
+        """Convert messages to AgentLoopOutput.
+
+        Args:
+            messages (List[Dict[str, Any]]): List of messages in OpenAI request format.
+
+        Returns:
+            AgentLoopOutput: agent loop output trajectory used for training.
+        """
+        # Ensure tools is iterable for chat templates that iterate over tools
+
+        response_length = self.config.actor_rollout_ref.rollout.response_length
+        prompt_ids, response_ids, response_mask = await encode_messages(self.tokenizer,
+                                                                        messages,
+                                                                        response_length=response_length,
+                                                                        tools=self.agent.tools)
+        output = AgentLoopOutput(
+            prompt_ids=prompt_ids,
+            response_ids=response_ids,
+            response_mask=response_mask,
+            num_turns=turns_num(messages),
+            metrics={},
+        )
         return output
