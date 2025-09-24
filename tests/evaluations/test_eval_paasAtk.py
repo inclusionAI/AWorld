@@ -8,7 +8,8 @@ from aworld.evaluations.eval_targets.agent_eval import AworldTaskEvalTarget
 from aworld.evaluations.base import EvalDataCase
 from aworld.core.task import Task
 from aworld.config import TaskConfig
-from aworld.config.conf import EvaluationConfig
+from aworld.config.conf import EvaluationConfig, DataLoaderConfig
+from aworld.dataset.sampler import RangeSampler
 
 from dotenv import load_dotenv
 
@@ -52,6 +53,7 @@ class EvalPassAtKTest(unittest.IsolatedAsyncioTestCase):
                 }
             ],
             eval_dataset_id_or_file_path="tests/evaluations/test_data.csv",
+            eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(length=5, start_index=1, end_index=4)),
             repeat_times=5,
         ))
         print(results)
