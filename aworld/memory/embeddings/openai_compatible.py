@@ -3,7 +3,7 @@ import time
 import logging
 from typing import Any, List
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from aworld.core.memory import EmbeddingsConfig
 from aworld.memory.embeddings.base import EmbeddingsBase
@@ -27,6 +27,7 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
         """
         super().__init__(config)
         self.client = OpenAI(api_key=config.api_key, base_url=config.base_url)
+        self.async_client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
 
 
     def embed_query(self, text: str) -> List[float]:
@@ -57,7 +58,7 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
             List[float]: Embedding vector.
         """
         try:
-            response = self.client.embeddings.create(
+            response = await self.async_client.embeddings.create(
                 model=self.config.model_name,
                 input=text,
                 dimensions=self.config.dimensions)
