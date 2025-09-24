@@ -10,7 +10,7 @@ from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
     MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary,
     MemorySystemMessage, MemoryToolMessage, MessageMetadata,
-    UserProfile, AgentExperience, ConversationSummary
+    UserProfile, AgentExperience, ConversationSummary, Fact
 )
 from aworld.models.model_response import ToolCall
 
@@ -190,6 +190,16 @@ class SQLiteMemoryStore(MemoryStore):
                 content=self._deserialize_content(content),
                 status=memory_meta.get('status', 'success'),
                 metadata=MessageMetadata(**memory_meta),
+                **base_data
+            )
+        elif memory_type == 'fact':
+            content_data = self._deserialize_content(content)
+            if not content_data or not isinstance(content_data, dict):
+                return None
+            return Fact(
+                content=content_data,
+                user_id=memory_meta.get('user_id'),
+                metadata=memory_meta,
                 **base_data
             )
         elif memory_type == 'user_profile':
