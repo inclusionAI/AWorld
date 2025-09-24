@@ -17,9 +17,9 @@ from aworld.core.context.base import Context
 from aworld.agents.llm_agent import Agent
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.task import Task, TaskResponse
+from aworld.dataset.trajectory_dataset import get_trajectory
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
-from aworld.replay_buffer import EventReplayBuffer
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 
@@ -40,7 +40,6 @@ class TaskEventRunner(TaskRunner):
         self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
-        self.replay_buffer = EventReplayBuffer()
 
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
@@ -368,7 +367,8 @@ class TaskEventRunner(TaskRunner):
     async def _save_trajectories(self):
         try:
             messages = await self.event_mng.messages_by_task_id(self.task.id)
-            trajectory = await self.replay_buffer.get_trajectory(messages, self.task.id, self.state_manager)
+            # trajectory = await self.replay_buffer.get_trajectory(messages, self.task.id, self.state_manager)
+            trajectory = await get_trajectory(messages, self.task.id, self.state_manager)
             self._task_response.trajectory = trajectory
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")

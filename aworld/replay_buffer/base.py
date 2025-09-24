@@ -1,7 +1,7 @@
 import random
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, List, TypeVar
+from typing import Dict, List, TypeVar, Any
 from abc import ABC, abstractmethod
 from math import ceil
 
@@ -26,6 +26,7 @@ class Experience:
     adv_t: float = None
     v_t: float = None
     messages: List[Dict] = None
+    ext_info: Dict[str, Any] = None
 
     def to_dict(self):
         return {
@@ -34,7 +35,8 @@ class Experience:
             "reward_t": self.reward_t,
             "adv_t": self.adv_t,
             "v_t": self.v_t,
-            "messages": self.messages
+            "messages": self.messages,
+            "ext_info": to_serializable(self.ext_info)
         }
 
 
