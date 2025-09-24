@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 """String-based prompt template implementation."""
 import inspect
+import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import logging
 logger = logging.getLogger("prompts")
@@ -93,10 +94,13 @@ class StringPromptTemplate(BasePromptTemplate):
         
     def format(self, context: 'Context' = None, **kwargs: Any) -> str:
         try:
+            st = time.time()
             variables = self._merge_partial_and_user_variables(context=context, **kwargs)
             self._validate_input_variables(variables)
             logger.debug(f"variables: {variables} {self.template} {self.template_format}")
-            return format_template(self.template, self.template_format, **variables)
+            formatted = format_template(self.template, self.template_format, **variables)
+            logger.info(f"Formatting StringPromptTemplate with context, cost: {time.time() - st}")
+            return formatted
         except Exception as e:
             # If any error during formatting, return original template
             logger.warning(f"Error formatting StringPromptTemplate: {e}, returning original template")

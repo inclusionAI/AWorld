@@ -221,7 +221,7 @@ class Fact(MemoryItem):
         content (str): fact.
         metadata (Optional[Dict[str, Any]]): Additional metadata.
     """
-    def __init__(self, user_id: str = None, agent_id: str = None, content: str = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+    def __init__(self, user_id: str = None, agent_id: str = None, content: Any = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         meta = metadata.copy() if metadata else {}
         if user_id:
             meta['user_id'] = user_id
@@ -234,15 +234,15 @@ class Fact(MemoryItem):
 
     @property
     def key(self) -> str:
-        return self.content.key
+        return self.content.get('key', '')
 
     @property
     def value(self) -> Any:
-        return self.content.value
+        return self.content.get('value', '')
 
     @property
     def embedding_text(self):
-        return self.content
+        return f"key:{self.key} value:{self.value}"
 
     def to_openai_message(self) -> dict:
         return {
