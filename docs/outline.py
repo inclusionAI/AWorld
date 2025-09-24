@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import os
+from collections import OrderedDict
 from typing import List
 
 import yaml
@@ -8,6 +9,9 @@ import yaml
 docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
+file_priority = {"Quickstart": ["Install", "Agent Construction", "Workflow Construction",
+                                "Multi-agent System Construction", "Environment"]
+                 }
 dir_order = ["Quickstart", "Tutorials"]
 
 
@@ -15,14 +19,23 @@ def scan_path(path: str) -> List[dict]:
     items = scan(path)
     res = []
     for k, v in items.items():
+        # root path
         if k in black_keys and v in black_values:
             continue
 
-        res.append({k: v})
+        # files in dir
+        final_map = OrderedDict()
+        for file in file_priority.get(k, []):
+            if file in v:
+                final_map[file] = v[file]
+                v.pop(file)
+        final_map.update(v)
+
+        res.append({k: dict(final_map)})
     return res
 
 
-def scan(path: str):
+def scan(path: str) -> dict:
     items = {}
     for name in sorted(os.listdir(path)):
         p = os.path.join(path, name)

@@ -1,0 +1,14 @@
+services:
+  gaia-mcp-server:
+    build:
+      context: .
+    image: gaia-mcp-server:latest
+    platform: linux/amd64
+    ports:
+      - 8000:8080
+      - 5901:5901
+    restart: no
+    deploy:
+      resources:
+        limits:
+          memory: 8G
