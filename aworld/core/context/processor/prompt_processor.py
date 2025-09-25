@@ -12,7 +12,7 @@ from aworld.core.context.processor.chunk_utils import ChunkUtils, MessageChunk, 
 from aworld.core.context.processor.llm_compressor import LLMCompressor, CompressionType
 from aworld.core.context.processor.llmlingua_compressor import LLMLinguaCompressor
 from aworld.core.context.processor.truncate_compressor import TruncateCompressor
-from aworld.logs.util import Color, color_log, logger
+from aworld.logs.util import logger
 from aworld.models.utils import num_tokens_from_messages, truncate_tokens_from_messages
 
 
@@ -424,7 +424,7 @@ class PromptProcessor:
         
         total_time = time.time() - start_time
 
-        color_log(f"\nContext processing statistics: "
+        logger.info(f"\nContext processing statistics: "
                    f"\nOriginal message count={truncated_result.original_messages_len}"
                    f"\nProcessed message count={truncated_result.processing_messaged_len}"
                    f"\nMax context length max_context_len={self.get_max_tokens()} = {self.model_config.max_model_len} * {self.context_rule.optimization_config.max_token_budget_ratio}"
@@ -434,8 +434,7 @@ class PromptProcessor:
                    f"\nTotal processing time={total_time:.3f}s"
                    f"\nMethod used={truncated_result.method_used}"
                    f"\norigin_messages={num_tokens_from_messages(messages)}"
-                   f"\ntruncated_messages={num_tokens_from_messages(truncated_messages)}",
-                   color=Color.pink,)
+                   f"\ntruncated_messages={num_tokens_from_messages(truncated_messages)}")
 
         return ContextProcessingResult(
             processed_messages=truncated_messages,

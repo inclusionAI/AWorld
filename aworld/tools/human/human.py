@@ -62,7 +62,7 @@ class HumanTool(AsyncTool):
             if not confirm_content:
                 raise ValueError("content invalid")
             # send human message to read human input
-            message, error = await self.send_human_message(confirm_content=confirm_content)
+            message, error = await self.send_human_message(action=action, confirm_content=confirm_content)
             if error:
                 raise ValueError(f"HumanTool|send human message failed: {error}")
 
@@ -115,13 +115,14 @@ class HumanTool(AsyncTool):
             logger.debug(f"HumanTool|tool {self.name()} callback failed with node: {res_node}.")
             raise ValueError(f"HumanTool|send human message failed: {res_node}")
 
-    async def send_human_message(self, confirm_content):
+    async def send_human_message(self, action: ActionModel, confirm_content):
         error = None
         try:
             message = HumanMessage(
                 category=Constants.HUMAN,
                 payload=confirm_content,
                 sender=self.name(),
+                receiver=action.agent_name,
                 session_id=self.context.session_id,
                 topic=TopicType.HUMAN_CONFIRM,
                 headers={"context": self.context}

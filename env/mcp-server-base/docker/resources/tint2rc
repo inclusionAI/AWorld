@@ -1,0 +1,66 @@
+# Tint2 config file
+# Background definitions
+# ID 1 - Panel background
+rounded = 0
+border_width = 0
+background_color = #ffffff 80
+border_color = #ffffff 30
+
+# ID 2 - Task background
+rounded = 2
+border_width = 1
+background_color = #ffffff 20
+border_color = #cccccc 40
+
+# ID 3 - Active task background
+rounded = 2
+border_width = 1
+background_color = #0078d4 80
+border_color = #0078d4 100
+
+# Panel
+panel_items = T
+panel_size = 100% 30
+panel_margin = 0 0
+panel_padding = 5 2 5
+panel_background_id = 1
+panel_position = bottom
+panel_layer = top
+panel_monitor = all
+autohide = 0
+strut_policy = follow_size
+
+# Taskbar
+taskbar_mode = single_desktop
+taskbar_padding = 2 2 2
+taskbar_background_id = 0
+taskbar_active_background_id = 0
+taskbar_name = 1
+taskbar_distribute_size = 1
+taskbar_sort_order = none
+task_align = left
+
+# Task
+task_text = 1
+task_icon = 1
+task_centered = 1
+urgent_nb_of_blink = 100000
+task_maximum_size = 150 35
+task_padding = 6 2 4
+task_tooltip = 1
+task_background_id = 2
+task_active_background_id = 3
+task_urgent_background_id = 2
+task_iconified_background_id = 2
+mouse_left = toggle_iconify
+mouse_middle = none
+mouse_right = close
+mouse_scroll_up = toggle
+mouse_scroll_down = iconify
+
+# Tooltip
+tooltip_show_timeout = 0.5
+tooltip_hide_timeout = 0.1
+tooltip_padding = 4 4
+tooltip_background_id = 1
+tooltip_font_color = #000000 80

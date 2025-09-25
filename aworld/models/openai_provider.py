@@ -1,3 +1,4 @@
+import json
 import os
 import traceback
 from typing import Any, Dict, List, Generator, AsyncGenerator
@@ -49,8 +50,9 @@ class OpenAIProvider(LLMProviderBase):
             return OpenAI(
                 api_key=api_key,
                 base_url=base_url,
-                timeout=self.kwargs.get("timeout", 180),
-                max_retries=self.kwargs.get("max_retries", 3)
+                timeout=self.kwargs.get("timeout", 600),
+                max_retries=self.kwargs.get("max_retries", 3),
+                http_client=self.kwargs.get("http_client", None),
             )
 
     def _init_async_provider(self):
@@ -74,8 +76,9 @@ class OpenAIProvider(LLMProviderBase):
         return AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=self.kwargs.get("timeout", 180),
-            max_retries=self.kwargs.get("max_retries", 3)
+            timeout=self.kwargs.get("timeout", 600),
+            max_retries=self.kwargs.get("max_retries", 3),
+            http_client=self.kwargs.get("http_client", None),
         )
 
     @classmethod
@@ -397,6 +400,7 @@ class OpenAIProvider(LLMProviderBase):
 
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            logger.debug(f"openai_params: {json.dumps(openai_params)}")
             if self.is_http_provider:
                 response = await self.http_provider.async_call(openai_params)
             else:
@@ -436,15 +440,19 @@ class OpenAIProvider(LLMProviderBase):
 
         supported_params = [
             "max_completion_tokens", "meta_data", "modalities", "n", "parallel_tool_calls",
-            "prediction", "reasoning_effort", "service_tier", "stream_options", "web_search_options"
+            "prediction", "reasoning_effort", "service_tier", "stream_options", "web_search_options",
             "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
             "presence_penalty", "response_format", "seed", "stream", "top_p",
-            "user", "function_call", "functions", "tools", "tool_choice"
+            "user", "function_call", "functions", "tools", "tool_choice", "metadata",
+            "prompt_cache_key", "safety_identifier", "store", "verbosity"
         ]
 
+        llm_params = self.kwargs.get("params", {})
+        llm_params.update(kwargs)
+
         for param in supported_params:
-            if param in kwargs and kwargs[param] is not None:
-                openai_params[param] = kwargs[param]
+            if param in llm_params and llm_params[param] is not None:
+                openai_params[param] = llm_params[param]
 
         return openai_params
 

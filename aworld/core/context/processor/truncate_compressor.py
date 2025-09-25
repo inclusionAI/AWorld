@@ -2,17 +2,14 @@
 # Copyright (c) 2025 inclusionAI.
 
 import time
-import logging
 from typing import Any, Dict, List
 
 from aworld.config.conf import ModelConfig
 from aworld.core.context.processor import CompressionResult, CompressionType, MessagesProcessingResult
 from aworld.core.context.processor.base_compressor import BaseCompressor
-from aworld.logs.util import Color, color_log
+from aworld.logs.util import logger
 from aworld.models.utils import num_tokens_from_messages
 from aworld.utils import import_package
-
-logger = logging.getLogger(__name__)
 
 
 class TruncateCompressor(BaseCompressor):
