@@ -329,3 +329,5 @@ class EvaluationConfig(BaseConfig):
     eval_output_answer_column: Optional[str] = "answer"
     repeat_times: int = 1
     parallel_num: int = 1
+    skip_passed_cases: bool = False
+    skip_passed_on_metrics: List[str] = []
