@@ -89,6 +89,7 @@ class AWorldLogger:
             format = """<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
 {extra[name]} PID: {process}, TID:{thread} |</black> <bold>{name}.{function}:{line}</bold> \
 - \n<level>{message}</level> {exception} """
+
             def _formatter(record):
                 if record['extra'].get('name') == 'AWorld':
                     return f"{format.replace('{extra[name]} ', '')}\n"

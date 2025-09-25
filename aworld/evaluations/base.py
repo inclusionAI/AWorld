@@ -173,7 +173,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
     def __init__(self, name: str = None, eval_config: EvaluationConfig = None):
         self.name = name or self.__class__.__name__
         self.eval_config = eval_config or EvaluationConfig()
-        self.eval_criterias = eval_config.eval_criterias or {}
+        self.eval_criterias = self.eval_config.eval_criterias or {}
 
     def __str__(self) -> str:
         return self.name
@@ -387,15 +387,15 @@ class Evaluator(Generic[EvalCaseDataType]):
             metrics_to_check = self.skip_passed_on_metrics
             if not metrics_to_check:
                 for scorer in self.scorers:
-                    metrics_to_check.append(scorer.list_eval_metrics())
-
+                    metrics_to_check.extend(scorer.list_eval_metrics())
+            print(f"metrics_to_check: {metrics_to_check}, passed_cases:{self._passed_cases}, id={input.eval_case_id}")
             async with self._passed_cases_lock:
                 # If there are metrics to check, verify if all of them have passed for this case
                 if metrics_to_check:
                     # Check if all metrics_to_check have passed
                     if all(input.eval_case_id in self._passed_cases.get(metric_name, set()) for metric_name in metrics_to_check):
                         should_skip = True
-                        logger.info(f"Skipping case {input.eval_case_id} which has already passed all required metrics")
+                        logger.warning(f"Skipping case {input.eval_case_id} which has already passed all required metrics")
         return should_skip
 
     async def run_single_case(self, index: int, eval_target: EvalTarget[EvalCaseDataType], input: EvalDataCase[EvalCaseDataType]) -> EvalCaseResult:
@@ -428,12 +428,12 @@ class Evaluator(Generic[EvalCaseDataType]):
             score_rows[scorer.name] = scorer_result
 
             # Record passed metrics if skip_passed_on_metrics is specified
-            if self.skip_passed_on_metrics:
-                for metric_result in scorer_result.metric_results.values():
+            if self.skip_passed_cases:
+                for metric_name, metric_result in scorer_result.metric_results.items():
                     if metric_result.get('eval_status') == EvalStatus.PASSED:
                         # Add to passed cases if it passed on this metric
                         async with self._passed_cases_lock:
-                            self._passed_cases.setdefault(metric_result.get('metric_name'), set()).add(input.eval_case_id)
+                            self._passed_cases.setdefault(metric_name, set()).add(input.eval_case_id)
 
         return EvalCaseResult(index=index,
                               input=input,
