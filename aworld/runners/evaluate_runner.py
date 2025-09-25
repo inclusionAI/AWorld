@@ -53,7 +53,9 @@ class EvaluateRunner(Runner):
             evaluator = Evaluator(
                 scorers=scorers,
                 repeat_times=eval_config.repeat_times,
-                parallel_num=eval_config.parallel_num
+                parallel_num=eval_config.parallel_num,
+                skip_passed_cases=eval_config.skip_passed_cases,
+                skip_passed_on_metrics=eval_config.skip_passed_on_metrics,
             )
             result = await evaluator.evaluate(eval_dataset, eval_target)
             await self.result_recorder.save_eval_result(result)
