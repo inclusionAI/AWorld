@@ -9,7 +9,7 @@ from loguru import logger as base_logger
 
 base_logger.remove()
 SEGMENT_LEN = 200
-CONSOLE_LEVEL = 'DEBUG'
+CONSOLE_LEVEL = 'INFO'
 STORAGE_LEVEL = 'INFO'
 SUPPORTED_FUNC = ['info', 'debug', 'warning', 'error', 'critical', 'exception', 'trace', 'success', 'log', 'catch',
                   'opt', 'bind', 'unbind', 'contextualize', 'patch']
