@@ -1,9 +1,9 @@
 import subprocess
-import logging
-from pathlib import Path
 import sys
 
-logger = logging.getLogger(__name__)
+from pathlib import Path
+
+from aworld.logs.util import logger
 
 
 def build_webui(force_rebuild: bool = False) -> str:

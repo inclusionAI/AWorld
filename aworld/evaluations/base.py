@@ -65,12 +65,12 @@ class EvalCriteria:
 
 
 @dataclass
-class EvalRun:
+class EvalTask:
     '''
-    Evaluation run.
+    Evaluation task.
     '''
-    run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    run_name: str = field(default_factory=str)
+    task_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    task_name: str = field(default_factory=str)
     create_time: float = field(default_factory=lambda: time.time())
     config: EvaluationConfig = field(default=None)
 

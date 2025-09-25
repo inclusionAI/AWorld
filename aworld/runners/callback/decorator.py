@@ -3,20 +3,17 @@
 
 import functools
 import inspect
-import logging
 from typing import Dict, Any, Callable, Optional, Union, Awaitable
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("callback_registry")
+from aworld.logs.util import logger
 
 
 class CallbackRegistry:
     """Callback function registry, used to manage and execute callback functions"""
-    
+
     # Registry for storing decorated callback functions
     _registry: Dict[str, Callable] = {}
-    
+
     @classmethod
     def register(cls, key_name: str, func: Callable) -> Callable:
         """Register callback function to the registry
@@ -36,10 +33,10 @@ class CallbackRegistry:
                 f"Original function: {existing_func.__name__ if hasattr(existing_func, '__name__') else str(existing_func)}, "
                 f"New function: {func.__name__ if hasattr(func, '__name__') else str(func)}"
             )
-        
+
         cls._registry[key_name] = func
         return func
-    
+
     @classmethod
     def get(cls, key_name: str) -> Optional[Callable]:
         """Get registered callback function by key_name
@@ -51,15 +48,15 @@ class CallbackRegistry:
             Registered callback function, or None if not found
         """
         return cls._registry.get(key_name)
-    
+
     @classmethod
     async def execute(
-        cls,
-        key_name: str, 
-        tool: Any, 
-        args: Dict[str, Any], 
-        tool_context: Any, 
-        tool_response: Optional[Dict[str, Any]] = None
+            cls,
+            key_name: str,
+            tool: Any,
+            args: Dict[str, Any],
+            tool_context: Any,
+            tool_response: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         """Execute registered callback function
         
@@ -76,7 +73,7 @@ class CallbackRegistry:
         callback = cls.get(key_name)
         if not callback:
             return None
-        
+
         # Determine parameters based on callback type
         if tool_response is not None:
             # Post-callback
@@ -84,13 +81,13 @@ class CallbackRegistry:
         else:
             # Pre-callback
             result = callback(tool, args, tool_context)
-        
+
         # Handle asynchronous callbacks
         if inspect.isawaitable(result):
             result = await result
-            
+
         return result
-    
+
     @classmethod
     def list(cls) -> Dict[str, str]:
         """List all registered callback functions
@@ -113,16 +110,17 @@ def reg_callback(key_name: str):
     Returns:
         Decorator function
     """
+
     def decorator(func):
         # Register function to the global registry
         CallbackRegistry.register(key_name, func)
-        
+
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             return func(*args, **kwargs)
-        
+
         return wrapper
-    
+
     return decorator
 
 
@@ -140,11 +138,11 @@ def get_callback(key_name: str) -> Optional[Callable]:
 
 
 async def execute_callback(
-    key_name: str, 
-    tool: Any, 
-    args: Dict[str, Any], 
-    tool_context: Any, 
-    tool_response: Optional[Dict[str, Any]] = None
+        key_name: str,
+        tool: Any,
+        args: Dict[str, Any],
+        tool_context: Any,
+        tool_response: Optional[Dict[str, Any]] = None
 ) -> Optional[Dict[str, Any]]:
     """Execute registered callback function
     
@@ -167,4 +165,4 @@ def list_callbacks() -> Dict[str, str]:
     Returns:
         Dictionary containing callback function names and descriptions
     """
-    return CallbackRegistry.list() 
+    return CallbackRegistry.list()

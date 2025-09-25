@@ -1,4 +1,3 @@
-import logging
 import json
 from typing import Dict
 from fastapi import APIRouter, Depends, Request
@@ -7,9 +6,8 @@ from aworld.cmd.data_model import AgentModel, ChatCompletionRequest
 from aworld.cmd.utils import agent_executor
 from aworld.cmd.utils.trace_summarize import summarize_trace
 from aworld.cmd.web.utils.users import get_user_id_from_jwt
+from aworld.logs.util import logger
 import aworld.trace as trace
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 

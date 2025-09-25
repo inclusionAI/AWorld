@@ -7,11 +7,11 @@ import importlib
 from typing import Dict, Any, List, Optional, Callable
 from aworld.config.conf import EvaluationConfig
 from aworld.evaluations.base import (
-    EvalDataCase, EvalDataset, EvalResult, Scorer, EvalCriteria, EvalTarget, EvalRun, Evaluator
+    EvalDataCase, EvalDataset, EvalResult, Scorer, EvalCriteria, EvalTarget, EvalTask, Evaluator
 )
-from aworld.evaluations.evel_runtime.eval_run_manager import EvalRunManager, DefaultEvalRunManager
-from aworld.evaluations.evel_runtime.eval_dataset_manager import EvalDatasetManager, DefaultEvalDatasetManager
-from aworld.evaluations.evel_runtime.eval_result_manager import EvalResultManager, DefaultEvalResultManager
+from aworld.evaluations.evel_runtime.eval_task_recorder import EvalTaskRecorder, DefaultEvalTaskRecorder
+from aworld.evaluations.evel_runtime.eval_dataset_recorder import EvalDatasetManager, DefaultEvalDatasetManager
+from aworld.evaluations.evel_runtime.eval_result_manager import EvalResultRecorder, DefaultEvalResultRecorder
 from aworld.dataset.dataset import Dataset
 from aworld.logs.util import logger
 from aworld.evaluations.scorers.scorer_registry import get_scorer_instances_for_criterias
@@ -20,10 +20,13 @@ from aworld.evaluations.scorers.scorer_registry import get_scorer_instances_for_
 class EvaluateRunner(abc.ABC):
 
     def __init__(self,
-                 eval_run_manager: EvalRunManager = DefaultEvalRunManager(),
+                 eval_config: EvaluationConfig = None,
+                 eval_task: EvalTask = None,
+                 eval_run_manager: EvalTaskRecorder = DefaultEvalTaskRecorder(),
                  eval_dataset_manager: EvalDatasetManager = DefaultEvalDatasetManager(),
-                 eval_result_manager: EvalResultManager = DefaultEvalResultManager(),
+                 eval_result_manager: EvalResultRecorder = DefaultEvalResultRecorder(),
                  ):
+        self.eval_task = eval_task
         self.eval_dataset_manager = eval_dataset_manager
         self.eval_result_manager = eval_result_manager
         self.eval_run_manager = eval_run_manager
@@ -35,10 +38,10 @@ class EvaluateRunner(abc.ABC):
             EvaluationResult
         """
         try:
-            eval_run: EvalRun = await self.eval_run_manager.create_eval_run(eval_config)
+            eval_task: EvalTask = await self.eval_run_manager.create_eval_task(eval_config)
             loaded_dataset: EvalDataset = await self.load_dataset(eval_config)
-            eval_dataset: EvalDataset = await self.eval_dataset_manager.create_eval_dataset(run_id=eval_run.run_id,
-                                                                                            dataset_name=f"Dataset_{eval_run.run_id}",
+            eval_dataset: EvalDataset = await self.eval_dataset_manager.create_eval_dataset(run_id=eval_task.task_id,
+                                                                                            dataset_name=f"Dataset_{eval_task.task_id}",
                                                                                             data_cases=loaded_dataset.eval_cases)
             scorers = self.get_scorers(eval_config)
             eval_target = self.get_target_for_eval(eval_config)
@@ -51,7 +54,7 @@ class EvaluateRunner(abc.ABC):
             await self.eval_result_manager.save_eval_result(result)
             return result
         except Exception as e:
-            logger.error(f"eval run {eval_run.run_id} failed: {str(e)}")
+            logger.error(f"eval run {eval_task.task_id} failed: {str(e)}")
             raise e
 
     def get_scorers(self, eval_config: EvaluationConfig) -> list[Scorer]:
@@ -81,7 +84,8 @@ class EvaluateRunner(abc.ABC):
             if '.' in eval_config.eval_target_full_class_name:
                 module_path, class_name = eval_config.eval_target_full_class_name.rsplit('.', 1)
             else:
-                raise ValueError(f"Invalid full class name format: {eval_config.eval_target_full_class_name}. It should include module path.")
+                raise ValueError(
+                    f"Invalid full class name format: {eval_config.eval_target_full_class_name}. It should include module path.")
             module = importlib.import_module(module_path)
             eval_target_class = getattr(module, class_name)
             if not issubclass(eval_target_class, EvalTarget):
@@ -92,7 +96,8 @@ class EvaluateRunner(abc.ABC):
             return eval_target_instance
         except (ImportError, AttributeError, TypeError) as e:
             logger.error(f"Failed to create EvalTarget instance: {str(e)}")
-            raise ValueError(f"Failed to create EvalTarget instance from {eval_config.eval_target_full_class_name}: {str(e)}")
+            raise ValueError(
+                f"Failed to create EvalTarget instance from {eval_config.eval_target_full_class_name}: {str(e)}")
 
     async def load_dataset(self, eval_config: EvaluationConfig) -> EvalDataset:
         """Load the dataset.

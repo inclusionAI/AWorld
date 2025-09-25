@@ -6,6 +6,7 @@ from aworld.config import RunConfig
 
 from aworld.config.conf import AgentConfig
 from aworld.core.task import Task
+from aworld.logs.util import trace_logger, Color
 from aworld.runner import Runners
 from tests.gym_demo.agent import GymDemoAgent as GymAgent
 
@@ -16,7 +17,7 @@ async def main():
     task = Task(agent=agent,
                 tools_conf={"gym": {"env_id": "CartPole-v1", "render_mode": "human", "render": True, "use_async": True}})
     res = await Runners.run_task(task=task, run_conf=RunConfig())
-
+    trace_logger.info("asdfadfasdf", color=Color.pink)
 
 if __name__ == "__main__":
     # We use it as a showcase to demonstrate the framework's scalability.

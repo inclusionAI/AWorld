@@ -1,5 +1,4 @@
 import os
-import logging
 import traceback
 import asyncio
 import re
@@ -11,9 +10,8 @@ from aworld.agents.llm_agent import Agent
 from typing import Dict, Union
 
 from aworld.core.context.base import Context
+from aworld.logs.util import logger
 from aworld.utils.run_util import exec_agent
-
-logger = logging.getLogger(__name__)
 
 
 class SimpleSummaryCache:
