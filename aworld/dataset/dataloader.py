@@ -55,8 +55,18 @@ class DataLoader(Generic[_T_co]):
         self.collate_fn = collate_fn
 
     def __iter__(self) -> Iterator[Union[List[_T_co], _Batch]]:
-        # If batch_sampler is provided, iterate directly on its batches
+        # If batch_sampler is provided, try to inject dataset length then iterate directly on its batches
         if self.batch_sampler is not None:
+            # Best-effort: if batch_sampler wraps a sampler with set_length, inject length
+            try:
+                inner_sampler = getattr(self.batch_sampler, "sampler", None)
+                if inner_sampler is not None:
+                    if hasattr(inner_sampler, "set_dataset"):
+                        inner_sampler.set_dataset(self.dataset)  # type: ignore[call-arg]
+                    elif hasattr(inner_sampler, "set_length") and inner_sampler.length is None:
+                        inner_sampler.set_length(len(self.dataset))  # type: ignore[call-arg]
+            except Exception:
+                pass
             for batch_indices in self.batch_sampler:
                 batch: List[_T_co] = []
                 for idx in batch_indices:
@@ -71,6 +81,14 @@ class DataLoader(Generic[_T_co]):
         # Resolve indices from sampler / shuffle
         num_items = len(self.dataset)
         if self.sampler is not None:
+            # Inject dataset length for samplers that support it
+            try:
+                if hasattr(self.sampler, "set_dataset"):
+                    self.sampler.set_dataset(self.dataset)  # type: ignore[call-arg]
+                elif hasattr(self.sampler, "set_length") and self.sampler.length is None:
+                    self.sampler.set_length(num_items)  # type: ignore[call-arg]
+            except Exception:
+                pass
             indices = list(iter(self.sampler))
         else:
             indices = list(range(num_items))

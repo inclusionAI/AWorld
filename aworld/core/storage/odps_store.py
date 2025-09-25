@@ -4,9 +4,8 @@ from odps.models import Table
 from typing import Any, List, Dict
 
 from aworld.config import StorageConfig
-from aworld.core.storage.base import DataBlock, DataItem
+from aworld.core.storage.base import DataBlock, DataItem, Storage
 from aworld.core.storage.condition import ConditionBuilder, Condition
-from aworld.replay_buffer.base import Storage
 from aworld.logs.util import logger
 
 
