@@ -1,8 +1,8 @@
 import os
-from pydantic import BaseModel, ConfigDict
+from dataclasses import dataclass, field
+
 from typing import Sequence, Optional
 from aworld.trace.span_cosumer import SpanConsumer
-from logging import Logger
 from aworld.logs.util import trace_logger
 from aworld.trace.context_manager import trace_configure
 from aworld.metrics.context_manager import MetricContext
@@ -15,33 +15,38 @@ from aworld.trace.instrumentation.tool import ToolInstrumentor
 from aworld.trace.opentelemetry.memory_storage import TraceStorage
 
 
-class ObservabilityConfig(BaseModel):
+def backend_list():
+    return ["memory"]
+
+def logger_list():
+    return [trace_logger]
+
+@dataclass
+class ObservabilityConfig():
     '''
     Observability configuration
     '''
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    trace_provider: Optional[str] = "otlp"
-    trace_backends: Optional[Sequence[str]] = ["memory"]
-    trace_base_url: Optional[str] = None
-    trace_write_token: Optional[str] = None
-    trace_span_consumers: Optional[Sequence[SpanConsumer]] = None
-    trace_storage: Optional[TraceStorage] = None
+    trace_provider: Optional[str] = field(default="otlp")
+    trace_backends: Optional[Sequence[str]] = field(default_factory=backend_list)
+    trace_base_url: Optional[str] = field(default=None)
+    trace_write_token: Optional[str] = field(default=None)
+    trace_span_consumers: Optional[Sequence[SpanConsumer]] = field(default_factory=list)
+    trace_storage: Optional[TraceStorage] = field(default=None)
     # whether to start the trace service
-    trace_server_enabled: Optional[bool] = False
-    trace_server_port: Optional[int] = 7079
-    metrics_provider: Optional[str] = None
-    metrics_backend: Optional[str] = None
-    metrics_base_url: Optional[str] = None
-    metrics_write_token: Optional[str] = None
+    trace_server_enabled: Optional[bool] = field(default=False)
+    trace_server_port: Optional[int] = field(default=7079)
+    metrics_provider: Optional[str] = field(default=None)
+    metrics_backend: Optional[str] = field(default=None)
+    metrics_base_url: Optional[str] = field(default=None)
+    metrics_write_token: Optional[str] = field(default=None)
     # whether to instrument system metrics
-    metrics_system_enabled: Optional[bool] = False
-    logs_provider: Optional[str] = None
-    logs_backend: Optional[str] = None
-    logs_base_url: Optional[str] = None
-    logs_write_token: Optional[str] = None
+    metrics_system_enabled: Optional[bool] = field(default=False)
+    logs_provider: Optional[str] = field(default=None)
+    logs_backend: Optional[str] = field(default=None)
+    logs_base_url: Optional[str] = field(default=None)
+    logs_write_token: Optional[str] = field(default=None)
     # The loggers that need to record the log as a span
-    logs_trace_instrumented_loggers: Sequence[Logger] = [trace_logger]
+    logs_trace_instrumented_loggers: Sequence = field(default_factory=logger_list)
 
 
 def configure(config: ObservabilityConfig = None):
