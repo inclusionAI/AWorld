@@ -62,7 +62,7 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
         runtime_backend = new_instance(run_conf.cls, run_conf)
     else:
         runtime_backend = new_instance(
-            f"aworld.core.runtime_engine.{snake_to_camel(name)}Runtime", run_conf)
+            f"aworld.runners.runtime_engine.{snake_to_camel(name)}Runtime", run_conf)
     runtime_engine = runtime_backend.build_engine()
 
     if run_conf.engine_name != EngineName.LOCAL or run_conf.reuse_process == False:

@@ -1,8 +1,8 @@
-import logging
 import json
 import traceback
 
 from aworld.core.context.base import Context
+from aworld.logs.util import logger
 # from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 
@@ -49,7 +49,7 @@ class McpServers:
             return self.tool_list
         except Exception as e:
             traceback.print_exc()
-            logging.warning(f"Failed to list tools: {e}")
+            logger.warning(f"Failed to list tools: {e}")
             return []
 
     async def check_tool_params(self, context: Context, server_name: str, tool_name: str,
@@ -85,7 +85,7 @@ class McpServers:
                     break
 
             if not target_tool:
-                logging.warning(f"Tool not found: {tool_identifier}")
+                logger.warning(f"Tool not found: {tool_identifier}")
                 return False
 
             # Get tool parameter definitions
@@ -98,18 +98,18 @@ class McpServers:
             if "session_id" in properties:
                 if hasattr(context, 'session_id') and context.session_id:
                     parameter["session_id"] = context.session_id
-                    logging.info(f"Auto-added session_id: {context.session_id}")
+                    logger.info(f"Auto-added session_id: {context.session_id}")
 
             # Check if task_id is needed
             if "task_id" in properties:
                 if hasattr(context, 'task_id') and context.task_id:
                     parameter["task_id"] = context.task_id
-                    logging.info(f"Auto-added task_id: {context.task_id}")
+                    logger.info(f"Auto-added task_id: {context.task_id}")
 
             return True
 
         except Exception as e:
-            logging.warning(f"Error checking tool parameters: {e}")
+            logger.warning(f"Error checking tool parameters: {e}")
             return False
 
     async def call_tool(
@@ -160,7 +160,7 @@ class McpServers:
 
                         self._update_metadata(result_key, call_result, operation_info)
                     except Exception as e:
-                        logging.warning(f"Error calling function_tool tool: {e}")
+                        logger.warning(f"Error calling function_tool tool: {e}")
                         self._update_metadata(result_key, {"error": str(e)}, operation_info)
                     continue
 
@@ -174,7 +174,7 @@ class McpServers:
 
                         self._update_metadata(result_key, call_result, operation_info)
                     except Exception as e:
-                        logging.warning(f"Error calling API tool: {e}")
+                        logger.warning(f"Error calling API tool: {e}")
                         self._update_metadata(result_key, {"error": str(e)}, operation_info)
                     continue
 
@@ -185,9 +185,9 @@ class McpServers:
                     server = await get_server_instance(server_name, self.mcp_config,context)
                     if server:
                         self.server_instances[server_name] = server
-                        logging.info(f"Created and cached new server instance for {server_name}")
+                        logger.info(f"Created and cached new server instance for {server_name}")
                     else:
-                        logging.warning(f"Created new server failed: {server_name}, session_id: {session_id}, tool_name: {tool_name}")
+                        logger.warning(f"Created new server failed: {server_name}, session_id: {session_id}, tool_name: {tool_name}")
 
                         self._update_metadata(result_key, {"error": "Failed to create server instance"}, operation_info)
                         continue
@@ -218,7 +218,7 @@ class McpServers:
                                 )
                                 sync_exec(send_message, tool_output_message)
                             except BaseException as e:
-                                logging.warning(f"Error calling progress callback: {e}")
+                                logger.warning(f"Error calling progress callback: {e}")
 
                         await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
                                                      parameter=parameter)
@@ -226,14 +226,14 @@ class McpServers:
                                                                  progress_callback=progress_callback)
                         break
                     except BaseException as e:
-                        logging.warning(
+                        logger.warning(
                             f"Error calling tool error: {e}. Extra info: session_id = {session_id}, tool_name = {tool_name}."
                             f"Traceback:\n{traceback.format_exc()}"
                         )
-                logging.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
-                logging.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
+                logger.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
+                logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
                 if not call_result_raw:
-                    logging.warning(f"Error calling tool with cached server")
+                    logger.warning(f"Error calling tool with cached server")
 
                     self._update_metadata(result_key, {"error": str(e)}, operation_info)
 
@@ -243,7 +243,7 @@ class McpServers:
                             await cleanup_server(self.server_instances[server_name])
                             del self.server_instances[server_name]
                         except Exception as e:
-                            logging.warning(f"Failed to cleanup server {server_name}: {e}")
+                            logger.warning(f"Failed to cleanup server {server_name}: {e}")
                 else:
                     if call_result_raw and call_result_raw.content:
                         metadata = call_result_raw.content[0].model_extra.get("metadata", {})
@@ -282,7 +282,7 @@ class McpServers:
                     self._update_metadata(result_key, action_result, operation_info)
 
         except Exception as e:
-            logging.warning(f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}")
+            logger.warning(f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}")
             return None
 
         return results
@@ -321,7 +321,7 @@ class McpServers:
             return
 
         except Exception as e:
-            logging.debug(f"Failed to update sandbox metadata: {e}")
+            logger.debug(f"Failed to update sandbox metadata: {e}")
 
     # Add cleanup method, called when Sandbox is destroyed
     async def cleanup(self):
@@ -330,6 +330,6 @@ class McpServers:
             try:
                 await cleanup_server(server)
                 del self.server_instances[server_name]
-                logging.info(f"Cleaned up server instance for {server_name}")
+                logger.info(f"Cleaned up server instance for {server_name}")
             except Exception as e:
-                logging.warning(f"Failed to cleanup server {server_name}: {e}")
+                logger.warning(f"Failed to cleanup server {server_name}: {e}")

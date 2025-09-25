@@ -3,11 +3,10 @@
 """Base classes for prompt templates."""
 import traceback
 from abc import ABC, abstractmethod
-import logging
-logger = logging.getLogger("prompts")
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 from aworld.core.context.prompts.formatters import TemplateFormat, get_template_variables
+from aworld.logs.util import logger
 
 if TYPE_CHECKING:
     from aworld.core.context.base import Context

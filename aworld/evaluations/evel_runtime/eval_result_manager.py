@@ -1,14 +1,10 @@
-
 import abc
 from aworld.evaluations.base import EvalResult
 from aworld.core.storage.base import Storage
 from aworld.core.storage.inmemory_store import InmemoryStorage
 
 
-class EvalResultManager(abc.ABC):
-    '''
-    The base class of eval result manager.
-    '''
+class EvalResultRecorder(abc.ABC):
 
     @abc.abstractmethod
     async def save_eval_result(self, eval_result: EvalResult) -> EvalResult:
@@ -32,10 +28,7 @@ class EvalResultManager(abc.ABC):
         raise NotImplementedError
 
 
-class DefaultEvalResultManager(EvalResultManager):
-    '''
-    The default eval result manager.
-    '''
+class DefaultEvalResultRecorder(EvalResultRecorder):
 
     def __init__(self, storage: Storage = None):
         self.storage = storage or InmemoryStorage()

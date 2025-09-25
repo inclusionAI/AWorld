@@ -10,10 +10,10 @@ in PromptTemplate to inject runtime-generated values.
 import os
 import platform
 import uuid
-import logging
-logger = logging.getLogger("prompts")
 from datetime import datetime, timezone
 from typing import Callable, Any, Optional, TYPE_CHECKING
+
+from aworld.logs.util import logger
 
 if TYPE_CHECKING:
     from aworld.core.context.base import Context
@@ -329,7 +329,6 @@ def create_context_field_getter(
             
             result = str(value) if value is not None else default_value
             
-            # Debug logging
             logger.debug(f"Field retrieval: '{field_path}' -> '{result}' (source: {source})")
             
             return result

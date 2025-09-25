@@ -3,11 +3,9 @@ import importlib
 import subprocess
 import sys
 import traceback
-import logging
 from typing import List, Dict
 from aworld.cmd.data_model import AgentModel
-
-logger = logging.getLogger(__name__)
+from aworld.logs.util import logger
 
 _agent_cache: Dict[str, AgentModel] = {}
 

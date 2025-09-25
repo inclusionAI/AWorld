@@ -1,10 +1,10 @@
-import logging
 import os
 from typing import List, Optional
 from pydantic import BaseModel
 
 from fastapi import APIRouter, HTTPException, status, Query, Body
 
+from aworld.logs.util import logger
 from aworld.output import WorkSpace, ArtifactType
 from aworld.output.utils import load_workspace
 
@@ -14,7 +14,7 @@ prefix = "/api/workspaces"
 
 @router.get("/{workspace_id}/tree")
 async def get_workspace_tree(workspace_id: str):
-    logging.info(f"get_workspace_tree: {workspace_id}")
+    logger.info(f"get_workspace_tree: {workspace_id}")
     workspace = await get_workspace(workspace_id)
     return workspace.generate_tree_data()
 
@@ -39,12 +39,12 @@ async def get_workspace_artifacts(workspace_id: str, request: ArtifactRequest):
         # Validate all types
         invalid_types = [t for t in artifact_types if t not in ArtifactType.__members__]
         if invalid_types:
-            logging.error(f"Invalid artifact_types: {invalid_types}")
+            logger.error(f"Invalid artifact_types: {invalid_types}")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"Invalid artifact types: {invalid_types}")
-        logging.info(f"Fetching artifacts of types: {artifact_types}")
+        logger.info(f"Fetching artifacts of types: {artifact_types}")
     else:
-        logging.info(f"Fetching all artifacts (no type filter)")
+        logger.info(f"Fetching all artifacts (no type filter)")
 
     workspace = await get_workspace(workspace_id)
     all_artifacts = workspace.list_artifacts()
@@ -61,7 +61,7 @@ async def get_workspace_artifacts(workspace_id: str, request: ArtifactRequest):
 
 @router.get("/{workspace_id}/file/{artifact_id}/content")
 async def get_workspace_file_content(workspace_id: str, artifact_id: str):
-    logging.info(f"get_workspace_file_content: {workspace_id}, {artifact_id}")
+    logger.info(f"get_workspace_file_content: {workspace_id}, {artifact_id}")
     workspace = await get_workspace(workspace_id)
     return {
         "data": workspace.get_file_content_by_artifact_id(artifact_id)

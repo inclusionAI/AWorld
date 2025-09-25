@@ -5,7 +5,6 @@
 General Kubernetes API Client Example
 Can be used to perform various Kubernetes API operations
 """
-import logging
 import os
 
 import yaml
@@ -13,6 +12,8 @@ from dotenv import load_dotenv
 from kubernetes import client, config
 from kubernetes.client import V1DeleteOptions
 from kubernetes.client.rest import ApiException
+
+from aworld.logs.util import logger
 
 
 class KubernetesApiClient:
@@ -49,9 +50,9 @@ class KubernetesApiClient:
             self.rbac_v1 = client.RbacAuthorizationV1Api()
             self.custom_objects = client.CustomObjectsApi()
 
-            logging.info("Kubernetes API client initialized successfully")
+            logger.info("Kubernetes API client initialized successfully")
         except Exception as e:
-            logging.info(f"Failed to initialize Kubernetes API client: {e}")
+            logger.info(f"Failed to initialize Kubernetes API client: {e}")
             raise
 
     # ===================== Pod Operations =====================
@@ -67,7 +68,7 @@ class KubernetesApiClient:
                 namespace=namespace
             )
         except ApiException as e:
-            logging.warning(f"Failed to get Pod {namespace}/{name}: {e}")
+            logger.warning(f"Failed to get Pod {namespace}/{name}: {e}")
             return None
 
     def list_pods(self, namespace="default", label_selector=None, field_selector=None):
@@ -82,7 +83,7 @@ class KubernetesApiClient:
                 field_selector=field_selector
             )
         except ApiException as e:
-            logging.warning(f"Failed to list Pods in namespace {namespace}: {e}")
+            logger.warning(f"Failed to list Pods in namespace {namespace}: {e}")
             return None
 
     def list_pods_all_namespaces(self, label_selector=None, field_selector=None):
@@ -96,7 +97,7 @@ class KubernetesApiClient:
                 field_selector=field_selector
             )
         except ApiException as e:
-            logging.warning(f"Failed to list Pods across all namespaces: {e}")
+            logger.warning(f"Failed to list Pods across all namespaces: {e}")
             return None
 
     def create_pod(self, pod_manifest, namespace="default"):
@@ -127,7 +128,7 @@ class KubernetesApiClient:
                     body=pod_manifest
                 )
         except ApiException as e:
-            logging.warning(f"Failed to create Pod: {e}")
+            logger.warning(f"Failed to create Pod: {e}")
             return None
 
     def create_pod_from_yaml(self, yaml_file=None, namespace=None, pod_name=None):
@@ -163,7 +164,7 @@ class KubernetesApiClient:
 
             return self.create_pod(pod_manifest, namespace)
         except Exception as e:
-            logging.info(f"Failed to create Pod from YAML file: {e}")
+            logger.info(f"Failed to create Pod from YAML file: {e}")
             return None
 
     def delete_pod(self, name, namespace="default", grace_period_seconds=30):
@@ -190,7 +191,7 @@ class KubernetesApiClient:
                 )
             )
         except ApiException as e:
-            logging.warning(f"Failed to delete Pod {namespace}/{name}: {e}")
+            logger.warning(f"Failed to delete Pod {namespace}/{name}: {e}")
             return None
 
     def update_pod(self, name, pod_manifest, namespace="default"):
@@ -231,7 +232,7 @@ class KubernetesApiClient:
                     body=pod_manifest
                 )
         except ApiException as e:
-            logging.warning(f"Failed to update Pod {namespace}/{name}: {e}")
+            logger.warning(f"Failed to update Pod {namespace}/{name}: {e}")
             return None
 
     def patch_pod(self, name, patch_data, namespace="default"):
@@ -255,7 +256,7 @@ class KubernetesApiClient:
                 body=patch_data
             )
         except ApiException as e:
-            logging.warning(f"Failed to patch Pod {namespace}/{name}: {e}")
+            logger.warning(f"Failed to patch Pod {namespace}/{name}: {e}")
             return None
 
     def get_pod_info(self, name, namespace="default"):
@@ -294,7 +295,7 @@ class KubernetesApiClient:
 
             return pod_info
         except Exception as e:
-            logging.warning(f"Failed to get Pod information for {namespace}/{name}: {e}")
+            logger.warning(f"Failed to get Pod information for {namespace}/{name}: {e}")
             return None
 
     # ===================== Deployment Operations =====================
@@ -310,7 +311,7 @@ class KubernetesApiClient:
                 namespace=namespace
             )
         except ApiException as e:
-            logging.warning(f"Failed to get Deployment {namespace}/{name}: {e}")
+            logger.warning(f"Failed to get Deployment {namespace}/{name}: {e}")
             return None
 
     def list_deployments(self, namespace="default", label_selector=None):
@@ -324,7 +325,7 @@ class KubernetesApiClient:
                 label_selector=label_selector
             )
         except ApiException as e:
-            logging.warning(f"Failed to list Deployments in namespace {namespace}: {e}")
+            logger.warning(f"Failed to list Deployments in namespace {namespace}: {e}")
             return None
 
     # ===================== Service Operations =====================
@@ -340,7 +341,7 @@ class KubernetesApiClient:
                 namespace=namespace
             )
         except ApiException as e:
-            logging.warning(f"Failed to get Service {namespace}/{name}: {e}")
+            logger.warning(f"Failed to get Service {namespace}/{name}: {e}")
             return None
 
     def list_services(self, namespace="default", label_selector=None):
@@ -354,7 +355,7 @@ class KubernetesApiClient:
                 label_selector=label_selector
             )
         except ApiException as e:
-            logging.warning(f"Failed to list Services in namespace {namespace}: {e}")
+            logger.warning(f"Failed to list Services in namespace {namespace}: {e}")
             return None
 
     def create_service(self, service_manifest, namespace="default"):
@@ -385,7 +386,7 @@ class KubernetesApiClient:
                     body=service_manifest
                 )
         except ApiException as e:
-            logging.warning(f"Failed to create Service: {e}")
+            logger.warning(f"Failed to create Service: {e}")
             return None
 
     def create_service_from_yaml(self, yaml_file=None, namespace=None, service_name=None, selector_name=None):
@@ -426,7 +427,7 @@ class KubernetesApiClient:
 
             return self.create_service(service_manifest, namespace)
         except Exception as e:
-            logging.info(f"Failed to create Service from YAML file: {e}")
+            logger.info(f"Failed to create Service from YAML file: {e}")
             return None
 
     def update_service(self, name, service_manifest, namespace="default"):
@@ -467,7 +468,7 @@ class KubernetesApiClient:
                     body=service_manifest
                 )
         except ApiException as e:
-            logging.warning(f"Failed to update Service {namespace}/{name}: {e}")
+            logger.warning(f"Failed to update Service {namespace}/{name}: {e}")
             return None
 
     def patch_service(self, name, patch_data, namespace="default"):
@@ -491,7 +492,7 @@ class KubernetesApiClient:
                 body=patch_data
             )
         except ApiException as e:
-            logging.warning(f"Failed to patch Service {namespace}/{name}: {e}")
+            logger.warning(f"Failed to patch Service {namespace}/{name}: {e}")
             return None
 
     def delete_service(self, name, namespace="default"):
@@ -513,7 +514,7 @@ class KubernetesApiClient:
                 namespace=namespace
             )
         except ApiException as e:
-            logging.warning(f"Failed to delete Service {namespace}/{name}: {e}")
+            logger.warning(f"Failed to delete Service {namespace}/{name}: {e}")
             return None
 
     def get_service_info(self, name, namespace="default"):
@@ -603,7 +604,7 @@ class KubernetesApiClient:
         try:
             return self.core_v1.read_namespace(name=name)
         except ApiException as e:
-            logging.warning(f"Failed to get namespace {name}: {e}")
+            logger.warning(f"Failed to get namespace {name}: {e}")
             return None
 
     def list_namespaces(self, label_selector=None):
@@ -614,7 +615,7 @@ class KubernetesApiClient:
         try:
             return self.core_v1.list_namespace(label_selector=label_selector)
         except ApiException as e:
-            logging.warning(f"Failed to list namespaces: {e}")
+            logger.warning(f"Failed to list namespaces: {e}")
             return None
 
     # ===================== Custom Resource (CRD) Operations =====================
@@ -647,7 +648,7 @@ class KubernetesApiClient:
                 )
         except ApiException as e:
             resource_path = f"{namespace}/{name}" if namespace else name
-            logging.warning(f"Failed to get custom resource {group}/{version}/{plural}/{resource_path}: {e}")
+            logger.warning(f"Failed to get custom resource {group}/{version}/{plural}/{resource_path}: {e}")
             return None
 
 
@@ -655,7 +656,7 @@ if __name__ == "__main__":
     client = KubernetesApiClient("./kubeconfig")
     # result = client.get_pod("mcp-openapi-node-2", namespace="default")
     # print(result)
-    #result = client.create_pod_from_yaml("./pod.yaml")
+    # result = client.create_pod_from_yaml("./pod.yaml")
 
     # result = client.get_pod_info("mcp-openapi-node-5", namespace="default")
     # print(result)
@@ -673,4 +674,3 @@ if __name__ == "__main__":
 
     # result = client.delete_service("mcp-openapi-service-2")
     # print(result)
-

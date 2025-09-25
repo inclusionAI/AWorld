@@ -1,8 +1,8 @@
-import logging
 import asyncio
 import uuid
 from typing import Dict, List, Any, Optional
 
+from aworld.logs.util import logger
 from aworld.sandbox.api.local.sandbox_api import LocalSandboxApi
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
@@ -77,7 +77,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             if not response:
                 self._status = SandboxStatus.ERROR
                 # If creation fails, keep the generated UUID as the ID
-                logging.warning(f"Failed to create sandbox, using generated ID: {self._sandbox_id}")
+                logger.warning(f"Failed to create sandbox, using generated ID: {self._sandbox_id}")
             else:
                 self._sandbox_id = response.sandbox_id
                 self._status = SandboxStatus.RUNNING
@@ -113,15 +113,15 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         try:
             if hasattr(self, '_mcpservers') and self._mcpservers:
                 await self._mcpservers.cleanup()
-                logging.info(f"Cleaned up MCP servers for sandbox {self.sandbox_id}")
+                logger.info(f"Cleaned up MCP servers for sandbox {self.sandbox_id}")
         except Exception as e:
-            logging.warning(f"Failed to cleanup MCP servers: {e}")
+            logger.warning(f"Failed to cleanup MCP servers: {e}")
         
         # Call the original remove method
         try:
             await self.remove()
         except Exception as e:
-            logging.warning(f"Failed to remove sandbox: {e}")
+            logger.warning(f"Failed to remove sandbox: {e}")
             
     def __del__(self):
         """
@@ -131,7 +131,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             # Handle the case where an event loop already exists
             try:
                 loop = asyncio.get_running_loop()
-                logging.warning("Cannot clean up sandbox in __del__ when event loop is already running")
+                logger.warning("Cannot clean up sandbox in __del__ when event loop is already running")
                 return
             except RuntimeError:
                 # No running event loop, create a new one
@@ -140,4 +140,4 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 loop.run_until_complete(self.cleanup())
                 loop.close()
         except Exception as e:
-            logging.warning(f"Failed to cleanup sandbox resources during garbage collection: {e}") 
+            logger.warning(f"Failed to cleanup sandbox resources during garbage collection: {e}") 

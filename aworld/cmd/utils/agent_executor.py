@@ -10,13 +10,12 @@ from aworld.cmd.data_model import (
     ChatCompletionResponse,
 )
 from .agent_ui_parser import AWorldWebAgentUI
-import logging
 import os
 import uuid
 from dotenv import load_dotenv
 import traceback
 
-logger = logging.getLogger(__name__)
+from aworld.logs.util import logger
 
 
 async def stream_run(request: ChatCompletionRequest, agent_server: AgentServer):

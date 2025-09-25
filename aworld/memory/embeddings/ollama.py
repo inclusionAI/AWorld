@@ -1,10 +1,10 @@
-import logging
 from typing import List
 
 import aiohttp
 import requests
 
 from aworld.core.memory import EmbeddingsConfig
+from aworld.logs.util import logger
 from aworld.memory.embeddings.base import EmbeddingsBase
 
 
@@ -38,7 +38,7 @@ class OllamaEmbeddings(EmbeddingsBase):
             response.raise_for_status()
             data = response.json()
             # Ollama returns {"embedding": [...], ...}
-            logging.debug(f"Ollama embedding response: {data}")
+            logger.debug(f"Ollama embedding response: {data}")
             return self.resolve_embedding(data)
         except Exception as e:
             import traceback

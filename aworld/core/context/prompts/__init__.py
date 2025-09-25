@@ -31,7 +31,6 @@ It supports string formatting, chat message templates, and various formatting op
 
 """
 
-import logging
 from aworld.core.context.prompts.base_prompt_template import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate, PromptTemplate
 from aworld.core.context.prompts.formatters import (

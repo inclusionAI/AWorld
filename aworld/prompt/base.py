@@ -1,10 +1,10 @@
-import logging
 import re
 from typing import Dict, Any, Optional, Callable, List
 
 from aworld.core.context.base import Context
 from aworld.core.context.prompts.dynamic_variables import create_simple_field_getter, create_multiple_field_getters, \
     get_field_values_from_list
+from aworld.logs.util import logger
 
 # Import system_prompt directly from the module
 try:
@@ -52,7 +52,7 @@ class Prompt:
             # Remove duplicates
             return list(set(matches))
         except Exception as e:
-            logging.warning(f"Error extracting variables from template: {str(e)}")
+            logger.warning(f"Error extracting variables from template: {str(e)}")
             return []
 
     
@@ -75,7 +75,7 @@ class Prompt:
             try:
                 result = get_field_values_from_list(context=context, field_paths=field_paths,default="")
             except Exception as e:
-                logging.warning(f"Error getting variable values from API: {str(e)}")
+                logger.warning(f"Error getting variable values from API: {str(e)}")
                 return None
         return result
     

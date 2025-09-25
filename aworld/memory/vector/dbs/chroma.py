@@ -6,11 +6,11 @@ Special thanks to the open-webui contributors for their excellent work.
 
 Reference: https://github.com/open-webui/open-webui/blob/main/backend/open_webui/retrieval/vector/dbs/chroma.py
 """
-import logging
 import time
 import traceback
 from typing import Optional, Dict, Any
 
+from aworld.logs.util import logger
 from aworld.memory.embeddings.base import EmbeddingsResults, EmbeddingsMetadata, EmbeddingsResult
 from aworld.memory.vector.dbs.base import VectorDB
 
@@ -114,7 +114,7 @@ class ChromaVectorDB(VectorDB):
             return None
         except Exception as e:
             traceback.print_exc()
-            logging.error(f"Error in search: {e}")
+            logger.error(f"Error in search: {e}")
             return None
 
     def query(
@@ -333,7 +333,7 @@ class ChromaVectorDB(VectorDB):
                     self.client.delete_collection(name=collection_name)
         except Exception as e:
             # If collection doesn't exist, that's fine - nothing to delete
-            logging.debug(
+            logger.debug(
                 f"Attempted to delete from non-existent collection {collection_name}. Ignoring."
             )
             pass

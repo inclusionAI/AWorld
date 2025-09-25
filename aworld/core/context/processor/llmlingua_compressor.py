@@ -1,12 +1,10 @@
 import re
-import logging
 from typing import Any, Dict, List, Optional, Pattern, Tuple
 
 from aworld.config.conf import ModelConfig
 from aworld.core.context.processor import CompressionResult, CompressionType
 from aworld.core.context.processor.base_compressor import BaseCompressor
-
-logger = logging.getLogger(__name__)
+from aworld.logs.util import logger
 
 DEFAULT_LLM_LINGUA_INSTRUCTION = (
     "Given this conversation messages, please compress them while preserving key information"

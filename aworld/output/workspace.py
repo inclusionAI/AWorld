@@ -1,4 +1,3 @@
-import logging
 import os
 import traceback
 import uuid
@@ -7,6 +6,7 @@ from typing import Dict, Any, Optional, List, Union
 
 from pydantic import BaseModel, Field, ConfigDict
 
+from aworld.logs.util import logger
 from aworld.output.artifact import ArtifactType, Artifact
 from aworld.output.code_artifact import CodeArtifact
 from aworld.output.storage.artifact_repository import ArtifactRepository, LocalArtifactRepository
@@ -243,7 +243,7 @@ class WorkSpace(BaseModel):
         for artifact in artifacts:
             # Store in repository
             await self._store_artifact(artifact)
-            logging.info(f"[📂WORKSPACE]💾 Storing artifact in repository: {artifact.artifact_id}")
+            logger.info(f"[📂WORKSPACE]💾 Storing artifact in repository: {artifact.artifact_id}")
 
 
         # Update workspace time
@@ -290,7 +290,7 @@ class WorkSpace(BaseModel):
         if artifact:
             artifact.mark_complete()
             self.repository.store_artifact(artifact)
-            logging.info(f"[📂WORKSPACE]🎉 Marking artifact as completed: {artifact_id}")
+            logger.info(f"[📂WORKSPACE]🎉 Marking artifact as completed: {artifact_id}")
             await self._notify_observers("complete", artifact)
         self.save()
 
@@ -432,14 +432,14 @@ class WorkSpace(BaseModel):
 
     def _append_artifact(self, artifact: Artifact) -> None:
         self.artifacts.append(artifact)
-        logging.debug(f"[📂WORKSPACE]🆕 Appending artifact in repository: {artifact.artifact_id}")
+        logger.debug(f"[📂WORKSPACE]🆕 Appending artifact in repository: {artifact.artifact_id}")
 
 
     def _update_artifact(self, artifact: Artifact) -> None:
         for i, a in enumerate(self.artifacts):
             if a.artifact_id == artifact.artifact_id:
                 self.artifacts[i] = artifact
-                logging.info(f"[📂WORKSPACE]🔄 Updating artifact in repository: {artifact.artifact_id}")
+                logger.info(f"[📂WORKSPACE]🔄 Updating artifact in repository: {artifact.artifact_id}")
                 break
 
     
