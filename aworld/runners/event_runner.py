@@ -362,6 +362,10 @@ class TaskEventRunner(TaskRunner):
     def _response(self):
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_context == False:
             self._task_response.context = None
+        if self._task_response is None:
+            self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
+                                               success=False,
+                                               msg="Task return None.")
         return self._task_response
 
     async def _save_trajectories(self):

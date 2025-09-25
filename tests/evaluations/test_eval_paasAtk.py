@@ -3,7 +3,7 @@ import os
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.evaluations.evel_runtime.eval_runner import EvaluateRunner
+from aworld.evaluations.recoder.eval_runner import EvaluateRunner
 from aworld.evaluations.eval_targets.agent_eval import AworldTaskEvalTarget
 from aworld.evaluations.base import EvalDataCase
 from aworld.core.task import Task
