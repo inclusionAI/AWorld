@@ -80,7 +80,10 @@ class Scorer(abc.ABC):
             score_dict['mean'] = sum(scores) / len(scores)
             score_dict['min'] = min(scores)
             score_dict['max'] = max(scores)
-            score_dict['std'] = statistics.stdev(scores)
+            if len(scores) >= 2:
+                score_dict['std'] = statistics.stdev(scores)
+            else:
+                score_dict['std'] = 0.0
         elif isinstance(score, dict):
             all_keys = list(
                 dict.fromkeys([k for score in scores if isinstance(score, dict) for k in score.keys()])
