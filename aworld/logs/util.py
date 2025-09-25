@@ -8,7 +8,7 @@ from typing import Union, Callable
 from loguru import logger as base_logger
 
 base_logger.remove()
-CONSOLE_LEVEL = 'DEBUG'
+CONSOLE_LEVEL = 'INFO'
 STORAGE_LEVEL = 'INFO'
 SUPPORTED_FUNC = ['info', 'debug', 'warning', 'error', 'critical', 'exception', 'trace', 'success', 'log', 'catch',
                   'opt', 'bind', 'unbind', 'contextualize', 'patch']
@@ -145,8 +145,9 @@ class AWorldLogger:
             frame = inspect.currentframe().f_back
             if frame.f_back and frame.f_code.co_qualname == 'aworld_log.<locals>.decorator':
                 frame = frame.f_back
-            module = inspect.getmodule(frame).__name__
 
+            module = inspect.getmodule(frame)
+            module = module.__name__ if module else ''
             line = frame.f_lineno
             func_name = frame.f_code.co_qualname.replace("<module>", "")
             return getattr(self._logger.patch(lambda r: r.update(function=func_name, line=line, name=module)), name)

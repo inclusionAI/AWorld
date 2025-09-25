@@ -128,8 +128,6 @@ class Runner(object):
             await self.pre_run()
             await self._daemon_run()
             ret = await self.do_run()
-            if ret is None:
-                ret = TaskResponse(id=self.context.task_id if self.context else "", success=False, msg = "Task return None.")
             return ret
         except BaseException as ex:
             self._exception = ex

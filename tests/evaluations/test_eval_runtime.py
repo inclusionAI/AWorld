@@ -1,5 +1,5 @@
 import unittest
-from aworld.evaluations.evel_runtime.eval_runner import EvaluateRunner
+from aworld.evaluations.recoder.eval_runner import EvaluateRunner
 from aworld.config.conf import EvaluationConfig
 
 from dotenv import load_dotenv

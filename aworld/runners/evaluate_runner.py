@@ -9,9 +9,9 @@ from aworld.core.task import Runner
 from aworld.evaluations.base import (
     EvalDataCase, EvalDataset, Scorer, EvalCriteria, EvalTarget, EvalTask, Evaluator
 )
-from aworld.evaluations.evel_runtime.eval_task_recorder import EvalTaskRecorder, DefaultEvalTaskRecorder
-from aworld.evaluations.evel_runtime.eval_dataset_recorder import EvalDatasetManager, DefaultEvalDatasetManager
-from aworld.evaluations.evel_runtime.eval_result_manager import EvalResultRecorder, DefaultEvalResultRecorder
+from aworld.evaluations.recoder.eval_task_recorder import EvalTaskRecorder, DefaultEvalTaskRecorder
+from aworld.evaluations.recoder.eval_dataset_recorder import EvalDatasetManager, DefaultEvalDatasetManager
+from aworld.evaluations.recoder.eval_result_recorder import EvalResultRecorder, DefaultEvalResultRecorder
 from aworld.dataset.dataset import Dataset
 from aworld.logs.util import logger
 from aworld.evaluations.scorers.scorer_registry import get_scorer_instances_for_criterias

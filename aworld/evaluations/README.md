@@ -1,6 +1,8 @@
 # AWorld Evaluations Module
 
-The `aworld.evaluations` module provides a comprehensive framework for evaluating the performance of AI agents, language models, and tasks within the AWorld ecosystem. It offers flexible evaluation criteria, diverse scoring mechanisms, and a robust runtime system to conduct structured assessments.
+The `aworld.evaluations` module provides a comprehensive framework for evaluating the performance of AI agents, language
+models, and tasks within the AWorld ecosystem. It offers flexible evaluation criteria, diverse scoring mechanisms, and a
+robust runtime system to conduct structured assessments.
 
 ## Table of Contents
 
@@ -15,7 +17,8 @@ The `aworld.evaluations` module provides a comprehensive framework for evaluatin
 
 ### EvalTarget
 
-`EvalTarget` is an abstract base class that defines the interface for objects to be evaluated. It provides a `predict` method that should be implemented by subclasses to execute the model or agent and return results.
+`EvalTarget` is an abstract base class that defines the interface for objects to be evaluated. It provides a `predict`
+method that should be implemented by subclasses to execute the model or agent and return results.
 
 ```python
 class EvalTarget(abc.ABC, Generic[EvalCaseDataType]):
@@ -30,7 +33,8 @@ class EvalTarget(abc.ABC, Generic[EvalCaseDataType]):
 
 ### Scorer
 
-`Scorer` is an abstract base class for evaluation scorers. It provides methods to score results against predefined criteria and summarize scores across multiple evaluation cases.
+`Scorer` is an abstract base class for evaluation scorers. It provides methods to score results against predefined
+criteria and summarize scores across multiple evaluation cases.
 
 ```python
 class Scorer(abc.ABC, Generic[EvalCaseDataType]):
@@ -47,11 +51,13 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
 
 ### Evaluator
 
-`Evaluator` coordinates the evaluation process by running evaluation cases through the target and applying scorers to the results. It supports parallel execution and repeated runs for statistical robustness.
+`Evaluator` coordinates the evaluation process by running evaluation cases through the target and applying scorers to
+the results. It supports parallel execution and repeated runs for statistical robustness.
 
 ### EvalCriteria
 
-`EvalCriteria` defines the metrics and thresholds for evaluation, including scoring rubrics, value ranges, and pass/fail conditions.
+`EvalCriteria` defines the metrics and thresholds for evaluation, including scoring rubrics, value ranges, and pass/fail
+conditions.
 
 ```python
 @dataclass
@@ -67,27 +73,30 @@ class EvalCriteria:
 
 ### EvalDataset and EvalDataCase
 
-`EvalDataset` represents a collection of evaluation cases, while `EvalDataCase` represents a single evaluation instance with input data.
+`EvalDataset` represents a collection of evaluation cases, while `EvalDataCase` represents a single evaluation instance
+with input data.
 
 ### EvalResult
 
 `EvalResult` captures the outcomes of an evaluation run, including individual case results and summary statistics.
 
-## Scorers System
+## Scorers
 
 ### Scorer Registry
 
-The scorer registry provides a centralized mechanism for registering and retrieving scorers. It supports automatic registration using decorators and mapping between metrics and their associated scorers.
+The scorer registry provides a centralized mechanism for registering and retrieving scorers. It supports automatic
+registration using decorators and mapping between metrics and their associated scorers.
 
 ```python
 @scorer_register(MetricNames.ANSWER_ACCURACY)
 class AnswerAccuracyLLMScorer(LLMAsJudgeScorer):
-    # Implementation details
+# Implementation details
 ```
 
 ### LLM as Judge
 
-The `LLMAsJudgeScorer` class enables using language models as evaluators. It provides a framework for building prompts, sending them to a judge model, and interpreting the results.
+The `LLMAsJudgeScorer` class enables using language models as evaluators. It provides a framework for building prompts,
+sending them to a judge model, and interpreting the results.
 
 ```python
 class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
@@ -114,41 +123,47 @@ The module includes several pre-built scorers for common evaluation tasks:
 
 ### AworldAgentEvalTarget
 
-`AworldAgentEvalTarget` enables evaluating AWorld agents by running them on evaluation datasets and capturing their responses.
+`AworldAgentEvalTarget` enables evaluating AWorld agents by running them on evaluation datasets and capturing their
+responses.
 
 ```python
 class AworldAgentEvalTarget(EvalTarget[dict]):
-    def __init__(self, agent: Optional[Agent] = None, agent_config: Optional[dict | str] = None, query_column: str = 'query'):
-        # Initialization logic
+    def __init__(self, agent: Optional[Agent] = None, agent_config: Optional[dict | str] = None,
+                 query_column: str = 'query'):
+
+    # Initialization logic
 
     async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
-        # Agent execution logic
+# Agent execution logic
 ```
 
 ### AworldTaskEvalTarget
 
-`AworldTaskEvalTarget` provides a framework for evaluating task-based systems by building and running tasks for each evaluation case.
+`AworldTaskEvalTarget` provides a framework for evaluating task-based systems by building and running tasks for each
+evaluation case.
 
-## Evaluation Runtime
+## Recorder
 
-### EvalRunner
+The runtime system includes recorders for handling evaluation runs, datasets, and results, with default implementations
+that can be extended or replaced as needed:
 
-`EvalRunner` orchestrates the complete evaluation process, including loading datasets, creating evaluation runs, executing evaluations, and saving results.
+- **EvalRunRecorder**: Manages evaluation runs and their metadata
+- **EvalDatasetRecorder**: Handles dataset loading and storage
+- **EvalResultRecorder**: Manages result persistence and retrieval
+
+## Evaluation Runner
+
+`EvalRunner` orchestrates the complete evaluation process, including loading datasets, creating evaluation runs,
+executing evaluations, and saving results.
 
 ```python
-class EvaluateRunner(abc.ABC):
-    async def eval_run(self, eval_config: EvaluationConfig) -> EvalResult:
+from aworld.core.task import Runner
+
+class EvaluateRunner(Runner):
+    async def do_run(self) -> EvalResult:
         """Run the evaluation."""
         # Evaluation orchestration logic
 ```
-
-### Evaluation Management
-
-The runtime system includes managers for handling evaluation runs, datasets, and results, with default implementations that can be extended or replaced as needed:
-
-- **EvalRunManager**: Manages evaluation runs and their metadata
-- **EvalDatasetManager**: Handles dataset loading and storage
-- **EvalResultManager**: Manages result persistence and retrieval
 
 ## Usage Examples
 
@@ -156,7 +171,7 @@ The runtime system includes managers for handling evaluation runs, datasets, and
 
 ```python
 from aworld.evaluations.base import EvaluationConfig, EvalDataset, EvalDataCase
-from aworld.evaluations.evel_runtime.eval_runner import EvaluateRunner
+from aworld.evaluations.recoder.eval_runner import EvaluateRunner
 
 # Create evaluation config
 config = EvaluationConfig(
@@ -178,11 +193,12 @@ from aworld.evaluations.scorers.scorer_registry import scorer_register
 from aworld.evaluations.base import MetricResult, ScorerResult
 from aworld.evaluations.scorers.metrics import MetricNames
 
+
 @scorer_register(MetricNames.CUSTOM_METRIC)
 class MyCustomScorer(Scorer):
     async def score(self, index: int, input: EvalDataCase, output: dict) -> ScorerResult:
         # Custom scoring logic
-        score_value = ... # Calculate score
+        score_value = ...  # Calculate score
         return ScorerResult(
             scorer_name=self.name,
             metric_results={MetricNames.CUSTOM_METRIC: {"value": score_value}}
