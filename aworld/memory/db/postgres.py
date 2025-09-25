@@ -1,6 +1,5 @@
 from datetime import datetime
 from typing import Optional
-from typing import Optional
 
 import pytz  # Add pytz for timezone handling
 from pydantic import BaseModel
@@ -9,7 +8,7 @@ from aworld.core.memory import MemoryStore
 from aworld.memory.models import (
     MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary, MemorySystemMessage, MemoryToolMessage,
     MessageMetadata,
-    UserProfile, AgentExperience, ConversationSummary
+    UserProfile, AgentExperience, ConversationSummary, Fact
 )
 from aworld.models.model_response import ToolCall
 
@@ -125,6 +124,18 @@ def orm_to_memory_item(orm_item: MemoryItemModel) -> Optional[MemoryItem]:
             content=orm_item.content,
             status=memory_meta.get('status', 'success'),
             metadata=MessageMetadata(**memory_meta),
+            **base_data
+        )
+    elif message_type == 'fact':
+        if not orm_item.content:
+            return None
+        if not isinstance(orm_item.content, dict):
+            return None
+
+        return Fact(
+            content=orm_item.content,
+            user_id=orm_item.memory_meta.get('user_id'),
+            metadata=memory_meta,
             **base_data
         )
     elif message_type == 'user_profile':

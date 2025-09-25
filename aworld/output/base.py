@@ -66,6 +66,8 @@ class ToolResultOutput(Output):
 
     tool_name: str = Field(default=None)
 
+    action_name: str = Field(default=None)
+
     def output_type(self):
         return "tool_call_result"
 
@@ -141,7 +143,7 @@ class MessageOutput(Output):
         elif source is not None and isinstance(source, str):
             self.reasoning, self.response = self.__resolve_think__(source)
 
-        if not self.reasoning and self.source.reasoning_content:
+        if not self.reasoning and isinstance(self.source, ModelResponse) and self.source.reasoning_content:
             self.reasoning = self.source.reasoning_content
         return self
 

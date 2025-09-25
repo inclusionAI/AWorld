@@ -461,7 +461,7 @@ class Memory(MemoryBase):
         if not filters:
             filters = {}
 
-        return self.search(user_input, limit=limit,memory_type='fact',threshold=threshold, filters={
+        return self.search(query=user_input, limit=limit,memory_type='fact',threshold=threshold, filters={
             'user_id': user_id,
             **filters
         })

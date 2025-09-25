@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
 from aworld.core.agent.agent_desc import get_agent_desc
-from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent
+from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.context.processor.prompt_processor import PromptProcessor
@@ -82,6 +82,15 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     logger.warning(f"{tool_call.function.arguments} parse to json fail.")
                     params = {}
                 # format in framework
+                agent_info = AgentFactory.agent_instance(agent_id)
+                if full_name and not full_name.startswith(
+                        "mcp__") and agent_info and agent_info.sandbox and agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers and len(
+                        agent_info.sandbox.mcpservers.mcp_servers) > 0:
+                    tmp_names = full_name.split("__")
+                    tmp_tool_name = tmp_names[0]
+                    if tmp_tool_name in agent_info.sandbox.mcpservers.mcp_servers:
+                        full_name = f"mcp__{full_name}"
+
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(full_name):
@@ -298,7 +307,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     urls.append(
                         {'type': 'image_url', 'image_url': {"url": image_url}})
                 content = urls
-            await self._add_human_input_to_memory(content, message.context, memory_type="message")
+            await self._add_human_input_to_memory(content, message.context)
 
         # from memory get last n messages
         histories = self.memory.get_last_n(self.memory_config.history_rounds, filters={
@@ -692,32 +701,22 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     model=self.model_name,
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
-                    stream=True
+                    stream=True,
+                    **kwargs
                 )
 
-                async def async_call_llm(resp_stream, json_parse=False):
-                    llm_resp = ModelResponse(
-                        id="", model="", content="", tool_calls=[])
-
-                    # Async streaming with acall_llm_model
-                    async def async_generator():
-                        async for chunk in resp_stream:
-                            if chunk.content:
-                                llm_resp.content += chunk.content
-                                yield chunk.content
-                            if chunk.tool_calls:
-                                llm_resp.tool_calls.extend(chunk.tool_calls)
-                            if chunk.error:
-                                llm_resp.error = chunk.error
-                            llm_resp.id = chunk.id
-                            llm_resp.model = chunk.model
-                            llm_resp.usage = nest_dict_counter(
-                                llm_resp.usage, chunk.usage)
-
-                    return MessageOutput(source=async_generator(), json_parse=json_parse), llm_resp
-
-                output, response = await async_call_llm(resp_stream)
-                llm_response = response
+                async for chunk in resp_stream:
+                    if chunk.content:
+                        llm_response.content += chunk.content
+                    if chunk.tool_calls:
+                        llm_response.tool_calls.extend(chunk.tool_calls)
+                    if chunk.error:
+                        llm_response.error = chunk.error
+                    llm_response.id = chunk.id
+                    llm_response.model = chunk.model
+                    llm_response.usage = nest_dict_counter(
+                        llm_response.usage, chunk.usage, ignore_zero=False)
+                    llm_response.message.update(chunk.message)
 
             else:
                 llm_response = await acall_llm_model(
@@ -726,7 +725,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     model=self.model_name,
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
-                    stream=kwargs.get("stream", False)
+                    stream=kwargs.get("stream", False),
+                    **kwargs
                 )
 
             logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
@@ -876,7 +876,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     }
                 }
             ]
-            await self._add_human_input_to_memory(image_content, context, "message")
+            await self._add_human_input_to_memory(image_content, context)
         else:
             await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
 
