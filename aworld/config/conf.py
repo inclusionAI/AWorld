@@ -116,6 +116,7 @@ class ModelConfig(BaseConfig):
     llm_client_type: ClientType = ClientType.SDK
     llm_sync_enabled: bool = True
     llm_async_enabled: bool = True
+    llm_stream_call: bool = False
     max_retries: int = 3
     max_model_len: Optional[int] = None  # Maximum model context length
     model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
