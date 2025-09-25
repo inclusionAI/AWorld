@@ -17,9 +17,9 @@ from aworld.core.context.base import Context
 from aworld.agents.llm_agent import Agent
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.task import Task, TaskResponse
+from aworld.dataset.trajectory_dataset import generate_trajectory
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
-from aworld.replay_buffer import EventReplayBuffer
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 
@@ -40,7 +40,6 @@ class TaskEventRunner(TaskRunner):
         self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
-        self.replay_buffer = EventReplayBuffer()
 
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
@@ -53,10 +52,12 @@ class TaskEventRunner(TaskRunner):
                 await self.event_mng.emit_message(msg)
             await self._do_run()
             await self._save_trajectories()
-            return self._response()
+            resp = self._response()
+            logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished.')
+            return resp
 
     async def pre_run(self):
-        logger.debug(f"[TaskEventRunner] pre_run start {self.task.id}")
+        logger.debug(f"task {self.task.id} pre run start...")
         await super().pre_run()
         self.event_mng.context = self.context
         self.context.event_manager = self.event_mng
@@ -99,7 +100,7 @@ class TaskEventRunner(TaskRunner):
         else:
             for handler in HandlerFactory:
                 self.handlers.append(HandlerFactory(handler, runner=self))
-        logger.debug(f"[TaskEventRunner] pre_run finish {self.task.id}")
+        logger.debug(f"task {self.task.id} pre run finish.")
 
     def _build_first_message(self):
         # build the first message
@@ -130,8 +131,7 @@ class TaskEventRunner(TaskRunner):
                                                       headers={'context': self.context}))
 
     async def _common_process(self, message: Message) -> List[Message]:
-        logger.debug(
-            f"[TaskEventRunner] _common_process start {self.task.id}, message_id = {message.id}")
+        logger.debug(f"will process message id: {message.id} of task {self.task.id}")
         event_bus = self.event_mng.event_bus
 
         key = message.category
@@ -142,11 +142,9 @@ class TaskEventRunner(TaskRunner):
         results = []
         handlers = self.event_mng.get_handlers(key)
         async with trace.message_span(message=message):
-            logger.debug(
-                f"[TaskEventRunner] start_message_node start {self.task.id}, message_id = {message.id}")
+            logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
-            logger.debug(
-                f"[TaskEventRunner] start_message_node end {self.task.id}, message_id = {message.id}")
+            logger.debug(f"start_message_node end message id: {message.id} of task {self.task.id}")
             if handlers:
                 if message.topic:
                     handlers = {message.topic: handlers.get(message.topic, [])}
@@ -154,8 +152,7 @@ class TaskEventRunner(TaskRunner):
                     handlers = {message.receiver: handlers.get(
                         message.receiver, [])}
                 else:
-                    logger.warning(
-                        f"{message.id} no receiver and topic, be ignored.")
+                    logger.warning(f"{message.id} no receiver and topic, be ignored.")
                     handlers.clear()
 
                 handle_tasks = []
@@ -168,26 +165,19 @@ class TaskEventRunner(TaskRunner):
                         t = asyncio.create_task(
                             self._handle_task(message, handler))
                         handle_tasks.append(t)
-                logger.debug(
-                    f"[TaskEventRunner] _common_process handle_tasks collect finished {self.task.id}, message_id = {message.id}")
 
                 # For _handle_task case, end message node asynchronously
                 async def async_end_message_node():
-                    logger.debug(
-                        f"[TaskEventRunner] async_end_message_node STARTED {self.task.id}, message_id = {message.id}")
+                    logger.debug(f"STARTED message id: {message.id} of task {self.task.id}")
                     try:
                         # Wait for all _handle_task tasks to complete before ending message node
                         if handle_tasks:
-                            logger.debug(
-                                f"[TaskEventRunner] async_end_message_node {self.task.id} Before gather {len(handle_tasks)} tasks")
+                            logger.debug(f"{self.task.id} Before gather {len(handle_tasks)} tasks")
                             await asyncio.gather(*handle_tasks)
-                            logger.debug(
-                                f"[TaskEventRunner] async_end_message_node {self.task.id} After gather tasks completed")
-                        logger.debug(
-                            f"[TaskEventRunner] _common_process handle_tasks process end_message_node start {self.task.id}, message_id = {message.id}")
+                            logger.debug(f"{self.task.id} After gather tasks completed")
+                        logger.debug(f"end_message_node start message id: {message.id} of task {self.task.id}")
                         self.state_manager.end_message_node(message)
-                        logger.debug(
-                            f"[TaskEventRunner] _common_process handle_tasks process finished {self.task.id}, message_id = {message.id}")
+                        logger.debug(f"end_message_node end message id: {message.id} of task {self.task.id}")
                     except Exception as e:
                         logger.error(f"Error in async_end_message_node: {e}")
                         raise
@@ -205,25 +195,20 @@ class TaskEventRunner(TaskRunner):
                 # wait until it is complete
                 await t
                 self.state_manager.end_message_node(message)
-            logger.debug(
-                f"[TaskEventRunner] _common_process return results {self.task.id}, message_id = {message.id},  ")
+            logger.debug(f"process finished message id: {message.id} of task {self.task.id}")
             return results
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
         async with trace.handler_span(message=message, handler=handler):
             try:
-                logger.debug(
-                    f"event_runner _handle_task - self: {self}, swarm: {self.swarm}, event_mng: {self.event_mng}, event_bus: {self.event_mng.event_bus}, message: {message}")
-                logger.info(
-                    f"[TaskEventRunner] {self.task.id} _handle_task start, message: {message.id}")
+                logger.info(f"process start message id: {message.id} of task {self.task.id}")
                 if asyncio.iscoroutinefunction(handler):
                     con = await handler(con)
                 else:
                     con = handler(con)
 
-                logger.info(
-                    f"[TaskEventRunner] {self.task.id} _handle_task  finished message= {message.id}, session_id = {self.task.session_id}")
+                logger.info(f"process end message id: {message.id} of task {self.task.id}")
                 if isinstance(con, Message):
                     # process in framework
                     self.state_manager.save_message_handle_result(name=handler.__name__,
@@ -238,8 +223,7 @@ class TaskEventRunner(TaskRunner):
                     self.state_manager.save_message_handle_result(name=handler.__name__,
                                                                   message=message)
             except Exception as e:
-                logger.warning(
-                    f"{handler} process fail. {traceback.format_exc()}")
+                logger.warning(f"{handler} process fail. {traceback.format_exc()}")
                 error_msg = Message(
                     category=Constants.TASK,
                     payload=TaskItem(msg=str(e), data=message),
@@ -269,7 +253,8 @@ class TaskEventRunner(TaskRunner):
                     yield event
 
     async def _do_run(self):
-        logger.debug(f"[TaskEventRunner] _do_run start {self.task.id}")
+        task_flag = "sub" if self.task.is_sub_task else "main"
+        logger.debug(f"{task_flag} task: {self.task.id} start to run...")
 
         """Task execution process in real."""
         start = time.time()
@@ -278,9 +263,8 @@ class TaskEventRunner(TaskRunner):
         message = None
         try:
             while True:
-                if self.task.timeout > 0 and time.time() - self.start_time > self.task.timeout:
-                    logger.warn(
-                        f"[TaskEventRunner] {self.task.id} task timeout after {time.time() - self.start_time} seconds.")
+                if 0 < self.task.timeout < time.time() - self.start_time:
+                    logger.warn(f"{task_flag} task {self.task.id} timeout after {time.time() - self.start_time} seconds.")
                     self._task_response = TaskResponse(answer='',
                                                        success=False,
                                                        context=message.context,
@@ -291,11 +275,8 @@ class TaskEventRunner(TaskRunner):
                                                        status='cancelled')
                     await self.stop()
                 if await self.is_stopped():
-                    logger.debug(
-                        f"[TaskEventRunner] break snap {self.task.id}")
+                    logger.info(f"{task_flag} task {self.task.id} stoped and will break snap")
                     await self.event_mng.done()
-                    logger.info(
-                        f" [TaskEventRunner] stop task {self.task.id}...")
                     if self._task_response is None:
                         # send msg to output
                         self._task_response = TaskResponse(msg=msg,
@@ -308,15 +289,14 @@ class TaskEventRunner(TaskRunner):
                                                            usage=self.context.token_usage,
                                                            status='success' if not msg else 'failed')
                     break
-                logger.debug(f"[TaskEventRunner] next snap {self.task.id}")
+                logger.debug(f"{task_flag} task {self.task.id} next message snap")
                 # consume message
                 message: Message = await self.event_mng.consume()
-                logger.debug(
-                    f"[TaskEventRunner] next consume finished {self.task.id}, event_bus: {self.event_mng.event_bus},: message = {message}")
+                logger.debug(f"consume message {message} of {task_flag} task: {self.task.id}, {self.event_mng.event_bus}")
                 # use registered handler to process message
                 await self._common_process(message)
-                logger.debug(
-                    f"[TaskEventRunner] _common_process finished {self.task.id}")
+                await self.context.update_task_after_run(self._task_response)
+                logger.debug(f"{task_flag} task {self.task.id} finished.")
         except Exception as e:
             logger.error(f"consume message fail. {traceback.format_exc()}")
             error_msg = Message(
@@ -332,14 +312,9 @@ class TaskEventRunner(TaskRunner):
                                                           result=error_msg)
             await self.event_mng.emit_message(error_msg)
         finally:
-            logger.debug(
-                f"[TaskEventRunner] _do_run finished  await_is_stopped {self.task.id}")
             if await self.is_stopped():
-                logger.info(
-                    f"[TaskEventRunner] _do_run finished is_stopped {self.task.id}")
-                await self.context.update_task_after_run(self._task_response)
                 if not self.task.is_sub_task:
-                    logger.info(f"FINISHED|TaskEventRunner|outputs|{self.task.id} {self.task.is_sub_task}")
+                    logger.info(f'{task_flag} task {self.task.id} will mark outputs finished')
                     await self.task.outputs.mark_completed()
 
                 if self.swarm and self.swarm.agents:
@@ -348,8 +323,7 @@ class TaskEventRunner(TaskRunner):
                             if hasattr(agent, 'sandbox') and agent.sandbox:
                                 await agent.sandbox.cleanup()
                         except Exception as e:
-                            logger.warning(
-                                f"event_runner Failed to cleanup sandbox for agent {agent_name}: {e}")
+                            logger.warning(f"Failed to cleanup sandbox for agent {agent_name}: {e}")
 
     async def stop(self):
         self._stopped.set()
@@ -363,12 +337,16 @@ class TaskEventRunner(TaskRunner):
     def _response(self):
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_context == False:
             self._task_response.context = None
+        if self._task_response is None:
+            self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
+                                               success=False,
+                                               msg="Task return None.")
         return self._task_response
 
     async def _save_trajectories(self):
         try:
-            messages = self.event_mng.messages_by_task_id(self.task.id)
-            trajectory = await self.replay_buffer.get_trajectory(messages, self.task.id, self.state_manager)
+            messages = await self.event_mng.messages_by_task_id(self.task.id)
+            trajectory = await generate_trajectory(messages, self.task.id, self.state_manager)
             self._task_response.trajectory = trajectory
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")

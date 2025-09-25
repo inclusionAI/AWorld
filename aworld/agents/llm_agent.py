@@ -22,7 +22,7 @@ from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message
-from aworld.logs.util import logger, color_log, Color
+from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MessageMetadata, MemoryAIMessage, MemoryToolMessage, MemoryHumanMessage, \
@@ -577,8 +577,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                          outputs=message.context.outputs,
                                          task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
             if not act_result.success:
-                color_log(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
-                          color=Color.red)
+                logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
+                               color=Color.red)
                 continue
             tool_results.append(
                 ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer))
@@ -690,7 +690,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 serializable_messages, ensure_ascii=False))
 
         try:
-            stream_mode = kwargs.get("stream", False)
+            stream_mode = kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)
             if stream_mode:
                 llm_response = ModelResponse(

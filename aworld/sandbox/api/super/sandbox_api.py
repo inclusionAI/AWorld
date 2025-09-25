@@ -1,9 +1,9 @@
-import logging
 import os
 from typing import Dict, List, Any, Optional
 
 from dotenv import load_dotenv
 
+from aworld.logs.util import logger
 from aworld.sandbox.api.base_sandbox_api import BaseSandboxApi
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxSuperResponse
 from aworld.sandbox.run.mcp_servers import McpServers
@@ -27,14 +27,14 @@ class SuperSandboxApi(BaseSandboxApi):
         """
         try:
             if not mcp_servers:
-                logging.info("_create_sandbox_by_super mcp_servers is not exist")
+                logger.info("_create_sandbox_by_super mcp_servers is not exist")
                 return None
                 
             load_dotenv()
             host = os.getenv("SUPERCOMPUTER_HOST")
             
             if not host:
-                logging.warning("_create_sandbox_by_super SUPERCOMPUTER_HOST is null")
+                logger.warning("_create_sandbox_by_super SUPERCOMPUTER_HOST is null")
                 return None
                 
             metadata = {
@@ -60,7 +60,7 @@ class SuperSandboxApi(BaseSandboxApi):
             )
             
         except Exception as e:
-            logging.warning(f"Failed to create supercomputer sandbox: {e}")
+            logger.warning(f"Failed to create supercomputer sandbox: {e}")
             return None
     
     @classmethod
@@ -96,7 +96,7 @@ class SuperSandboxApi(BaseSandboxApi):
 
             return mcp_config
         except Exception as e:
-            logging.warning(f"Failed to get_mcp_configs_from_super: {e}")
+            logger.warning(f"Failed to get_mcp_configs_from_super: {e}")
             return None
 
     

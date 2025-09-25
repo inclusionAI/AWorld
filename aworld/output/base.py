@@ -1,11 +1,11 @@
 import json
-import logging
 from builtins import anext
 from datetime import datetime
 from typing import Any, Dict, Generator, AsyncGenerator, Optional
 
 from pydantic import Field, BaseModel, model_validator
 
+from aworld.logs.util import logger
 from aworld.models.model_response import ModelResponse, ToolCall
 
 
@@ -201,7 +201,7 @@ class MessageOutput(Output):
                     reasoning_buffer += chunk_content
                     yield chunk_content
         except StopAsyncIteration:
-            logging.info("StopAsyncIteration")
+            logger.info("StopAsyncIteration")
 
     async def __aget_response_generator(self) -> AsyncGenerator[str, None]:
         """

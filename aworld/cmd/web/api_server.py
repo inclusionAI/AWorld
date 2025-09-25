@@ -1,11 +1,8 @@
-import logging
 from fastapi import FastAPI
 import uvicorn
 
 from aworld.cmd.utils.agent_server import AgentServer
 
-
-logger = logging.getLogger(__name__)
 
 app = FastAPI()
 

@@ -1,11 +1,9 @@
-import asyncio
-import time
-import logging
 from typing import Any, List
 
 from openai import OpenAI
 
 from aworld.core.memory import EmbeddingsConfig
+from aworld.logs.util import logger
 from aworld.memory.embeddings.base import EmbeddingsBase
 
 
@@ -43,7 +41,7 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
                 input=text,
                 dimensions=self.config.dimensions)
             data = response.data
-            logging.debug(f"OpenAI embedding response: {data}")
+            logger.debug(f"OpenAI embedding response: {data}")
             return self.resolve_embedding(data)
         except Exception as e:
             raise RuntimeError(f"OpenAI embedding API error: {e}")
@@ -62,7 +60,7 @@ class OpenAICompatibleEmbeddings(EmbeddingsBase):
                 input=text,
                 dimensions=self.config.dimensions)
             data = response.data
-            logging.debug(f"OpenAI embedding response: {data}")
+            logger.debug(f"OpenAI embedding response: {data}")
             return self.resolve_embedding(data)
         except Exception as e:
             raise RuntimeError(f"OpenAI async embedding API error: {e}")

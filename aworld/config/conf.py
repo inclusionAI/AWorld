@@ -6,11 +6,12 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable
 
 import yaml
 from pydantic import BaseModel, Field
 
+from aworld.dataset.sampler import Sampler
 from aworld.logs.util import logger
 
 
@@ -115,6 +116,7 @@ class ModelConfig(BaseConfig):
     llm_client_type: ClientType = ClientType.SDK
     llm_sync_enabled: bool = True
     llm_async_enabled: bool = True
+    llm_stream_call: bool = False
     max_retries: int = 3
     max_model_len: Optional[int] = None  # Maximum model context length
     model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
@@ -275,6 +277,58 @@ class RunConfig(BaseConfig):
     tracer: Optional[Dict[str, Any]] = None
 
 
+class StorageConfig(BaseConfig):
+    name: str = "inmemory"
+
+
+class DataLoaderConfig(BaseConfig):
+    batch_size: Optional[int] = 1
+    sampler: Any = None
+    shuffle: bool = False
+    drop_last: bool = False
+    seed: Optional[int] = None
+    batch_sampler: Optional[Iterable[List[int]]] = None
+    collate_fn: Optional[Callable[..., Any]] = None
+
+
+class DatasetConfig(BaseConfig):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    transforms: List[Callable[..., Any]] = Field(default_factory=list)
+
+    # Config for loading dataset from source
+    format: Optional[str] = None
+    split: Optional[str] = None
+    subset: Optional[str] = None
+    json_field: Optional[str] = None
+    parquet_columns: Optional[List[str]] = None
+    encoding: str = "utf-8"
+    limit: Optional[int] = None
+    preload_transform: Optional[Callable[..., Any]] = None
+
+    # Config for dataloader
+    dataloader_config: DataLoaderConfig = DataLoaderConfig()
+
+
 class EvaluationConfig(BaseConfig):
-    work_dir: Optional[str] = None
-    run_times: int = 1
+    '''
+    Evaluation run config.
+    '''
+    # full class name of eval target, e.g. aworld.evaluations.base.EvalTarget
+    eval_target: Any = None
+    eval_target_full_class_name: str = None
+    eval_target_config: dict = None
+    eval_criterias: List[Union[dict]] = None
+    # eval dataset id or file path, file path should be a jsonl file
+    eval_dataset_id_or_file_path: str = None
+    eval_dataset_load_config: Optional[DataLoaderConfig] = DataLoaderConfig()
+    # preload transform function or function name, e.g. aworld.evaluations.base.preload_transform
+    eval_dataset_preload_transform: Optional[Union[Callable[[any], Any], str]] = None
+    eval_dataset_query_column: Optional[str] = "query"
+    eval_dataset_answer_column: Optional[str] = "answer"
+    eval_output_answer_column: Optional[str] = "answer"
+    repeat_times: int = 1
+    parallel_num: int = 1
+    skip_passed_cases: bool = False
+    skip_passed_on_metrics: List[str] = []

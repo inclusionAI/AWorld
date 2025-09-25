@@ -1,11 +1,9 @@
 import json
-import logging
 from fastapi import APIRouter
 from aworld.trace.server import get_trace_server
 from aworld.trace.server.util import build_trace_tree, get_agent_flow
 from aworld.cmd.utils.trace_summarize import get_summarize_trace
 
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
