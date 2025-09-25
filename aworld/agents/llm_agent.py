@@ -681,7 +681,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 serializable_messages, ensure_ascii=False))
 
         try:
-            stream_mode = kwargs.get("stream", False)
+            stream_mode = kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)
             if stream_mode:
                 llm_response = ModelResponse(
