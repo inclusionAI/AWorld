@@ -1,6 +1,5 @@
 import traceback
 import uuid
-import random
 import os
 import json
 import csv
@@ -9,7 +8,7 @@ from typing import TypeVar, Generic, Dict, List, Any, Iterator, Optional, Iterab
 
 from pydantic import BaseModel, Field
 
-from aworld.config import ConfigDict
+from aworld import import_package
 from aworld.dataset.sampler import Sampler
 from aworld.dataset.dataloader import DataLoader
 from aworld.logs.util import logger
@@ -219,6 +218,7 @@ class Dataset(BaseModel, Generic[_T_co]):
 
         # Hugging Face Hub branch (requires `datasets` library)
         try:
+            import_package("datasets")
             from datasets import load_dataset  # type: ignore
         except Exception as e:  # pragma: no cover - optional dependency
             raise RuntimeError(
