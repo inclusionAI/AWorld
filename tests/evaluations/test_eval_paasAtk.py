@@ -53,7 +53,7 @@ class EvalPassAtKTest(unittest.IsolatedAsyncioTestCase):
                 }
             ],
             eval_dataset_id_or_file_path="tests/evaluations/test_data.csv",
-            eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(length=5, start_index=1, end_index=4)),
+            eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=1, end_index=4)),
             repeat_times=5,
         ))
         print(results)
