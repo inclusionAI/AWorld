@@ -39,11 +39,11 @@ class AgentEvaluationTest(unittest.IsolatedAsyncioTestCase):
         )
 
         score_llm_config = ModelConfig(
-            llm_provider=os.getenv("LLM_PROVIDER_SCORE"),
-            llm_model_name=os.getenv("LLM_MODEL_NAME_SCORE"),
-            llm_temperature=float(os.getenv("LLM_TEMPERATURE_SCORE", "0.3")),
-            llm_base_url=os.getenv("LLM_BASE_URL_SCORE"),
-            llm_api_key=os.getenv("LLM_API_KEY_SCORE"),
+            llm_provider=os.getenv("LLM_PROVIDER"),
+            llm_model_name=os.getenv("LLM_MODEL_NAME"),
+            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
+            llm_base_url=os.getenv("LLM_BASE_URL"),
+            llm_api_key=os.getenv("LLM_API_KEY"),
         )
 
         evaluatable = AworldAgentEvalTarget(agent=summarize_agent)

@@ -32,12 +32,12 @@ class DefaultEvalTaskRecorder(EvalTaskRecorder):
     def __init__(self, storage: Storage[EvalTask] = InmemoryStorage()):
         self.storage = storage
 
-    async def create_eval_task(self, eval_config: EvaluationConfig, eval_run_name: str = None) -> EvalTask:
-        if not eval_run_name:
-            eval_run_name = f"EvalTask_{eval_config.eval_dataset_id_or_file_path}"
-        eval_run = EvalTask(config=eval_config, run_name=eval_run_name)
-        await self.storage.create_data(block_id=eval_run.run_id, data=eval_run, overwrite=False)
-        return eval_run
+    async def create_eval_task(self, eval_config: EvaluationConfig, task_name: str = None) -> EvalTask:
+        if not task_name:
+            task_name = f"EvalTask_{eval_config.eval_dataset_id_or_file_path}"
+        eval_task = EvalTask(config=eval_config, task_name=task_name)
+        await self.storage.create_data(block_id=eval_task.task_id, data=eval_task, overwrite=False)
+        return eval_task
 
-    async def get_eval_task(self, eval_run_id: str) -> EvalTask:
-        return await self.storage.get_block(block_id=eval_run_id)
+    async def get_eval_task(self, task_id: str) -> EvalTask:
+        return await self.storage.get_block(block_id=task_id)

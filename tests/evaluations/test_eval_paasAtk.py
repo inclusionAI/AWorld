@@ -3,13 +3,13 @@ import os
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.evaluations.recoder.eval_runner import EvaluateRunner
 from aworld.evaluations.eval_targets.agent_eval import AworldTaskEvalTarget
 from aworld.evaluations.base import EvalDataCase
 from aworld.core.task import Task
 from aworld.config import TaskConfig
 from aworld.config.conf import EvaluationConfig, DataLoaderConfig
 from aworld.dataset.sampler import RangeSampler
+from aworld.runners.evaluate_runner import EvaluateRunner
 
 from dotenv import load_dotenv
 
@@ -44,7 +44,7 @@ class EvalPassAtKTest(unittest.IsolatedAsyncioTestCase):
     async def test_agent_evaluation(self):
         load_dotenv()
 
-        results = await EvaluateRunner().eval_run(eval_config=EvaluationConfig(
+        results = await EvaluateRunner(config=EvaluationConfig(
             eval_target=self.TestAgentEvalTarget(),
             eval_criterias=[
                 {
@@ -55,5 +55,5 @@ class EvalPassAtKTest(unittest.IsolatedAsyncioTestCase):
             eval_dataset_id_or_file_path="tests/evaluations/test_data.csv",
             eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=1, end_index=4)),
             repeat_times=5,
-        ))
+        )).run()
         print(results)

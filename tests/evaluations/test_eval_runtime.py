@@ -1,8 +1,10 @@
 import unittest
-from aworld.evaluations.recoder.eval_runner import EvaluateRunner
-from aworld.config.conf import EvaluationConfig
 
 from dotenv import load_dotenv
+
+from aworld.config.conf import EvaluationConfig
+
+from aworld.runners.evaluate_runner import EvaluateRunner
 
 
 class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
@@ -30,5 +32,5 @@ class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
             eval_dataset_query_column="question",
         )
 
-        results = await EvaluateRunner().eval_run(eval_config=eval_config)
+        results = await EvaluateRunner(config=eval_config).run()
         print(results)
