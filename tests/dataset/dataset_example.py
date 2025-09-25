@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Dataset Usage Example
-Demonstrates how to load local CSV files and showcase various Dataset functionalities
+Demonstrates how to load local CSV files and showcase various Dataset/DataLoader/Sampler functionalities.
+
+Updated to use dataset injection for samplers (set_dataset) instead of passing explicit lengths.
 """
 
 import os
@@ -152,18 +154,20 @@ def main():
     # 3. Demonstrate different samplers
     print("=== 3. Different Samplers Demo ===")
 
-    # Sequential sampler
+    # Sequential sampler (dataset injection)
     print("Sequential sampler (first 5 indices):")
-    seq_sampler = SequentialSampler(len(hotpot_qa_dataset.data))
+    seq_sampler = SequentialSampler()
+    seq_sampler.set_dataset(hotpot_qa_dataset)
     for i, idx in enumerate(seq_sampler):
         if i >= 5:
             break
         print(f"  Index {i}: {idx}")
     print()
 
-    # Random sampler
+    # Random sampler (dataset injection)
     print("Random sampler (first 5 indices, seed=42):")
-    rand_sampler = RandomSampler(len(hotpot_qa_dataset.data), seed=42)
+    rand_sampler = RandomSampler(seed=42)
+    rand_sampler.set_dataset(hotpot_qa_dataset)
     for i, idx in enumerate(rand_sampler):
         if i >= 5:
             break
@@ -195,9 +199,50 @@ def main():
             break
     print()
 
+    # 4.1 Demonstrate DataLoader + Sampler integration
+    print("=== 4.1 DataLoader + Sampler Integration ===")
+
+    # 4.1.1 DataLoader with SequentialSampler (dataset auto-injection)
+    print("Using DataLoader with SequentialSampler (batch_size=3):")
+    seq_sampler_dl = SequentialSampler()  # Do not set_dataset; DataLoader will inject it
+    batch_count = 0
+    for batch in DataLoader(hotpot_qa_dataset, batch_size=3, sampler=seq_sampler_dl, shuffle=False):
+        batch_count += 1
+        sample_ids = [b.get('id', 'N/A') if isinstance(b, dict) else str(b) for b in batch[:3]]
+        print(f"  Batch {batch_count}|{len(batch)} samples: {', '.join(sample_ids)}")
+        if batch_count >= 2:
+            break
+    print()
+
+    # 4.1.2 DataLoader with RandomSampler (deterministic order via seed)
+    print("Using DataLoader with RandomSampler (batch_size=3, seed=99):")
+    rand_sampler_dl = RandomSampler(seed=99)  # Do not set_dataset; DataLoader will inject it
+    batch_count = 0
+    for batch in DataLoader(hotpot_qa_dataset, batch_size=3, sampler=rand_sampler_dl, shuffle=False):
+        batch_count += 1
+        sample_ids = [b.get('id', 'N/A') if isinstance(b, dict) else str(b) for b in batch[:3]]
+        print(f"  Batch {batch_count}|{len(batch)} samples: {', '.join(sample_ids)}")
+        if batch_count >= 2:
+            break
+    print()
+
+    # 4.1.3 DataLoader with BatchSampler (mutually exclusive with batch_size/shuffle/sampler)
+    print("Using DataLoader with BatchSampler (inner RandomSampler, per-batch size=2):")
+    inner_sampler = RandomSampler(seed=777)  # auto-injected by DataLoader via batch_sampler.sampler
+    batch_sampler_for_dl = BatchSampler(inner_sampler, batch_size=2, drop_last=False)
+    batch_count = 0
+    for batch in DataLoader(hotpot_qa_dataset, batch_size=None, batch_sampler=batch_sampler_for_dl):
+        batch_count += 1
+        sample_ids = [b.get('id', 'N/A') if isinstance(b, dict) else str(b) for b in batch[:2]]
+        print(f"  Batch {batch_count}|{len(batch)} samples: {', '.join(sample_ids)}")
+        if batch_count >= 3:
+            break
+    print()
+
     # 5. Demonstrate custom sampler batch processing
     print("=== 5. Custom Batch Processing Sampler ===")
-    base_sampler = RandomSampler(len(hotpot_qa_dataset.data), seed=456)
+    base_sampler = RandomSampler(seed=456)
+    base_sampler.set_dataset(hotpot_qa_dataset)
     batch_sampler = BatchSampler(base_sampler, batch_size=2, drop_last=False)
 
     print("Using BatchSampler (batch_size=2):")

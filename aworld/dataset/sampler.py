@@ -15,21 +15,49 @@ class Sampler():
         raise NotImplementedError
 
     # Intentionally do not provide a default __len__
+    def set_length(self, length: int) -> None:
+        """Optional hook to inject dataset length at runtime.
+
+        Default implementation stores the value on the instance so subclasses
+        that rely on `self.length` can use it if they wish.
+        """
+        if not isinstance(length, int) or length < 0:
+            raise ValueError("length must be a non-negative integer")
+        self.length = length  # type: ignore[attr-defined]
+
+    def set_dataset(self, dataset: Sized) -> None:
+        """Optional hook to inject dataset at runtime.
+
+        Stores the dataset on the instance (as `self.dataset`) and also derives
+        and sets `self.length` using ``len(dataset)`` for samplers that rely on
+        a numeric length.
+        """
+        self.dataset = dataset  # type: ignore[attr-defined]
+        derived_length = len(dataset)
+        self.set_length(derived_length)
 
 
 class SequentialSampler(Sampler):
     """Samples elements sequentially from 0 to length-1."""
 
-    def __init__(self, length: int) -> None:
-        if length < 0:
+    def __init__(self, length: Optional[int] = None) -> None:
+        if length is not None and length < 0:
             raise ValueError("length must be non-negative")
         self.length = length
 
     def __iter__(self) -> Iterator[int]:
-        return iter(range(self.length))
+        # Prefer explicit length; fall back to injected dataset length
+        effective_length: Optional[int] = getattr(self, "length", None)
+        if effective_length is None:
+            effective_length = len(self.dataset)  # type: ignore[attr-defined]
+        return iter(range(effective_length))
 
     def __len__(self) -> int:
-        return self.length
+        if getattr(self, "length", None) is not None:
+            return int(self.length)  # type: ignore[return-value]
+        if hasattr(self, "dataset"):
+            return len(self.dataset)  # type: ignore[attr-defined]
+        raise TypeError("Length is not defined for SequentialSampler")
 
 
 class RandomSampler(Sampler):
@@ -40,57 +68,100 @@ class RandomSampler(Sampler):
         seed: Optional seed for deterministic sampling.
     """
 
-    def __init__(self, length: int, seed: Optional[int] = None) -> None:
-        if length < 0:
+    def __init__(self, length: Optional[int] = None, seed: Optional[int] = None) -> None:
+        if length is not None and length < 0:
             raise ValueError("length must be non-negative")
         self.length = length
         self.seed = seed
 
     def __iter__(self) -> Iterator[int]:
-        indices = list(range(self.length))
+        effective_length: Optional[int] = getattr(self, "length", None)
+        if effective_length is None:
+            effective_length = len(self.dataset)  # type: ignore[attr-defined]
+        indices = list(range(effective_length))
         rng = random.Random(self.seed)
         rng.shuffle(indices)
         return iter(indices)
 
     def __len__(self) -> int:
-        return self.length
+        if getattr(self, "length", None) is not None:
+            return int(self.length)  # type: ignore[return-value]
+        if hasattr(self, "dataset"):
+            return len(self.dataset)  # type: ignore[attr-defined]
+        raise TypeError("Length is not defined for RandomSampler")
 
 
 class RangeSampler(Sampler):
-    """Samples elements from a specified range of indices."""
+    """Samples elements from a specified range of indices.
 
-    def __init__(self, length: int, start_index: int, end_index: int = None, 
-                 shuffle: bool = False, seed: Optional[int] = None) -> None:
-        if length < 0:
+    Supports deferred dataset length injection via `set_length`.
+    """
+
+    def __init__(
+        self,
+        length: Optional[int] = None,
+        start_index: int = 0,
+        end_index: Optional[int] = None,
+        shuffle: bool = False,
+        seed: Optional[int] = None,
+    ) -> None:
+        if length is not None and length < 0:
             raise ValueError("length must be non-negative")
         if start_index < 0:
             raise ValueError("start_index must be non-negative")
-        if start_index >= length:
-            raise ValueError("start_index must be < length")
-        if end_index is None:
-            end_index = length
-        if end_index < start_index:
-            raise ValueError("end_index must be >= start_index")
         if not isinstance(shuffle, bool):
             raise ValueError("shuffle must be a boolean")
-            
-        self.length = length
+
+        self.length: Optional[int] = length
         self.start_index = start_index
-        self.end_index = min(end_index, length)
+        self.end_index: Optional[int] = end_index
         self.shuffle = shuffle
         self.seed = seed
 
+        # If both length and end_index are provided at init, basic validation
+        if self.length is not None:
+            if self.start_index >= self.length:
+                raise ValueError("start_index must be < length")
+            if self.end_index is None:
+                self.end_index = self.length
+            if self.end_index < self.start_index:
+                raise ValueError("end_index must be >= start_index")
+
+    def set_length(self, length: int) -> None:
+        super().set_length(length)
+        # When length is injected later, complete validations and defaults
+        assert self.length is not None
+        if self.start_index >= self.length:
+            raise ValueError("start_index must be < length")
+        if self.end_index is None:
+            self.end_index = self.length
+        if self.end_index < self.start_index:
+            raise ValueError("end_index must be >= start_index")
+
+    def _effective_bounds(self) -> List[int]:
+        if self.end_index is None and self.length is None:
+            raise ValueError("RangeSampler requires `end_index` or injected `length` before iteration")
+        end = self.end_index if self.end_index is not None else self.length  # type: ignore[union-attr]
+        assert end is not None
+        max_len = self.length if self.length is not None else end
+        eff_end = min(end, max_len)
+        return [self.start_index, eff_end]
+
     def __iter__(self) -> Iterator[int]:
-        indices = list(range(self.start_index, self.end_index))
-        
-        if self.shuffle:
+        start, eff_end = self._effective_bounds()
+        if start < 0:
+            raise ValueError("start_index must be non-negative")
+        if eff_end < start:
+            raise ValueError("end_index must be >= start_index")
+        indices = list(range(start, eff_end))
+        if self.shuffle and len(indices) > 1:
             rng = random.Random(self.seed)
             rng.shuffle(indices)
-            
         return iter(indices)
 
     def __len__(self) -> int:
-        return self.end_index - self.start_index
+        start, eff_end = self._effective_bounds()
+        return max(0, eff_end - start)
 
 
 class BatchSampler(Sampler):

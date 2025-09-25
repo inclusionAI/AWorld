@@ -45,7 +45,7 @@ class EvaluateRunner(abc.ABC):
             evaluator = Evaluator(
                 scorers=scorers,
                 repeat_times=eval_config.repeat_times,
-                eval_parallelism=eval_config.eval_parallelism
+                parallel_num=eval_config.parallel_num
             )
             result = await evaluator.evaluate(eval_dataset, eval_target)
             await self.eval_result_manager.save_eval_result(result)
@@ -66,7 +66,7 @@ class EvaluateRunner(abc.ABC):
                 converted_criterias.append(criteria)
         scorers = get_scorer_instances_for_criterias(converted_criterias)
         for scorer in scorers:
-            scorer.set_eval_config(eval_config)
+            scorer.eval_config = eval_config
         return scorers
 
     def get_target_for_eval(self, eval_config: EvaluationConfig) -> EvalTarget:
@@ -88,7 +88,7 @@ class EvaluateRunner(abc.ABC):
                 raise ValueError(f"Class {eval_config.eval_target_full_class_name} is not a subclass of EvalTarget")
             eval_target_config = eval_config.eval_target_config or {}
             eval_target_instance = eval_target_class(**eval_target_config)
-            eval_target_instance.set_eval_config(eval_config)
+            eval_target_instance.eval_config = eval_config
             return eval_target_instance
         except (ImportError, AttributeError, TypeError) as e:
             logger.error(f"Failed to create EvalTarget instance: {str(e)}")

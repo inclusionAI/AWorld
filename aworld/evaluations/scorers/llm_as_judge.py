@@ -1,14 +1,14 @@
 import abc
 import os
-
+import json
+import re
 from typing import Optional, Generic
 
 from aworld.evaluations.base import MetricResult, Scorer, EvalDataCase, EvalCaseDataType, ScorerResult
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import ModelConfig, AgentConfig
 from aworld.runner import Runners
-
-DEFAULT_JUDGE_SYSTEM_PROMPT = "You are a judge model that evaluates the quality of the response."
+from aworld.logs.util import logger
 
 
 class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
@@ -35,15 +35,8 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
             llm_api_key=self.model_config.llm_api_key,
         )
 
-    def build_judge_system_prompt(self) -> str:
-        """Get system prompt for judge model.
-
-        Returns:
-            str: System prompt.
-        """
-        return DEFAULT_JUDGE_SYSTEM_PROMPT
-
-    def build_judge_agent_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+    @abc.abstractmethod
+    def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
         """Builds a prompt for the judge model to evaluate the response.
            This method should be implemented by subclasses to create a context-rich prompt
            that enables the judge model to assess the quality of the output against the given input case. 
@@ -56,10 +49,17 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
 
         Returns:
             A formatted prompt string that will be sent to the judge model.
-        """
-        raise NotImplementedError("build_judge_agent_prompt must be implemented in subclasses")
 
-    def build_judge_agent_task_input(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+        Example:
+            '''
+            Please based on the correct answer given below, determine whether the answer to the original question is correct.
+            Here is the task: {data_to_judge}
+            '''
+        """
+        raise NotImplementedError("build_judge_prompt must be implemented in subclasses")
+
+    @abc.abstractmethod
+    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
         """Builds the input for the judge agent task.
 
         Args:
@@ -69,8 +69,13 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
 
         Returns:
             str: The input string for the judge agent task.
+
+        Example:
+            [Question]: {input.case_data.get('question', '')}
+            [Correct_Answer]: {input.case_data.get('answer', '')}
+            [Response]: {output.get('answer', '')}
         """
-        raise NotImplementedError("build_judge_agent_task_input must be implemented in subclasses")
+        raise NotImplementedError("build_judge_data must be implemented in subclasses")
 
     @abc.abstractmethod
     def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
@@ -96,12 +101,32 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
             ScorerResult: Scorer result.
         """
         score_agent = Agent(conf=self.agent_config, name='score_agent',
-                            system_prompt=self.build_judge_system_prompt(),
-                            agent_prompt=self.build_judge_agent_prompt(index=index, input=input, output=output))
+                            system_prompt=self._build_judge_system_prompt(),
+                            agent_prompt=self.build_judge_prompt(index=index, input=input, output=output))
 
-        task_input = self.build_judge_agent_task_input(index=index, input=input, output=output)
+        task_input = self.build_judge_data(index=index, input=input, output=output)
         response = await Runners.run(task_input, agent=score_agent)
         metric_results = self.convert_judge_response_to_score(response.answer)
         if metric_results:
             return ScorerResult(scorer_name=self.name, metric_results=metric_results)
         return ScorerResult(scorer_name=self.name, metric_results={})
+
+    def fetch_json_from_result(self, input_str):
+        json_match = re.search(r'\{[^{}]*\}', input_str, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError as e:
+                logger.warning(f"_fetch_json_from_result json_str: {json_str} error: {e}")
+        return ""
+
+    def _build_judge_system_prompt(self) -> str:
+        """Get system prompt for judge model.
+
+        Returns:
+            str: System prompt.
+        """
+        return '''
+        You are a judge model that evaluates the quality of the response.
+        '''

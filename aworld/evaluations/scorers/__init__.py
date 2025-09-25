@@ -3,6 +3,7 @@
 import os
 import importlib
 import pkgutil
+from aworld.logs.util import logger
 
 current_dir = os.path.dirname(__file__)
 
@@ -16,7 +17,7 @@ def _auto_discover_scorers():
         try:
             importlib.import_module(f'.{module_name}', package=package_name)
         except Exception as e:
-            print(f"Failed to import scorer module {module_name}: {e}")
+            logger.error(f"Failed to import scorer module {module_name}: {e}")
 
 
 _auto_discover_scorers()
