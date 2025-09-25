@@ -172,8 +172,8 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
 
     def __init__(self, name: str = None, eval_config: EvaluationConfig = None):
         self.name = name or self.__class__.__name__
-        self.eval_criterias = {}
         self.eval_config = eval_config or EvaluationConfig()
+        self.eval_criterias = self.eval_config.eval_criterias or {}
 
     def __str__(self) -> str:
         return self.name
@@ -183,6 +183,12 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
             Add eval criteria.
         '''
         self.eval_criterias[eval_criteria.metric_name] = eval_criteria
+
+    def list_eval_metrics(self) -> list[str]:
+        '''
+            List eval metric names.
+        '''
+        return list(self.eval_criterias.keys())
 
     async def scorer_and_judge(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> ScorerResult:
         '''
@@ -306,7 +312,9 @@ class Evaluator(Generic[EvalCaseDataType]):
                  scorers: list[Scorer] = None,
                  prepare_dataset: Optional[Callable[[EvalDataset], List[dict]]] = None,
                  repeat_times: int = 1,
-                 parallel_num: int = 1):
+                 parallel_num: int = 1,
+                 skip_passed_cases: bool = False,
+                 skip_passed_on_metrics: list[str] = None):
         self.scorers = scorers or []
         # preprocess the dataset
         self.prepare_dataset = prepare_dataset
@@ -314,6 +322,14 @@ class Evaluator(Generic[EvalCaseDataType]):
         self.repeat_times = repeat_times
         # evaluate parallelism
         self.parallel_num = parallel_num
+        # whether to skip cases that have already passed
+        self.skip_passed_cases = skip_passed_cases
+        # Skip cases when the metric in the list have passed, if None, skip cases only all metrics have passed
+        self.skip_passed_on_metrics = skip_passed_on_metrics or []
+        # set to track eval_case_ids that have already passed, key is metric_name, value is a set of eval_case_ids that have already passed on this metric
+        self._passed_cases = dict[str, set[str]]()
+        # lock to protect access to _passed_cases in async environment
+        self._passed_cases_lock = asyncio.Lock()
 
     def _default_prepare_dataset(self, dataset: EvalDataset) -> List[EvalDataCase[EvalCaseDataType]]:
         return dataset.eval_cases
@@ -355,6 +371,33 @@ class Evaluator(Generic[EvalCaseDataType]):
                 task.cancel()
             raise e
 
+    async def _should_skip_predict(self, input: EvalDataCase[EvalCaseDataType]) -> bool:
+        """Check if we should skip this case because it has already passed.
+
+        Args:
+            input: the input data.
+
+        Returns:
+            True if we should skip this case, False otherwise.
+        """
+        should_skip = False
+        if self.skip_passed_cases:
+            # If skip_passed_on_metrics is empty, we need to check all metrics have passed
+            # If skip_passed_on_metrics is specified, check only those metrics
+            metrics_to_check = self.skip_passed_on_metrics
+            if not metrics_to_check:
+                for scorer in self.scorers:
+                    metrics_to_check.extend(scorer.list_eval_metrics())
+            print(f"metrics_to_check: {metrics_to_check}, passed_cases:{self._passed_cases}, id={input.eval_case_id}")
+            async with self._passed_cases_lock:
+                # If there are metrics to check, verify if all of them have passed for this case
+                if metrics_to_check:
+                    # Check if all metrics_to_check have passed
+                    if all(input.eval_case_id in self._passed_cases.get(metric_name, set()) for metric_name in metrics_to_check):
+                        should_skip = True
+                        logger.warning(f"Skipping case {input.eval_case_id} which has already passed all required metrics")
+        return should_skip
+
     async def run_single_case(self, index: int, eval_target: EvalTarget[EvalCaseDataType], input: EvalDataCase[EvalCaseDataType]) -> EvalCaseResult:
         """Run a single case.
 
@@ -365,10 +408,33 @@ class Evaluator(Generic[EvalCaseDataType]):
         Returns:
             execute result
         """
+        # Check if we should skip this case because it has already passed
+
+        if await self._should_skip_predict(input):
+            # Return an empty result with the same case ID
+            return EvalCaseResult(index=index,
+                                  input=input,
+                                  eval_case_id=input.eval_case_id,
+                                  eval_dataset_id=input.eval_dataset_id,
+                                  output={},
+                                  score_rows={})
+
+        # Proceed with normal evaluation if not skipped
         output = await eval_target.predict(index, input)
         score_rows = {}
+
         for scorer in self.scorers:
-            score_rows[scorer.name] = await scorer.scorer_and_judge(index, input, output)
+            scorer_result = await scorer.scorer_and_judge(index, input, output)
+            score_rows[scorer.name] = scorer_result
+
+            # Record passed metrics if skip_passed_on_metrics is specified
+            if self.skip_passed_cases:
+                for metric_name, metric_result in scorer_result.metric_results.items():
+                    if metric_result.get('eval_status') == EvalStatus.PASSED:
+                        # Add to passed cases if it passed on this metric
+                        async with self._passed_cases_lock:
+                            self._passed_cases.setdefault(metric_name, set()).add(input.eval_case_id)
+
         return EvalCaseResult(index=index,
                               input=input,
                               eval_case_id=input.eval_case_id,

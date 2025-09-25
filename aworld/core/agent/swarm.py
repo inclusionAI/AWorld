@@ -183,7 +183,7 @@ class Swarm(object):
             return
 
         for agent in agents:
-            logger.info(f"register_agent: {type(agent)}: {agent.id()}")
+            logger.debug(f"register_agent: {type(agent)}: {agent.id()}")
             if agent.id() not in AgentFactory:
                 AgentFactory._cls[agent.id()] = agent.__class__
                 AgentFactory._desc[agent.id()] = agent.desc()
