@@ -149,6 +149,9 @@ class EvaluateRunner(Runner):
                 module_path, function_name = preload_transform.rsplit('.', 1)
                 module = importlib.import_module(module_path)
                 preload_transform = getattr(module, function_name)
+                if not callable(preload_transform):
+                    raise ValueError(f"Preload transform {preload_transform} is not a callable function.")
+                return preload_transform
             except (ImportError, AttributeError) as e:
                 logger.error(f"Failed to load preload transform {preload_transform}: {str(e)}")
                 raise ValueError(f"Failed to load preload transform {preload_transform}: {str(e)}")
