@@ -80,6 +80,7 @@ class Scorer(abc.ABC):
             score_dict['mean'] = sum(scores) / len(scores)
             score_dict['min'] = min(scores)
             score_dict['max'] = max(scores)
+            # Only calculate standard deviation if there are at least 2 data points
             if len(scores) >= 2:
                 score_dict['std'] = statistics.stdev(scores)
             else:
