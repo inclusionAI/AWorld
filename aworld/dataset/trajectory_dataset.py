@@ -259,7 +259,7 @@ class TrajectoryDataset(Dataset[DataRow]):
             logger.warn(f"Failed to upload {filepath} to OSS: {str(e)}")
 
 
-async def get_trajectory(messages: List[Message], task_id: str, state_mng: RuntimeStateManager = None) -> List[Dict[str, Any]] | None:
+async def generate_trajectory(messages: List[Message], task_id: str, state_mng: RuntimeStateManager = None) -> List[Dict[str, Any]] | None:
     traj_dataset = await TrajectoryDataset.from_messages(name=f"{task_id}_trajectory_dataset", event_messages=messages, task_id=task_id, state_manager=state_mng)
 
     try:
