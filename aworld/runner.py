@@ -3,14 +3,17 @@
 import asyncio
 from typing import List, Dict, Union
 
-from aworld.config import RunConfig
+from aworld.config import RunConfig, EvaluationConfig
 from aworld.config.conf import TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.task import Task, TaskResponse, Runner
+from aworld.evaluations.base import EvalTask
 from aworld.logs.util import logger
 from aworld.output import StreamingOutputs
+from aworld.runners.evaluate_runner import EvaluateRunner
+from aworld.runners.utils import execute_runner
 from aworld.utils.common import sync_exec
 from aworld.utils.run_util import exec_tasks
 
@@ -113,3 +116,11 @@ class Runners:
                     event_driven=swarm.event_driven, session_id=session_id)
         res = await Runners.run_task(task, run_conf=run_conf)
         return res.get(task.id)
+
+    @staticmethod
+    async def evaluate(task: EvalTask = None,
+                       eval_conf: EvaluationConfig = None,
+                       run_conf: RunConfig = None):
+        # todo: unify in exec_tasks
+        runner = EvaluateRunner(task=task, config=eval_conf)
+        return await execute_runner([runner], run_conf)

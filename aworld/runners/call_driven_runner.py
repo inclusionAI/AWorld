@@ -79,9 +79,7 @@ class WorkflowRunner(TaskRunner):
                 if not self.task.is_sub_task:
                     logger.info(f"FINISHED|call_driven_runner|mark_completed|{self.task.id}")
                     await self.outputs.mark_completed()
-                logger.info(f"task token usage: {self.context.token_usage}",
-                          color=Color.pink,
-                          logger_=trace_logger)
+                logger.info(f"task token usage: {self.context.token_usage}", color=Color.pink)
                 for _, tool in self.tools.items():
                     if isinstance(tool, AsyncTool):
                         await tool.close()
@@ -415,9 +413,7 @@ class LoopWorkflowRunner(WorkflowRunner):
                 if not self.task.is_sub_task:
                     logger.info(f"FINISHED|LoopWorkflowRunner|outputs|{self.task.id} {self.task.is_sub_task}")
                     await self.outputs.mark_completed()
-                logger.info(f"task token usage: {self.context.token_usage}",
-                          color=Color.pink,
-                          logger_=trace_logger)
+                logger.info(f"task token usage: {self.context.token_usage}", color=Color.pink)
                 for _, tool in self.tools.items():
                     if isinstance(tool, AsyncTool):
                         await tool.close()
@@ -527,9 +523,7 @@ class HandoffRunner(TaskRunner):
                                     time_cost=(time.time() - start),
                                     usage=self.context.token_usage)
             finally:
-                logger.info(f"task token usage: {self.context.token_usage}",
-                          color=Color.pink,
-                          logger_=trace_logger)
+                logger.info(f"task token usage: {self.context.token_usage}", color=Color.pink)
                 for _, tool in self.tools.items():
                     if isinstance(tool, AsyncTool):
                         await tool.close()
