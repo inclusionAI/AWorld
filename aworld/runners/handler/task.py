@@ -50,9 +50,7 @@ class DefaultTaskHandler(TaskHandler):
         return True
 
     async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if not self.is_valid_message(message):
-            return
-
+        task_flag = "sub" if self.runner.task.is_sub_task else "main"
         logger.debug(f"task handler receive message: {message}")
 
         headers = {"context": message.context}
@@ -73,7 +71,7 @@ class DefaultTaskHandler(TaskHandler):
             async for event in self.run_hooks(message, HookPoint.ERROR):
                 yield event
 
-            logger.warning(f"task {self.runner.task.id} stop, cause: {task_item.msg}")
+            logger.warning(f"{task_flag} task {self.runner.task.id} stop, cause: {task_item.msg}")
             self.runner._task_response = TaskResponse(msg=task_item.msg,
                                                       answer='',
                                                       context=message.context,
@@ -82,7 +80,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
             if not self.runner.task.is_sub_task:
-                logger.info(f"FINISHED|DefaultTaskHandler|outputs|{self.runner.task.id} {self.runner.task.is_sub_task}")
+                logger.info(f"{self.runner.task.id} {self.runner.task.is_sub_task}")
                 await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
         elif topic == TopicType.FINISHED:
@@ -96,20 +94,22 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
 
-            logger.info(f"FINISHED|task|{self.runner.task.id} finished. {self.runner.task.is_sub_task}")
+            logger.info(f"{task_flag} task {self.runner.task.id} receive finished message.")
+
             if not self.runner.task.is_sub_task:
-                logger.info(f"FINISHED|DefaultTaskHandler|outputs|{self.runner.task.id} {self.runner.task.is_sub_task}")
+                logger.info(f'{task_flag} task {self.runner.task.id} will mark outputs finished')
                 await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
         elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):
                 yield event
 
-            logger.info(f"task start event: {message}, will send init message.")
+            logger.info(f"{task_flag} task start event: {message}, will send init message.")
             if message.payload:
                 yield message
             else:
-                yield self.runner.init_message
+                for msg in self.runner.init_messages:
+                    yield msg
         elif topic == TopicType.OUTPUT:
             yield message
         elif topic == TopicType.HUMAN_CONFIRM:

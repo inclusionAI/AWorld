@@ -8,7 +8,8 @@ from typing import Union, Callable
 from loguru import logger as base_logger
 
 base_logger.remove()
-CONSOLE_LEVEL = 'INFO'
+SEGMENT_LEN = 200
+CONSOLE_LEVEL = 'DEBUG'
 STORAGE_LEVEL = 'INFO'
 SUPPORTED_FUNC = ['info', 'debug', 'warning', 'error', 'critical', 'exception', 'trace', 'success', 'log', 'catch',
                   'opt', 'bind', 'unbind', 'contextualize', 'patch']
@@ -85,8 +86,8 @@ class AWorldLogger:
         file_formatter = formatter
         console_formatter = formatter
         if not formatter:
-            format = """{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
-{extra[name]} PID: {process}, TID:{thread} | <cyan>{name}</cyan>.<cyan>{function}</cyan>:<cyan>{line}</cyan> \
+            format = """<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
+{extra[name]} PID: {process}, TID:{thread} |</black> <bold>{name}.{function}:{line}</bold> \
 - \n<level>{message}</level> {exception} """
             def _formatter(record):
                 if record['extra'].get('name') == 'AWorld':
@@ -101,9 +102,9 @@ class AWorldLogger:
                 return _formatter(record)
 
             def console_formatter(record):
-                part_len = 200
+                part_len = SEGMENT_LEN
                 record['message'] = record['message'][:-5].strip()
-                if len(record['message']) > part_len:
+                if 1 < part_len < len(record['message']):
                     part = int(len(record['message']) / part_len)
                     lines = []
                     i = 0

@@ -24,7 +24,7 @@ class LocalSandboxApi(BaseSandboxApi):
         """
         try:
             if not mcp_servers:
-                logger.info("_create_sandbox_by_local mcp_servers is not exist")
+                logger.debug("_create_sandbox_by_local mcp_servers is not exist")
                 return None
 
             return SandboxLocalResponse(

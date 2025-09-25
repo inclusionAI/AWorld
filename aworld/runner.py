@@ -35,7 +35,7 @@ class Runners:
         task.outputs = streamed_result
         streamed_result.task_id = task.id
 
-        logger.info(f"[Runners]streamed_run_task start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
+        logger.info(f"start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
 
         streamed_result._run_impl_task = asyncio.create_task(
             Runners.run_task(task)
@@ -53,9 +53,9 @@ class Runners:
         if isinstance(task, Task):
             task = [task]
 
-        logger.debug(f"[Runners]run_task start task_id={task[0].id} start")
+        logger.debug(f"task_id: {task[0].id} start")
         result = await exec_tasks(task, run_conf)
-        logger.debug(f"[Runners]run_task end task_id={task[0].id} end")
+        logger.debug(f"task_id: {task[0].id} end")
         return result
 
     @staticmethod
