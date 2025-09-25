@@ -17,7 +17,7 @@ from aworld.core.event.base import Message, ToolMessage, AgentMessage
 from aworld.core.tool.base import ToolFactory, Tool, AsyncTool
 from aworld.core.tool.tool_desc import is_tool_by_name
 from aworld.core.task import Task, TaskResponse
-from aworld.logs.util import logger, color_log, Color, trace_logger
+from aworld.logs.util import logger, Color, trace_logger
 from aworld.models.model_response import ToolCall
 from aworld.output.base import StepOutput, ToolResultOutput
 from aworld.runners.task_runner import TaskRunner
@@ -79,9 +79,7 @@ class WorkflowRunner(TaskRunner):
                 if not self.task.is_sub_task:
                     logger.info(f"FINISHED|call_driven_runner|mark_completed|{self.task.id}")
                     await self.outputs.mark_completed()
-                color_log(f"task token usage: {self.context.token_usage}",
-                          color=Color.pink,
-                          logger_=trace_logger)
+                logger.info(f"task token usage: {self.context.token_usage}", color=Color.pink)
                 for _, tool in self.tools.items():
                     if isinstance(tool, AsyncTool):
                         await tool.close()
@@ -167,7 +165,7 @@ class WorkflowRunner(TaskRunner):
                                             json.dumps([action.model_dump() for action in policy],
                                                        ensure_ascii=False))
                     observation.content = None
-                    color_log(f"{cur_agent.id()} policy: {policy}")
+                    logger.info(f"{cur_agent.id()} policy: {policy}")
                     if not policy:
                         logger.warning(f"current agent {cur_agent.id()} no policy to use.")
                         await self.outputs.add_output(
@@ -369,7 +367,7 @@ class WorkflowRunner(TaskRunner):
 
             # Check if there's an exception in info
             if info.get("exception"):
-                color_log(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
+                logger.info(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
                 msg = f"Step {step} failed with exception: {info['exception']}"
             logger.info(f"step: {step} finished by tool action: {action}.")
             log_ob = Observation(content='' if observation.content is None else observation.content,
@@ -415,9 +413,7 @@ class LoopWorkflowRunner(WorkflowRunner):
                 if not self.task.is_sub_task:
                     logger.info(f"FINISHED|LoopWorkflowRunner|outputs|{self.task.id} {self.task.is_sub_task}")
                     await self.outputs.mark_completed()
-                color_log(f"task token usage: {self.context.token_usage}",
-                          color=Color.pink,
-                          logger_=trace_logger)
+                logger.info(f"task token usage: {self.context.token_usage}", color=Color.pink)
                 for _, tool in self.tools.items():
                     if isinstance(tool, AsyncTool):
                         await tool.close()
@@ -527,9 +523,7 @@ class HandoffRunner(TaskRunner):
                                     time_cost=(time.time() - start),
                                     usage=self.context.token_usage)
             finally:
-                color_log(f"task token usage: {self.context.token_usage}",
-                          color=Color.pink,
-                          logger_=trace_logger)
+                logger.info(f"task token usage: {self.context.token_usage}", color=Color.pink)
                 for _, tool in self.tools.items():
                     if isinstance(tool, AsyncTool):
                         await tool.close()
@@ -588,7 +582,7 @@ class HandoffRunner(TaskRunner):
                     "steps": step,
                     "success": False,
                     "time_cost": (time.time() - start)}
-        color_log(f"{self.swarm.cur_agent.id()} policy: {policy}")
+        logger.info(f"{self.swarm.cur_agent.id()} policy: {policy}")
 
         msg = None
         response = None
@@ -670,7 +664,7 @@ class HandoffRunner(TaskRunner):
                                                             outputs=self.outputs,
                                                             stream=self.conf.get("stream", False))
                     policy = message.payload
-                    color_log(f"{cur_agent.id()} policy: {policy}")
+                    logger.info(f"{cur_agent.id()} policy: {policy}")
 
             if policy:
                 response = policy[0].policy_info if policy[0].policy_info else policy[0].action_name
@@ -757,7 +751,7 @@ class HandoffRunner(TaskRunner):
                               "response": "",
                               "steps": step,
                               "success": False}, None
-        color_log(f"{cur_agent.id()} policy: {agent_policy}")
+        logger.info(f"{cur_agent.id()} policy: {agent_policy}")
         return 'normal', agent_policy, observation
 
     async def _social_tool_call(self, policy: List[ActionModel], step: int):
@@ -813,11 +807,11 @@ class HandoffRunner(TaskRunner):
 
             # Check if there's an exception in info
             if info.get("exception"):
-                color_log(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
+                logger.info(f"Step {step} failed with exception: {info['exception']}", color=Color.red)
             logger.info(f"step: {step} finished by tool action {action}.")
             log_ob = Observation(content='' if observation.content is None else observation.content,
                                  action_result=observation.action_result)
-            color_log(f"{tool_name} observation: {log_ob}", color=Color.green)
+            logger.info(f"{tool_name} observation: {log_ob}", color=Color.green)
 
         # The tool results give itself, exit; give to other agents, continue
         tmp_name = policy[0].agent_name

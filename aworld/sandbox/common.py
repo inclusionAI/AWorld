@@ -1,8 +1,7 @@
-import asyncio
-import logging
 import abc
 from typing import Dict, List, Any, Optional
 
+from aworld.logs.util import logger
 from aworld.sandbox.base import Sandbox
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
@@ -51,9 +50,8 @@ class BaseSandbox(Sandbox):
         Set up a logger for the sandbox instance.
         
         Returns:
-            logging.Logger: Configured logger instance.
+            logger.Logger: Configured logger instance.
         """
-        logger = logging.getLogger(f"sandbox.{self.__class__.__name__}.{self.sandbox_id[:8]}")
         return logger
         
     def get_info(self) -> SandboxInfo:

@@ -114,7 +114,7 @@ class Runner(object):
         pass
 
     @abc.abstractmethod
-    async def do_run(self, context: Context = None):
+    async def do_run(self):
         """Raise exception if not success."""
 
     async def _daemon_run(self):
@@ -127,9 +127,7 @@ class Runner(object):
         try:
             await self.pre_run()
             await self._daemon_run()
-            ret = await self.do_run(self.context)
-            if ret is None:
-                ret = TaskResponse(id=self.context.task_id if self.context else "", success=False, msg = "Task return None.")
+            ret = await self.do_run()
             return ret
         except BaseException as ex:
             self._exception = ex

@@ -1,27 +1,24 @@
-import asyncio
-import logging
 import re
-from abc import ABC, abstractmethod
 import traceback
 from typing import Any, Dict, List
 
 from aworld.config.conf import ModelConfig
 from aworld.core.context.processor import CompressionResult, CompressionType
 from aworld.core.context.processor.base_compressor import BaseCompressor
+from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model
 from aworld.config import ConfigDict
-                
-logger = logging.getLogger(__name__)
+
 
 class LLMCompressor(BaseCompressor):
     """LLM-based prompt compressor"""
-    
+
     def __init__(self, config: Dict[str, Any] = None, llm_config: ModelConfig = None):
         super().__init__(config, llm_config)
         self.compression_prompt = self.config.get("compression_prompt", self._default_compression_prompt())
         # Lazy import to avoid circular dependencies
         self._llm_client = self._create_llm_client(llm_config)
-    
+
     @staticmethod
     def _remove_think_blocks(content: str) -> str:
         """Remove <think>...</think> blocks from content"""
@@ -50,11 +47,11 @@ You are a text compression expert. Please intelligently compress the following t
 {content}
 
 Please output the compressed text:"""
-    
+
     def compress(self, content: str) -> CompressionResult:
         """Compress content using LLM"""
         original_content = content
-        
+
         # Get LLM client
         llm_client = self._llm_client
         if llm_client is None:
@@ -66,22 +63,22 @@ Please output the compressed text:"""
                 metadata={"error": "LLM client unavailable"},
                 compression_type=CompressionType.LLM_BASED
             )
-        
+
         try:
             # Build prompt
             prompt = self.compression_prompt.format(content=content)
             messages = [{"role": "user", "content": prompt}]
-            
+
             # Call LLM
             response = llm_client.completion(
                 messages=messages,
                 temperature=0.3
             )
-            
+
             # Remove <think>...</think> blocks first, then strip whitespace
             compressed_content = self._remove_think_blocks(response.content).strip()
             compression_ratio = self._calculate_compression_ratio(original_content, compressed_content)
-            
+
             return CompressionResult(
                 original_content=original_content,
                 compressed_content=compressed_content,
@@ -92,7 +89,7 @@ Please output the compressed text:"""
                 },
                 compression_type=CompressionType.LLM_BASED
             )
-            
+
         except Exception as e:
             logger.error(f"LLM compression failed: {traceback.format_exc()}")
             return CompressionResult(
@@ -102,7 +99,7 @@ Please output the compressed text:"""
                 metadata={"error": str(e)},
                 compression_type=CompressionType.LLM_BASED
             )
-    
+
     def compress_batch(self, contents: List[str]) -> List[CompressionResult]:
         """Compress multiple contents in batch"""
         results = []
@@ -110,4 +107,3 @@ Please output the compressed text:"""
             result = self.compress(content)
             results.append(result)
         return results
-    

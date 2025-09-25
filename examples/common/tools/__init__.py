@@ -7,3 +7,4 @@ from aworld.utils.common import scan_packages
 
 scan_packages("examples.common.tools", [Tool, AsyncTool, ExecutableAction])
 from examples.common.tools.browsers.action.actions import *
+from examples.common.tools.apis.search_api import SearchTool

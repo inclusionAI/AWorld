@@ -5,6 +5,8 @@ from typing import Dict, Any, List, Callable
 from aworld.core.context.base import Context
 from aworld.core.event import eventbus
 from aworld.core.event.base import Constants, Message
+from aworld.core.storage.data import Data
+from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
 
 
 class EventManager:
@@ -15,8 +17,8 @@ class EventManager:
         self.event_bus = eventbus
         self.context = context
         # Record events in memory for re-consume.
-        self.messages: Dict[str, List[Message]] = {'None': []}
         self.max_len = kwargs.get('max_len', 1000)
+        self.store = InmemoryStorage(InmemoryConfig(max_capacity=self.max_len))
 
     async def emit(
             self,
@@ -50,13 +52,7 @@ class EventManager:
 
     async def emit_message(self, event: Message):
         """Send the message to the event bus."""
-        key = event.key()
-        if key not in self.messages:
-            self.messages[key] = []
-        self.messages[key].append(event)
-        if len(self.messages) > self.max_len:
-            self.messages = self.messages[-self.max_len:]
-
+        await self.store.create_data(Data(block_id=event.context.get_task().id, value=event, id=event.id))
         await self.event_bus.publish(event)
         return True
 
@@ -88,44 +84,45 @@ class EventManager:
     def get_transform_handler(self, key: str) -> Callable[..., Any]:
         return self.event_bus.get_transform_handler(self.context.task_id, key)
 
-    def messages_by_key(self, key: str) -> List[Message]:
-        return self.messages.get(key, [])
+    async def messages_by_key(self, key: str) -> List[Message]:
+        # key is task_id
+        results = await self.store.get_data_items(key)
+        if not results:
+            return []
 
-    def messages_by_sender(self, sender: str, key: str):
+        reses = []
+        for res in results:
+            reses.append(res.value)
+        return reses
+
+    async def messages_by_sender(self, sender: str, key: str):
+        # key is task_id
         results = []
-        for res in self.messages.get(key, []):
+        reses = await self.messages_by_key(key)
+        for res in reses:
             if res.sender == sender:
                 results.append(res)
         return results
 
-    def messages_by_topic(self, topic: str, key: str):
+    async def messages_by_topic(self, topic: str, key: str):
+        # key is task_id
         results = []
-        for res in self.messages.get(key, []):
+        reses = await self.messages_by_key(key)
+        for res in reses:
             if res.topic == topic:
                 results.append(res)
         return results
 
-    def session_messages(self, session_id: str) -> List[Message]:
-        return [m for k, msg in self.messages.items() for m in msg if m.session_id == session_id]
+    async def messages_by_session_id(self, session_id: str) -> List[Message]:
+        # select all data
+        results = await self.store.select_data()
+        return [m for m in results if m.session_id == session_id]
 
-    def messages_by_task_id(self, task_id: str):
+    async def messages_by_task_id(self, task_id: str):
         results = []
-        for _, msgs in self.messages.items():
-            for msg in msgs:
-                if msg.context.task_id == task_id:
-                    results.append(msg)
+        reses = await self.messages_by_key(task_id)
+        for msg in reses:
+            if msg.context.task_id == task_id:
+                results.append(msg)
         results.sort(key=lambda x: x.timestamp)
         return results
-
-    @staticmethod
-    def mark_valid(messages: List[Message]):
-        for msg in messages:
-            msg.is_valid = True
-
-    @staticmethod
-    def mark_invalid(messages: List[Message]):
-        for msg in messages:
-            msg.is_valid = False
-
-    def clear_messages(self):
-        self.messages = []

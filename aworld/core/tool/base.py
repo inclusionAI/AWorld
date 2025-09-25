@@ -456,7 +456,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 f"tool {self.name()} callback failed with node: {res_node}.")
             return
 
-    def _update_headers(self, message: Message, input_message: Message) -> Dict[str, Any]:
+    def _update_headers(self, message: Message, input_message: Message):
         headers = input_message.headers.copy()
         headers['context'] = message.context
         headers['level'] = headers.get('level', 0) + 1

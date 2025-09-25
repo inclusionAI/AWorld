@@ -5,8 +5,9 @@
 import re
 from enum import Enum
 from typing import Any, Dict, List, Mapping, Set
-import logging
-logger = logging.getLogger("prompts")
+
+from aworld.logs.util import logger
+
 
 class TemplateFormat(str, Enum):
     """Template format enumeration."""

@@ -1,17 +1,19 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-import logging
-from concurrent.futures.process import ProcessPoolExecutor
 from typing import List, Dict, Union
 
-from aworld.config import RunConfig
+from aworld.config import RunConfig, EvaluationConfig
 from aworld.config.conf import TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
 from aworld.core.task import Task, TaskResponse, Runner
+from aworld.evaluations.base import EvalTask
+from aworld.logs.util import logger
 from aworld.output import StreamingOutputs
+from aworld.runners.evaluate_runner import EvaluateRunner
+from aworld.runners.utils import execute_runner
 from aworld.utils.common import sync_exec
 from aworld.utils.run_util import exec_tasks
 
@@ -33,7 +35,7 @@ class Runners:
         task.outputs = streamed_result
         streamed_result.task_id = task.id
 
-        logging.info(f"[Runners]streamed_run_task start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
+        logger.info(f"start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
 
         streamed_result._run_impl_task = asyncio.create_task(
             Runners.run_task(task)
@@ -51,9 +53,9 @@ class Runners:
         if isinstance(task, Task):
             task = [task]
 
-        logging.debug(f"[Runners]run_task start task_id={task[0].id} start")
+        logger.debug(f"task_id: {task[0].id} start")
         result = await exec_tasks(task, run_conf)
-        logging.debug(f"[Runners]run_task end task_id={task[0].id} end")
+        logger.debug(f"task_id: {task[0].id} end")
         return result
 
     @staticmethod
@@ -114,3 +116,11 @@ class Runners:
                     event_driven=swarm.event_driven, session_id=session_id)
         res = await Runners.run_task(task, run_conf=run_conf)
         return res.get(task.id)
+
+    @staticmethod
+    async def evaluate(task: EvalTask = None,
+                       eval_conf: EvaluationConfig = None,
+                       run_conf: RunConfig = None):
+        # todo: unify in exec_tasks
+        runner = EvaluateRunner(task=task, config=eval_conf)
+        return await execute_runner([runner], run_conf)

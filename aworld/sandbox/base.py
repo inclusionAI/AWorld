@@ -1,9 +1,9 @@
 import abc
 import asyncio
-import logging
 import uuid
 from typing import Dict, List, Any, Optional
 
+from aworld.logs.util import logger
 from aworld.sandbox.api.setup import SandboxSetup
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
@@ -14,9 +14,9 @@ class Sandbox(SandboxSetup):
     Sandbox abstract base class that defines the interface for all sandbox implementations.
     A sandbox provides an isolated environment for executing code and operations.
     """
-    
+
     default_sandbox_timeout = 3000
-    
+
     @property
     def sandbox_id(self) -> str:
         """
@@ -72,7 +72,7 @@ class Sandbox(SandboxSetup):
         Returns the list of black-listed tools.
         """
         return self._black_tool_actions
-    
+
     @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
@@ -83,7 +83,6 @@ class Sandbox(SandboxSetup):
             McpServers: The MCP servers instance.
         """
         pass
-
 
     def __init__(
             self,
@@ -115,7 +114,7 @@ class Sandbox(SandboxSetup):
         self._mcp_servers = mcp_servers or []
         self._mcp_config = mcp_config or {}
         self._black_tool_actions = black_tool_actions or {}
-        
+
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:
         """
@@ -125,7 +124,7 @@ class Sandbox(SandboxSetup):
             SandboxInfo: Information about the sandbox.
         """
         pass
-    
+
     @abc.abstractmethod
     async def remove(self) -> bool:
         """
@@ -135,7 +134,7 @@ class Sandbox(SandboxSetup):
             bool: True if removal was successful, False otherwise.
         """
         pass
-    
+
     @abc.abstractmethod
     async def cleanup(self) -> bool:
         """
@@ -145,7 +144,7 @@ class Sandbox(SandboxSetup):
             bool: True if cleanup was successful, False otherwise.
         """
         pass
-    
+
     def __del__(self):
         """
         Ensure resources are cleaned up when the object is garbage collected.
@@ -154,7 +153,7 @@ class Sandbox(SandboxSetup):
             # Handle the case where an event loop already exists
             try:
                 loop = asyncio.get_running_loop()
-                logging.warning("Cannot clean up sandbox in __del__ when event loop is already running")
+                logger.warning("Cannot clean up sandbox in __del__ when event loop is already running")
                 return
             except RuntimeError:
                 # No running event loop, create a new one
@@ -163,4 +162,4 @@ class Sandbox(SandboxSetup):
                 loop.run_until_complete(self.cleanup())
                 loop.close()
         except Exception as e:
-            logging.warning(f"Failed to cleanup sandbox resources during garbage collection: {e}")
+            logger.warning(f"Failed to cleanup sandbox resources during garbage collection: {e}")

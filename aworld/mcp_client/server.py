@@ -3,7 +3,6 @@ from __future__ import annotations
 import abc
 import asyncio
 from datetime import timedelta
-import logging
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal
@@ -16,6 +15,8 @@ from mcp.shared.session import ProgressFnT
 from mcp.types import CallToolResult, JSONRPCMessage, InitializeResult
 from mcp.shared.message import SessionMessage
 from typing_extensions import NotRequired, TypedDict
+
+from aworld.logs.util import logger
 
 
 class MCPServer(abc.ABC):
@@ -138,11 +139,11 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             self.server_initialize_result = server_result
             self.session = session
         except Exception as e:
-            logging.error(f"Error initializing MCP server: {e}")
+            logger.error(f"Error initializing MCP server: {e}")
             await self.cleanup()
             return
         except BaseException as e:
-            logging.error(f"Error initializing MCP server: {e}")
+            logger.error(f"Error initializing MCP server: {e}")
             await self.cleanup()
             return
 
@@ -196,9 +197,9 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
                     try:
                         await exit_stack.aclose()
                     except Exception as e:
-                        logging.debug(f"Error closing exit stack during cleanup: {e}")
+                        logger.debug(f"Error closing exit stack during cleanup: {e}")
             except Exception as e:
-                logging.error(f"Error during server cleanup: {e}")
+                logger.error(f"Error during server cleanup: {e}")
             finally:
                 self.session = None
 

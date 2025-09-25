@@ -327,7 +327,7 @@ class RuntimeStateManager(InheritanceSingleton):
         '''
             set node status to RUNNING and update to storage
         '''
-        logger.debug(f"====== set node {node_id} running =======")
+        logger.debug(f"set node {node_id} running")
         node = self._node_exist(node_id)
         node.status = RunNodeStatus.RUNNING
         node.execute_time = time.time()
@@ -371,7 +371,7 @@ class RuntimeStateManager(InheritanceSingleton):
             if not node.results:
                 node.results = []
             node.results.extend(results)
-        logger.debug(f"====== run_succeed set node {node_id} succeed: {node} =======")
+        logger.debug(f"set node {node_id} succeed: {node}")
 
         self.storage.update(node)
 

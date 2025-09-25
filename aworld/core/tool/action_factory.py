@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-import logging
 import sys
 from typing import Dict, List
 
@@ -29,7 +28,7 @@ class ActionManager(Factory):
                 raise RuntimeError("The action was not registered.\nPlease confirm the package has been imported.")
         except Exception:
             err = sys.exc_info()
-            logging.warning("Failed to create action with name '%s':\n%s" % (name, err[1]), exc_info=err)
+            logger.warning("Failed to create action with name '%s':\n%s" % (name, err[1]), exc_info=err)
             act = None
 
         if act is None:

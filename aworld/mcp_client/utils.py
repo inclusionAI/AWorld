@@ -1,21 +1,18 @@
-import logging
-from datetime import timedelta
-from typing import List, Dict, Any
 import json
-import os
-from contextlib import AsyncExitStack
+import requests
 import traceback
 
-import requests
-from aworld.core.context.base import Context
+from datetime import timedelta
+from typing import List, Dict, Any
+from contextlib import AsyncExitStack
+
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
-
+from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
 from aworld.tools import get_function_tools
-from aworld.utils.common import find_file
 
 MCP_SERVERS_CONFIG = {}
 
@@ -125,12 +122,12 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
                     "function": openai_function_schema,
                 }
             )
-        logging.info(
+        logger.info(
             f"✅ function_tool_server #({sever_name}) connected success，tools: {len(tools)}"
         )
 
     except Exception as e:
-        logging.warning(
+        logger.warning(
             f"server_name-get_function_tool:{sever_name} translate failed: {e}"
         )
         return []
@@ -138,7 +135,7 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
         return openai_tools
 
 
-async def run(mcp_servers: list[MCPServer],black_tool_actions: Dict[str, List[str]] = None) -> List[Dict[str, Any]]:
+async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[str]] = None) -> List[Dict[str, Any]]:
     openai_tools = []
     for i, server in enumerate(mcp_servers):
         try:
@@ -151,7 +148,7 @@ async def run(mcp_servers: list[MCPServer],black_tool_actions: Dict[str, List[st
                         balck_server in black_tool_actions and
                         black_tool_actions[balck_server] and
                         tool.name in black_tool_actions[balck_server]):
-                    logging.info(
+                    logger.info(
                         f"server #{i + 1} ({balck_server}) black_tool_actions: {tool.name}"
                     )
                     continue
@@ -247,12 +244,12 @@ async def run(mcp_servers: list[MCPServer],black_tool_actions: Dict[str, List[st
                         "function": openai_function_schema,
                     }
                 )
-            logging.info(
+            logger.info(
                 f"✅ server #{i + 1} ({server.name}) connected success，tools: {len(tools)}"
             )
 
         except Exception as e:
-            logging.warning(
+            logger.warning(
                 f"❌ server #{i + 1} ({server.name}) connect fail: {e}\n"
                 f"Traceback:\n{traceback.format_exc()}"
             )
@@ -290,7 +287,7 @@ async def mcp_tool_desc_transform_v2(
                     tmp_function_tool = get_function_tool(server_name)
                     openai_tools.extend(tmp_function_tool)
                 except Exception as e:
-                    logging.warning(f"server_name:{server_name} translate failed: {e}")
+                    logger.warning(f"server_name:{server_name} translate failed: {e}")
             elif "api" == server_config.get("type", ""):
                 api_result = requests.get(server_config["url"] + "/list_tools")
                 try:
@@ -321,7 +318,7 @@ async def mcp_tool_desc_transform_v2(
                         }
                         openai_tools.append(tmp_function)
                 except Exception as e:
-                    logging.warning(f"server_name:{server_name} translate failed: {e}")
+                    logger.warning(f"server_name:{server_name} translate failed: {e}")
             elif "sse" == server_config.get("type", ""):
                 server_configs.append(
                     {
@@ -415,28 +412,28 @@ async def mcp_tool_desc_transform_v2(
                         name=server_config["name"], params=server_config["params"]
                     )
                 else:
-                    logging.warning(
+                    logger.warning(
                         f"Unsupported MCP server type: {server_config['type']}"
                     )
                     continue
 
                 server = await stack.enter_async_context(server)
-                #servers.append(server)
-                _mcp_openai_tools = await run([server],black_tool_actions)
+                # servers.append(server)
+                _mcp_openai_tools = await run([server], black_tool_actions)
             if _mcp_openai_tools:
                 mcp_openai_tools.extend(_mcp_openai_tools)
         except BaseException as err:
             # single
-            logging.warning(
+            logger.warning(
                 f"Failed to get tools for MCP server '{server_config['name']}'.\n"
                 f"Error: {err}\n"
                 f"Traceback:\n{traceback.format_exc()}"
             )
             continue
 
-    #async with AsyncExitStack() as stack:
+    # async with AsyncExitStack() as stack:
 
-        #mcp_openai_tools = await run(servers)
+    # mcp_openai_tools = await run(servers)
 
     if mcp_openai_tools:
         openai_tools.extend(mcp_openai_tools)
@@ -471,7 +468,7 @@ async def mcp_tool_desc_transform(
                     tmp_function_tool = get_function_tool(server_name)
                     openai_tools.extend(tmp_function_tool)
                 except Exception as e:
-                    logging.warning(f"server_name:{server_name} translate failed: {e}")
+                    logger.warning(f"server_name:{server_name} translate failed: {e}")
             elif "api" == server_config.get("type", ""):
                 api_result = requests.get(server_config["url"] + "/list_tools")
                 try:
@@ -502,7 +499,7 @@ async def mcp_tool_desc_transform(
                         }
                         openai_tools.append(tmp_function)
                 except Exception as e:
-                    logging.warning(f"server_name:{server_name} translate failed: {e}")
+                    logger.warning(f"server_name:{server_name} translate failed: {e}")
             elif "sse" == server_config.get("type", ""):
                 server_configs.append(
                     {
@@ -581,7 +578,7 @@ async def mcp_tool_desc_transform(
                         name=server_config["name"], params=server_config["params"]
                     )
                 else:
-                    logging.warning(
+                    logger.warning(
                         f"Unsupported MCP server type: {server_config['type']}"
                     )
                     continue
@@ -590,7 +587,7 @@ async def mcp_tool_desc_transform(
                 servers.append(server)
             except BaseException as err:
                 # single
-                logging.error(
+                logger.error(
                     f"Failed to get tools for MCP server '{server_config['name']}'.\n"
                     f"Error: {err}\n"
                     f"Traceback:\n{traceback.format_exc()}"
@@ -648,7 +645,7 @@ async def call_function_tool(
                 )
 
     except Exception as e:
-        logging.warning(f"call_function_tool ({server_name})({tool_name}) failed: {e}")
+        logger.warning(f"call_function_tool ({server_name})({tool_name}) failed: {e}")
         action_result = ActionResult(
             tool_name=server_name, action_name=tool_name, content="", keep=True
         )
@@ -686,7 +683,7 @@ async def call_api(
 
     server_config = mcp_servers.get(server_name)
     if "api" != server_config.get("type", ""):
-        logging.warning(
+        logger.warning(
             f"Server {server_name} is not API type, should use call_tool instead"
         )
         return action_result
@@ -703,7 +700,7 @@ async def call_api(
             keep=True,
         )
     except Exception as e:
-        logging.warning(f"call_api ({server_name})({tool_name}) failed: {e}")
+        logger.warning(f"call_api ({server_name})({tool_name}) failed: {e}")
         action_result = ActionResult(
             tool_name=server_name,
             action_name=tool_name,
@@ -740,7 +737,7 @@ async def get_server_instance(
         # Note: We've already handled API type in McpServers.call_tool method
         # Here we don't return None, but let the caller handle it
         if "api" == server_config.get("type", ""):
-            logging.info(f"API server {server_name} doesn't need persistent connection")
+            logger.info(f"API server {server_name} doesn't need persistent connection")
             return None
         elif "sse" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
@@ -759,7 +756,7 @@ async def get_server_instance(
                 },
             )
             await server.connect()
-            logging.info(f"Successfully connected to SSE server: {server_name}")
+            logger.info(f"Successfully connected to SSE server: {server_name}")
             return server
         elif "streamable-http" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
@@ -777,7 +774,7 @@ async def get_server_instance(
                 },
             )
             await server.connect()
-            logging.info(f"Successfully connected to STREAMABLE-HTTP server: {server_name}")
+            logger.info(f"Successfully connected to STREAMABLE-HTTP server: {server_name}")
             return server
         else:  # stdio type
             params = {
@@ -793,10 +790,10 @@ async def get_server_instance(
             }
             server = MCPServerStdio(name=server_name, params=params)
             await server.connect()
-            logging.info(f"Successfully connected to stdio server: {server_name}")
+            logger.info(f"Successfully connected to stdio server: {server_name}")
             return server
     except Exception as e:
-        logging.warning(f"Failed to create server instance for {server_name}: {e}")
+        logger.warning(f"Failed to create server instance for {server_name}: {e}")
         return None
 
 
@@ -811,8 +808,8 @@ async def cleanup_server(server):
             await server.cleanup()
         elif hasattr(server, "close"):
             await server.close()
-        logging.info(
+        logger.info(
             f"Successfully cleaned up server: {getattr(server, 'name', 'unknown')}"
         )
     except Exception as e:
-        logging.warning(f"Failed to cleanup server: {e}")
+        logger.warning(f"Failed to cleanup server: {e}")

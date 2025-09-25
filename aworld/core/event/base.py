@@ -114,7 +114,7 @@ class Message(Generic[DataType]):
 
 
 @dataclass
-class TaskEvent(Message[TaskItem]):
+class TaskMessage(Message[TaskItem]):
     """Task message is oriented towards applications, can interact with third-party entities independently."""
     category: str = 'task'
 
@@ -143,6 +143,7 @@ class CancelMessage(Message[TaskItem]):
     category: str = 'task'
     priority: int = -1
     topic: str = TopicType.CANCEL
+
 
 @dataclass
 class GroupMessage(Message[Union[Dict[str, Any], List[ActionModel]]]):
@@ -200,7 +201,6 @@ class Messageable(object):
         Args:
             message: Message structure that carries the data that needs to be processed.
         """
-
 
 class Recordable(Messageable):
     """Top-level API for recording data."""

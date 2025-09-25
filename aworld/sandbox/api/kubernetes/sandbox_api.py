@@ -1,10 +1,10 @@
-import logging
 import time
 import datetime
 import random
 import string
 from typing import Dict, List, Any, Optional
 
+from aworld.logs.util import logger
 from aworld.sandbox.api.base_sandbox_api import BaseSandboxApi
 from aworld.sandbox.env_client.kubernetes.client import KubernetesApiClient
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxK8sResponse
@@ -38,8 +38,8 @@ class KubernetesSandboxApi(BaseSandboxApi):
             random_str = cls.generate_random_string()
             pod_name = f"pod-{date_prefix}-{random_str}"
             service_name = f"service-{date_prefix}-{random_str}"
-            logging.info(f"Generated pod_name: {pod_name}")
-            logging.info(f"Generated service_name: {service_name}")
+            logger.info(f"Generated pod_name: {pod_name}")
+            logger.info(f"Generated service_name: {service_name}")
 
             client = KubernetesApiClient()
 
@@ -60,11 +60,11 @@ class KubernetesSandboxApi(BaseSandboxApi):
                     break
                 attempts += 1
                 if attempts < max_attempts:
-                    logging.info(f"Waiting for Pod to be ready, attempt {attempts}/{max_attempts}")
+                    logger.info(f"Waiting for Pod to be ready, attempt {attempts}/{max_attempts}")
                     time.sleep(wait_seconds)
                     
             if not pod_ready:
-                logging.warning("Timed out waiting for Pod and Service to be ready")
+                logger.warning("Timed out waiting for Pod and Service to be ready")
                 client.delete_pod(pod_name)
                 return None
 
@@ -90,7 +90,7 @@ class KubernetesSandboxApi(BaseSandboxApi):
                     break
                 attempts += 1
                 if attempts < max_attempts:
-                    logging.info(f"Waiting for Service to be ready, attempt {attempts}/{max_attempts}")
+                    logger.info(f"Waiting for Service to be ready, attempt {attempts}/{max_attempts}")
                     time.sleep(wait_seconds)
                     
             if not service_ready:
@@ -119,7 +119,7 @@ class KubernetesSandboxApi(BaseSandboxApi):
                         if response:
                             mcp_config = response
                     except Exception as e:
-                        logging.warning(f"Failed to get mcp configs: {e}")
+                        logger.warning(f"Failed to get mcp configs: {e}")
 
             return SandboxK8sResponse(
                 pod_name=pod_name,
@@ -132,7 +132,7 @@ class KubernetesSandboxApi(BaseSandboxApi):
             )
 
         except Exception as e:
-            logging.info(f"Failed to create Sandbox by k8s: {e}")
+            logger.info(f"Failed to create Sandbox by k8s: {e}")
             # Only attempt to delete resources if client has been initialized
             if client:
                 if pod_name:
@@ -183,7 +183,7 @@ class KubernetesSandboxApi(BaseSandboxApi):
 
             return mcp_config
         except Exception as e:
-            logging.warning(f"Failed to get_mcp_configs_from_k8s: {e}")
+            logger.warning(f"Failed to get_mcp_configs_from_k8s: {e}")
             return None
     
     @classmethod
@@ -198,14 +198,14 @@ class KubernetesSandboxApi(BaseSandboxApi):
         """
         try:
             if not sandbox_id or not metadata:
-                logging.warning(f"sandbox_id={sandbox_id} or metadata={metadata} is None")
+                logger.warning(f"sandbox_id={sandbox_id} or metadata={metadata} is None")
                 return False
 
             pod_name = metadata.get("pod_name")
             service_name = metadata.get("service_name")
             
             if not pod_name or not service_name:
-                logging.warning(f"pod_name={pod_name} or service_name={service_name} is None")
+                logger.warning(f"pod_name={pod_name} or service_name={service_name} is None")
                 return False
                 
             client = KubernetesApiClient()
@@ -214,5 +214,5 @@ class KubernetesSandboxApi(BaseSandboxApi):
             return True
             
         except Exception as e:
-            logging.warning(f"Failed to remove Sandbox: {e}")
+            logger.warning(f"Failed to remove Sandbox: {e}")
             return False 

@@ -91,7 +91,7 @@ class DefaultAgentHandler(AgentHandler):
                     topic=TopicType.FINISHED,
                     headers=headers
                 )
-                logger.info(f"FINISHED|agent handler send finished message: {msg}")
+                logger.info(f"agent handler send finished message: {msg}")
                 yield msg
                 return
 
@@ -112,7 +112,7 @@ class DefaultAgentHandler(AgentHandler):
                         topic=TopicType.FINISHED,
                         headers=headers
                     )
-                    logger.info(f"FINISHED|agent handler send finished message: {msg}")
+                    logger.info(f"agent handler send finished message: {msg}")
                     yield msg
                 else:
                     msg = Message(
@@ -369,8 +369,7 @@ class DefaultAgentHandler(AgentHandler):
         if ((not caller or caller == self.swarm.communicate_agent.id())
                 and (self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished or
                      (agent.id() == self.swarm.agent_graph.root_agent.id() and agent.finished))):
-            logger.info(
-                f"FINISHED|_social_stop_check finished|{self.swarm.cur_step}|{self.swarm.max_steps}|{self.swarm.finished}")
+            logger.info(f"Team swarm {self.swarm} finished {self.swarm.finished}, run step: {self.swarm.cur_step}")
             yield Message(
                 category=Constants.TASK,
                 payload=action.policy_info,
@@ -382,7 +381,6 @@ class DefaultAgentHandler(AgentHandler):
         agent = self.swarm.agents.get(action.agent_name)
         caller = self.swarm.agent_graph.root_agent.id() or message.caller
         if agent.id() != self.swarm.agent_graph.root_agent.id():
-            logger.info(f"_stop_check Team|{agent.id()} --> {caller}")
             yield Message(
                 category=Constants.AGENT,
                 payload=Observation(content=action.policy_info),
@@ -401,7 +399,7 @@ class DefaultAgentHandler(AgentHandler):
                           endless_threshold=self.endless_threshold,
                           root_agent_name=self.swarm.communicate_agent.id()):
             logger.info(
-                f"FINISHED|_social_stop_check endless_detect|{self.agent_calls}|{self.endless_threshold}|{self.swarm.communicate_agent.id()}")
+                f"endless_detect|{self.agent_calls}|{self.endless_threshold}|{self.swarm.communicate_agent.id()}")
             yield Message(
                 category=Constants.TASK,
                 payload=action.policy_info,
@@ -414,8 +412,7 @@ class DefaultAgentHandler(AgentHandler):
 
         if not caller or caller == self.swarm.communicate_agent.id():
             if self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished:
-                logger.info(
-                    f"FINISHED|_social_stop_check finished|{self.swarm.cur_step}|{self.swarm.max_steps}|{self.swarm.finished}")
+                logger.info(f"Handoff swarm {self.swarm} finished {self.swarm.finished}, run step: {self.swarm.cur_step}")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,
@@ -426,7 +423,7 @@ class DefaultAgentHandler(AgentHandler):
                 )
             else:
                 self.swarm.cur_step += 1
-                logger.info(f"_social_stop_check execute loop {self.swarm.cur_step}.")
+                logger.info(f"Handoff swarm {self.swarm} execute loop {self.swarm.cur_step}.")
                 yield Message(
                     category=Constants.AGENT,
                     payload=Observation(content=action.policy_info),
