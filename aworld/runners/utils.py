@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import List, Dict
 
-from aworld.config import RunConfig, EngineName, ConfigDict
+from aworld.config import RunConfig, EngineName, ConfigDict, TaskConfig
 from aworld.core.agent.swarm import GraphBuildType
 
 from aworld.core.task import Task, TaskResponse, Runner
@@ -74,7 +74,7 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
             if runner.task.conf:
                 runner.task.conf.resp_carry_context = False
             else:
-                runner.task.conf = ConfigDict(resp_carry_context=False)
+                runner.task.conf = ConfigDict(TaskConfig(resp_carry_context=False).model_dump())
     return await runtime_engine.execute([runner.run for runner in runners])
 
 

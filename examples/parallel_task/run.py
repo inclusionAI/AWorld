@@ -9,14 +9,14 @@ from aworld.config import RunConfig, EngineName
 os.environ["LLM_PROVIDER"] = "openai"
 os.environ["LLM_MODEL_NAME"] = "gpt-4o"
 os.environ["LLM_API_KEY"] = "your-api-key"
-# os.environ["LLM_BASE_URL"] = "https://api.openai.com/v1"
+os.environ["LLM_BASE_URL"] = "http://localhost:34567"
 
 # Create agent
 agent_config = AgentConfig(
     llm_provider=os.getenv("LLM_PROVIDER", "openai"),
     llm_model_name=os.getenv("LLM_MODEL_NAME"),
     llm_api_key=os.getenv("LLM_API_KEY"),
-    # llm_base_url=os.getenv("LLM_BASE_URL")
+    llm_base_url=os.getenv("LLM_BASE_URL")
 )
 my_agent = Agent(name="my_agent", conf=agent_config)
 
