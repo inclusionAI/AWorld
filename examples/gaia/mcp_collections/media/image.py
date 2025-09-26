@@ -158,7 +158,7 @@ class ImageCollection(ActionCollection):
                 {
                     "role": "user",
                     "content": [
-                        {"role": "text", "content": task},
+                        {"role": "text", "text": task},
                         {"type": "image_url", "image_url": {"url": image_base64}},
                     ],
                 },
