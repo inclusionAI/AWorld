@@ -10,7 +10,10 @@ from aworld.core.storage.condition import Condition
 from aworld.core.storage.data import Data, DataBlock
 from aworld.logs.util import logger
 
-DataItem = TypeVar('DataItem', bound=[Data, BaseModel])
+# Python3.11+
+# DataItem = TypeVar('DataItem', bound=[Data, BaseModel])
+# Python3.10
+DataItem = TypeVar('DataItem', bound=Data | BaseModel)
 
 
 class Storage(Generic[DataItem]):
