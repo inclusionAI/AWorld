@@ -4,25 +4,21 @@ import asyncio
 import time
 import traceback
 
-from aworld.core.agent.base import BaseAgent
-
-from aworld.core.exceptions import AWorldRuntimeException
-
 import aworld.trace as trace
 from typing import List, Callable, Any
 
+from aworld.agents.llm_agent import Agent
+from aworld.core.agent.base import BaseAgent
 from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
-
-from aworld.agents.llm_agent import Agent
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse
 from aworld.dataset.trajectory_dataset import generate_trajectory
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
-
 from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import override_in_subclass, new_instance
 from aworld.runners.state_manager import EventRuntimeStateManager
@@ -264,7 +260,8 @@ class TaskEventRunner(TaskRunner):
         try:
             while True:
                 if 0 < self.task.timeout < time.time() - self.start_time:
-                    logger.warn(f"{task_flag} task {self.task.id} timeout after {time.time() - self.start_time} seconds.")
+                    logger.warn(
+                        f"{task_flag} task {self.task.id} timeout after {time.time() - self.start_time} seconds.")
                     self._task_response = TaskResponse(answer='',
                                                        success=False,
                                                        context=message.context,
@@ -292,7 +289,8 @@ class TaskEventRunner(TaskRunner):
                 logger.debug(f"{task_flag} task {self.task.id} next message snap")
                 # consume message
                 message: Message = await self.event_mng.consume()
-                logger.debug(f"consume message {message} of {task_flag} task: {self.task.id}, {self.event_mng.event_bus}")
+                logger.debug(
+                    f"consume message {message} of {task_flag} task: {self.task.id}, {self.event_mng.event_bus}")
                 # use registered handler to process message
                 await self._common_process(message)
                 logger.debug(f"{task_flag} task {self.task.id} finished.")
@@ -341,6 +339,8 @@ class TaskEventRunner(TaskRunner):
             self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
                                                success=False,
                                                msg="Task return None.")
+        if self.context.get_task().conf and self.context.get_task().conf.resp_carry_raw_llm_resp == True:
+            self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
         return self._task_response
 
     async def _save_trajectories(self):
