@@ -54,6 +54,7 @@ class DefaultTaskHandler(TaskHandler):
         logger.debug(f"task handler receive message: {message}")
 
         headers = {"context": message.context}
+        self.runner.context.merge_context(message.context)
         topic = message.topic
         task_item: TaskItem = message.payload
         if topic == TopicType.SUBSCRIBE_TOOL:
