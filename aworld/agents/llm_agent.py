@@ -29,7 +29,7 @@ from aworld.memory.models import MessageMetadata, MemoryAIMessage, MemoryToolMes
     MemorySystemMessage, MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse, ToolCall, LLMResponseError
-from aworld.models.utils import tool_desc_transform, agent_desc_transform
+from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
@@ -730,6 +730,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 )
 
             logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
+            if llm_response:
+                usage_process(llm_response.usage, message.context)
         except Exception as e:
             logger.warn(traceback.format_exc())
             await send_message(Message(

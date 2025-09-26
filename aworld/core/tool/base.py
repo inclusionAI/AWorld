@@ -253,7 +253,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             )
             raise e
         finally:
-            logger.warning(
+            logger.info(
                 f"Tool {self.name()} result: {final_res}, session_id: {message.session_id}, task_id: {message.context.task_id}"
             )
 
