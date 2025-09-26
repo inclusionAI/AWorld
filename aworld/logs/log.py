@@ -48,25 +48,24 @@ def get_log_provider() -> LoggerProvider:
 
 def instrument_logging(logger: Logger, level: Union[int, str] = NOTSET) -> None:
     """Instrument the logger."""
-    pass
-    # for handler in logger.handlers:
-    #     if not any(isinstance(filter, TraceLoggingFilter) for filter in handler.filters):
-    #         handler.setFormatter(Formatter(TRACE_LOG_FORMAT))
-    #         handler.addFilter(TraceLoggingFilter())
-    #
-    # if not logger.handlers:
-    #     print("No handlers found, adding a StreamHandler. logger=", logger.name)
-    #     handler = StreamHandler()
-    #     handler.setFormatter(Formatter(SPECIAL_TRACE_LOG_FORMAT))
-    #     handler.addFilter(TraceLoggingFilter())
-    #     logger.addHandler(handler)
-    # else:
-    #     for handler in logger.handlers:
-    #         if not any(isinstance(filter, TraceLoggingFilter) for filter in handler.filters):
-    #             handler.setFormatter(Formatter(SPECIAL_TRACE_LOG_FORMAT))
-    #             handler.addFilter(TraceLoggingFilter())
-    # logger.propagate = False
-    # logger.addHandler(TraceLogginHandler(level))
+    for handler in logger.handlers:
+        if not any(isinstance(filter, TraceLoggingFilter) for filter in handler.filters):
+            handler.setFormatter(Formatter(TRACE_LOG_FORMAT))
+            handler.addFilter(TraceLoggingFilter())
+
+    if not logger.handlers:
+        # print("No handlers found, adding a StreamHandler. logger=", logger.name)
+        handler = StreamHandler()
+        handler.setFormatter(Formatter(SPECIAL_TRACE_LOG_FORMAT))
+        handler.addFilter(TraceLoggingFilter())
+        logger.addHandler(handler)
+    else:
+        for handler in logger.handlers:
+            if not any(isinstance(filter, TraceLoggingFilter) for filter in handler.filters):
+                handler.setFormatter(Formatter(SPECIAL_TRACE_LOG_FORMAT))
+                handler.addFilter(TraceLoggingFilter())
+    logger.propagate = False
+    logger.addHandler(TraceLogginHandler(level))
 
 
 class TraceLoggingFilter(Filter):
