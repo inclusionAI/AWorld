@@ -147,7 +147,7 @@ class AWorldLogger:
             frame = inspect.currentframe().f_back
             if frame.f_back and (
                     # python3.11+
-                    (hasattr(frame.f_code, "co_qualname") and frame.f_code.co_qualname == 'aworld_log.<locals>.decorator') or
+                    (getattr(frame.f_code, "co_qualname", None) == 'aworld_log.<locals>.decorator') or
                     # python3.10
                     (frame.f_code.co_name == 'decorator' and os.path.basename(frame.f_code.co_filename) == 'util.py')):
                 frame = frame.f_back
