@@ -5,8 +5,8 @@ from typing import AsyncGenerator
 
 from aworld.config import ConfigDict
 from aworld.core.agent.base import is_agent
-from aworld.core.common import ActionModel, TaskItem
-from aworld.core.event.base import Message, Constants, TopicType
+from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
+from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
 from aworld.core.tool.base import AsyncTool, Tool, ToolFactory
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -78,15 +78,39 @@ class DefaultToolHandler(ToolHandler):
                 conf = self.tools_conf.get(act.tool_name)
                 if isinstance(conf, dict):
                     conf = ConfigDict(conf)
-                tool = ToolFactory(act.tool_name, conf=conf, asyn=conf.use_async if conf else False)
-                tool.event_driven = True
-                if isinstance(tool, Tool):
-                    tool.reset()
-                elif isinstance(tool, AsyncTool):
-                    await tool.reset()
-                tool_mapping[act.tool_name] = []
-                self.tools[act.tool_name] = tool
-                new_tools[act.tool_name] = tool
+                try:
+                    tool = ToolFactory(act.tool_name, conf=conf, asyn=conf.use_async if conf else False)
+                    tool.event_driven = True
+                    if isinstance(tool, Tool):
+                        tool.reset()
+                    elif isinstance(tool, AsyncTool):
+                        await tool.reset()
+                    tool_mapping[act.tool_name] = []
+                    self.tools[act.tool_name] = tool
+                    new_tools[act.tool_name] = tool
+                except Exception as e:
+                    logger.error(f"create tool {act.tool_name} failed: {str(e)}")
+                    err_msg = f"Failed to execute {act.tool_name}: {str(e)}"
+                    yield AgentMessage(
+                        category=Constants.AGENT,
+                        payload=Observation(
+                            content=err_msg,
+                            action_result=[
+                                ActionResult(
+                                    tool_name=act.tool_name,
+                                    tool_call_id=act.tool_call_id,
+                                    content=err_msg,
+                                    error=str(e),
+                                    success=False,
+                                )
+                            ]
+                        ),
+                        sender=act.tool_name,
+                        session_id=message.session_id,
+                        receiver=act.agent_name,
+                        headers=message.headers
+                    )
+                    return
             if act.tool_name not in tool_mapping:
                 tool_mapping[act.tool_name] = []
             tool_mapping[act.tool_name].append(act)
