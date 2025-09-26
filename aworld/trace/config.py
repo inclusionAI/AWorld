@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 
 from typing import Sequence, Optional
 from aworld.trace.span_cosumer import SpanConsumer
-from aworld.logs.util import trace_logger
 from aworld.trace.context_manager import trace_configure
 from aworld.metrics.context_manager import MetricContext
 from aworld.logs.log import set_log_provider, instrument_logging
@@ -18,8 +17,10 @@ from aworld.trace.opentelemetry.memory_storage import TraceStorage
 def backend_list():
     return ["memory"]
 
+
 def logger_list():
-    return [trace_logger]
+    return []
+
 
 @dataclass
 class ObservabilityConfig():
