@@ -295,7 +295,6 @@ class TaskEventRunner(TaskRunner):
                 logger.debug(f"consume message {message} of {task_flag} task: {self.task.id}, {self.event_mng.event_bus}")
                 # use registered handler to process message
                 await self._common_process(message)
-                await self.context.update_task_after_run(self._task_response)
                 logger.debug(f"{task_flag} task {self.task.id} finished.")
         except Exception as e:
             logger.error(f"consume message fail. {traceback.format_exc()}")
@@ -313,6 +312,7 @@ class TaskEventRunner(TaskRunner):
             await self.event_mng.emit_message(error_msg)
         finally:
             if await self.is_stopped():
+                await self.context.update_task_after_run(self._task_response)
                 if not self.task.is_sub_task:
                     logger.info(f'{task_flag} task {self.task.id} will mark outputs finished')
                     await self.task.outputs.mark_completed()

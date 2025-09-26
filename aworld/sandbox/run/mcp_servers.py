@@ -75,7 +75,7 @@ class McpServers:
 
         try:
             # Build unique identifier for the tool
-            tool_identifier = f"mcp__{server_name}__{tool_name}"
+            tool_identifier = f"{server_name}__{tool_name}"
 
             # Find corresponding tool in tool_list
             target_tool = None

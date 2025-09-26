@@ -8,7 +8,7 @@ from typing import Union, Callable
 from loguru import logger as base_logger
 
 base_logger.remove()
-SEGMENT_LEN = 200
+SEGMENT_LEN = 2000
 CONSOLE_LEVEL = 'INFO'
 STORAGE_LEVEL = 'INFO'
 SUPPORTED_FUNC = ['info', 'debug', 'warning', 'error', 'critical', 'exception', 'trace', 'success', 'log', 'catch',
