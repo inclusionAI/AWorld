@@ -145,13 +145,17 @@ class AWorldLogger:
     def __getattr__(self, name: str):
         if name in SUPPORTED_FUNC:
             frame = inspect.currentframe().f_back
-            if frame.f_back and frame.f_code.co_qualname == 'aworld_log.<locals>.decorator':
+            if frame.f_back and (
+                    # python3.11+
+                    (hasattr(frame.f_code, "co_qualname") and frame.f_code.co_qualname == 'aworld_log.<locals>.decorator') or
+                    # python3.10
+                    (frame.f_code.co_name == 'decorator' and os.path.basename(frame.f_code.co_filename) == 'util.py')):
                 frame = frame.f_back
 
             module = inspect.getmodule(frame)
             module = module.__name__ if module else ''
             line = frame.f_lineno
-            func_name = frame.f_code.co_qualname.replace("<module>", "")
+            func_name = getattr(frame.f_code, "co_qualname", frame.f_code.co_name).replace("<module>", "")
             return getattr(self._logger.patch(lambda r: r.update(function=func_name, line=line, name=module)), name)
         raise AttributeError(f"'AWorldLogger' object has no attribute '{name}'")
 
