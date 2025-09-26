@@ -83,6 +83,8 @@ class AWorldLogger:
     _added_handlers = set()
 
     def __init__(self, tag='AWorld', name: str = 'AWorld', formatter: Union[str, Callable] = None):
+        self.tag = tag
+        self.name = name
         file_formatter = formatter
         console_formatter = formatter
         if not formatter:
