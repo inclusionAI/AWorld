@@ -5,13 +5,13 @@ from typing import Sequence, Optional
 from aworld.trace.span_cosumer import SpanConsumer
 from aworld.trace.context_manager import trace_configure
 from aworld.metrics.context_manager import MetricContext
-from aworld.logs.log import set_log_provider, instrument_logging
 from aworld.trace.instrumentation.uni_llmmodel import LLMModelInstrumentor
 from aworld.trace.instrumentation.eventbus import EventBusInstrumentor
 from aworld.trace.instrumentation.agent import AgentInstrumentor
 from aworld.trace.instrumentation.tool import ToolInstrumentor
-
+from aworld.logs.log import set_log_provider
 from aworld.trace.opentelemetry.memory_storage import TraceStorage
+from aworld.logs.util import trace_logger
 
 
 def backend_list():
@@ -101,7 +101,49 @@ def _log_configure(config: ObservabilityConfig):
                          backend=config.logs_backend,
                          base_url=config.logs_base_url,
                          write_token=config.logs_write_token)
+    if _has_loguru():
+        instrument_loguru(config.logs_trace_instrumented_loggers)
+    elif _has_logging():
+        _instrument_logging(config.logs_trace_instrumented_loggers)
 
-    if config.logs_trace_instrumented_loggers:
-        for logger in config.logs_trace_instrumented_loggers:
-            instrument_logging(logger)
+
+def _instrument_logging(logs_trace_instrumented_loggers: Sequence[str]) -> None:
+    """Instrument the logger."""
+    from aworld.logs.logging_instrument import instrument_logging
+    import logging
+
+    if not logs_trace_instrumented_loggers:
+        instrument_logging()
+    else:
+        for logger in logs_trace_instrumented_loggers:
+            if isinstance(logger, logging.Logger):
+                instrument_logging(logger)
+
+
+def instrument_loguru(logs_trace_instrumented_loggers) -> None:
+    """Instrument the logger."""
+    from aworld.logs.loguru_instrument import instrument_loguru, instrument_loguru_base_logger
+    from aworld.logs.util import AWorldLogger
+
+    instrument_loguru_base_logger()
+    need_instrument_logger_tags = set()
+    for logger in logs_trace_instrumented_loggers:
+        if isinstance(logger, AWorldLogger):
+            need_instrument_logger_tags.add(logger.tag)
+    instrument_loguru(need_instrument_logger_tags)
+
+
+def _has_loguru() -> bool:
+    try:
+        import loguru
+        return True
+    except ImportError:
+        return False
+
+
+def _has_logging() -> bool:
+    try:
+        import logging
+        return True
+    except ImportError:
+        return False

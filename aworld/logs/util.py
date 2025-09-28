@@ -82,7 +82,13 @@ def monkey_logger(logger: base_logger):
 class AWorldLogger:
     _added_handlers = set()
 
-    def __init__(self, tag='AWorld', name: str = 'AWorld', formatter: Union[str, Callable] = None):
+    def __init__(self, tag='AWorld',
+                 name: str = 'AWorld',
+                 console_level: str = CONSOLE_LEVEL,
+                 file_level: str = STORAGE_LEVEL,
+                 formatter: Union[str, Callable] = None):
+        self.tag = tag
+        self.name = name
         file_formatter = formatter
         console_formatter = formatter
         if not formatter:
@@ -124,7 +130,7 @@ class AWorldLogger:
                         filter=lambda record: record['extra'].get('name') == tag,
                         colorize=True,
                         format=console_formatter,
-                        level=CONSOLE_LEVEL)
+                        level=console_level)
 
         log_file = f'{os.getcwd()}/logs/{tag}-{{time:YYYY-MM-DD}}.log'
         handler_key = f'{name}_{tag}'
@@ -132,7 +138,7 @@ class AWorldLogger:
             base_logger.add(log_file,
                             format=file_formatter,
                             filter=lambda record: record['extra'].get('name') == tag,
-                            level=STORAGE_LEVEL,
+                            level=file_level,
                             rotation='32 MB',
                             retention='1 days',
                             enqueue=True,
@@ -142,12 +148,16 @@ class AWorldLogger:
 
         self._logger = base_logger.bind(name=tag)
 
+    def reset_level(self, level: str):
+        base_logger.remove()
+        self.__init__(tag=self.tag, name=self.name, console_level=level, file_level=level)
+
     def __getattr__(self, name: str):
         if name in SUPPORTED_FUNC:
             frame = inspect.currentframe().f_back
             if frame.f_back and (
                     # python3.11+
-                    (hasattr(frame.f_code, "co_qualname") and frame.f_code.co_qualname == 'aworld_log.<locals>.decorator') or
+                    (getattr(frame.f_code, "co_qualname", None) == 'aworld_log.<locals>.decorator') or
                     # python3.10
                     (frame.f_code.co_name == 'decorator' and os.path.basename(frame.f_code.co_filename) == 'util.py')):
                 frame = frame.f_back

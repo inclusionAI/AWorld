@@ -1,3 +1,5 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
 import requests
 from urllib.parse import urljoin
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
@@ -7,6 +9,8 @@ from opentelemetry.sdk._logs._internal import SynchronousMultiLogRecordProcessor
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
 from ..log import LoggerProvider
+
+
 class OTLPLoggerProvider(LoggerProvider):
 
     def __init__(self,
@@ -14,11 +18,10 @@ class OTLPLoggerProvider(LoggerProvider):
                  base_url: str = None,
                  write_token: str = None,
                  **kwargs
-    ) -> None:
+                 ) -> None:
         self._logger_provider = _build_otlp_privider(backend=backend,
-                                               base_url=base_url,
-                                               write_token=write_token)
-
+                                                     base_url=base_url,
+                                                     write_token=write_token)
 
 
 def _build_otlp_privider(backend: str = None, base_url: str = None, write_token: str = None):
@@ -56,7 +59,7 @@ def _configure_logfire_exporter(write_token: str, base_url: str = None) -> OTLPL
     session = requests.Session()
     session.headers.update(headers)
     return OTLPLogExporter(
-                endpoint=urljoin(base_url, '/v1/logs'),
-                session=session,
-                compression=Compression.Gzip,
+        endpoint=urljoin(base_url, '/v1/logs'),
+        session=session,
+        compression=Compression.Gzip,
     )
