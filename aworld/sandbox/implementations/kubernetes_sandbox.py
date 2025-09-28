@@ -23,8 +23,7 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
             mcp_config: Optional[Any] = None,
             **kwargs
     ):
-        """
-        Initialize a new KubernetesSandbox instance.
+        """Initialize a new KubernetesSandbox instance.
         
         Args:
             sandbox_id: Unique identifier for the sandbox. If None, one will be generated.
@@ -56,7 +55,7 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
         self._env_type = SandboxEnvType.K8S
         self._mcp_servers = mcp_servers
         self._mcp_config = mcp_config
-        
+
         # Ensure sandbox_id has a value in all cases
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
 
@@ -68,7 +67,7 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
                 mcp_servers=mcp_servers,
                 mcp_config=mcp_config,
             )
-            
+
             if not response:
                 self._status = SandboxStatus.ERROR
                 # If creation fails, keep the generated UUID as the ID
@@ -86,7 +85,7 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
                     "env_type": getattr(response, 'env_type', None),
                 }
                 self._mcp_config = getattr(response, 'mcp_config', None)
-            
+
         # Initialize McpServers
         self._mcpservers = McpServers(
             mcp_servers,
@@ -95,47 +94,27 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
         )
 
     async def remove(self) -> None:
-        """
-        Remove sandbox.
-        """
+        """Remove sandbox."""
         await self._remove_sandbox(
             sandbox_id=self.sandbox_id,
             metadata=self._metadata,
             env_type=self._env_type
         )
-        
+
     async def cleanup(self) -> None:
-        """
-        Clean up Sandbox resources, including MCP server connections
-        """
+        """Clean up Sandbox resources, including MCP server connections."""
         try:
             if hasattr(self, '_mcpservers') and self._mcpservers:
                 await self._mcpservers.cleanup()
                 logger.info(f"Cleaned up MCP servers for sandbox {self.sandbox_id}")
         except Exception as e:
             logger.warning(f"Failed to cleanup MCP servers: {e}")
-        
+
         # Call the original remove method
         try:
             await self.remove()
         except Exception as e:
             logger.warning(f"Failed to remove sandbox: {e}")
-            
+
     def __del__(self):
-        """
-        Ensure resources are cleaned up when the object is garbage collected
-        """
-        try:
-            # Handle the case where an event loop already exists
-            try:
-                loop = asyncio.get_running_loop()
-                logger.warning("Cannot clean up sandbox in __del__ when event loop is already running")
-                return
-            except RuntimeError:
-                # No running event loop, create a new one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self.cleanup())
-                loop.close()
-        except Exception as e:
-            logger.warning(f"Failed to cleanup sandbox resources during garbage collection: {e}") 
+        super().__del__()
