@@ -109,7 +109,7 @@ def _log_configure(config: ObservabilityConfig):
 
 def _instrument_logging(logs_trace_instrumented_loggers: Sequence[str]) -> None:
     """Instrument the logger."""
-    from aworld.logs.logging_instrument import instrument_logging
+    from aworld.logs.instrument.logging_instrument import instrument_logging
     import logging
 
     if not logs_trace_instrumented_loggers:
@@ -122,7 +122,7 @@ def _instrument_logging(logs_trace_instrumented_loggers: Sequence[str]) -> None:
 
 def instrument_loguru(logs_trace_instrumented_loggers) -> None:
     """Instrument the logger."""
-    from aworld.logs.loguru_instrument import instrument_loguru, instrument_loguru_base_logger
+    from aworld.logs.instrument.loguru_instrument import instrument_loguru, instrument_loguru_base_logger
     from aworld.logs.util import AWorldLogger
 
     instrument_loguru_base_logger()
