@@ -20,7 +20,7 @@ async def main():
                 tools_conf={
                     "gym": {"env_id": "CartPole-v1", "render_mode": "human", "render": True, "use_async": True}})
     res = await Runners.run_task(task=task, run_conf=RunConfig())
-    trace_logger.info("asdfadfasdf", color=Color.pink)
+    trace_logger.info("show_trace", color=Color.pink)
 
 
 if __name__ == "__main__":
