@@ -58,7 +58,7 @@ class AworldWorkflow(RolloutWorkflow):
         n_samples = self.gconfig.n_samples
         tasks = [Task(input=data["messages"][0].get("content"),
                       agent=await self.build_agents(engine),
-                      conf=TaskConfig(resp_carry_raw_llm_resp=True))
+                      conf=TaskConfig(resp_carry_raw_llm_resp=True, resp_carry_context=False))
                  for _ in range(n_samples)]
         task_dict = {task.id: task for task in tasks}
         responses = await Runners.run_task(tasks)
@@ -139,6 +139,5 @@ class AworldWorkflow(RolloutWorkflow):
                     )
                     await f.write(info + "\n")
 
-        responses.clear()
         res = concat_padded_tensors(results)
         return res

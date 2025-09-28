@@ -1,18 +1,26 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import os
+import time
 import uuid
+import random
 from typing import List, Dict, Any
+
+import aiohttp
 
 from areal.api.cli_args import GenerationHyperparameters
 from areal.api.io_struct import ModelRequest, ModelResponse as ArealModelResponse
+from areal.engine.sglang_remote import RID_CACHE_SIZE
+from areal.utils.http import get_default_connector, arequest_with_retry
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.llm import register_llm_provider
-from aworld.models.model_response import ModelResponse, ToolCall
+from aworld.models.model_response import ModelResponse, ToolCall, Function
 from aworld.utils.common import sync_exec
+from aworld.logs.util import logger
 
 from vllm.entrypoints.openai.protocol import ExtractedToolCallInformation
-from vllm.entrypoints.openai.tool_parsers import ToolParserManager
+from vllm.entrypoints.openai.tool_parsers import ToolParserManager, ToolParser
 
 
 class ArealProvider(LLMProviderBase):
@@ -32,11 +40,19 @@ class ArealProvider(LLMProviderBase):
                          async_enabled=async_enabled, **kwargs)
 
         params = kwargs.get("params")
-        self.provider = params.get("client")
         self.tokenizer = params.get("tokenizer")
         self.sampling_params = params.get("sampling_params", {})
         self.request_id = params.get("request_id")
         self.tool_parser = params.get("tool_parser")
+        self.request_timeout = params.get("request_timeout", 3600)
+        self.request_retries = params.get("request_retries", 3)
+
+        self.rid_to_address = {}
+        # Maintain the addresses for the recent 128 requests
+        self.rid_queue = []
+        self.addresses = []
+        self.addresses = os.getenv("AREAL_LLM_SERVER_ADDRS").split(",")
+        self.server_idx = random.randint(0, len(self.addresses) - 1)
 
     def _init_provider(self):
         pass
@@ -62,14 +78,15 @@ class ArealProvider(LLMProviderBase):
                           stop: List[str] = None,
                           **kwargs) -> ModelResponse:
         loop = asyncio.get_running_loop()
+
         prompt_ids = await loop.run_in_executor(
             None,
-            lambda: self.tokenizer.apply_chat_template(
+            lambda:self.tokenizer.apply_chat_template(
                 messages,
                 tools=kwargs.get("tools"),
                 add_generation_prompt=True,
                 tokenize=True,
-            ),
+            )
         )
         rid = self.request_id or uuid.uuid4().hex
         req = ModelRequest(
@@ -78,11 +95,15 @@ class ArealProvider(LLMProviderBase):
             gconfig=GenerationHyperparameters(n_samples=1, **self.sampling_params),
             tokenizer=self.tokenizer,
         )
-        response: ArealModelResponse = await self.provider.agenerate(req)
+
+        response: ArealModelResponse = await loop.run_in_executor(
+            None,
+            lambda: sync_exec(self.agenerate, req)
+        )
         content = self.tokenizer.decode(response.output_tokens, skip_special_tokens=True)
 
         tool_parser = ToolParserManager.get_tool_parser(self.tool_parser)
-        res: ExtractedToolCallInformation = await tool_parser(self.tokenizer).extract_tool_calls(content)
+        res: ExtractedToolCallInformation = tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
 
         tool_calls = []
         if res.tools_called:
@@ -91,7 +112,127 @@ class ArealProvider(LLMProviderBase):
                              content=res.content,
                              tool_calls=tool_calls,
                              model=self.model_name,
-                             raw_response=response)
+                             raw_response=content)
+
+    async def agenerate(self, req: ModelRequest) -> ModelResponse:
+        # from AReaL
+        gconfig = req.gconfig
+        stop_token_ids = gconfig.stop_token_ids
+        stop = gconfig.stop
+
+        sample_params = {
+            "top_p": gconfig.top_p,
+            "top_k": gconfig.top_k,
+            "max_new_tokens": gconfig.max_new_tokens,
+            "temperature": 0.0 if gconfig.greedy else gconfig.temperature,
+            "stop_token_ids": stop_token_ids,
+            "frequency_penalty": gconfig.frequency_penalty,
+        }
+        if stop:
+            sample_params["stop"] = stop
+
+        payload = {
+            "input_ids": req.input_ids.copy(),
+            "image_data": req.image_data,  # ImageObject or str
+            "sampling_params": sample_params,
+            "return_logprob": True,
+            "stream": False,
+        }
+
+        # Make request
+        start_time = time.perf_counter()
+        accumulated_output_tokens = []
+        accumulated_output_logprobs = []
+        accumulated_versions = []
+
+        # A single "rid" shares the same sever to allow KV cache reuse
+        if req.rid in self.rid_to_address:
+            server_addr = self.rid_to_address[req.rid]
+        else:
+            server_addr = self.addresses[self.server_idx]
+            self.server_idx = (self.server_idx + 1) % len(self.addresses)
+            if len(self.rid_queue) >= RID_CACHE_SIZE:
+                # Remove the oldest entry if cache is full
+                oldest_rid = self.rid_queue.pop(0)
+                self.rid_to_address.pop(oldest_rid, None)
+            self.rid_to_address[req.rid] = server_addr
+            self.rid_queue.append(req.rid)
+
+        # Create a new session because we don't know whether this method
+        # is called in the workflow thread or the main thread.
+        session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(
+                total=self.request_timeout,
+                sock_connect=self.request_timeout,
+                connect=self.request_timeout,
+            ),
+            read_bufsize=1024 * 1024 * 10,
+            connector=get_default_connector(),
+        )
+
+        # Deal with rollout interruption
+        # "abort" is the stop reason for later v0.4.9.post2 after
+        # we call the pause_generation endpoint
+        stop_reason = None
+        while (
+                stop_reason not in ["stop", "tool_calls", "length"]
+                and len(accumulated_output_tokens) < gconfig.max_new_tokens
+        ):
+            # loop until the generation is complete
+            result = await arequest_with_retry(
+                session=session,
+                addr=server_addr,
+                endpoint="/generate",
+                payload=payload,
+                method="POST",
+                max_retries=self.request_retries,
+                timeout=self.request_timeout,
+            )
+
+            meta_info = result["meta_info"]
+            # Check if generation is complete
+            finish_reason = meta_info["finish_reason"]
+            stop_reason = finish_reason["type"]
+            if (
+                    stop_reason == "abort"
+                    and finish_reason.get("message") == "Abort before prefill"
+            ):
+                continue
+
+            # Parse response
+            output_tokens = [x[1] for x in meta_info["output_token_logprobs"]]
+            output_logprobs = [x[0] for x in meta_info["output_token_logprobs"]]
+
+            # Update accumulated outputs
+            accumulated_output_tokens.extend(output_tokens)
+            accumulated_output_logprobs.extend(output_logprobs)
+            # FIXME: Update with actual server versions
+            accumulated_versions.extend([-1] * len(output_tokens))
+
+            payload["input_ids"] += output_tokens
+            sample_params["max_new_tokens"] -= len(output_tokens)
+
+        if stop_reason == "abort":
+            # If stop_reason is "abort", the only reason we exit the loop is
+            # len(accumulated_output_tokens) >= gconfig.max_new_tokens
+            # so the actual reason is length
+            stop_reason = "length"
+        await session.close()
+        latency = time.perf_counter() - start_time
+
+        response = ArealModelResponse(
+            input_tokens=req.input_ids,
+            input_images=req.image_data,
+            output_tokens=accumulated_output_tokens,
+            output_logprobs=accumulated_output_logprobs,
+            output_versions=accumulated_versions,
+            stop_reason=stop_reason,
+            latency=latency,
+            ttft=latency,  # Simplified for non-streaming
+            tokenizer=req.tokenizer,
+            processor=req.processor,
+        )
+        return response
 
 
 register_llm_provider("areal", ArealProvider)

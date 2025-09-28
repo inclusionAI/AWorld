@@ -77,8 +77,13 @@ class VerlProvider(LLMProviderBase):
             ),
         )
         rid = self.request_id
-        response_output = await self.provider.generate(
-            request_id=rid, prompt_ids=prompt_ids, sampling_params=sampling_params
+
+        response_output = await loop.run_in_executor(
+            None,
+            lambda: sync_exec(self.provider.generate,
+                              request_id=rid,
+                              prompt_ids=prompt_ids,
+                              sampling_params=sampling_params)
         )
         content = self.tokenizer.decode(response_output.token_ids, skip_special_tokens=True)
 
