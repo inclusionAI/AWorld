@@ -413,6 +413,21 @@ def get_tracer_provider_silent():
         return None
 
 
+def get_trace_id():
+    try:
+        tracer = get_tracer_provider()
+    except Exception:
+        tracer = None
+
+    trace_id = ''
+    if tracer:
+        try:
+            span = tracer.get_current_span()
+            trace_id = span.get_trace_id()
+        except:
+            pass
+    return trace_id
+
 def log_trace_error():
     """
     Log an error with traceback information.

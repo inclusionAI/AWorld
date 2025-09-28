@@ -55,7 +55,7 @@ def configure(config: ObservabilityConfig = None):
         config = ObservabilityConfig()
     _trace_configure(config)
     _metrics_configure(config)
-    _log_configure(config)
+    # _log_configure(config)
     LLMModelInstrumentor().instrument()
     EventBusInstrumentor().instrument()
     AgentInstrumentor().instrument()

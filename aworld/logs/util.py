@@ -92,7 +92,7 @@ class AWorldLogger:
         file_formatter = formatter
         console_formatter = formatter
         if not formatter:
-            format = """<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
+            format = """<black>{extra[trace_id]} | {time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
 {extra[name]} PID: {process}, TID:{thread} |</black> <bold>{name}.{function}:{line}</bold> \
 - \n<level>{message}</level> {exception} """
 
@@ -153,6 +153,8 @@ class AWorldLogger:
         self.__init__(tag=self.tag, name=self.name, console_level=level, file_level=level)
 
     def __getattr__(self, name: str):
+        from aworld.trace.base import get_trace_id
+
         if name in SUPPORTED_FUNC:
             frame = inspect.currentframe().f_back
             if frame.f_back and (
@@ -166,7 +168,16 @@ class AWorldLogger:
             module = module.__name__ if module else ''
             line = frame.f_lineno
             func_name = getattr(frame.f_code, "co_qualname", frame.f_code.co_name).replace("<module>", "")
-            return getattr(self._logger.patch(lambda r: r.update(function=func_name, line=line, name=module)), name)
+
+            trace_id = get_trace_id()
+            update = {"function": func_name, "line": line, "name": module, "extra": {"trace_id": trace_id}}
+            def patch(record):
+                extra = update.pop("extra")
+                record.update(update)
+                record['extra'].update(extra)
+                return record
+
+            return getattr(self._logger.patch(patch), name)
         raise AttributeError(f"'AWorldLogger' object has no attribute '{name}'")
 
 
