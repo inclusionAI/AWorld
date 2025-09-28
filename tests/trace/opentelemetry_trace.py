@@ -57,7 +57,7 @@ def main():
             span2.set_attribute("child_test_attr", "cccccc")
             logger.info("child hello aworld")
             current_span = trace.get_current_span()
-            logger.info("trace_id=%s", current_span.get_trace_id())
+            logger.info(f"trace_id={current_span.get_trace_id()}")
     try:
         test_class = TestClass()
         test_class.test_func(artifact=Artifact(
@@ -76,3 +76,7 @@ def main():
     # b.classb_function_2()
     if get_trace_server():
         get_trace_server().join()
+
+
+# if __name__ == "__main__":
+#     main()
