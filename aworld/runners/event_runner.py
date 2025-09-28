@@ -53,7 +53,8 @@ class TaskEventRunner(TaskRunner):
             await self._do_run()
             await self._save_trajectories()
             resp = self._response()
-            logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished.')
+            logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished, '
+                        f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
             return resp
 
     async def pre_run(self):

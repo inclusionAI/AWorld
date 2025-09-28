@@ -19,7 +19,7 @@ def backend_list():
 
 
 def logger_list():
-    return [trace_logger]
+    return []
 
 
 @dataclass

@@ -18,16 +18,6 @@ from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutp
 from train.adapter.common import encode_messages, turns_num
 from train.adapter.verl.verl_provider import VerlProvider
 
-# show aworld log on ray
-logger.setLevel(logging.INFO)
-logger.propagate = False
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-
 
 class AworldAgentLoop(AgentLoopBase):
     __metaclass__ = abc.ABCMeta
