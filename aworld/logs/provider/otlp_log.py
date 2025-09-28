@@ -1,3 +1,5 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
 import requests
 from urllib.parse import urljoin
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
