@@ -420,7 +420,11 @@ class Evaluator(Generic[EvalCaseDataType]):
                                   score_rows={})
 
         # Proceed with normal evaluation if not skipped
+        start_time = time.time()
         output = await eval_target.predict(index, input)
+        end_time = time.time()
+        time_cost_ms = (end_time - start_time) * 1000
+        output['_time_cost_ms'] = time_cost_ms
         score_rows = {}
 
         for scorer in self.scorers:
