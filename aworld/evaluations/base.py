@@ -277,7 +277,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
                 # If there are repeated cases (same eval_case_id appears multiple times), calculate pass@k
                 if repeat_times > 1:
                     # For each k value between 2 and repeat_times
-                    for k in range(2, repeat_times + 1):
+                    for k in range(1, repeat_times + 1):
                         # Calculate pass@k
                         passed_count = 0
                         for _, results in case_groups.items():
