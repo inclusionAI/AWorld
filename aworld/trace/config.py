@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass, field
 
-from typing import Sequence, Optional
+from typing import Sequence, Optional, Any
 from aworld.trace.span_cosumer import SpanConsumer
 from aworld.trace.context_manager import trace_configure
 from aworld.metrics.context_manager import MetricContext
@@ -36,6 +36,8 @@ class ObservabilityConfig():
     # whether to start the trace service
     trace_server_enabled: Optional[bool] = field(default=False)
     trace_server_port: Optional[int] = field(default=7079)
+    # The id generator to use for trace ids
+    trace_id_generator: Optional[Any] = field(default=None)
     metrics_provider: Optional[str] = field(default=None)
     metrics_backend: Optional[str] = field(default=None)
     metrics_base_url: Optional[str] = field(default=None)
@@ -78,7 +80,8 @@ def _trace_configure(config: ObservabilityConfig):
         span_consumers=config.trace_span_consumers,
         server_enabled=config.trace_server_enabled,
         server_port=config.trace_server_port,
-        storage=config.trace_storage
+        storage=config.trace_storage,
+        id_generator=config.trace_id_generator
     )
 
 
