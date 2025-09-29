@@ -82,11 +82,17 @@ def monkey_logger(logger: base_logger):
 class AWorldLogger:
     _added_handlers = set()
 
-    def __init__(self, tag='AWorld', name: str = 'AWorld', formatter: Union[str, Callable] = None):
+    def __init__(self, tag='AWorld',
+                 name: str = 'AWorld',
+                 console_level: str = CONSOLE_LEVEL,
+                 file_level: str = STORAGE_LEVEL,
+                 formatter: Union[str, Callable] = None):
+        self.tag = tag
+        self.name = name
         file_formatter = formatter
         console_formatter = formatter
         if not formatter:
-            format = """<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
+            format = """<black>{extra[trace_id]} | {time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
 {extra[name]} PID: {process}, TID:{thread} |</black> <bold>{name}.{function}:{line}</bold> \
 - \n<level>{message}</level> {exception} """
 
@@ -124,7 +130,7 @@ class AWorldLogger:
                         filter=lambda record: record['extra'].get('name') == tag,
                         colorize=True,
                         format=console_formatter,
-                        level=CONSOLE_LEVEL)
+                        level=console_level)
 
         log_file = f'{os.getcwd()}/logs/{tag}-{{time:YYYY-MM-DD}}.log'
         handler_key = f'{name}_{tag}'
@@ -132,7 +138,7 @@ class AWorldLogger:
             base_logger.add(log_file,
                             format=file_formatter,
                             filter=lambda record: record['extra'].get('name') == tag,
-                            level=STORAGE_LEVEL,
+                            level=file_level,
                             rotation='32 MB',
                             retention='1 days',
                             enqueue=True,
@@ -142,12 +148,18 @@ class AWorldLogger:
 
         self._logger = base_logger.bind(name=tag)
 
+    def reset_level(self, level: str):
+        base_logger.remove()
+        self.__init__(tag=self.tag, name=self.name, console_level=level, file_level=level)
+
     def __getattr__(self, name: str):
+        from aworld.trace.base import get_trace_id
+
         if name in SUPPORTED_FUNC:
             frame = inspect.currentframe().f_back
             if frame.f_back and (
                     # python3.11+
-                    (hasattr(frame.f_code, "co_qualname") and frame.f_code.co_qualname == 'aworld_log.<locals>.decorator') or
+                    (getattr(frame.f_code, "co_qualname", None) == 'aworld_log.<locals>.decorator') or
                     # python3.10
                     (frame.f_code.co_name == 'decorator' and os.path.basename(frame.f_code.co_filename) == 'util.py')):
                 frame = frame.f_back
@@ -156,7 +168,16 @@ class AWorldLogger:
             module = module.__name__ if module else ''
             line = frame.f_lineno
             func_name = getattr(frame.f_code, "co_qualname", frame.f_code.co_name).replace("<module>", "")
-            return getattr(self._logger.patch(lambda r: r.update(function=func_name, line=line, name=module)), name)
+
+            trace_id = get_trace_id()
+            update = {"function": func_name, "line": line, "name": module, "extra": {"trace_id": trace_id}}
+            def patch(record):
+                extra = update.pop("extra")
+                record.update(update)
+                record['extra'].update(extra)
+                return record
+
+            return getattr(self._logger.patch(patch), name)
         raise AttributeError(f"'AWorldLogger' object has no attribute '{name}'")
 
 

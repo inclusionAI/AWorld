@@ -94,6 +94,10 @@ from examples.for_test import topology<div align="center">
       </td>
       <td style="padding: 8px; vertical-align: top;">
         通过 GRPO 进行 rollout、奖励计算和梯度更新
+        <br>
+            <a href="https://huggingface.co/inclusionAI/Qwen3-32B-AWorld" target="_blank" style="text-decoration: none;">
+            <img src="https://img.shields.io/badge/Model-HuggingFace-green" alt="Model">
+        </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
         3行代码即可

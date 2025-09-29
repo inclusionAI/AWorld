@@ -10,7 +10,6 @@ from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from aworld.logs.util import logger
-from aworld.models.utils import usage_process
 
 
 class OpenAIProvider(LLMProviderBase):
@@ -252,7 +251,6 @@ class OpenAIProvider(LLMProviderBase):
                 raise LLMResponseError("Empty response", kwargs.get("model_name", self.model_name or "unknown"))
 
             resp = self.postprocess_response(response)
-            usage_process(resp.usage)
             return resp
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -307,7 +305,6 @@ class OpenAIProvider(LLMProviderBase):
                 if resp:
                     self._accumulate_chunk_usage(usage, resp.usage)
                     yield resp
-            usage_process(usage)
 
         except Exception as e:
             logger.warn(f"Error in stream_completion: {e}")
@@ -365,7 +362,6 @@ class OpenAIProvider(LLMProviderBase):
                     if resp:
                         self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
-            usage_process(usage)
 
         except Exception as e:
             logger.warn(f"Error in astream_completion: {e}")
@@ -416,7 +412,6 @@ class OpenAIProvider(LLMProviderBase):
                 raise LLMResponseError("Empty response", kwargs.get("model_name", self.model_name or "unknown"))
 
             resp = self.postprocess_response(response)
-            usage_process(resp.usage)
             return resp
         except Exception as e:
             if isinstance(e, LLMResponseError):
