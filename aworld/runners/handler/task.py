@@ -97,10 +97,8 @@ class DefaultTaskHandler(TaskHandler):
 
             logger.info(f"{task_flag} task {self.runner.task.id} receive finished message.")
 
-            if not self.runner.task.is_sub_task:
-                logger.info(f'{task_flag} task {self.runner.task.id} will mark outputs finished')
-                await self.runner.task.outputs.mark_completed()
             await self.runner.stop()
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers)
         elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):
                 yield event
