@@ -13,9 +13,10 @@ import aworld.trace as trace  # noqa
 from aworld.logs.util import logger, trace_logger
 from aworld.trace.server import get_trace_server
 from aworld.output.artifact import Artifact, ArtifactType
+from aworld.trace.opentelemetry.id_generator import ProcessSafeIdGenerator
 
 
-trace.configure(trace.ObservabilityConfig(trace_server_enabled=True))
+trace.configure(trace.ObservabilityConfig(trace_server_enabled=True, trace_id_generator=ProcessSafeIdGenerator()))
 
 
 class TestClass:

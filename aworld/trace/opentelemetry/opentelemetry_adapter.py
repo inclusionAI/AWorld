@@ -378,8 +378,10 @@ def configure_otlp_provider(
                 base_url=base_url, **kwargs)
             processor.add_span_processor(BatchSpanProcessor(span_exporter))
 
+    id_generator = kwargs.get("id_generator")
     set_tracer_provider(OTLPTraceProvider(SDKTracerProvider(active_span_processor=processor,
-                                                            resource=build_otel_resource())))
+                                                            resource=build_otel_resource(),
+                                                            id_generator=id_generator)))
 
 
 def _configure_logfire_exporter(write_token: str, base_url: str = None) -> None:

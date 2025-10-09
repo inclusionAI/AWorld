@@ -196,6 +196,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.loop_step = 0
         should_term = self.sync_should_terminate_loop(message)
         if should_term:
+            self.postprocess_terminate_loop(message)
             return AgentMessage(
                 payload=message.payload,
                 caller=message.sender,
@@ -230,6 +231,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.loop_step = 0
         should_term = await self.should_terminate_loop(message)
         if should_term:
+            self.postprocess_terminate_loop(message)
             return AgentMessage(
                 payload=message.payload,
                 caller=message.sender,
@@ -318,6 +320,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     async def should_terminate_loop(self, message: Message) -> bool:
         return False
+
+    def postprocess_terminate_loop(self, message: Message):
+        self.loop_step = 0
 
 
 class AgentManager(Factory):

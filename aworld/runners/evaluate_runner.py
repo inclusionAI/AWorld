@@ -15,6 +15,7 @@ from aworld.evaluations.recoder.eval_result_recorder import EvalResultRecorder, 
 from aworld.dataset.dataset import Dataset
 from aworld.logs.util import logger
 from aworld.evaluations.scorers.scorer_registry import get_scorer_instances_for_criterias
+from aworld.evaluations.scorers.metrics import MetricNames
 
 
 class EvaluateRunner(Runner):
@@ -67,11 +68,27 @@ class EvaluateRunner(Runner):
     def get_scorers(self, eval_config: EvaluationConfig) -> list[Scorer]:
         """Get scorer instances for evaluation."""
         converted_criterias = []
+        has_time_cost_metric = False
+
         for criteria in eval_config.eval_criterias:
             if isinstance(criteria, dict):
-                converted_criterias.append(EvalCriteria.from_dict(criteria))
+                converted_criteria = EvalCriteria.from_dict(criteria)
+                converted_criterias.append(converted_criteria)
+                if converted_criteria.metric_name == MetricNames.PREDICT_TIME_COST_MS:
+                    has_time_cost_metric = True
             else:
                 converted_criterias.append(criteria)
+                if criteria.metric_name == MetricNames.PREDICT_TIME_COST_MS:
+                    has_time_cost_metric = True
+
+        # add predict_time_cost_ms metric if not exists
+        if not has_time_cost_metric:
+            time_cost_criteria = EvalCriteria(
+                metric_name=MetricNames.PREDICT_TIME_COST_MS,
+                min_value=0.0
+            )
+            converted_criterias.append(time_cost_criteria)
+
         scorers = get_scorer_instances_for_criterias(converted_criterias)
         for scorer in scorers:
             scorer.eval_config = eval_config

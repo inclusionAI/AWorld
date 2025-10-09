@@ -277,7 +277,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
                 # If there are repeated cases (same eval_case_id appears multiple times), calculate pass@k
                 if repeat_times > 1:
                     # For each k value between 2 and repeat_times
-                    for k in range(2, repeat_times + 1):
+                    for k in range(1, repeat_times + 1):
                         # Calculate pass@k
                         passed_count = 0
                         for _, results in case_groups.items():
@@ -420,7 +420,11 @@ class Evaluator(Generic[EvalCaseDataType]):
                                   score_rows={})
 
         # Proceed with normal evaluation if not skipped
+        start_time = time.time()
         output = await eval_target.predict(index, input)
+        end_time = time.time()
+        time_cost_ms = (end_time - start_time) * 1000
+        output['_time_cost_ms'] = time_cost_ms
         score_rows = {}
 
         for scorer in self.scorers:
