@@ -96,14 +96,18 @@ class ArealProvider(LLMProviderBase):
             tokenizer=self.tokenizer,
         )
 
-        response: ArealModelResponse = await loop.run_in_executor(
+        response: ArealModelResponse = await self.agenerate(req)
+
+        content = await loop.run_in_executor(
             None,
-            lambda: sync_exec(self.agenerate, req)
+            lambda: self.tokenizer.decode(response.output_tokens, skip_special_tokens=True)
         )
-        content = self.tokenizer.decode(response.output_tokens, skip_special_tokens=True)
 
         tool_parser = ToolParserManager.get_tool_parser(self.tool_parser)
-        res: ExtractedToolCallInformation = tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
+        res: ExtractedToolCallInformation = await loop.run_in_executor(
+            None,
+            lambda: tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
+        )
 
         tool_calls = []
         if res.tools_called:
