@@ -1,5 +1,5 @@
 import os
-import json
+import time
 from aworld.logs.util import logger, trace_logger
 from typing import Sequence
 import aworld.trace as trace
@@ -18,8 +18,16 @@ class MockSpanConsumer(SpanConsumer):
 
     def consume(self, spans: Sequence[Span]) -> None:
         for span in spans:
+            start_timestamp = span.start_time / 1e9
+            end_timestamp = span.end_time / 1e9
+            start_ms = int((span.start_time % 1e9) / 1e6)
+            end_ms = int((span.end_time % 1e9) / 1e6)
+            start_time = time.strftime(
+                '%Y-%m-%d %H:%M:%S', time.localtime(start_timestamp)) + f'.{start_ms:03d}',
+            end_time = time.strftime(
+                '%Y-%m-%d %H:%M:%S', time.localtime(end_timestamp)) + f'.{end_ms:03d}',
             logger.info(
-                f"_test_param={self._test_param}, trace_id={span.get_trace_id()}, span_id={span.get_span_id()}, attributes={span.attributes}")
+                f"[trace_span]={span.name}, trace_id={span.get_trace_id()}, span_id={span.get_span_id()}, start_time={start_time}, end_time={end_time}, duration_ms={(span.end_time - span.start_time)/1e6}, attributes={span.attributes}")
 
 
 def main():

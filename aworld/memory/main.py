@@ -629,12 +629,7 @@ class AworldMemory(Memory):
             }
         ]
         llm_summary = await self._call_llm_summary(summary_messages, agent_memory_config)
-        tool_use_content = "\n\n the following is the tool use history:\n"
-        for item in to_be_summary_items:
-            if item.metadata.get('summary_content'):
-                tool_use_content += f"{item.metadata.get('summary_content', '')}\n"
-
-        return f"{llm_summary}{tool_use_content}"
+        return f"<history_step_summary>\n {llm_summary} \n</history_step_summary>\n"
 
 
 

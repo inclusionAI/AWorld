@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 import json
 from pydantic import BaseModel
@@ -165,6 +166,8 @@ class ModelResponse:
             self.message = message
 
         self.reasoning_content = reasoning_content
+
+        self.created_at = datetime.now().isoformat()
 
     @classmethod
     def _get_item_from_openai_message(cls, message:Any, key: str, default_value: Any = None) -> Any:
@@ -596,7 +599,8 @@ class ModelResponse:
             "usage": self.usage,
             "error": self.error,
             "message": self.message,
-            "reasoning_content": self.reasoning_content
+            "reasoning_content": self.reasoning_content,
+            "created_at": self.created_at
         }
 
     def get_message(self) -> Dict[str, Any]:

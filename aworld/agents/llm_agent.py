@@ -38,6 +38,7 @@ from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
 from aworld.trace.instrumentation import semconv
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
+from aworld.memory.models import MemoryItem
 
 
 class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
@@ -252,6 +253,37 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return sync_exec(self.async_messages_transform, image_urls=image_urls, observation=observation,
                          message=message, **kwargs)
 
+    def _clean_redundant_tool_call_messages(self, histories: List[MemoryItem]) -> None:
+        try:
+            for i in range(len(histories) - 1, -1, -1):
+                his = histories[i]
+                if his.metadata and "tool_calls" in his.metadata and his.metadata['tool_calls']:
+                    logger.info(f"Agent {self.id()} deleted tool call messages from memory: {his}")
+                    self.memory.delete(his.id)
+                else:
+                    break
+        except Exception:
+            logger.error(f"Agent {self.id()} clean redundant tool_call_messages error: {traceback.format_exc()}")
+            pass
+
+    def postprocess_terminate_loop(self, message: Message):
+        logger.info(f"Agent {self.id()} postprocess_terminate_loop: {self.loop_step}")
+        super().postprocess_terminate_loop(message)
+        try:
+            session_id = message.context.get_task().session_id
+            task_id = message.context.get_task().id
+            histories = self.memory.get_all(filters={
+                "agent_id": self.id(),
+                "session_id": session_id,
+                "task_id": task_id,
+                "memory_type": "message"
+            })
+            self._clean_redundant_tool_call_messages(histories)
+        except Exception:
+            logger.error(f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}")
+            pass
+
+
     async def async_messages_transform(self,
                                        image_urls: List[str] = None,
                                        observation: Observation = None,
@@ -282,10 +314,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         last_history = histories[-1] if histories and len(histories) > 0 else None
 
         # append observation to memory
+        tool_result_added = False
         if observation.is_tool_result:
             for action_item in observation.action_result:
                 tool_call_id = action_item.tool_call_id
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=action_item, context=message.context)
+                tool_result_added = True
         elif last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
                 last_history.metadata[
                     'tool_calls']:
@@ -295,8 +329,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 if tool_name and tool_name == message.sender:
                     await self._add_tool_result_to_memory(tool_call_id, tool_result=observation.content,
                                                           context=message.context)
+                    tool_result_added = True
                     break
-        else:
+        if not tool_result_added:
+            self._clean_redundant_tool_call_messages(histories)
             content = observation.content
             logger.debug(f"agent_prompt: {agent_prompt}")
             if agent_prompt:

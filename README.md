@@ -213,6 +213,10 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
       </td>
       <td style="padding: 8px; vertical-align: top;">
         Rollout, reward calculation, and gradient updates via GRPO
+        <br>
+            <a href="https://huggingface.co/inclusionAI/Qwen3-32B-AWorld" target="_blank" style="text-decoration: none;">
+            <img src="https://img.shields.io/badge/Model-HuggingFace-green" alt="Model">
+        </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
       Three lines of code to run.

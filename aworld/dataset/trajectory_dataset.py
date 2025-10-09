@@ -74,7 +74,9 @@ class TrajectoryDataset(Dataset[DataRow]):
             if isinstance(result, Message) and isinstance(result.payload, list):
                 agent_results.extend(result.payload)
             else:
-                ext_info["agent_results"] = ext_info.get("agent_results", []).append(handle_result)
+                if not ext_info.get("agent_results"):
+                    ext_info["agent_results"] = []
+                ext_info["agent_results"].append(handle_result)
         messages = self._get_llm_messages_from_memory(message)
 
         def _get_attr_from_action(obj, attr, default=None):
