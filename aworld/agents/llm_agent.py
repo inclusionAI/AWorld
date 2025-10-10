@@ -541,6 +541,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         messages = await self.build_llm_input(observation, info, message=message, **kwargs)
 
         serializable_messages = to_serializable(messages)
+        message.context.context_info["llm_input"] = serializable_messages
         llm_response = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
@@ -717,14 +718,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             LLM response
         """
         llm_response = None
-        source_span = trace.get_current_span()
-        serializable_messages = to_serializable(messages)
-        message.context.context_info["llm_input"] = serializable_messages
-
-        if source_span:
-            source_span.set_attribute("messages", json.dumps(
-                serializable_messages, ensure_ascii=False))
-
         try:
             stream_mode = kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)

@@ -1,5 +1,5 @@
 # coding: utf-8
-
+import asyncio
 # Derived from browser_use DomService, we use it as a utility method, and supports sync and async.
 
 import gc
@@ -7,7 +7,6 @@ import json
 
 from typing import Dict, Any, Tuple, Optional
 
-from aworld.utils.async_func import async_func
 from examples.common.tools.browsers.util.dom import DOMElementNode, DOMBaseNode, DOMTextNode, ViewportInfo
 from aworld.logs.util import logger
 
@@ -29,7 +28,8 @@ async def async_build_dom_tree(page, js_code: str, args: Dict[str, Any]) -> Tupl
     if args.get("debugMode") and 'perfMetrics' in eval_page:
         logger.debug('DOM Tree Building Performance Metrics:\n%s', json.dumps(eval_page['perfMetrics'], indent=2))
 
-    return await async_func(_construct_dom_tree)(eval_page)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _construct_dom_tree(eval_page))
 
 
 def build_dom_tree(page, js_code: str, args: Dict[str, Any]) -> Tuple[DOMElementNode, Dict[int, DOMElementNode]]:

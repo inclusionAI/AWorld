@@ -167,13 +167,17 @@ class TaskEventRunner(TaskRunner):
                         handle_map[t] = False
                     for t, _ in handle_map.items():
                         t.add_done_callback(partial(self._task_done_callback, group=handle_map, message=message))
+                        await asyncio.sleep(0)
             else:
                 # not handler, return raw message
-                results.append(message)
+                if key == Constants.OUTPUT:
+                    return results
 
+                results.append(message)
                 t = asyncio.create_task(self._raw_task(results))
                 self.background_tasks.add(t)
                 t.add_done_callback(partial(self._task_done_callback, message=message))
+                await asyncio.sleep(0)
             logger.debug(f"process finished message id: {message.id} of task {self.task.id}")
             return results
 
@@ -339,3 +343,4 @@ class TaskEventRunner(TaskRunner):
             self._task_response.trajectory = trajectory
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
+netstat -an | grep
