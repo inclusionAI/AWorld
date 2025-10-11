@@ -631,9 +631,6 @@ class AworldMemory(Memory):
         llm_summary = await self._call_llm_summary(summary_messages, agent_memory_config)
         return f"<history_step_summary>\n {llm_summary} \n</history_step_summary>\n"
 
-
-
-
     def _save_to_vector_db(self, memory_item: MemoryItem):
         try:
             if not memory_item.embedding_text:
@@ -658,7 +655,7 @@ class AworldMemory(Memory):
 
                 self._vector_db.insert(self.config.vector_store_config.config['collection_name'], [embedding_item])
             else:
-                logger.warning(f"memory_store or embedder is None, skip save to vector store")
+                logger.debug(f"memory_store or embedder is None, skip save to vector store")
         except Exception as err:
             logger.warning(f"save_to_vector, failed is {err}")
 
