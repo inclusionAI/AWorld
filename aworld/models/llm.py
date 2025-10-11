@@ -165,7 +165,7 @@ class LLMModel:
                     break
 
         if provider and provider in PROVIDER_CLASSES and identified_provider and identified_provider != provider:
-            logger.warning(
+            logger.debug(
                 f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider")
             identified_provider = provider
 
