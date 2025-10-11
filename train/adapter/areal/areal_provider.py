@@ -81,7 +81,7 @@ class ArealProvider(LLMProviderBase):
 
         prompt_ids = await loop.run_in_executor(
             None,
-            lambda:self.tokenizer.apply_chat_template(
+            lambda: self.tokenizer.apply_chat_template(
                 messages,
                 tools=kwargs.get("tools"),
                 add_generation_prompt=True,
@@ -116,7 +116,12 @@ class ArealProvider(LLMProviderBase):
                              content=res.content,
                              tool_calls=tool_calls,
                              model=self.model_name,
-                             raw_response=content)
+                             raw_response=ArealModelResponse(input_tokens=list(response.input_tokens),
+                                                             output_tokens=list(response.output_tokens),
+                                                             output_logprobs=list(response.output_logprobs),
+                                                             output_versions=[-1] * len(prompt_ids),
+                                                             input_len=response.input_len,
+                                                             output_len=response.output_len))
 
     async def agenerate(self, req: ModelRequest) -> ModelResponse:
         # from AReaL

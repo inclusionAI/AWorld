@@ -343,4 +343,3 @@ class TaskEventRunner(TaskRunner):
             self._task_response.trajectory = trajectory
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
-netstat -an | grep
