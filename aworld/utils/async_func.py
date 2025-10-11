@@ -5,10 +5,24 @@ import asyncio
 import contextlib
 from collections.abc import Generator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from typing import List
+
+use_new_loop = False
 
 
 @contextlib.contextmanager
 def loop_in_new_thread() -> Generator[asyncio.AbstractEventLoop]:
+    """Run loop in the new thread.
+
+    Examples:
+        >>> async def example(): ...
+        >>> with loop_in_new_thread() as loop:
+        >>>     future = asyncio.run_coroutine_threadsafe(example(), loop)
+        >>>     ...
+
+    NOTE:
+        All operations must be in `with loop_in_new_thread()`, otherwise `different loop problems` will occur.
+    """
     loop_future = Future[asyncio.AbstractEventLoop]()
     stop_event = asyncio.Event()
 
@@ -29,14 +43,14 @@ def loop_in_new_thread() -> Generator[asyncio.AbstractEventLoop]:
                 future.result()
 
 
-def start_loop(loop):
+def start_loop(loop: asyncio.AbstractEventLoop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
 
 
-def shutdown_loop(loop):
+def shutdown_loop(loop: asyncio.AbstractEventLoop):
     loop.stop()
 
 
-def shutdown_all(loops):
+def shutdown_all(loops: List[asyncio.AbstractEventLoop]):
     [loop.call_soon_threadsafe(shutdown_loop, loop) for loop in loops]

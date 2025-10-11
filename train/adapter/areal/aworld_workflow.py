@@ -1,6 +1,9 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
+import concurrent
+import random
 import os
 import uuid
 from typing import Union
@@ -16,6 +19,7 @@ from aworld.core.task import Task
 from aworld.core.agent.swarm import Swarm
 from aworld.logs.util import logger
 from aworld.runner import Runners
+from aworld.utils.async_func import start_loop, use_new_loop
 
 from tensordict import TensorDict
 from transformers import PreTrainedTokenizerFast
@@ -28,6 +32,17 @@ from areal.api.workflow_api import RolloutWorkflow
 from areal.utils import stats_tracker
 from areal.utils.data import concat_padded_tensors
 from areal.workflow.areal_provider import ArealProvider
+
+
+if use_new_loop:
+    workers = 256
+    THREAD_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    LOOP = []
+
+    for i in range(workers):
+        new_loop = asyncio.new_event_loop()
+        LOOP.append(new_loop)
+        THREAD_POOL.submit(start_loop, new_loop)
 
 
 class AworldWorkflow(RolloutWorkflow):
@@ -54,6 +69,15 @@ class AworldWorkflow(RolloutWorkflow):
     async def build_agents(self, engine) -> Union[Agent, Swarm]:
         """Build single- or multi-agent"""
 
+    async def run_task(self, tasks):
+        if not use_new_loop:
+            return await Runners.run_task(tasks)
+        else:
+            idx = random.randint(0, len(LOOP) - 1)
+            logger.info(f"loop {idx} tasks: {len(asyncio.all_tasks(LOOP[idx]))}")
+            con_future = asyncio.run_coroutine_threadsafe(Runners.run_task(tasks), LOOP[idx])
+            return await asyncio.wrap_future(con_future)
+
     async def arun_episode(self, engine: InferenceEngine, data):
         n_samples = self.gconfig.n_samples
         tasks = [Task(input=data["messages"][0].get("content"),
@@ -61,7 +85,7 @@ class AworldWorkflow(RolloutWorkflow):
                       conf=TaskConfig(resp_carry_raw_llm_resp=True, resp_carry_context=False))
                  for _ in range(n_samples)]
         task_dict = {task.id: task for task in tasks}
-        responses = await Runners.run_task(tasks)
+        responses = await self.run_task(tasks)
         version = engine.get_version()
         prompt_strs = []
         completions_strs = []
