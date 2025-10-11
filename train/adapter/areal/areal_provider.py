@@ -119,9 +119,7 @@ class ArealProvider(LLMProviderBase):
                              raw_response=ArealModelResponse(input_tokens=list(response.input_tokens),
                                                              output_tokens=list(response.output_tokens),
                                                              output_logprobs=list(response.output_logprobs),
-                                                             output_versions=[-1] * len(prompt_ids),
-                                                             input_len=response.input_len,
-                                                             output_len=response.output_len))
+                                                             output_versions=[-1] * len(prompt_ids)))
 
     async def agenerate(self, req: ModelRequest) -> ModelResponse:
         # from AReaL
