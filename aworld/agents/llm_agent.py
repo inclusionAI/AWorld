@@ -245,7 +245,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self.sandbox:
             mcp_tools = await self.sandbox.mcpservers.list_tools(context)
             processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
-            self.sandbox.mcpservers.map_tool_list(tool_mapping)
+            self.sandbox.mcpservers.map_tool_list=tool_mapping
             self.tools.extend(processed_tools)
         else:
             self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
