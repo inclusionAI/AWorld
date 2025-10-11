@@ -23,7 +23,7 @@ from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message
 from aworld.logs.util import logger, Color
-from aworld.mcp_client.utils import mcp_tool_desc_transform
+from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MessageMetadata, MemoryAIMessage, MemoryToolMessage, MemoryHumanMessage, \
     MemorySystemMessage, MemoryMessage
@@ -87,11 +87,15 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                 if full_name and not full_name.startswith(
                         "mcp__") and agent_info and agent_info.sandbox and agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers and len(
                         agent_info.sandbox.mcpservers.mcp_servers) > 0:
-                    tmp_names = full_name.split("__")
-                    tmp_tool_name = tmp_names[0]
-                    if tmp_tool_name in agent_info.sandbox.mcpservers.mcp_servers:
-                        full_name = f"mcp__{full_name}"
-
+                    if agent_info.sandbox.mcpservers.map_tool_list:
+                        _server_name = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
+                        if _server_name:
+                            full_name = f"mcp__{_server_name}__{full_name}"
+                    else:
+                        tmp_names = full_name.split("__")
+                        tmp_tool_name = tmp_names[0]
+                        if tmp_tool_name in agent_info.sandbox.mcpservers.mcp_servers:
+                            full_name = f"mcp__{full_name}"
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(full_name):
@@ -240,7 +244,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # MCP servers are tools
         if self.sandbox:
             mcp_tools = await self.sandbox.mcpservers.list_tools(context)
-            self.tools.extend(mcp_tools)
+            processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
+            self.sandbox.mcpservers.map_tool_list=tool_mapping
+            self.tools.extend(processed_tools)
         else:
             self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
 

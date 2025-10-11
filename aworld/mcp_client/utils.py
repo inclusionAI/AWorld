@@ -3,7 +3,7 @@ import requests
 import traceback
 
 from datetime import timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from contextlib import AsyncExitStack
 
 from mcp.types import TextContent, ImageContent
@@ -440,6 +440,28 @@ async def mcp_tool_desc_transform_v2(
 
     return openai_tools
 
+async def process_mcp_tools(
+        mcp_tools: Optional[List[Dict[str, Any]]] = None
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    if mcp_tools is None:
+        return [], {}
+
+    tool_mapping: Dict[str, str] = {}
+    processed_tools: List[Dict[str, Any]] = []
+
+    for tool in mcp_tools:
+        processed_tool = tool.copy()
+        processed_tool["function"] = tool["function"].copy()
+
+        original_name = processed_tool["function"]["name"]
+        if "__" in original_name:
+            server_name, simple_name = original_name.split("__", 1)
+            processed_tool["function"]["name"] = simple_name
+            tool_mapping[simple_name] = server_name
+
+        processed_tools.append(processed_tool)
+
+    return processed_tools, tool_mapping
 
 async def mcp_tool_desc_transform(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None
