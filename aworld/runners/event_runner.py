@@ -3,9 +3,10 @@
 import asyncio
 import time
 import traceback
-from functools import partial
 
 import aworld.trace as trace
+
+from functools import partial
 from typing import List, Callable, Any
 
 from aworld.agents.llm_agent import Agent
@@ -21,8 +22,9 @@ from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.task_runner import TaskRunner
-from aworld.utils.common import override_in_subclass, new_instance
 from aworld.runners.state_manager import EventRuntimeStateManager
+from aworld.trace.base import get_trace_id
+from aworld.utils.common import override_in_subclass, new_instance
 
 
 class TaskEventRunner(TaskRunner):
@@ -340,6 +342,7 @@ class TaskEventRunner(TaskRunner):
                                                msg="Task return None.")
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_raw_llm_resp == True:
             self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
+        self._task_response.trace_id = get_trace_id()
         return self._task_response
 
     async def _save_trajectories(self):
