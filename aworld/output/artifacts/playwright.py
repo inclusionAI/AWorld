@@ -1,17 +1,14 @@
 import json
+import re
+from dataclasses import dataclass
+from enum import Enum
+from typing import List, Optional, Dict, Any
 
 from pydantic import BaseModel
 
 from aworld.logs.util import logger
 from aworld.output import Artifact, ArtifactType
-
-import re
-from typing import List, Optional, Dict, Any
-
 from aworld.output.storage.artifact_repository import CommonEncoder
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from enum import Enum
 
 
 class ElementType(Enum):
