@@ -439,7 +439,7 @@ class OpenAIProvider(LLMProviderBase):
             "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
             "presence_penalty", "response_format", "seed", "stream", "top_p",
             "user", "function_call", "functions", "tools", "tool_choice", "metadata",
-            "prompt_cache_key", "safety_identifier", "store", "verbosity"
+            "prompt_cache_key", "safety_identifier", "store", "verbosity", "extra_body"
         ]
 
         llm_params = self.kwargs.get("params", {})
@@ -448,7 +448,6 @@ class OpenAIProvider(LLMProviderBase):
         for param in supported_params:
             if param in llm_params and llm_params[param] is not None:
                 openai_params[param] = llm_params[param]
-
         return openai_params
 
     def speech_to_text(self,
