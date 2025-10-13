@@ -31,7 +31,11 @@ from areal.utils.stats_logger import StatsLogger
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
-from train.adapter.areal.aworld_workflow import AworldWorkflow
+import aworld.utils.async_func
+aworld.utils.async_func.use_new_loop = True
+
+from aworld.utils.async_func import use_new_loop
+from train.adapter.areal.aworld_workflow import AworldWorkflow, create_pool, close_pool
 from train.adapter.common import get_agent_tool_env_and_servers
 
 GAIA_SYSTEM_PROMPT = """
@@ -334,4 +338,9 @@ def main(args):
 
 
 if __name__ == "__main__":
+    if use_new_loop:
+        create_pool()
+
     main(sys.argv[1:])
+    if use_new_loop:
+        close_pool()

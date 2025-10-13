@@ -89,6 +89,8 @@ class AWorldLogger:
                  formatter: Union[str, Callable] = None):
         self.tag = tag
         self.name = name
+        self.console_level = console_level
+        self.file_level = file_level
         file_formatter = formatter
         console_formatter = formatter
         if not formatter:
@@ -149,8 +151,23 @@ class AWorldLogger:
         self._logger = base_logger.bind(name=tag)
 
     def reset_level(self, level: str):
-        base_logger.remove()
+        from aworld.logs.instrument.loguru_instrument import _get_handlers
+
+        handlers = _get_handlers(self._logger)
+        for handler in handlers:
+            self._logger.remove(handler._id)
+        self._logger.remove()
         self.__init__(tag=self.tag, name=self.name, console_level=level, file_level=level)
+
+    def reset_format(self, format_str: str):
+        from aworld.logs.instrument.loguru_instrument import _get_handlers
+
+        handlers = _get_handlers(self._logger)
+        for handler in handlers:
+            self._logger.remove(handler._id)
+        self.__init__(tag=self.tag, name=self.name,
+                      console_level=self.console_level, file_level=self.file_level,
+                      formatter=format_str)
 
     def __getattr__(self, name: str):
         from aworld.trace.base import get_trace_id
@@ -171,6 +188,7 @@ class AWorldLogger:
 
             trace_id = get_trace_id()
             update = {"function": func_name, "line": line, "name": module, "extra": {"trace_id": trace_id}}
+
             def patch(record):
                 extra = update.pop("extra")
                 record.update(update)
