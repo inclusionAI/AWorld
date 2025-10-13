@@ -53,7 +53,6 @@ class Gsm8kWorkflow(AworldWorkflow):
                         "tool_parser": "hermes"}
             ),
             name="gaia_super_agent",
-            system_prompt=GAIA_SYSTEM_PROMPT,
         )
 
 
