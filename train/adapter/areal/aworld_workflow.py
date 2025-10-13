@@ -126,10 +126,7 @@ class AworldWorkflow(RolloutWorkflow):
             seqlens.append(len(seq))
 
             reward = await self.async_reward_fn(
-                prompt_str,
                 completions_str,
-                model_output.input_tokens,
-                model_output.output_tokens,
                 **data,
             )
 
