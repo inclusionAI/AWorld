@@ -406,7 +406,7 @@ def conf_contains_key(conf: Union[ConfigDict, AgentConfig, ModelConfig], key: st
     """
     if not conf:
         return False
-    if type(conf).__name__ == 'AgentConfig':
+    if type(conf).__name__ == 'AgentConfig' or type(conf).__name__ == 'ModelConfig':
         return hasattr(conf, key)
     else:
         return key in conf
