@@ -1,3 +1,6 @@
+from aworld.output.artifacts.file import DirArtifact
+from aworld.output.artifacts.playwright import PlaywrightSnapshotArtifact
+from aworld.output.artifacts.search import SearchArtifact
 from aworld.output.base import Output, SearchOutput, SearchItem, ToolResultOutput, MessageOutput, ToolCallOutput, \
     RUN_FINISHED_SIGNAL
 from aworld.output.artifact import Artifact, ArtifactType
@@ -12,6 +15,10 @@ __all__ = [
     "Artifact",
     "ArtifactType",
     "CodeArtifact",
+    "ShellArtifact",
+    "DirArtifact",
+    "SearchArtifact",
+    "PlaywrightSnapshotArtifact",
     "ShellArtifact",
     "WorkSpace",
     "ArtifactRepository",
