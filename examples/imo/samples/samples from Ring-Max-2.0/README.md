@@ -1,6 +1,6 @@
-# Ring-Max-2.0 IMO 2025 Results
+# Ring-1T IMO 2025 Results
 
-This directory contains the execution results and trajectories from running IMO 2025 competition problems using the **[Ring-Max-2.0](https://huggingface.co/inclusionAI/Ring-1T)** large language model with the AWorld framework's **solver-grader multi-agent system**.
+This directory contains the execution results and trajectories from running IMO 2025 competition problems using the **[Ring-1T](https://huggingface.co/inclusionAI/Ring-1T)** large language model with the AWorld framework's **solver-grader multi-agent system**.
 
 ## Overview
 
@@ -52,7 +52,7 @@ The log files (`AWorld.log`) contain raw execution details for in-depth analysis
 
 - **Multi-attempt problems**: imo2 and imo6 have multiple trajectory files (`results_try1.json`, `results_try2.json`, `results_try3.json`) representing different solving attempts.
 - **Evaluation**: Problem 2 (geometry proof) was evaluated by Gemini 2.5 Pro against reference solutions.
-- **Model**: All results were generated using [Ring-Max-2.0](https://huggingface.co/inclusionAI/Ring-1T) as the base LLM.
+- **Model**: All results were generated using [Ring-1T](https://huggingface.co/inclusionAI/Ring-1T) as the base LLM.
 - **Framework**: Solutions were produced by the AWorld framework's solver-grader multi-agent architecture.
 
 ## Reference
