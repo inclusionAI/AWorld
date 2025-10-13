@@ -112,7 +112,7 @@ class AworldWorkflow(RolloutWorkflow):
         )
 
         for key, resp in responses.items():
-            model_output: ModelResponse = resp.answer.raw_response
+            model_output: ModelResponse = resp.raw_llm_resp.raw_response
 
             seq = model_output.input_tokens + model_output.output_tokens
             logprobs = [0.0] * model_output.input_len + model_output.output_logprobs
