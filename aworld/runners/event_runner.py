@@ -45,14 +45,20 @@ class TaskEventRunner(TaskRunner):
             raise AWorldRuntimeException("no question event to solve.")
 
         async with trace.task_span(self.init_messages[0].session_id, self.task):
-            for msg in self.init_messages:
-                await self.event_mng.emit_message(msg)
-            await self._do_run()
-            await self._save_trajectories()
-            resp = self._response()
-            logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished, '
-                        f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
-            return resp
+            try:
+                for msg in self.init_messages:
+                    await self.event_mng.emit_message(msg)
+                await self._do_run()
+                await self._save_trajectories()
+                resp = self._response()
+                logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished, '
+                            f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
+                return resp
+            finally:
+                # the last step mark output finished
+                if not self.task.is_sub_task:
+                    logger.info(f'main task {self.task.id} will mark outputs finished')
+                    await self.task.outputs.mark_completed()
 
     async def pre_run(self):
         logger.debug(f"task {self.task.id} pre run start...")
@@ -303,10 +309,10 @@ class TaskEventRunner(TaskRunner):
             await self.event_mng.emit_message(error_msg)
         finally:
             if await self.is_stopped():
-                await self.context.update_task_after_run(self._task_response)
-                if not self.task.is_sub_task:
-                    logger.info(f'{task_flag} task {self.task.id} will mark outputs finished')
-                    await self.task.outputs.mark_completed()
+                try:
+                    await self.context.update_task_after_run(self._task_response)
+                except:
+                    logger.warning("context update_task_after_run fail.")
 
                 if self.swarm and self.swarm.agents:
                     for agent_name, agent in self.swarm.agents.items():
