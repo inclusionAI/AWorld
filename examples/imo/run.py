@@ -83,7 +83,7 @@ class GuardRunner:
             logging.info(f"Super-agent output: {super_output[:200]}...")
             
             # 2. Check if the output contains the final answer
-            if self._has_final_answer(super_output) and iteration > 1:
+            if self._has_final_answer(super_output) and iteration > 0:
                 logging.info("find the final answer, the conversation should stop")
                 return super_output
             

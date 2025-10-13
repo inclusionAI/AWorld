@@ -68,8 +68,8 @@ class LLMHTTPHandler:
         try:
             # Remove 'data: ' prefix if present
             line_str = line.decode('utf-8').strip()
-            if line_str.startswith('data: '):
-                line_str = line_str[6:]
+            if line_str.startswith('data:'):
+                line_str = line_str[5:].lstrip()
 
             # Skip empty lines
             if not line_str:

@@ -78,7 +78,7 @@ class McpTool(AsyncTool):
                 logger.warning(f"Unsupported tool: {tool_name}. {actions}")
                 continue
             full_tool_name = action.action_name
-            names = full_tool_name.split("__")
+            names = full_tool_name.split("__",1)
             if len(names) < 2:
                 logger.warning(f"{full_tool_name} illegal format")
                 continue

@@ -37,6 +37,7 @@ class McpServers:
         self.server_instances = {}
         self.tool_list = None
         self.black_tool_actions = black_tool_actions or {}
+        self.map_tool_list = {}
 
     async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
         if self.tool_list:
