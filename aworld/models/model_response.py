@@ -320,13 +320,13 @@ class ModelResponse:
             return cls(
                 id=chunk.id if hasattr(chunk, 'id') else chunk.get('id', 'unknown'),
                 model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
-                content=None,
+                content="",
                 raw_response=chunk,
                 message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason}
             )
 
         # Normal chunk with delta content
-        content = None
+        content = ""
         processed_tool_calls = []
 
         if hasattr(chunk, 'choices') and chunk.choices:
@@ -387,7 +387,7 @@ class ModelResponse:
         return cls(
             id=chunk.id if hasattr(chunk, 'id') else chunk.get('id', 'unknown'),
             model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
-            content=content,
+            content=content or "",
             tool_calls=processed_tool_calls or None,
             usage=usage,
             raw_response=chunk,
