@@ -12,14 +12,14 @@ import aiofiles
 import aiofiles.os
 import colorama
 import torch
-from aworld.config.conf import TaskConfig
+from aworld.config.conf import TaskConfig, AgentConfig
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
 from aworld.core.agent.swarm import Swarm
 from aworld.logs.util import logger
 from aworld.runner import Runners
-from aworld.utils.async_func import start_loop, use_new_loop
+from aworld.utils.async_func import start_loop, use_new_loop, shutdown_all
 
 from tensordict import TensorDict
 from transformers import PreTrainedTokenizerFast
@@ -33,16 +33,27 @@ from areal.utils import stats_tracker
 from areal.utils.data import concat_padded_tensors
 from areal.workflow.areal_provider import ArealProvider
 
+THREAD_POOL = None
+LOOP = []
 
-if use_new_loop:
-    workers = 256
+
+def create_pool(workers: int = 256):
+    import asyncio
+    import concurrent
+
+    assert workers > 0, "workers value must large than 0"
     THREAD_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
-    LOOP = []
 
     for i in range(workers):
         new_loop = asyncio.new_event_loop()
         LOOP.append(new_loop)
         THREAD_POOL.submit(start_loop, new_loop)
+
+
+def close_pool():
+    shutdown_all(LOOP)
+    if THREAD_POOL:
+        THREAD_POOL.shutdown()
 
 
 class AworldWorkflow(RolloutWorkflow):
