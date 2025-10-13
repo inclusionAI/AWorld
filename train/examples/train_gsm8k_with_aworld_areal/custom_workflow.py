@@ -32,14 +32,11 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
 import aworld.utils.async_func
+
 aworld.utils.async_func.use_new_loop = True
 
 from aworld.utils.async_func import use_new_loop
 from train.adapter.areal.aworld_workflow import AworldWorkflow, create_pool, close_pool
-
-GAIA_SYSTEM_PROMPT = """
-You are an all-capable AI assistant, aimed at solving any task presented by the user.
-"""
 
 
 class Gsm8kWorkflow(AworldWorkflow):
