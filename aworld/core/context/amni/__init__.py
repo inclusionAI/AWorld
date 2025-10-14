@@ -1137,7 +1137,7 @@ class ApplicationContext(AmniContext):
         artifact_context += "\n<knowledge_list>\n"
         search_tasks = []
         for artifact in artifacts:
-            search_tasks.append(self._get_knowledge_index_context(artifact, load_chunk_content_size=10))
+            search_tasks.append(self._get_knowledge_index_context(artifact, load_chunk_content_size=5))
         search_task_results = await asyncio.gather(*search_tasks)
         artifact_context += "\n".join(search_task_results)
         artifact_context += "</knowledge_list>"

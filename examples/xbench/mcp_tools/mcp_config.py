@@ -21,7 +21,7 @@ MCP_CONFIG = {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.image_server"
+                "mcp_tools.image_server"
             ],
             "env": {
                 "LLM_API_KEY": os.environ.get("IMAGE_LLM_API_KEY"),
@@ -34,7 +34,7 @@ MCP_CONFIG = {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.document_server"
+                "mcp_tools.document_server"
             ],
             "env": {
                 "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
@@ -44,7 +44,7 @@ MCP_CONFIG = {
             "command": "python",
             "args": [
                 "-m",
-                "mcp_servers.terminal_server"
+                "mcp_tools.terminal_server"
             ],
             "env": {
             }

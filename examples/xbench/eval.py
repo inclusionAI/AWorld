@@ -86,7 +86,6 @@ class AmniContextEvaluatable(EvalTarget):
         task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
         try:
             result = await Runners.run_task(task=task)
-            print(result)
             if not os.path.exists(f"results/{batch_id}"):
                 os.mkdir(f"results/{batch_id}")
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')

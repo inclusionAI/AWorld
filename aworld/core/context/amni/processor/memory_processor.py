@@ -132,13 +132,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
             logger.debug(f"   ✅ Successful operations: {successful_ops}/{total_ops}")
             logger.debug(f"   ❌ Failed operations: {failed_ops}/{total_ops}")
             logger.debug(f"   📈 Success rate: {(successful_ops/total_ops)*100:.1f}%")
-            
-            logger.info(f"🏁 Pipeline execution completed:")
-            logger.info(f"   📊 Total duration: {total_duration:.3f}s")
-            logger.info(f"   ✅ Successful operations: {successful_ops}/{total_ops}")
-            logger.info(f"   ❌ Failed operations: {failed_ops}/{total_ops}")
-            logger.info(f"   📈 Success rate: {(successful_ops/total_ops)*100:.1f}%")
-            
+
             # 记录每个操作的详细metrics
             if operation_metrics:
                 logger.debug("📋 Operation metrics:")

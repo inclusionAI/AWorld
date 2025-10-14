@@ -39,17 +39,6 @@ IMAGE_OCR = (
     '{"image_text": "text from image"}'
 )
 
-IMAGE_REASONING = (
-    "Input is a base64 encoded image. Given user's task: {task}, "
-    "solve it following the guide line:\n"
-    "1. Careful visual inspection\n"
-    "2. Contextual reasoning\n"
-    "3. Text transcription where relevant\n"
-    "4. Logical deduction from visual evidence\n"
-    "Return a json string with the following format: "
-    '{"image_reasoning_result": "reasoning result given task and image"}'
-)
-
 
 def optimize_image(image_data: bytes, max_size: int = 1024) -> bytes:
     """
@@ -140,7 +129,6 @@ def encode_images(image_sources: List[str], with_header: bool = True) -> List[st
 
 def image_to_base64(image_path):
     try:
-        # todo 解析pdf或其他文件的图片
         with Image.open(image_path) as image:
             buffered = BytesIO()
             image_format = image.format if image.format else "JPEG"
@@ -153,35 +141,25 @@ def image_to_base64(image_path):
         return None
 
 
-def create_image_contents(prompt: str, image_base64: List[str]) -> List[Dict[str, Any]]:
-    """Create uniform image format for querying llm."""
-    content = [
-        {"type": "text", "text": prompt},
-    ]
-    content.extend(
-        [{"type": "image_url", "image_url": {"url": url}} for url in image_base64]
-    )
-    return content
 
 
-@mcp.tool(description="solve the question by careful reasoning given the image(s) in given local filepath or url, including reasoning, ocr, etc.")
+@mcp.tool(description="OCR tool for recognizing text content from images. Only performs basic text recognition, does NOT analyze or reason about the content.")
 def mcp_image_recognition(
     image_urls: List[str] = Field(
-        description="The input image(s) in given a list of local filepaths or urls."
-    ),
-    question: str = Field(description="The question to ask."),
+        description="The input image(s) as a list of local absolute filepaths or urls."
+    )
 ) -> str:
-    """solve the question by careful reasoning given the image(s) in given filepath or url."""
+    """OCR tool for recognizing text from images. """
 
     try:
         image_base64 = image_to_base64(image_urls[0])
-        logger.info(f"image_url: {image_urls[0]}")
-        reasoning_prompt = question
+        logger.info(f"🖼️ Image OCR - Processing: {image_urls[0]}")
+        
         messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "system", "content": "You are an OCR assistant. Your only task is to recognize and extract text from images accurately. Do not analyze, summarize, or process the text."},
                 {"role": "user", "content": 
                 [
-                    {"type": "text", "text": reasoning_prompt},
+                    {"type": "text", "text": IMAGE_OCR},
                     {
                         "type": "image_url", 
                         "image_url": {
@@ -213,9 +191,7 @@ def mcp_image_recognition(
         traceback.print_exc()
         logger.error(f"image_reasoning_result-Execute error: {e}")
 
-    logger.info(
-        f"---get_reasoning_by_image-image_reasoning_result:{image_reasoning_result}"
-    )
+    logger.info(f"---get_reasoning_by_image-image_reasoning_result:{image_reasoning_result}")
 
     return image_reasoning_result
 
