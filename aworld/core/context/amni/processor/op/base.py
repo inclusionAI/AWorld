@@ -3,7 +3,7 @@ from typing import Any, Dict, Literal, TypeVar, Generic, Optional
 
 from pydantic import BaseModel, Field
 
-from amnicontext import ApplicationContext
+from ... import ApplicationContext
 from aworld.memory.models import MemoryItem
 
 MEMORY_ITEM = TypeVar("MEMORY_ITEM", bound=MemoryItem)

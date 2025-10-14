@@ -1,6 +1,5 @@
 from typing import Optional
 
-from amnicontext import get_amnicontext_config
 from .base import GraphDBConfig
 from .base_graph_store import BaseGraphStore
 
@@ -23,9 +22,7 @@ class GraphDBFactory:
         # 如果已经创建过实例，直接返回
         if self._graph_store is not None:
             return self._graph_store
-            
-        if graph_db_config is None:
-            graph_db_config = get_amnicontext_config().graph_db_config
+
         if not graph_db_config:
             return None
             

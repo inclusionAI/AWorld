@@ -1,6 +1,6 @@
 from typing import List
 
-from amnicontext import ApplicationContext, logger
+from ... import ApplicationContext, logger
 from . import Neuron
 
 

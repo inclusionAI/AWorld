@@ -1,6 +1,6 @@
 from typing import List
 
-from amnicontext import ApplicationContext
+from ... import ApplicationContext
 from . import Neuron
 
 TODO_PROMPT = """
@@ -83,7 +83,6 @@ TODO_PROMPT = """
 - ✅ Complete task tracking until all items marked as done
 </todo_guide>
 """
-
 
 class TodoNeuron(Neuron):
     """处理计划相关属性的Neuron"""

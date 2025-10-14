@@ -1,6 +1,6 @@
 from typing import Any, Optional
 
-from amnicontext import ApplicationContext
+from .. import ApplicationContext
 from aworld.core.common import ActionResult
 from aworld.memory.models import MemoryHumanMessage, MessageMetadata, MemoryToolMessage, MemoryMessage
 

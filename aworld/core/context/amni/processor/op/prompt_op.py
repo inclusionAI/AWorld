@@ -8,7 +8,7 @@ from .base import BaseOp
 from .op_factory import memory_op
 from ...prompt.neurons import neuron_factory
 from aworld.memory.models import MemorySystemMessage, MessageMetadata, MemoryHumanMessage
-from aworldspace.prompt.prompt_ext import ContextPromptTemplate
+from ...prompt.prompt_ext import ContextPromptTemplate
 
 
 @memory_op("append_user_prompt")

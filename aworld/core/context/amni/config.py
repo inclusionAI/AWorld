@@ -249,105 +249,60 @@ def get_amnicontext_config() -> AmniContextConfig:
                         event_types=[EventType.TOOL_RESULT],
                     ),
                     priority=0
-                ),
-                # 工具结果后，append用户提示词
-                # AmniContextProcessorConfig(
-                #     name="augmented_user_prompt_to_memory",
-                #     type="pipeline_memory_processor",
-                #     pipeline="neuron_augment|append_user_prompt",
-                #     subscription=EventSubscriptionConfig(
-                #         event_types=[EventType.TOOL_RESULT],
-                #     ),
-                #     priority=10
-                # ),
-                # 记忆提取
-                # AmniContextProcessorConfig(
-                #     name="extract_tool_fact",
-                #     type="pipeline_memory_processor",
-                #     pipeline="extract_tool_fact|save_memory",
-                #     subscription=EventSubscriptionConfig(
-                #         event_types=[EventType.TOOL_RESULT],
-                #     ),
-                #     is_async=True,
-                #     priority=100
-                # ),
-                # AmniContextProcessorConfig(
-                #     name="system_refresh_processor",
-                #     type="pipeline_memory_processor",
-                #     pipeline="extract_user_profile|save_memory"
-                # ),
-                # AmniContextProcessorConfig(
-                #     name="messages_summary",
-                #     type="pipeline_memory_processor",
-                #     pipeline="extract_user_profile|save_memory"
-                # ),
-                # AmniContextProcessorConfig(
-                #     name="fact_extract",
-                #     type="pipeline_memory_processor",
-                #     pipeline="extract_user_profile|save_memory"
-                # )
+                )
             ],
             neuron_config=[
                 AmniContextNeuronConfig(
-                    name="human",
-                    type="amnicontext.prompt.neurons.human_neuron.HumanNeuron",
-                    default_strategy=HumanNeuronStrategyConfig(mode="block"),
-                    strategies={
-                        "execution_search_agent": HumanNeuronStrategyConfig(mode="wait", wait_time=30),
-                    },
-                    priority=5,
-                ),
-                AmniContextNeuronConfig(
                     name="history",
-                    type="amnicontext.prompt.neurons.history_neuron.HistoryNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.history_neuron.HistoryNeuron",
                     default_strategy=NeuronStrategyConfig(),
                     priority=7,
                 ),
                 AmniContextNeuronConfig(
                     name="task",
-                    type="amnicontext.prompt.neurons.task_neuron.TaskHistoryNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.task_neuron.TaskHistoryNeuron",
                     default_strategy=NeuronStrategyConfig(),
                     priority=1,
                 ),
                 AmniContextNeuronConfig(
                     name="working_dir",
-                    type="amnicontext.prompt.neurons.working_dir_neuron.WorkingDirNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.working_dir_neuron.WorkingDirNeuron",
                     default_strategy=NeuronStrategyConfig(),
                     priority=8,
                 ),
                 AmniContextNeuronConfig(
                     name="basic",
-                    type="amnicontext.prompt.neurons.basic_neuron.BasicNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.basic_neuron.BasicNeuron",
                     default_strategy=NeuronStrategyConfig(),
                     priority=9,
                 ),
                 AmniContextNeuronConfig(
                     name="fact",
-                    type="amnicontext.prompt.neurons.fact_neuron.FactsNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.fact_neuron.FactsNeuron",
                     default_strategy=NeuronStrategyConfig(prompt_augment_strategy="append"),
                     priority=3,
                 ),
                 AmniContextNeuronConfig(
                     name="todo",
-                    type="amnicontext.prompt.neurons.todo_neuron.TodoNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.todo_neuron.TodoNeuron",
                     default_strategy=NeuronStrategyConfig(),
                     priority=2,
                 ),
                 AmniContextNeuronConfig(
                     name="workspace",
-                    type="amnicontext.prompt.neurons.workspace_neuron.WorkspaceNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.workspace_neuron.WorkspaceNeuron",
                     default_strategy=NeuronStrategyConfig(),
                     priority=10,
                 ),
                 AmniContextNeuronConfig(
                     name="action_info",
-                    type="amnicontext.prompt.neurons.action_info_neuron.ActionInfoNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.action_info_neuron.ActionInfoNeuron",
                     default_strategy=NeuronStrategyConfig(),
                     priority=3,
                 ),
                 AmniContextNeuronConfig(
                     name="conversation_history",
-                    type="amnicontext.prompt.neurons.conversation_history_neuron.ConversationHistoryNeuron",
+                    type="aworld.core.context.amni.prompt.neurons.conversation_history_neuron.ConversationHistoryNeuron",
                     default_strategy=NeuronStrategyConfig(),
                     priority=3,
                 ),

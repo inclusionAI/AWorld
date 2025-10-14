@@ -1,0 +1,49 @@
+from typing import Dict, Any, List
+
+
+from aworld.agents.amni_llm_agent import ApplicationAgent
+from aworld.core.common import Observation, ActionModel
+from aworld.core.event.base import Message
+from aworld.logs.util import logger
+
+
+class ExecutionSearchAgent(ApplicationAgent):
+    """
+    读取web页面内容Agent
+    """
+    max_loop = 100
+
+    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
+                           **kwargs) -> List[ActionModel]:
+        return await super().async_policy(observation, info, message, **kwargs)
+
+    async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation,
+                             message: Message = None) -> Message:
+        if self._finished:
+            try:
+                # 获取 todo_info 和 actions_info，处理可能的 None 值和异常
+                todo_info = await self.get_task_context(message).get_todo_info()
+                actions_info = await self.get_task_context(message).get_actions_info()
+
+                # 设置到 task_output_object
+                self.get_task_context(message).task_output_object.todo_info = todo_info
+                self.get_task_context(message).task_output_object.actions_info = actions_info
+
+                # 安全地拼接字符串，处理 None 值
+                if todo_info is not None:
+                    policy_result[0].policy_info += todo_info
+                if actions_info is not None:
+                    policy_result[0].policy_info += actions_info
+
+            except Exception as e:
+                # 记录错误但不中断执行流程
+                logger.error(f"❌ Error in ExecutionSearchAgent async_post_run: {e}")
+                # 确保 policy_result[0].policy_info 是字符串类型
+                if not isinstance(policy_result[0].policy_info, str):
+                    policy_result[0].policy_info = str(policy_result[0].policy_info) if policy_result[
+                        0].policy_info else ""
+
+        return await super().async_post_run(policy_result, policy_input, message)
+
+    async def should_terminate_loop(self, message: Message) -> bool:
+        return self.loop_step >= self.max_loop

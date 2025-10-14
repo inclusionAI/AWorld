@@ -274,7 +274,7 @@ class ContextManager(BaseModel):
         logger.info(f"[ContextManager] Found checkpoint for session {session_id}, task {checkpoint.metadata.task_id}")
 
         # Restore Context from checkpoint
-        from amnicontext import ApplicationContext
+        from ... import ApplicationContext
         context = ApplicationContext.from_dict(checkpoint.values)
 
         workspace = await workspace_repo.get_session_workspace(session_id=context.session_id)

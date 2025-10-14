@@ -2,7 +2,7 @@ import inspect
 from datetime import datetime
 from typing import List
 
-from amnicontext import ApplicationContext
+from ... import ApplicationContext
 from . import Neuron
 
 

@@ -6,7 +6,6 @@ from . import Neuron, Neurons
 from ..neurons_binding import agent_neuron_factory
 from ... import get_amnicontext_config, logger
 
-# TODO add to config.py
 DEFAULT_COMPONENTS = [Neurons.BASIC, Neurons.TASK, Neurons.WORKING_DIR, Neurons.TODO, Neurons.ACTION_INFO]
 
 

@@ -1,6 +1,6 @@
 from typing import List
 
-from amnicontext import ApplicationContext
+from ... import ApplicationContext
 from ..formatter.task_formatter import TaskFormatter
 from . import Neuron
 

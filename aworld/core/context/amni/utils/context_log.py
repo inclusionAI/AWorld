@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict
 
-# from amnicontext import ApplicationContext
+# from ... import ApplicationContext
 from ..logger import amni_digest_logger, amni_prompt_logger
 from aworld.core.agent.base import BaseAgent
 from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES

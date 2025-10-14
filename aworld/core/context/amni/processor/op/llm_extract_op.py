@@ -12,7 +12,7 @@ from ...event import ToolResultEvent
 from .base import BaseOp, MemoryCommand
 from aworld.core.common import ActionResult
 from aworld.memory.models import Fact, MemoryItem
-from aworldspace.prompt.prompt_ext import ContextPromptTemplate
+from ...prompt.prompt_ext import ContextPromptTemplate
 
 # TODO add to config 定义事件白名单
 EVENT_NAME_WHITE = ["ms-playwright", "wiki-server"]

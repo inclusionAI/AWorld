@@ -10,7 +10,7 @@ from ...utils.memoryutils import MemoryItemConvertor
 from ...utils.modelutils import num_tokens_from_string
 from aworld.core.common import ActionResult
 from aworld.memory.models import MemoryMessage
-from aworldspace.utils.workspace_utils import extract_artifacts_from_toolresult
+from ...utils.workspace_utils import extract_artifacts_from_toolresult
 
 CONTEXT_OFFLOAD_TOOL_NAME_WHITE = ["aworldsearch-server:search", "readweb-server:read_url",
                                    "web-search-server:search_web", "google-search-server",
@@ -98,7 +98,7 @@ class ToolResultOffloadOp(BaseOp):
 
         """
 
-        ## 将本次检索到的内容抽取成artifacts
+        ## extract artifacts from tool result
         artifacts = extract_artifacts_from_toolresult(tool_result)
         for index, artifact in enumerate(artifacts):
             logger.info(
@@ -109,7 +109,7 @@ class ToolResultOffloadOp(BaseOp):
                 "session_id": context.session_id
             })
 
-        ## 卸载上下文
+        ## do offload
         offloaded_content = await context.offload_by_workspace(artifacts=artifacts, biz_id=tool_result.tool_call_id)
         #
         # tool_result_content_tokens = num_tokens_from_string(tool_result.content)

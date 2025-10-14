@@ -1,6 +1,6 @@
 from typing import Dict, Optional
 
-from amnicontext import logger
+from aworld.logs.util import logger
 from aworld.models import qwen_tokenizer
 from aworld.models.openai_tokenizer import openai_tokenizer
 

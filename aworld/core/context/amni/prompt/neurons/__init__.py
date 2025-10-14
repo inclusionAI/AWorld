@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List
 
-from amnicontext import ApplicationContext
+from ... import ApplicationContext
 
 
 class Neurons:

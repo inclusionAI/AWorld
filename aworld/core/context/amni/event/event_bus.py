@@ -35,7 +35,7 @@ class EventBus:
             return
             
         handler_modules = [
-            'amnicontext.event.memory_handlers'
+            'aworld.core.context.amni.event.memory_handlers'
         ]
         
         for module_name in handler_modules:

@@ -8,7 +8,7 @@ from ... import ApplicationContext
 from ...event import ContextEvent
 from .base import BaseOp, MemoryCommand
 from aworld.memory.models import MemoryItem
-from aworldspace.prompt.prompt_ext import ContextPromptTemplate
+from ...prompt.prompt_ext import ContextPromptTemplate
 
 try:
     # 尝试导入langextract，如果不可用则设为None
