@@ -80,7 +80,7 @@ def run():
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="claude-3-7-sonnet-20250219",
-        llm_base_url="https://matrixllm.alipay.com/v1",
+        llm_base_url="xxx",
         llm_api_key="xxx",
     )
 
