@@ -16,11 +16,11 @@ This example demonstrates how to train a mathematical reasoning model on the GSM
 1. Install the required dependencies:
 
 ```bash
+cd AWorld
 pip install .
-pip install areal
 ```
 
-2. Ensure you have access to the AReaL framework and AWorld is properly installed.
+2. Ensure you have access to the AWorld and AReaL is properly installed.
 
 ### Data Preparation
 

@@ -5,7 +5,6 @@ import os
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.logs.util import color_log, Color
 from aworld.runner import Runners
 from aworld.tools.human.human import HUMAN
 import examples
@@ -31,4 +30,4 @@ if __name__ == '__main__':
               "please use HUMAN tool only once",
         swarm=swarm
     )
-    color_log(f"agent result:{result.answer}", color=Color.pink)
+    print(result)
