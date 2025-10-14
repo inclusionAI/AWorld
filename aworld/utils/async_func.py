@@ -2,65 +2,55 @@
 # Copyright (c) 2025 inclusionAI.
 
 import asyncio
-from functools import wraps
-from typing import Callable, Optional, Union, Any, Dict
+import contextlib
+from collections.abc import Generator
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from typing import List
+
+use_new_loop = False
 
 
-class Functionable:
-    def __init__(self, function: Callable[..., Any], *args: Any, **kwargs: Dict[str, Any]) -> None:
-        self.function = function
-        self.args = args
-        self.kwargs = kwargs
-        self.done: bool = False
-        self.error: bool = False
-        self.result: Optional[Any] = None
-        self.exception: Optional[Exception] = None
+@contextlib.contextmanager
+def loop_in_new_thread() -> Generator[asyncio.AbstractEventLoop]:
+    """Run loop in the new thread.
 
-    def __call__(self) -> None:
-        try:
-            self.result = self.function(*self.args, **self.kwargs)
-        except Exception as e:
-            self.error = True
-            self.exception = e
-        self.done = True
+    Examples:
+        >>> async def example(): ...
+        >>> with loop_in_new_thread() as loop:
+        >>>     future = asyncio.run_coroutine_threadsafe(example(), loop)
+        >>>     ...
 
-    def call(self):
-        self.__call__()
+    NOTE:
+        All operations must be in `with loop_in_new_thread()`, otherwise `different loop problems` will occur.
+    """
+    loop_future = Future[asyncio.AbstractEventLoop]()
+    stop_event = asyncio.Event()
+
+    async def create():
+        loop_future.set_result(asyncio.get_running_loop())
+        await stop_event.wait()
+
+    with ThreadPoolExecutor(1) as pool:
+        complete_future = pool.submit(asyncio.run, create())
+        for future in as_completed((loop_future, complete_future)):
+            if future is loop_future:
+                loop = loop_future.result()
+                try:
+                    yield loop
+                finally:
+                    loop.call_soon_threadsafe(stop_event.set, )
+            else:
+                future.result()
 
 
-def async_decorator(*func, delay: Optional[Union[int, float]] = 0.5) -> Callable:
-    def wrapper(function: Callable[..., Any]) -> Callable[..., Any]:
-        @wraps(function)
-        async def inner_wrapper(*args: Any, **kwargs: Any) -> Any:
-            sleep_time = 0 if delay is None else delay
-            task = Functionable(function, *args, **kwargs)
-            # TODO: Use thread pool to process task
-            task.call()
-            if task.error:
-                raise task.exception
-            await asyncio.sleep(sleep_time)
-            return task.result
+def start_loop(loop: asyncio.AbstractEventLoop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
 
-        return inner_wrapper
 
-    if not func:
-        return wrapper
-    else:
-        if asyncio.iscoroutinefunction(func[0]):
-            # coroutine function, return itself
-            return func[0]
-        return wrapper(func[0])
+def shutdown_loop(loop: asyncio.AbstractEventLoop):
+    loop.stop()
 
-def async_func(function: Callable[..., Any]) -> Callable[..., Any]:
-    @wraps(function)
-    async def inner_wrapper(*args: Any, **kwargs: Any) -> Any:
-        task = Functionable(function, *args, **kwargs)
-        task.call()
-        if task.error:
-            raise task.exception
-        return task.result
 
-    if asyncio.iscoroutinefunction(function):
-        # coroutine function, return itself
-        return function
-    return inner_wrapper
+def shutdown_all(loops: List[asyncio.AbstractEventLoop]):
+    [loop.call_soon_threadsafe(shutdown_loop, loop) for loop in loops]

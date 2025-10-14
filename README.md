@@ -243,7 +243,7 @@ pip install .
 ## Hello world examples
 We introduce the concepts of `Agent` and `Runners` to help you get started quickly.
 
-For parallel task execution, see the [parallel run examples](examples/parallel_run/README.md).
+For parallel task execution, see the [parallel run examples](examples/parallel_task/README.md).
 
 ```python
 from aworld.agents.llm_agent import Agent

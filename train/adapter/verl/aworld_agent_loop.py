@@ -2,7 +2,6 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import json
-import logging
 import os
 import uuid
 from typing import Any, List, Dict, Union
@@ -60,9 +59,9 @@ class AworldAgentLoop(AgentLoopBase):
             input = input.get("content", "")
         # collect trajectory
         if isinstance(agent, Swarm):
-            result = Runners.sync_run(input=input, swarm=agent)
+            result = await Runners.run(input=input, swarm=agent)
         else:
-            result = Runners.sync_run(input=input, agent=agent)
+            result = await Runners.run(input=input, agent=agent)
 
         return result
 

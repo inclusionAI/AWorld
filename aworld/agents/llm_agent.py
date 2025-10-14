@@ -235,20 +235,35 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
 
         # Stateless tool
-        self.tools = tool_desc_transform(get_tool_desc(),
-                                         tools=self.tool_names if self.tool_names else [],
-                                         black_tool_actions=self.black_tool_actions)
+        try:
+            self.tools = tool_desc_transform(get_tool_desc(),
+                                             tools=self.tool_names if self.tool_names else [],
+                                             black_tool_actions=self.black_tool_actions)
+        except:
+            logger.warning(f"{self.id()} get tools desc fail, no tool to use. error: {traceback.format_exc()}")
         # Agents as tool
-        self.tools.extend(agent_desc_transform(get_agent_desc(),
-                                               agents=self.handoffs if self.handoffs else []))
+        try:
+            self.tools.extend(agent_desc_transform(get_agent_desc(),
+                                                   agents=self.handoffs if self.handoffs else []))
+        except:
+            logger.warning(f"{self.id()} get agent desc fail, no agent as tool to use. error: {traceback.format_exc()}")
         # MCP servers are tools
-        if self.sandbox:
-            mcp_tools = await self.sandbox.mcpservers.list_tools(context)
-            processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
-            self.sandbox.mcpservers.map_tool_list=tool_mapping
-            self.tools.extend(processed_tools)
-        else:
-            self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
+        try:
+            if self.sandbox:
+                mcp_tools = await self.sandbox.mcpservers.list_tools(context)
+                self.tools.extend(mcp_tools)
+            else:
+                self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
+
+            if self.sandbox:
+                mcp_tools = await self.sandbox.mcpservers.list_tools(context)
+                processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
+                self.sandbox.mcpservers.map_tool_list = tool_mapping
+                self.tools.extend(processed_tools)
+            else:
+                self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
+        except:
+            logger.warning(f"{self.id()} get MCP desc fail, no MCP to use. error: {traceback.format_exc()}")
 
     def messages_transform(self,
                            content: str,
@@ -547,6 +562,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         messages = await self.build_llm_input(observation, info, message=message, **kwargs)
 
         serializable_messages = to_serializable(messages)
+        message.context.context_info["llm_input"] = serializable_messages
         llm_response = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
@@ -723,14 +739,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             LLM response
         """
         llm_response = None
-        source_span = trace.get_current_span()
-        serializable_messages = to_serializable(messages)
-        message.context.context_info["llm_input"] = serializable_messages
-
-        if source_span:
-            source_span.set_attribute("messages", json.dumps(
-                serializable_messages, ensure_ascii=False))
-
         try:
             stream_mode = kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)

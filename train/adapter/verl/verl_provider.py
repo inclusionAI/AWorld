@@ -77,13 +77,22 @@ class VerlProvider(LLMProviderBase):
             ),
         )
         rid = self.request_id
+
         response_output = await self.provider.generate(
-            request_id=rid, prompt_ids=prompt_ids, sampling_params=sampling_params
+            request_id=rid,
+            prompt_ids=prompt_ids,
+            sampling_params=sampling_params
         )
-        content = self.tokenizer.decode(response_output.token_ids, skip_special_tokens=True)
+        content = await loop.run_in_executor(
+            None,
+            lambda: self.tokenizer.decode(response_output.token_ids, skip_special_tokens=True)
+        )
 
         tool_parser = ToolParserManager.get_tool_parser(self.tool_parser)
-        res: ExtractedToolCallInformation = tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
+        res: ExtractedToolCallInformation = await loop.run_in_executor(
+            None,
+            lambda: tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
+        )
 
         tool_calls = []
         if res.tools_called:
