@@ -17,6 +17,19 @@ MCP_CONFIG = {
                 "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
             }
         },
+        "image_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "mcp_servers.image_server"
+            ],
+            "env": {
+                "LLM_API_KEY": os.environ.get("IMAGE_LLM_API_KEY"),
+                "LLM_MODEL_NAME": os.environ.get("IMAGE_LLM_MODEL_NAME"),
+                "LLM_BASE_URL": os.environ.get("IMAGE_LLM_BASE_URL"),
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
+            }
+        },
         "document_server": {
             "command": "python",
             "args": [

@@ -22,51 +22,42 @@ def logical_schema_getter(
     return ApplicationContext.get_logical_schema_field(
         key=field_path, context=context, recursive=recursive, agent_id=agent_id)
 
-async def working_dir_desc(context: ApplicationContext):
-    component = neuron_factory.get_neuron(Neurons.WORKING_DIR)
-    if not component:
-        return ""
-    return await component.format(context=context)
+def create_neuron_formatter(neuron_type: Neurons):
+    """
+    Factory function to create neuron formatter functions.
+    
+    This eliminates code duplication by dynamically generating formatter functions
+    for different neuron types with the same logic pattern.
+    
+    Args:
+        neuron_type: The type of neuron to format
+        
+    Returns:
+        An async function that formats the neuron content
+        
+    Example:
+        >>> working_dir_desc = create_neuron_formatter(Neurons.WORKING_DIR)
+        >>> result = await working_dir_desc(context)
+    """
+    async def formatter(context: ApplicationContext) -> str:
+        component = neuron_factory.get_neuron(neuron_type)
+        if not component:
+            return ""
+        return await component.format(context=context)
+    
+    return formatter
 
-async def facts_desc(context: ApplicationContext) -> str:
-    component = neuron_factory.get_neuron(Neurons.FACT)
-    if not component:
-        return ""
-    return await component.format(context=context)
-
-async def task_desc(context: ApplicationContext):
-    component = neuron_factory.get_neuron(Neurons.TASK)
-    if not component:
-        return ""
-    return await component.format(context=context)
-
-async def todo_info(context: ApplicationContext):
-    component = neuron_factory.get_neuron(Neurons.TODO)
-    if not component:
-        return ""
-    return await component.format(context=context)
-
-async def action_info(context: ApplicationContext):
-    component = neuron_factory.get_neuron(Neurons.ACTION_INFO)
-    if not component:
-        return ""
-    return await component.format(context=context)
-
-async def conversation_history(context: ApplicationContext):
-    component = neuron_factory.get_neuron(Neurons.CONVERSATION_HISTORY)
-    if not component:
-        return ""
-    return await component.format(context=context)
 
 CONTEXT_PREDEFINED_DYNAMIC_VARIABLES = dict(ALL_PREDEFINED_DYNAMIC_VARIABLES, **{
     # user specified context
     "ai_context": ApplicationContext.ai_context,
-    "working_dir": working_dir_desc,
-    "facts": facts_desc,
-    "task_history": task_desc,
-    "todo_info": todo_info,
-    "action_info": action_info,
-    "conversation_history": conversation_history
+    # dynamically generated neuron formatters
+    "working_dir": create_neuron_formatter(Neurons.WORKING_DIR),
+    "facts": create_neuron_formatter(Neurons.FACT),
+    "task_history": create_neuron_formatter(Neurons.TASK),
+    "todo_info": create_neuron_formatter(Neurons.TODO),
+    "action_info": create_neuron_formatter(Neurons.ACTION_INFO),
+    "conversation_history": create_neuron_formatter(Neurons.CONVERSATION_HISTORY)
 })
 
 CONTEXT_LOGICAL_SCHEMA_GETTER = logical_schema_getter

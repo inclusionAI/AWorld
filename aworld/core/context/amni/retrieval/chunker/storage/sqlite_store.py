@@ -41,7 +41,6 @@ class SQLiteChunkStore(ChunkStore):
     def _init_database(self) -> None:
         """Initialize the database and create tables if they don't exist."""
         try:
-            print(f"当前SQLite版本: {sqlite3.sqlite_version}")
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
