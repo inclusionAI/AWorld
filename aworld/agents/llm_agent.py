@@ -326,17 +326,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 tool_call_id = action_item.tool_call_id
                 await self._add_tool_result_to_memory(tool_call_id, tool_result=action_item, context=message.context)
                 tool_result_added = True
-        elif last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
-                last_history.metadata[
-                    'tool_calls']:
-            for tool_call in last_history.metadata['tool_calls']:
-                tool_call_id = tool_call['id']
-                tool_name = tool_call['function']['name']
-                if tool_name and tool_name == message.sender:
-                    await self._add_tool_result_to_memory(tool_call_id, tool_result=observation.content,
-                                                          context=message.context)
-                    tool_result_added = True
-                    break
+
         if not tool_result_added:
             self._clean_redundant_tool_call_messages(histories)
             content = observation.content
@@ -384,58 +374,58 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _log_messages(self, messages: List[Dict[str, Any]], **kwargs) -> None:
         """Log the sequence of messages for debugging purposes"""
-        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
-        logger.debug(f"[agent] use tools: {self.tools}")
+        logger.info(f"[agent {self.id()}] Invoking LLM with {len(messages)} messages:")
+        logger.debug(f"[agent {self.id()}] use tools: {self.tools}")
         for i, msg in enumerate(messages):
             prefix = msg.get('role')
             logger.info(
-                f"[agent] Message {i + 1}: {prefix} ===================================")
+                f"[agent {self.id()}] Message {i + 1}: {prefix} ===================================")
             if isinstance(msg['content'], list):
                 try:
                     for item in msg['content']:
                         if item.get('type') == 'text':
                             logger.info(
-                                f"[agent] Text content: {item.get('text')}")
+                                f"[agent {self.id()}] Text content: {item.get('text')}")
                         elif item.get('type') == 'image_url':
                             image_url = item.get('image_url', {}).get('url', '')
                             if image_url.startswith('data:image'):
-                                logger.info(f"[agent] Image: [Base64 image data]")
+                                logger.info(f"[agent {self.id()}] Image: [Base64 image data]")
                             else:
                                 logger.info(
-                                    f"[agent] Image URL: {image_url[:30]}...")
+                                    f"[agent {self.id()}] Image URL: {image_url[:30]}...")
                 except Exception as e:
-                    logger.error(f"[agent] Error parsing msg['content']: {msg}. Error: {e}")
+                    logger.error(f"[agent {self.id()}] Error parsing msg['content']: {msg}. Error: {e}")
                     content = str(msg['content'])
                     chunk_size = 500
                     for j in range(0, len(content), chunk_size):
                         chunk = content[j:j + chunk_size]
                         if j == 0:
-                            logger.info(f"[agent] Content: {chunk}")
+                            logger.info(f"[agent {self.id()}] Content: {chunk}")
                         else:
-                            logger.info(f"[agent] Content (continued): {chunk}")
+                            logger.info(f"[agent {self.id()}] Content (continued): {chunk}")
             else:
                 content = str(msg['content'])
                 chunk_size = 500
                 for j in range(0, len(content), chunk_size):
                     chunk = content[j:j + chunk_size]
                     if j == 0:
-                        logger.info(f"[agent] Content: {chunk}")
+                        logger.info(f"[agent {self.id()}] Content: {chunk}")
                     else:
-                        logger.info(f"[agent] Content (continued): {chunk}")
+                        logger.info(f"[agent {self.id()}] Content (continued): {chunk}")
 
             if 'tool_calls' in msg and msg['tool_calls']:
                 for tool_call in msg.get('tool_calls'):
                     if isinstance(tool_call, dict):
                         logger.info(
-                            f"[agent] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
+                            f"[agent {self.id()}] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
                         args = str(tool_call.get('function', {}).get(
                             'arguments', {}))[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+                        logger.info(f"[agent {self.id()}] Tool args: {args}...")
                     elif isinstance(tool_call, ToolCall):
                         logger.info(
-                            f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
+                            f"[agent {self.id()}] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
                         args = str(tool_call.function.arguments)[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+                        logger.info(f"[agent {self.id()}] Tool args: {args}...")
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
@@ -461,7 +451,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         _group_name = None
         # agents and tools exist simultaneously, more than one agent/tool name
-        if (agents and tools) or len(agents) > 1 or len(tools) > 1:
+        if (agents and tools) or len(agents) > 1 or len(tools) > 1 or (len(agents) == 1 and agents[0].tool_name):
             _group_name = f"{self.id()}_{uuid.uuid1().hex}"
 
         # complex processing
