@@ -9,10 +9,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Tuple
 
 from aworld.logs.util import logger
-from .base import Event
+from .base import Event, ContextEvent
 from .base_handler import EventHandler
 from .decorators import event_handler
-from .. import AmniContextConfig
 from ..processor.processor_factory import ProcessorFactory
 from ..utils.context_log import _generate_top_border, _generate_bottom_border
 
@@ -21,41 +20,35 @@ from ..utils.context_log import _generate_top_border, _generate_bottom_border
 class MemoryProcessorHandler(EventHandler, ABC):
     """基础记忆处理器，抽象 workflow 的解析和执行逻辑"""
 
-    def __init__(self, config: AmniContextConfig, priority: int = 20):
+    def __init__(self, priority: int = 20):
         super().__init__("memory_processor", self.process_messages, priority=priority)
-        self.config = config
         self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="async_processor")
         
-    async def process_messages(self, event: Event) -> Optional[Event]:
-        """处理所有类型的事件"""
-        if not self.config:
-            return None
-            
+    async def process_messages(self, event: ContextEvent) -> Optional[Event]:
+
         try:
-            # 分离同步和异步处理器
             sync_processors = []
             async_processors = []
             
-            for processor_config in self.config.processor_config:
-                # 检查订阅条件
+            for processor_config in event.context.get_config().processor_config:
+                # check subscription
                 if processor_config.subscription:
                     if not processor_config.subscription.should_process_event(event.event_type, event.namespace):
                         logger.debug(f"Skipping processor {processor_config.name} due to subscription filter")
                         continue
                 
-                # 根据is_async配置分类处理器
                 if processor_config.is_async:
                     async_processors.append(processor_config)
                 else:
                     sync_processors.append(processor_config)
 
-            # 根据优先级排序
+            # sort processors by priority
             sync_processors.sort(key=lambda x: x.priority or 0)
             async_processors.sort(key=lambda x: x.priority or 0)
 
             results = []
 
-            # 先处理同步处理器
+            # first process sync processors
             for processor_config in sync_processors:
                 self.log_start(event, processor_config)
                 result = await self._process_single_processor(processor_config, event.deep_copy())
@@ -63,7 +56,7 @@ class MemoryProcessorHandler(EventHandler, ABC):
                     results.append(result)
                 self.log_end(event, processor_config)
 
-            # 然后处理异步处理器（在后台运行，不等待完成）
+            # then process async processors created tasks
             if async_processors:
                 self._start_async_processors(async_processors, event)
 
@@ -83,9 +76,9 @@ class MemoryProcessorHandler(EventHandler, ABC):
         logger.info(_generate_bottom_border())
 
     async def _process_single_processor(self, processor_config, event: Event) -> Optional[Tuple[str, any]]:
-        """处理单个同步处理器"""
+        """process a single processor"""
         try:
-            # 动态创建处理器实例
+            # create processor
             processor = ProcessorFactory.create(processor_config=processor_config)
             if not processor:
                 logger.warning(f"Failed to create processor: {processor_config.name} {traceback.format_exc()}")

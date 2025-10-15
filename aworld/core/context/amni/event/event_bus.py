@@ -7,12 +7,11 @@ import traceback
 from typing import Dict, List, Optional, Any
 
 from aworld.logs.util import logger
-from ..config import AmniContextConfig, get_amnicontext_config
+from ..config import AmniContextConfig
 from .base import Event, EventType, ContextEvent, EventStatus, SystemPromptEvent, ToolResultEvent
 from .base_handler import EventHandler
 from .storage import InMemoryEventStorage
 from aworld.core.context.base import Context
-from aworld.memory.main import Memory
 
 
 class EventBus:
@@ -326,9 +325,6 @@ async def get_global_event_bus(config: Optional['AmniContextConfig'] = None) -> 
 
     if _global_event_bus is not None:
         return _global_event_bus
-
-    if config is None:
-        config = get_amnicontext_config()
 
     _global_config = config
     _global_event_bus = await start_global_event_bus(config)

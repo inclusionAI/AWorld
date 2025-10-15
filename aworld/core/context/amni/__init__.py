@@ -17,7 +17,7 @@ from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
 from aworld.output.artifact import ArtifactAttachment
-from .config import AgentContextConfig, AmniContextConfig, get_amnicontext_config
+from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .logger import logger, amni_prompt_logger
 from .contexts import ContextManager
 from .retrieval.embeddings import EmbeddingsMetadata, SearchResults
@@ -397,8 +397,6 @@ class ApplicationContext(AmniContext):
         self._workspace = workspace
         self._parent = parent
         self._config = context_config
-        if not self._config:
-            self._config = get_amnicontext_config()
         self._working_dir = working_dir
 
     def get_config(self) -> AmniContextConfig:
@@ -408,8 +406,10 @@ class ApplicationContext(AmniContext):
 
     @classmethod
     async def from_input(cls, task_input: TaskInput, workspace: WorkSpace = None, use_checkpoint: bool = True, context_config: AmniContextConfig = None,  **kwargs) -> "ApplicationContext":
+        if not context_config:
+            context_config = AmniConfigFactory.create()
         try:
-            await start_global_event_bus(context_config if context_config else get_amnicontext_config() )
+            await start_global_event_bus(context_config)
         except Exception as e:
             logger.warning(f"Failed to start global event bus: {e} {traceback.format_exc()}")
         try:

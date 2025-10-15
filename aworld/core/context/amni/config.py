@@ -82,12 +82,11 @@ class HumanNeuronStrategyConfig(NeuronStrategyConfig):
     mode: str = Field(description="模式, block|wait")
     wait_time: int = Field(default=10, description="等待时间, 单位: 秒")
 
-# AmniContextNeuronConfig removed - neurons are now registered via decorators
+
 
 class AgentContextConfig(BaseModel):
-    # System Augment
-    # Context Neuron
-    # human : xxx
+    # System Prompt Augment
+    neuron_names: Optional[list[str]] = Field(default_factory=list)
     neuron_config: Optional[Dict[str, NeuronStrategyConfig]] = Field(default_factory=list)
 
 
@@ -228,7 +227,6 @@ def get_amnicontext_config() -> AmniContextConfig:
                     priority=0
                 )
             ]
-            # neuron_config removed - neurons are now auto-registered via @neuron_factory.register decorators
         )
     return DEFAULT_CONFIG
 
@@ -247,8 +245,8 @@ class AmniConfigLevel(Enum):
 class AmniConfigFactory:
 
     @staticmethod
-    def create(level: AmniConfigLevel) -> AmniContextConfig:
-        if level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
+    def create(level: Optional[AmniConfigLevel] = None) -> AmniContextConfig:
+        if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             return get_amnicontext_config()
         elif level == AmniConfigLevel.NAVIGATOR:
             return get_amnicontext_config()

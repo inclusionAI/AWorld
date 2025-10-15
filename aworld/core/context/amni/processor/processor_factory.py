@@ -6,10 +6,10 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Type
 
 from aworld.logs.util import logger
+from .. import ContextEvent
 from ..config import AmniContextProcessorConfig
 from aworld.core.common import Observation
 from aworld.core.context.base import Context
-from ..event import Event
 
 class BaseContextProcessor(ABC):
     """内存处理器基类"""
@@ -18,7 +18,7 @@ class BaseContextProcessor(ABC):
         self.config = config
 
     @abstractmethod
-    async def process(self, context: Context, event: Event, **kwargs) -> Optional[Observation]:
+    async def process(self, context: Context, event: ContextEvent, **kwargs) -> Optional[Observation]:
         """处理消息"""
         pass
 

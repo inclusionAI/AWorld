@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from aworld.core.context.base import Context
-from aworld.memory.main import Memory
 from aworld.memory.models import MemoryMessage
 from aworld.output import Artifact
 
@@ -40,7 +39,7 @@ class Event:
     timestamp: datetime = field(default_factory=datetime.now)
     namespace: str = ""
     status: str = field(default=EventStatus.INIT)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "event_id": self.event_id,
@@ -97,55 +96,47 @@ class SystemPromptEvent(ContextEvent):
         return new_event
 
 @dataclass
-class ArtifactEvent(Event):
-    """包含Artifact的事件"""
+class ArtifactEvent(ContextEvent):
+    """contains artifact"""
     artifact: Optional[Artifact] = None
-    context: Optional[Context] = None
 
     def to_dict(self) -> Dict[str, Any]:
         base_dict = super().to_dict()
         base_dict.update({
             "artifact_id": self.artifact.artifact_id if self.artifact else None,
-            "context": str(self.context) if self.context else None
         })
         return base_dict
 
 
 @dataclass
-class MessageEvent(Event):
-    """包含MemoryMessage的事件"""
+class MessageEvent(ContextEvent):
+    """contain MemoryMessage"""
     message: Optional[MemoryMessage] = None
-    context: Optional[Context] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         base_dict = super().to_dict()
         base_dict.update({
             "message_id": self.message.id if self.message else None,
             "message_role": self.message.role if self.message else None,
-            "context": str(self.context) if self.context else None
         })
         return base_dict
 
 
 @dataclass
-class ToolResultEvent(Event):
+class ToolResultEvent(ContextEvent):
     """包含工具结果的事件"""
     tool_result: Optional[Any] = None
-    context: Optional[Context] = None
     tool_call_id: Optional[str] = None
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
 
     def deep_copy(self) -> 'ToolResultEvent':
-        """创建事件的深拷贝，memory字段直接引用"""
+        """创建事件的深拷贝"""
         import copy
         
         new_event = ToolResultEvent()
         for key, value in self.__dict__.items():
-            if key == 'memory':
-                # memory字段直接引用
-                setattr(new_event, key, value)
-            elif key == 'context' and value is not None:
+            if key == 'context' and value is not None:
                 # context字段特殊处理
                 if hasattr(value, 'deep_copy'):
                     setattr(new_event, key, value.deep_copy())
