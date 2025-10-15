@@ -21,13 +21,13 @@ class PipelineMemoryProcessor(BaseContextProcessor):
         if not pipeline:
             return []
         
-        # Parse pipeline string, support comma-separated operations
+        # parse pipeline string, support comma-separated operations
         # Example: "set_query|retrieve_top_memory|print_memory"
         pipeline_parts = [part.strip() for part in pipeline.split("|") if part.strip()]
         return pipeline_parts
 
     def _get_ops(self, processor_config: AmniContextProcessorConfig) -> Dict[str, Any]:
-        """从OpFactory获取所有注册的操作"""
+        """get all registered operations from OpFactory"""
         ops = {}
         for op_name in OpFactory.list_all_ops():
             op_instance = OpFactory.create(op_name)
@@ -36,7 +36,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
         return ops
 
     def build_pipeline(self, pipeline_config: str) -> List[Any]:
-        """构建操作列表"""
+        """build operation list"""
         pipeline_ops = self.parse_pipeline_config(pipeline_config)
 
         ops_list = []
@@ -73,7 +73,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
                 logger.debug(f"⚡ [{i+1}/{total_ops}] Executing: {op_name}")
                 
                 try:
-                    # 直接调用操作的execute方法
+                    # directly call the execute method of the operation
                     result = await op_instance.execute(context=context,
                                                       info=info,
                                                       event=event,
@@ -83,7 +83,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
                     op_duration = op_end_time - op_start_time
                     successful_ops += 1
                     
-                    # 记录操作metrics
+                    # record operation metrics
                     operation_metrics.append({
                         'operation': op_name,
                         'index': i + 1,
@@ -91,7 +91,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
                         'status': 'success'
                     })
                     
-                    # 更新info，确保操作之间的状态传递
+                    # update info, ensure state transfer between operations
                     if result and isinstance(result, dict):
                         info.update(result)
                         previous_result = result
@@ -108,7 +108,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
                     op_duration = op_end_time - op_start_time
                     failed_ops += 1
                     
-                    # 记录失败的操作metrics
+                    # record failed operation metrics
                     operation_metrics.append({
                         'operation': op_name,
                         'index': i + 1,
@@ -119,21 +119,21 @@ class PipelineMemoryProcessor(BaseContextProcessor):
                     
                     logger.warn(f"❌ [{i+1}/{total_ops}] {op_name} failed in {op_duration:.3f}s | Error: {e} {traceback.format_exc()}")
                     logger.warning(f"❌ [{i+1}/{total_ops}] {op_name} failed in {op_duration:.3f}s | Error: {e} {traceback.format_exc()}")
-                    # 继续执行下一个操作，不中断整个流程
+                    # continue to execute the next operation, without interrupting the entire process
                     continue
             
-            # 计算总体metrics
+            # calculate overall metrics
             pipeline_end_time = time.time()
             total_duration = pipeline_end_time - pipeline_start_time
             
-            # 记录pipeline执行摘要
+            # record pipeline execution summary
             logger.debug(f"🏁 Pipeline execution completed:")
             logger.debug(f"   📊 Total duration: {total_duration:.3f}s")
             logger.debug(f"   ✅ Successful operations: {successful_ops}/{total_ops}")
             logger.debug(f"   ❌ Failed operations: {failed_ops}/{total_ops}")
             logger.debug(f"   📈 Success rate: {(successful_ops/total_ops)*100:.1f}%")
 
-            # 记录每个操作的详细metrics
+            # record each operation's detailed metrics
             if operation_metrics:
                 logger.debug("📋 Operation metrics:")
                 logger.debug("📋 Operation metrics:")
@@ -145,7 +145,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
                         logger.warning(f"      Error: {metric['error']}")
                         logger.warning(f"      Error: {metric['error']}")
             
-            # 返回最终结果
+        
             return previous_result
             
         except Exception as e:
@@ -167,6 +167,6 @@ class PipelineMemoryProcessor(BaseContextProcessor):
         return result
 
     async def process(self, context: Context, event: Event, **kwargs) -> Dict[str, Any]:
-        """处理消息"""
-        # 使用配置的pipeline处理
+        """process message"""
+        # use the configured pipeline to process
         return await self.process_with_pipeline(pipeline=self.config.pipeline, context=context, event=event, **kwargs)
