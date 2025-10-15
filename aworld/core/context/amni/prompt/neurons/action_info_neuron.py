@@ -7,25 +7,25 @@ from .neuron_factory import neuron_factory
 
 @neuron_factory.register(name="action_info", desc="Action info neuron", prio=3)
 class ActionInfoNeuron(Neuron):
-    """处理工作空间相关属性的Neuron"""
+    """Neuron for handling action information related properties"""
 
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        """格式化工作空间信息"""
+        """Format action information"""
         context._workspace._load_workspace_data()
         artifacts = await context._workspace.query_artifacts(search_filter={
             "context_type": "actions_info"
         })
-        logger.info(f"get_actions_info: {len(artifacts)}")
+        logger.info(f"📚 Retrieved actions info: {len(artifacts)} artifacts")
         return [f"  <knowledge id='{artifact.artifact_id}' summary='{artifact.summary}'></knowledge>\n" for artifact in artifacts]
 
 
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None,
                      **kwargs) -> str:
-        """组合工作空间信息"""
+        """Combine action information"""
         actions_info = (
             "\nBelow is the actions information, including both successful and failed experiences, "
-            "as well as key knowledge and insights obtained during the process ，"
-            "\n充分使用这些信息:\n"
+            "as well as key knowledge and insights obtained during the process.\n"
+            "Make full use of this information:\n"
             "<knowledge_list>\n"
         )
         if not items:

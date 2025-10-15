@@ -7,13 +7,13 @@ from .neuron_factory import neuron_factory
 
 @neuron_factory.register(name="workspace", desc="Workspace neuron", prio=10)
 class WorkspaceNeuron(Neuron):
-    """处理工作空间相关属性的Neuron"""
+    """Neuron for handling workspace related properties"""
 
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        """格式化工作空间信息"""
+        """Format workspace information"""
         items = []
 
-        # 工作空间
+        # Workspace
         workspace = context.workspace
         if workspace:
             workspace_info = f"<workspace_id>{getattr(workspace, 'workspace_id', 'unknown')}</workspace_id>"
@@ -24,7 +24,7 @@ class WorkspaceNeuron(Neuron):
 
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None,
                      **kwargs) -> str:
-        """组合工作空间信息"""
+        """Combine workspace information"""
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
 

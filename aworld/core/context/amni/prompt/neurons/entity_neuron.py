@@ -7,19 +7,19 @@ from .neuron_factory import neuron_factory
 
 @neuron_factory.register(name="entity", desc="Entity neuron", prio=4)
 class EntitiesNeuron(Neuron):
-    """处理实体相关属性的Neuron"""
+    """Neuron for handling entity related properties"""
 
     async def desc(self, context: ApplicationContext, namespace: str = None, **kwargs) -> str:
         """
-        生成查询实体或实体之间联系的prompt描述
+        Generate prompt description for querying entities or relationships between entities
         
         Args:
-            context: 应用上下文
-            namespace: 命名空间
-            **kwargs: 其他参数
+            context: Application context
+            namespace: Namespace
+            **kwargs: Additional parameters
             
         Returns:
-            str: 实体查询的prompt描述
+            str: Prompt description for entity queries
         """
         return """
 <entity_relationship_rule>

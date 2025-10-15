@@ -21,7 +21,7 @@ class Neurons:
 
 class Neuron(ABC):
     """
-    神经元抽象类
+    Abstract base class for neurons
     """
 
     async def desc(self, context: ApplicationContext, namespace: str = None, **kwargs) -> str:
@@ -35,14 +35,14 @@ class Neuron(ABC):
         pass
 
 
-# 导入注册表和工厂
+# Import registry and factory
 from .neuron_factory import NeuronFactory, neuron_factory
 from aworld.utils.common import scan_packages
 
-# 自动扫描并注册所有 Neuron 类
+# Automatically scan and register all Neuron classes
 scan_packages("aworld.core.context.amni.prompt.neurons", [Neuron])
 
-# 导出
+# Exports
 __all__ = [
     'Neuron',
     'Neurons',

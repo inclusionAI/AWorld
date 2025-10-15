@@ -7,10 +7,10 @@ from .neuron_factory import neuron_factory
 
 @neuron_factory.register(name="fact", desc="Facts neuron", prio=3, prompt_augment_strategy="append")
 class FactsNeuron(Neuron):
-    """处理事实相关属性的Neuron"""
+    """Neuron for handling fact related properties"""
 
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        """格式化事实信息"""
+        """Format fact information"""
         facts = await context.retrival_facts()
         if not facts:
             return []
@@ -23,7 +23,7 @@ class FactsNeuron(Neuron):
 
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None,
                      **kwargs) -> str:
-        """组合事实信息"""
+        """Combine fact information"""
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
 

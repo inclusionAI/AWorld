@@ -7,19 +7,19 @@ from .neuron_factory import neuron_factory
 
 @neuron_factory.register(name="history", desc="History messages neuron", prio=7)
 class HistoryNeuron(Neuron):
-    """处理历史消息和前一轮结果相关属性的Neuron"""
+    """Neuron for handling historical messages and previous round results related properties"""
     
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        """格式化历史消息和前一轮结果信息"""
+        """Format historical messages and previous round results information"""
         items = []
         
-        # 历史消息
+        # Historical messages
         history = context.history
         if history:
             for i, message in enumerate(history):
                 items.append(f"<history_message_{i}>{message}</history_message_{i}>")
         
-        # 前一轮结果
+        # Previous round results
         if hasattr(context, 'root') and hasattr(context.root, 'task_state') and hasattr(context.root.task_state, 'previous_round_results'):
             previous_round_results = context.root.task_state.previous_round_results
             if previous_round_results:
@@ -29,7 +29,7 @@ class HistoryNeuron(Neuron):
         return items
     
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None, **kwargs) -> str:
-        """组合历史消息和前一轮结果信息"""
+        """Combine historical messages and previous round results information"""
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
         

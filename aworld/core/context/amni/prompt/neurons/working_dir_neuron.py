@@ -7,10 +7,10 @@ from .neuron_factory import neuron_factory
 
 @neuron_factory.register(name="working_dir", desc="Working directory neuron", prio=8)
 class WorkingDirNeuron(Neuron):
-    """处理工作目录相关属性的Neuron"""
+    """Neuron for handling working directory related properties"""
     
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        """格式化工作目录信息"""
+        """Format working directory information"""
         await context.load_working_dir()
 
         if not context._working_dir or not context._working_dir.inner_attachments:
@@ -26,7 +26,7 @@ class WorkingDirNeuron(Neuron):
                 f"  <mime_type>{attachment.mime_type}</mime_type>\n"
             )
 
-            # 添加额外的元数据信息（如果存在）
+            # Add additional metadata information (if exists)
             if hasattr(attachment, 'metadata') and attachment.metadata:
                 if 'repository_key' in attachment.metadata:
                     item += f"  <repository_key>{attachment.metadata['repository_key']}</repository_key>\n"
@@ -39,7 +39,7 @@ class WorkingDirNeuron(Neuron):
         return working_dir_context
 
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None, **kwargs) -> str:
-        """组合工作目录信息"""
+        """Combine working directory information"""
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
         

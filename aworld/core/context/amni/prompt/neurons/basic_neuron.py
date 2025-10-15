@@ -9,20 +9,20 @@ from .neuron_factory import neuron_factory
 
 @neuron_factory.register(name="basic", desc="Basic neuron for dynamic variables", prio=9)
 class BasicNeuron(Neuron):
-    """处理动态变量相关属性的Neuron"""
+    """Neuron for handling dynamic variable related properties"""
     
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        """格式化动态变量信息（同步版本，处理同步函数）"""
+        """Format dynamic variable information (synchronous version, handles synchronous functions)"""
         items = []
         
         try:
-            # 导入动态变量
-            from aworldspace.prompt.prompt_ext import ALL_PREDEFINED_DYNAMIC_VARIABLES
+            # Import dynamic variables
+            from ...prompt.prompt_ext import ALL_PREDEFINED_DYNAMIC_VARIABLES
 
             target_keys = {
                 "current_date"
             }
-            # 排除无用的key
+            # Exclude unused keys
             excluded_keys = {
                 'system_platform', 'system_os', 'python_version', 
                 'hostname', 'username', 'working_directory', 
@@ -30,23 +30,23 @@ class BasicNeuron(Neuron):
 
             }
             
-            # 处理预定义的动态变量
+            # Process predefined dynamic variables
             for key, value in ALL_PREDEFINED_DYNAMIC_VARIABLES.items():
                 if key not in target_keys:
                     continue
-                # 跳过被排除的key
+                # Skip excluded keys
                 if key in excluded_keys:
                     continue
                 try:
                     if callable(value):
-                        # 检查函数签名
+                        # Check function signature
                         sig = inspect.signature(value)
                         is_async = inspect.iscoroutinefunction(value)
                         
-                        # 只处理同步函数
+                        # Only process synchronous functions
                         if not is_async:
                             if "context" in sig.parameters:
-                                # 同步函数，需要context参数
+                                # Synchronous function, requires context parameter
                                 try:
                                     result = value(context=context)
                                     if result:
@@ -54,7 +54,7 @@ class BasicNeuron(Neuron):
                                 except Exception as e:
                                     items.append(f"<{key}>error: {str(e)}</{key}>")
                             else:
-                                # 同步函数，无context参数
+                                # Synchronous function, no context parameter
                                 try:
                                     result = value()
                                     if result:
@@ -62,10 +62,10 @@ class BasicNeuron(Neuron):
                                 except Exception as e:
                                     items.append(f"<{key}>error: {str(e)}</{key}>")
                         else:
-                            # 异步函数，在同步方法中标记为需要异步处理
+                            # Async function, mark as requiring async processing in sync method
                             items.append(f"<{key}>async_function_requires_async_context</{key}>")
                     else:
-                        # 非函数值
+                        # Non-function value
                         if value:
                             items.append(f"<{key}>{value}</{key}>")
                 except Exception as e:
@@ -79,8 +79,8 @@ class BasicNeuron(Neuron):
         return items
     
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None, **kwargs) -> str:
-        """组合动态变量信息"""
+        """Combine dynamic variable information"""
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
         
-        return f"今年是{datetime.now().strftime('%Y')}年, Today is： {datetime.now().strftime('%Y-%m-%d')}, please keep in touch."
+        return f"This year is {datetime.now().strftime('%Y')}, Today is: {datetime.now().strftime('%Y-%m-%d')}, please keep in touch."

@@ -8,9 +8,9 @@ from .neuron_factory import neuron_factory
 @neuron_factory.register(name="kg", desc="Knowledge graph neuron", prio=6)
 class AugmentKgKeywordsNeuron(Neuron):
     """
-    通过KG增强 Neuron
-    - 宏观概念
-    - 微观概念
+    Neuron enhanced by Knowledge Graph
+    - Macro concepts
+    - Micro concepts
     """
 
     async def desc(self, context: ApplicationContext, namespace: str = None, **kwargs) -> str:

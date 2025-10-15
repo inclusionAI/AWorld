@@ -88,7 +88,7 @@ TODO_PROMPT = """
 
 @neuron_factory.register(name="todo", desc="Todo neuron", prio=2)
 class TodoNeuron(Neuron):
-    """处理计划相关属性的Neuron"""
+    """Neuron for handling plan related properties"""
 
     async def desc(self, context: ApplicationContext, namespace: str = None, **kwargs):
         return TODO_PROMPT
@@ -98,7 +98,7 @@ class TodoNeuron(Neuron):
         return [todo_info if todo_info else ""]
 
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None, **kwargs) -> str:
-        """组合计划信息"""
+        """Combine plan information"""
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
 

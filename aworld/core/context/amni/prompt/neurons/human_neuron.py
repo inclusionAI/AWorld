@@ -42,7 +42,7 @@ HUMAN_TOOL_PROMPT = """
 
 @neuron_factory.register(name="human", desc="Human tool neuron", prio=5)
 class HumanNeuron(Neuron):
-    """处理人工工具相关属性的Neuron"""
+    """Neuron for handling human tool related properties"""
 
     async def desc(self, context: ApplicationContext, namespace: str = None, **kwargs) -> str:
         return HUMAN_TOOL_PROMPT
@@ -51,5 +51,5 @@ class HumanNeuron(Neuron):
         return []
 
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None, **kwargs) -> str:
-        """组合人工工具信息"""
+        """Combine human tool information"""
         return ""

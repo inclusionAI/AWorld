@@ -7,13 +7,13 @@ from .neuron_factory import neuron_factory
 
 @neuron_factory.register(name="conversation_history", desc="Conversation history neuron", prio=3)
 class ConversationHistoryNeuron(Neuron):
-    """整个主对话的历史信息Neuron"""
+    """Neuron for entire main conversation history information"""
     
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        """格式化历史消息和前一轮结果信息"""
+        """Format historical messages and previous round results information"""
         items = []
         
-        # 历史消息
+        # Historical messages
         history = context.root.history
         if history:
             for i, message in enumerate(history):
@@ -22,7 +22,7 @@ class ConversationHistoryNeuron(Neuron):
         return items
     
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None, **kwargs) -> str:
-        """组合历史消息和前一轮结果信息"""
+        """Combine historical messages and previous round results information"""
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
         
