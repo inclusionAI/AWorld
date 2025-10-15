@@ -115,8 +115,10 @@ class ApplicationAgent(Agent, Generic[S]):
 
     async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult,
                                          context: ApplicationContext):
-        await context.pub_and_wait_tool_result_event(tool_result, tool_call_id,
-                                                     agent_id=self.id(), memory=self.memory,
+        await context.pub_and_wait_tool_result_event(tool_result,
+                                                     tool_call_id,
+                                                     agent_id=self.id(),
+                                                     agent_name=self.name(),
                                                      namespace=self.name())
 
     # 系统提示词追加模式
@@ -129,7 +131,7 @@ class ApplicationAgent(Agent, Generic[S]):
             system_prompt=self.system_prompt,
             user_query=context.task_input,
             agent_id=self.id(),
-            memory=self.memory,
+            agent_name=self.name(),
             context=context,
             namespace=self.name())
         logger.info(f"_add_system_message_to_memory finish {self.id()}")

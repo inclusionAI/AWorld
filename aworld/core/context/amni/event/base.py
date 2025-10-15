@@ -72,8 +72,8 @@ class ContextEvent(Event):
 class SystemPromptEvent(ContextEvent):
     system_prompt: Optional[str] = None
     user_query: Optional[str] = None
-    memory: Optional[Memory] = None
     agent_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
     def deep_copy(self) -> 'SystemPromptEvent':
         """创建事件的深拷贝，memory字段直接引用"""
@@ -133,9 +133,9 @@ class ToolResultEvent(Event):
     tool_result: Optional[Any] = None
     context: Optional[Context] = None
     tool_call_id: Optional[str] = None
-    memory: Optional[Memory] = None
     agent_id: Optional[str] = None
-    
+    agent_name: Optional[str] = None
+
     def deep_copy(self) -> 'ToolResultEvent':
         """创建事件的深拷贝，memory字段直接引用"""
         import copy

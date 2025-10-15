@@ -11,6 +11,7 @@ from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
+from aworld.config.conf import AgentMemoryConfig
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # 暂时注释掉，避免导入错误
@@ -165,6 +166,25 @@ class AmniContextConfig(BaseModel):
                 strategies[neuron.name] = neuron.strategy_config.get_strategy_for_namespace(namespace)
         return strategies
 
+    def get_agent_memory_config(self, namespace: str = "default") -> AgentMemoryConfig:
+        if isinstance(self.agent_config, AgentContextConfig):
+            return AgentMemoryConfig(
+                history_rounds=self.agent_config.history_rounds,
+                enable_summary=self.agent_config.enable_summary,
+                summary_rounds=self.agent_config.summary_rounds,
+                summary_context_length=self.agent_config.summary_context_length
+            )
+        elif isinstance(self.agent_config, list):
+            agent_context_config = self.agent_config.get(namespace)
+            if isinstance(agent_context_config, AgentContextConfig):
+                return AgentMemoryConfig(
+                    history_rounds=agent_context_config.history_rounds,
+                    enable_summary=agent_context_config.enable_summary,
+                    summary_rounds=agent_context_config.summary_rounds,
+                    summary_context_length=agent_context_config.summary_context_length
+                )
+        return AgentMemoryConfig()
+
 def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> None:
 
     ## 1. init memory
@@ -235,7 +255,7 @@ def get_amnicontext_config() -> AmniContextConfig:
                 AmniContextProcessorConfig(
                     name="augmented_system_prompt_to_memory",
                     type="pipeline_memory_processor",
-                    pipeline="neuron_augment|save_system_prompt",
+                    pipeline="system_prompt_augment|save_memory",
                     subscription=EventSubscriptionConfig(
                         event_types=[EventType.SYSTEM_PROMPT],
                     )
@@ -331,7 +351,9 @@ class AmniConfigLevel(Enum):
 
 class AmniConfigFactory:
 
-    def create(self, level: AmniConfigLevel) -> AmniContextConfig:
-        if level == AmniConfigLevel.PILOT:
-            return AmniContextConfig()
+    @staticmethod
+    def create(level: AmniConfigLevel) -> AmniContextConfig:
+        if level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT or level == AmniConfigLevel.NAVIGATOR:
+            return get_amnicontext_config()
+        raise ValueError(f"Unsupported level: {level}")
 

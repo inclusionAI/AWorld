@@ -221,15 +221,15 @@ class EventBus:
               context: Context,
               system_prompt: Optional[str] = None,
               user_query: Optional[str] = None,
-              memory: Optional[Memory] = None,
               agent_id: Optional[str] = None,
+              agent_name: Optional[str] = None,
               namespace: str = "",) -> 'ContextEvent':
         return SystemPromptEvent(
             context=context,
             system_prompt=system_prompt,
             user_query=user_query,
-            memory=memory,
             agent_id=agent_id,
+            agent_name=agent_name,
             event_type=event_type,
             namespace=namespace
         )
@@ -238,16 +238,16 @@ class EventBus:
     def create_tool_result_event(tool_result: Any,
                                  context: Context,
                                  tool_call_id: Optional[str] = None,
-                                 memory: Optional[Memory] = None,
                                  agent_id: Optional[str] = None,
+                                 agent_name: Optional[str] = None,
                                  namespace: str = "") -> 'ToolResultEvent':
         return ToolResultEvent(
             event_type=EventType.TOOL_RESULT,
             tool_result=tool_result,
             context=context,
             tool_call_id=tool_call_id,
-            memory=memory,
             agent_id=agent_id,
+            agent_name=agent_name,
             namespace=namespace
         )
 

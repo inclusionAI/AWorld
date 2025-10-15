@@ -9,6 +9,7 @@ from typing import Optional, Any, Literal, List, Dict
 
 from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
+from aworld.config.conf import AgentMemoryConfig
 from aworld.core.agent.base import BaseAgent
 from aworld.core.context.base import Context
 from aworld.memory.main import Memory
@@ -16,7 +17,7 @@ from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
 from aworld.output.artifact import ArtifactAttachment
-from .config import AmniContextConfig, get_amnicontext_config
+from .config import AgentContextConfig, AmniContextConfig, get_amnicontext_config
 from .logger import logger, amni_prompt_logger
 from .contexts import ContextManager
 from .retrieval.embeddings import EmbeddingsMetadata, SearchResults
@@ -1086,14 +1087,18 @@ class ApplicationContext(AmniContext):
         await event_bus.publish_and_wait(event)
 
     async def pub_and_wait_system_prompt_event(self, event_type: str, system_prompt: str, user_query: str, agent_id: str,
-                                               memory: Memory, context: Context, namespace: str = "default"):
+                                               agent_name: str,  context: Context, namespace: str = "default"):
         event_bus = await get_global_event_bus()
         await event_bus.publish_and_wait(
             EventBus.create_system_prompt_event(event_type=event_type, system_prompt=system_prompt, user_query=user_query, agent_id=agent_id,
-                                    memory=memory, context=context, namespace=namespace))
+                                        agent_name=agent_name, context=context, namespace=namespace))
 
-    async def pub_and_wait_tool_result_event(self, tool_result: Any, tool_call_id: str,
-                                             agent_id: str, memory: Memory, namespace: str = "default"):
+    async def pub_and_wait_tool_result_event(self,
+                                             tool_result: Any,
+                                             tool_call_id: str,
+                                             agent_id: str,
+                                             agent_name: str,
+                                             namespace: str = "default"):
         logger.info(f"publish tool result event process start ")
         start_time = time.time()
         """发布并等待工具结果事件"""
@@ -1104,7 +1109,7 @@ class ApplicationContext(AmniContext):
                 context=self,
                 tool_call_id=tool_call_id,
                 agent_id=agent_id,
-                memory=memory,
+                agent_name=agent_name,
                 namespace=namespace
             )
         )

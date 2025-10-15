@@ -1,44 +1,62 @@
 import os
 import time
 import traceback
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from aworld.memory.main import MemoryFactory
+from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from ... import ApplicationContext
 from ...event import SystemPromptEvent
 from aworld.logs.util import logger
-from .base import BaseOp
+from .base import BaseOp, MemoryCommand
 from .op_factory import memory_op
 from ...prompt.neurons import neuron_factory, Neuron
+from ...prompt.prompt_ext import ContextPromptTemplate
 from ...retrieval.reranker import RerankResult
 from ...retrieval.reranker.factory import RerankerFactory
 
 
-@memory_op("neuron_augment")
-class NeuronAugmentOp(BaseOp):
+@memory_op("system_prompt_augment")
+class SystemPromptAugmentOp(BaseOp):
     """
-    系统提示词格式化算子
-    使用ContextPromptTemplate对系统提示词进行增强和格式化
-    融合了prompt组件的处理逻辑，支持rerank和append两种策略
+    System prompt formatting operator
+    Uses ContextPromptTemplate to enhance and format system prompts
+    Integrates prompt component processing logic, supporting both rerank and append strategies
     """
 
-    def __init__(self, name: str = "neuron_augment", **kwargs):
+    def __init__(self, name: str = "system_prompt_augment", **kwargs):
         super().__init__(name, **kwargs)
+        self._memory = MemoryFactory.instance()
 
-    async def execute(self, context: ApplicationContext, **kwargs) -> Dict[str, Any]:
+    async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: SystemPromptEvent = None,
+                      **kwargs) -> Dict[str, Any]:
         try:
-            event: SystemPromptEvent = kwargs.get("event", None)
+            # if system prompt existed, return
+            if await self.check_system_prompt_existed(context, event):
+                return {
+                    "memory_commands": []
+                }
 
-            # 处理prompt组件
+            # get memory commands
+            if info:
+                memory_commands = info.get("memory_commands", [])
+            else:
+                memory_commands = []
+
+            # process prompt components
             augment_prompts = await self._process_neurons(context, event)
 
+            # build system message command and return
+            system_command = await self.build_system_command(context, event, augment_prompts)
+            memory_commands.append(system_command)
             return {
-                "augment_prompts": augment_prompts,
+                "memory_commands": memory_commands
             }
+
         except Exception as e:
-            # 出错返回空白
             logger.error(f"System prompt format error: {e} {traceback.format_exc()}")
             return {
-                "augment_prompts": {},
+                "memory_commands": []
             }
 
     async def _process_neurons(self, context: ApplicationContext, event: SystemPromptEvent) -> str:
@@ -178,3 +196,64 @@ class NeuronAugmentOp(BaseOp):
                 filtered_results.append(result)
 
         return filtered_results
+
+    async def build_system_command(self, context: ApplicationContext, event: SystemPromptEvent, augment_prompts: str) -> Optional[MemoryCommand]:
+        """
+        build system message command
+        """
+        agent_id = event.agent_id
+        agent_name = event.agent_name
+        user_query = event.user_query
+
+        # combine system prompt and augment_prompts
+        appended_prompt = event.system_prompt + "\n\n" + "\n".join(augment_prompts.values())
+
+        formatted_system_prompt = await ContextPromptTemplate(template=appended_prompt).async_format(
+            context=context,
+            task=user_query)
+        # if not exist history, add new system message
+        system_message = await self._build_system_message(
+            context=context,
+            content=formatted_system_prompt,
+            agent_id=agent_id,
+            agent_name=agent_name
+        )
+
+        return MemoryCommand(
+            type="ADD",
+            item=system_message,
+            memory_id=None
+        )
+
+    async def check_system_prompt_existed(self, context, event):
+        session_id = context.get_task().session_id
+        task_id = context.get_task().id
+        #  check history
+        histories = self._memory.get_last_n(0, filters={
+            "agent_id": event.agent_id,
+            "session_id": session_id,
+            "task_id": task_id
+        })
+        return histories and len(histories) > 0
+
+    async def _build_system_message(self,
+                                    context: ApplicationContext,
+                                    content: str,
+                                    agent_id: str,
+                                    agent_name: str = None) -> MemorySystemMessage:
+        session_id = context.get_task().session_id
+        task_id = context.get_task().id
+        user_id = context.get_task().user_id
+
+        system_message = MemorySystemMessage(
+            content=content,
+            metadata=MessageMetadata(
+                session_id=session_id,
+                user_id=user_id,
+                task_id=task_id,
+                agent_id=agent_id,
+                agent_name=agent_name or 'unknown',
+            )
+        )
+
+        return system_message
