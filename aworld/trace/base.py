@@ -350,6 +350,7 @@ class TraceContext:
     version: str = "00"
     trace_flags: str = "01"
     attributes: dict[str, Any] = field(default_factory=dict)
+    auto_clear: bool = True
 
 
 class Propagator(ABC):
@@ -427,6 +428,7 @@ def get_trace_id():
         except:
             pass
     return trace_id
+
 
 def log_trace_error():
     """
