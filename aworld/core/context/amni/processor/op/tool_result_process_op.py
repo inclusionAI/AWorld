@@ -47,13 +47,13 @@ class ToolResultOffloadOp(BaseOp):
                                    tool_result: ActionResult,
                                    context: ApplicationContext) -> Optional[list[MemoryMessage]]:
         try:
-            ## 判断工具是否在上下文卸载白名单里面
+            # Check if tool is in context offload whitelist
             need_offload = await self._need_offload(tool_result)
             if need_offload:
-                # 卸载工具结果
+                # Offload tool result
                 tool_result_prompt = await self._offload_tool_result(namespace, tool_result, context)
 
-                ## 更新工具结果
+                # Update tool result
                 tool_result.content = tool_result_prompt
 
                 logger.info(f"Offload finished: {namespace} -> {tool_call_id}: {len(tool_result.content)}")
@@ -69,25 +69,25 @@ class ToolResultOffloadOp(BaseOp):
         if isinstance(tool_result, ActionResult):
             if f"{tool_result.tool_name}:{tool_result.action_name}" in CONTEXT_OFFLOAD_TOOL_NAME_WHITE:
                 logger.info(
-                    f"{tool_result.tool_name}:{tool_result.action_name} in CONTEXT_OFFLOAD_TOOL_NAME_WHITE, need compress")
+                    f"📦 {tool_result.tool_name}:{tool_result.action_name} in CONTEXT_OFFLOAD_TOOL_NAME_WHITE, need compress")
                 return True
             if tool_result.metadata and tool_result.metadata.get("offload", False) == True:
-                logger.info(f"tool_result.tool_name:tool_result.metadata.offload Enable, need compress")
+                logger.info(f"📦 tool_result.tool_name:tool_result.metadata.offload Enable, need compress")
                 return True
             if num_tokens_from_string(tool_result.content) > 30_1000:
-                logger.info(f"tool_result.tool_name:tool_result.content is too large, need compress")
+                logger.info(f"📦 tool_result.tool_name:tool_result.content is too large, need compress")
                 return True
             return False
         elif isinstance(tool_result, str):
             if num_tokens_from_string(tool_result) > 30_1000:
-                logger.info(f"tool_result is too large, need compress")
+                logger.info(f"📦 tool_result is too large, need compress")
                 return True
         else:
             return False
 
     async def _offload_tool_result(self, namespace: str, tool_result: ActionResult, context: ApplicationContext):
         """
-        offload tool result to workspace
+        Offload tool result to workspace
 
         Args:
             namespace: agent namespace
@@ -98,21 +98,17 @@ class ToolResultOffloadOp(BaseOp):
 
         """
 
-        ## extract artifacts from tool result
+        # Extract artifacts from tool result
         artifacts = extract_artifacts_from_toolresult(tool_result)
         for index, artifact in enumerate(artifacts):
             logger.info(
-                f"offload_tool_result#[{tool_result.tool_call_id}] -> artifact#{index} [{artifact.artifact_id}:{artifact.title}]")
+                f"📤 offload_tool_result#[{tool_result.tool_call_id}] -> artifact#{index} [{artifact.artifact_id}:{artifact.title}]")
             artifact.metadata.update({
                 "agent_id": namespace,
                 "task_id": context.task_id,
                 "session_id": context.session_id
             })
 
-        ## do offload
+        # Do offload
         offloaded_content = await context.offload_by_workspace(artifacts=artifacts, biz_id=tool_result.tool_call_id)
-        #
-        # tool_result_content_tokens = num_tokens_from_string(tool_result.content)
-        # offloaded_content_tokens = num_tokens_from_string(offloaded_content)
-        # logger.info(f"[OFFLOAD_CONTEXT]offload metrics is (origin[{tool_result_content_tokens}] -> result[{offloaded_content_tokens}]); offload rate is {offloaded_content_tokens / tool_result_content_tokens:.3f}")
         return offloaded_content

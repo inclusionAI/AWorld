@@ -14,17 +14,17 @@ class MemoryCommand(BaseModel, Generic[MEMORY_ITEM]):
     item: MEMORY_ITEM
 
 class BaseOp(ABC):
-    """基础操作类，所有 pipeline 操作都应该继承此类"""
+    """Base operation class, all pipeline operations should inherit from this class"""
     
     def __init__(self, name: str, **kwargs):
         self.op_name = name
         self.kwargs = kwargs
 
     def get_name(self) -> str:
-        """获取操作名称"""
+        """Get operation name"""
         return self.op_name
 
     @abstractmethod
     async def execute(self, context: ApplicationContext, **kwargs) -> Dict[str, Any]:
-        """执行核心逻辑"""
+        """Execute core logic"""
         pass

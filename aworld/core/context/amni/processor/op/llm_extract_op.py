@@ -14,7 +14,7 @@ from aworld.core.common import ActionResult
 from aworld.memory.models import Fact, MemoryItem
 from ...prompt.prompt_ext import ContextPromptTemplate
 
-# TODO add to config 定义事件白名单
+# TODO add to config - Define event whitelist
 EVENT_NAME_WHITE = ["ms-playwright", "wiki-server"]
 
 
@@ -23,16 +23,16 @@ class LlmExtractOp(BaseOp):
 
     async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: ToolResultEvent = None, **kwargs) -> Dict[str, Any]:
         """
-        执行知识图谱记忆提取操作
+        Execute knowledge graph memory extraction operation
 
         Args:
-            context: 应用上下文
-            info: 操作信息字典
-            event: 工具结果事件
-            **kwargs: 额外参数
+            context: Application context
+            info: Operation info dictionary
+            event: Tool result event
+            **kwargs: Additional parameters
 
         Returns:
-            更新后的信息字典，包含内存命令
+            Updated info dictionary containing memory commands
         """
         try:
             if not event or not event.tool_result or not isinstance(event.tool_result, ActionResult):
@@ -42,22 +42,22 @@ class LlmExtractOp(BaseOp):
             if f"{event.tool_result.tool_name}" not in EVENT_NAME_WHITE:
                 return {}
 
-            # 准备提取文本
+            # Prepare extraction text
             extraction_text = await self._prepare_extraction_text(context, info, event.namespace, event)
             if not extraction_text:
                 logger.warning("No extraction text available")
                 return {}
 
-            # 调用 LLM 进行提取
+            # Call LLM for extraction
             extraction_result = await self._call_llm_for_extraction(context=context, text=extraction_text)
             if not extraction_result:
                 logger.warning("no valid LLM extraction")
                 return {}
 
-            # 转换为内存命令
+            # Convert to memory commands
             memory_commands = self._convert_extraction_to_memory_commands(extraction_result, context, event.namespace)
 
-            # 更新 info 字典
+            # Update info dictionary
             if not info:
                 info = {}
             if info.get("memory_commands") is None:
@@ -85,24 +85,24 @@ class LlmExtractOp(BaseOp):
 
     async def _call_llm_for_extraction(self, context: ApplicationContext, text: str) -> Optional[Dict[str, Any]]:
         """
-        调用 LLM 进行知识图谱提取
+        Call LLM for knowledge graph extraction
 
         Args:
-            text: 要提取的文本
+            text: Text to extract from
 
         Returns:
-            提取结果字典
+            Extraction result dictionary
         """
         try:
-            # 构建提示
+            # Build prompt
             prompt = self._build_extraction_prompt_template()
             full_prompt = await ContextPromptTemplate(template=prompt).async_format(context=context, text=text)
 
-            # 构建请求数据
+            # Build request data
             messages = [
                 {
                     "role": "system",
-                    "content": "你是一个专业的长期记忆分析师，能够从对话中准确提取长期记忆的事实记忆。"
+                    "content": "You are a professional long-term memory analyst who can accurately extract factual memories from conversations."
                 },
                 {
                     "role": "user",
@@ -121,7 +121,7 @@ class LlmExtractOp(BaseOp):
                 stream=False
             )
             result = response.choices[0].message.content or '{}'
-            # 去掉 <think>...</think> 部分
+            # Remove <think>...</think> parts
             result = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL)
             result = re.sub(r'```json', '', result, flags=re.DOTALL)
             result = re.sub(r'```', '', result, flags=re.DOTALL)

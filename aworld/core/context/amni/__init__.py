@@ -446,7 +446,7 @@ class ApplicationContext(AmniContext):
                     return ApplicationContext(task_state, workspace, context_config)
             else:
                 task_state = await cls._build_new_task_state(task_input)
-                context = ApplicationContext(task_state, workspace, context_config)
+                context = ApplicationContext(task_state, workspace = workspace, context_config = context_config)
                 # 将当前轮的输入作为单独的字段
                 context.put("origin_task_input", context.task_input)
                 context.put("origin_task_output", context.task_output)

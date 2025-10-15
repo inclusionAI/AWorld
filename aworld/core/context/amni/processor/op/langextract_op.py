@@ -11,7 +11,7 @@ from aworld.memory.models import MemoryItem
 from ...prompt.prompt_ext import ContextPromptTemplate
 
 try:
-    # 尝试导入langextract，如果不可用则设为None
+    # Try to import langextract, set to None if unavailable
     import langextract as lx
     from langextract.factory import ModelConfig
     LANGEXTRACT_AVAILABLE = True
@@ -20,7 +20,7 @@ except ImportError:
     ModelConfig = None
     LANGEXTRACT_AVAILABLE = False
 
-# 定义泛型类型变量
+# Define generic type variable
 T = TypeVar('T', bound=MemoryItem)
 
 class LangExtractOp(BaseOp, Generic[T]):
@@ -42,10 +42,10 @@ class LangExtractOp(BaseOp, Generic[T]):
             extraction_classes: List of extraction class names
             **kwargs: Additional configuration options
         """
-        # 总是调用父类初始化
+        # Always call parent class initialization
         super().__init__(name, **kwargs)
         
-        # 如果langextract不可用，记录警告并设置默认值
+        # If langextract is unavailable, log warning and set default values
         if not LANGEXTRACT_AVAILABLE:
             logger.warning("⚠️ langextract not available, skipping extraction")
             self.lx = None
@@ -99,15 +99,15 @@ class LangExtractOp(BaseOp, Generic[T]):
             List of MemoryCommand objects
         """
         try:
-            # 获取few-shot示例
+            # Get few-shot examples
             examples = self._prepare_examples()
             
-            # 准备提取文本
+            # Prepare extraction text
             extraction_text = self._prepare_extraction_text(context, agent_id, event)
             if not extraction_text:
                 return []
             
-            # 运行提取
+            # Run extraction
             from langextract.providers import openai
             from langextract import factory
             result = lx.extract(
@@ -133,7 +133,7 @@ class LangExtractOp(BaseOp, Generic[T]):
             
             logger.info(f"✅ Successfully extracted information using langextract: {result}")
             
-            # 处理提取结果并转换为 MemoryCommand 格式
+            # Process extraction results and convert to MemoryCommand format
             memory_commands = self._convert_extractions_to_memory_commands(result, context, agent_id)
             logger.info(f"🔄 Converted to {len(memory_commands)} memory commands")
             
@@ -154,10 +154,10 @@ class LangExtractOp(BaseOp, Generic[T]):
         try:
             examples = []
             for few_shot in self.few_shots:
-                # 提取对话内容作为文本
+                # Extract conversation content as text
                 conversation_text = few_shot["input"]
 
-                # 提取输出作为属性
+                # Extract output as attributes
                 extractions = []
                 for output_item in few_shot["output"]:
                     extraction = self.lx.data.Extraction(
@@ -216,10 +216,10 @@ class LangExtractOp(BaseOp, Generic[T]):
             if not extractions_result.extractions:
                 return []
 
-            # 处理提取结果
+            # Process extraction results
             for extraction in extractions_result.extractions:
                 if extraction.extraction_class in self.extraction_classes:
-                    # 提取属性
+                    # Extract attributes
                     attributes = extraction.attributes
                     operation_type = attributes.get("type")
                     extract_data = attributes.get("item")
@@ -228,7 +228,7 @@ class LangExtractOp(BaseOp, Generic[T]):
                     memory_item = self._build_memory_item(extract_data, context, agent_id)
                     if not memory_item:
                         continue
-                    # 创建 MemoryCommand
+                    # Create MemoryCommand
                     if operation_type == "ADD":
                         command = MemoryCommand(
                             type="ADD",
@@ -267,27 +267,27 @@ class LangExtractOp(BaseOp, Generic[T]):
         if not LANGEXTRACT_AVAILABLE or ModelConfig is None:
             return None
         
-        # 获取模型名称，如果没有设置则使用默认值
+        # Get model name, use default if not set
         model_id = os.environ.get("LLM_MODEL_NAME", "gpt-4o")
         
-        # 准备提供者参数
+        # Prepare provider kwargs
         provider_kwargs = {}
         
-        # 添加 API 密钥
+        # Add API key
         api_key = os.environ.get('LLM_API_KEY')
         if api_key:
             provider_kwargs["api_key"] = api_key
         
-        # 添加基础 URL
+        # Add base URL
         base_url = os.environ.get("LLM_BASE_URL")
         if base_url:
             provider_kwargs["base_url"] = base_url
         
-        # 不指定 provider，让 langextract 根据 model_id 自动解析
-        # 这样可以避免 "No provider found matching: 'openai'" 错误
+        # Don't specify provider, let langextract auto-resolve based on model_id
+        # This avoids "No provider found matching: 'openai'" error
         return ModelConfig(
             model_id=model_id,
-            provider='openai',  # 让 langextract 自动解析提供者
+            provider='openai',  # Let langextract auto-resolve provider
             provider_kwargs=provider_kwargs
         )
 

@@ -37,7 +37,7 @@ class SaveGraphMemoryOp(BaseOp):
         return {'memory_commands': []}
 
     async def _add_graph_node(self, context, node_data: GraphMemoryNode):
-        """添加图节点"""
+        """Add graph node"""
         try:
             graph_store = graph_db_factory.get_graph_db()
             if graph_store:
@@ -45,12 +45,11 @@ class SaveGraphMemoryOp(BaseOp):
                 properties = node_data.properties
                 await graph_store.upsert_node(namespace=context.session_id, node_id=node_id, node_data=properties)
         except Exception as e:
-            logger.error(f"Error adding graph node: {e} {traceback.format_exc()}")
-            # 确保在错误情况下也能继续处理其他节点
+            logger.error(f"❌ Error adding graph node: {e} {traceback.format_exc()}")
             pass
 
     async def _add_graph_edge(self, context, edge_data: GraphMemoryEdge):
-        """添加图边"""
+        """Add graph edge"""
         try:
             graph_store = graph_db_factory.get_graph_db()
             if graph_store:
@@ -59,6 +58,5 @@ class SaveGraphMemoryOp(BaseOp):
                 properties = edge_data.properties
                 await graph_store.upsert_edge(namespace=context.session_id, source_node_id=source_id, target_node_id=target_id, properties=properties)
         except Exception as e:
-            logger.error(f"Error adding graph edge: {edge_data} reason: {e}")
-            # 确保在错误情况下也能继续处理其他边
+            logger.error(f"❌ Error adding graph edge: {edge_data} reason: {e}")
             pass

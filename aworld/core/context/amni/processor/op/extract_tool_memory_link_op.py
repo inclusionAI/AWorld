@@ -15,101 +15,101 @@ from ... import ApplicationContext
 @memory_op("extract_tool_memory_link")
 class ExtractToolMemoryLinkOp(LlmExtractOp):
     """
-    从工具事实中提取链接记忆的操作
+    Operation to extract link memories from tool facts
     
-    基于link_related_memories的逻辑，从工具结果中
-    提取可以与其他记忆建立链接的关键信息
+    Based on link_related_memories logic, extract key information
+    from tool results that can establish links with other memories
     """
 
     def __init__(self, name: str = "extract_link_memory", **kwargs):
-        # 调用父类构造函数
+        # Call parent constructor
         super().__init__(name=name, **kwargs)
 
     async def _prepare_extraction_text(self, context: ApplicationContext, info: Dict[str, Any] = None, agent_id: str = None,
                                  event: ToolResultEvent = None) -> str:
-        # # 当前这一轮的抽取结果
+        # # Current round extraction results
         # memory_commands = info.get("memory_commands", [])
         # if not memory_commands:
         #     return None
         # memory_items = [i.item for i in memory_commands]
 
-        # 历史抽取
+        # Historical extraction
         graph_db = graph_db_factory.get_graph_db()
         if not graph_db:
-            logger.info(f"skip extract_tool_memory_node because graph_db is None")
+            logger.info(f"⏭️ skip extract_tool_memory_node because graph_db is None")
             return None
         nodes = await graph_db.get_all_nodes(namespace=context.session_id)
         memory_items = [GraphMemoryNode(id=item.get('id', ''), user_id='', label=item.get('label', ''), properties=item)
                              for item in nodes]
 
-        # 格式化实体信息为中文，每行一个实体
+        # Format entity information, one entity per line
         formatted_items = []
         for item in memory_items:
-            formatted_item = f"实体ID: {item.id}, 标签: {item.label}, 属性: {item.properties}"
+            formatted_item = f"Entity ID: {item.id}, Label: {item.label}, Properties: {item.properties}"
             formatted_items.append(formatted_item)
         
-        return f"已抽取实体信息：\n" + "\n".join(formatted_items)
+        return f"Extracted Entity Information:\n" + "\n".join(formatted_items)
 
     def _build_extraction_prompt_template(self) -> str:
-        """构建链接记忆提取的提示模板"""
-        return """你是一个链接记忆分析器，专门从工具执行结果中提取可以与其他记忆建立链接的关键信息。你的主要作用是从工具结果中识别出具有链接价值的事实片段，这些事实将帮助agent在记忆系统中建立有意义的关系。
+        """Build prompt template for link memory extraction"""
+        return """You are a link memory analyzer, specialized in extracting key information from tool execution results that can establish links with other memories. Your main role is to identify fact fragments with linking value from tool results, which will help agents establish meaningful relationships in the memory system.
 
-需要提取的链接记忆类型：
+Types of link memories to extract:
 
-1. **entity_mentions**：实体提及、人名、地名、机构名、产品名等可链接的实体
-2. **temporal_references**：时间引用、日期、时间段、历史事件等时间相关信息
-3. **conceptual_connections**：概念连接、主题、类别、领域等抽象概念
-4. **causal_relationships**：因果关系、影响关系、依赖关系等逻辑连接
-5. **spatial_relationships**：空间关系、地理位置、区域、距离等地理连接
-6. **numerical_relationships**：数值关系、统计数据、比较数据等量化连接
-7. **functional_relationships**：功能关系、用途、作用、效果等功能连接
-8. **hierarchical_relationships**：层级关系、分类、等级、结构等组织连接
-9. **sequential_relationships**：序列关系、流程、步骤、顺序等过程连接
-10. **contextual_relationships**：上下文关系、背景、环境、条件等情境连接
+1. **entity_mentions**: Entity mentions, person names, place names, organization names, product names, and other linkable entities
+2. **temporal_references**: Time references, dates, time periods, historical events, and other time-related information
+3. **conceptual_connections**: Conceptual connections, themes, categories, domains, and other abstract concepts
+4. **causal_relationships**: Causal relationships, impact relationships, dependency relationships, and other logical connections
+5. **spatial_relationships**: Spatial relationships, geographic locations, regions, distances, and other geographical connections
+6. **numerical_relationships**: Numerical relationships, statistical data, comparative data, and other quantitative connections
+7. **functional_relationships**: Functional relationships, purposes, roles, effects, and other functional connections
+8. **hierarchical_relationships**: Hierarchical relationships, classifications, ranks, structures, and other organizational connections
+9. **sequential_relationships**: Sequential relationships, processes, steps, orders, and other procedural connections
+10. **contextual_relationships**: Contextual relationships, backgrounds, environments, conditions, and other situational connections
 
-请记住以下几点：
-- 专注于提取具有链接价值的信息，这些信息可以与其他记忆建立有意义的关系
-- 优先提取实体、概念、关系等可以跨记忆共享的元素
-- 如果工具结果中没有可链接的信息，返回空列表
-- 确保提取的信息清晰、具体、可链接
-- 保持信息的客观性和准确性
-- 你应该检测用户输入的语言，并用相同的语言记录链接信息
-- 优先提取具有跨记忆连接潜力的关键要素
-- 对于实体信息，注意提取完整的名称和上下文
-- 对于关系信息，注意提取关系的类型和方向
-- 必须给出提取该关系的原因reason
+Please remember:
+- Focus on extracting information with linking value that can establish meaningful relationships with other memories
+- Prioritize extracting entities, concepts, and relationships that can be shared across memories
+- Return empty list if tool results contain no linkable information
+- Ensure extracted information is clear, specific, and linkable
+- Maintain objectivity and accuracy of information
+- Detect the language of user input and record link information in the same language
+- Prioritize extracting key elements with cross-memory connection potential
+- For entity information, extract complete names and context
+- For relationship information, extract relationship types and directions
+- Must provide reason for extracting each relationship
 
-输出格式要求：
-- 注意输出字符串前后不要加任何 ```json 或 ``` 这样的标记
-- 输出字符串必须可以被正常反序列化为json对象
-- 输出格式必须是JSON对象，包含提取的链接信息
-- 每个链接类型作为JSON对象的键，对应的值是该类型的链接内容
+Output format requirements:
+- Do not add ```json or ``` markers before or after the output string
+- Output string must be properly deserializable to a JSON object
+- Output format must be a JSON object containing extracted link information
+- Each link type serves as a key in the JSON object, with corresponding link content as value
 
-输出示例：
+Output example:
 ```json
 [
     {
         "label": "entity_mentions",
-        "name": "生产",
+        "name": "produces",
         "source_id": "1",
         "target_id": "2",
         "properties": {
-            "reason": "苹果公司、iPhone、蒂姆·库克"
+            "reason": "Apple Inc., iPhone, Tim Cook"
         }
     },
     {
         "label": "entity_mentions",
-        "name": "生产",
+        "name": "produces",
         "source_id": "1",
         "target_id": "2",
         "properties": {
-            "reason": "苹果公司、iPhone、蒂姆·库克"
+            "reason": "Apple Inc., iPhone, Tim Cook"
         }
     }
 ]
 ```
 
-待抽取关系的节点列表
+List of nodes for relationship extraction
 {{text}}
 """
 
@@ -139,7 +139,7 @@ class ExtractToolMemoryLinkOp(LlmExtractOp):
         return memory_commands
 
     def _get_link_types(self) -> List[str]:
-        """获取支持的链接类型"""
+        """Get supported link types"""
         return [
             "entity_mentions",
             "temporal_references", 

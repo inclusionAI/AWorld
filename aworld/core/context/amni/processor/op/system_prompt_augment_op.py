@@ -31,22 +31,22 @@ class SystemPromptAugmentOp(BaseOp):
     async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: SystemPromptEvent = None,
                       **kwargs) -> Dict[str, Any]:
         try:
-            # if system prompt existed, return
+            # If system prompt existed, return
             if await self.check_system_prompt_existed(context, event):
                 return {
                     "memory_commands": []
                 }
 
-            # get memory commands
+            # Get memory commands
             if info:
                 memory_commands = info.get("memory_commands", [])
             else:
                 memory_commands = []
 
-            # process prompt components
+            # Process prompt components
             augment_prompts = await self._process_neurons(context, event)
 
-            # build system message command and return
+            # Build system message command and return
             system_command = await self.build_system_command(context, event, augment_prompts)
             memory_commands.append(system_command)
             return {
@@ -61,43 +61,43 @@ class SystemPromptAugmentOp(BaseOp):
 
     async def _process_neurons(self, context: ApplicationContext, event: SystemPromptEvent) -> str:
         """
-        处理prompt组件，支持rerank和append两种策略
-        支持根据namespace过滤component_neuron配置的组件
+        Process prompt components, supporting both rerank and append strategies
+        Supports filtering components configured in component_neuron based on namespace
         """
         augment_prompts = {}
 
-        # 记录每个组件的耗时
+        # Record timing for each component
         component_timings = []
         total_start_time = time.time()
 
-        # 获取namespace（从event中获取）
+        # Get namespace (from event)
         namespace = getattr(event, 'namespace', None)
         agent_id = getattr(event, 'agent_id', None)
 
-        # 处理组件
+        # Process components
         neurons = neuron_factory.get_all_neurons(namespace=namespace)
 
-        # 处理rerank策略的组件
+        # Process components with rerank strategy
         if neurons:
-            # desc
+            # Desc
             for neuron in neurons:
                 augment_prompts[neuron.name] = await neuron.desc(context=context, namespace=namespace)
 
-            # context
+            # Context
 
             for neuron in neurons:
                 component_start_time = time.time()
                 component_name = neuron.__class__.__name__
 
                 try:
-                    # context augment
+                    # Context augment
                     st = time.time()
                     augment_prompts[neuron.name] = (augment_prompts[neuron.name] + '\n\n'
                                                     + await self.rerank_items(neuron=neuron,
                                                                    context=context, namespace=namespace))
                     t1 = time.time() - st
                     logger.debug(
-                        f"_process_prompt_components rerank strategy: {component_name} rerank time: start_time={st}s format_time={t1:.3f}s")
+                        f"🧠 _process_prompt_components rerank strategy: {component_name} rerank time: start_time={st}s format_time={t1:.3f}s")
 
                     component_end_time = time.time()
                     component_duration = component_end_time - component_start_time
@@ -112,11 +112,11 @@ class SystemPromptAugmentOp(BaseOp):
         total_end_time = time.time()
         total_duration = total_end_time - total_start_time
 
-        # 格式化耗时信息
+        # Format timing information
         timing_info = f"total:{total_duration:.3f}s, " + ", ".join(component_timings)
 
         logger.info(
-            f"Successfully processed {len(augment_prompts)} prompt components for agent {event.agent_id}, session {context.session_id}, timings: {timing_info}")
+            f"✅ Successfully processed {len(augment_prompts)} prompt components for agent {event.agent_id}, session {context.session_id}, timings: {timing_info}")
 
         return augment_prompts
 
@@ -129,24 +129,24 @@ class SystemPromptAugmentOp(BaseOp):
         score_threshold = self._get_score_threshold()
         items = await neuron.format_items(context=context, namespace=namespace)
         t1 = time.time() - st
-        # 只有当items不为空时才进行rerank
+        # Only perform rerank when items is not empty
         if not items:
             return ""
 
-        # 长度不够不需要rerank 直接append
+        # If length is not enough, no need to rerank, directly append
         total_length = sum(len(item) for item in items)
         if total_length <= 4000:
             return await neuron.format(context=context, namespace=namespace)
 
-        # 只判断前面一部分文本
+        # Only judge the first part of text
         tmp_items = [item[:1000] for item in items]
         rerank_results = await reranker.run(query=user_query, documents=tmp_items)
         t2 = time.time() - st - t1
         if rerank_results:
-            # 过滤分数大于阈值的文档
+            # Filter documents with scores greater than threshold
             filtered_results = self._filter_by_score(rerank_results, score_threshold)
             if filtered_results:
-                # 从过滤后的rerank结果中提取文档内容
+                # Extract document content from filtered rerank results
                 reranked_docs = self._filter_items_by_rerank_result(items, rerank_results)
                 component_prompt = await neuron.format(context=context, items=reranked_docs, namespace=namespace)
 
@@ -156,7 +156,7 @@ class SystemPromptAugmentOp(BaseOp):
                 return component_prompt
         t3 = time.time() - st - t1 - t2
         logger.info(
-            f"_process_prompt_components: {neuron.__class__.__name__} rerank time: start_time={st}s format_time={t1:.3f}s, rerank_time={t2:.3f}s, filter_time={t3:.3f}s lens={[len(item) for item in items]}")
+            f"🔄 _process_prompt_components: {neuron.__class__.__name__} rerank time: start_time={st}s format_time={t1:.3f}s, rerank_time={t2:.3f}s, filter_time={t3:.3f}s lens={[len(item) for item in items]}")
         return ""
 
     def _filter_items_by_rerank_result(self, items: List[str], rerank_results: RerankResult) -> List[str]:
@@ -184,34 +184,34 @@ class SystemPromptAugmentOp(BaseOp):
 
         filtered_results = []
         for result in rerank_results:
-            # 检查结果对象是否有score属性
+            # Check if result object has score attribute
             if hasattr(result, 'score') and result.score is not None:
                 if result.score > score_threshold:
                     filtered_results.append(result)
                 else:
-                    logger.debug(f"Filtered out document with score {result.score} (threshold: {score_threshold})")
+                    logger.debug(f"⏭️ Filtered out document with score {result.score} (threshold: {score_threshold})")
             else:
-                # 如果没有score属性，保留该结果（向后兼容）
-                logger.warning(f"Rerank result missing score attribute, keeping result: {result}")
+                # If no score attribute, keep the result (backward compatible)
+                logger.warning(f"⚠️ Rerank result missing score attribute, keeping result: {result}")
                 filtered_results.append(result)
 
         return filtered_results
 
     async def build_system_command(self, context: ApplicationContext, event: SystemPromptEvent, augment_prompts: str) -> Optional[MemoryCommand]:
         """
-        build system message command
+        Build system message command
         """
         agent_id = event.agent_id
         agent_name = event.agent_name
         user_query = event.user_query
 
-        # combine system prompt and augment_prompts
+        # Combine system prompt and augment_prompts
         appended_prompt = event.system_prompt + "\n\n" + "\n".join(augment_prompts.values())
 
         formatted_system_prompt = await ContextPromptTemplate(template=appended_prompt).async_format(
             context=context,
             task=user_query)
-        # if not exist history, add new system message
+        # If not exist history, add new system message
         system_message = await self._build_system_message(
             context=context,
             content=formatted_system_prompt,
@@ -228,7 +228,7 @@ class SystemPromptAugmentOp(BaseOp):
     async def check_system_prompt_existed(self, context, event):
         session_id = context.get_task().session_id
         task_id = context.get_task().id
-        #  check history
+        # Check history
         histories = self._memory.get_last_n(0, filters={
             "agent_id": event.agent_id,
             "session_id": session_id,

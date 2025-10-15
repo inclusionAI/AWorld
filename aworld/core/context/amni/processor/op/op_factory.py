@@ -9,13 +9,13 @@ from .base import BaseOp
 
 
 class OpFactory:
-    """操作工厂类"""
+    """Operation factory class"""
 
     _ops: Dict[str, Type[BaseOp]] = {}
 
     @classmethod
     def register(cls, op_name: str, op_class: Type[BaseOp]):
-        """注册操作类型"""
+        """Register operation type"""
         if op_name in cls._ops:
             logger.warning(f"Memory op '{op_name}' is already registered, skipping duplicate registration")
             return
@@ -24,7 +24,7 @@ class OpFactory:
 
     @classmethod
     def create(cls, op_name: str, **kwargs) -> Optional[BaseOp]:
-        """创建操作实例"""
+        """Create operation instance"""
         if op_name not in cls._ops:
             logger.warning(f"Unknown memory op: {op_name}")
             return None
@@ -37,18 +37,18 @@ class OpFactory:
 
     @classmethod
     def list_all_ops(cls) -> List[str]:
-        """获取所有注册的操作类型"""
+        """Get all registered operation types"""
         return list(cls._ops.keys())
 
     @classmethod
     def get_op_class(cls, op_name: str) -> Optional[Type[BaseOp]]:
-        """根据名称获取操作类"""
+        """Get operation class by name"""
         return cls._ops.get(op_name)
 
 
 def memory_op(op_name: str):
     """
-    装饰器：自动注册内存操作到OpFactory
+    Decorator: Automatically register memory operation to OpFactory
     
     Usage:
         @memory_op("set_query")
@@ -57,7 +57,7 @@ def memory_op(op_name: str):
     """
 
     def decorator(cls: Type[BaseOp]):
-        # 注册到OpFactory
+        # Register to OpFactory
         OpFactory.register(op_name, cls)
         return cls
 

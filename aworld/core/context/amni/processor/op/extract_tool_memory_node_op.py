@@ -15,14 +15,14 @@ class ExtractToolMemoryNodeOp(ExtractToolFactOp[GraphMemoryNode]):
     def _prepare_extraction_text(self, context: ApplicationContext, agent_id: str, event: ContextEvent = None) -> str:
         graph_db = graph_db_factory.get_graph_db()
         if not graph_db:
-            logger.info(f"skip extract_tool_memory_node because graph_db is None")
+            logger.info(f"⏭️ skip extract_tool_memory_node because graph_db is None")
             return None
 
     def _get_few_shot_examples(self) -> List[Dict]:
         return [
             {
                 "type": "tool_fact",
-                "input": "工具名称: web_search\n动作名称: search\n参数: {'search_term': '苹果公司2024年第三季度财报营收数据'}\n结果: 苹果公司2024年第三季度营收达到948.4亿美元，同比增长1.4%。iPhone营收为459.6亿美元，服务营收为212.1亿美元，Mac营收为74.0亿美元，iPad营收为57.9亿美元。净利润为236.4亿美元。",
+                "input": "Tool Name: web_search\nAction Name: search\nParameters: {'search_term': 'Apple Q3 2024 financial report revenue data'}\nResult: Apple Q3 2024 revenue reached $94.84 billion, up 1.4% YoY. iPhone revenue was $45.96 billion, services revenue $21.21 billion, Mac revenue $7.40 billion, iPad revenue $5.79 billion. Net profit was $23.64 billion.",
                 "output": [
                     {
                         "type": "economic_financial",

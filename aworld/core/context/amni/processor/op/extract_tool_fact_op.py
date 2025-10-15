@@ -17,17 +17,17 @@ class ExtractToolFactOp(LangExtractOp[Fact], Generic[T]):
 
     def __init__(self, name: str = "extract_tool_fact", **kwargs):
         """
-        初始化工具事实提取操作
+        Initialize tool fact extraction operation
         
         Args:
-            name: 操作名称
-            **kwargs: 额外配置参数
+            name: Operation name
+            **kwargs: Additional configuration parameters
         """
-        # 获取提示模板和few-shot示例
+        # Get prompt template and few-shot examples
         prompt = self._build_extraction_prompt_template()
         few_shots = self._get_few_shot_examples()
         
-        # 调用父类构造函数
+        # Call parent constructor
         super().__init__(
             name=name,
             prompt=prompt,
@@ -38,71 +38,71 @@ class ExtractToolFactOp(LangExtractOp[Fact], Generic[T]):
 
     def _prepare_extraction_text(self, context: ApplicationContext, agent_id: str, event: ContextEvent = None) -> str:
         """
-        准备用于事实提取的文本
+        Prepare text for fact extraction
 
         Args:
-            context: 应用上下文
-            agent_id: 代理标识符
-            event: 上下文事件
+            context: Application context
+            agent_id: Agent identifier
+            event: Context event
 
         Returns:
-            格式化的提取文本
+            Formatted extraction text
         """
         if event and hasattr(event, 'tool_result') and event.tool_result:
             tool_result = event.tool_result
             if not isinstance(tool_result, ActionResult):
 
                 return None
-            return (f"- 工具名称: {tool_result.tool_name}\n"
-                    f"- 动作名称: {tool_result.action_name}\n"
-                    f"- 参数: {tool_result.parameter}\n"
-                    f"- 结果: {tool_result.content}\n")
+            return (f"- Tool Name: {tool_result.tool_name}\n"
+                    f"- Action Name: {tool_result.action_name}\n"
+                    f"- Parameters: {tool_result.parameter}\n"
+                    f"- Result: {tool_result.content}\n")
         else:
-            return f"\n\n对话历史:\n{context.get_history_desc()}"
+            return f"\n\nConversation History:\n{context.get_history_desc()}"
 
     def _build_extraction_prompt_template(self) -> str:
-        """构建提取提示模板 - 专注于搜索结果的事实提取"""
-        return """你是一个搜索结果事实分析器，专门从web搜索工具的结果中提取与当前任务相关的关键事实信息。你的主要作用是从搜索结果中识别有价值的事实片段，这些事实将帮助agent更好地理解和执行相关任务。
+        """Build extraction prompt template - focused on fact extraction from search results"""
+        return """You are a search result fact analyzer, specialized in extracting key factual information relevant to the current task from web search tool results. Your main role is to identify valuable fact fragments from search results that will help agents better understand and execute related tasks.
 
-需要提取的搜索结果事实类型：
+Types of search result facts to extract:
 
-1. **mathematical_data**：数学计算、统计数据、数值信息
-2. **temporal_information**：时间、日期、历史事件、时间线
-3. **geographical_data**：地理位置、坐标、地图信息、地理特征
-4. **scientific_facts**：科学发现、研究结果、技术规格、实验数据
-5. **cultural_entertainment**：电影、音乐、游戏、文学作品、艺术信息
-6. **economic_financial**：价格、股票、经济指标、金融数据
-7. **biological_medical**：生物信息、医学数据、健康相关事实
-8. **technical_specifications**：技术参数、软件版本、硬件规格
-9. **institutional_data**：机构信息、组织数据、官方记录
-10. **general_knowledge**：常识、定义、解释、背景信息
+1. **mathematical_data**: Mathematical calculations, statistical data, numerical information
+2. **temporal_information**: Time, dates, historical events, timelines
+3. **geographical_data**: Geographic locations, coordinates, map information, geographic features
+4. **scientific_facts**: Scientific discoveries, research results, technical specifications, experimental data
+5. **cultural_entertainment**: Movies, music, games, literary works, art information
+6. **economic_financial**: Prices, stocks, economic indicators, financial data
+7. **biological_medical**: Biological information, medical data, health-related facts
+8. **technical_specifications**: Technical parameters, software versions, hardware specifications
+9. **institutional_data**: Institutional information, organizational data, official records
+10. **general_knowledge**: Common knowledge, definitions, explanations, background information
 
-请记住以下几点：
-- 专注于从搜索结果中提取有价值的事实信息
-- 提取对当前任务执行有直接帮助的信息
-- 如果搜索结果中没有任务相关信息，返回空列表
-- 确保事实描述清晰、具体、准确
-- 保持事实的客观性和时效性
-- 你应该检测用户输入的语言，并用相同的语言记录事实
-- 优先提取具体的事实细节而非泛泛的描述
-- 对于时事信息，注意提取时间、地点、人物等关键要素
-- 对于科学知识，注意提取数据、原理、应用等核心内容
-- **重要：实体必须原子化，每个实体应该是独立的、最小的信息单元**
-- **禁止将多个实体合并为一个实体，如"东方财富、广东甘化、红星发展"应分别提取**
-- **每个实体应该包含单一的概念、对象或事实，避免复合实体**
+Please remember:
+- Focus on extracting valuable factual information from search results
+- Extract information directly helpful for current task execution
+- Return empty list if search results contain no task-relevant information
+- Ensure fact descriptions are clear, specific, and accurate
+- Maintain objectivity and timeliness of facts
+- Detect the language of user input and record facts in the same language
+- Prioritize extracting specific factual details over general descriptions
+- For current events, extract key elements like time, location, people
+- For scientific knowledge, extract core content like data, principles, applications
+- **Important: Entities must be atomic, each entity should be an independent, minimal information unit**
+- **Do not merge multiple entities into one, e.g., "Apple, Google, Microsoft" should be extracted separately**
+- **Each entity should contain a single concept, object, or fact, avoiding compound entities**
 
-格式约束：
-- 注意输出字符串前后不要加任何 ```json 或 ``` 这样的标记
-- 输出字符串必须可以被正常反序列化为json对象
+Format constraints:
+- Do not add ```json or ``` markers before or after the output string
+- Output string must be properly deserializable to a JSON object
 
-用户输入
+User input
 {{task_input}}
-根据用户输入制订出的待办列表
+Todo list created based on user input
 {{todo_info}}
 """
 
     def _get_few_shot_examples(self) -> List[Dict]:
-        """获取搜索结果事实提取的few-shot示例"""
+        """Get few-shot examples for search result fact extraction"""
         return [
             {
                 "type": "tool_fact",
@@ -348,15 +348,15 @@ class ExtractToolFactOp(LangExtractOp[Fact], Generic[T]):
 
     def _build_memory_item(self, extract_data: Dict[str, Any], context: ApplicationContext, agent_id: str) -> Optional[Fact]:
         """
-        从提取数据构建Fact对象
+        Build Fact object from extracted data
         
         Args:
-            extract_data: 提取的数据
-            context: 应用上下文
-            agent_id: 代理ID
+            extract_data: Extracted data
+            context: Application context
+            agent_id: Agent ID
             
         Returns:
-            Fact对象
+            Fact object
         """
         try:
             if not extract_data or not isinstance(extract_data, dict):
