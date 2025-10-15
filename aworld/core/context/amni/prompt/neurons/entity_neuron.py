@@ -2,7 +2,10 @@ from typing import List
 
 from ... import ApplicationContext
 from . import Neuron
+from .neuron_factory import neuron_factory
 
+
+@neuron_factory.register(name="entity", desc="Entity neuron", prio=4)
 class EntitiesNeuron(Neuron):
     """处理实体相关属性的Neuron"""
 

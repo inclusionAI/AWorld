@@ -2,8 +2,10 @@ from typing import List
 
 from ... import ApplicationContext
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 
+@neuron_factory.register(name="fact", desc="Facts neuron", prio=3, prompt_augment_strategy="append")
 class FactsNeuron(Neuron):
     """处理事实相关属性的Neuron"""
 

@@ -2,8 +2,10 @@ from typing import List
 
 from ... import ApplicationContext
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 
+@neuron_factory.register(name="workspace", desc="Workspace neuron", prio=10)
 class WorkspaceNeuron(Neuron):
     """处理工作空间相关属性的Neuron"""
 

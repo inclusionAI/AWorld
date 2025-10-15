@@ -2,8 +2,10 @@ from typing import List
 
 from ... import ApplicationContext, logger
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 
+@neuron_factory.register(name="action_info", desc="Action info neuron", prio=3)
 class ActionInfoNeuron(Neuron):
     """处理工作空间相关属性的Neuron"""
 

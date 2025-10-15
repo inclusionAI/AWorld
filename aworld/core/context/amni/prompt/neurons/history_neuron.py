@@ -2,8 +2,10 @@ from typing import List
 
 from ... import ApplicationContext
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 
+@neuron_factory.register(name="history", desc="History messages neuron", prio=7)
 class HistoryNeuron(Neuron):
     """处理历史消息和前一轮结果相关属性的Neuron"""
     

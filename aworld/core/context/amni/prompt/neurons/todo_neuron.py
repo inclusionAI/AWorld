@@ -2,6 +2,7 @@ from typing import List
 
 from ... import ApplicationContext
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 TODO_PROMPT = """
 <todo_guide>
@@ -84,6 +85,8 @@ TODO_PROMPT = """
 </todo_guide>
 """
 
+
+@neuron_factory.register(name="todo", desc="Todo neuron", prio=2)
 class TodoNeuron(Neuron):
     """处理计划相关属性的Neuron"""
 

@@ -82,15 +82,7 @@ class HumanNeuronStrategyConfig(NeuronStrategyConfig):
     mode: str = Field(description="模式, block|wait")
     wait_time: int = Field(default=10, description="等待时间, 单位: 秒")
 
-class AmniContextNeuronConfig(BaseModel):
-    name: str = Field(description="神经元名称")
-    type: str = Field(description="神经元类型")
-    default_strategy: NeuronStrategyConfig = Field(description="默认策略配置")
-    strategies: dict[str, NeuronStrategyConfig] = Field(default_factory=dict, description="策略配置")
-    priority: int = Field(default=0, description="神经元优先级")
-
-    def get_strategy(self, namespace: str) -> Optional[NeuronStrategyConfig]:
-        return self.strategies.get(namespace)
+# AmniContextNeuronConfig removed - neurons are now registered via decorators
 
 class AgentContextConfig(BaseModel):
     # System Augment
@@ -126,45 +118,10 @@ class AmniContextConfig(BaseModel):
     agent_config: Union[AgentContextConfig, Dict[str, AgentContextConfig]] = Field(default_factory=dict)
 
     processor_config: Optional[list[AmniContextProcessorConfig]] = Field(default_factory=list)
-    neuron_config: Optional[list[AmniContextNeuronConfig]] = Field(default_factory=list)
+    # neuron_config removed - neurons are now registered via decorators in neuron_factory
     # other config
     debug_mode: Optional[bool] = False
     log_level: Optional[str] = "INFO"
-    
-    def get_neuron_strategy(self, neuron_name: str, namespace: str = None) -> Optional[dict]:
-        """
-        获取指定神经元在特定命名空间下的策略配置
-        
-        Args:
-            neuron_name: 神经元名称
-            namespace: 命名空间，如果为 None 则返回默认策略
-            
-        Returns:
-            策略配置字典，如果未找到则返回 None
-        """
-        for neuron in self.neuron_config or []:
-            if neuron.name == neuron_name and neuron.enabled:
-                if namespace:
-                    return neuron.strategy_config.get_strategy_for_namespace(namespace)
-                else:
-                    return neuron.strategy_config.default_strategy
-        return None
-    
-    def get_all_neuron_strategies_for_namespace(self, namespace: str) -> dict[str, dict]:
-        """
-        获取指定命名空间下所有神经元的策略配置
-        
-        Args:
-            namespace: 目标命名空间
-            
-        Returns:
-            字典，键为神经元名称，值为对应的策略配置
-        """
-        strategies = {}
-        for neuron in self.neuron_config or []:
-            if neuron.enabled:
-                strategies[neuron.name] = neuron.strategy_config.get_strategy_for_namespace(namespace)
-        return strategies
 
     def get_agent_memory_config(self, namespace: str = "default") -> AgentMemoryConfig:
         if isinstance(self.agent_config, AgentContextConfig):
@@ -270,70 +227,8 @@ def get_amnicontext_config() -> AmniContextConfig:
                     ),
                     priority=0
                 )
-            ],
-            neuron_config=[
-                AmniContextNeuronConfig(
-                    name="history",
-                    type="aworld.core.context.amni.prompt.neurons.history_neuron.HistoryNeuron",
-                    default_strategy=NeuronStrategyConfig(),
-                    priority=7,
-                ),
-                AmniContextNeuronConfig(
-                    name="task",
-                    type="aworld.core.context.amni.prompt.neurons.task_neuron.TaskHistoryNeuron",
-                    default_strategy=NeuronStrategyConfig(),
-                    priority=1,
-                ),
-                AmniContextNeuronConfig(
-                    name="working_dir",
-                    type="aworld.core.context.amni.prompt.neurons.working_dir_neuron.WorkingDirNeuron",
-                    default_strategy=NeuronStrategyConfig(),
-                    priority=8,
-                ),
-                AmniContextNeuronConfig(
-                    name="basic",
-                    type="aworld.core.context.amni.prompt.neurons.basic_neuron.BasicNeuron",
-                    default_strategy=NeuronStrategyConfig(),
-                    priority=9,
-                ),
-                AmniContextNeuronConfig(
-                    name="fact",
-                    type="aworld.core.context.amni.prompt.neurons.fact_neuron.FactsNeuron",
-                    default_strategy=NeuronStrategyConfig(prompt_augment_strategy="append"),
-                    priority=3,
-                ),
-                AmniContextNeuronConfig(
-                    name="todo",
-                    type="aworld.core.context.amni.prompt.neurons.todo_neuron.TodoNeuron",
-                    default_strategy=NeuronStrategyConfig(),
-                    priority=2,
-                ),
-                AmniContextNeuronConfig(
-                    name="workspace",
-                    type="aworld.core.context.amni.prompt.neurons.workspace_neuron.WorkspaceNeuron",
-                    default_strategy=NeuronStrategyConfig(),
-                    priority=10,
-                ),
-                AmniContextNeuronConfig(
-                    name="action_info",
-                    type="aworld.core.context.amni.prompt.neurons.action_info_neuron.ActionInfoNeuron",
-                    default_strategy=NeuronStrategyConfig(),
-                    priority=3,
-                ),
-                AmniContextNeuronConfig(
-                    name="conversation_history",
-                    type="aworld.core.context.amni.prompt.neurons.conversation_history_neuron.ConversationHistoryNeuron",
-                    default_strategy=NeuronStrategyConfig(),
-                    priority=3,
-                ),
-                # AmniContextNeuronConfig(
-                #     name="entity",
-                #     type="amnicontext.prompt.neurons.entity_neuron.EntitiesNeuron",
-                #     default_strategy=RAGNeuronStrategyConfig(),
-                #     priority=3,
-                # )
-
             ]
+            # neuron_config removed - neurons are now auto-registered via @neuron_factory.register decorators
         )
     return DEFAULT_CONFIG
 
@@ -353,7 +248,9 @@ class AmniConfigFactory:
 
     @staticmethod
     def create(level: AmniConfigLevel) -> AmniContextConfig:
-        if level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT or level == AmniConfigLevel.NAVIGATOR:
+        if level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
+            return get_amnicontext_config()
+        elif level == AmniConfigLevel.NAVIGATOR:
             return get_amnicontext_config()
         raise ValueError(f"Unsupported level: {level}")
 

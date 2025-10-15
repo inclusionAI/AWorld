@@ -3,8 +3,10 @@ from typing import List
 from ... import ApplicationContext
 from ..formatter.task_formatter import TaskFormatter
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 
+@neuron_factory.register(name="task", desc="Task history neuron", prio=1)
 class TaskHistoryNeuron(Neuron):
     """处理任务历史、当前任务信息和计划相关属性的Neuron"""
 

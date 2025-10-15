@@ -4,8 +4,10 @@ from typing import List
 
 from ... import ApplicationContext
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 
+@neuron_factory.register(name="basic", desc="Basic neuron for dynamic variables", prio=9)
 class BasicNeuron(Neuron):
     """处理动态变量相关属性的Neuron"""
     

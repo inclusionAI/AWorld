@@ -2,6 +2,7 @@ from typing import List
 
 from ... import ApplicationContext
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 HUMAN_TOOL_PROMPT = """
 <human>
@@ -39,6 +40,7 @@ HUMAN_TOOL_PROMPT = """
 """
 
 
+@neuron_factory.register(name="human", desc="Human tool neuron", prio=5)
 class HumanNeuron(Neuron):
     """处理人工工具相关属性的Neuron"""
 

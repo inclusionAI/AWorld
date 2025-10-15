@@ -2,8 +2,10 @@ from typing import List
 
 from ... import ApplicationContext
 from . import Neuron
+from .neuron_factory import neuron_factory
 
 
+@neuron_factory.register(name="working_dir", desc="Working directory neuron", prio=8)
 class WorkingDirNeuron(Neuron):
     """处理工作目录相关属性的Neuron"""
     
