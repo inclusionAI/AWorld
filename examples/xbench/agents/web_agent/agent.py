@@ -21,24 +21,24 @@ class WebAgent(ApplicationAgent):
                              message: Message = None) -> Message:
         if self._finished:
             try:
-                # 获取 todo_info 和 actions_info，处理可能的 None 值和异常
+                # Get todo_info and actions_info, handle potential None values and exceptions
                 todo_info = await self.get_task_context(message).get_todo_info()
                 actions_info = await self.get_task_context(message).get_actions_info()
 
-                # 设置到 task_output_object
+                # Set to task_output_object
                 self.get_task_context(message).task_output_object.todo_info = todo_info
                 self.get_task_context(message).task_output_object.actions_info = actions_info
 
-                # 安全地拼接字符串，处理 None 值
+                # Safely concatenate strings, handle None values
                 if todo_info is not None:
                     policy_result[0].policy_info += todo_info
                 if actions_info is not None:
                     policy_result[0].policy_info += actions_info
 
             except Exception as e:
-                # 记录错误但不中断执行流程
+                # Log error but don't interrupt execution flow
                 logger.error(f"❌ Error in WebAgent async_post_run: {e}")
-                # 确保 policy_result[0].policy_info 是字符串类型
+                # Ensure policy_result[0].policy_info is string type
                 if not isinstance(policy_result[0].policy_info, str):
                     policy_result[0].policy_info = str(policy_result[0].policy_info) if policy_result[
                         0].policy_info else ""

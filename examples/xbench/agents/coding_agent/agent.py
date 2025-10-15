@@ -5,10 +5,10 @@ from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
 
 
-# 编写和运行代码Agent
+# Agent for writing and running code
 class CodingAgent(ApplicationAgent):
     """
-    # 编写和运行代码Agent
+    Agent for writing and running code
     """
 
     max_loop = 100
