@@ -1,12 +1,8 @@
 import traceback
 from aworld.agents.llm_agent import Agent
-from aworld.config.conf import AgentConfig, ConfigDict
-from aworld.core.common import Observation, ActionModel
-from typing import Dict, Any, List, Union
-from aworld.core.tool.base import ToolFactory
-from aworld.models.llm import call_llm_model, acall_llm_model
+from aworld.config.conf import AgentConfig
+from typing import List
 from aworld.trace.config import ObservabilityConfig
-from aworld.utils.common import sync_exec
 from aworld.logs.util import logger
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
@@ -18,123 +14,6 @@ trace.configure(ObservabilityConfig(trace_server_enabled=True,
                                     metrics_provider="otlp",
                                     metrics_backend="antmonitor",
                                     metrics_base_url="https://antcollector.alipay.com/namespace/aworld/task/aworld/otlp/api/v1/metrics"))
-
-
-class TraceAgent(Agent):
-
-    def __init__(self,
-                 conf: Union[Dict[str, Any], ConfigDict, AgentConfig],
-                 name: str,
-                 **kwargs):
-        super().__init__(conf, name, **kwargs)
-
-    def policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
-        """use trace tool to get trace data, and call llm to summary
-
-        Args:
-            observation: The state observed from tools in the environment.
-            info: Extended information is used to assist the agent to decide a policy.
-
-        Returns:
-            ActionModel sequence from agent policy
-        """
-
-        self._finished = False
-        self.desc_transform()
-
-        tool_name = "trace"
-        tool = ToolFactory(tool_name, asyn=False)
-        tool.reset()
-        tool_params = {}
-        action = ActionModel(tool_name=tool_name,
-                             action_name="get_trace",
-                             agent_name=self.id(),
-                             params=tool_params)
-        message = tool.step(action)
-
-        observation, _, _, _, _ = message.payload
-
-        llm_response = None
-
-        messages = self.messages_transform(content=observation.content,
-                                           sys_prompt=self.system_prompt,
-                                           agent_prompt=self.agent_prompt)
-        try:
-            llm_response = call_llm_model(
-                self.llm,
-                messages=messages,
-                model=self.model_name,
-                temperature=self.conf.llm_config.llm_temperature
-            )
-
-            logger.info(f"Execute response: {llm_response.message}")
-        except Exception as e:
-            logger.warn(traceback.format_exc())
-            raise e
-        finally:
-            if llm_response:
-                if llm_response.error:
-                    logger.info(
-                        f"{self.id()} llm result error: {llm_response.error}")
-            else:
-                logger.error(f"{self.id()} failed to get LLM response")
-                raise RuntimeError(
-                    f"{self.id()} failed to get LLM response")
-
-        agent_result = sync_exec(self.model_output_parser.parse, llm_response, agent_id=self.id())
-        if not agent_result.is_call_tool:
-            self._finished = True
-        return agent_result.actions
-
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
-
-        self._finished = False
-        self.desc_transform()
-
-        tool_name = "trace"
-        tool = ToolFactory(tool_name, asyn=False)
-        tool.reset()
-        tool_params = {}
-        action = ActionModel(tool_name=tool_name,
-                             action_name='get_trace',
-                             agent_name=self.id(),
-                             params=tool_params)
-        message = tool.step([action])
-
-        observation, _, _, _, _ = message.payload
-
-        llm_response = None
-
-        messages = self.messages_transform(content=observation.content,
-                                           sys_prompt=self.system_prompt,
-                                           agent_prompt=self.agent_prompt)
-        try:
-            llm_response = await acall_llm_model(
-                self.llm,
-                messages=messages,
-                model=self.model_name,
-                temperature=self.conf.llm_config.llm_temperature
-            )
-
-            logger.info(f"Execute response: {llm_response.message}")
-        except Exception as e:
-            logger.warn(traceback.format_exc())
-            raise e
-        finally:
-            if llm_response:
-                if llm_response.error:
-                    logger.info(
-                        f"{self.id()} llm result error: {llm_response.error}")
-            else:
-                logger.error(f"{self.id()} failed to get LLM response")
-                raise RuntimeError(
-                    f"{self.id()} failed to get LLM response")
-
-        agent_result = await self.model_output_parser.parse(llm_response, agent_id=self.id())
-        if not agent_result.is_call_tool:
-            self._finished = True
-        return agent_result.actions
-
 
 search_sys_prompt = "You are a helpful search agent."
 search_prompt = """
@@ -200,11 +79,9 @@ def _print_tree(graph, node_id, prefix, is_last):
 def run():
     agent_config = AgentConfig(
         llm_provider="openai",
-        llm_model_name="DeepSeek-V3-Function-Call",
-        llm_temperature=0.3,
-
-        llm_base_url="http://localhost:34567",
-        llm_api_key="dummy-key",
+        llm_model_name="claude-3-7-sonnet-20250219",
+        llm_base_url="xxx",
+        llm_api_key="xxx",
     )
 
     search = Agent(
@@ -222,15 +99,8 @@ def run():
         agent_prompt=summary_prompt
     )
 
-    trace = TraceAgent(
-        conf=agent_config,
-        name="trace_agent",
-        system_prompt=trace_sys_prompt,
-        agent_prompt=trace_prompt
-    )
-
     # default is sequence swarm mode
-    swarm = Swarm(search, summary, trace, max_steps=1, event_driven=True)
+    swarm = Swarm(search, summary, max_steps=1, event_driven=True)
 
     prefix = "search baidu:"
     # can special search google, wiki, duck go, or baidu. such as:
@@ -250,3 +120,7 @@ def run():
     logger.info(f"session 123 nodes: {nodes}")
     build_run_flow(nodes)
     get_trace_server().join()
+
+
+# if __name__ == "__main__":
+#     run()

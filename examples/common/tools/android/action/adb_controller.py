@@ -12,7 +12,7 @@ import base64
 import xml.etree.ElementTree as ET
 import os
 
-from aworld.logs.util import logger, color_log, Color
+from aworld.logs.util import logger
 from aworld.utils import import_package
 
 configs = {"MIN_DIST": 30}
@@ -119,7 +119,7 @@ def draw_bbox_multi(img_path, output_path, elem_list):
                                 text_RGB=(255, 255, 255), alpha=0.0)
 
         except Exception as e:
-            color_log(f"ERROR: An exception occurs while labeling the image\n{e}", Color.red)
+            logger.warning(f"ERROR: An exception occurs while labeling the image\n{e}")
             logger.info(traceback.print_exc())
         count += 1
     cv2.imwrite(output_path, imgcv)
