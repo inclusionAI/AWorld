@@ -141,7 +141,7 @@ class ToolMessage(Message[List[ActionModel]]):
 class CancelMessage(Message[TaskItem]):
     """Cancel event of the task, has higher priority."""
     category: str = 'task'
-    priority: int = -1
+    priority: int = -5
     topic: str = TopicType.CANCEL
 
 
@@ -163,6 +163,7 @@ class HumanMessage(Message[Any]):
     in interactive AI systems.
     """
     category: str = 'human'
+    priority = -1
 
 
 class Messageable(object):

@@ -59,7 +59,8 @@ class TraceContextHolder:
         except LookupError:
             return self._var.get(None)
         finally:
-            self._var.set(None)
+            if value and value.auto_clear:
+                self._var.set(None)
         return value
 
     def get(self) -> TraceContext:
