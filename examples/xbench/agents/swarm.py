@@ -1,29 +1,29 @@
 from aworld.core.agent.swarm import TeamSwarm
-from .choose_agent.agent import ChooseAgent
-from .choose_agent.config import choose_agent_config, choose_mcp_servers
-from .choose_agent.prompt import choose_agent_system_prompt
+from .orchestrator_agent.agent import OrchestratorAgent
+from .orchestrator_agent.config import orchestrator_agent_config, orchestrator_mcp_servers
+from .orchestrator_agent.prompt import orchestrator_agent_system_prompt
 from .coding_agent.agent import CodingAgent
 from .coding_agent.config import coding_agent_config, coding_mcp_servers
 from .coding_agent.prompt import coding_agent_system_prompt
-from .web_agent.agent import ExecutionSearchAgent
+from .web_agent.agent import WebAgent
 from .web_agent.config import web_agent_config, web_mcp_servers
 from .web_agent.prompt import web_agent_system_prompt
 from ..mcp_tools.mcp_config import MCP_CONFIG
 
-
+# Orchestrator Agent - responsible for task analysis and agent coordination
 def build_xbench_swarm():
-    choose_agent = ChooseAgent(
-        name="choose_agent",
-        desc="choose_agent",
-        conf=choose_agent_config,
-        system_prompt=choose_agent_system_prompt,
-        mcp_servers=choose_mcp_servers,
+    orchestrator_agent = OrchestratorAgent(
+        name="orchestrator_agent",
+        desc="orchestrator_agent",
+        conf=orchestrator_agent_config,
+        system_prompt=orchestrator_agent_system_prompt,
+        mcp_servers=orchestrator_mcp_servers,
         mcp_config=MCP_CONFIG
-    )
+    )   
 
-    web_agent = ExecutionSearchAgent(
+    web_agent = WebAgent(
         name="web_agent",
-        desc="你是一名专业的网络浏览专家，擅长通过浏览器操作收集、整理和分析信息。你的目标是获取最全面、最详细的网页信息",
+        desc="You are a professional web browsing expert, skilled in collecting, organizing, and analyzing information through browser operations. Your goal is to obtain the most comprehensive and detailed web information",
         conf=web_agent_config,
         system_prompt=web_agent_system_prompt,
         mcp_servers=web_mcp_servers,
@@ -41,11 +41,11 @@ def build_xbench_swarm():
 
     coding_agent = CodingAgent(
         name="coding_agent",
-        desc="你是一个代码编写专家，擅长通过编写代码、执行代码等能力来完成任务的专家",
+        desc="You are a coding expert, skilled in using coding, executing code, and other abilities to complete tasks",
         conf=coding_agent_config,
         system_prompt=coding_agent_system_prompt,
         mcp_servers=coding_mcp_servers,
         mcp_config=MCP_CONFIG
     )
 
-    return TeamSwarm(choose_agent, web_agent, coding_agent, max_steps=30)
+    return TeamSwarm(orchestrator_agent, web_agent, coding_agent, max_steps=30)

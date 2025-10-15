@@ -145,7 +145,7 @@ async def evaluate_answer_accuracy():
                 }
             ],
             eval_dataset_id_or_file_path=os.path.join(current_dir, 'benchmark', 'xbench_deepsearch.csv'),
-            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[43])),
+            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[57])),
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,

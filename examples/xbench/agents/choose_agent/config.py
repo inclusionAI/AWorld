@@ -2,7 +2,7 @@ import os
 
 from aworld.config import AgentConfig, ModelConfig
 
-choose_agent_config = AgentConfig(
+orchestrator_agent_config = AgentConfig(
     llm_config=ModelConfig(
         llm_temperature=0.1,
         llm_model_name=os.environ.get("LLM_MODEL_NAME"),
@@ -13,4 +13,4 @@ choose_agent_config = AgentConfig(
     use_vision=False
 )
 
-choose_mcp_servers = ["amnicontext-server"]
+orchestrator_mcp_servers = ["amnicontext-server"]

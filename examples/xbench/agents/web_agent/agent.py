@@ -7,9 +7,9 @@ from aworld.core.event.base import Message
 from aworld.logs.util import logger
 
 
-class ExecutionSearchAgent(ApplicationAgent):
+class WebAgent(ApplicationAgent):
     """
-    读取web页面内容Agent
+    Web browsing agent for reading and analyzing web page content
     """
     max_loop = 100
 
@@ -37,7 +37,7 @@ class ExecutionSearchAgent(ApplicationAgent):
 
             except Exception as e:
                 # 记录错误但不中断执行流程
-                logger.error(f"❌ Error in ExecutionSearchAgent async_post_run: {e}")
+                logger.error(f"❌ Error in WebAgent async_post_run: {e}")
                 # 确保 policy_result[0].policy_info 是字符串类型
                 if not isinstance(policy_result[0].policy_info, str):
                     policy_result[0].policy_info = str(policy_result[0].policy_info) if policy_result[

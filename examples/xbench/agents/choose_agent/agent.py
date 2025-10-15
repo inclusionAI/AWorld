@@ -6,7 +6,7 @@ from aworld.core.event.base import Message
 from aworld.logs.util import logger
 
 
-class ChooseAgent(ApplicationAgent):
+class OrchestratorAgent(ApplicationAgent):
 
     max_loop=50
 
@@ -15,7 +15,7 @@ class ChooseAgent(ApplicationAgent):
 
         action_model_list = await super().async_policy(observation, info, message, **kwargs)
         if self._finished:
-            logger.info(f"[ChooseAgent] add final_result to context : {action_model_list[0].policy_info}")
+            logger.info(f"[OrchestratorAgent] add final_result to context : {action_model_list[0].policy_info}")
             self.get_task_context(message).put("final_result", action_model_list[0].policy_info)
         if self._finished and not action_model_list[0].policy_info:
             action_model_list[0].policy_info += "\n\n" + observation.content
