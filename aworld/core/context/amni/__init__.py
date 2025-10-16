@@ -1431,7 +1431,7 @@ class ApplicationContext(AmniContext):
         """
         self._workspace._load_workspace_data()
         todo_info = (
-            "Below is the task execute todo information, explaining the current task progress:\n"
+            "Below is the global task execute todo information, explaining the current progress:\n"
         )
         artifact = self._workspace.get_artifact(f"session_{self.session_id}_todo")
         if not artifact:

@@ -604,7 +604,10 @@ class PlaywrightSnapshotArtifact(Artifact):
         # Build result information
         result_context = ""
         if self.result:
-            result_context = f"\n{json.dumps(self.result, ensure_ascii=False, indent=2)}\n"
+            result_context = self.result
+            if len(self.result) > 10000:
+                result_context = f"{self.result[:10000]}... (truncated content is too long {len(self.result)})"
+            result_context = f"\n{json.dumps(result_context, ensure_ascii=False, indent=2)}\n"
         
         # Build tab information
         tabs_context = ""

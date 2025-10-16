@@ -20,9 +20,11 @@ TODO_PROMPT = """
 - **Dynamic Adjustment**: Promptly adjust or add new subtasks based on new situations encountered during execution
 
 ## ✅ Task Completion Criteria
-- **Completeness Check**: Only consider the entire task complete when all items in todo are marked as finished
-- **Result Verification**: Ensure each completed subtask has corresponding outputs or results
-- **Quality Confirmation**: Verify that final results meet the original requirements
+- **Scope Boundary** ⚠️: The TODO list may contain the GLOBAL task plan. Your responsibility is ONLY to complete YOUR ASSIGNED SUBTASK, NOT all items in the todo list. Once you have completed your specific assigned task (e.g., information collection), STOP immediately - do NOT continue to execute other unrelated tasks in the global todo.
+- **Task Identification**: Identify which specific subtask in the todo is YOUR current responsibility based on the user's instruction
+- **Completeness Check**: Only consider YOUR assigned subtask complete when it meets its specific requirements
+- **Result Verification**: Ensure your completed subtask has corresponding outputs or results
+- **Quality Confirmation**: Verify that your results meet the requirements of YOUR assigned subtask
 
 ## 📝 TODO Format Specifications
 - **Incomplete Tasks**: Use `[ ] task description` format
@@ -92,14 +94,3 @@ class TodoNeuron(Neuron):
 
     async def desc(self, context: ApplicationContext, namespace: str = None, **kwargs):
         return TODO_PROMPT
-
-    async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        todo_info = await context.get_todo_info()
-        return [todo_info if todo_info else ""]
-
-    async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None, **kwargs) -> str:
-        """Combine plan information"""
-        if not items:
-            items = await self.format_items(context, namespace, **kwargs)
-
-        return "\n\n<todo_info>\n" + "\n".join(items) + "\n</todo_info>\n"

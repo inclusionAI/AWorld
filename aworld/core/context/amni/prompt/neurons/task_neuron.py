@@ -29,29 +29,15 @@ class TaskHistoryNeuron(Neuron):
         if task_output:
             items.append(f"  <task_output>{task_output}</task_output>")
 
-        # # Task status
-        # task_status = context.task_status
-        # if task_status:
-        #     items.append(f"<task_status>{task_status}</task_status>")
-
-        # # Task input object
-        # task_input_object = context.task_input_object
-        # if task_input_object:
-        #     items.append(f"<task_input_object>{task_input_object}</task_input_object>")
-        #
-        # # Task output object
-        # task_output_object = context.task_output_object
-        # if task_output_object:
-        #     items.append(f"<task_output_object>{task_output_object}</task_output_object>")
 
         # Original user input
         origin_user_input = context.origin_user_input
         if origin_user_input:
             items.append(f"  <origin_user_input>{origin_user_input}</origin_user_input>")
 
-        # origin_task_input = context.get("origin_task_input")
-        # if origin_task_input:
-        #     items.append(f"<origin_task_input>{origin_task_input}</origin_task_input>")
+        todo_info = await context.get_todo_info()
+        if todo_info:
+            items.append(" <todo_info description=\"Todo information Help You Tracking the Global Task\">\n" + todo_info + "\n</todo_info>\n")
 
         return items
 
@@ -99,7 +85,7 @@ class TaskHistoryNeuron(Neuron):
         
         # Current task information
         if current_task_info:
-            result_parts.append("<global_task_info>\n" + "\n".join(current_task_info) + "\n</global_task_info>")
+            result_parts.append("<global_task_info description=\"Current task information Help You Understand the Current Task\">\n" + "\n".join(current_task_info) + "\n</global_task_info>")
         
         # Plan information
         if plan_info:
