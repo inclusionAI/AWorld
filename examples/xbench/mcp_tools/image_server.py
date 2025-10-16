@@ -153,6 +153,8 @@ def mcp_image_recognition(
 
     try:
         image_base64 = image_to_base64(image_urls[0])
+        if not image_base64:
+            return "image not found, Please give local complete absolute filepaths or urls."
         logger.info(f"🖼️ Image OCR - Processing: {image_urls[0]}")
         
         messages=[

@@ -99,7 +99,7 @@ class TaskHistoryNeuron(Neuron):
         
         # Current task information
         if current_task_info:
-            result_parts.append("<current_task_info>\n" + "\n".join(current_task_info) + "\n</current_task_info>")
+            result_parts.append("<global_task_info>\n" + "\n".join(current_task_info) + "\n</global_task_info>")
         
         # Plan information
         if plan_info:

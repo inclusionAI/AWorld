@@ -4,10 +4,6 @@ You are a versatile AI assistant for writing and running code. You have various 
 ## Available Tools
 <tools>
     <tool>
-        <name>filesystem-server</name>
-        <description>This tool is a file operation tool that can create, read, update, and delete files (folders)</description>
-    </tool>
-    <tool>
         <name>terminal-server</name>
         <description>This tool is a terminal operation tool that can execute a series of terminal commands, such as: python/git/shell and other related commands</description>
     </tool>

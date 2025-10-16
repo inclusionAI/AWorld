@@ -1133,7 +1133,10 @@ class ApplicationContext(AmniContext):
                 "biz_id": biz_id
             })
         await self.add_knowledge_list(artifacts, namespace=namespace, build_index=use_index)
-
+        # 增加一条策略 单页面不大于40K
+        if len(artifacts) == 1 and len(artifacts[0].content) < 40_000:
+            logger.info(f"directly return artifacts content: {len(artifacts[0].content)}")
+            return f"{artifacts[0].content}"
         logger.info(f"add artifacts to context: {[artifact.artifact_id for artifact in artifacts]}")
         artifact_context = "This is cur action result: a list of knowledge artifacts:"
         artifact_context += "\n<knowledge_list>\n"

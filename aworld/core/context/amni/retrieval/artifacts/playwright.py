@@ -491,9 +491,12 @@ class PlaywrightSnapshotArtifact(Artifact):
         open_tabs = PlaywrightHelper.extract_open_tabs(content)
 
         if result:
+            if len(result.get("raw_result")) > 10000:
+                result = result.get("raw_result") + (f"... (truncated content is too long {len(result.get('raw_result'))})) \n\n "
+                                                     f"if you want to see the full content, please use browser tools to extract detailed content if needed")
             content = result
         if downloads:
-            content = f"Downloading Files list\n {downloads}"
+            content += f"Downloading Files list\n {downloads}"
 
         return PlaywrightSnapshotArtifact(
             artifact_type=ArtifactType.PLAYWRIGHT,

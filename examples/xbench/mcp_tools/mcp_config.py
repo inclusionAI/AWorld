@@ -7,10 +7,9 @@ MCP_CONFIG = {
             "args": [
                 "@playwright/mcp@0.0.37",
                 "--no-sandbox",
-                # "--isolated",
+                "--isolated",
                 "--output-dir=/tmp/playwright",
                 "--timeout-action=10000"
-                "--cdp-endpoint=http://localhost:9222"
             ],
             "env": {
                 "PLAYWRIGHT_TIMEOUT": "120000",

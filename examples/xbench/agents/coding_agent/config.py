@@ -10,8 +10,6 @@ coding_agent_config = AgentConfig(
         llm_api_key=os.environ.get("LLM_API_KEY"),
         llm_base_url=os.environ.get("LLM_BASE_URL")
     ),
-    memory_config=AgentMemoryConfig(history_rounds=20, enable_summary=True, summary_rounds=20,
-                                    summary_context_length=40000),
     use_vision=False
 )
-coding_mcp_servers = ["terminal-server", "ms-playwright", "amnicontext-server"]
+coding_mcp_servers = ["terminal-server", "amnicontext-server"]

@@ -7,14 +7,13 @@ from datetime import datetime
 from typing import Iterator
 
 from aworld.core.context.amni import TaskInput, ApplicationContext
-from aworld.core.context.amni.config import init_middlewares
+from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
 from aworld.core.context.amni.worksapces import workspace_repo
 from aworld.dataset.sampler import RangeSampler, Sampler
 from aworld.runners.evaluate_runner import EvaluateRunner
 from examples.xbench.agents.swarm import build_xbench_swarm
 from dotenv import load_dotenv
 from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig
-from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTarget, EvalDataCase, EvalTask, EvalResult
 from aworld.runner import Runners
@@ -55,7 +54,9 @@ class AmniContextEvaluatable(EvalTarget):
             origin_user_input=user_query
         )
         workspace = await workspace_repo.get_session_workspace(session_id=task_input.session_id)
-        return await ApplicationContext.from_input(task_input, workspace)
+        context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
+
+        return await ApplicationContext.from_input(task_input, workspace, False, context_config = context_config)
 
     async def build_task(self, task_content: str, session_id: str = None, task_id: str = None) -> Task:
         context = await self.build_context(task_content, session_id=session_id, task_id=task_id)
@@ -145,14 +146,17 @@ async def evaluate_answer_accuracy():
                 }
             ],
             eval_dataset_id_or_file_path=os.path.join(current_dir, 'benchmark', 'xbench_deepsearch.csv'),
-            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[57])),
+            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[109])),
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
             parallel_num=1,
             skip_passed_cases=True,
         )).run()
-    with open(f"results/{task_id}/results.txt", "w") as f:
+    result_file_path = f"results/{task_id}/"
+    if not os.path.exists(result_file_path):
+        os.mkdir(result_file_path)
+    with open(f"{result_file_path}/results.txt", "w") as f:
         f.write(f"{result.run_id}\n")
         f.write(f"START: {datetime.fromtimestamp((int(result.create_time))).strftime('%Y%m%d %H%M%S')}\n")
         f.write(f"END: {datetime.now().strftime('%Y%m%d %H%M%S')}\n")

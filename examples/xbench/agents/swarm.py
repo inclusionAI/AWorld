@@ -32,7 +32,6 @@ def build_xbench_swarm():
             "document_server": [
                 "mcpreadtext",
                 "mcpreadjson",
-                "mcpreadexcel",
                 "mcpreadhtmltext",
                 "mcpreadxml"
             ]
