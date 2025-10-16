@@ -18,7 +18,7 @@ from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.context.prompts import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
-from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType
+from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, ChunkMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message
@@ -754,6 +754,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     stream=True,
                     **kwargs
                 )
+                streaming_queue = message.context.streaming_queue
 
                 async for chunk in resp_stream:
                     if chunk.content:
@@ -767,6 +768,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.usage = nest_dict_counter(
                         llm_response.usage, chunk.usage, ignore_zero=False)
                     llm_response.message.update(chunk.message)
+                    streaming_queue.put_nowait(
+                        ChunkMessage(payload=chunk, session_id=message.context.session_id, headers=message.headers))
+                streaming_queue.put_nowait(
+                    ChunkMessage(payload=ModelResponse(id=llm_response.id, model=llm_response.model, content="[LLM END]"),
+                                 session_id=message.context.session_id,
+                                 headers=message.headers)
+                )
 
             else:
                 llm_response = await acall_llm_model(

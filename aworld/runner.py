@@ -1,13 +1,14 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-from typing import List, Dict, Union
+from typing import List, Dict, Union, AsyncGenerator, Tuple
 
 from aworld.config import RunConfig, EvaluationConfig
 from aworld.config.conf import TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config
+from aworld.core.event.base import Message, Constants, TopicType, TaskMessage
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.evaluations.base import EvalTask
 from aworld.logs.util import logger
@@ -61,6 +62,44 @@ class Runners:
     @staticmethod
     def sync_run_task(task: Union[Task, List[Task]], run_conf: Config = None) -> Dict[str, TaskResponse]:
         return sync_exec(Runners.run_task, task=task, run_conf=run_conf)
+
+    @staticmethod
+    async def streaming_run_task(task: Task, run_conf: Config = None) -> AsyncGenerator[Message, None]:
+        queue = asyncio.Queue()
+
+        agents = task.swarm.agents if task and task.swarm else {task.agent.id(): task.agent}
+        logger.info(f"task agents: {agents}")
+        if not agents:
+            raise ValueError("Cannot find `agent` or `swarm` in task.")
+        for agent_id, agent in agents.items():
+            agent.conf.llm_config.llm_stream_call = True
+
+        task.streaming_queue = queue
+
+            # Execute the agent asynchronously
+        stream_task = asyncio.create_task(
+            Runners.run_task(task)
+        )
+
+        if stream_task.done():
+            await queue.put(Message(payload="[END]"))
+        else:
+            stream_task.add_done_callback(lambda _: queue.put_nowait(Message(payload="[END]")))
+
+        def is_end_msg(msg: Message):
+            return msg and isinstance(msg.payload, str) and msg.payload == "[END]"
+
+        # Receive the messages from the agent's message queue
+        while True:
+            # The message obj, and a boolean indicating whether it's the last chunk
+            # in a streaming message
+            streaming_msg = await queue.get()
+
+            # End the loop when the message is None
+            if is_end_msg(streaming_msg):
+                break
+
+            yield streaming_msg
 
     @staticmethod
     def sync_run(

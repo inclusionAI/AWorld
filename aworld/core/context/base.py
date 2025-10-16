@@ -213,6 +213,10 @@ class Context:
     def outputs(self):
         return self._task.outputs
 
+    @property
+    def streaming_queue(self):
+        return self._task.streaming_queue
+
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.context_info.get(key, default)
 
