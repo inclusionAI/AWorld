@@ -12,17 +12,6 @@ from aworld.core.common import ActionResult
 from aworld.memory.models import MemoryMessage
 from ...utils.workspace_utils import extract_artifacts_from_toolresult
 
-CONTEXT_OFFLOAD_TOOL_NAME_WHITE = ["aworldsearch-server:search", "readweb-server:read_url",
-                                   "web-search-server:search_web", "google-search-server",
-                                   "wiki-server:get_article_content", "wiki-server:get_article_summary",
-                                   "wiki-server:get_article_history", "wiki-server:get_wikipedia_capabilities",
-                                   "arxiv-server:load_article_to_context",
-                                   "wiki-server:get_article_categories","wiki-server:get_article_links",
-                                   "ms-playwright:browser_snapshot", "ms-playwright:browser_navigate",
-                                   "ms-playwright:browser_click","ms-playwright:browser_type",
-                                   "ms-playwright:browser_evaluate","ms-playwright:browser_tab_select",
-                                   "ms-playwright:browser_press_key","ms-playwright:browser_wait_for"
-                                   ]
 
 @memory_op("tool_result_offload")
 class ToolResultOffloadOp(BaseOp):
@@ -36,7 +25,7 @@ class ToolResultOffloadOp(BaseOp):
         if not info.get("memory_commands"):
             info["memory_commands"] = []
 
-        items = await self._resolve_tool_result(event.agent_id, event.tool_call_id, event.tool_result, context)
+        items = await self._resolve_tool_result(event.agent_id, event.tool_call_id, event.tool_result, context, event)
         for item in items:
             info["memory_commands"].append(MemoryCommand(type="ADD", item=item))
         return info
@@ -45,10 +34,12 @@ class ToolResultOffloadOp(BaseOp):
                                    namespace: str,
                                    tool_call_id: str,
                                    tool_result: ActionResult,
-                                   context: ApplicationContext) -> Optional[list[MemoryMessage]]:
+                                   context: ApplicationContext,
+                                   event: ToolResultEvent
+                                   ) -> Optional[list[MemoryMessage]]:
         try:
             # Check if tool is in context offload whitelist
-            need_offload = await self._need_offload(tool_result)
+            need_offload = await self._need_offload(tool_result, context, event)
             if need_offload:
                 # Offload tool result
                 tool_result_prompt = await self._offload_tool_result(namespace, tool_result, context)
@@ -64,22 +55,24 @@ class ToolResultOffloadOp(BaseOp):
             logger.warning(
                 f"extract_artifacts_from_toolresult execute failed is {err}, trace is {traceback.format_exc()}")
 
-    async def _need_offload(self, tool_result):
-        # return False
+    async def _need_offload(self, tool_result, context: ApplicationContext, event: ToolResultEvent) -> Optional[bool]:
+        agent_context_config = context.get_config().get_agent_context_config(event.agent_id)
+        if not agent_context_config.tool_result_offload:
+            return False
         if isinstance(tool_result, ActionResult):
-            if f"{tool_result.tool_name}:{tool_result.action_name}" in CONTEXT_OFFLOAD_TOOL_NAME_WHITE:
+            if agent_context_config.tool_action_white_list and isinstance(agent_context_config.tool_action_white_list, list) and f"{tool_result.tool_name}:{tool_result.action_name}" in agent_context_config.tool_action_white_list:
                 logger.info(
                     f"📦 {tool_result.tool_name}:{tool_result.action_name} in CONTEXT_OFFLOAD_TOOL_NAME_WHITE, need compress")
                 return True
             if tool_result.metadata and tool_result.metadata.get("offload", False) == True:
                 logger.info(f"📦 tool_result.tool_name:tool_result.metadata.offload Enable, need compress")
                 return True
-            if num_tokens_from_string(tool_result.content) > 30_1000:
+            if num_tokens_from_string(tool_result.content) > agent_context_config.tool_result_length_threshold:
                 logger.info(f"📦 tool_result.tool_name:tool_result.content is too large, need compress")
                 return True
             return False
         elif isinstance(tool_result, str):
-            if num_tokens_from_string(tool_result) > 30_1000:
+            if num_tokens_from_string(tool_result) > agent_context_config.tool_result_length_threshold:
                 logger.info(f"📦 tool_result is too large, need compress")
                 return True
         else:

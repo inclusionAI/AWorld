@@ -64,6 +64,13 @@ class SystemPromptAugmentOp(BaseOp):
         Process prompt components, supporting both rerank and append strategies
         Supports filtering components configured in component_neuron based on namespace
         """
+        agent_id = getattr(event, 'agent_id', None)
+
+        if not context.get_config().get_agent_context_config(agent_id).enable_system_prompt_augment:
+            logger.info(f"[SYSTEM_PROMPT_AUGMENT_OP] switch is disabled")
+            return ""
+
+
         augment_prompts = {}
 
         # Record timing for each component
@@ -72,10 +79,9 @@ class SystemPromptAugmentOp(BaseOp):
 
         # Get namespace (from event)
         namespace = getattr(event, 'namespace', None)
-        agent_id = getattr(event, 'agent_id', None)
 
         # Process components
-        neurons = neuron_factory.get_all_neurons(namespace=namespace)
+        neurons = neuron_factory.get_neurons_by_names(names=context.get_config().get_agent_context_config(agent_id).neuron_names)
 
         # Process components with rerank strategy
         if neurons:

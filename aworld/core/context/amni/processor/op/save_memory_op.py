@@ -24,7 +24,7 @@ class SaveMemoryOp(BaseOp):
             try:
                 if memory_command.type == "ADD":
                     await self._memory.add(memory_command.item, agent_memory_config = context.get_config().get_agent_memory_config(namespace = memory_command.item.agent_id))
-                    logger.info(f"📝 add memory #{type(memory_command.item).__name__} -> {memory_command.item}")
+                    logger.info(f"📝 add memory #{type(memory_command.item).__name__} -> {memory_command.item.id}")
                 elif memory_command.type == "DELETE":
                     await self._memory.delete(memory_command.memory_id)
                     logger.info(f"🗑️ delete memory #{memory_command.memory_id}")

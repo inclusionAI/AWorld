@@ -86,9 +86,9 @@ class HumanNeuronStrategyConfig(NeuronStrategyConfig):
 
 class AgentContextConfig(BaseModel):
     # System Prompt Augment
+    enable_system_prompt_augment: bool = Field(default=False, description="enable_system_prompt_augment")
     neuron_names: Optional[list[str]] = Field(default_factory=list)
     neuron_config: Optional[Dict[str, NeuronStrategyConfig]] = Field(default_factory=list)
-
 
     # Context Purge
     history_rounds: int = Field(default=100,
@@ -106,40 +106,48 @@ class AgentContextConfig(BaseModel):
     # Context Offload
     tool_result_offload: bool = Field(default=False, description="tool result offload")
     tool_action_white_list: Optional[list[str]] = Field(default_factory=list, description="tool white list")
-    tool_result_length_threshold: Optional[int] = Field(default=40960, description=" when the content length is greater than the tool_result_length_threshold, the tool result will be offloaded")
+    tool_result_length_threshold: Optional[int] = Field(default=30000, description=" when the content length is greater than the tool_result_length_threshold, the tool result will be offloaded")
+
+    def to_memory_config(self) -> AgentMemoryConfig:
+        return AgentMemoryConfig(
+            history_rounds=self.history_rounds,
+            enable_summary=self.enable_summary,
+            summary_rounds=self.summary_rounds,
+            summary_context_length=self.summary_context_length
+        )
 
 
-
+DEFAULT_AGENT_CONFIG = AgentContextConfig()
 class AmniContextConfig(BaseModel):
     """AmniContext configs"""
 
     retrival_index_type_list: Optional[list[str]] = Field(default_factory=list)
+
+    # agent config
     agent_config: Union[AgentContextConfig, Dict[str, AgentContextConfig]] = Field(default_factory=dict)
 
+    # processor config
     processor_config: Optional[list[AmniContextProcessorConfig]] = Field(default_factory=list)
-    # neuron_config removed - neurons are now registered via decorators in neuron_factory
+
     # other config
     debug_mode: Optional[bool] = False
-    log_level: Optional[str] = "INFO"
+
+    def get_agent_context_config(self, namespace: str = "default") -> AgentContextConfig:
+        if isinstance(self.agent_config, AgentContextConfig):
+            return self.agent_config
+        elif isinstance(self.agent_config, dict):
+            return self.agent_config.get(namespace)
+        else:
+            return DEFAULT_AGENT_CONFIG
 
     def get_agent_memory_config(self, namespace: str = "default") -> AgentMemoryConfig:
         if isinstance(self.agent_config, AgentContextConfig):
-            return AgentMemoryConfig(
-                history_rounds=self.agent_config.history_rounds,
-                enable_summary=self.agent_config.enable_summary,
-                summary_rounds=self.agent_config.summary_rounds,
-                summary_context_length=self.agent_config.summary_context_length
-            )
-        elif isinstance(self.agent_config, list):
+            return self.agent_config.to_memory_config()
+        elif isinstance(self.agent_config, dict):
             agent_context_config = self.agent_config.get(namespace)
             if isinstance(agent_context_config, AgentContextConfig):
-                return AgentMemoryConfig(
-                    history_rounds=agent_context_config.history_rounds,
-                    enable_summary=agent_context_config.enable_summary,
-                    summary_rounds=agent_context_config.summary_rounds,
-                    summary_context_length=agent_context_config.summary_context_length
-                )
-        return AgentMemoryConfig()
+                return agent_context_config.to_memory_config()
+        return DEFAULT_AGENT_CONFIG.to_memory_config()
 
 def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> None:
 
@@ -242,13 +250,34 @@ class AmniConfigLevel(Enum):
     # 高级版本 智能的自动化
     NAVIGATOR = "Navigator"
 
+CONTEXT_OFFLOAD_TOOL_NAME_WHITE = ["arxiv-server:load_article_to_context",
+                                       "wiki-server:get_article_categories", "wiki-server:get_article_links",
+                                       "ms-playwright:browser_snapshot", "ms-playwright:browser_navigate",
+                                       "ms-playwright:browser_click", "ms-playwright:browser_type",
+                                       "ms-playwright:browser_evaluate", "ms-playwright:browser_tab_select",
+                                       "ms-playwright:browser_press_key", "ms-playwright:browser_wait_for"
+                                       ]
+
 class AmniConfigFactory:
+
 
     @staticmethod
     def create(level: Optional[AmniConfigLevel] = None) -> AmniContextConfig:
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             return get_amnicontext_config()
         elif level == AmniConfigLevel.NAVIGATOR:
-            return get_amnicontext_config()
+            config = get_amnicontext_config()
+            config.agent_config = AgentContextConfig(
+                enable_system_prompt_augment=True,
+                neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
+                history_rounds= 100,
+                enable_summary=True,
+                summary_rounds= 30,
+                summary_context_length= 40960,
+                tool_result_offload= True,
+                tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
+                tool_result_length_threshold= 30000
+            )
+            return config
         raise ValueError(f"Unsupported level: {level}")
 
