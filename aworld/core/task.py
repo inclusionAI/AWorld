@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable, Optional
@@ -52,6 +53,7 @@ class Task:
     parent_task: Optional['Task'] = field(default=None, repr=False)
     max_retry_count: int = 0
     timeout: int = field(default=0)
+    streaming_queue: asyncio.Queue = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.

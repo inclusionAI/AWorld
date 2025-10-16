@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from aworld.config.conf import ConfigDict
 from aworld.core.common import Config, Observation, ActionModel, TaskItem
 from aworld.core.context.base import Context
+from aworld.models.model_response import ModelResponse
 
 
 class Constants:
@@ -56,7 +57,7 @@ class Message(Generic[DataType]):
     or by extending `Message`.
     """
     session_id: str = field(default_factory=str)
-    payload: Optional[DataType] = field(default_factory=object, repr=False)
+    payload: Optional[DataType] = field(default_factory=object)
     # Current caller
     sender: str = field(default_factory=str)
     # event type
@@ -164,6 +165,11 @@ class HumanMessage(Message[Any]):
     """
     category: str = 'human'
     priority = -1
+
+@dataclass
+class ChunkMessage(Message[ModelResponse]):
+    """Chunk message is used to stream the response of the LLM."""
+    category: str = 'chunk'
 
 
 class Messageable(object):
