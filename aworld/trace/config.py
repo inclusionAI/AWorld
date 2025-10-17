@@ -9,6 +9,8 @@ from aworld.trace.instrumentation.uni_llmmodel import LLMModelInstrumentor
 from aworld.trace.instrumentation.eventbus import EventBusInstrumentor
 from aworld.trace.instrumentation.agent import AgentInstrumentor
 from aworld.trace.instrumentation.tool import ToolInstrumentor
+from aworld.trace.instrumentation.threading import ThreadingInstrumentor
+
 from aworld.logs.log import set_log_provider
 from aworld.trace.opentelemetry.memory_storage import TraceStorage
 from aworld.logs.util import trace_logger
@@ -62,6 +64,7 @@ def configure(config: ObservabilityConfig = None):
     EventBusInstrumentor().instrument()
     AgentInstrumentor().instrument()
     ToolInstrumentor().instrument()
+    ThreadingInstrumentor().instrument()
 
 
 def _trace_configure(config: ObservabilityConfig):

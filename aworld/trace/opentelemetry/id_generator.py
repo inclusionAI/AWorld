@@ -36,7 +36,6 @@ class ProcessSafeIdGenerator(IdGenerator):
             if self.counter == 0:
                 time.sleep(0.001)
 
-        print(f"generate_span_id: {span_id}")
         return span_id
 
     def generate_trace_id(self) -> int:

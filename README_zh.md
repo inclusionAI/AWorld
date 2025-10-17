@@ -124,7 +124,7 @@ pip install .
 ## Hello world 示例
 我们引入 `Agent` 和 `Runners` 的概念来帮助您快速上手。
 
-关于并行任务执行，请参考[并行运行示例](examples/parallel_run/README.md)。
+关于并行任务执行，请参考[并行运行示例](examples/parallel_task/README.md)。
 
 ```python
 from aworld.agents.llm_agent import Agent

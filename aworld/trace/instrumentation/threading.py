@@ -8,7 +8,7 @@ from aworld.trace.propagator import get_global_trace_context
 from aworld.trace.instrumentation import Instrumentor
 from aworld.trace.instrumentation.utils import unwrap
 from aworld.logs.util import logger
-
+from aworld.utils.common import ReturnThread
 
 R = TypeVar("R")
 
@@ -44,6 +44,11 @@ class ThreadingInstrumentor(Instrumentor):
         )
         wrap_function_wrapper(
             threading.Thread,
+            "run",
+            ThreadingInstrumentor.__wrap_threading_run,
+        )
+        wrap_function_wrapper(
+            ReturnThread,
             "run",
             ThreadingInstrumentor.__wrap_threading_run,
         )
@@ -93,7 +98,7 @@ class ThreadingInstrumentor(Instrumentor):
         span: Span = trace.get_current_span()
         if span:
             instance._trace_context = TraceContext(
-                trace_id=span.get_trace_id(), span_id=span.get_span_id())
+                trace_id=span.get_trace_id(), span_id=span.get_span_id(), auto_clear=False)
         return call_wrapped(*args, **kwargs)
 
     @staticmethod
