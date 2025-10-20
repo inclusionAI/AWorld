@@ -52,7 +52,7 @@ from xls2xlsx import XLS2XLSX
 
 from aworld.logs.util import logger
 from aworld.utils import import_package
-from mcp_servers.image_server import encode_images
+from .image_server import encode_images
 
 mcp = FastMCP("document-server")
 
