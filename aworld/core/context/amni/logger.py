@@ -9,7 +9,7 @@ from logging.handlers import TimedRotatingFileHandler
 amni_prompt_logger = logging.getLogger("amnicontext_prompt")
 amni_digest_logger = logging.getLogger("amnicontext_digest")
 logger = logging.getLogger("amnicontext")
-# 新增异步日志logger
+# Add async logger
 async_logger = logging.getLogger("amnicontext_async")
 
 log_info_dict = {
@@ -21,7 +21,7 @@ log_info_dict = {
 }
 
 class AsyncLogHandler(logging.Handler):
-    """异步日志处理器，将日志写入队列并在后台线程中处理"""
+    """Async log handler that writes logs to queue and processes them in background thread"""
 
     def __init__(self, log_file_path: str, level=logging.NOTSET):
         super().__init__(level)
@@ -32,7 +32,7 @@ class AsyncLogHandler(logging.Handler):
         self.file_handler = None
 
     def start(self):
-        """启动异步日志处理线程"""
+        """Start async log processing thread"""
         if self.running:
             return
 
@@ -41,7 +41,7 @@ class AsyncLogHandler(logging.Handler):
         self.thread.start()
 
     def stop(self):
-        """停止异步日志处理线程"""
+        """Stop async log processing thread"""
         if not self.running:
             return
 
@@ -50,11 +50,11 @@ class AsyncLogHandler(logging.Handler):
             self.thread.join(timeout=5.0)
 
     def emit(self, record):
-        """将日志记录放入队列"""
+        """Put log record into queue"""
         try:
             self.log_queue.put_nowait(record)
         except queue.Full:
-            # 如果队列满了，丢弃最老的记录
+            # If queue is full, discard the oldest record
             try:
                 self.log_queue.get_nowait()
                 self.log_queue.put_nowait(record)
@@ -62,12 +62,12 @@ class AsyncLogHandler(logging.Handler):
                 pass
 
     def _log_worker(self):
-        """后台线程处理日志写入"""
+        """Background thread to handle log writing"""
         try:
-            # 确保日志目录存在
+            # Ensure log directory exists
             os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
 
-            # 创建文件处理器
+            # Create file handler
             self.file_handler = TimedRotatingFileHandler(
                 self.log_file_path,
                 when='H',
@@ -76,7 +76,7 @@ class AsyncLogHandler(logging.Handler):
             )
             self.file_handler.setLevel(logging.DEBUG)
 
-            # 设置格式化器
+            # Set formatter
             formatter = logging.Formatter(
                 "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
             )
@@ -84,10 +84,10 @@ class AsyncLogHandler(logging.Handler):
 
             while self.running:
                 try:
-                    # 从队列获取日志记录，超时1秒
+                    # Get log record from queue with 1 second timeout
                     record = self.log_queue.get(timeout=1.0)
                     if record:
-                        # 写入文件
+                        # Write to file
                         self.file_handler.emit(record)
                         self.log_queue.task_done()
                 except queue.Empty:
@@ -115,7 +115,7 @@ def setup_amni_logging(log_dir: str = "./logs") -> None:
     logger.setLevel(log_info_dict[os.getenv("AMNI_LOG_LEVEL", "INFO")])
     amni_prompt_logger.setLevel(log_info_dict[os.getenv("AMNI_PROMPT_LOG_LEVEL", "DEBUG")])
     amni_digest_logger.setLevel(log_info_dict[os.getenv("AMNI_DIGEST_LOG_LEVEL", "INFO")])
-    # 设置异步日志logger
+    # Set async logger level
     async_logger.setLevel(log_info_dict[os.getenv("AMNI_ASYNC_LOG_LEVEL", "DEBUG")])
 
     # logger.propagate = False

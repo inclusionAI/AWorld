@@ -14,7 +14,7 @@ from aworld.config import ModelConfig
 from aworld.config.conf import AgentMemoryConfig
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
-# from aworld.memory.db import SQLiteMemoryStore  # 暂时注释掉，避免导入错误
+# from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
 from aworld.memory.main import MemoryFactory
 from .event.base import EventType
 from .retrieval.base import RetrieverFactory
@@ -22,24 +22,24 @@ from .retrieval.graph.base import GraphDBConfig
 
 
 class EventSubscriptionConfig(BaseModel):
-    """事件订阅配置"""
-    event_types: Optional[List[str]] = Field(default_factory=list)  # None 表示订阅所有事件类型
-    exclude_event_types: Optional[List[str]] = Field(default_factory=list)  # 排除的事件类型
-    namespaces: Optional[List[str]] = Field(default_factory=list)  # 订阅的命名空间
-    exclude_namespaces: Optional[List[str]] = Field(default_factory=list)  # 排除的命名空间
+    """Event subscription configuration"""
+    event_types: Optional[List[str]] = Field(default_factory=list)  # None means subscribe to all event types
+    exclude_event_types: Optional[List[str]] = Field(default_factory=list)  # Excluded event types
+    namespaces: Optional[List[str]] = Field(default_factory=list)  # Subscribed namespaces
+    exclude_namespaces: Optional[List[str]] = Field(default_factory=list)  # Excluded namespaces
 
     def should_process_event(self, event_type: str, namespace: str) -> bool:
-        """判断是否应该处理该事件"""
-        # 检查是否在排除列表中
+        """Determine whether this event should be processed"""
+        # Check if in exclude list
         if event_type in self.exclude_event_types:
             return False
-        # 如果配置了命名空间，则进行校验
+        # If namespaces are configured, validate them
         if self.namespaces is not None and len(self.namespaces) > 0 and namespace not in self.namespaces:
             return False
         if namespace in self.exclude_namespaces:
             return False
 
-        # 检查事件类型过滤
+        # Check event type filtering
         if self.event_types is not None and event_type not in self.event_types:
             return False
 
@@ -55,10 +55,10 @@ class AmniContextProcessorConfig(BaseModel):
     pipeline: Optional[str]
     subscription: Optional[EventSubscriptionConfig] = Field(default_factory=EventSubscriptionConfig)
     is_async: Optional[bool] = False
-    priority: Optional[int] = 0 # 数字越小的优先执行
+    priority: Optional[int] = 0 # Lower numbers execute first
 
 class BaseNeuronStrategyConfig(BaseModel):
-    # 继承BaseModel来支持Pydantic序列化
+    # Inherit from BaseModel to support Pydantic serialization
     model_config = {"arbitrary_types_allowed": True}
 
     def __init__(self, **data):
@@ -75,12 +75,12 @@ class BaseNeuronStrategyConfig(BaseModel):
 
 
 class NeuronStrategyConfig(BaseNeuronStrategyConfig):
-    # 提示词配置 init|append -> 仅初始化|生成后追加
+    # Prompt configuration: init|append -> initialize only | append after generation
     prompt_augment_strategy: Optional[str] = Field(default="init")
 
 class HumanNeuronStrategyConfig(NeuronStrategyConfig):
-    mode: str = Field(description="模式, block|wait")
-    wait_time: int = Field(default=10, description="等待时间, 单位: 秒")
+    mode: str = Field(description="Mode: block|wait")
+    wait_time: int = Field(default=10, description="Wait time in seconds")
 
 
 
@@ -151,28 +151,16 @@ class AmniContextConfig(BaseModel):
 
 def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> None:
 
-    ## 1. init memory
+    # 1. Initialize memory
     if init_memory:
         MemoryFactory.init(
             custom_memory_store=SQLiteMemoryStore(db_path=os.getenv("DB_PATH", "./data/amni_context.db")),
             config=build_memory_config()
         )
 
-    ## 2. init retriever
+    # 2. Initialize retriever
     if init_retriever:
         RetrieverFactory.init()
-
-    graph_db_config=GraphDBConfig(
-        provider="pg",
-        config={
-            "uri": os.getenv('GRAPH_STORE_URI'),
-            "username": os.getenv('GRAPH_STORE_USERNAME'),
-            "password": os.getenv('GRAPH_STORE_PASSWORD'),
-            "port": os.getenv("GRAPH_STORE_PORT"),
-            "database": os.getenv("GRAPH_STORE_DATABASE")
-        }
-    ),
-
 
 def build_memory_config():
     from aworld.core.memory import VectorDBConfig
@@ -204,7 +192,7 @@ def get_amnicontext_config() -> AmniContextConfig:
     global DEFAULT_CONFIG
 
     if DEFAULT_CONFIG is None:
-        # 默认配置
+        # Default configuration
         DEFAULT_CONFIG = AmniContextConfig(
             processor_config=[
                 AmniContextProcessorConfig(
@@ -215,7 +203,7 @@ def get_amnicontext_config() -> AmniContextConfig:
                         event_types=[EventType.AGENT_RESULT],
                     )
                 ),
-                # 系统提示词增强
+                # System prompt augmentation
                 AmniContextProcessorConfig(
                     name="augmented_system_prompt_to_memory",
                     type="pipeline_memory_processor",
@@ -224,7 +212,7 @@ def get_amnicontext_config() -> AmniContextConfig:
                         event_types=[EventType.SYSTEM_PROMPT],
                     )
                 ),
-                # 工具结果卸载
+                # Tool result offloading
                 AmniContextProcessorConfig(
                     name="tool_offload_save_memory",
                     type="pipeline_memory_processor",
@@ -241,13 +229,13 @@ def get_amnicontext_config() -> AmniContextConfig:
 
 class AmniConfigLevel(Enum):
 
-    # 基础版本 用户介入可编程的
+    # Basic version - user-programmable with intervention
     PILOT = "Pilot"
 
-    # 进阶版本 基础的自动化
+    # Advanced version - basic automation
     COPILOT = "CoPilot"
 
-    # 高级版本 智能的自动化
+    # Premium version - intelligent automation
     NAVIGATOR = "Navigator"
 
 CONTEXT_OFFLOAD_TOOL_NAME_WHITE = ["arxiv-server:load_article_to_context",

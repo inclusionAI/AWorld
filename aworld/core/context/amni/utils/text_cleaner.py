@@ -211,4 +211,11 @@ def clean_and_format_content(content: str, content_type: str = "web") -> str:
             
     except Exception as e:
         logger.warning(f"Error cleaning content of type {content_type}: {e}")
-        return content.strip() if content else "" 
+        return content.strip() if content else ""
+
+def truncate_content(raw_content, char_limit):
+    if raw_content is None:
+        raw_content = ''
+    if len(raw_content) > char_limit:
+        raw_content = raw_content[:char_limit] + "... [truncated]"
+    return raw_content

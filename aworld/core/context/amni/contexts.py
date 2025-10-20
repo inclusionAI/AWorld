@@ -56,7 +56,7 @@ class ContextManager(BaseModel):
             return []
         session_id = similar_conversation[0].session_id
 
-        #2. 根据session_id获取历史对话
+        # 2. Get historical conversation by session_id
         session_messages = self._memory.get_all(filters={
             "user_id": task_input.user_id,
             "agent_id": task_input.agent_id,
@@ -103,10 +103,10 @@ class ContextManager(BaseModel):
         Returns:
             None
         """
-        # 1. save conversations to memory
+        # 1. Save conversations to memory
         save_memory_task = self._save_conversations_to_memory(context)
 
-        # 2. save checkpoint
+        # 2. Save checkpoint
         save_checkpoint_task = self._save_context_checkpoint_async(context, **kwargs)
 
         # 3. Execute all three tasks concurrently
@@ -123,7 +123,7 @@ class ContextManager(BaseModel):
         metadata = self._build_memory_message_metadata(context.task_input_object)
 
         await self._memory.add(MemoryHumanMessage(content=context.task_input_object.task_content, metadata=metadata))
-        # TODO 优化 只保存核心的内容
+        # TODO: Optimize - only save core content
         await self._memory.add(MemoryAIMessage(content=await TaskFormatter.format_task_history(context) if not context.task_output else context.task_output, metadata=metadata))
         logger.info(f"[ContextManager] add task result to memory, session {context.session_id}, task {context.task_id}")
 

@@ -123,7 +123,7 @@ class PromptLogger:
                                   Format: [{'role': 'user', 'content': 'Hello'}, ...]
         """
         # 记录函数开始时间
-        start_time = time.time()
+        start_time = context.start_time
 
         logger = logging.getLogger("amnicontext_prompt")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

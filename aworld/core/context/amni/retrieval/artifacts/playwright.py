@@ -2,6 +2,7 @@ import json
 
 from pydantic import BaseModel
 
+from aworld.core.context.amni.utils.text_cleaner import truncate_content
 from aworld.logs.util import logger
 from aworld.output import Artifact, ArtifactType
 
@@ -64,7 +65,7 @@ class ClickableElement(BaseModel):
     parent_ref: Optional[str]  # Parent element reference
 
     def format_text(self):
-        return f"  <element ref='{self.ref}' element_type='{self.element_type}' url='{self.url}'>{self.text}<element>"
+        return f"  <element ref='{self.ref}' element_type='{self.element_type}' url='{truncate_content(self.url, 500)}'>{self.text}<element>"
 
 
 class TableElement(BaseModel):
@@ -630,8 +631,8 @@ class PlaywrightSnapshotArtifact(Artifact):
                 f"<url>{self.page_url}</url>\n"
                 f"{f'<execution_result>{result_context}</execution_result>' if result_context else ''}"
                 f"{f'<open_tabs>{tabs_context}</open_tabs>' if tabs_context else ''}"
-                f"{f'<downloads>{downloads_context}</downloads>' if downloads_context else ''}"
-                f"<table_elements description='available tables - use browser tools to extract detailed content if needed'>\n"
+                f"\n{f'<downloads>{downloads_context}</downloads>' if downloads_context else ''}"
+                f"\n<table_elements description='available tables - use browser tools to extract detailed content if needed'>\n"
                 f"{table_elements_context}"
                 f"\n</table_elements>\n"
                 f"<click_elements description='if you use browser_click tool, please search in click_elements'>\n"

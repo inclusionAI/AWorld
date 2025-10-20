@@ -17,6 +17,7 @@ from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
 from aworld.output.artifact import ArtifactAttachment
+from examples.multi_agents.collaborative.debate.agent.debate_agent import truncate_content
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .logger import logger, amni_prompt_logger
 from .contexts import ContextManager
@@ -419,12 +420,12 @@ class ApplicationContext(AmniContext):
                 if checkpoint:
                     logger.info(
                         f"[CONTEXT RESTORE]Restore context from checkpoint: {task_input.session_id} {await get_context_manager().aget_checkpoint(task_input.session_id)}")
-                    # 引用上一轮未完成任务的context，可以取到历史的上下文
+                    # Reference context from previous unfinished task to get historical context
                     context: "ApplicationContext" = await get_context_manager().build_context_from_checkpoint(task_input.session_id)
-                    # 将上一轮的输入作为单独的字段
+                    # Store previous round's input as a separate field
                     context.put("origin_task_input", context.task_input)
                     context.put("origin_task_output", context.task_output)
-                    # 更新这一轮的输入
+                    # Update with current round's input
                     context.task_state.set_task_input(task_input)
                     context.task_state.set_task_output(TaskOutput())
                     history_messages = await get_context_manager().get_task_histories(task_input)
@@ -437,7 +438,7 @@ class ApplicationContext(AmniContext):
 
                     context._workspace = workspace
 
-                    # clear checkpoint, avoid duplicate restore context when creating sub-task
+                    # Clear checkpoint to avoid duplicate context restoration when creating sub-task
                     get_context_manager().delete_checkpoint(task_input.session_id)
                     return context
                 else:
@@ -447,7 +448,7 @@ class ApplicationContext(AmniContext):
             else:
                 task_state = await cls._build_new_task_state(task_input)
                 context = ApplicationContext(task_state, workspace = workspace, context_config = context_config)
-                # 将当前轮的输入作为单独的字段
+                # Store current round's input as a separate field
                 context.put("origin_task_input", context.task_input)
                 context.put("origin_task_output", context.task_output)
                 return context
@@ -524,8 +525,8 @@ class ApplicationContext(AmniContext):
             workspace = self.workspace
 
         sub_context = ApplicationContext(task_state, workspace, parent=self)
-        # 启动子上下文的事件总线（全局事件总线已启动，这里不需要重复启动）
-        # upsert sub task to task state
+        # Initialize sub-context event bus (global event bus already started, no need to restart here)
+        # Upsert sub task to task state
         self.task_state.working_state.upsert_subtask_by_input(sub_task_input)
 
         if agents:
@@ -564,7 +565,7 @@ class ApplicationContext(AmniContext):
         """
         for agent in agents:
             if isinstance(agent, list):
-                # 遍历 tuple 中的每个 agent
+                # Iterate through each agent in the tuple
                 for single_agent in agent:
                     await self.build_agent_state(single_agent)
             else:
@@ -622,7 +623,7 @@ class ApplicationContext(AmniContext):
 
         # merge sub task status & result
         sub_task_id = sub_task_context.task_state.task_input.task_id
-        # 遍历sub_task_list，找到sub_task_id一致的
+        # Iterate through sub_task_list to find matching sub_task_id
         for sub_task in self.task_state.working_state.sub_task_list:
             if sub_task.task_id == sub_task_id:
                 sub_task.status = sub_task_context.task_status
@@ -785,44 +786,44 @@ class ApplicationContext(AmniContext):
         Returns:
             str: A formatted tree string showing the context hierarchy with subtasks
         """
-        # 1. 收集整个上下文层次结构
+        # 1. Collect entire context hierarchy
         context_path = []
         current = self
         while current is not None:
             context_path.append(current)
             current = getattr(current, '_parent', None)
         
-        # 反转列表，使根上下文在前
+        # Reverse list so root context is first
         context_path.reverse()
         
-        # 2. 获取当前任务ID
+        # 2. Get current task ID
         current_task_id = getattr(self, 'task_id', None)
         
-        # 3. 创建一个集合来跟踪已处理的任务ID
+        # 3. Create a set to track processed task IDs
         processed_task_ids = set()
         
-        # 4. 添加全局标记确保当前任务只显示一次
+        # 4. Add global flag to ensure current task is only displayed once
         current_task_marked = False
         
-        # 5. 创建结果列表
+        # 5. Create result list
         tree_lines = []
         
-        # 6. 递归构建树
+        # 6. Recursively build tree
         def build_tree(context, level, prefix):
             nonlocal current_task_marked
             
-            # 获取上下文标识符
+            # Get context identifier
             context_id = getattr(context, 'task_id', None) or getattr(context, 'session_id', 'unknown')
             task_content = getattr(context, 'task_input', '')
             
-            # 构建描述
+            # Build description
             swarm_desc = ':'.join([agent.name() for agent in context.swarm.topology])
             context_desc = f"[T]{context_id}: [R]{task_content} : [O]{context.task_input_object.origin_user_input}" if task_content else str(context_id)
             
-            # 检查是否为当前上下文且尚未标记当前任务
+            # Check if current context and not yet marked
             is_current = context is self and not current_task_marked
             
-            # 添加当前上下文行，只有当上下文ID未处理过时才添加
+            # Add current context line, only if context ID hasn't been processed
             if context_id not in processed_task_ids:
                 if is_current:
                     tree_lines.append(f"{prefix}📍 {context_desc} (current)")
@@ -830,76 +831,76 @@ class ApplicationContext(AmniContext):
                 else:
                     tree_lines.append(f"{prefix}├─ {context_desc}")
                 
-                # 标记为已处理
+                # Mark as processed
                 processed_task_ids.add(context_id)
             
-            # 获取子任务列表
+            # Get sub-task list
             sub_tasks = []
             if hasattr(context, 'task_state') and context.task_state:
                 if hasattr(context.task_state.working_state, 'sub_task_list') and context.task_state.working_state.sub_task_list:
                     sub_tasks = context.task_state.working_state.sub_task_list
             
-            # 检查是否有下一级上下文
+            # Check if there is a next level context
             next_context_index = level + 1
             next_context = context_path[next_context_index] if next_context_index < len(context_path) else None
             next_context_id = getattr(next_context, 'task_id', None) if next_context else None
             
-            # 计算子任务的缩进
+            # Calculate sub-task indentation
             child_prefix = prefix + "│   "
             
-            # 按原始顺序处理子任务
+            # Process sub-tasks in original order
             valid_sub_tasks = []
             next_context_sub_task_index = -1
             
-            # 收集有效的子任务（未处理过的）
+            # Collect valid sub-tasks (not yet processed)
             for i, sub_task in enumerate(sub_tasks):
                 sub_task_id = getattr(sub_task, 'task_id', None)
                 if sub_task_id and sub_task_id not in processed_task_ids:
                     valid_sub_tasks.append((i, sub_task))
-                    # 检查是否为下一级上下文
+                    # Check if it's the next level context
                     if sub_task_id == next_context_id:
                         next_context_sub_task_index = len(valid_sub_tasks) - 1
             
-            # 处理有效子任务
+            # Process valid sub-tasks
             for i, (original_index, sub_task) in enumerate(valid_sub_tasks):
                 sub_task_id = getattr(sub_task, 'task_id', None)
                 
-                # 获取子任务内容
+                # Get sub-task content
                 subtask_content = ""
                 if hasattr(sub_task, 'input') and sub_task.input:
                     subtask_content = getattr(sub_task.input, 'task_content', str(sub_task.input))
                 else:
                     subtask_content = str(sub_task)
                 
-                # 确定是否为最后一个子任务
+                # Determine if it's the last sub-task
                 is_last = i == len(valid_sub_tasks) - 1
                 
-                # 选择适当的连接符
+                # Choose appropriate connector
                 connector = "└─" if is_last else "├─"
                 
-                # 是否为包含下一级上下文的子任务
+                # Check if it contains the next level context
                 is_next_context_task = i == next_context_sub_task_index and next_context
                 
-                # 添加子任务行
+                # Add sub-task line
                 if sub_task_id == current_task_id and not current_task_marked:
                     tree_lines.append(f"{child_prefix}{connector} 📍{swarm_desc} {sub_task_id}: {subtask_content} (current)")
                     current_task_marked = True
                 else:
                     tree_lines.append(f"{child_prefix}{connector} {swarm_desc} {sub_task_id}: {subtask_content}")
                 
-                # 标记为已处理
+                # Mark as processed
                 processed_task_ids.add(sub_task_id)
                 
-                # 如果是包含下一级上下文的子任务，递归处理下一级上下文
+                # If it's a sub-task containing the next level context, recursively process the next level
                 if is_next_context_task:
                     next_child_prefix = child_prefix + ("    " if is_last else "│   ")
                     build_tree(next_context, level + 1, next_child_prefix)
         
-        # 从根上下文开始构建树
+        # Start building tree from root context
         if context_path:
             build_tree(context_path[0], 0, "")
         
-        # 添加树标题
+        # Add tree header
         tree_header = "Context Tree (from root to current):\n"
         
         return tree_header + "\n".join(tree_lines)
@@ -1005,38 +1006,38 @@ class ApplicationContext(AmniContext):
     def get_from_context_hierarchy(self, key: str,
                                    context: "ApplicationContext",
                                    recursive: bool = True) -> Optional[str]:
-        # 情况1: current.xxx - 取当前context
+        # Case 1: current.xxx - get from current context
         if key.startswith("current."):
-            actual_field = key[8:]  # 移除 "current." 前缀
+            actual_field = key[8:]  # Remove "current." prefix
             return self.get_logical_schema_field(actual_field, context)
-        # 情况2-4: parent.xxx, root.xxx, parent.parent.xxx 等 - 使用递归解析路径
+        # Case 2-4: parent.xxx, root.xxx, parent.parent.xxx etc. - use recursive path parsing
         elif key.startswith(("parent.", "root.")):
-            # 分割路径
+            # Split path
             parts = key.split('.')
             current_obj = context
-            # 遍历路径的每一部分
+            # Traverse each part of the path
             for part in parts[:-1]:
                 if not hasattr(current_obj, part):
                     return None
                 current_obj = getattr(current_obj, part)
                 if current_obj is None:
                     return None
-            # 如果最终对象是 ApplicationContext，则从其中获取字段值
+            # If final object is ApplicationContext, get field value from it
             if hasattr(current_obj, 'task_state'):
-                # 这里需要从路径的最后一部分获取实际的字段名
-                # 例如：parent.parent.data -> 我们需要获取 data 字段
+                # Get actual field name from the last part of the path
+                # E.g. parent.parent.data -> we need to get data field
                 actual_field = parts[-1] if len(parts) > 1 else key
                 return ApplicationContext.get_logical_schema_field(key=actual_field, context=current_obj)
-        # 情况5: xxx - 取当前context及所有parent，遍历调用get_from_task_state，直到取到值为止
+        # Case 5: xxx - get from current context and all parents, iterate until value is found
         else:
-            # 首先尝试当前context
+            # First try current context
             value = self.get_from_task_state(key, context.task_state)
             if value is not None and value != DEFAULT_VALUE:
                 return value
-            # 是否递归查询parent task context
+            # Whether to recursively query parent task context
             if not recursive:
                 return None
-            # 然后递归遍历所有parent
+            # Then recursively traverse all parents
             current_parent = getattr(context, 'parent', None)
             while current_parent:
                 value = ApplicationContext.get_logical_schema_field(key=key, context=current_parent, recursive=False)
@@ -1168,18 +1169,18 @@ class ApplicationContext(AmniContext):
             chunk_count_desc = f"Total is {total_chunk} chunks"
             knowledge_context += f"<chunks description='{chunk_count_desc}'>\n"
 
-            # load chunk index
+            # Load chunk index
             if load_chunk_indicis:
                 pass
 
-            # load head and tail chunks
+            # Load head and tail chunks
             if load_chunk_content_size:
                 def _format_chunk_content(_chunk: Chunk) -> str:
                     return (
                         f"  <knowledge_chunk>\n"
                         f"    <chunk_id>{_chunk.chunk_id}</chunk_id>\n"
                         f"    <chunk_index>{_chunk.chunk_metadata.chunk_index}</chunk_index>\n"
-                        f"    <chunk_content>{_chunk.content}</chunk_content>\n"
+                        f"    <chunk_content>{truncate_content(_chunk.content, 300)}</chunk_content>\n"
                         f"  </knowledge_chunk>\n"
                     )
 
@@ -1187,14 +1188,14 @@ class ApplicationContext(AmniContext):
                     knowledge.artifact_id,
                     load_chunk_content_size
                 )
-                # add head chunks
+                # Add head chunks
                 if head_chunks:
                     knowledge_chunk_context += f"\n<head_chunks start='{head_chunks[0].chunk_id}' end='{head_chunks[len(head_chunks)-1].chunk_id}'>\n"
                     for chunk in head_chunks:
                         knowledge_chunk_context += _format_chunk_content(chunk)
                     knowledge_chunk_context += f"\n</head_chunks>\n"
 
-                # add tail chunks
+                # Add tail chunks
                 if tail_chunks:
                     knowledge_chunk_context += f"<tail_chunks  start='{tail_chunks[0].chunk_id}' end='{tail_chunks[len(tail_chunks)-1].chunk_id}'>\n"
                     for chunk in tail_chunks:
@@ -1216,7 +1217,7 @@ class ApplicationContext(AmniContext):
         if not search_filter:
             search_filter = {}
 
-        ## 1. get knowledge_chunk_index with biz_id
+        # 1. Get knowledge_chunk_index with biz_id
         knowledge_index_context = ""
         knowledge_chunk_context = ""
         if search_by_index:
@@ -1239,26 +1240,26 @@ class ApplicationContext(AmniContext):
             logger.info(f"📊 artifacts_indicis loaded successfully in {time.time() - start_time:.3f} seconds")
 
             if artifacts_indicis:
-                # 📈 1. get artifact statistics info
+                # 📈 1. Get artifact statistics info
                 artifact_stats = await self._get_artifact_statistics(artifacts_indicis)
                 if artifact_stats:
                     knowledge_index_context += artifact_stats
 
-                # 🔍 2. process load_index logic - each artifact read the index from topk to 2*topk
+                # 🔍 2. Process load_index logic - each artifact read the index from topk to 2*topk
                 if load_index:
                     knowledge_index_context += await self._load_artifact_index_context(
                         artifact_chunk_indicis=artifacts_indicis,
                         top_k=top_k
                     )
 
-                # 📄 3. process load_content logic - each artifact keep head-topk and tail-topk chunks
+                # 📄 3. Process load_content logic - each artifact keep head-topk and tail-topk chunks
                 if load_content:
                     knowledge_chunk_context += await self._load_artifact_content_context(
                         chunk_indicis=artifacts_indicis,
                         top_k=top_k
                     )
 
-        ## 3. format context
+        # 3. Format context
         knowledge_context = AMNI_CONTEXT_PROMPT["KNOWLEDGE_PART"].format(
             knowledge_index=knowledge_index_context,
             knowledge_chunks=knowledge_chunk_context
@@ -1310,8 +1311,7 @@ class ApplicationContext(AmniContext):
             logger.debug(f"🧠 Start adding knowledge in batch, total {len(knowledge_list)} items")
             start_time = time.time()
 
-            # for knowledge in knowledge_list:
-            #     await self.add_knowledge(knowledge, namespace, build_index)
+            # Batch process all knowledge items concurrently
             await asyncio.gather(*(self.add_knowledge(knowledge, namespace, build_index) for knowledge in knowledge_list))
             elapsed = time.time() - start_time
             logger.info(f"✅ Batch add {len(knowledge_list)} knowledge addition completed, elapsed time: {elapsed:.3f} seconds")
@@ -1338,22 +1338,23 @@ class ApplicationContext(AmniContext):
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
                        knowledge_id: Optional[str] = None, namespace: str = "default"):
-        # save metadata
+        # Save metadata
         file = ArtifactAttachment(filename=filename, mime_type=mime_type, content=content)
         dir_artifact: DirArtifact = await self.load_working_dir(knowledge_id)
-        # 持久化保存到目录内的新文件
+        # Persist the new file to the directory
         dir_artifact.add_file(file)
-        # 刷新目录索引
+        # Refresh directory index
         await self.add_knowledge(dir_artifact, namespace, index=False)
 
     async def init_working_dir(self, knowledge_id: Optional[str] = None) -> DirArtifact:
         if knowledge_id:
-            # reset current context working dir
+            # Reset current context working dir
             self._working_dir = await self.get_knowledge_by_id(knowledge_id)
             return self._working_dir
         if self._working_dir:
             return self._working_dir
-        # init by env, 因为mcp container没有本地环境，本地mcp tool实现也不全，所以本地测试时使用with_local_repository会导致文件找不到
+        # Initialize by env. Using with_local_repository for local testing may cause file not found issues
+        # because MCP container has no local environment and local MCP tool implementation is incomplete
 
         self._working_dir = DirArtifact.with_local_repository(base_path=str(self._workspace.repository.storage_path) + "/tempfiles")
         # else:
@@ -1381,7 +1382,7 @@ class ApplicationContext(AmniContext):
 
 
     def add_history_message(self, memory_message: MemoryMessage, namespace: str = "default") -> None:
-        ## hook call processor such as tool_node_with_pruning
+        # Hook call processor such as tool_node_with_pruning
         self._get_working_state(namespace).history_messages.append(memory_message)
 
 
@@ -1454,8 +1455,8 @@ class ApplicationContext(AmniContext):
         logger.info(f"get_actions_info: {len(artifacts)}")
         actions_info = (
             "\nBelow is the actions information, including both successful and failed experiences, "
-            "as well as key knowledge and insights obtained during the process ，"
-            "\n充分使用这些信息:\n"
+            "as well as key knowledge and insights obtained during the process. "
+            "\nMake full use of this information:\n"
             "<knowledge_list>"
         )
         for artifact in artifacts:
@@ -1541,7 +1542,7 @@ class ApplicationContext(AmniContext):
         if hasattr(other_context, 'task_state') and other_context.task_state:
             try:
                 for key, value in other_context.task_state.items():
-                    # If key already exists, add suffix to avoid overwriting
+                    # If key already exists, the value will be overwritten
                     self.task_state[key] = value
             except Exception as e:
                 logger.warning(f"Failed to merge task_state: {e}")
@@ -1549,7 +1550,7 @@ class ApplicationContext(AmniContext):
     def to_dict(self) -> dict:
         result = {}
 
-        # 序列化task_state - 使用安全的序列化函数
+        # Serialize task_state using safe serialization function
         if self.task_state:
             try:
                 result["task_state"] = self.task_state.model_dump()
@@ -1559,7 +1560,7 @@ class ApplicationContext(AmniContext):
         else:
             result["task_state"] = None
 
-        # 序列化workspace信息
+        # Serialize workspace information
         if self._workspace:
             try:
                 result["workspace_info"] = {
@@ -1578,42 +1579,42 @@ class ApplicationContext(AmniContext):
     @classmethod
     def from_dict(cls, data: dict) -> 'ApplicationContext':
         try:
-            # 反序列化task_state
+            # Deserialize task_state
             task_state = None
             if "task_state" in data and data["task_state"]:
                 task_state_data = data["task_state"]
                 try:
-                    # 使用Pydantic的model_validate方法（v2）或parse_obj方法（v1）
+                    # Use Pydantic's model_validate method (v2) or parse_obj method (v1)
                     if hasattr(ApplicationTaskContextState, 'model_validate'):
                         task_state = ApplicationTaskContextState.model_validate(task_state_data, strict=False)
                     else:
-                        # 手动构建task_state
+                        # Manually build task_state
                         task_state = ApplicationTaskContextState(**task_state_data)
                 except Exception as e:
                     logger.warning(f"Failed to deserialize task_state: {e} {traceback.format_exc()}")
-                    # 创建一个基本的task_state
+                    # Create a basic task_state
                     raise e
 
-            # 处理workspace - 这里只能保存基本信息，实际workspace需要重新创建
+            # Handle workspace - only basic info can be saved here, actual workspace needs to be recreated
             workspace = None
             if "workspace_info" in data and data["workspace_info"]:
                 workspace_info = data["workspace_info"]
                 if isinstance(workspace_info, dict) and "error" not in workspace_info:
-                    # 注意：这里只能保存workspace的基本信息，实际workspace对象需要根据具体情况重新创建
+                    # Note: Only basic workspace info can be saved here, actual workspace object needs to be recreated based on specific situation
                     logger.info(f"Workspace info preserved: {workspace_info}")
-                    # workspace = WorkSpace.from_local_storages(...) # 需要根据具体情况实现
+                    # workspace = WorkSpace.from_local_storages(...) # Need to implement based on specific situation
 
             return cls(task_state=task_state, workspace=workspace)
 
         except Exception as e:
             logger.error(f"Failed to deserialize ApplicationContext: {e}")
-            # 返回一个基本的ApplicationContext
+            # Return a basic ApplicationContext
             return cls(task_state=ApplicationTaskContextState())
 
     async def _get_artifact_statistics(self, chunk_indicis: list) -> str:
         if not chunk_indicis:
             return ""
-        # generate statistics info
+        # Generate statistics info
         artifact_count_info = ", ".join(
             [f"{item.artifact_id}: {item.chunk_count} chunks " for item in chunk_indicis[:100]]
         )
@@ -1629,7 +1630,7 @@ class ApplicationContext(AmniContext):
         if not artifact_chunk_indicis:
             return ""
 
-        # 按artifact_id分组
+        # Group by artifact_id
         artifact_chunks = {}
         for chunk_item in artifact_chunk_indicis:
             if hasattr(chunk_item, "artifact_id"):
@@ -1638,7 +1639,7 @@ class ApplicationContext(AmniContext):
                     artifact_chunks[artifact_id] = []
                 artifact_chunks[artifact_id].append(chunk_item)
 
-        # 🚀 为每个artifact获取中间范围的索引，使用高效的范围查询
+        # 🚀 Get middle range indices for each artifact using efficient range queries
         tasks = []
         for artifact_id in artifact_chunks.keys():
             task = self._workspace.get_artifact_chunk_indices_middle_range(artifact_id, top_k)
@@ -1648,7 +1649,7 @@ class ApplicationContext(AmniContext):
             middle_range_indices = await asyncio.gather(*tasks)
             for artifact_id, indices in zip(artifact_chunks.keys(), middle_range_indices):
                 if indices:
-                    knowledge_index_context += f"\n📄 Artifact {artifact_id} (第{top_k}到{2*top_k}个chunk): index :\n"
+                    knowledge_index_context += f"\n📄 Artifact {artifact_id} (chunks {top_k} to {2*top_k}): index :\n"
                     for item in indices:
                         knowledge_index_context += f"{item.model_dump()}\n"
 
@@ -1660,7 +1661,7 @@ class ApplicationContext(AmniContext):
 
         knowledge_chunk_context = ""
 
-        # group by artifact_id
+        # Group by artifact_id
         artifact_chunks = {}
         for chunk_item in chunk_indicis:
             if hasattr(chunk_item, "artifact_id"):
@@ -1669,7 +1670,7 @@ class ApplicationContext(AmniContext):
                     artifact_chunks[artifact_id] = []
                 artifact_chunks[artifact_id].append(chunk_item)
 
-        # 🚀 for each artifact get head and tail chunks using efficient range queries
+        # 🚀 Get head and tail chunks for each artifact using efficient range queries
         tasks = []
         for artifact_id in artifact_chunks.keys():
             task = self._workspace.get_artifact_chunks_head_and_tail(artifact_id, top_k)
@@ -1679,17 +1680,17 @@ class ApplicationContext(AmniContext):
             head_tail_chunks = await asyncio.gather(*tasks)
             for artifact_id, (head_chunks, tail_chunks) in zip(artifact_chunks.keys(), head_tail_chunks):
                 if head_chunks or tail_chunks:
-                    knowledge_chunk_context += f"\n📄 Artifact {artifact_id} 内容:\n"
+                    knowledge_chunk_context += f"\n📄 Artifact {artifact_id} content:\n"
 
-                    # add head chunks
+                    # Add head chunks
                     if head_chunks:
-                        knowledge_chunk_context += f"🔝 head chunks ({len(head_chunks)}个):\n"
+                        knowledge_chunk_context += f"🔝 head chunks ({len(head_chunks)} chunks):\n"
                         for chunk in head_chunks:
                             knowledge_chunk_context += self._format_chunk_content(chunk)
 
-                    # add tail chunks
+                    # Add tail chunks
                     if tail_chunks:
-                        knowledge_chunk_context += f"🔚 tail chunks ({len(tail_chunks)}个):\n"
+                        knowledge_chunk_context += f"🔚 tail chunks ({len(tail_chunks)} chunks):\n"
                         for chunk in tail_chunks:
                             knowledge_chunk_context += self._format_chunk_content(chunk)
 
