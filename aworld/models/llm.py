@@ -44,7 +44,7 @@ class LLMModel:
     """Unified large model interface, encapsulates different model implementations, provides a unified completion method.
     """
 
-    def __init__(self, conf: Union[ConfigDict, AgentConfig, ModelConfig] = None, custom_provider: LLMProviderBase = None, **kwargs):
+    def __init__(self, conf: Union[ConfigDict, ModelConfig] = None, custom_provider: LLMProviderBase = None, **kwargs):
         """Initialize unified model interface.
 
         Args:
@@ -65,7 +65,6 @@ class LLMModel:
             self.provider_name = "custom"
             self.provider = custom_provider
             return
-        conf = conf.llm_config if type(conf).__name__ == 'AgentConfig' else conf
         # Get basic parameters
         base_url = kwargs.get("base_url") or (
             conf.llm_base_url if conf else None)
@@ -166,7 +165,7 @@ class LLMModel:
                     break
 
         if provider and provider in PROVIDER_CLASSES and identified_provider and identified_provider != provider:
-            logger.warning(
+            logger.debug(
                 f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider")
             identified_provider = provider
 
@@ -406,13 +405,13 @@ def conf_contains_key(conf: Union[ConfigDict, AgentConfig, ModelConfig], key: st
     """
     if not conf:
         return False
-    if type(conf).__name__ == 'AgentConfig' or type(conf).__name__ == 'ModelConfig':
+    if type(conf).__name__ == 'ModelConfig':
         return hasattr(conf, key)
     else:
         return key in conf
 
 
-def get_llm_model(conf: Union[ConfigDict, AgentConfig] = None,
+def get_llm_model(conf: Union[ConfigDict, ModelConfig] = None,
                   custom_provider: LLMProviderBase = None,
                   **kwargs) -> Union[LLMModel, 'ChatOpenAI']:
     """Get a unified LLM model instance.
