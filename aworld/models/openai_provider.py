@@ -448,6 +448,9 @@ class OpenAIProvider(LLMProviderBase):
         for param in supported_params:
             if param in llm_params and llm_params[param] is not None:
                 openai_params[param] = llm_params[param]
+        if ("llm_request_params" in llm_params and llm_params["llm_request_params"] is not None
+                and isinstance(llm_params["llm_request_params"], dict)):
+            openai_params.update(llm_params["llm_request_params"])
         return openai_params
 
     def speech_to_text(self,
