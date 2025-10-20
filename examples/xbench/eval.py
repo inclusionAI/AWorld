@@ -9,7 +9,7 @@ from typing import Iterator
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
 from aworld.core.context.amni.worksapces import workspace_repo
-from aworld.dataset.sampler import RangeSampler, Sampler
+from aworld.dataset.sampler import RangeSampler, Sampler, FixedSampler
 from aworld.runners.evaluate_runner import EvaluateRunner
 from examples.xbench.agents.swarm import build_xbench_swarm
 from dotenv import load_dotenv
@@ -75,7 +75,7 @@ class AmniContextEvaluatable(EvalTarget):
                 stream=False,
                 exit_on_failure=True
             ),
-            timeout=1800
+            timeout=60 * 60
         )
 
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
@@ -106,35 +106,13 @@ class AmniContextEvaluatable(EvalTarget):
             return {"answer": str(err)}
 
 
-class FixedSampler(Sampler):
-    """Samples elements from a specified range of indices.
-
-    Supports deferred dataset length injection via `set_length`.
-    """
-
-    def __init__(
-            self,
-            ids: list[int]
-    ) -> None:
-        self.ids = ids
-
-    def set_length(self, length: int) -> None:
-        super().set_length(len(self.ids))
-
-    def __iter__(self) -> Iterator[int]:
-        return iter([_ - 1 for _ in self.ids])
-
-    def __len__(self) -> int:
-        return len(self.ids)
-
-
-async def evaluate_answer_accuracy():
+async def evaluate():
     load_dotenv()
-    current_dir = os.path.dirname(os.path.abspath(__file__))
     init_middlewares()
-
     eval_target = AmniContextEvaluatable()
     task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    # ============= RUN EVALUATION =============
     result: EvalResult = await EvaluateRunner(
         task=EvalTask(task_id=task_id),
         config=EvaluationConfig(
@@ -145,14 +123,16 @@ async def evaluate_answer_accuracy():
                     "threshold": 0.5,
                 }
             ],
-            eval_dataset_id_or_file_path=os.path.join(current_dir, 'benchmark', 'xbench_deepsearch.csv'),
-            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[109])),
+            eval_dataset_id_or_file_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'benchmark', 'DeepSearch_decrypted.csv'),
+            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[1])),
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=1,
+            parallel_num=3,
             skip_passed_cases=True,
         )).run()
+
+    # ============= SAVE RESULT TO FILE =============
     result_file_path = f"results/{task_id}/"
     if not os.path.exists(result_file_path):
         os.mkdir(result_file_path)
@@ -173,7 +153,5 @@ async def evaluate_answer_accuracy():
             f.write(f"{case_result.eval_case_id}|{case_result.input.case_data.get('id')}|{answer_acc.get('eval_status')}|{int(cost_time.get('value')/1000)}\n")
 
 
-
-
 if __name__ == '__main__':
-    asyncio.run(evaluate_answer_accuracy())
+    asyncio.run(evaluate())
