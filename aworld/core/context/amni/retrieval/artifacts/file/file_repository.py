@@ -3,10 +3,17 @@ import os
 from abc import abstractmethod
 from typing import Optional, Dict, Any, List
 
-import oss2
 from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
+
+# Try to import oss2 as optional dependency
+try:
+    import oss2
+    OSS2_AVAILABLE = True
+except ImportError:
+    OSS2_AVAILABLE = False
+    oss2 = None
 
 
 class FileRepository(BaseModel):
@@ -156,6 +163,9 @@ class OssFileRepository(FileRepository):
             enable_export: Whether to enable export functionality
         """
         super().__init__()
+        if not OSS2_AVAILABLE:
+            logger.warning("⚠️ oss2 library is not installed. OssFileRepository will not be functional. "
+                         "Install it with: pip install oss2")
         self._initialize_oss_client(
             access_key_id=access_key_id,
             access_key_secret=access_key_secret,
@@ -171,6 +181,10 @@ class OssFileRepository(FileRepository):
                               bucket_name: Optional[str] = None,
                               enable_export: bool = True):
         """Initialize OSS client using provided parameters or environment variables."""
+        if not OSS2_AVAILABLE:
+            self.bucket = None
+            return
+            
         try:
             # Use provided parameters or fall back to environment variables
             final_access_key_id = access_key_id or os.getenv('DIR_ARTIFACT_OSS_ACCESS_KEY_ID')
@@ -233,6 +247,10 @@ class OssFileRepository(FileRepository):
     
     def list_files(self, prefix: str = "") -> List[Dict[str, Any]]:
         """List files in OSS with optional prefix filter."""
+        if not OSS2_AVAILABLE:
+            logger.error("❌ oss2 library is not installed")
+            return []
+            
         if not self.bucket:
             logger.error("❌ OSS client not initialized")
             return []
