@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 from PIL import Image
 from pydantic import Field
 from aworld.logs.util import logger
-from base import get_file_from_source
+from .base import get_file_from_source
 from mcp.server.fastmcp import FastMCP
 from openai import OpenAI
 
