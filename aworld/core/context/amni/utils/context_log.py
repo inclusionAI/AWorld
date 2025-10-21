@@ -233,7 +233,7 @@ class PromptLogger:
             
             # Prepare text data for the right side of the grid
             text_data = [
-                "",  # 空行
+                "",
                 f"📊 CONTEXT USAGE {agent.id()}",
                 f"{model_name} -> {total_context_length_k:.1f}k/{context_window_limit/1024}k tokens ({total_percentage:.1f}%)",
                 f"",
@@ -459,11 +459,7 @@ class PromptLogger:
                         indent_level = 2
                         indent_str = "  " * indent_level
                         formatted_line = f"{indent_str}├─ 🎯 {line_content.split('🎯', 1)[1].strip()}"
-                
-                # Ensure line length doesn't exceed border width, maintain border alignment
-                # if len(formatted_line) > BORDER_WIDTH:
-                #     formatted_line = formatted_line[:BORDER_WIDTH-3] + "..."
-                #
+
                 # Calculate right padding to maintain border alignment
                 padding = BORDER_WIDTH - len(formatted_line)
                 if padding > 0:
@@ -641,25 +637,7 @@ class PromptLogger:
                             
                             amni_prompt_logger.info(f"  🔧 Tool #{j}: {function_name}")
                             amni_prompt_logger.info(f"  🆔 ID: {tool_id}")
-                            
-                            # # Format argument display, limit length and maintain border alignment
-                            # if isinstance(args, str):
-                            #     # 如果是字符串，确保Unicode转义序列被正确解码
-                            #     try:
-                            #         # 处理可能的Unicode转义序列
-                            #         args_str = args.encode('utf-8').decode('unicode_escape')
-                            #     except (UnicodeDecodeError, UnicodeError):
-                            #         # 如果已经是正确编码的字符串，直接使用
-                            #         args_str = str(args)
-                            # else:
-                            #     # 对于非字符串类型，先转换为字符串再处理Unicode
-                            #     args_str = str(args)
-                            #     try:
-                            #         # 尝试解码可能存在的Unicode转义序列
-                            #         args_str = args_str.encode('utf-8').decode('unicode_escape')
-                            #     except (UnicodeDecodeError, UnicodeError):
-                            #         # 如果已经是正确编码的字符串，保持不变
-                            #         pass
+
                             args_str = str(args)
                             padded_args = args_str.ljust(BORDER_WIDTH - 8)
                             amni_prompt_logger.info(f"  📋 Args: {padded_args}")
@@ -672,25 +650,7 @@ class PromptLogger:
                             
                             amni_prompt_logger.info(f"  🔧 Tool #{j}: {function_name}")
                             amni_prompt_logger.info(f"  🆔 ID: {tool_id}")
-                            
-                            # # Format argument display, limit length and maintain border alignment
-                            # if isinstance(args, str):
-                            #     # 如果是字符串，确保Unicode转义序列被正确解码
-                            #     try:
-                            #         # 处理可能的Unicode转义序列
-                            #         args_str = args.encode('utf-8').decode('unicode_escape')
-                            #     except (UnicodeDecodeError, UnicodeError):
-                            #         # 如果已经是正确编码的字符串，直接使用
-                            #         args_str = str(args)
-                            # else:
-                            #     # 对于非字符串类型，先转换为字符串再处理Unicode
-                            #     args_str = str(args)
-                            #     try:
-                            #         # 尝试解码可能存在的Unicode转义序列
-                            #         args_str = args_str.encode('utf-8').decode('unicode_escape')
-                            #     except (UnicodeDecodeError, UnicodeError):
-                            #         # 如果已经是正确编码的字符串，保持不变
-                            #         pass
+
                             args_str = str(args)
                             padded_args = args_str.ljust(BORDER_WIDTH - 8)
                             amni_prompt_logger.info(f"  📋 Args: {padded_args}")
@@ -711,42 +671,34 @@ class PromptLogger:
             return
 
         def truncate_value(value, max_length=20):
-            """截断超过指定长度的字符串值"""
             if isinstance(value, str) and len(value) > max_length:
                 return value[:max_length] + "..."
             return value
 
-        # 格式化variables字典，分离预定义变量和用户变量
         formatted_vars = {}
         predefined_vars = []
 
         for key, value in variables.items():
-            # 检查是否是预定义变量
             if key in ALL_PREDEFINED_DYNAMIC_VARIABLES:
                 predefined_vars.append(f"{key}:{value}")
             else:
                 formatted_vars[key] = value
 
-        # 构建结构化日志格式
         log_lines = [
             "╭────────────────────────────────────────────────────────────────────────────────────────────────────╮",
             "│                                      🎯 PROMPT TEMPLATE PARAMETERS                                 │",
             "├────────────────────────────────────────────────────────────────────────────────────────────────────┤"
         ]
 
-        # 添加预定义变量信息（压缩在一行）
         if predefined_vars:
             predefined_line = "│ 🔧 Predefined Variables: " + " | ".join(predefined_vars)
             log_lines.append(predefined_line)
 
-        # 添加用户变量信息
         if formatted_vars:
             log_lines.append("│ 📋 User Variables:")
             for key, value in formatted_vars.items():
-                # 格式化key-value对，确保对齐
                 value_str = str(value)
                 key_str = f" 🏷️{key}({num_tokens_from_string(value_str)} tokens) -> :"
-                # 如果value太长，需要换行处理
                 log_lines.append(f"│ {key_str} {truncate_value(value_str)}")
         else:
             log_lines.append("│ 📋 User Variables: (empty)")
@@ -754,7 +706,6 @@ class PromptLogger:
         log_lines.append("├────────────────────────────────────────────────────────────────────────────────────────────────────┤")
         log_lines.append("╰────────────────────────────────────────────────────────────────────────────────────────────────────╯")
 
-        # 输出每一行日志
         for line in log_lines:
             amni_prompt_logger.info(line)
 
@@ -835,18 +786,3 @@ class PromptLogger:
         
         return grid
 
-
-"""
-上下文窗口定义总结
-================
-
-根据 Andrej Karpathy 的观点，大语言模型（LLMs）就像一种新型的操作系统：
-- LLM 就像 CPU，而上下文窗口就像 RAM，作为模型的工作内存
-- 就像 RAM 一样，LLM 上下文窗口的容量有限，需要处理各种上下文来源
-- 正如操作系统管理 CPU 的 RAM 使用，我们可以将"上下文工程"视为类似的作用
-
-Karpathy 对上下文工程的定义：
-"上下文工程是...用恰好合适的信息填充上下文窗口以进行下一步的精细艺术和科学。"
-
-这个定义强调了在有限的上下文窗口中优化信息选择和管理的重要性，这是构建高效 AI 系统的关键要素。
-"""
