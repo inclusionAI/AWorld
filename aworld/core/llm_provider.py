@@ -9,6 +9,7 @@ from typing import (
 )
 
 from aworld.models.model_response import ModelResponse
+from aworld.core.context.base import Context
 
 
 class LLMProviderBase(abc.ABC):
@@ -105,6 +106,7 @@ class LLMProviderBase(abc.ABC):
                           temperature: float = 0.0,
                           max_tokens: int = None,
                           stop: List[str] = None,
+                          context: Context = None,
                           **kwargs) -> ModelResponse:
         """Asynchronously call model to generate response.
         
@@ -113,6 +115,7 @@ class LLMProviderBase(abc.ABC):
             temperature: Temperature parameter.
             max_tokens: Maximum number of tokens to generate.
             stop: List of stop sequences.
+            context: runtime context.
             **kwargs: Other parameters.
 
         Returns:
@@ -133,6 +136,7 @@ class LLMProviderBase(abc.ABC):
                    temperature: float = 0.0,
                    max_tokens: int = None,
                    stop: List[str] = None,
+                   context: Context = None,
                    **kwargs) -> ModelResponse:
         """Synchronously call model to generate response.
 
@@ -141,6 +145,7 @@ class LLMProviderBase(abc.ABC):
             temperature: Temperature parameter.
             max_tokens: Maximum number of tokens to generate.
             stop: List of stop sequences.
+            context: runtime context.
             **kwargs: Other parameters.
 
         Returns:
@@ -156,6 +161,7 @@ class LLMProviderBase(abc.ABC):
                           temperature: float = 0.0,
                           max_tokens: int = None,
                           stop: List[str] = None,
+                          context: Context = None,
                           **kwargs) -> Generator[ModelResponse, None, None]:
         """Synchronously call model to generate streaming response.
 
@@ -164,6 +170,7 @@ class LLMProviderBase(abc.ABC):
             temperature: Temperature parameter.
             max_tokens: Maximum number of tokens to generate.
             stop: List of stop sequences.
+            context: runtime context.
             **kwargs: Other parameters.
 
         Returns:
@@ -179,6 +186,7 @@ class LLMProviderBase(abc.ABC):
                                  temperature: float = 0.0,
                                  max_tokens: int = None,
                                  stop: List[str] = None,
+                                 context: Context = None,
                                  **kwargs) -> AsyncGenerator[ModelResponse, None]:
         """Asynchronously call model to generate streaming response.
 
@@ -187,6 +195,7 @@ class LLMProviderBase(abc.ABC):
             temperature: Temperature parameter.
             max_tokens: Maximum number of tokens to generate.
             stop: List of stop sequences.
+            context: runtime context.
             **kwargs: Other parameters.
 
         Returns:

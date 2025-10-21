@@ -239,6 +239,7 @@ class TaskConfig(BaseConfig):
     resp_carry_raw_llm_resp: bool = False
     exit_on_failure: bool = False
     ext: dict = {}
+    train_mode: bool = False
 
 
 class ToolConfig(BaseConfig):

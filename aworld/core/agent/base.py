@@ -177,6 +177,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def _init_context(self, context: Context):
         self.context = context
+        self.context.agent_info.current_agent_id = self.id()
 
     def id(self) -> str:
         return self._id
