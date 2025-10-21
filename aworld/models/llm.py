@@ -15,6 +15,7 @@ from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
 from aworld.models.model_response import ModelResponse
+from aworld.core.context.base import Context
 
 # Predefined model names for common providers
 MODEL_NAMES = {
@@ -201,6 +202,7 @@ class LLMModel:
                           temperature: float = 0.0,
                           max_tokens: int = None,
                           stop: List[str] = None,
+                          context: Context = None,
                           **kwargs) -> ModelResponse:
         """Asynchronously call model to generate response.
 
@@ -209,6 +211,7 @@ class LLMModel:
             temperature: Temperature parameter.
             max_tokens: Maximum number of tokens to generate.
             stop: List of stop sequences.
+            context: runtime context.
             **kwargs: Other parameters.
 
         Returns:
@@ -221,6 +224,7 @@ class LLMModel:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
+                context=context,
                 **kwargs
             )
         except AttributeError as e:
@@ -239,6 +243,7 @@ class LLMModel:
                    temperature: float = 0.0,
                    max_tokens: int = None,
                    stop: List[str] = None,
+                   context: Context = None,
                    **kwargs) -> ModelResponse:
         """Synchronously call model to generate response.
 
@@ -247,6 +252,7 @@ class LLMModel:
             temperature: Temperature parameter.
             max_tokens: Maximum number of tokens to generate.
             stop: List of stop sequences.
+            context: runtime context.
             **kwargs: Other parameters.
 
         Returns:
@@ -258,6 +264,7 @@ class LLMModel:
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
+            context=context,
             **kwargs
         )
 
@@ -266,6 +273,7 @@ class LLMModel:
                           temperature: float = 0.0,
                           max_tokens: int = None,
                           stop: List[str] = None,
+                          context: Context = None,
                           **kwargs) -> Generator[ModelResponse, None, None]:
         """Synchronously call model to generate streaming response.
 
@@ -285,6 +293,7 @@ class LLMModel:
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
+            context=context,
             **kwargs
         )
 
@@ -293,6 +302,7 @@ class LLMModel:
                                  temperature: float = 0.0,
                                  max_tokens: int = None,
                                  stop: List[str] = None,
+                                 context: Context = None,
                                  **kwargs) -> AsyncGenerator[ModelResponse, None]:
         """Asynchronously call model to generate streaming response.
 
@@ -315,6 +325,7 @@ class LLMModel:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
+                context=context,
                 **kwargs
         ):
             yield chunk
@@ -388,14 +399,14 @@ def register_llm_provider(provider: str, provider_class: type):
 
 def conf_contains_key(conf: Union[ConfigDict, AgentConfig, ModelConfig], key: str) -> bool:
     """Check if configuration contains a specific key.
-    
+
     Args:
         conf: Configuration object (ConfigDict or AgentConfig).
         key: Key to check for existence.
-        
+
     Returns:
         bool: True if the key exists in the configuration, False otherwise.
-        
+
     Examples:
         >>> conf = AgentConfig(llm_provider="openai")
         >>> conf_contains_key(conf, "llm_provider")
@@ -501,6 +512,7 @@ async def acall_llm_model(
         max_tokens: int = None,
         stop: List[str] = None,
         stream: bool = False,
+        context: Context = None,
         **kwargs
 ) -> ModelResponse:
     """Convenience function to asynchronously call LLM model.
@@ -522,6 +534,7 @@ async def acall_llm_model(
         temperature=temperature,
         max_tokens=max_tokens,
         stop=stop,
+        context=context,
         **kwargs
     )
 
