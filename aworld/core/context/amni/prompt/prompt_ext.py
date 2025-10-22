@@ -49,8 +49,6 @@ def create_neuron_formatter(neuron_type: Neurons):
 
 
 CONTEXT_PREDEFINED_DYNAMIC_VARIABLES = dict(ALL_PREDEFINED_DYNAMIC_VARIABLES, **{
-    # user specified context
-    "ai_context": ApplicationContext.ai_context,
     # dynamically generated neuron formatters
     "working_dir": create_neuron_formatter(Neurons.WORKING_DIR),
     "facts": create_neuron_formatter(Neurons.FACT),

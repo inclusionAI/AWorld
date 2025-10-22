@@ -914,55 +914,14 @@ class ApplicationContext(AmniContext):
         pass
         # get_context_manager().
 
-    @staticmethod
-    async def ai_context(context: "ApplicationContext") -> str:
-        """
-        Asynchronously assembly the context for the AI.
-
-        This method gathers context from various sources like knowledge base,
-        memory, user profile, etc., and compiles it into a single string.
-
-        Returns:
-            str: The compiled AI context.
-        """
-
-        # retrival relevant memory
-        previous_round_results = (
-            f"<relevant_conversation_history>\n"
-            f"{chr(10).join([str(item.to_openai_message()) for item in context.root.task_state.previous_round_results])}\n"
-            f"</relevant_conversation_history>\n"
-        )
-
-        knowledge_context = await context.build_knowledge_context()
-
-        # retrival user_profile memory
-
-        # retrival facts memory
-
-        # retrival agent's relation memory
-
-        # retrival working memory
-
-
-        # retrival aigc content
-
-
-        return (
-            f"----------------------------------"
-            f"{previous_round_results}"
-            f"----------------------------------"
-            f"{knowledge_context}"
-        )
-
     ####################### Context logical schema #######################
 
     def get_from_artifacts(self, key: str, state: WorkingState):
         if not state:
             return DEFAULT_VALUE
 
-        # 检查 key 是否为 "ARTIFACT_ID/summary" 格式
         if key.endswith('/summary'):
-            artifact_id = key[:-8]  # 移除 '/summary' 后缀
+            artifact_id = key[:-8]
             artifact_s = state.get_knowledge(artifact_id)
             if artifact_s:
                 return artifact_s
@@ -1057,13 +1016,13 @@ class ApplicationContext(AmniContext):
         if not context:
             return DEFAULT_VALUE
         try:
-            # 1. 从 ApplicationContext 属性中获取
+            # 1. get Key from current context
             if hasattr(context, key):
                 value = getattr(context, key)
                 if value is not None:
                     return str(value)
 
-            # 2. 从agent context中获取
+            # 2. get key from agent context
             agent_state = None
             if context.task_state.working_state and context.task_state.working_state.agent_states:
                 agent_state = context.task_state.working_state.agent_states.get(agent_id)
@@ -1071,7 +1030,7 @@ class ApplicationContext(AmniContext):
             if value is not None:
                 return value
 
-            # 3. 查询Task Context， 处理 field_path 的5种情况
+            # 3. get key from Context parent
             value = context.get_from_context_hierarchy(key, context, recursive)
             if value is not None and value != DEFAULT_VALUE:
                 return value

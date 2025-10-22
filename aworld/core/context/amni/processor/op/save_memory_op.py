@@ -1,3 +1,4 @@
+import traceback
 from typing import Any, Dict
 
 from aworld.logs.util import logger
@@ -31,5 +32,5 @@ class SaveMemoryOp(BaseOp):
                 else:
                     logger.info("⚠️ unprocess")
             except Exception as e:
-                logger.error(f"❌ Error processing memory command {memory_command}: {e}")
+                logger.error(f"❌ Error processing memory command {memory_command}: {e}, traceback is {traceback.format_exc()}")
         return {}

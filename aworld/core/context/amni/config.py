@@ -90,11 +90,11 @@ class AgentContextConfig(BaseModel):
     neuron_names: Optional[list[str]] = Field(default_factory=list)
     neuron_config: Optional[Dict[str, NeuronStrategyConfig]] = Field(default_factory=list)
 
-    # Context Purge
+    # Context Reduce - Purge
     history_rounds: int = Field(default=100,
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
 
-    # Context Compress
+    # Context Reduce - Compress
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
@@ -108,6 +108,12 @@ class AgentContextConfig(BaseModel):
     tool_action_white_list: Optional[list[str]] = Field(default_factory=list, description="tool white list")
     tool_result_length_threshold: Optional[int] = Field(default=30000, description=" when the content length is greater than the tool_result_length_threshold, the tool result will be offloaded")
 
+    # Context Retrival
+    enable_chunk: bool = Field(default=False, description="enable_chunk")
+    enable_full_text_index: bool = Field(default=False, description="enable_full_text")
+    enable_semantic_index: bool = Field(default=False, description="enable_semantic_index")
+    enable_rerank: bool = Field(default=False, description="enable_rerank")
+
     def to_memory_config(self) -> AgentMemoryConfig:
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
@@ -120,8 +126,6 @@ class AgentContextConfig(BaseModel):
 DEFAULT_AGENT_CONFIG = AgentContextConfig()
 class AmniContextConfig(BaseModel):
     """AmniContext configs"""
-
-    retrival_index_type_list: Optional[list[str]] = Field(default_factory=list)
 
     # agent config
     agent_config: Union[AgentContextConfig, Dict[str, AgentContextConfig]] = Field(default_factory=dict)
@@ -187,44 +191,39 @@ def build_memory_config():
         )
     )
 
-DEFAULT_CONFIG: Optional[AmniContextConfig] = None
-def get_amnicontext_config() -> AmniContextConfig:
-    global DEFAULT_CONFIG
 
-    if DEFAULT_CONFIG is None:
-        # Default configuration
-        DEFAULT_CONFIG = AmniContextConfig(
-            processor_config=[
-                AmniContextProcessorConfig(
-                    name="message_processor",
-                    type="pipeline_memory_processor",
-                    pipeline="extract_user_profile|save_memory",
-                    subscription=EventSubscriptionConfig(
-                        event_types=[EventType.AGENT_RESULT],
-                    )
-                ),
-                # System prompt augmentation
-                AmniContextProcessorConfig(
-                    name="augmented_system_prompt_to_memory",
-                    type="pipeline_memory_processor",
-                    pipeline="system_prompt_augment|save_memory",
-                    subscription=EventSubscriptionConfig(
-                        event_types=[EventType.SYSTEM_PROMPT],
-                    )
-                ),
-                # Tool result offloading
-                AmniContextProcessorConfig(
-                    name="tool_offload_save_memory",
-                    type="pipeline_memory_processor",
-                    pipeline="tool_result_offload|save_memory",
-                    subscription=EventSubscriptionConfig(
-                        event_types=[EventType.TOOL_RESULT],
-                    ),
-                    priority=0
+def get_default_config() -> AmniContextConfig:
+    return AmniContextConfig(
+        processor_config=[
+            AmniContextProcessorConfig(
+                name="message_processor",
+                type="pipeline_memory_processor",
+                pipeline="extract_user_profile|save_memory",
+                subscription=EventSubscriptionConfig(
+                    event_types=[EventType.AGENT_RESULT],
                 )
-            ]
-        )
-    return DEFAULT_CONFIG
+            ),
+            # System prompt augmentation
+            AmniContextProcessorConfig(
+                name="augmented_system_prompt_to_memory",
+                type="pipeline_memory_processor",
+                pipeline="system_prompt_augment|save_memory",
+                subscription=EventSubscriptionConfig(
+                    event_types=[EventType.SYSTEM_PROMPT],
+                )
+            ),
+            # Tool result offloading
+            AmniContextProcessorConfig(
+                name="tool_offload_save_memory",
+                type="pipeline_memory_processor",
+                pipeline="tool_result_offload|save_memory",
+                subscription=EventSubscriptionConfig(
+                    event_types=[EventType.TOOL_RESULT],
+                ),
+                priority=0
+            )
+        ]
+    )
 
 
 class AmniConfigLevel(Enum):
@@ -252,9 +251,9 @@ class AmniConfigFactory:
     @staticmethod
     def create(level: Optional[AmniConfigLevel] = None) -> AmniContextConfig:
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
-            return get_amnicontext_config()
+            return get_default_config()
         elif level == AmniConfigLevel.NAVIGATOR:
-            config = get_amnicontext_config()
+            config = get_default_config()
             config.agent_config = AgentContextConfig(
                 enable_system_prompt_augment=True,
                 neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
