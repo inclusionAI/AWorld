@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import enum
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ class Constants:
     GROUP = "group"
     HUMAN = "human"
     HUMAN_RESPONSE = "human_response"
+    MEMORY = "memory"
 
 
 class TopicType:
@@ -153,6 +155,24 @@ class GroupMessage(Message[Union[Dict[str, Any], List[ActionModel]]]):
     def __post_init__(self):
         super().__post_init__()
         self.headers['group_id'] = self.group_id
+
+
+class MemoryEventType(enum.Enum):
+    SYSTEM = 'SYSTEM'
+    HUMAN = 'HUMAN'
+    AI = 'AI'
+    TOOL = 'TOOL'
+
+
+@dataclass
+class MemoryEventMessage(Message[Any]):
+    """Memory event is oriented towards applications, can interact with third-party entities independently.
+
+    For example, `memory` event can interact with other memory through the MCP protocol.
+    """
+    category: str = 'memory'
+    agent: 'BaseAgent' = None
+    memory_event_type: MemoryEventType = None
 
 
 @dataclass
