@@ -91,7 +91,9 @@ class TrainLLMProvider(LLMProviderBase):
         if res.tools_called:
             tool_calls = [ToolCall(**tool_call.model_dump()) for tool_call in res.tool_calls]
 
-        context.add_llm_resp_token_ids(token_id_response)
+        context.add_llm_resp_token_ids(input_token_ids=current_step_input_token_ids,
+                                       prompt_token_ids=input_ids,
+                                       response=token_id_response)
         return ModelResponse(id=self.request_id,
                              content=content,
                              tool_calls=tool_calls,

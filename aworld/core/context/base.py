@@ -445,10 +445,11 @@ class Context:
             raise Exception("No current agent id found in context.")
         return self._agent_token_id_traj.get(current_agent_id, AgentTokenIdTrajectory(agent_id=current_agent_id))
 
-    def add_llm_resp_token_ids(self, agent_id: str,
+    def add_llm_resp_token_ids(self,
                                input_token_ids: List[int],
                                prompt_token_ids: List[int],
-                               response: "TokenIdModelResponse"):
+                               response: "TokenIdModelResponse",
+                               agent_id: str = None):
         """Add the token ids of the current step input to the context.
 
         Args:
@@ -457,7 +458,8 @@ class Context:
             prompt_token_ids: Prompt token ids of the current llm call.
             response: Token id model response.
         """
-
+        if not agent_id:
+            agent_id = self.agent_info.current_agent_id
         token_id_traj = self._agent_token_id_traj.get(agent_id, AgentTokenIdTrajectory(agent_id=agent_id))
         step = token_id_traj.get_current_step()
         if not step:
@@ -472,21 +474,24 @@ class Context:
         step.finish_reason = response.finish_reason
         token_id_traj.all_token_id_seq.extend(step.input_token_ids + step.output_token_ids)
 
-    def add_tool_resp_token_ids(self, agent_id: str,
-                                tool_resp_token_ids: List[int]):
+    def add_tool_resp_token_ids(self,
+                                tool_resp_token_ids: List[int],
+                                agent_id: str = None):
         """Add the token ids of the current step tool response to the context.
 
         Args:
             agent_id: Agent id.
             tool_resp_token_ids: Tool response token ids of the current step.
         """
+        if not agent_id:
+            agent_id = self.agent_info.current_agent_id
         token_id_traj = self._agent_token_id_traj.get(agent_id, AgentTokenIdTrajectory(agent_id=agent_id))
         step = token_id_traj.get_current_step()
         if not step:
             logger.error("No current step found in context.")
             raise Exception("No current step found in context.")
         step.tool_resp_token_ids = tool_resp_token_ids
-        step.output_token_ids = step.output_token_ids + tool_resp_token_ids
+        step.output_token_ids.extend(tool_resp_token_ids)
         step.output_logprobs.extend([0.0] * len(tool_resp_token_ids))
         step.output_versions.extend([-1] * len(tool_resp_token_ids))
         token_id_traj.all_token_id_seq.extend(step.tool_resp_token_ids)
