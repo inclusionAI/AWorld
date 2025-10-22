@@ -84,9 +84,9 @@ MCP_CONFIG = {
                 "ELASTICSEARCH_USERNAME": os.environ['ELASTICSEARCH_USERNAME'],
                 "ELASTICSEARCH_PASSWORD": os.environ['ELASTICSEARCH_PASSWORD'],
                 'RERANKER_PROVIDER': 'http',
-                'RERANKER_BASE_URL': 'https://antchat.alipay.com/v1',
-                'RERANKER_API_KEY': 'zLGL7xFPTTLbWYraGdb4jsdxTiQ0IPrQ',
-                'RERANKER_MODEL_NAME': 'Qwen3_Reranker_8B',
+                'RERANKER_BASE_URL': os.environ['RERANKER_BASE_URL'],
+                'RERANKER_API_KEY': os.environ['RERANKER_API_KEY'],
+                'RERANKER_MODEL_NAME': os.environ['RERANKER_MODEL_NAME'],
                 'LLM_BASE_URL': os.environ['LLM_BASE_URL'],
                 'LLM_MODEL_NAME': os.environ['LLM_MODEL_NAME'],
                 'LLM_API_KEY': os.environ['LLM_API_KEY']
