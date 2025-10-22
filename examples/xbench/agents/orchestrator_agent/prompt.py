@@ -133,7 +133,7 @@ Please use appropriate tools for the task, analyze the results obtained from the
 11. When after multiple attempts you find that your historical step results are correct, directly return the result without further reasoning
 
 ## ***IMPORTANT*** Tool or Agent Selection Recommendations:
-1. For search-related tasks, consider selecting web_agent. The corresponding task description should include task objectives to enable web_agent to better understand the task, ensuring consistency between search information and task objectives, without excessive divergence in retrieved information. Pay special attention to quantifiers in the task
+1. For search-related tasks, consider selecting web_agent_xxx. The corresponding task description should include task objectives to enable web_agent_xxx to better understand the task, ensuring consistency between search information and task objectives, without excessive divergence in retrieved information. Pay special attention to quantifiers in the task
    - **Task Priority**: For clue-finding tasks, search order should be based on "easier to locate" condition priority from high to low:
        * 1. Most specific and unique conditions (such as specific person visits, specific events, etc.)
        * 2. Conditions with narrowest time range (such as "recent 2-3 years" is more specific than "early 21st century")
@@ -170,7 +170,7 @@ Please use appropriate tools for the task, analyze the results obtained from the
      * Avoid repeated searches of known information, conduct more precise targeted searches based on existing information
      * Each search task should be further refined based on previous task results, rather than starting over
 
-2. For tasks involving code, github, huggingface, benchmark-related content, prioritize selecting coding_agent rather than using web_agent
+2. For tasks involving code, github, huggingface, benchmark-related content, prioritize selecting coding_agent_xxx rather than using web_agent_xxx
 
 # Output Requirements:
 1. Before providing the `final answer`, carefully reflect on whether the task has been fully solved. If you have not solved the task, please provide your reasoning and suggest the next steps.

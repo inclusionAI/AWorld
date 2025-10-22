@@ -192,40 +192,41 @@ class ApplicationWorkspace(WorkSpace):
         return await self.get_artifact_chunk_indices_by_range(artifact_id, start_index, end_index)
 
 
-class Workspaces:
-
-    def __init__(self):
-        self._workspace_rag = None
-
-    async def get_session_workspace(self, session_id, load_rag:bool=True) -> ApplicationWorkspace:
+async def load_workspace(workspace_id: str, workspace_type: str = None, workspace_parent_path: str = None) -> Optional[
+    ApplicationWorkspace]:
+    """
+    This function is used to get the workspace by its id.
+    It first checks the workspace type and then creates the workspace accordingly.
+    If the workspace type is not valid, it raises an HTTPException.
+    """
+    if workspace_id is None:
+        raise RuntimeError("workspace_id is None")
+    if workspace_type is None:
         workspace_type = os.environ.get("WORKSPACE_TYPE", "local")
-        workspace_path = os.environ.get("WORKSPACE_PATH", "./data/workspaces")
+    if workspace_parent_path is None:
+        workspace_parent_path = os.environ.get("WORKSPACE_PATH", "./data/workspaces")
 
-        return await self.load_workspace(session_id, workspace_type, workspace_path, load_rag)
+    if workspace_type == "local":
+        workspace = ApplicationWorkspace.from_local_storages(
+            workspace_id,
+            storage_path=os.path.join(workspace_parent_path,workspace_id),
+        )
+    elif workspace_type == "oss":
+        workspace = ApplicationWorkspace.from_oss_storages(
+            workspace_id,
+            storage_path=os.path.join(workspace_parent_path, workspace_id),
+        )
+    else:
+        raise RuntimeError("Invalid workspace type")
+    return workspace
 
-    async def load_workspace(self, workspace_id: str, workspace_type: str, workspace_parent_path: str, load_rag: bool = True) -> Optional[
-        ApplicationWorkspace]:
-        """
-        This function is used to get the workspace by its id.
-        It first checks the workspace type and then creates the workspace accordingly.
-        If the workspace type is not valid, it raises an HTTPException.
-        """
-        if workspace_id is None:
-            raise RuntimeError("workspace_id is None")
 
-        if workspace_type == "local":
-            workspace = ApplicationWorkspace.from_local_storages(
-                workspace_id,
-                storage_path=os.path.join(workspace_parent_path,workspace_id),
-            )
-        elif workspace_type == "oss":
-            workspace = ApplicationWorkspace.from_oss_storages(
-                workspace_id,
-                storage_path=os.path.join(workspace_parent_path, workspace_id),
-            )
-        else:
-            raise RuntimeError("Invalid workspace type")
-        return workspace
+class Workspaces:
+    """
+    This class is used to get the workspace by its id.
+    """
+    async def get_session_workspace(self, session_id: str) -> ApplicationWorkspace:
+        return await load_workspace(session_id)
 
 
 workspace_repo = Workspaces()

@@ -10,6 +10,7 @@ from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
 from aworld.core.context.amni.worksapces import workspace_repo
 from aworld.dataset.sampler import RangeSampler, Sampler, FixedSampler
+from aworld.output import WorkSpace
 from aworld.runners.evaluate_runner import EvaluateRunner
 from examples.xbench.agents.swarm import build_xbench_swarm
 from dotenv import load_dotenv
@@ -42,24 +43,24 @@ class AmniContextEvaluatable(EvalTarget):
     def __init__(self):
         super().__init__()
 
-    async def build_context(self, user_query: str, session_id: str = None, task_id: str = None) -> ApplicationContext:
+    async def build_context(self, task_input: TaskInput) -> ApplicationContext:
+
+        context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
+
+        return await ApplicationContext.from_input(task_input, context_config = context_config)
+
+    async def build_task(self, task_content: str, session_id: str = None, task_id: str = None) -> Task:
         if not session_id:
             session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         task_input = TaskInput(
             user_id=f"test_user",
             session_id=session_id,
             task_id=f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}" if not task_id else task_id,
-            model="deep_plan_agent",
-            task_content=user_query,
-            origin_user_input=user_query
+            task_content=task_content,
+            origin_user_input=task_content
         )
-        workspace = await workspace_repo.get_session_workspace(session_id=task_input.session_id)
-        context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
 
-        return await ApplicationContext.from_input(task_input, workspace, False, context_config = context_config)
-
-    async def build_task(self, task_content: str, session_id: str = None, task_id: str = None) -> Task:
-        context = await self.build_context(task_content, session_id=session_id, task_id=task_id)
+        context = await self.build_context(task_input)
         swarm = build_xbench_swarm()
         await context.build_agents_state(swarm.topology)
 
@@ -124,7 +125,7 @@ async def evaluate():
                 }
             ],
             eval_dataset_id_or_file_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'benchmark', 'DeepSearch_decrypted.csv'),
-            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[1])),
+            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[3])),
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
@@ -134,6 +135,8 @@ async def evaluate():
 
     # ============= SAVE RESULT TO FILE =============
     result_file_path = f"results/{task_id}/"
+    if not os.path.exists("results"):
+        os.mkdir("results")
     if not os.path.exists(result_file_path):
         os.mkdir(result_file_path)
     with open(f"{result_file_path}/results.txt", "w") as f:

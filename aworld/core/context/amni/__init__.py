@@ -34,7 +34,7 @@ from .state import ApplicationTaskContextState, ApplicationAgentState, TaskOutpu
 from .state.agent_state import AgentWorkingState
 from .state.common import WorkingState, TaskInput
 from .state.task_state import SubTask
-from .worksapces import ApplicationWorkspace
+from .worksapces import ApplicationWorkspace, workspace_repo
 
 DEFAULT_VALUE = None
 
@@ -406,13 +406,17 @@ class ApplicationContext(AmniContext):
     ####################### Context Build/Copy/Merge/Restore #######################
 
     @classmethod
-    async def from_input(cls, task_input: TaskInput, workspace: WorkSpace = None, use_checkpoint: bool = True, context_config: AmniContextConfig = None,  **kwargs) -> "ApplicationContext":
+    async def from_input(cls, task_input: TaskInput, workspace: WorkSpace = None, use_checkpoint: bool = False, context_config: AmniContextConfig = None,  **kwargs) -> "ApplicationContext":
         if not context_config:
             context_config = AmniConfigFactory.create()
         try:
             await start_global_event_bus(context_config)
         except Exception as e:
             logger.warning(f"Failed to start global event bus: {e} {traceback.format_exc()}")
+
+        if not workspace:
+            # build workspace for offload tool results
+            workspace = await workspace_repo.get_session_workspace(session_id=task_input.session_id)
         try:
             if use_checkpoint:
                 # restore context from checkpoint
