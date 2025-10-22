@@ -13,9 +13,9 @@ from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants
+from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants, MemoryEventMessage, MemoryEventType
 from aworld.core.factory import Factory
-from aworld.events.util import send_message
+from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
@@ -200,6 +200,7 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
 class Tool(BaseTool[Observation, List[ActionModel]]):
     def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
                           action: ToolInput,
+                          input_message: Message,
                           **kwargs):
         if not step_res or not action:
             return
@@ -229,6 +230,13 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 )
                 sync_exec(send_message, tool_output_message)
 
+        # add results to memory after sending outputs
+        try:
+            # step_res typing narrowed: Tuple[Observation, ...]
+            self._add_tool_results_to_memory(step_res, action, input_message.context)
+        except Exception:
+            logger.warning(f"Tool {self.name()} post internal process memory write failed: {traceback.format_exc()}")
+
     def step(self, message: Message, **kwargs) -> Message:
         final_res = None
         try:
@@ -243,7 +251,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             res = self.do_step(action, **kwargs)
             final_res = self.post_step(res, action, **kwargs)
             self._internal_process(
-                res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+                res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             return final_res
         except Exception as e:
             logger.error(
@@ -286,6 +294,32 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                                 session_id=self.context.session_id,
                                 headers={"context": self.context})
 
+    def _add_tool_results_to_memory(self,
+                                    step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                                    action: List[ActionModel],
+                                    context: Context):
+        try:
+            if not step_res or not action:
+                return
+            observation = step_res[0]
+            if not hasattr(observation, 'action_result') or observation.action_result is None:
+                return
+            for idx, act in enumerate(action):
+                if idx >= len(observation.action_result):
+                    continue
+                tool_result = observation.action_result[idx]
+                receive_agent = context.swarm.agents.get(act.agent_name)
+                sync_exec(send_message, MemoryEventMessage(
+                    payload=tool_result,
+                    agent=receive_agent,
+                    memory_event_type=MemoryEventType.TOOL,
+                    session_id=self.context.session_id if self.context else "",
+                    headers={"context": context}
+                ))
+        except Exception:
+            logger.warning(f"Tool {self.name()} write tool results to memory failed: {traceback.format_exc()}")
+
+
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
     async def _internal_process(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
@@ -318,6 +352,14 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     headers={"context": self.context}
                 )
                 await send_message(tool_output_message)
+
+        # add results to memory after sending outputs
+        try:
+            await self._add_tool_results_to_memory(step_res, action, input_message.context)
+        except Exception:
+            logger.warning(f"AsyncTool {self.name()} post internal process memory write failed: {traceback.format_exc()}")
+
+        logger.info("[tag for memory tool]======= Send memory message finished")
 
         await send_message(Message(
             category=Constants.OUTPUT,
@@ -455,6 +497,39 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             logger.warn(
                 f"tool {self.name()} callback failed with node: {res_node}.")
             return
+
+    async def _add_tool_results_to_memory(self,
+                                          step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                                          action: List[ActionModel],
+                                          context: Context):
+        try:
+            if not step_res or not action:
+                return
+            observation = step_res[0]
+            if not hasattr(observation, 'action_result') or observation.action_result is None:
+                return
+            for idx, act in enumerate(action):
+                if idx >= len(observation.action_result):
+                    continue
+                tool_result = observation.action_result[idx]
+                receive_agent = context.swarm.agents.get(act.agent_name)
+                memory_msg = MemoryEventMessage(
+                    payload=tool_result,
+                    agent=receive_agent,
+                    memory_event_type=MemoryEventType.TOOL,
+                    session_id=self.context.session_id if self.context else "",
+                    headers={"context": context}
+                )
+                try:
+                    future = await send_message_with_future(memory_msg)
+                    results = await future.wait(timeout=10)
+                    if not results:
+                        logger.warning(f"Memory write task failed: {memory_msg}")
+                except Exception as e:
+                    logger.warn(f"Memory write task failed: {traceback.format_exc()}")
+
+        except Exception:
+            logger.warning(f"AsyncTool {self.name()} write tool results to memory failed: {traceback.format_exc()}")
 
     def _update_headers(self, message: Message, input_message: Message):
         headers = input_message.headers.copy()
