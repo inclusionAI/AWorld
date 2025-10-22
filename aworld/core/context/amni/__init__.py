@@ -528,7 +528,7 @@ class ApplicationContext(AmniContext):
         if not workspace:
             workspace = self.workspace
 
-        sub_context = ApplicationContext(task_state, workspace, parent=self)
+        sub_context = ApplicationContext(task_state, workspace, parent=self, context_config=self.get_config())
         # Initialize sub-context event bus (global event bus already started, no need to restart here)
         # Upsert sub task to task state
         self.task_state.working_state.upsert_subtask_by_input(sub_task_input)
