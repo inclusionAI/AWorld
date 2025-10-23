@@ -1,0 +1,53 @@
+# XBench Project Requirements
+# Core AWorld Framework Dependencies
+pydantic==2.11.7
+pydantic_core==2.33.2
+pydantic-settings==2.8.1
+PyYAML==6.0.2
+openai==1.99.2
+mcp==1.10.1
+fastmcp==2.10.0
+python-dotenv==1.1.1
+executing==2.2.0
+tiktoken==0.9.0
+fastapi==0.116.1
+fastapi-cli==0.0.7
+aiohttp==3.9.5
+json_repair==0.49.0
+# HTTP and Network
+requests==2.32.2
+requests-oauthlib==2.0.0
+requests-toolbelt==1.0.0
+
+# Logging and Utilities
+loguru==0.7.3
+packaging==25.0
+tabulate==0.9.0
+
+# Document Processing
+PyMuPDF==1.25.3  # fitz - PDF processing
+html2text==2025.4.15
+pandas==2.2.3
+xmltodict==0.14.2
+beautifulsoup4==4.13.4
+docx2markdown==0.1.1
+python-pptx==1.0.2
+PyPDF2==3.0.1
+xls2xlsx==0.2.0
+openpyxl==3.1.5  # Excel file support for pandas
+
+# Image Processing
+Pillow==11.2.1
+
+# Vector Database
+chromadb==1.0.15
+
+
+# For potential future extensions (optional)
+# numpy>=1.26.0
+# matplotlib>=3.8.0
+scipy>=1.11.0
+
+# Optional Vector Database
+# elasticsearch==version match you elasticsearch version
+
