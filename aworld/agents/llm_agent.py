@@ -28,7 +28,7 @@ from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MessageMetadata, MemoryAIMessage, MemoryToolMessage, MemoryHumanMessage, \
     MemorySystemMessage, MemoryMessage
-from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream
+from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall, LLMResponseError
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
 from aworld.output import Outputs
@@ -595,6 +595,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             else:
                 policy_result = await self.execution_tools(agent_result.actions, message)
         await self.send_llm_response_output(llm_response, agent_result, message.context, kwargs.get("outputs"))
+        await self._add_tool_result_token_ids_to_context(message.context)
         return policy_result
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
@@ -630,7 +631,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
                                color=Color.red)
                 continue
-            act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=tool_exec_response.answer)
+            act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer)
             tool_results.append(act_res)
             await self._add_tool_result_to_memory(act_res, context=message.context)
         result = sync_exec(self.tools_aggregate_func, tool_results)
@@ -902,6 +903,31 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 logger.warning(f"Memory write task failed: {memory_msg}")
         except Exception as e:
             logger.warn(f"Memory write task failed: {traceback.format_exc()}")
+
+    async def _add_tool_result_token_ids_to_context(self, context: Context):
+        """Add tool result token ids to context"""
+        train_mode = context.get_task().conf.get("train_mode", False)
+        if not train_mode:
+            return
+        histories = self.memory.get_all(filters={
+            "agent_id": self.id(),
+            "session_id": context.get_task().session_id,
+            "task_id": context.get_task().id,
+            "memory_type": "message"
+        })
+        tool_openai_messages_after_last_assistant = []
+        found_assistant = False
+        for i in range(len(histories) - 1, -1, -1):
+            history = histories[i]
+            if hasattr(history, 'role') and history.role == 'assistant':
+                found_assistant = True
+                break
+            elif not found_assistant and hasattr(history, 'role') and history.rool == 'tool':
+                tool_openai_messages_after_last_assistant.append(history.to_openai_message())
+
+        if tool_openai_messages_after_last_assistant:
+            tool_result_token_ids = apply_chat_template(self.llm, tool_openai_messages_after_last_assistant)
+            context.add_tool_resp_token_ids(tool_result_token_ids, self.id())
 
     async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""

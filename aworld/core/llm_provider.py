@@ -41,7 +41,7 @@ class LLMProviderBase(abc.ABC):
         # Initialize providers based on flags
         self.provider = self._init_provider() if self.need_sync else None
         self.async_provider = self._init_async_provider() if self.need_async else None
-        self.stream_tool_buffer=[]
+        self.stream_tool_buffer = []
 
     @abc.abstractmethod
     def _init_provider(self):
@@ -83,7 +83,7 @@ class LLMProviderBase(abc.ABC):
 
         Returns:
             ModelResponse: Unified format response object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
@@ -93,10 +93,10 @@ class LLMProviderBase(abc.ABC):
 
         Args:
             chunk: Original response chunk from provider.
-            
+
         Returns:
             ModelResponse: Unified format response object for the chunk.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
@@ -109,7 +109,7 @@ class LLMProviderBase(abc.ABC):
                           context: Context = None,
                           **kwargs) -> ModelResponse:
         """Asynchronously call model to generate response.
-        
+
         Args:
             messages: Message list, format is [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}].
             temperature: Temperature parameter.
@@ -120,7 +120,7 @@ class LLMProviderBase(abc.ABC):
 
         Returns:
             ModelResponse: Unified model response object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When async provider is not initialized.
@@ -128,7 +128,6 @@ class LLMProviderBase(abc.ABC):
         if not self.async_provider:
             raise RuntimeError(
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
-
 
     @abc.abstractmethod
     def completion(self,
@@ -150,7 +149,7 @@ class LLMProviderBase(abc.ABC):
 
         Returns:
             ModelResponse: Unified model response object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When sync provider is not initialized.
@@ -175,7 +174,7 @@ class LLMProviderBase(abc.ABC):
 
         Returns:
             Generator yielding ModelResponse chunks.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When sync provider is not initialized.
@@ -200,7 +199,7 @@ class LLMProviderBase(abc.ABC):
 
         Returns:
             AsyncGenerator yielding ModelResponse chunks.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
             RuntimeError: When async provider is not initialized.
@@ -224,3 +223,5 @@ class LLMProviderBase(abc.ABC):
     async def aspeech_to_text(self, audio_file, language, prompt, **kwargs) -> ModelResponse:
         pass
 
+    def apply_chat_template(self, messages: List[Dict[str, str]]) -> List[int]:
+        pass

@@ -72,6 +72,8 @@ class TaskRunner(Runner):
         self._exception = None
         self.start_time = time.time()
         self.step_agent_counter = {}
+        if task.conf.get("train_mode", False) and self.task.agent:
+            self.task.agent.wait_tool_result = True
 
     async def pre_run(self):
         task = self.task
