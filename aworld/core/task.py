@@ -53,7 +53,9 @@ class Task:
     parent_task: Optional['Task'] = field(default=None, repr=False)
     max_retry_count: int = 0
     timeout: int = field(default=0)
+    streaming_mode: str = field(default=None)
     streaming_queue: asyncio.Queue = None
+    streaming_config: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.

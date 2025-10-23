@@ -73,6 +73,14 @@ class TaskRunner(Runner):
         self.start_time = time.time()
         self.step_agent_counter = {}
 
+        if task.streaming_mode:
+            agents = task.swarm.agents
+            logger.info(f"task agents: {agents}")
+            if not agents:
+                raise ValueError("Cannot find `agent` or `swarm` in task.")
+            for agent_id, agent in agents.items():
+                agent.conf.llm_config.llm_stream_call = True
+
     async def pre_run(self):
         task = self.task
         # copy context from parent_task(if exists)
