@@ -36,9 +36,6 @@ class DefaultMemoryHandler(DefaultHandler):
         return True
 
     async def _do_handle(self, message: MemoryEventMessage):
-        if not self.is_valid_message(message):
-            return
-
         # Resolve agent from sender/receiver/headers
         context = message.context
         agent = message.agent
