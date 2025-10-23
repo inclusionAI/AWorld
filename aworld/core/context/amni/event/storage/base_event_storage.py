@@ -7,7 +7,7 @@ from ..base import Event, EventStatus
 
 
 class BaseEventStorage(ABC):
-    """事件存储基础抽象类"""
+    """Base abstract class for event storage"""
     
     @abstractmethod
     async def put(self, event: Event) -> bool:

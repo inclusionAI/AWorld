@@ -7,7 +7,7 @@ from typing import Optional, Callable
 from .base import Event
 
 class EventHandler:
-    """事件处理器基类"""
+    """Base class for event handlers"""
     
     def __init__(self, name: str, handler_func: Callable, priority: int = 0):
         self.name = name
@@ -16,7 +16,7 @@ class EventHandler:
         self.is_active = True
     
     async def handle(self, event: Event) -> Optional[Event]:
-        """处理事件"""
+        """Handle event"""
         if not self.is_active:
             return None
         

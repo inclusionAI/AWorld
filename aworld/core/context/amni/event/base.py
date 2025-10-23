@@ -11,7 +11,7 @@ from aworld.output import Artifact
 
 
 class EventType:
-    """事件类型"""
+    """Event types"""
     ARTIFACT_ADDED = "artifact_added"
     CONTEXT_CONSOLIDATION = "context_consolidation"
     SYSTEM_PROMPT = "system_prompt"
@@ -25,7 +25,7 @@ class EventType:
                 EventType.USER_INPUT, EventType.AGENT_RESULT, EventType.TOOL_RESULT]
 
 class EventStatus:
-    """事件状态"""
+    """Event status"""
     INIT = "init"
     PROCESSING = "processing"
     SUCCESS = "success"
@@ -33,7 +33,7 @@ class EventStatus:
 
 @dataclass
 class Event:
-    """基础事件定义"""
+    """Base event definition"""
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     event_type: str = None
     timestamp: datetime = field(default_factory=datetime.now)
@@ -50,7 +50,7 @@ class Event:
         }
     
     def deep_copy(self) -> 'Event':
-        """创建事件的深拷贝"""
+        """Create a deep copy of the event"""
         import copy
         return copy.deepcopy(self)
 
@@ -75,22 +75,22 @@ class SystemPromptEvent(ContextEvent):
     agent_name: Optional[str] = None
 
     def deep_copy(self) -> 'SystemPromptEvent':
-        """创建事件的深拷贝，memory字段直接引用"""
+        """Create a deep copy of the event, with memory field referenced directly"""
         import copy
         
         new_event = SystemPromptEvent()
         for key, value in self.__dict__.items():
             if key == 'memory':
-                # memory字段直接引用
+                # Reference memory field directly
                 setattr(new_event, key, value)
             elif key == 'context' and value is not None:
-                # context字段特殊处理
+                # Special handling for context field
                 if hasattr(value, 'deep_copy'):
                     setattr(new_event, key, value.deep_copy())
                 else:
                     setattr(new_event, key, copy.deepcopy(value))
             else:
-                # 其他字段深拷贝
+                # Deep copy other fields
                 setattr(new_event, key, copy.deepcopy(value))
         
         return new_event
@@ -124,26 +124,26 @@ class MessageEvent(ContextEvent):
 
 @dataclass
 class ToolResultEvent(ContextEvent):
-    """包含工具结果的事件"""
+    """Event containing tool results"""
     tool_result: Optional[Any] = None
     tool_call_id: Optional[str] = None
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
 
     def deep_copy(self) -> 'ToolResultEvent':
-        """创建事件的深拷贝"""
+        """Create a deep copy of the event"""
         import copy
         
         new_event = ToolResultEvent()
         for key, value in self.__dict__.items():
             if key == 'context' and value is not None:
-                # context字段特殊处理
+                # Special handling for context field
                 if hasattr(value, 'deep_copy'):
                     setattr(new_event, key, value.deep_copy())
                 else:
                     setattr(new_event, key, copy.deepcopy(value))
             else:
-                # 其他字段深拷贝
+                # Deep copy other fields
                 setattr(new_event, key, copy.deepcopy(value))
         
         return new_event

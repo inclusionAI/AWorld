@@ -10,7 +10,7 @@ from .base_event_storage import BaseEventStorage
 
 
 class InMemoryEventStorage(BaseEventStorage):
-    """内存事件存储实现"""
+    """In-memory event storage implementation"""
     
     def __init__(self):
         self._events: Dict[str, Event] = {}

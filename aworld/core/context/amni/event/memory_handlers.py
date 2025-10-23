@@ -16,9 +16,9 @@ from ..processor.processor_factory import ProcessorFactory
 from ..utils.context_log import _generate_top_border, _generate_bottom_border
 
 
-@event_handler(event_types="*", priority=20)  # "*" 表示处理所有事件类型
+@event_handler(event_types="*", priority=20)  # "*" means handle all event types
 class MemoryProcessorHandler(EventHandler, ABC):
-    """基础记忆处理器，抽象 workflow 的解析和执行逻辑"""
+    """Base memory processor that abstracts workflow parsing and execution logic"""
 
     def __init__(self, priority: int = 20):
         super().__init__("memory_processor", self.process_messages, priority=priority)
@@ -94,19 +94,19 @@ class MemoryProcessorHandler(EventHandler, ABC):
             return (processor_config.name, None)
     
     def _start_async_processors(self, async_processors: List, event: Event):
-        """启动异步处理器在后台运行，不等待完成"""
+        """Start async processors running in the background without waiting for completion"""
         for processor_config in async_processors:
-            # 创建后台任务，不等待完成
+            # Create background task without waiting for completion
             asyncio.create_task(
                 self._run_processor_in_thread_pool(processor_config, event.deep_copy()
             ))
             logger.info(f"Started async processor {processor_config.name} in background")
     
     async def _run_processor_in_thread_pool(self, processor_config, event: Event) -> Optional[Tuple[str, any]]:
-        """在线程池中运行处理器"""
+        """Run processor in thread pool"""
         try:
             self.log_start(event, processor_config)
-            # 动态创建处理器实例
+            # Dynamically create processor instance
             processor = ProcessorFactory.create(processor_config=processor_config)
             if not processor:
                 logger.warning(f"Failed to create async processor: {processor_config.name} {traceback.format_exc()}")
@@ -114,7 +114,7 @@ class MemoryProcessorHandler(EventHandler, ABC):
             
             logger.info(f"Processing async with {processor.__class__.__name__}")
             
-            # 在线程池中运行处理器的process方法
+            # Run processor's process method in thread pool
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 self.thread_pool,
@@ -133,7 +133,7 @@ class MemoryProcessorHandler(EventHandler, ABC):
             return (processor_config.name, None)
     
     def _sync_wrapper(self, processor, context, event: Event):
-        """同步包装器，用于在线程池中运行异步方法"""
+        """Synchronous wrapper for running async methods in thread pool"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         # try:
@@ -142,7 +142,7 @@ class MemoryProcessorHandler(EventHandler, ABC):
         #     logger.error(f"Error in sync wrapper: {e}")
         #     return None
         # finally:
-        #     # 确保所有任务完成后再关闭循环
+        #     # Ensure all tasks complete before closing the loop
         #     try:
         #         pending = asyncio.all_tasks(loop)
         #         if pending:
@@ -153,7 +153,7 @@ class MemoryProcessorHandler(EventHandler, ABC):
         #         loop.close()
     
     def __del__(self):
-        """清理线程池资源"""
+        """Clean up thread pool resources"""
         if hasattr(self, 'thread_pool'):
             self.thread_pool.shutdown(wait=True)
 

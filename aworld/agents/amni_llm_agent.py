@@ -13,16 +13,16 @@ from aworld.logs.util import logger
 from aworld.memory.models import MemoryAIMessage, MessageMetadata
 from aworld.output import Output
 
-# 定义泛型类型变量，限制为 AgentWorkingState 的子类
+# Define generic type variable, constrained to subclasses of AgentWorkingState
 S = TypeVar('S', bound=AgentWorkingState)
 
 
 class ApplicationAgent(Agent, Generic[S]):
     """
-    应用程序智能体基类，支持泛型工作状态类型
+    Base class for application agents, supporting generic working state types
 
-    这个智能体可以与继承自 AgentWorkingState 的不同类型的工作状态一起工作。
-    提供了状态管理、上下文操作等基础功能。
+    This agent can work with different types of working states that inherit from AgentWorkingState.
+    Provides basic functionality for state management, context operations, etc.
     """
 
     def __init__(self,
@@ -50,33 +50,33 @@ class ApplicationAgent(Agent, Generic[S]):
 
     def init_working_state(self, agent_state: ApplicationAgentState) -> AgentWorkingState:
         """
-        自定义工作状态初始化方法
+        Custom working state initialization method
 
-        通过反射获取泛型类型参数并创建实例
+        Obtains generic type parameters through reflection and creates an instance
 
         Args:
-            agent_state: 应用程序智能体状态对象
+            agent_state: Application agent state object
         """
         return AgentWorkingState()
 
     def get_working_state(self, context: ApplicationContext) -> S:
         """
-        获取智能体的工作状态
+        Get the agent's working state
 
-        从应用程序上下文中获取当前智能体的工作状态对象
+        Retrieves the current agent's working state object from the application context
 
         Args:
-            context: 应用程序上下文对象
+            context: Application context object
 
         Returns:
-            智能体的工作状态对象，类型为 S (必须是 AgentWorkingState 的子类)
+            The agent's working state object, of type S (must be a subclass of AgentWorkingState)
         """
-        # 从上下文中获取当前智能体的状态
+        # Get the current agent's state from the context
         agent_state = context.get_agent_state(self.id())
         if agent_state is None:
             agent_state = ApplicationAgentState()
             context.set_agent_state(self.id(), agent_state)
-        # 返回工作状态部分
+        # Return the working state portion
         return agent_state.working_state
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
@@ -121,7 +121,7 @@ class ApplicationAgent(Agent, Generic[S]):
                                                      agent_name=self.name(),
                                                      namespace=self.name())
 
-    # 系统提示词追加模式
+    # System prompt append mode
     async def _add_system_message_to_memory(self, context: ApplicationContext, content: str):
         if not self.system_prompt:
             return
