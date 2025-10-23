@@ -1,3 +1,8 @@
+
+from dotenv import load_dotenv
+# init env
+load_dotenv()
+
 import asyncio
 import logging
 import os
@@ -13,7 +18,6 @@ from aworld.dataset.sampler import RangeSampler, Sampler, FixedSampler
 from aworld.output import WorkSpace
 from aworld.runners.evaluate_runner import EvaluateRunner
 from examples.xbench.agents.swarm import build_xbench_swarm
-from dotenv import load_dotenv
 from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig
 from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTarget, EvalDataCase, EvalTask, EvalResult
@@ -108,7 +112,6 @@ class AmniContextEvaluatable(EvalTarget):
 
 
 async def evaluate():
-    load_dotenv()
     init_middlewares()
     eval_target = AmniContextEvaluatable()
     task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
