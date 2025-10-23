@@ -51,7 +51,7 @@ def extract_artifacts_from_toolresult(tool_result: ActionResult) -> Optional[lis
                                                          })
             artifacts.append(artifact)
         else:
-            # 默认处理
+            # Default processing
             logger.info(f"{tool_result.action_name} use Default Artifact")
             content = json.loads(tool_result.content)[0]
             artifact = Artifact(artifact_id=str(uuid.uuid4()),

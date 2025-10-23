@@ -60,7 +60,7 @@ class HttpReranker(Reranker):
         try:
             return await self._run_http(query, documents, top_k)
         except Exception as e:
-            logger.error(f"❌ HTTP rerank 调用失败: {str(e)}, traceback is {traceback.format_exc()}")
+            logger.error(f"❌ HTTP rerank call failed: {str(e)}, traceback is {traceback.format_exc()}")
             return None
 
     def _calculate_batch_size(self, documents: List[str]) -> int:
@@ -79,7 +79,7 @@ class HttpReranker(Reranker):
         if model_name == QWEN3_RERANKER_8B:
             max_doc_length = max(len(doc) for doc in documents) if documents else 0
             if max_doc_length > MAX_DOC_LENGTH_32K:
-                logger.warning(f"⚠️ Qwen3_Reranker_8B 检测到文档长度超过32K ({max_doc_length} chars), 限制batch数量为1")
+                logger.warning(f"⚠️ Qwen3_Reranker_8B detected document length exceeds 32K ({max_doc_length} chars), limiting batch size to 1")
                 return 1
         
         # Default batch size limit
@@ -132,7 +132,7 @@ class HttpReranker(Reranker):
             if top_k is not None:
                 payload["top_n"] = top_k
 
-            logger.debug(f"🔄 处理batch {i//batch_size + 1}: {len(batch_docs)} 文档")
+            logger.debug(f"🔄 Processing batch {i//batch_size + 1}: {len(batch_docs)} documents")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers, verify_ssl=False) as response:

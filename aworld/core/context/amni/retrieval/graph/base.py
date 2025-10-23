@@ -31,10 +31,10 @@ class GraphMemoryEdge(MemoryItem):
 
         properties = kwargs.get('properties', {})
 
-        # 先调用父类初始化，确保Pydantic属性正确设置
+        # Call parent class initialization first to ensure Pydantic attributes are set correctly
         super().__init__(content=properties, metadata=meta, memory_type="fact", **kwargs)
 
-        # 然后设置子类属性
+        # Then set subclass attributes
         self.label = label
         self.id = id
         self.source_id = source_id
@@ -83,10 +83,10 @@ class GraphMemoryNode(MemoryItem):
 
         properties = kwargs.get('properties', {})
 
-        # 先调用父类初始化，确保Pydantic属性正确设置
+        # Call parent class initialization first to ensure Pydantic attributes are set correctly
         super().__init__(content=properties, metadata=meta, memory_type="fact", **kwargs)
 
-        # 然后设置子类属性
+        # Then set subclass attributes
         self.label = label
         self.id = id
         self.properties = properties

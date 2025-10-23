@@ -93,7 +93,7 @@ class ChunkerBase(Chunker, BaseModel):
                     chunk_overlap=self.config.chunk_overlap,
                     artifact_id=artifact.artifact_id,
                     artifact_type=artifact.artifact_type.value,
-                    chunk_desc=text[:100], # TODO chunk的summary
+                    chunk_desc=text[:100], # TODO chunk summary
                     **artifact.metadata
                 )
             )

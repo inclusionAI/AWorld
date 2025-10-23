@@ -32,7 +32,7 @@ class SubTask(BaseModel):
         return self.input.origin_user_input
 
     def to_dict(self):
-        """将SubTask对象转换为可JSON序列化的字典"""
+        """Convert SubTask object to JSON serializable dictionary"""
         return {
             "task_id": self.task_id,
             "status": self.status,
@@ -69,7 +69,7 @@ class TaskWorkingState(WorkingState):
     agent_states: Optional[Dict[str, ApplicationAgentState]] = Field(default_factory=dict,
                                                                      description="Agent context isolation",
                                                                      exclude=True)
-    # Task Core Step: 记录一些必要的步骤，
+    # Task Core Step: Record some necessary steps,
     # core_steps: Optional[list[str]] = Field(default_factory=list)
 
     def set_agent_state(self, agent_id: str, application_agent_state: ApplicationAgentState):

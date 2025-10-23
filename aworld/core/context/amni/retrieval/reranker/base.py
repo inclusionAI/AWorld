@@ -48,19 +48,19 @@ class Reranker(ABC):
         Example:
             ```python
             reranker = HttpReranker(config)
-            results = await reranker.run("你好", documents=[
-                "你好",
-                "我很好",
-                "谢谢你",
-                "很高兴遇到你",
+            results = await reranker.run("Hello", documents=[
+                "Hello",
+                "I'm fine",
+                "Thank you",
+                "Nice to meet you",
             ])
             for result in results:
                 print(f"{result.doc}: {result.score}")
             # Output:
-            # 你好: 0.989096999168396
-            # 很高兴遇到你: 0.30921047925949097
-            # 谢谢你: 0.10078048706054688
-            # 我很好: 0.06917418539524078
+            # Hello: 0.989096999168396
+            # Nice to meet you: 0.30921047925949097
+            # Thank you: 0.10078048706054688
+            # I'm fine: 0.06917418539524078
             ```
         """
         raise NotImplementedError

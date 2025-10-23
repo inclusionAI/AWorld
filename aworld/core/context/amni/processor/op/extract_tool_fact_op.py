@@ -9,7 +9,7 @@ from .langextract_op import LangExtractOp
 from .op_factory import memory_op
 from ... import ApplicationContext
 
-# 定义泛型类型变量
+# Define generic type variable
 T = TypeVar('T', bound=Fact)
 
 @memory_op("extract_tool_fact")

@@ -200,7 +200,7 @@ class InMemoryChunkStore(ChunkStore):
                 # Count chunks per artifact_id using Counter
                 artifact_counts = Counter(chunk.chunk_metadata.artifact_id for chunk in matching_chunks)
                 
-                logger.debug(f"📊 内存存储查询完成: 找到 {len(artifact_counts)} 个 artifacts 的统计信息")
+                logger.debug(f"📊 In-memory storage query completed: found statistics for {len(artifact_counts)} artifacts")
                 return dict(artifact_counts)
                 
             except Exception as e:

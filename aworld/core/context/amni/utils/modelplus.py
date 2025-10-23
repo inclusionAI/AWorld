@@ -10,23 +10,23 @@ from aworld.models.model_response import ToolCall
 
 def from_dict_to_memory_message(data: Dict[str, Any]) -> Optional[MemoryMessage]:
     """
-    根据 role 将 dict 转换为 MemoryMessage
+    Convert dict to MemoryMessage based on role
     
     Args:
-        data: 包含消息数据的字典
+        data: Dictionary containing message data
         
     Returns:
-        MemoryMessage 对象，如果转换失败则返回 None
+        MemoryMessage object, returns None if conversion fails
     """
     if not data:
         return None
     
-    # 提取基本信息
+    # Extract basic information
     content = data.get('content', '')
     metadata = data.get('metadata', {})
     role = metadata.get('role', '')
 
-    # 基础数据
+    # Base data
     base_data = {
         'id': data.get('id'),
         'created_at': data.get('created_at'),
@@ -36,7 +36,7 @@ def from_dict_to_memory_message(data: Dict[str, Any]) -> Optional[MemoryMessage]
         'deleted': data.get('deleted', False)
     }
     
-    # 根据 role 创建对应的 MemoryMessage
+    # Create corresponding MemoryMessage based on role
     if role == 'system':
         return MemorySystemMessage(
             content=content,
@@ -50,7 +50,7 @@ def from_dict_to_memory_message(data: Dict[str, Any]) -> Optional[MemoryMessage]
             **base_data
         )
     elif role == 'assistant':
-        # 处理 tool_calls
+        # Handle tool_calls
         tool_calls = []
         tool_calls_data = metadata.get('tool_calls', [])
         for tool_call_data in tool_calls_data:
@@ -74,7 +74,7 @@ def from_dict_to_memory_message(data: Dict[str, Any]) -> Optional[MemoryMessage]
             **base_data
         )
     else:
-        # 默认返回 MemoryMessage
+        # Default return MemoryMessage
         return MemoryMessage(
             content=content,
             metadata=metadata,

@@ -19,7 +19,7 @@ class GraphDBFactory:
         return cls._instance
 
     def get_graph_db(self, graph_db_config: GraphDBConfig = None) -> Optional[BaseGraphStore]:
-        # 如果已经创建过实例，直接返回
+        # If instance has already been created, return directly
         if self._graph_store is not None:
             return self._graph_store
 
@@ -27,23 +27,23 @@ class GraphDBFactory:
             return None
             
         with self._lock:
-            # 双重检查锁定模式
+            # Double-check locking pattern
             if self._graph_store is not None:
                 return self._graph_store
                 
             if graph_db_config.provider == "pg":
                 from .pg_graph_store import PGGraphStore
                 try:
-                    # 尝试创建连接并测试连通性
+                    # Try to create connection and test connectivity
                     graph_store = PGGraphStore(graph_db_config.config)
-                    # 测试连接是否可用
+                    # Test if connection is available
                     if hasattr(graph_store, 'test_connection'):
                         if not graph_store.test_connection():
                             return None
                     self._graph_store = graph_store
                     return self._graph_store
                 except Exception:
-                    # 连接失败时返回None
+                    # Return None when connection fails
                     return None
             else:
                 raise ValueError(f"Graph database {graph_db_config.provider} is not supported")

@@ -44,7 +44,7 @@ class SQLiteChunkStore(ChunkStore):
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # 🚀 启用WAL模式提高写入性能
+                # 🚀 Enable WAL mode to improve write performance
                 cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.execute("PRAGMA cache_size=10000")
@@ -159,15 +159,15 @@ class SQLiteChunkStore(ChunkStore):
         start_time = time.time()
         total_chunks = len(chunks)
         
-        # 🚀 如果chunks数量超过batch_size，分批处理
+        # 🚀 If chunks count exceeds batch_size, process in batches
         if total_chunks > batch_size:
-            logger.info(f"📦 分批处理: {total_chunks} chunks, 批次大小: {batch_size}")
+            logger.info(f"📦 Batch processing: {total_chunks} chunks, batch size: {batch_size}")
             for i in range(0, total_chunks, batch_size):
                 batch_chunks = chunks[i:i + batch_size]
                 await self._process_batch(batch_chunks, i // batch_size + 1)
             return
         
-        # 单批次处理
+        # Single batch processing
         await self._process_batch(chunks, 1)
     
     async def _process_batch(self, chunks: List[Chunk], batch_num: int) -> None:
@@ -185,7 +185,7 @@ class SQLiteChunkStore(ChunkStore):
                 with sqlite3.connect(self.db_path) as conn:
                     cursor = conn.cursor()
                     
-                    # 🚀 批量查询所有chunk_id是否存在
+                    # 🚀 Batch query all chunk_ids to check existence
                     query_start = time.time()
                     chunk_ids = [chunk.chunk_id for chunk in chunks]
                     placeholders = ','.join(['?' for _ in chunk_ids])
@@ -193,7 +193,7 @@ class SQLiteChunkStore(ChunkStore):
                     existing_ids = {row[0] for row in cursor.fetchall()}
                     query_time = time.time() - query_start
                     
-                    # 分离需要更新和插入的chunks
+                    # Separate chunks that need updating and inserting
                     chunks_to_update = []
                     chunks_to_insert = []
                     
@@ -203,7 +203,7 @@ class SQLiteChunkStore(ChunkStore):
                         else:
                             chunks_to_insert.append(chunk)
                     
-                    # 🚀 批量更新
+                    # 🚀 Batch update
                     update_time = 0
                     if chunks_to_update:
                         update_start = time.time()
@@ -218,12 +218,12 @@ class SQLiteChunkStore(ChunkStore):
                         """, update_data)
                         update_time = time.time() - update_start
                     
-                    # 🚀 批量插入
+                    # 🚀 Batch insert
                     insert_time = 0
                     if chunks_to_insert:
                         insert_start = time.time()
                         
-                        # 🚀 预序列化所有metadata，减少重复计算
+                        # 🚀 Pre-serialize all metadata to reduce repeated calculations
                         serialization_start = time.time()
                         insert_data = []
                         for chunk in chunks_to_insert:
@@ -231,7 +231,7 @@ class SQLiteChunkStore(ChunkStore):
                             insert_data.append((chunk.chunk_id, chunk.content, metadata_json))
                         serialization_time = time.time() - serialization_start
                         
-                        # 🚀 使用executemany进行批量插入
+                        # 🚀 Use executemany for batch insert
                         db_insert_start = time.time()
                         cursor.executemany(f"""
                             INSERT INTO {self.table_name} (chunk_id, content, chunk_metadata)
@@ -241,18 +241,18 @@ class SQLiteChunkStore(ChunkStore):
                         
                         insert_time = time.time() - insert_start
                         
-                        logger.debug(f"🔧 批次{batch_num}插入详情 - 序列化耗时: {serialization_time:.3f}s, 数据库插入耗时: {db_insert_time:.3f}s")
+                        logger.debug(f"🔧 Batch {batch_num} insert details - serialization time: {serialization_time:.3f}s, database insert time: {db_insert_time:.3f}s")
                     
                     conn.commit()
                     batch_time = time.time() - batch_start_time
                     
-                    logger.debug(f"🔄 批次{batch_num}完成: {len(chunks_to_update)} 个更新, {len(chunks_to_insert)} 个插入")
-                    logger.debug(f"⏱️ 批次{batch_num}性能 - 总chunks: {len(chunks)}, 总耗时: {batch_time:.3f}s, "
-                              f"查询耗时: {query_time:.3f}s, 更新耗时: {update_time:.3f}s, "
-                              f"插入耗时: {insert_time:.3f}s, 平均: {batch_time/len(chunks)*1000:.2f}ms/chunk")
+                    logger.debug(f"🔄 Batch {batch_num} completed: {len(chunks_to_update)} updates, {len(chunks_to_insert)} inserts")
+                    logger.debug(f"⏱️ Batch {batch_num} performance - total chunks: {len(chunks)}, total time: {batch_time:.3f}s, "
+                              f"query time: {query_time:.3f}s, update time: {update_time:.3f}s, "
+                              f"insert time: {insert_time:.3f}s, average: {batch_time/len(chunks)*1000:.2f}ms/chunk")
                     
             except Exception as e:
-                logger.error(f"❌ 批次{batch_num}处理失败: {e}")
+                logger.error(f"❌ Batch {batch_num} processing failed: {e}")
                 raise
     
     async def get_chunk(self, chunk_id: str) -> Optional[Chunk]:
@@ -534,7 +534,7 @@ class SQLiteChunkStore(ChunkStore):
                         if artifact_id:  # Skip None values
                             artifact_counts[artifact_id] = chunk_count
                     
-                    logger.debug(f"📊 SQLite 查询完成: 找到 {len(artifact_counts)} 个 artifacts 的统计信息")
+                    logger.debug(f"📊 SQLite query completed: found statistics for {len(artifact_counts)} artifacts")
                     return artifact_counts
                     
             except Exception as e:

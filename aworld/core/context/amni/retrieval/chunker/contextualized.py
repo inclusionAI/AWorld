@@ -41,7 +41,7 @@ class ContextualizedChunker(ChunkerBase):
             A list of `Chunk` objects.
         """
 
-        # TODO 根据不同的artifact类型路由到不同的pipeline
+        # TODO Route to different pipelines based on artifact type
         texts = self._text_splitter.split_text(artifact.content)
 
         contextualized_texts = []

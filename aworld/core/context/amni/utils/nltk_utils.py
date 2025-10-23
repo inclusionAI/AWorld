@@ -1,30 +1,30 @@
 """
-NLTK文本处理工具类
-提供实体识别和关键词提取功能，支持并发处理和批量操作
+NLTK Text Processing Utility Class
+Provides entity recognition and keyword extraction functionality with support for concurrent processing and batch operations
 
-主要特性:
-- 🔍 实体识别: 支持人员、组织机构、地理位置等多种实体类型
-- 📊 关键词提取: 提供TF-IDF、频率分析、POS标签三种方法
-- ⚡ 并发处理: 支持异步和批量处理，提高效率
-- 📦 结构化结果: 使用dataclass提供类型安全的结果存储
-- 🔄 向后兼容: 提供字典格式转换，保持兼容性
+Main Features:
+- 🔍 Entity Recognition: Supports multiple entity types including persons, organizations, locations, etc.
+- 📊 Keyword Extraction: Provides TF-IDF, frequency analysis, and POS tagging methods
+- ⚡ Concurrent Processing: Supports async and batch processing for improved efficiency
+- 📦 Structured Results: Uses dataclass to provide type-safe result storage
+- 🔄 Backward Compatibility: Provides dictionary format conversion to maintain compatibility
 
-使用示例:
+Usage Examples:
 
-1. 基本使用:
+1. Basic Usage:
 ```python
 from amnicontext.utils.nltk_utils import process_text_with_nltk
 
 text = "Apple Inc. was founded by Steve Jobs in Cupertino, California."
 result = process_text_with_nltk(text)
 
-print(f"人员: {result.entities.persons}")  # ['Steve Jobs']
-print(f"组织机构: {result.entities.organizations}")  # ['Apple Inc.']
-print(f"地理位置: {result.entities.locations}")  # ['Cupertino', 'California']
-print(f"TF-IDF关键词: {result.keywords.get_top_tfidf(5)}")
+print(f"Persons: {result.entities.persons}")  # ['Steve Jobs']
+print(f"Organizations: {result.entities.organizations}")  # ['Apple Inc.']
+print(f"Locations: {result.entities.locations}")  # ['Cupertino', 'California']
+print(f"TF-IDF Keywords: {result.keywords.get_top_tfidf(5)}")
 ```
 
-2. 异步处理:
+2. Async Processing:
 ```python
 import asyncio
 from amnicontext.utils.nltk_utils import process_text_with_nltk_async
@@ -36,43 +36,43 @@ async def process_text():
 result = asyncio.run(process_text())
 ```
 
-3. 批量处理:
+3. Batch Processing:
 ```python
 from amnicontext.utils.nltk_utils import NLTKProcessor
 
 processor = NLTKProcessor(max_workers=4)
-texts = ["文本1", "文本2", "文本3"]
+texts = ["Text 1", "Text 2", "Text 3"]
 
-# 批量异步处理
+# Batch async processing
 results = await processor.process_texts_batch(texts)
 ```
 
-4. 自定义参数:
+4. Custom Parameters:
 ```python
 processor = NLTKProcessor(max_workers=4)
 result = processor.process_text_sync(
     text,
-    max_tfidf_features=50,  # TF-IDF最大特征数
-    top_frequency=30,       # 频率分析前N个
-    top_pos=30             # POS分析前N个
+    max_tfidf_features=50,  # Maximum TF-IDF features
+    top_frequency=30,       # Top N frequency analysis
+    top_pos=30             # Top N POS analysis
 )
 ```
 
-5. 在ExtractArtifactEntityOp中使用:
+5. Usage in ExtractArtifactEntityOp:
 ```python
-# 单文档处理
+# Single document processing
 result = await extract_op.execute(context, event)
 
-# 批量处理
+# Batch processing
 results = await extract_op.execute_batch(context, events)
 ```
 
-依赖要求:
+Dependencies:
 - nltk
 - scikit-learn
 - numpy
 
-确保已安装NLTK数据包:
+Ensure NLTK data packages are installed:
 ```python
 import nltk
 nltk.download('punkt')
@@ -108,16 +108,16 @@ class EntityExtractionResult:
     """
     Dataclass for storing entity extraction results
     
-    存储实体识别结果的dataclass，包含各种类型的实体
+    Dataclass for storing entity recognition results, containing various types of entities
     
-    示例:
+    Example:
     ```python
     result = EntityExtractionResult()
     result.persons = ['Steve Jobs', 'Bill Gates']
     result.organizations = ['Apple Inc.', 'Microsoft']
     result.locations = ['Cupertino', 'Seattle']
     
-    # 转换为字典格式
+    # Convert to dictionary format
     dict_result = result.to_dict()
     ```
     """
@@ -149,16 +149,16 @@ class KeywordExtractionResult:
     """
     Dataclass for storing keyword extraction results
     
-    存储关键词提取结果的dataclass，包含三种不同的关键词提取方法
+    Dataclass for storing keyword extraction results, containing three different keyword extraction methods
     
-    示例:
+    Example:
     ```python
     result = KeywordExtractionResult()
     result.tfidf_keywords = [('apple', 0.8), ('technology', 0.6)]
     result.frequency_keywords = [('company', 5), ('product', 3)]
     result.pos_keywords = [('innovation', 2), ('development', 2)]
     
-    # 获取前N个关键词
+    # Get top N keywords
     top_tfidf = result.get_top_tfidf(5)
     top_freq = result.get_top_frequency(5)
     ```
@@ -185,24 +185,24 @@ class NLTKProcessingResult:
     """
     Main dataclass for storing all NLTK processing results
     
-    主要的NLTK处理结果存储类，包含实体识别和关键词提取的所有结果
+    Main NLTK processing result storage class, containing all results from entity recognition and keyword extraction
     
-    示例:
+    Example:
     ```python
     processor = NLTKProcessor()
     result = processor.process_text_sync("Apple Inc. was founded by Steve Jobs.")
     
-    # 访问实体信息
+    # Access entity information
     print(result.entities.persons)  # ['Steve Jobs']
     print(result.entities.organizations)  # ['Apple Inc.']
     
-    # 访问关键词信息
+    # Access keyword information
     print(result.keywords.get_top_tfidf(5))
     
-    # 访问元数据
+    # Access metadata
     print(result.metadata['text_length'])
     
-    # 转换为字典格式（向后兼容）
+    # Convert to dictionary format (backward compatibility)
     dict_result = result.to_dict()
     ```
     """
@@ -566,7 +566,7 @@ def process_text_with_nltk(text: str, max_tfidf_features: int = 50,
     """
     Convenience function for processing text with NLTK
     
-    便利函数，用于快速处理文本的实体识别和关键词提取
+    Convenience function for quickly processing text entity recognition and keyword extraction
     
     Args:
         text: Input text to process
@@ -577,18 +577,18 @@ def process_text_with_nltk(text: str, max_tfidf_features: int = 50,
     Returns:
         NLTKProcessingResult containing all extracted information
         
-    示例:
+    Example:
     ```python
     text = "Apple Inc. was founded by Steve Jobs in Cupertino, California."
     result = process_text_with_nltk(text)
     
-    # 访问结果
-    print(f"人员: {result.entities.persons}")  # ['Steve Jobs']
-    print(f"组织机构: {result.entities.organizations}")  # ['Apple Inc.']
-    print(f"地理位置: {result.entities.locations}")  # ['Cupertino', 'California']
-    print(f"TF-IDF关键词: {result.keywords.get_top_tfidf(5)}")
-    
-    # 自定义参数
+    # Access results
+    print(f"Persons: {result.entities.persons}")  # ['Steve Jobs']
+    print(f"Organizations: {result.entities.organizations}")  # ['Apple Inc.']
+    print(f"Locations: {result.entities.locations}")  # ['Cupertino', 'California']
+    print(f"TF-IDF Keywords: {result.keywords.get_top_tfidf(5)}")
+
+    # Custom parameters
     result = process_text_with_nltk(text, max_tfidf_features=20, top_frequency=15)
     ```
     """
@@ -601,7 +601,7 @@ async def process_text_with_nltk_async(text: str, max_tfidf_features: int = 50,
     """
     Convenience function for async processing text with NLTK
     
-    异步便利函数，用于异步处理文本的实体识别和关键词提取
+    Async convenience function for asynchronous processing of text entity recognition and keyword extraction
     
     Args:
         text: Input text to process
@@ -612,7 +612,7 @@ async def process_text_with_nltk_async(text: str, max_tfidf_features: int = 50,
     Returns:
         NLTKProcessingResult containing all extracted information
         
-    示例:
+    Example:
     ```python
     import asyncio
     
@@ -620,13 +620,13 @@ async def process_text_with_nltk_async(text: str, max_tfidf_features: int = 50,
         text = "Tesla Inc. was founded by Elon Musk in California."
         result = await process_text_with_nltk_async(text)
         
-        print(f"人员: {result.entities.persons}")  # ['Elon Musk']
-        print(f"组织机构: {result.entities.organizations}")  # ['Tesla Inc.']
-        print(f"地理位置: {result.entities.locations}")  # ['California']
+        print(f"Persons: {result.entities.persons}")  # ['Elon Musk']
+        print(f"Organizations: {result.entities.organizations}")  # ['Tesla Inc.']
+        print(f"Locations: {result.entities.locations}")  # ['California']
         
         return result
     
-    # 运行异步函数
+    # Run async function
     result = asyncio.run(process_text())
     ```
     """

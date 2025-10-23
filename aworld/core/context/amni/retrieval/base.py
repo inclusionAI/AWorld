@@ -11,7 +11,7 @@ from .index import RetrievalPluginConfig
 from aworld.output import Artifact
 
 class RetrieverConfig(BaseModel):
-    """retriever 配置"""
+    """Retriever configuration"""
     type: str = "amni"
     chunk_config: Optional[ChunkConfig] = None
     chunk_store_config: Optional[ChunkStoreConfig] = None

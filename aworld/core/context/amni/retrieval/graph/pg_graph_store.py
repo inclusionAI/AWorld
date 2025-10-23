@@ -16,7 +16,7 @@ from aworld.logs.util import logger
 
 @dataclass
 class PostgreSQLDB:
-    """PostgreSQL数据库连接管理"""
+    """PostgreSQL database connection management"""
     
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.config = config
@@ -25,13 +25,13 @@ class PostgreSQLDB:
         self._is_initialized = False
     
     async def initdb(self):
-        """初始化数据库连接池"""
+        """Initialize database connection pool"""
         async with self._initialization_lock:
             if self._is_initialized:
                 return
                 
             try:
-                # 构建连接参数
+                # Build connection parameters
                 connection_params = {
                     "host": self.config.get("host", "localhost"),
                     "port": self.config.get("port", 5432),
@@ -40,29 +40,29 @@ class PostgreSQLDB:
                     "database": self.config.get("database", "aworldcore"),
                 }
                 
-                # SSL配置
+                # SSL configuration
                 if self.config.get("ssl_mode"):
                     connection_params["ssl"] = self._create_ssl_context()
                 
-                # 创建连接池
+                # Create connection pool
                 self.pool = await asyncpg.create_pool(
                     **connection_params,
                     min_size=1,
                     max_size=10,
-                    command_timeout=120,  # 增加命令超时时间
+                    command_timeout=120,  # Increase command timeout
                     server_settings={
                         'application_name': 'aworldcore_graph_store',
                         'tcp_keepalives_idle': '600',
                         'tcp_keepalives_interval': '30',
                         'tcp_keepalives_count': '3',
                     },
-                    # 连接超时设置
-                    timeout=30,  # 连接超时30秒
-                    max_queries=50000,  # 最大查询数
-                    max_inactive_connection_lifetime=300.0,  # 非活跃连接最大生存时间
+                    # Connection timeout settings
+                    timeout=30,  # Connection timeout 30 seconds
+                    max_queries=50000,  # Maximum queries
+                    max_inactive_connection_lifetime=300.0,  # Maximum inactive connection lifetime
                 )
                 
-                # 配置AGE扩展
+                # Configure AGE extension
                 async with self.pool.acquire() as connection:
                     await self.configure_age_extension(connection)
                 
@@ -73,7 +73,7 @@ class PostgreSQLDB:
                 raise Exception(f"Failed to initialize PostgreSQL database: {e}")
     
     def _create_ssl_context(self) -> ssl.SSLContext | None:
-        """创建SSL上下文"""
+        """Create SSL context"""
         try:
             ssl_mode = self.config.get("ssl_mode", "prefer")
             if ssl_mode == "disable":
@@ -90,31 +90,31 @@ class PostgreSQLDB:
     
     @staticmethod
     async def configure_age_extension(connection: Connection) -> None:
-        """配置Apache AGE扩展"""
+        """Configure Apache AGE extension"""
         try:
-            # 创建AGE扩展
+            # Create AGE extension
             await connection.execute("CREATE EXTENSION IF NOT EXISTS age;")
             
-            # 设置搜索路径
+            # Set search path
             await connection.execute("SET search_path = ag_catalog, public;")
             
         except Exception as e:
-            # 如果AGE扩展不可用，记录警告但继续
+            # If AGE extension is not available, log warning but continue
             print(f"Warning: Apache AGE extension not available: {e}")
     
     async def query(self, sql: str, params: List[Any] = None, multirows: bool = False, 
                    with_age: bool = False, graph_name: str = None) -> Union[Dict[str, Any], List[Dict[str, Any]], None]:
-        """执行查询"""
+        """Execute query"""
         if not self.pool:
             raise Exception("Database pool not initialized")
         
         connection = None
         try:
             connection = await self.pool.acquire()
-            # 对于查询操作，使用只读事务
+            # For query operations, use read-only transaction
             async with connection.transaction(readonly=True):
                 if with_age and graph_name:
-                    # 设置AGE搜索路径
+                    # Set AGE search path
                     await connection.execute(f"SET search_path = ag_catalog, public;")
                 
                 if multirows:
@@ -124,7 +124,7 @@ class PostgreSQLDB:
                     row = await connection.fetchrow(sql, *(params or []))
                     return dict(row) if row else None
         except Exception as e:
-            # 确保连接被正确释放
+            # Ensure connection is properly released
             raise e
         finally:
             if connection:
@@ -135,36 +135,36 @@ class PostgreSQLDB:
     
     async def execute(self, sql: str, data: Dict[str, Any] = None, upsert: bool = False, 
                      ignore_if_exists: bool = False, with_age: bool = False, graph_name: str = None):
-        """执行SQL语句"""
+        """Execute SQL statement"""
         if not self.pool:
             raise Exception("Database pool not initialized")
         
         connection = None
         try:
             connection = await self.pool.acquire()
-            # 开始事务
+            # Begin transaction
             async with connection.transaction():
                 if with_age and graph_name:
-                    # 设置AGE搜索路径
+                    # Set AGE search path
                     await connection.execute(f"SET search_path = ag_catalog, public;")
                 
                 try:
                     if data:
-                        # Apache AGE 的 cypher 函数需要将参数作为单个字典传递
+                        # Apache AGE's cypher function requires parameters to be passed as a single dictionary
                         result = await connection.fetch(sql, data)
                     else:
                         result = await connection.fetch(sql)
                     
-                    # 返回查询结果
+                    # Return query result
                     return [dict(row) for row in result] if result else []
                 except Exception as e:
                     if ignore_if_exists and "already exists" in str(e).lower():
-                        # 忽略"已存在"错误
+                        # Ignore "already exists" error
                         pass
                     else:
                         raise e
         except Exception as e:
-            # 确保连接被正确释放
+            # Ensure connection is properly released
             raise e
         finally:
             if connection:
@@ -174,10 +174,10 @@ class PostgreSQLDB:
                     print(f"Warning: Error releasing connection: {release_error}")
     
     async def close(self):
-        """关闭连接池"""
+        """Close connection pool"""
         if self.pool:
             try:
-                # 等待所有连接完成
+                # Wait for all connections to complete
                 await asyncio.sleep(0.1)
                 await self.pool.close()
                 self._is_initialized = False
@@ -188,12 +188,12 @@ class PostgreSQLDB:
 
 
 class ClientManager:
-    """客户端管理器 - 改进的资源管理"""
+    """Client manager - improved resource management"""
     _instances: Dict[str, Any] = {"db": None, "ref_count": 0, "_lock": asyncio.Lock(), "_shutdown": False}
 
     @classmethod
     async def get_client(cls, config: dict[str, Any]) -> PostgreSQLDB:
-        """获取数据库客户端"""
+        """Get database client"""
         async with cls._instances["_lock"]:
             if cls._instances["_shutdown"]:
                 raise RuntimeError("ClientManager is shutting down")
@@ -207,7 +207,7 @@ class ClientManager:
     
     @classmethod
     async def reset_client(cls):
-        """重置数据库客户端连接"""
+        """Reset database client connection"""
         async with cls._instances["_lock"]:
             if cls._instances["db"]:
                 try:
@@ -220,7 +220,7 @@ class ClientManager:
     
     @classmethod
     async def release_client(cls, db: PostgreSQLDB):
-        """释放数据库客户端"""
+        """Release database client"""
         async with cls._instances["_lock"]:
             if cls._instances["ref_count"] > 0:
                 cls._instances["ref_count"] -= 1
@@ -236,7 +236,7 @@ class ClientManager:
     
     @classmethod
     async def shutdown(cls):
-        """强制关闭所有连接"""
+        """Force close all connections"""
         async with cls._instances["_lock"]:
             cls._instances["_shutdown"] = True
             if cls._instances["db"]:
@@ -251,7 +251,7 @@ class ClientManager:
 
 @dataclass
 class PGGraphStore(BaseGraphStore):
-    """PostgreSQL图存储实现"""
+    """PostgreSQL graph storage implementation"""
 
     graph_db_config: GraphDBConfig = field(default=None)
     db: Optional[PostgreSQLDB] = field(default=None)
@@ -262,22 +262,22 @@ class PGGraphStore(BaseGraphStore):
         self.graph_name = graph_name
 
     async def initialize(self):
-        """初始化图存储"""
+        """Initialize graph storage"""
         if self.db is None:
             self.db = await ClientManager.get_client(self.graph_db_config)
         
-        # 确保数据库已初始化
+        # Ensure database is initialized
         if not self.db._is_initialized:
             await self.db.initdb()
         
-        # 检查连接健康状态
+        # Check connection health status
         await self._check_connection_health()
         
-        # 创建AGE扩展和配置图环境
+        # Create AGE extension and configure graph environment
         async with self.db.pool.acquire() as connection:
             await PostgreSQLDB.configure_age_extension(connection)
         
-        # 执行图初始化语句
+        # Execute graph initialization statements
         queries = [
             f"SELECT create_graph('{self.graph_name}')",
             f"SELECT create_vlabel('{self.graph_name}', 'base');",
@@ -288,15 +288,15 @@ class PGGraphStore(BaseGraphStore):
             try:
                 await self.db.execute(query, with_age=True, graph_name=self.graph_name, ignore_if_exists=True)
             except Exception as e:
-                # 忽略"已存在"错误
+                # Ignore "already exists" error
                 if "already exists" not in str(e).lower():
                     print(f"Warning: Failed to execute query {query}: {e}")
     
     async def _check_connection_health(self):
-        """检查数据库连接健康状态"""
+        """Check database connection health status"""
         try:
             if self.db and self.db.pool:
-                # 尝试获取一个连接并执行简单查询
+                # Try to acquire a connection and execute a simple query
                 async with self.db.pool.acquire() as connection:
                     await connection.fetchval("SELECT 1")
                 logger.debug("Database connection health check passed")
@@ -304,19 +304,19 @@ class PGGraphStore(BaseGraphStore):
                 raise Exception("Database pool not available")
         except Exception as e:
             logger.error(f"Database connection health check failed: {e}")
-            # 如果健康检查失败，尝试重新初始化连接
+            # If health check fails, try to reinitialize connection
             if self.db:
                 try:
                     await self.db.close()
                 except:
                     pass
                 self.db = None
-                # 重新获取客户端
+                # Re-acquire client
                 self.db = await ClientManager.get_client(self.graph_db_config)
                 await self.db.initdb()
     
     async def finalize(self):
-        """清理资源"""
+        """Clean up resources"""
         if self.db is not None:
             try:
                 await ClientManager.release_client(self.db)
@@ -327,15 +327,15 @@ class PGGraphStore(BaseGraphStore):
     
     @staticmethod
     def _record_to_dict(record: asyncpg.Record) -> Dict[str, Any]:
-        """将AGE查询记录转换为字典"""
+        """Convert AGE query records to dictionary"""
         d = {}
         
         for k in record.keys():
             v = record[k]
             if isinstance(v, str) and "::" in v:
-                # 处理AGE类型数据
+                # Handle AGE type data
                 if v.startswith("[") and v.endswith("]"):
-                    # 处理数组类型
+                    # Handle array type
                     json_content = v[:v.rfind("::")]
                     type_id = v[v.rfind("::") + 2:]
                     if type_id in ["vertex", "edge"]:
@@ -345,7 +345,7 @@ class PGGraphStore(BaseGraphStore):
                         except json.JSONDecodeError:
                             d[k] = None
                 else:
-                    # 处理单个对象
+                    # Handle single object
                     json_content = v[:v.rfind("::")]
                     type_id = v[v.rfind("::") + 2:]
                     if type_id in ["vertex", "edge"]:
@@ -363,7 +363,7 @@ class PGGraphStore(BaseGraphStore):
     
     @staticmethod
     def _format_properties(properties: Dict[str, Any], _id: Optional[str] = None) -> str:
-        """将属性字典转换为Cypher查询字符串"""
+        """Convert property dictionary to Cypher query string"""
         props = []
         for k, v in properties.items():
             prop = f"`{k}`: {json.dumps(v)}"
@@ -376,8 +376,8 @@ class PGGraphStore(BaseGraphStore):
     
     async def _query(self, query: str, readonly: bool = True, upsert: bool = False, 
                     params: Dict[str, Any] = None, max_retries: int = 5) -> List[Dict[str, Any]]:
-        """执行图查询"""
-        # 确保数据库已初始化
+        """Execute graph query"""
+        # Ensure database is initialized
         if self.db is None:
             await self.initialize()
         
@@ -407,7 +407,7 @@ class PGGraphStore(BaseGraphStore):
             
             except Exception as e:
                 error_msg = str(e).lower()
-                # 检查是否是连接相关的错误，需要重试
+                # Check if it's a connection-related error that needs retry
                 retryable_errors = [
                     "another operation is in progress",
                     "connection is closed",
@@ -423,12 +423,12 @@ class PGGraphStore(BaseGraphStore):
                 is_retryable = any(keyword in error_msg for keyword in retryable_errors)
                 
                 if is_retryable and attempt < max_retries - 1:
-                    # 指数退避重试，增加等待时间
-                    wait_time = min(2.0 * (2 ** attempt), 30.0)  # 最大等待30秒
+                    # Exponential backoff retry, increase wait time
+                    wait_time = min(2.0 * (2 ** attempt), 30.0)  # Maximum wait 30 seconds
                     logger.warning(f"Database connection error, retrying ({attempt + 1}/{max_retries}) in {wait_time:.1f}s: {e}")
                     await asyncio.sleep(wait_time)
                     
-                    # 如果是连接池问题，尝试重新初始化
+                    # If it's a connection pool issue, try to reinitialize
                     if "pool" in error_msg and attempt == 1:
                         try:
                             logger.info("Attempting to reinitialize database connection pool...")
@@ -444,7 +444,7 @@ class PGGraphStore(BaseGraphStore):
                     raise Exception(f"Error executing graph query: {query}, error: {e}")
  
     async def has_node(self, namespace, node_id: str) -> bool:
-        """检查节点是否存在"""
+        """Check if node exists"""
         query = f"""
             SELECT EXISTS (
               SELECT 1
@@ -464,7 +464,7 @@ class PGGraphStore(BaseGraphStore):
         return bool(row["node_exists"])
 
     async def has_edge(self, namespace, source_node_id: str, target_node_id: str) -> bool:
-        """检查边是否存在"""
+        """Check if edge exists"""
         query = f"""
             WITH a AS (
               SELECT id AS vid
@@ -500,7 +500,7 @@ class PGGraphStore(BaseGraphStore):
         return bool(row["edge_exists"])
 
     async def get_node(self, namespace, node_id: str) -> Optional[dict[str, str]]:
-        """获取节点"""
+        """Get node"""
         result = await self.get_nodes_batch(namespace=namespace, node_ids=[node_id])
         if result and node_id in result:
             return result[node_id]
@@ -508,14 +508,14 @@ class PGGraphStore(BaseGraphStore):
 
     
     async def get_edge(self, namespace, source_node_id: str, target_node_id: str) -> Optional[Dict[str, Any]]:
-        """获取边"""
+        """Get edge"""
         result = await self.get_edges_batch(namespace, [{"src": source_node_id, "tgt": target_node_id}])
         if result and (source_node_id, target_node_id) in result:
             return result[(source_node_id, target_node_id)]
         return None
 
     async def upsert_node(self, namespace, node_id: str, node_data: dict[str, str]) -> None:
-        # 确保namespace属性被包含在节点数据中
+        # Ensure namespace property is included in node data
         node_data_with_namespace = node_data.copy()
         node_data_with_namespace['namespace'] = namespace
         properties = self._format_properties(node_data_with_namespace)
@@ -531,7 +531,7 @@ class PGGraphStore(BaseGraphStore):
         )
 
         try:
-            # 确保数据库连接健康
+            # Ensure database connection is healthy
             await self._check_connection_health()
             
             await self._query(query, readonly=False, upsert=True)
@@ -542,36 +542,36 @@ class PGGraphStore(BaseGraphStore):
                 f"[{self.graph_name}] POSTGRES, upsert_node error on node_id: `{node_id}`, error: {e}"
             )
             
-            # 如果是连接超时错误，尝试重新初始化连接
+            # If connection timeout error, try to reinitialize connection
             error_msg = str(e).lower()
             if any(keyword in error_msg for keyword in ["timeout", "connection", "cancelled"]):
                 logger.warning(f"Connection issue detected for node {node_id}, attempting to recover...")
                 try:
-                    # 重置客户端连接
+                    # Reset client connection
                     await ClientManager.reset_client()
                     self.db = None
                     await self.initialize()
                     
-                    # 重试一次
+                    # Retry once
                     await self._query(query, readonly=False, upsert=True)
                     logger.info(f"Successfully recovered and upserted node: {node_id}")
                     return
                 except Exception as retry_error:
                     logger.error(f"Failed to recover connection for node {node_id}: {retry_error}")
             
-            # 重新抛出异常，但添加更多上下文信息
+            # Re-raise exception with more context information
             raise Exception(f"Failed to upsert node {node_id}: {e}") from e
 
     async def upsert_edge(self, namespace, source_node_id: str, target_node_id: str, edge_data: Dict[str, Any]) -> None:
         try:
-            """插入或更新边"""
-            # 确保源节点和目标节点存在
+            """Insert or update edge"""
+            # Ensure source and target nodes exist
             source = await self.get_node(source_node_id)
             target = await self.get_node(target_node_id)
             if not source or not target:
                 raise ValueError(f"Source or target node does not exist: {source_node_id}, {target_node_id}")
 
-            # 确保边数据包含namespace属性
+            # Ensure edge data contains namespace property
             edge_data_with_namespace = edge_data.copy()
             edge_data_with_namespace['namespace'] = namespace
             edge_properties = self._format_properties(edge_data_with_namespace)
@@ -597,11 +597,11 @@ class PGGraphStore(BaseGraphStore):
             raise
 
     async def remove_nodes(self, namespace, node_ids: List[str] = None) -> None:
-        """删除多个节点"""
+        """Delete multiple nodes"""
         if not node_ids:
             return
         
-        # 构建节点ID列表的字符串
+        # Build string of node ID list
         node_ids_str = ", ".join([f"'{node_id}'" for node_id in node_ids])
         
         query = f"""
@@ -618,16 +618,16 @@ class PGGraphStore(BaseGraphStore):
             deleted_count = result[0].get('result', {}).get('deleted_count', 0)
             logger.info(f"🗑️ Successfully deleted {deleted_count} nodes: {node_ids}")
         
-        # 验证删除是否成功
+        # Verify deletion was successful
         await self._verify_nodes_deleted(namespace, node_ids)
 
     async def remove_edges(self, namespace, edges: List[Tuple[str, str]]) -> None:
-        """删除多个边"""
+        """Delete multiple edges"""
         if not edges:
             return
         
         deleted_count = 0
-        # 为每个边构建删除查询
+        # Build delete query for each edge
         for source_id, target_id in edges:
             query = f"""
                 SELECT * FROM cypher('{self.graph_name}', $$
@@ -648,21 +648,21 @@ class PGGraphStore(BaseGraphStore):
         
         logger.info(f"🗑️ Successfully deleted {deleted_count} edges out of {len(edges)}")
         
-        # 验证删除是否成功
+        # Verify deletion was successful
         await self._verify_edges_deleted(edges)
 
     async def get_nodes_batch(self, namespace, node_ids: List[str], batch_size: int = 1000) -> Dict[str, Dict[str, Any]]:
-        """批量获取节点"""
+        """Batch get nodes"""
         if not node_ids:
             return {}
 
         nodes_dict = {}
         
-        # 分批处理节点ID
+        # Process node IDs in batches
         for i in range(0, len(node_ids), batch_size):
             batch = node_ids[i:i + batch_size]
             
-            # 构建节点ID列表的字符串
+            # Build string of node ID list
             node_ids_str = ", ".join([f"'{node_id}'" for node_id in batch])
 
             query = f"""
@@ -847,26 +847,26 @@ class PGGraphStore(BaseGraphStore):
         return edges_dict
 
     async def index_done_callback(self) -> None:
-        """索引完成回调"""
-        # PostgreSQL自动处理持久化
+        """Index completion callback"""
+        # PostgreSQL automatically handles persistence
         pass
     
     async def _flush_database_cache(self) -> None:
-        """刷新数据库缓存，确保删除操作立即生效"""
+        """Refresh database cache to ensure deletion takes effect immediately"""
         try:
             async with self.db.pool.acquire() as connection:
-                # 强制刷新所有缓存
+                # Force refresh all caches
                 await connection.execute("SELECT pg_stat_reset();")
-                # 刷新AGE图缓存
+                # Refresh AGE graph cache
                 await connection.execute(f"SET search_path = ag_catalog, public;")
-                # 执行一个简单的查询来刷新连接
+                # Execute a simple query to refresh connection
                 await connection.fetch("SELECT 1;")
                 logger.debug("🔄 Database cache flushed")
         except Exception as e:
             logger.warning(f"⚠️ Failed to flush database cache: {e}")
     
     async def _verify_nodes_deleted(self, namespace, node_ids: List[str]) -> None:
-        """验证节点是否已成功删除"""
+        """Verify nodes have been successfully deleted"""
         try:
             for node_id in node_ids:
                 exists = await self.has_node(namespace, node_id)
@@ -878,7 +878,7 @@ class PGGraphStore(BaseGraphStore):
             logger.error(f"❌ Error verifying node deletion: {e}")
     
     async def _verify_edges_deleted(self, namespace, edges: List[Tuple[str, str]]) -> None:
-        """验证边是否已成功删除"""
+        """Verify edges have been successfully deleted"""
         try:
             for source_id, target_id in edges:
                 exists = await self.has_edge(namespace=namespace, source_node_id=source_id, target_node_id=target_id)
@@ -988,26 +988,26 @@ class PGGraphStore(BaseGraphStore):
         return out
     
     async def get_related_nodes(self, namespace, node_id: str, max_depth: int = 2, limit: int = 10) -> List[str]:
-        """获取与指定节点相关的节点ID列表，支持多层级查询
+        """Get list of node IDs related to specified node, supports multi-level queries
         
         Args:
-            node_id: 要查询关联节点的节点ID
-            max_depth: 最大查询深度，默认为2
-            limit: 返回结果数量限制，默认为10
+            node_id: Node ID to query related nodes
+            max_depth: Maximum query depth, defaults to 2
+            limit: Result count limit, defaults to 10
             
         Returns:
-            List[str]: 关联节点ID列表
+            List[str]: List of related node IDs
         """
         if max_depth <= 0:
             return []
         
-        # 构建多层级查询的Cypher语句
-        # 使用UNION ALL来合并不同深度的结果
+        # Build multi-level query Cypher statement
+        # Use UNION ALL to merge results from different depths
         depth_queries = []
         
         for depth in range(1, max_depth + 1):
             if depth == 1:
-                # 直接连接的节点
+                # Directly connected nodes
                 query = f"""
                     SELECT * FROM cypher('{self.graph_name}', $$
                         MATCH (n:base {{id: "{node_id}"}})
@@ -1017,7 +1017,7 @@ class PGGraphStore(BaseGraphStore):
                     $$) AS (related_id text)
                 """
             else:
-                # 多层级连接的节点
+                # Multi-level connected nodes
                 query = f"""
                     SELECT * FROM cypher('{self.graph_name}', $$
                         MATCH (n:base {{id: "{node_id}"}})
@@ -1028,7 +1028,7 @@ class PGGraphStore(BaseGraphStore):
                 """
             depth_queries.append(query)
         
-        # 合并所有深度的查询结果
+        # Merge query results from all depths
         combined_query = " UNION ALL ".join(depth_queries)
         final_query = f"""
             WITH all_related AS ({combined_query})
@@ -1053,11 +1053,11 @@ class PGGraphStore(BaseGraphStore):
             
         except Exception as e:
             logger.error(f"Error getting related nodes for {node_id}: {e}")
-            # 如果多层级查询失败，回退到单层级查询
+            # If multi-level query fails, fallback to single-level query
             return await self._get_related_nodes_fallback(namespace, node_id, limit)
     
     async def _get_related_nodes_fallback(self, namespace, node_id: str, limit: int = 10) -> List[str]:
-        """回退方法：获取直接关联的节点"""
+        """Fallback method: get directly related nodes"""
         try:
             edges = await self.get_node_edges(namespace=namespace, source_node_id=node_id)
             if not edges:
@@ -1077,28 +1077,28 @@ class PGGraphStore(BaseGraphStore):
             return []
 
     def _normalize_node_id(self, node_id: str) -> str:
-        """标准化节点ID"""
+        """Normalize node ID"""
         return str(node_id) if node_id is not None else ""
 
     async def test_connection(self) -> bool:
-        """测试数据库连接是否正常
+        """Test if database connection is normal
         
         Returns:
-            bool: 连接成功返回True，失败返回False
+            bool: Returns True if connection succeeds, False if fails
         """
         try:
-            # 确保数据库已初始化
+            # Ensure database is initialized
             if self.db is None:
                 await self.initialize()
             
-            # 检查连接池是否存在
+            # Check if connection pool exists
             if not self.db or not self.db.pool:
                 logger.error("Database pool not available")
                 return False
             
-            # 尝试获取连接并执行简单查询
+            # Try to acquire connection and execute simple query
             async with self.db.pool.acquire() as connection:
-                # 执行简单的健康检查查询
+                # Execute simple health check query
                 result = await connection.fetchval("SELECT 1")
                 if result == 1:
                     logger.debug("Database connection test passed")

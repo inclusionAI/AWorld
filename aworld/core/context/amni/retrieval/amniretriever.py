@@ -412,12 +412,12 @@ class AmniRetriever(BaseRetriever):
                                           search_filter: dict = None
                                           ) -> Optional[list[ArtifactStats]]:
         """
-        查询每个 artifact 的 chunk 数量统计信息。
-        
-        此方法根据提供的搜索过滤器查询所有匹配的 chunks，然后按 artifact_id 分组
-        统计每个 artifact 包含的 chunk 数量，返回统计结果列表。
-        
-        处理流程:
+        Query chunk count statistics for each artifact.
+
+        This method queries all matching chunks based on the provided search filter, then groups by artifact_id
+        to count the number of chunks contained in each artifact, returning a list of statistics.
+
+        Processing flow:
         +-------------+    search    +------------+    group     +------------+    count     +------------+
         |Search Filter|------------->|   Chunks   |------------>| Group by   |------------>| Artifact   |
         |             |              |            |             |artifact_id |             |  Stats     |
@@ -433,15 +433,15 @@ class AmniRetriever(BaseRetriever):
               +--------------------------------------------------------------------------------+
         
         Args:
-            search_filter (dict, optional): 搜索条件字典，用于过滤 chunks。默认为 None。
-                                         会自动添加 workspace_id 以确保安全隔离。
-        
+            search_filter (dict, optional): Search condition dictionary for filtering chunks. Defaults to None.
+                                         Automatically adds workspace_id to ensure security isolation.
+
         Returns:
-            Optional[list[ArtifactStats]]: 包含每个 artifact 统计信息的列表，如果查询失败则返回 None。
-                                         每个 ArtifactStats 包含 artifact_id 和对应的 chunk_count。
-        
+            Optional[list[ArtifactStats]]: List containing statistics for each artifact, returns None if query fails.
+                                         Each ArtifactStats contains artifact_id and corresponding chunk_count.
+
         Raises:
-            Exception: 如果查询过程中发生错误
+            Exception: If an error occurs during the query process
         """
         try:
             # ensure workspace_id 
@@ -449,39 +449,39 @@ class AmniRetriever(BaseRetriever):
                 search_filter = {}
             search_filter["workspace_id"] = workspace_id
             
-            logger.debug(f"📊 开始查询 artifact 统计信息，workspace_id: {workspace_id}")
-            logger.debug(f"🔍 搜索过滤器: {search_filter}")
-            
-            # 直接从数据库查询统计结果，避免加载所有 chunks 到内存
+            logger.debug(f"📊 Starting artifact statistics query, workspace_id: {workspace_id}")
+            logger.debug(f"🔍 Search filter: {search_filter}")
+
+            # Query statistics directly from database to avoid loading all chunks into memory
             artifact_chunk_counts = await self.chunk_store.get_artifact_chunk_counts(search_filter)
             
             if not artifact_chunk_counts:
-                logger.debug("📊 未找到匹配的 artifacts")
+                logger.debug("📊 No matching artifacts found")
                 return []
-            
-            logger.debug(f"📊 数据库查询完成: 找到 {len(artifact_chunk_counts)} 个 artifacts 的统计信息")
-            
-            # 构建 ArtifactStats 列表 - 使用列表推导式优化性能
+
+            logger.debug(f"📊 Database query completed: found statistics for {len(artifact_chunk_counts)} artifacts")
+
+            # Build ArtifactStats list - using list comprehension for performance optimization
             artifact_stats_list = [
                 ArtifactStats(artifact_id=artifact_id, chunk_count=chunk_count)
                 for artifact_id, chunk_count in artifact_chunk_counts.items()
             ]
             
-            # 结果已经按 chunk_count 降序排序（在数据库查询中完成）
+            # Results are already sorted by chunk_count in descending order (completed in database query)
             total_chunks = sum(artifact_chunk_counts.values())
-            logger.debug(f"📊 统计完成: 找到 {len(artifact_stats_list)} 个 artifacts，总计 {total_chunks} 个 chunks")
+            logger.debug(f"📊 Statistics completed: found {len(artifact_stats_list)} artifacts, total {total_chunks} chunks")
             
-            # 记录前几个 artifact 的详细信息（用于调试）
+            # Log detailed information for the first few artifacts (for debugging)
             if artifact_stats_list:
-                top_artifacts = artifact_stats_list[:5]  # 显示前5个
-                top_info = ", ".join([f"{stats.artifact_id}: {stats.chunk_count}块" for stats in top_artifacts])
-                logger.debug(f"📊 前几个 artifacts 统计: {top_info}")
+                top_artifacts = artifact_stats_list[:5]  # Show top 5
+                top_info = ", ".join([f"{stats.artifact_id}: {stats.chunk_count} chunks" for stats in top_artifacts])
+                logger.debug(f"📊 Top artifacts statistics: {top_info}")
             
             return artifact_stats_list
             
         except Exception as e:
-            logger.error(f"❌ 查询 artifact 统计信息失败: {str(e)}")
-            logger.error(f"🔍 搜索过滤器: {search_filter}")
+            logger.error(f"❌ Failed to query artifact statistics: {str(e)}")
+            logger.error(f"🔍 Search filter: {search_filter}")
             raise
 
     async def async_query_chunk(self,workspace_id:str, artifact_id: str,

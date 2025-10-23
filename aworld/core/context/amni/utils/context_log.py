@@ -11,10 +11,10 @@ from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC
 
 from .modelutils import ModelUtils, num_tokens_from_string
 
-# 日志显示配置常量
-BORDER_WIDTH = 100  # 边框内容区域宽度
-BORDER_PADDING = 4  # 左侧填充宽度
-TOTAL_WIDTH = BORDER_WIDTH + BORDER_PADDING + 4  # 总宽度（包含边框字符）
+# Log display configuration constants
+BORDER_WIDTH = 100  # Border content area width
+BORDER_PADDING = 4  # Left padding width
+TOTAL_WIDTH = BORDER_WIDTH + BORDER_PADDING + 4  # Total width (including border characters)
 
 def _generate_separator(style: str = "─") -> str:
     """
@@ -122,12 +122,12 @@ class PromptLogger:
             messages (list[dict]): List of message dictionaries with 'role' and 'content' keys
                                   Format: [{'role': 'user', 'content': 'Hello'}, ...]
         """
-        # 记录函数开始时间
+        # Record function start time
         start_time = context.start_time
 
         logger = logging.getLogger("amnicontext_prompt")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 使用更美观的分隔符和格式
+        # Use more beautiful separators and format
         amni_prompt_logger.info(_generate_top_border())
         amni_prompt_logger.info(f"│{'🚀 AGENT EXECUTION START':^{BORDER_WIDTH}}│")
         amni_prompt_logger.info(_generate_separator())
@@ -179,7 +179,7 @@ class PromptLogger:
         except Exception as e:
             amni_prompt_logger.warning(f"❌ Error logging messages: {str(e)}")
         
-        # 计算并记录函数执行耗时
+        # Calculate and record function execution time
         end_time = time.time()
         execution_time = end_time - start_time
         logger.info(_generate_separator())

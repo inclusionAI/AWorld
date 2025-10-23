@@ -54,7 +54,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
         return ops_list
     
     async def execute_pipeline(self, ops_list: List[Any], context: Context, event: ContextEvent,  **kwargs) -> Optional[Dict[str, Any]]:
-        """直接for循环执行操作列表"""
+        """Execute operation list directly with for loop"""
         pipeline_start_time = time.time()
         total_ops = len(ops_list)
         successful_ops = 0

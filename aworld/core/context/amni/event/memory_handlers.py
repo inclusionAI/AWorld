@@ -76,9 +76,9 @@ class MemoryProcessorHandler(EventHandler, ABC):
         logger.info(_generate_bottom_border())
 
     async def _process_single_processor(self, processor_config, event: Event) -> Optional[Tuple[str, any]]:
-        """process a single processor"""
+        """Process a single processor"""
         try:
-            # create processor
+            # Create processor
             processor = ProcessorFactory.create(processor_config=processor_config)
             if not processor:
                 logger.warning(f"Failed to create processor: {processor_config.name} {traceback.format_exc()}")

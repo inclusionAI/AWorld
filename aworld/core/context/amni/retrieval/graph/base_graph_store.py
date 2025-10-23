@@ -7,7 +7,7 @@ from .base import GraphDBConfig
 
 @dataclass
 class KnowledgeGraphNode:
-    """知识图谱节点"""
+    """Knowledge graph node"""
     id: str
     labels: List[str]
     properties: Dict[str, Any]
@@ -15,7 +15,7 @@ class KnowledgeGraphNode:
 
 @dataclass
 class KnowledgeGraphEdge:
-    """知识图谱边"""
+    """Knowledge graph edge"""
     id: str
     type: str
     source: str
@@ -25,7 +25,7 @@ class KnowledgeGraphEdge:
 
 @dataclass
 class KnowledgeGraph:
-    """知识图谱"""
+    """Knowledge graph"""
     nodes: List[KnowledgeGraphNode] = None
     edges: List[KnowledgeGraphEdge] = None
     is_truncated: bool = False
@@ -38,129 +38,129 @@ class KnowledgeGraph:
 
 
 class BaseGraphStore(ABC):
-    """图存储基类"""
+    """Graph storage base class"""
     
     def __init__(self, graph_db_config: GraphDBConfig, **kwargs):
         self.graph_db_config = graph_db_config
     
     async def initialize(self):
-        """初始化存储"""
+        """Initialize storage"""
         pass
     
     async def finalize(self):
-        """清理存储资源"""
+        """Clean up storage resources"""
         pass
     
     @abstractmethod
     async def has_node(self, namespace, node_id: str) -> bool:
-        """检查节点是否存在
+        """Check if node exists
         
         Args:
-            node_id: 节点ID
+            node_id: Node ID
             
         Returns:
-            True如果节点存在，否则False
+            True if node exists, otherwise False
         """
         pass
     
     @abstractmethod
     async def has_edge(self, namespace, source_node_id: str, target_node_id: str) -> bool:
-        """检查两个节点之间是否存在边
+        """Check if edge exists between two nodes
         
         Args:
-            source_node_id: 源节点ID
-            target_node_id: 目标节点ID
+            source_node_id: Source node ID
+            target_node_id: Target node ID
             
         Returns:
-            True如果边存在，否则False
+            True if edge exists, otherwise False
         """
         pass
     
     @abstractmethod
     async def get_node(self, namespace, node_id: str) -> Optional[Dict[str, Any]]:
-        """根据ID获取节点
+        """Get node by ID
         
         Args:
-            node_id: 节点ID
+            node_id: Node ID
             
         Returns:
-            节点属性字典，如果不存在则返回None
+            Node property dictionary, returns None if not exists
         """
         pass
     
     @abstractmethod
     async def get_edge(self, namespace, source_node_id: str, target_node_id: str) -> Optional[Dict[str, Any]]:
-        """获取两个节点之间的边
+        """Get edge between two nodes
         
         Args:
-            source_node_id: 源节点ID
-            target_node_id: 目标节点ID
+            source_node_id: Source node ID
+            target_node_id: Target node ID
             
         Returns:
-            边属性字典，如果不存在则返回None
+            Edge property dictionary, returns None if not exists
         """
         pass
     
     @abstractmethod
     async def get_node_edges(self, namespace, node_id: str) -> Optional[List[Tuple[str, str]]]:
-        """获取节点的所有边
+        """Get all edges of a node
         
         Args:
-            node_id: 节点ID
+            node_id: Node ID
             
         Returns:
-            (源节点ID, 目标节点ID)元组列表，如果节点不存在则返回None
+            List of (source node ID, target node ID) tuples, returns None if node not exists
         """
         pass
     
     @abstractmethod
     async def upsert_node(self, namespace, node_id: str, node_data: Dict[str, Any]) -> None:
-        """插入或更新节点
+        """Insert or update node
         
         Args:
-            node_id: 节点ID
-            node_data: 节点属性字典
+            node_id: Node ID
+            node_data: Node property dictionary
         """
         pass
     
     @abstractmethod
     async def upsert_edge(self, namespace, source_node_id: str, target_node_id: str, edge_data: Dict[str, Any]) -> None:
-        """插入或更新边
+        """Insert or update edge
         
         Args:
-            source_node_id: 源节点ID
-            target_node_id: 目标节点ID
-            edge_data: 边属性字典
+            source_node_id: Source node ID
+            target_node_id: Target node ID
+            edge_data: Edge property dictionary
         """
         pass
 
     @abstractmethod
     async def remove_nodes(self, namespace, node_ids: List[str]) -> None:
-        """删除多个节点
+        """Delete multiple nodes
         
         Args:
-            node_ids: 节点ID列表
+            node_ids: List of node IDs
         """
         pass
     
     @abstractmethod
     async def remove_edges(self, namespace, edges: List[Tuple[str, str]]) -> None:
-        """删除多个边
+        """Delete multiple edges
         
         Args:
-            edges: 边列表，每个边是(源节点ID, 目标节点ID)元组
+            edges: List of edges, each edge is a (source node ID, target node ID) tuple
         """
         pass
     
-    # 批量操作方法（可选实现，基类提供默认实现）
+    # Batch operation methods (optional implementation, base class provides default implementation)
     async def get_nodes_batch(self, namespace, node_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-        """批量获取节点
+        """Batch get nodes
         
         Args:
-            node_ids: 节点ID列表
+            node_ids: List of node IDs
             
         Returns:
-            节点ID到节点属性字典的映射
+            Mapping from node ID to node property dictionary
         """
         result = {}
         for node_id in node_ids:
@@ -173,13 +173,13 @@ class BaseGraphStore(ABC):
         pass
 
     async def get_edges_batch(self, namespace, pairs: List[Dict[str, str]]) -> Dict[Tuple[str, str], Dict[str, Any]]:
-        """批量获取边
+        """Batch get edges
         
         Args:
-            pairs: 边对列表，每个元素包含"src"和"tgt"键
+            pairs: List of edge pairs, each element contains "src" and "tgt" keys
             
         Returns:
-            (源节点ID, 目标节点ID)到边属性字典的映射
+            Mapping from (source node ID, target node ID) to edge property dictionary
         """
         result = {}
         for pair in pairs:
@@ -191,13 +191,13 @@ class BaseGraphStore(ABC):
         return result
     
     async def get_nodes_edges_batch(self, namespace, node_ids: List[str]) -> Dict[str, List[Tuple[str, str]]]:
-        """批量获取节点的边
+        """Batch get edges of nodes
         
         Args:
-            node_ids: 节点ID列表
+            node_ids: List of node IDs
             
         Returns:
-            节点ID到边列表的映射
+            Mapping from node ID to edge list
         """
         result = {}
         for node_id in node_ids:
@@ -206,17 +206,17 @@ class BaseGraphStore(ABC):
         return result
 
     async def get_related_nodes(self, namespace, node_id: str, max_depth: int = 2, limit: int = 10) -> List[str]:
-        """获取与指定节点相关的节点ID列表，支持多层级查询
+        """Get list of node IDs related to specified node, supports multi-level queries
         
         Args:
-            node_id: 要查询关联节点的节点ID
-            max_depth: 最大查询深度，默认为2
-            limit: 返回结果数量限制，默认为10
+            node_id: Node ID to query related nodes
+            max_depth: Maximum query depth, defaults to 2
+            limit: Result count limit, defaults to 10
             
         Returns:
-            List[str]: 关联节点ID列表
+            List[str]: List of related node IDs
         """
-        # 默认实现：只获取直接关联节点
+        # Default implementation: only get directly related nodes
         edges = await self.get_node_edges(namespace=namespace, node_id=node_id)
         if not edges:
             return []
@@ -231,6 +231,6 @@ class BaseGraphStore(ABC):
         return list(related_node_ids)[:limit]
 
     async def index_done_callback(self) -> None:
-        """索引完成后的回调，用于持久化数据"""
+        """Callback after indexing completion, used for data persistence"""
         pass
 

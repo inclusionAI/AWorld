@@ -12,25 +12,25 @@ from aworld.core.common import Observation
 from aworld.core.context.base import Context
 
 class BaseContextProcessor(ABC):
-    """内存处理器基类"""
+    """Base class for memory processors"""
     
     def __init__(self, config):
         self.config = config
 
     @abstractmethod
     async def process(self, context: Context, event: ContextEvent, **kwargs) -> Optional[Observation]:
-        """处理消息"""
+        """Process messages"""
         pass
 
 
 class ProcessorFactory:
-    """处理器工厂类"""
+    """Processor factory class"""
     
     _processors: Dict[str, Type[BaseContextProcessor]] = {}
     
     @classmethod
     def register(cls, processor_type: str, processor_class: Type[BaseContextProcessor]):
-        """注册处理器类型"""
+        """Register processor type"""
         cls._processors[processor_type] = processor_class
         logger.info(f"Registered processor: {processor_type}")
     
@@ -50,18 +50,18 @@ class ProcessorFactory:
     
     @classmethod
     def list_all_types(cls) -> List[str]:
-        """获取所有注册的处理器类型"""
+        """Get all registered processor types"""
         return list(cls._processors.keys())
     
     @classmethod
     def get_processor_class(cls, processor_type: str) -> Optional[Type[BaseContextProcessor]]:
-        """根据类型获取处理器类"""
+        """Get processor class by type"""
         return cls._processors.get(processor_type)
 
 
 def memory_processor(processor_type: str):
     """
-    装饰器：自动注册内存处理器到ProcessorFactory
+    Decorator: Automatically register memory processor to ProcessorFactory
     
     Usage:
         @memory_processor("swarm_based_memory_processor")
@@ -69,7 +69,7 @@ def memory_processor(processor_type: str):
             pass
     """
     def decorator(cls: Type[BaseContextProcessor]):
-        # 注册到ProcessorFactory
+        # Register to ProcessorFactory
         ProcessorFactory.register(processor_type, cls)
         return cls
     return decorator

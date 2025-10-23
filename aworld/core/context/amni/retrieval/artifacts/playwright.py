@@ -412,7 +412,7 @@ class PlaywrightHelper:
                 if line.strip().startswith("### "):
                     break
                 if line.strip():
-                    # Parse tab information, format like: "- 0: (current) [每日行情] (https://www.sge.com.cn/...)"
+                    # Parse tab information, format like: "- 0: (current) [Daily Market] (https://www.sge.com.cn/...)"
                     tab_match = re.match(r'-\s*(\d+):\s*(?:\(current\)\s*)?\[([^\]]+)\]\s*\(([^)]+)\)', line.strip())
                     if tab_match:
                         index, title, url = tab_match.groups()
@@ -439,8 +439,8 @@ class PlaywrightHelper:
         Example:
             >>> yaml_content = '''
             ... ### Downloads
-            ... - Downloaded file 每日行情数据20250925171446811.xlsx to /tmp/playwright/每日行情数据20250925171446811.xlsx
-            ... - Downloaded file 每日行情数据20250925171540475.xlsx to /tmp/playwright/每日行情数据20250925171540475.xlsx
+            ... - Downloaded file DailyMarketData20250925171446811.xlsx to /tmp/playwright/DailyMarketData20250925171446811.xlsx
+            ... - Downloaded file DailyMarketData20250925171540475.xlsx to /tmp/playwright/DailyMarketData20250925171540475.xlsx
             ... '''
             >>> downloads = PlaywrightHelper.extract_downloads(yaml_content)
             >>> print(f"Found {len(downloads)} downloaded files")

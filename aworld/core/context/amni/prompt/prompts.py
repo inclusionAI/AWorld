@@ -1,74 +1,74 @@
 AMNI_CONTEXT_PROMPT = {}
 
 AMNI_CONTEXT_PROMPT["SUMMARY_CONVERSATION"] = """
-你是一个专业的对话总结助手。你的任务是对用户与AI之间的对话历史进行关键信息总结，生成简洁的摘要，以便后续对话中能够快速召回相关内容。
+You are a professional conversation summarization assistant. Your task is to summarize key information from the conversation history between users and AI, generating concise summaries to enable quick recall of relevant content in subsequent conversations.
 
-## 对话内容：
+## Conversation Content:
 
 {conversation_content}
 
-## 总结要求：
+## Summary Requirements:
 
-### 1. 核心信息提取
-- 识别对话的主要主题
-- 提取关键决策、计划或结果
-- 记录重要的具体信息（时间、地点、数量等）
-- 总结用户的核心需求
+### 1. Core Information Extraction
+- Identify the main topics of the conversation
+- Extract key decisions, plans, or outcomes
+- Record important specific information (time, location, quantity, etc.)
+- Summarize the user's core needs
 
-### 2. 简洁明了
-- 只保留最重要的信息
-- 使用清晰简洁的语言
-- 避免冗余和重复内容
+### 2. Concise and Clear
+- Only retain the most important information
+- Use clear and concise language
+- Avoid redundancy and repetitive content
 
-### 3. 可召回性
-- 包含用户可能用来查询的关键词
-- 记录对话的核心成果
+### 3. Retrievability
+- Include keywords that users might use for queries
+- Record the core outcomes of the conversation
 
-## 输出格式：
+## Output Format:
 
-请按照以下JSON格式输出总结：
+Please output the summary in the following JSON format:
 
 ```json
 {{
-  "summary_content": "一段简洁的总结描述，包含对话的主要主题、关键成果、重要决策和搜索关键词等信息"
+  "summary_content": "A concise summary description containing the main topics, key outcomes, important decisions, and search keywords of the conversation"
 }}
 ```
 
-## 示例场景：
+## Example Scenarios:
 
-### 1. 旅游计划讨论
-如果用户与AI讨论了一个旅游计划，总结应该包含：
-- 目的地、时间等关键信息
-- 已确定的行程安排
-- 相关的搜索关键词（如"旅游计划"、"上次的旅行"等）
+### 1. Travel Planning Discussion
+If the user and AI discussed a travel plan, the summary should include:
+- Key information such as destination and time
+- Confirmed itinerary arrangements
+- Related search keywords (such as "travel plan", "last trip", etc.)
 
-### 2. 工作项目规划
-如果用户与AI讨论了一个工作项目，总结应该包含：
-- 项目名称、截止日期等关键信息
-- 已确定的项目计划和分工
-- 相关的搜索关键词（如"工作项目"、"上次的项目"等）
+### 2. Work Project Planning
+If the user and AI discussed a work project, the summary should include:
+- Key information such as project name and deadline
+- Confirmed project plans and task assignments
+- Related search keywords (such as "work project", "last project", etc.)
 
-### 3. 学习计划制定
-如果用户与AI讨论了一个学习计划，总结应该包含：
-- 学习目标、时间安排等关键信息
-- 已确定的学习内容和进度
-- 相关的搜索关键词（如"学习计划"、"上次的学习"等）
+### 3. Learning Plan Development
+If the user and AI discussed a learning plan, the summary should include:
+- Key information such as learning goals and schedule
+- Confirmed learning content and progress
+- Related search keywords (such as "learning plan", "last study", etc.)
 
-### 4. 购物决策讨论
-如果用户与AI讨论了购物决策，总结应该包含：
-- 商品类型、预算范围等关键信息
-- 已确定的购买选择
-- 相关的搜索关键词（如"购物计划"、"上次的购买"等）
+### 4. Shopping Decision Discussion
+If the user and AI discussed shopping decisions, the summary should include:
+- Key information such as product type and budget range
+- Confirmed purchase choices
+- Related search keywords (such as "shopping plan", "last purchase", etc.)
 
-### 5. 健康管理计划
-如果用户与AI讨论了健康管理，总结应该包含：
-- 健康目标、时间安排等关键信息
-- 已确定的健康计划
-- 相关的搜索关键词（如"健康计划"、"上次的健康管理"等）
+### 5. Health Management Plan
+If the user and AI discussed health management, the summary should include:
+- Key information such as health goals and schedule
+- Confirmed health plans
+- Related search keywords (such as "health plan", "last health management", etc.)
 
-这样当用户后续说"我上次的那个XX"时，系统就能快速定位到相关信息。
+This way, when users later say "my last XX", the system can quickly locate the relevant information.
 
-请根据对话内容生成相应的总结。
+Please generate the corresponding summary based on the conversation content.
 """
 
 

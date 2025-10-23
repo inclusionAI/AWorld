@@ -1065,7 +1065,7 @@ class ApplicationContext(AmniContext):
                                              namespace: str = "default"):
         logger.info(f"publish tool result event process start ")
         start_time = time.time()
-        """发布并等待工具结果事件"""
+        """Publish and wait for tool result event"""
         event_bus = await get_global_event_bus()
         await event_bus.publish_and_wait(
             EventBus.create_tool_result_event(
@@ -1097,7 +1097,7 @@ class ApplicationContext(AmniContext):
                 "biz_id": biz_id
             })
         await self.add_knowledge_list(artifacts, namespace=namespace, build_index=use_index)
-        # 增加一条策略 单页面不大于40K
+        # Add a strategy: single page should not exceed 40K
         if len(artifacts) == 1 and len(artifacts[0].content) < 40_000:
             logger.info(f"directly return artifacts content: {len(artifacts[0].content)}")
             return f"{artifacts[0].content}"
@@ -1388,7 +1388,7 @@ class ApplicationContext(AmniContext):
 
     async def get_todo_info(self):
         """
-        cooperate info from working state
+        Get cooperation info from working state
         Args:
         Returns:
 
@@ -1405,7 +1405,7 @@ class ApplicationContext(AmniContext):
 
     async def get_actions_info(self, namespace = "default"):
         """
-        cooperate info from working state
+        Get cooperation info from working state
         Args:
         Returns:
 
