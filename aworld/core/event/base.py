@@ -25,6 +25,7 @@ class Constants:
     GROUP = "group"
     HUMAN = "human"
     HUMAN_RESPONSE = "human_response"
+    CHUNK = "chunk"
 
 
 class TopicType:
@@ -170,6 +171,7 @@ class HumanMessage(Message[Any]):
 class ChunkMessage(Message[ModelResponse]):
     """Chunk message is used to stream the response of the LLM."""
     category: str = 'chunk'
+    source_type: str = field(default=None)
 
 
 class Messageable(object):

@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-from typing import List, Dict, Union, AsyncGenerator, Tuple
+from typing import List, Dict, Union, AsyncGenerator, Tuple, Any
 
 from aworld.config import RunConfig, EvaluationConfig
 from aworld.config.conf import TaskConfig
@@ -64,17 +64,18 @@ class Runners:
         return sync_exec(Runners.run_task, task=task, run_conf=run_conf)
 
     @staticmethod
-    async def streaming_run_task(task: Task, run_conf: Config = None) -> AsyncGenerator[Message, None]:
+    async def streaming_run_task(
+            task: Task,
+            streaming_mode: str = 'chunk_output',
+            streaming_conf: Dict[str, Any] = None,
+            run_conf: Config = None
+    ) -> AsyncGenerator[Message, None]:
         queue = asyncio.Queue()
 
-        agents = task.swarm.agents if task and task.swarm else {task.agent.id(): task.agent}
-        logger.info(f"task agents: {agents}")
-        if not agents:
-            raise ValueError("Cannot find `agent` or `swarm` in task.")
-        for agent_id, agent in agents.items():
-            agent.conf.llm_config.llm_stream_call = True
-
         task.streaming_queue = queue
+        task.streaming_mode = streaming_mode
+        if streaming_mode == 'custom':
+            task.streaming_config = streaming_conf
 
             # Execute the agent asynchronously
         stream_task = asyncio.create_task(
@@ -86,8 +87,8 @@ class Runners:
         else:
             stream_task.add_done_callback(lambda _: queue.put_nowait(Message(payload="[END]")))
 
-        def is_end_msg(msg: Message):
-            return msg and isinstance(msg.payload, str) and msg.payload == "[END]"
+        def is_task_end_msg(msg: Message):
+            return msg and isinstance(msg, Message) and isinstance(msg.payload, str) and msg.payload == "[END]"
 
         # Receive the messages from the agent's message queue
         while True:
@@ -96,7 +97,7 @@ class Runners:
             streaming_msg = await queue.get()
 
             # End the loop when the message is None
-            if is_end_msg(streaming_msg):
+            if is_task_end_msg(streaming_msg):
                 break
 
             yield streaming_msg

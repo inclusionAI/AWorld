@@ -762,13 +762,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.usage = nest_dict_counter(
                         llm_response.usage, chunk.usage, ignore_zero=False)
                     llm_response.message.update(chunk.message)
-                    streaming_queue.put_nowait(
-                        ChunkMessage(payload=chunk, session_id=message.context.session_id, headers=message.headers))
-                streaming_queue.put_nowait(
-                    ChunkMessage(payload=ModelResponse(id=llm_response.id, model=llm_response.model, content="[LLM END]"),
-                                 session_id=message.context.session_id,
-                                 headers=message.headers)
-                )
+                    await send_message(ChunkMessage(payload=chunk,
+                                                    source_type="llm",
+                                                    session_id=message.context.session_id,
+                                                    headers=message.headers))
 
             else:
                 llm_response = await acall_llm_model(

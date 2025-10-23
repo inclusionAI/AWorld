@@ -1,7 +1,7 @@
 import json
 import os
 import traceback
-from typing import Any, Dict, List, Generator, AsyncGenerator
+from typing import Any, Dict, List, Generator, AsyncGenerator, Tuple
 
 from openai import OpenAI, AsyncOpenAI
 
@@ -133,7 +133,7 @@ class OpenAIProvider(LLMProviderBase):
 
         return ModelResponse.from_openai_response(response)
 
-    def postprocess_stream_response(self, chunk: Any) -> ModelResponse:
+    def postprocess_stream_response(self, chunk: Any) -> Tuple[ModelResponse, str]:
         """Process OpenAI streaming response chunk.
 
         Args:
@@ -154,10 +154,23 @@ class OpenAIProvider(LLMProviderBase):
                 chunk
             )
 
+        chunk_choice = None
+        if hasattr(chunk, 'choices') and chunk.choices:
+            chunk_choice = chunk.choices[0]
+        elif isinstance(chunk, dict) and chunk.get("choices") and chunk["choices"]:
+            chunk_choice = chunk["choices"][0]
+        if not chunk_choice:
+            error_msg = f"chunk.choices[0] is None: {chunk}"
+            raise LLMResponseError(
+                error_msg,
+                self.model_name or "unknown",
+                chunk
+            )
+
         # process tool calls
-        if (hasattr(chunk, 'choices') and chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.tool_calls) or (
-                isinstance(chunk, dict) and chunk.get("choices") and chunk["choices"] and chunk["choices"][0].get("delta", {}).get("tool_calls")):
-            tool_calls = chunk.choices[0].delta.tool_calls if hasattr(chunk, 'choices') else chunk["choices"][0].get("delta", {}).get("tool_calls")
+        if (hasattr(chunk_choice, 'delta') and chunk_choice.delta and chunk_choice.delta.tool_calls) or (
+                isinstance(chunk_choice, dict) and chunk_choice.get("delta", {}).get("tool_calls")):
+            tool_calls = chunk_choice.delta.tool_calls if hasattr(chunk_choice, 'delta') else chunk_choice.get("delta", {}).get("tool_calls")
 
             for tool_call in tool_calls:
                 index = tool_call.index if hasattr(tool_call, 'index') else tool_call["index"]
@@ -181,12 +194,9 @@ class OpenAIProvider(LLMProviderBase):
                 processed_chunk["choices"][0]["delta"]["tool_calls"] = None
             resp = ModelResponse.from_openai_stream_chunk(processed_chunk)
             if (not resp.content and not resp.usage.get("total_tokens", 0)):
-                return None
-        if (hasattr(chunk, 'choices') and chunk.choices and chunk.choices[0].finish_reason) or (
-                isinstance(chunk, dict) and chunk.get("choices") and chunk["choices"] and chunk["choices"][0].get(
-            "finish_reason")):
-            finish_reason = chunk.choices[0].finish_reason if hasattr(chunk, 'choices') else chunk["choices"][0].get(
-                "finish_reason")
+                return None, None
+        finish_reason = ModelResponse._get_item_from_openai_message(chunk_choice, "finish_reason")
+        if finish_reason:
             if self.stream_tool_buffer:
                 tool_call_chunk = {
                     "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
@@ -203,9 +213,10 @@ class OpenAIProvider(LLMProviderBase):
                     ]
                 }
                 self.stream_tool_buffer = []
-                return ModelResponse.from_openai_stream_chunk(tool_call_chunk)
+                chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
+                return chunk_resp, finish_reason
 
-        return ModelResponse.from_openai_stream_chunk(chunk)
+        return ModelResponse.from_openai_stream_chunk(chunk), finish_reason
 
     def completion(self,
                    messages: List[Dict[str, str]],
@@ -301,10 +312,16 @@ class OpenAIProvider(LLMProviderBase):
             for chunk in response_stream:
                 if not chunk:
                     continue
-                resp = self.postprocess_stream_response(chunk)
+                resp, finish_reason = self.postprocess_stream_response(chunk)
                 if resp:
                     self._accumulate_chunk_usage(usage, resp.usage)
                     yield resp
+                    if finish_reason:
+                        yield ModelResponse(
+                            id = resp.id,
+                            model = resp.model,
+                            finish_reason=finish_reason,
+                            usage=usage)
 
         except Exception as e:
             logger.warn(f"Error in stream_completion: {e}")
@@ -350,18 +367,32 @@ class OpenAIProvider(LLMProviderBase):
                 async for chunk in self.http_provider.async_stream_call(openai_params):
                     if not chunk:
                         continue
-                    resp = self.postprocess_stream_response(chunk)
-                    self._accumulate_chunk_usage(usage, resp.usage)
-                    yield resp
+                    resp, finish_reason = self.postprocess_stream_response(chunk)
+                    if resp:
+                        self._accumulate_chunk_usage(usage, resp.usage)
+                        yield resp
+                        if finish_reason and resp.tool_calls:
+                            yield ModelResponse(
+                                id=resp.id,
+                                model=resp.model,
+                                finish_reason=finish_reason,
+                                usage=usage)
             else:
                 response_stream = await self.async_provider.chat.completions.create(**openai_params)
                 async for chunk in response_stream:
                     if not chunk:
                         continue
-                    resp = self.postprocess_stream_response(chunk)
+                    resp, finish_reason = self.postprocess_stream_response(chunk)
                     if resp:
                         self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
+                        if finish_reason and resp.tool_calls:
+                            yield ModelResponse(
+                                id=resp.id,
+                                model=resp.model,
+                                content="",
+                                finish_reason=finish_reason,
+                                usage=usage)
 
         except Exception as e:
             logger.warn(f"Error in astream_completion: {e}")

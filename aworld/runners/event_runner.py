@@ -36,6 +36,7 @@ class TaskEventRunner(TaskRunner):
         self.event_mng = EventManager(self.context)
         self.hooks = {}
         self.handlers = []
+        self.streaming_handlers = []
         self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
@@ -105,7 +106,11 @@ class TaskEventRunner(TaskRunner):
                 self.handlers.append(new_instance(hand, self))
         else:
             for handler in HandlerFactory:
-                self.handlers.append(HandlerFactory(handler, runner=self))
+                handler_instance = HandlerFactory(handler, runner=self)
+                self.handlers.append(handler_instance)
+                if handler_instance.is_stream_handler():
+                    self.streaming_handlers.append(handler_instance)
+            logger.warn(f"----- streaming_handlers: {self.streaming_handlers}")
 
         self.task_flag = "sub" if self.task.is_sub_task else "main"
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")
@@ -141,6 +146,8 @@ class TaskEventRunner(TaskRunner):
     async def _common_process(self, message: Message) -> List[Message]:
         logger.debug(f"will process message id: {message.id} of task {self.task.id}")
         event_bus = self.event_mng.event_bus
+
+        await self._streaming_task(message)
 
         key = message.category
         transformer = self.event_mng.get_transform_handler(key)
@@ -251,6 +258,16 @@ class TaskEventRunner(TaskRunner):
             for result in results:
                 async for event in handler.handle(result):
                     yield event
+
+    async def _streaming_task(self, message: Message):
+        async def streaming_handle(message: Message):
+            for handler in self.streaming_handlers:
+                async for event in handler.handle(message):
+                    pass
+        t = asyncio.create_task(streaming_handle(message))
+        self.background_tasks.add(t)
+        t.add_done_callback(partial(self._task_done_callback, message=message))
+        await asyncio.sleep(0)
 
     async def _do_run(self):
         """Task execution process in real."""
