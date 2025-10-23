@@ -18,10 +18,11 @@ from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.context.prompts import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
-from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType
+from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
+    MemoryEventType, MemoryEventMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
-from aworld.events.util import send_message
+from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools
 from aworld.memory.main import MemoryFactory
@@ -315,7 +316,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         agent_prompt = self.agent_prompt
         messages = []
         # append sys_prompt to memory
-        await self._add_system_message_to_memory(context=message.context, content=observation.content)
+        content = await self.custom_system_prompt(context=message.context, content=observation.content, tool_list=self.tools)
+        await self._add_system_message_to_memory(context=message.context, content=content)
 
         session_id = message.context.get_task().session_id
         task_id = message.context.get_task().id
@@ -330,21 +332,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # append observation to memory
         tool_result_added = False
         if observation.is_tool_result:
-            for action_item in observation.action_result:
-                tool_call_id = action_item.tool_call_id
-                await self._add_tool_result_to_memory(tool_call_id, tool_result=action_item, context=message.context)
-                tool_result_added = True
-        elif last_history and last_history.metadata and "tool_calls" in last_history.metadata and \
-                last_history.metadata[
-                    'tool_calls']:
-            for tool_call in last_history.metadata['tool_calls']:
-                tool_call_id = tool_call['id']
-                tool_name = tool_call['function']['name']
-                if tool_name and tool_name == message.sender:
-                    await self._add_tool_result_to_memory(tool_call_id, tool_result=observation.content,
-                                                          context=message.context)
-                    tool_result_added = True
-                    break
+            # Tool already writes results to memory in tool layer. Skip here to avoid duplication.
+            tool_result_added = True
+
         if not tool_result_added:
             self._clean_redundant_tool_call_messages(histories)
             content = observation.content
@@ -469,7 +459,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         _group_name = None
         # agents and tools exist simultaneously, more than one agent/tool name
-        if (agents and tools) or len(agents) > 1 or len(tools) > 1:
+        if (agents and tools) or len(agents) > 1 or len(tools) > 1 or (len(agents) == 1 and agents[0].tool_name):
             _group_name = f"{self.id()}_{uuid.uuid1().hex}"
 
         # complex processing
@@ -640,10 +630,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
                                color=Color.red)
                 continue
-            tool_results.append(
-                ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer))
-            await self._add_tool_result_to_memory(act.tool_call_id, act_result.answer,
-                                                  context=message.context)
+            act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=tool_exec_response.answer)
+            tool_results.append(act_res)
+            await self._add_tool_result_to_memory(act_res, context=message.context)
         result = sync_exec(self.tools_aggregate_func, tool_results)
         return result
 
@@ -849,30 +838,19 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     async def _add_system_message_to_memory(self, context: Context, content: str):
         if not self.system_prompt:
             return
-        session_id = context.get_task().session_id
-        task_id = context.get_task().id
-        user_id = context.get_task().user_id
-
-        histories = self.memory.get_last_n(0, filters={
-            "agent_id": self.id(),
-            "session_id": session_id,
-            "task_id": task_id
-        }, agent_memory_config=self.memory_config)
-        if histories:
-            logger.debug(f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
-            return
-
-        content = await self.custom_system_prompt(context=context, content=content, tool_list=self.tools)
-        await self.memory.add(MemorySystemMessage(
-            content=content,
-            metadata=MessageMetadata(
-                session_id=session_id,
-                user_id=user_id,
-                task_id=task_id,
-                agent_id=self.id(),
-                agent_name=self.name(),
-            )
-        ), agent_memory_config=self.memory_config)
+        memory_msg = MemoryEventMessage(
+            payload=content,
+            agent=self,
+            memory_event_type=MemoryEventType.SYSTEM,
+            headers={"context": context}
+        )
+        try:
+            future = await send_message_with_future(memory_msg)
+            results = await future.wait(timeout=10)
+            if not results:
+                logger.warning(f"Memory write task failed: {memory_msg}")
+        except Exception as e:
+            logger.warn(f"Memory write task failed: {traceback.format_exc()}")
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
@@ -880,59 +858,50 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
-        session_id = context.get_task().session_id
-        user_id = context.get_task().user_id
-        task_id = context.get_task().id
-
-        await self.memory.add(MemoryHumanMessage(
-            content=content,
-            metadata=MessageMetadata(
-                session_id=session_id,
-                user_id=user_id,
-                task_id=task_id,
-                agent_id=self.id(),
-                agent_name=self.name(),
-            ),
-            memory_type=memory_type
-        ), agent_memory_config=self.memory_config)
+        memory_msg = MemoryEventMessage(
+            payload={"content": content, "memory_type": memory_type},
+            agent=self,
+            memory_event_type=MemoryEventType.HUMAN,
+            headers={"context": context}
+        )
+        try:
+            future = await send_message_with_future(memory_msg)
+            results = await future.wait(timeout=10)
+            if not results:
+                logger.warning(f"Memory write task failed: {memory_msg}")
+        except Exception as e:
+            logger.warn(f"Memory write task failed: {e}. {traceback.format_exc()}")
 
     async def _add_llm_response_to_memory(self, llm_response, context: Context, history_messages: list, **kwargs):
-        """Add LLM response to memory"""
-        ai_message = MemoryAIMessage(
-            content=llm_response.content,
-            tool_calls=llm_response.tool_calls,
-            metadata=MessageMetadata(
-                session_id=context.get_task().session_id,
-                user_id=context.get_task().user_id,
-                task_id=context.get_task().id,
-                agent_id=self.id(),
-                agent_name=self.name()
-            )
+        memory_msg = MemoryEventMessage(
+            payload=llm_response,
+            agent=self,
+            memory_event_type=MemoryEventType.AI,
+            headers={"context": context}
         )
-        await self.memory.add(ai_message, agent_memory_config=self.memory_config)
+        try:
+            future = await send_message_with_future(memory_msg)
+            results = await future.wait(timeout=10)
+            if not results:
+                logger.warning(f"Memory write task failed: {memory_msg}")
+        except Exception as e:
+            logger.warn(f"Memory write task failed: {traceback.format_exc()}")
 
-    async def _add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
+    async def _add_tool_result_to_memory(self, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
-        if hasattr(tool_result, 'content') and isinstance(tool_result.content, str) and tool_result.content.startswith(
-                "data:image"):
-            image_content = tool_result.content
-            tool_result.content = "this picture is below "
-            await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
-            image_content = [
-                {
-                    "type": "text",
-                    "text": f"this is file of tool_call_id:{tool_result.tool_call_id}"
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_content
-                    }
-                }
-            ]
-            await self._add_human_input_to_memory(image_content, context)
-        else:
-            await self._do_add_tool_result_to_memory(tool_call_id, tool_result, context)
+        memory_msg = MemoryEventMessage(
+            payload=tool_result,
+            agent=self,
+            memory_event_type=MemoryEventType.TOOL,
+            headers={"context": context}
+        )
+        try:
+            future = await send_message_with_future(memory_msg)
+            results = await future.wait(timeout=10)
+            if not results:
+                logger.warning(f"Memory write task failed: {memory_msg}")
+        except Exception as e:
+            logger.warn(f"Memory write task failed: {traceback.format_exc()}")
 
     async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
