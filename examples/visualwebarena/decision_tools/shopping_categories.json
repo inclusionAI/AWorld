@@ -1,0 +1,2302 @@
+[
+    {
+        "class_name": "Beauty & Personal Care",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/beauty-personal-care.html"
+    },
+    {
+        "class_name": "Oral Care",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care.html"
+    },
+    {
+        "class_name": "Toothbrushes & Accessories",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/toothbrushes-accessories.html"
+    },
+    {
+        "class_name": "Dental Floss & Picks",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/dental-floss-picks.html"
+    },
+    {
+        "class_name": "Orthodontic Supplies",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/orthodontic-supplies.html"
+    },
+    {
+        "class_name": "Children's Dental Care",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/children-s-dental-care.html"
+    },
+    {
+        "class_name": "Oral Pain Relief",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/oral-pain-relief.html"
+    },
+    {
+        "class_name": "Toothpaste",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/toothpaste.html"
+    },
+    {
+        "class_name": "Teeth Whitening",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/teeth-whitening.html"
+    },
+    {
+        "class_name": "Breath Fresheners",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/breath-fresheners.html"
+    },
+    {
+        "class_name": "Denture Care",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/denture-care.html"
+    },
+    {
+        "class_name": "Tongue Cleaners",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/tongue-cleaners.html"
+    },
+    {
+        "class_name": "Mouthwash",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Oral Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/oral-care/mouthwash.html"
+    },
+    {
+        "class_name": "Skin Care",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/skin-care.html"
+    },
+    {
+        "class_name": "Sunscreens & Tanning Products",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Skin Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/skin-care/sunscreens-tanning-products.html"
+    },
+    {
+        "class_name": "Face",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Skin Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/skin-care/face.html"
+    },
+    {
+        "class_name": "Lip Care",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Skin Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/skin-care/lip-care.html"
+    },
+    {
+        "class_name": "Maternity",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Skin Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/skin-care/maternity.html"
+    },
+    {
+        "class_name": "Eyes",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Skin Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/skin-care/eyes.html"
+    },
+    {
+        "class_name": "Sets & Kits",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Skin Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/skin-care/sets-kits.html"
+    },
+    {
+        "class_name": "Body",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Skin Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/skin-care/body.html"
+    },
+    {
+        "class_name": "Makeup",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/makeup.html"
+    },
+    {
+        "class_name": "Body",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Makeup"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/makeup/body.html"
+    },
+    {
+        "class_name": "Eyes",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Makeup"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/makeup/eyes.html"
+    },
+    {
+        "class_name": "Lips",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Makeup"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/makeup/lips.html"
+    },
+    {
+        "class_name": "Makeup Palettes",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Makeup"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/makeup/makeup-palettes.html"
+    },
+    {
+        "class_name": "Face",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Makeup"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/makeup/face.html"
+    },
+    {
+        "class_name": "Makeup Sets",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Makeup"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/makeup/makeup-sets.html"
+    },
+    {
+        "class_name": "Makeup Remover",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Makeup"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/makeup/makeup-remover.html"
+    },
+    {
+        "class_name": "Foot, Hand & Nail Care",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/foot-hand-nail-care.html"
+    },
+    {
+        "class_name": "Tools & Accessories",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Foot, Hand & Nail Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/foot-hand-nail-care/tools-accessories.html"
+    },
+    {
+        "class_name": "Nail Art & Polish",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Foot, Hand & Nail Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/foot-hand-nail-care/nail-art-polish.html"
+    },
+    {
+        "class_name": "Foot & Hand Care",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Foot, Hand & Nail Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/foot-hand-nail-care/foot-hand-care.html"
+    },
+    {
+        "class_name": "Hair Care",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care.html"
+    },
+    {
+        "class_name": "Hair Loss Products",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/hair-loss-products.html"
+    },
+    {
+        "class_name": "Hair Masks",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/hair-masks.html"
+    },
+    {
+        "class_name": "Hair Cutting Tools",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/hair-cutting-tools.html"
+    },
+    {
+        "class_name": "Hair Coloring Products",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/hair-coloring-products.html"
+    },
+    {
+        "class_name": "Hair Treatment Oils",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/hair-treatment-oils.html"
+    },
+    {
+        "class_name": "Hair Extensions, Wigs & Accessories",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/hair-extensions-wigs-accessories.html"
+    },
+    {
+        "class_name": "Shampoo & Conditioner",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/shampoo-conditioner.html"
+    },
+    {
+        "class_name": "Styling Products",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/styling-products.html"
+    },
+    {
+        "class_name": "Styling Tools & Appliances",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/styling-tools-appliances.html"
+    },
+    {
+        "class_name": "Hair Accessories",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Hair Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/hair-care/hair-accessories.html"
+    },
+    {
+        "class_name": "Tools & Accessories",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/tools-accessories.html"
+    },
+    {
+        "class_name": "Bags & Cases",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Tools & Accessories"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/tools-accessories/bags-cases.html"
+    },
+    {
+        "class_name": "Makeup Brushes & Tools",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Tools & Accessories"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/tools-accessories/makeup-brushes-tools.html"
+    },
+    {
+        "class_name": "Refillable Containers",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Tools & Accessories"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/tools-accessories/refillable-containers.html"
+    },
+    {
+        "class_name": "Mirrors",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Tools & Accessories"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/tools-accessories/mirrors.html"
+    },
+    {
+        "class_name": "Skin Care Tools",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Tools & Accessories"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/tools-accessories/skin-care-tools.html"
+    },
+    {
+        "class_name": "Cotton Balls & Swabs",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Tools & Accessories"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/tools-accessories/cotton-balls-swabs.html"
+    },
+    {
+        "class_name": "Fragrance",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/fragrance.html"
+    },
+    {
+        "class_name": "Women's",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Fragrance"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/fragrance/women-s.html"
+    },
+    {
+        "class_name": "Men's",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Fragrance"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/fragrance/men-s.html"
+    },
+    {
+        "class_name": "Personal Care",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/personal-care.html"
+    },
+    {
+        "class_name": "Bath & Bathing Accessories",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/personal-care/bath-bathing-accessories.html"
+    },
+    {
+        "class_name": "Deodorants & Antiperspirants",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/personal-care/deodorants-antiperspirants.html"
+    },
+    {
+        "class_name": "Piercing & Tattoo Supplies",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/personal-care/piercing-tattoo-supplies.html"
+    },
+    {
+        "class_name": "Shave & Hair Removal",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/shave-hair-removal.html"
+    },
+    {
+        "class_name": "Men's",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Shave & Hair Removal"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/shave-hair-removal/men-s.html"
+    },
+    {
+        "class_name": "Women's",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Shave & Hair Removal"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/shave-hair-removal/women-s.html"
+    },
+    {
+        "class_name": "Salon & Spa Equipment",
+        "father_class_li": [
+            "Beauty & Personal Care"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/salon-spa-equipment.html"
+    },
+    {
+        "class_name": "Spa Storage Systems",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Salon & Spa Equipment"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/salon-spa-equipment/spa-storage-systems.html"
+    },
+    {
+        "class_name": "Spa Beds & Tables",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Salon & Spa Equipment"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/salon-spa-equipment/spa-beds-tables.html"
+    },
+    {
+        "class_name": "Professional Massage Equipment",
+        "father_class_li": [
+            "Beauty & Personal Care",
+            "Salon & Spa Equipment"
+        ],
+        "class_url": "http://localhost:7770/beauty-personal-care/salon-spa-equipment/professional-massage-equipment.html"
+    },
+    {
+        "class_name": "Sports & Outdoors",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/sports-outdoors.html"
+    },
+    {
+        "class_name": "Hunting & Fishing",
+        "father_class_li": [
+            "Sports & Outdoors"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/hunting-fishing.html"
+    },
+    {
+        "class_name": "Shooting",
+        "father_class_li": [
+            "Sports & Outdoors",
+            "Hunting & Fishing"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/hunting-fishing/shooting.html"
+    },
+    {
+        "class_name": "Exercise & Fitness",
+        "father_class_li": [
+            "Sports & Outdoors"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/exercise-fitness.html"
+    },
+    {
+        "class_name": "Fan Shop",
+        "father_class_li": [
+            "Sports & Outdoors"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/fan-shop.html"
+    },
+    {
+        "class_name": "Clothing",
+        "father_class_li": [
+            "Sports & Outdoors",
+            "Fan Shop"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/fan-shop/clothing.html"
+    },
+    {
+        "class_name": "Footwear",
+        "father_class_li": [
+            "Sports & Outdoors",
+            "Fan Shop"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/fan-shop/footwear.html"
+    },
+    {
+        "class_name": "Sports & Outdoor Recreation Accessories",
+        "father_class_li": [
+            "Sports & Outdoors"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/sports-outdoor-recreation-accessories.html"
+    },
+    {
+        "class_name": "Ball Storage",
+        "father_class_li": [
+            "Sports & Outdoors",
+            "Sports & Outdoor Recreation Accessories"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/sports-outdoor-recreation-accessories/ball-storage.html"
+    },
+    {
+        "class_name": "Sports",
+        "father_class_li": [
+            "Sports & Outdoors"
+        ],
+        "class_url": "http://localhost:7770/sports-outdoors/sports.html"
+    },
+    {
+        "class_name": "Clothing, Shoes & Jewelry",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry.html"
+    },
+    {
+        "class_name": "Men",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/men.html"
+    },
+    {
+        "class_name": "Clothing",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Men"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/men/clothing.html"
+    },
+    {
+        "class_name": "Shoes",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Men"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/men/shoes.html"
+    },
+    {
+        "class_name": "Uniforms, Work & Safety",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Men"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/men/uniforms-work-safety.html"
+    },
+    {
+        "class_name": "Women",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/women.html"
+    },
+    {
+        "class_name": "Clothing",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Women"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/women/clothing.html"
+    },
+    {
+        "class_name": "Shoes",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Women"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/women/shoes.html"
+    },
+    {
+        "class_name": "Accessories",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Women"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/women/accessories.html"
+    },
+    {
+        "class_name": "Uniforms, Work & Safety",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Women"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/women/uniforms-work-safety.html"
+    },
+    {
+        "class_name": "Novelty & More",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/novelty-more.html"
+    },
+    {
+        "class_name": "Clothing",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Novelty & More"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/novelty-more/clothing.html"
+    },
+    {
+        "class_name": "Sport Specific Clothing",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/sport-specific-clothing.html"
+    },
+    {
+        "class_name": "Competitive Swimwear",
+        "father_class_li": [
+            "Clothing, Shoes & Jewelry",
+            "Sport Specific Clothing"
+        ],
+        "class_url": "http://localhost:7770/clothing-shoes-jewelry/sport-specific-clothing/competitive-swimwear.html"
+    },
+    {
+        "class_name": "Home & Kitchen",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/home-kitchen.html"
+    },
+    {
+        "class_name": "Furniture",
+        "father_class_li": [
+            "Home & Kitchen"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture.html"
+    },
+    {
+        "class_name": "Living Room Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/living-room-furniture.html"
+    },
+    {
+        "class_name": "Accent Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/accent-furniture.html"
+    },
+    {
+        "class_name": "Home Office Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/home-office-furniture.html"
+    },
+    {
+        "class_name": "Kitchen Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/kitchen-furniture.html"
+    },
+    {
+        "class_name": "Game & Recreation Room Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/game-recreation-room-furniture.html"
+    },
+    {
+        "class_name": "Bedroom Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/bedroom-furniture.html"
+    },
+    {
+        "class_name": "Entryway Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/entryway-furniture.html"
+    },
+    {
+        "class_name": "Dining Room Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/dining-room-furniture.html"
+    },
+    {
+        "class_name": "Kids' Furniture",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Furniture"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/furniture/kids-furniture.html"
+    },
+    {
+        "class_name": "Bedding",
+        "father_class_li": [
+            "Home & Kitchen"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/bedding.html"
+    },
+    {
+        "class_name": "Kids' Bedding",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Bedding"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/bedding/kids-bedding.html"
+    },
+    {
+        "class_name": "Blankets & Throws",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Bedding"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/bedding/blankets-throws.html"
+    },
+    {
+        "class_name": "Decorative Pillows, Inserts & Covers",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Bedding"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/bedding/decorative-pillows-inserts-covers.html"
+    },
+    {
+        "class_name": "Storage & Organization",
+        "father_class_li": [
+            "Home & Kitchen"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/storage-organization.html"
+    },
+    {
+        "class_name": "Baskets, Bins & Containers",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Storage & Organization"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/storage-organization/baskets-bins-containers.html"
+    },
+    {
+        "class_name": "Home Storage Hooks",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Storage & Organization"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/storage-organization/home-storage-hooks.html"
+    },
+    {
+        "class_name": "Racks, Shelves & Drawers",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Storage & Organization"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/storage-organization/racks-shelves-drawers.html"
+    },
+    {
+        "class_name": "Clothing & Closet Storage",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Storage & Organization"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/storage-organization/clothing-closet-storage.html"
+    },
+    {
+        "class_name": "Home Décor Products",
+        "father_class_li": [
+            "Home & Kitchen"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/home-decor-products.html"
+    },
+    {
+        "class_name": "Home Décor Accents",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Home Décor Products"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/home-decor-products/home-decor-accents.html"
+    },
+    {
+        "class_name": "Window Treatments",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Home Décor Products"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/home-decor-products/window-treatments.html"
+    },
+    {
+        "class_name": "Artificial Plants & Flowers",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Home Décor Products"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/home-decor-products/artificial-plants-flowers.html"
+    },
+    {
+        "class_name": "Candles & Holders",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Home Décor Products"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/home-decor-products/candles-holders.html"
+    },
+    {
+        "class_name": "Mirrors",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Home Décor Products"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/home-decor-products/mirrors.html"
+    },
+    {
+        "class_name": "Rugs, Pads & Protectors",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Home Décor Products"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/home-decor-products/rugs-pads-protectors.html"
+    },
+    {
+        "class_name": "Slipcovers",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Home Décor Products"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/home-decor-products/slipcovers.html"
+    },
+    {
+        "class_name": "Kitchen & Dining",
+        "father_class_li": [
+            "Home & Kitchen"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/kitchen-dining.html"
+    },
+    {
+        "class_name": "Dining & Entertaining",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Kitchen & Dining"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/kitchen-dining/dining-entertaining.html"
+    },
+    {
+        "class_name": "Storage & Organization",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Kitchen & Dining"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/kitchen-dining/storage-organization.html"
+    },
+    {
+        "class_name": "Kitchen & Table Linens",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Kitchen & Dining"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/kitchen-dining/kitchen-table-linens.html"
+    },
+    {
+        "class_name": "Heating, Cooling & Air Quality",
+        "father_class_li": [
+            "Home & Kitchen"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/heating-cooling-air-quality.html"
+    },
+    {
+        "class_name": "Wall Art",
+        "father_class_li": [
+            "Home & Kitchen"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/wall-art.html"
+    },
+    {
+        "class_name": "Posters & Prints",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Wall Art"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/wall-art/posters-prints.html"
+    },
+    {
+        "class_name": "Bath",
+        "father_class_li": [
+            "Home & Kitchen"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/bath.html"
+    },
+    {
+        "class_name": "Bathroom Accessories",
+        "father_class_li": [
+            "Home & Kitchen",
+            "Bath"
+        ],
+        "class_url": "http://localhost:7770/home-kitchen/bath/bathroom-accessories.html"
+    },
+    {
+        "class_name": "Office Products",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/office-products.html"
+    },
+    {
+        "class_name": "Office Electronics",
+        "father_class_li": [
+            "Office Products"
+        ],
+        "class_url": "http://localhost:7770/office-products/office-electronics.html"
+    },
+    {
+        "class_name": "Printers & Accessories",
+        "father_class_li": [
+            "Office Products",
+            "Office Electronics"
+        ],
+        "class_url": "http://localhost:7770/office-products/office-electronics/printers-accessories.html"
+    },
+    {
+        "class_name": "Office & School Supplies",
+        "father_class_li": [
+            "Office Products"
+        ],
+        "class_url": "http://localhost:7770/office-products/office-school-supplies.html"
+    },
+    {
+        "class_name": "Desk Accessories & Workspace Organizers",
+        "father_class_li": [
+            "Office Products",
+            "Office & School Supplies"
+        ],
+        "class_url": "http://localhost:7770/office-products/office-school-supplies/desk-accessories-workspace-organizers.html"
+    },
+    {
+        "class_name": "Office Furniture & Lighting",
+        "father_class_li": [
+            "Office Products"
+        ],
+        "class_url": "http://localhost:7770/office-products/office-furniture-lighting.html"
+    },
+    {
+        "class_name": "Chairs & Sofas",
+        "father_class_li": [
+            "Office Products",
+            "Office Furniture & Lighting"
+        ],
+        "class_url": "http://localhost:7770/office-products/office-furniture-lighting/chairs-sofas.html"
+    },
+    {
+        "class_name": "Cabinets, Racks & Shelves",
+        "father_class_li": [
+            "Office Products",
+            "Office Furniture & Lighting"
+        ],
+        "class_url": "http://localhost:7770/office-products/office-furniture-lighting/cabinets-racks-shelves.html"
+    },
+    {
+        "class_name": "Tools & Home Improvement",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/tools-home-improvement.html"
+    },
+    {
+        "class_name": "Lighting & Ceiling Fans",
+        "father_class_li": [
+            "Tools & Home Improvement"
+        ],
+        "class_url": "http://localhost:7770/tools-home-improvement/lighting-ceiling-fans.html"
+    },
+    {
+        "class_name": "Lamps & Shades",
+        "father_class_li": [
+            "Tools & Home Improvement",
+            "Lighting & Ceiling Fans"
+        ],
+        "class_url": "http://localhost:7770/tools-home-improvement/lighting-ceiling-fans/lamps-shades.html"
+    },
+    {
+        "class_name": "Wall Lights",
+        "father_class_li": [
+            "Tools & Home Improvement",
+            "Lighting & Ceiling Fans"
+        ],
+        "class_url": "http://localhost:7770/tools-home-improvement/lighting-ceiling-fans/wall-lights.html"
+    },
+    {
+        "class_name": "Ceiling Lights",
+        "father_class_li": [
+            "Tools & Home Improvement",
+            "Lighting & Ceiling Fans"
+        ],
+        "class_url": "http://localhost:7770/tools-home-improvement/lighting-ceiling-fans/ceiling-lights.html"
+    },
+    {
+        "class_name": "Health & Household",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/health-household.html"
+    },
+    {
+        "class_name": "Household Supplies",
+        "father_class_li": [
+            "Health & Household"
+        ],
+        "class_url": "http://localhost:7770/health-household/household-supplies.html"
+    },
+    {
+        "class_name": "Household Batteries",
+        "father_class_li": [
+            "Health & Household",
+            "Household Supplies"
+        ],
+        "class_url": "http://localhost:7770/health-household/household-supplies/household-batteries.html"
+    },
+    {
+        "class_name": "Health Care",
+        "father_class_li": [
+            "Health & Household"
+        ],
+        "class_url": "http://localhost:7770/health-household/health-care.html"
+    },
+    {
+        "class_name": "Diet & Sports Nutrition",
+        "father_class_li": [
+            "Health & Household"
+        ],
+        "class_url": "http://localhost:7770/health-household/diet-sports-nutrition.html"
+    },
+    {
+        "class_name": "Nutrition Bars & Drinks",
+        "father_class_li": [
+            "Health & Household",
+            "Diet & Sports Nutrition"
+        ],
+        "class_url": "http://localhost:7770/health-household/diet-sports-nutrition/nutrition-bars-drinks.html"
+    },
+    {
+        "class_name": "Patio, Lawn & Garden",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/patio-lawn-garden.html"
+    },
+    {
+        "class_name": "Gardening & Lawn Care",
+        "father_class_li": [
+            "Patio, Lawn & Garden"
+        ],
+        "class_url": "http://localhost:7770/patio-lawn-garden/gardening-lawn-care.html"
+    },
+    {
+        "class_name": "Plants, Seeds & Bulbs",
+        "father_class_li": [
+            "Patio, Lawn & Garden",
+            "Gardening & Lawn Care"
+        ],
+        "class_url": "http://localhost:7770/patio-lawn-garden/gardening-lawn-care/plants-seeds-bulbs.html"
+    },
+    {
+        "class_name": "Pots, Planters & Container Accessories",
+        "father_class_li": [
+            "Patio, Lawn & Garden",
+            "Gardening & Lawn Care"
+        ],
+        "class_url": "http://localhost:7770/patio-lawn-garden/gardening-lawn-care/pots-planters-container-accessories.html"
+    },
+    {
+        "class_name": "Patio Furniture & Accessories",
+        "father_class_li": [
+            "Patio, Lawn & Garden"
+        ],
+        "class_url": "http://localhost:7770/patio-lawn-garden/patio-furniture-accessories.html"
+    },
+    {
+        "class_name": "Electronics",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/electronics.html"
+    },
+    {
+        "class_name": "Home Audio",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/home-audio.html"
+    },
+    {
+        "class_name": "Home Audio Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Home Audio"
+        ],
+        "class_url": "http://localhost:7770/electronics/home-audio/home-audio-accessories.html"
+    },
+    {
+        "class_name": "Speakers",
+        "father_class_li": [
+            "Electronics",
+            "Home Audio"
+        ],
+        "class_url": "http://localhost:7770/electronics/home-audio/speakers.html"
+    },
+    {
+        "class_name": "Compact Radios & Stereos",
+        "father_class_li": [
+            "Electronics",
+            "Home Audio"
+        ],
+        "class_url": "http://localhost:7770/electronics/home-audio/compact-radios-stereos.html"
+    },
+    {
+        "class_name": "Home Theater",
+        "father_class_li": [
+            "Electronics",
+            "Home Audio"
+        ],
+        "class_url": "http://localhost:7770/electronics/home-audio/home-theater.html"
+    },
+    {
+        "class_name": "Turntables & Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Home Audio"
+        ],
+        "class_url": "http://localhost:7770/electronics/home-audio/turntables-accessories.html"
+    },
+    {
+        "class_name": "Video Projectors",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/video-projectors.html"
+    },
+    {
+        "class_name": "Accessories & Supplies",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/accessories-supplies.html"
+    },
+    {
+        "class_name": "Audio & Video Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Accessories & Supplies"
+        ],
+        "class_url": "http://localhost:7770/electronics/accessories-supplies/audio-video-accessories.html"
+    },
+    {
+        "class_name": "Power Strips & Surge Protectors",
+        "father_class_li": [
+            "Electronics",
+            "Accessories & Supplies"
+        ],
+        "class_url": "http://localhost:7770/electronics/accessories-supplies/power-strips-surge-protectors.html"
+    },
+    {
+        "class_name": "Telephone Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Accessories & Supplies"
+        ],
+        "class_url": "http://localhost:7770/electronics/accessories-supplies/telephone-accessories.html"
+    },
+    {
+        "class_name": "Television & Video",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/television-video.html"
+    },
+    {
+        "class_name": "Projection Screens",
+        "father_class_li": [
+            "Electronics",
+            "Television & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/television-video/projection-screens.html"
+    },
+    {
+        "class_name": "Televisions",
+        "father_class_li": [
+            "Electronics",
+            "Television & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/television-video/televisions.html"
+    },
+    {
+        "class_name": "DVD Players & Recorders",
+        "father_class_li": [
+            "Electronics",
+            "Television & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/television-video/dvd-players-recorders.html"
+    },
+    {
+        "class_name": "Streaming Media Players",
+        "father_class_li": [
+            "Electronics",
+            "Television & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/television-video/streaming-media-players.html"
+    },
+    {
+        "class_name": "Home Theater Systems",
+        "father_class_li": [
+            "Electronics",
+            "Television & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/television-video/home-theater-systems.html"
+    },
+    {
+        "class_name": "Television Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Television & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/television-video/television-accessories.html"
+    },
+    {
+        "class_name": "Camera & Photo",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo.html"
+    },
+    {
+        "class_name": "Tripods & Monopods",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/tripods-monopods.html"
+    },
+    {
+        "class_name": "Lighting & Studio",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/lighting-studio.html"
+    },
+    {
+        "class_name": "Bags & Cases",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/bags-cases.html"
+    },
+    {
+        "class_name": "Binoculars & Scopes",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/binoculars-scopes.html"
+    },
+    {
+        "class_name": "Video Surveillance",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/video-surveillance.html"
+    },
+    {
+        "class_name": "Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/accessories.html"
+    },
+    {
+        "class_name": "Digital Cameras",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/digital-cameras.html"
+    },
+    {
+        "class_name": "Underwater Photography",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/underwater-photography.html"
+    },
+    {
+        "class_name": "Film Photography",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/film-photography.html"
+    },
+    {
+        "class_name": "Flashes",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/flashes.html"
+    },
+    {
+        "class_name": "Lenses",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/lenses.html"
+    },
+    {
+        "class_name": "Video",
+        "father_class_li": [
+            "Electronics",
+            "Camera & Photo"
+        ],
+        "class_url": "http://localhost:7770/electronics/camera-photo/video.html"
+    },
+    {
+        "class_name": "Computers & Accessories",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/computers-accessories.html"
+    },
+    {
+        "class_name": "Computer Accessories & Peripherals",
+        "father_class_li": [
+            "Electronics",
+            "Computers & Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/computers-accessories/computer-accessories-peripherals.html"
+    },
+    {
+        "class_name": "Networking Products",
+        "father_class_li": [
+            "Electronics",
+            "Computers & Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/computers-accessories/networking-products.html"
+    },
+    {
+        "class_name": "Tablet Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Computers & Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/computers-accessories/tablet-accessories.html"
+    },
+    {
+        "class_name": "Computers & Tablets",
+        "father_class_li": [
+            "Electronics",
+            "Computers & Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/computers-accessories/computers-tablets.html"
+    },
+    {
+        "class_name": "Data Storage",
+        "father_class_li": [
+            "Electronics",
+            "Computers & Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/computers-accessories/data-storage.html"
+    },
+    {
+        "class_name": "Laptop Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Computers & Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/computers-accessories/laptop-accessories.html"
+    },
+    {
+        "class_name": "Computer Components",
+        "father_class_li": [
+            "Electronics",
+            "Computers & Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/computers-accessories/computer-components.html"
+    },
+    {
+        "class_name": "Headphones",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/headphones.html"
+    },
+    {
+        "class_name": "Over-Ear Headphones",
+        "father_class_li": [
+            "Electronics",
+            "Headphones"
+        ],
+        "class_url": "http://localhost:7770/electronics/headphones/over-ear-headphones.html"
+    },
+    {
+        "class_name": "Earbud Headphones",
+        "father_class_li": [
+            "Electronics",
+            "Headphones"
+        ],
+        "class_url": "http://localhost:7770/electronics/headphones/earbud-headphones.html"
+    },
+    {
+        "class_name": "On-Ear Headphones",
+        "father_class_li": [
+            "Electronics",
+            "Headphones"
+        ],
+        "class_url": "http://localhost:7770/electronics/headphones/on-ear-headphones.html"
+    },
+    {
+        "class_name": "Portable Audio & Video",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/portable-audio-video.html"
+    },
+    {
+        "class_name": "Boomboxes",
+        "father_class_li": [
+            "Electronics",
+            "Portable Audio & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/portable-audio-video/boomboxes.html"
+    },
+    {
+        "class_name": "Portable Speakers & Docks",
+        "father_class_li": [
+            "Electronics",
+            "Portable Audio & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/portable-audio-video/portable-speakers-docks.html"
+    },
+    {
+        "class_name": "Radios",
+        "father_class_li": [
+            "Electronics",
+            "Portable Audio & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/portable-audio-video/radios.html"
+    },
+    {
+        "class_name": "MP3 & MP4 Player Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Portable Audio & Video"
+        ],
+        "class_url": "http://localhost:7770/electronics/portable-audio-video/mp3-mp4-player-accessories.html"
+    },
+    {
+        "class_name": "Security & Surveillance",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/security-surveillance.html"
+    },
+    {
+        "class_name": "Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Security & Surveillance"
+        ],
+        "class_url": "http://localhost:7770/electronics/security-surveillance/accessories.html"
+    },
+    {
+        "class_name": "Surveillance Video Equipment",
+        "father_class_li": [
+            "Electronics",
+            "Security & Surveillance"
+        ],
+        "class_url": "http://localhost:7770/electronics/security-surveillance/surveillance-video-equipment.html"
+    },
+    {
+        "class_name": "Power Accessories",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/power-accessories.html"
+    },
+    {
+        "class_name": "AC Adapters",
+        "father_class_li": [
+            "Electronics",
+            "Power Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/power-accessories/ac-adapters.html"
+    },
+    {
+        "class_name": "Car & Vehicle Electronics",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/car-vehicle-electronics.html"
+    },
+    {
+        "class_name": "Car Electronics",
+        "father_class_li": [
+            "Electronics",
+            "Car & Vehicle Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/car-vehicle-electronics/car-electronics.html"
+    },
+    {
+        "class_name": "Vehicle Electronics Accessories",
+        "father_class_li": [
+            "Electronics",
+            "Car & Vehicle Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/car-vehicle-electronics/vehicle-electronics-accessories.html"
+    },
+    {
+        "class_name": "Wearable Technology",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/wearable-technology.html"
+    },
+    {
+        "class_name": "Smartwatches",
+        "father_class_li": [
+            "Electronics",
+            "Wearable Technology"
+        ],
+        "class_url": "http://localhost:7770/electronics/wearable-technology/smartwatches.html"
+    },
+    {
+        "class_name": "GPS, Finders & Accessories",
+        "father_class_li": [
+            "Electronics"
+        ],
+        "class_url": "http://localhost:7770/electronics/gps-finders-accessories.html"
+    },
+    {
+        "class_name": "GPS System Accessories",
+        "father_class_li": [
+            "Electronics",
+            "GPS, Finders & Accessories"
+        ],
+        "class_url": "http://localhost:7770/electronics/gps-finders-accessories/gps-system-accessories.html"
+    },
+    {
+        "class_name": "Cell Phones & Accessories",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/cell-phones-accessories.html"
+    },
+    {
+        "class_name": "Accessories",
+        "father_class_li": [
+            "Cell Phones & Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories.html"
+    },
+    {
+        "class_name": "Chargers & Power Adapters",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/chargers-power-adapters.html"
+    },
+    {
+        "class_name": "Maintenance, Upkeep & Repairs",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/maintenance-upkeep-repairs.html"
+    },
+    {
+        "class_name": "Single Ear Bluetooth Headsets",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/single-ear-bluetooth-headsets.html"
+    },
+    {
+        "class_name": "Smartwatch Accessories",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/smartwatch-accessories.html"
+    },
+    {
+        "class_name": "Virtual Reality (VR) Headsets",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/virtual-reality-vr-headsets.html"
+    },
+    {
+        "class_name": "Stands",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/stands.html"
+    },
+    {
+        "class_name": "Automobile Accessories",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/automobile-accessories.html"
+    },
+    {
+        "class_name": "Photo & Video Accessories",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/photo-video-accessories.html"
+    },
+    {
+        "class_name": "Signal Boosters",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/accessories/signal-boosters.html"
+    },
+    {
+        "class_name": "Cases, Holsters & Sleeves",
+        "father_class_li": [
+            "Cell Phones & Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/cases-holsters-sleeves.html"
+    },
+    {
+        "class_name": "Basic Cases",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Cases, Holsters & Sleeves"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/cases-holsters-sleeves/basic-cases.html"
+    },
+    {
+        "class_name": "Flip Cases",
+        "father_class_li": [
+            "Cell Phones & Accessories",
+            "Cases, Holsters & Sleeves"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/cases-holsters-sleeves/flip-cases.html"
+    },
+    {
+        "class_name": "Cell Phones",
+        "father_class_li": [
+            "Cell Phones & Accessories"
+        ],
+        "class_url": "http://localhost:7770/cell-phones-accessories/cell-phones.html"
+    },
+    {
+        "class_name": "Video Games",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/video-games.html"
+    },
+    {
+        "class_name": "Xbox One",
+        "father_class_li": [
+            "Video Games"
+        ],
+        "class_url": "http://localhost:7770/video-games/xbox-one.html"
+    },
+    {
+        "class_name": "Accessories",
+        "father_class_li": [
+            "Video Games",
+            "Xbox One"
+        ],
+        "class_url": "http://localhost:7770/video-games/xbox-one/accessories.html"
+    },
+    {
+        "class_name": "PC",
+        "father_class_li": [
+            "Video Games"
+        ],
+        "class_url": "http://localhost:7770/video-games/pc.html"
+    },
+    {
+        "class_name": "Accessories",
+        "father_class_li": [
+            "Video Games",
+            "PC"
+        ],
+        "class_url": "http://localhost:7770/video-games/pc/accessories.html"
+    },
+    {
+        "class_name": "Virtual Reality",
+        "father_class_li": [
+            "Video Games",
+            "PC"
+        ],
+        "class_url": "http://localhost:7770/video-games/pc/virtual-reality.html"
+    },
+    {
+        "class_name": "Legacy Systems",
+        "father_class_li": [
+            "Video Games"
+        ],
+        "class_url": "http://localhost:7770/video-games/legacy-systems.html"
+    },
+    {
+        "class_name": "Xbox Systems",
+        "father_class_li": [
+            "Video Games",
+            "Legacy Systems"
+        ],
+        "class_url": "http://localhost:7770/video-games/legacy-systems/xbox-systems.html"
+    },
+    {
+        "class_name": "PlayStation Systems",
+        "father_class_li": [
+            "Video Games",
+            "Legacy Systems"
+        ],
+        "class_url": "http://localhost:7770/video-games/legacy-systems/playstation-systems.html"
+    },
+    {
+        "class_name": "Nintendo Systems",
+        "father_class_li": [
+            "Video Games",
+            "Legacy Systems"
+        ],
+        "class_url": "http://localhost:7770/video-games/legacy-systems/nintendo-systems.html"
+    },
+    {
+        "class_name": "PlayStation 4",
+        "father_class_li": [
+            "Video Games"
+        ],
+        "class_url": "http://localhost:7770/video-games/playstation-4.html"
+    },
+    {
+        "class_name": "Accessories",
+        "father_class_li": [
+            "Video Games",
+            "PlayStation 4"
+        ],
+        "class_url": "http://localhost:7770/video-games/playstation-4/accessories.html"
+    },
+    {
+        "class_name": "Nintendo Switch",
+        "father_class_li": [
+            "Video Games"
+        ],
+        "class_url": "http://localhost:7770/video-games/nintendo-switch.html"
+    },
+    {
+        "class_name": "Grocery & Gourmet Food",
+        "father_class_li": [],
+        "class_url": "http://localhost:7770/grocery-gourmet-food.html"
+    },
+    {
+        "class_name": "Food & Beverage Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts.html"
+    },
+    {
+        "class_name": "Bakery & Dessert Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Food & Beverage Gifts"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts/bakery-dessert-gifts.html"
+    },
+    {
+        "class_name": "Snack Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Food & Beverage Gifts"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts/snack-gifts.html"
+    },
+    {
+        "class_name": "Coffee & Tea Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Food & Beverage Gifts"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts/coffee-tea-gifts.html"
+    },
+    {
+        "class_name": "Fruit & Nut Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Food & Beverage Gifts"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts/fruit-nut-gifts.html"
+    },
+    {
+        "class_name": "Herb, Spice & Seasoning Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Food & Beverage Gifts"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts/herb-spice-seasoning-gifts.html"
+    },
+    {
+        "class_name": "Assortments & Variety Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Food & Beverage Gifts"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts/assortments-variety-gifts.html"
+    },
+    {
+        "class_name": "Meat & Seafood Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Food & Beverage Gifts"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts/meat-seafood-gifts.html"
+    },
+    {
+        "class_name": "Cheese & Charcuterie Gifts",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Food & Beverage Gifts"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/food-beverage-gifts/cheese-charcuterie-gifts.html"
+    },
+    {
+        "class_name": "Breads & Bakery",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/breads-bakery.html"
+    },
+    {
+        "class_name": "Cookies",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Breads & Bakery"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/breads-bakery/cookies.html"
+    },
+    {
+        "class_name": "Breads",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Breads & Bakery"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/breads-bakery/breads.html"
+    },
+    {
+        "class_name": "Cakes",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Breads & Bakery"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/breads-bakery/cakes.html"
+    },
+    {
+        "class_name": "Pastries & Bakery",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Breads & Bakery"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/breads-bakery/pastries-bakery.html"
+    },
+    {
+        "class_name": "Pantry Staples",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples.html"
+    },
+    {
+        "class_name": "Herbs, Spices & Seasonings",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/herbs-spices-seasonings.html"
+    },
+    {
+        "class_name": "Cooking & Baking",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/cooking-baking.html"
+    },
+    {
+        "class_name": "Olives, Pickles & Relishes",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/olives-pickles-relishes.html"
+    },
+    {
+        "class_name": "Canned, Jarred & Packaged Foods",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/canned-jarred-packaged-foods.html"
+    },
+    {
+        "class_name": "Sauces, Gravies & Marinades",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/sauces-gravies-marinades.html"
+    },
+    {
+        "class_name": "Pasta & Noodles",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/pasta-noodles.html"
+    },
+    {
+        "class_name": "Soups, Stocks & Broths",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/soups-stocks-broths.html"
+    },
+    {
+        "class_name": "Dried Grains & Rice",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/dried-grains-rice.html"
+    },
+    {
+        "class_name": "Jams, Jellies & Sweet Spreads",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/jams-jellies-sweet-spreads.html"
+    },
+    {
+        "class_name": "Condiments & Salad Dressings",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/condiments-salad-dressings.html"
+    },
+    {
+        "class_name": "Nut & Seed Butters",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Pantry Staples"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/pantry-staples/nut-seed-butters.html"
+    },
+    {
+        "class_name": "Snacks & Sweets",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/snacks-sweets.html"
+    },
+    {
+        "class_name": "Snack Foods",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Snacks & Sweets"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/snacks-sweets/snack-foods.html"
+    },
+    {
+        "class_name": "Chocolate",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Snacks & Sweets"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/snacks-sweets/chocolate.html"
+    },
+    {
+        "class_name": "Candy & Chocolate",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Snacks & Sweets"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/snacks-sweets/candy-chocolate.html"
+    },
+    {
+        "class_name": "Dairy, Cheese & Eggs",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/dairy-cheese-eggs.html"
+    },
+    {
+        "class_name": "Cheese",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Dairy, Cheese & Eggs"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/dairy-cheese-eggs/cheese.html"
+    },
+    {
+        "class_name": "Yogurt",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Dairy, Cheese & Eggs"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/dairy-cheese-eggs/yogurt.html"
+    },
+    {
+        "class_name": "Cheese Assortments & Samplers",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Dairy, Cheese & Eggs"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/dairy-cheese-eggs/cheese-assortments-samplers.html"
+    },
+    {
+        "class_name": "Non-Dairy Milks",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Dairy, Cheese & Eggs"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/dairy-cheese-eggs/non-dairy-milks.html"
+    },
+    {
+        "class_name": "Milk & Cream",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Dairy, Cheese & Eggs"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/dairy-cheese-eggs/milk-cream.html"
+    },
+    {
+        "class_name": "Breakfast Foods",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/breakfast-foods.html"
+    },
+    {
+        "class_name": "Cereals",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Breakfast Foods"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/breakfast-foods/cereals.html"
+    },
+    {
+        "class_name": "Breakfast & Cereal Bars",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Breakfast Foods"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/breakfast-foods/breakfast-cereal-bars.html"
+    },
+    {
+        "class_name": "Beverages",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/beverages.html"
+    },
+    {
+        "class_name": "Bottled Beverages, Water & Drink Mixes",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Beverages"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/beverages/bottled-beverages-water-drink-mixes.html"
+    },
+    {
+        "class_name": "Coffee, Tea & Cocoa",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Beverages"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/beverages/coffee-tea-cocoa.html"
+    },
+    {
+        "class_name": "Produce",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/produce.html"
+    },
+    {
+        "class_name": "Dried Fruits & Vegetables",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Produce"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/produce/dried-fruits-vegetables.html"
+    },
+    {
+        "class_name": "Alcoholic Beverages",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/alcoholic-beverages.html"
+    },
+    {
+        "class_name": "Wine",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Alcoholic Beverages"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/alcoholic-beverages/wine.html"
+    },
+    {
+        "class_name": "Deli & Prepared Foods",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/deli-prepared-foods.html"
+    },
+    {
+        "class_name": "Deli Meats & Cheeses",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Deli & Prepared Foods"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/deli-prepared-foods/deli-meats-cheeses.html"
+    },
+    {
+        "class_name": "Frozen",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/frozen.html"
+    },
+    {
+        "class_name": "Meals & Entrees",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Frozen"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/frozen/meals-entrees.html"
+    },
+    {
+        "class_name": "Meats",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Frozen"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/frozen/meats.html"
+    },
+    {
+        "class_name": "Ice Cream & Novelties",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Frozen"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/frozen/ice-cream-novelties.html"
+    },
+    {
+        "class_name": "Appetizers & Snacks",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Frozen"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/frozen/appetizers-snacks.html"
+    },
+    {
+        "class_name": "Seafood",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Frozen"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/frozen/seafood.html"
+    },
+    {
+        "class_name": "Home Brewing & Winemaking",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/home-brewing-winemaking.html"
+    },
+    {
+        "class_name": "Winemaking Ingredients",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Home Brewing & Winemaking"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/home-brewing-winemaking/winemaking-ingredients.html"
+    },
+    {
+        "class_name": "Meat & Seafood",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/meat-seafood.html"
+    },
+    {
+        "class_name": "Beef",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Meat & Seafood"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/meat-seafood/beef.html"
+    },
+    {
+        "class_name": "Seafood",
+        "father_class_li": [
+            "Grocery & Gourmet Food",
+            "Meat & Seafood"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/meat-seafood/seafood.html"
+    },
+    {
+        "class_name": "Fresh Meal Kits",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/fresh-meal-kits.html"
+    },
+    {
+        "class_name": "Meat Substitutes",
+        "father_class_li": [
+            "Grocery & Gourmet Food"
+        ],
+        "class_url": "http://localhost:7770/grocery-gourmet-food/meat-substitutes.html"
+    }
+]

@@ -178,8 +178,8 @@ class TaskEventRunner(TaskRunner):
                         await asyncio.sleep(0)
             else:
                 # not handler, return raw message
-                if key == Constants.OUTPUT:
-                    return results
+                # if key == Constants.OUTPUT:
+                #     return results
 
                 results.append(message)
                 t = asyncio.create_task(self._raw_task(results))
