@@ -14,7 +14,6 @@ from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
-from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.context.prompts import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
@@ -682,41 +681,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _process_messages(self, messages: List[Dict[str, Any]],
                           context: Context = None) -> Optional[List[Dict[str, Any]]]:
-        origin_messages = messages
-        st = time.time()
-        with trace.span(f"{SPAN_NAME_PREFIX_AGENT}llm_context_process", attributes={
-            "start_time": st,
-            semconv.AGENT_ID: self.id()
-        }) as compress_span:
-            if self.conf.context_rule is None:
-                logger.debug('debug|skip process_messages context_rule is None')
-                return messages
-            origin_len = compressed_len = len(str(messages))
-            origin_messages_count = truncated_messages_count = len(messages)
-            try:
-                prompt_processor = PromptProcessor(self.conf.context_rule, self.conf.llm_config)
-                result = prompt_processor.process_messages(messages, context)
-                messages = result.processed_messages
-
-                compressed_len = len(str(messages))
-                truncated_messages_count = len(messages)
-                logger.debug(
-                    f'debug|llm_context_process|{origin_len}|{compressed_len}|{origin_messages_count}|{truncated_messages_count}|\n|{origin_messages}\n|{messages}')
-                return messages
-            finally:
-                compress_span.set_attributes({
-                    "end_time": time.time(),
-                    "duration": time.time() - st,
-                    # messages length
-                    "origin_messages_count": origin_messages_count,
-                    "truncated_messages_count": truncated_messages_count,
-                    "truncated_ratio": round(truncated_messages_count / origin_messages_count,
-                                             2) if origin_messages_count > 0 else 0,
-                    # token length
-                    "origin_len": origin_len,
-                    "compressed_len": compressed_len,
-                    "compress_ratio": round(compressed_len / origin_len, 2)
-                })
+        return messages
 
     async def invoke_model(self,
                            messages: List[Dict[str, str]] = [],

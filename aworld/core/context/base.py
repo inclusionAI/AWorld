@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import copy
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
@@ -118,6 +119,11 @@ class Context:
         # TODO workspace
         self._swarm = None
         self._event_manager = None
+        self._start = time.time()
+
+    @property
+    def start_time(self) -> float:
+        return self._start
 
     def add_token(self, usage: Dict[str, int]):
         self._token_usage = nest_dict_counter(self._token_usage, usage)
