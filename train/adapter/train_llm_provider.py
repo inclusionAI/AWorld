@@ -71,14 +71,14 @@ class TrainLLMProvider(LLMProviderBase):
                           **kwargs) -> ModelResponse:
         loop = asyncio.get_running_loop()
         current_step_input_token_ids = await loop.run_in_executor(None, self._get_current_step_input_token_ids, messages)
-        current_agent_token_id_traj = context.get_current_agent_token_id_traj()
+        current_agent_token_id_traj = context.get_agent_token_id_traj()
 
         input_ids = current_agent_token_id_traj.all_token_id_seq + current_step_input_token_ids
         token_id_response = await self.agenerate(input_ids, temperature, max_tokens, stop, **kwargs)
 
         content = await loop.run_in_executor(
             None,
-            lambda: self.tokenizer.decode(token_id_response.output_tokens, skip_special_tokens=True)
+            lambda: self.tokenizer.decode(token_id_response.output_token_ids, skip_special_tokens=True)
         )
 
         tool_parser = ToolParserManager.get_tool_parser(self.tool_parser)

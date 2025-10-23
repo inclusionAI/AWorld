@@ -922,7 +922,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             if hasattr(history, 'role') and history.role == 'assistant':
                 found_assistant = True
                 break
-            elif not found_assistant and hasattr(history, 'role') and history.rool == 'tool':
+            elif not found_assistant and hasattr(history, 'role') and history.role == 'tool':
                 tool_openai_messages_after_last_assistant.append(history.to_openai_message())
 
         if tool_openai_messages_after_last_assistant:

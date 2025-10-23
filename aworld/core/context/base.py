@@ -438,12 +438,24 @@ class Context:
     async def update_task_after_run(self, task_response: 'TaskResponse'):
         pass
 
-    def get_current_agent_token_id_traj(self) -> AgentTokenIdTrajectory:
-        current_agent_id = self.agent_info.current_agent_id
-        if not current_agent_id:
+    def get_agent_token_id_traj(self, agent_id: str = None) -> AgentTokenIdTrajectory:
+        """Get the token id trajectory of the agent.
+
+        Args:
+            agent_id: Agent id.
+
+        Returns:
+            AgentTokenIdTrajectory: Token id trajectory of the agent.
+        """
+        if not agent_id:
+            agent_id = self.agent_info.current_agent_id
+        if not agent_id:
             logger.error("No current agent id found in context.")
             raise Exception("No current agent id found in context.")
-        return self._agent_token_id_traj.get(current_agent_id, AgentTokenIdTrajectory(agent_id=current_agent_id))
+
+        if agent_id not in self._agent_token_id_traj:
+            self._agent_token_id_traj[agent_id] = AgentTokenIdTrajectory(agent_id=agent_id)
+        return self._agent_token_id_traj[agent_id]
 
     def add_llm_resp_token_ids(self,
                                input_token_ids: List[int],
@@ -458,9 +470,7 @@ class Context:
             prompt_token_ids: Prompt token ids of the current llm call.
             response: Token id model response.
         """
-        if not agent_id:
-            agent_id = self.agent_info.current_agent_id
-        token_id_traj = self._agent_token_id_traj.get(agent_id, AgentTokenIdTrajectory(agent_id=agent_id))
+        token_id_traj = self.get_agent_token_id_traj(agent_id)
         step = token_id_traj.get_current_step()
         if not step:
             logger.error("No current step found in context.")
@@ -483,9 +493,9 @@ class Context:
             agent_id: Agent id.
             tool_resp_token_ids: Tool response token ids of the current step.
         """
-        if not agent_id:
-            agent_id = self.agent_info.current_agent_id
-        token_id_traj = self._agent_token_id_traj.get(agent_id, AgentTokenIdTrajectory(agent_id=agent_id))
+        if not tool_resp_token_ids:
+            return
+        token_id_traj = self.get_agent_token_id_traj(agent_id)
         step = token_id_traj.get_current_step()
         if not step:
             logger.error("No current step found in context.")
@@ -495,3 +505,12 @@ class Context:
         step.output_logprobs.extend([0.0] * len(tool_resp_token_ids))
         step.output_versions.extend([-1] * len(tool_resp_token_ids))
         token_id_traj.all_token_id_seq.extend(step.tool_resp_token_ids)
+
+    def new_train_step(self, agent_id: str = None):
+        """Add a new train step to the context.
+
+        Args:
+            agent_id: Agent id.
+        """
+        token_id_traj = self.get_agent_token_id_traj(agent_id)
+        token_id_traj.new_step()
