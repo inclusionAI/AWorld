@@ -4,7 +4,7 @@ from .decorators import registry
 
 
 class AgentNeuronFactory:
-    """Component Neuron 工厂类，用于管理和获取带有 component_neuron 注解的 Agent 的神经元组件"""
+    """Component Neuron Factory for managing and retrieving Agent neurons with component_neuron annotation"""
 
     def __init__(self):
         self._registry = registry
@@ -25,5 +25,5 @@ class AgentNeuronFactory:
         return self._registry.get(agent_name)
 
 
-# 创建全局工厂实例
+# Create global factory instance
 agent_neuron_factory = AgentNeuronFactory()
