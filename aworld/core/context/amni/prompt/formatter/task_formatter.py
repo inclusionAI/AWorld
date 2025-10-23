@@ -1,25 +1,25 @@
 """
-任务格式化工具模块
+Task Formatter Module
 
-这个模块包含了任务历史格式化的相关函数，用于避免循环依赖问题。
+This module contains functions for formatting task history to avoid circular dependency issues.
 """
 
 from ...state import TaskOutput
 
 
 class TaskFormatter:
-    """任务格式化工具类"""
+    """Task formatting utility class"""
     
     @staticmethod
     async def format_task_history(context) -> str:
         """
-        格式化任务历史信息
+        Format task history information
         
         Args:
-            context: ApplicationContext 实例
+            context: ApplicationContext instance
             
         Returns:
-            str: 格式化后的任务历史字符串
+            str: Formatted task history string
         """
         items = []
         sub_tasks = context.task_state.working_state.sub_task_list
