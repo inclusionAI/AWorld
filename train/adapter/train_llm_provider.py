@@ -114,4 +114,14 @@ class TrainLLMProvider(LLMProviderBase):
         # If no assistant message found, use all messages
         filtered_messages = messages[last_assistant_index + 1:] if last_assistant_index >= 0 else messages
 
-        return self.tokenizer.apply_chat_template(filtered_messages, tokenize=True, add_generation_prompt=True)
+        return self.apply_chat_template(filtered_messages)
+
+    def apply_chat_template(self, messages: List[Dict[str, str]]) -> List[int]:
+        """
+        Apply the chat template to the messages.
+        """
+        placeholder_messages = [{"role": "assistant", "content": "some random message."}]
+        s1 = self.tokenizer.apply_chat_template(placeholder_messages, tokenize=True)
+        messages = placeholder_messages + messages
+        s2 = self.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+        return s2[len(s1):]

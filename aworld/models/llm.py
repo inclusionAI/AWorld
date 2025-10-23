@@ -384,6 +384,17 @@ class LLMModel:
             **kwargs
         )
 
+    def apply_chat_template(self, messages: List[Dict[str, str]]) -> List[int]:
+        """Apply the chat template to the messages.
+
+        Args:
+            messages: Message list, format is [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}].
+
+        Returns:
+            List[int]: Tokenized message list.
+        """
+        return self.provider.apply_chat_template(messages)
+
 
 def register_llm_provider(provider: str, provider_class: type):
     """Register a custom LLM provider.
@@ -618,3 +629,18 @@ async def aspeech_to_text(
         prompt=prompt,
         **kwargs
     )
+
+
+def apply_chat_template(
+        llm_model: LLMModel,
+        messages: List[Dict[str, str]]) -> List[int]:
+    """Apply the chat template to the messages.
+
+    Args:
+        llm_model: LLM model instance.
+        messages: Message list, format is [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}].
+
+    Returns:
+        List[int]: Tokenized message list.
+    """
+    return llm_model.apply_chat_template(messages)
