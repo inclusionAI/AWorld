@@ -33,8 +33,6 @@ class DefaultOutputHandler(DefaultHandler):
         return True
 
     async def _do_handle(self, message):
-        if not self.is_valid_message(message):
-            return
         # 1. get outputs
         outputs = self.runner.task.outputs
         if not outputs:
