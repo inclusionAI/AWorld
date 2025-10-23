@@ -223,7 +223,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self._llm is None:
             llm_config = self.conf.llm_config or None
             conf = llm_config if llm_config and (
-                    llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
+                llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
             self._llm = get_llm_model(conf)
         return self._llm
 
@@ -297,7 +297,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         except Exception:
             logger.error(f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}")
             pass
-
 
     async def async_messages_transform(self,
                                        image_urls: List[str] = None,
@@ -373,7 +372,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     messages.append(history.to_openai_message())
                 else:
                     if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
-                        'tool_calls']:
+                            'tool_calls']:
                         messages.append({'role': history.metadata['role'], 'content': history.content,
                                          'tool_calls': [history.metadata["tool_calls"][0]]})
                     else:
@@ -515,7 +514,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         )
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
-        ActionModel]:
+            ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -614,20 +613,29 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             ActionModel sequence. Tool execution result.
         """
-        from aworld.utils.run_util import exec_tool
+        from aworld.utils.run_util import exec_tool, exec_agent
 
         tool_results = []
         for act in actions:
             if is_agent(act):
-                continue
-            act_result = await exec_tool(tool_name=act.tool_name,
-                                         action_name=act.action_name,
-                                         params=act.params,
-                                         agent_name=self.id(),
-                                         context=message.context.deep_copy(),
-                                         sub_task=True,
-                                         outputs=message.context.outputs,
-                                         task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
+                content = act.policy_info
+                if act.params and 'content' in act.params:
+                    content = act.params['content']
+                act_result = await exec_agent(question=content,
+                                              agent=act.agent_name,
+                                              context=message.context.deep_copy(),
+                                              sub_task=True,
+                                              outputs=message.context.outputs,
+                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
+            else:
+                act_result = await exec_tool(tool_name=act.tool_name,
+                                             action_name=act.action_name,
+                                             params=act.params,
+                                             agent_name=self.id(),
+                                             context=message.context.deep_copy(),
+                                             sub_task=True,
+                                             outputs=message.context.outputs,
+                                             task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
             if not act_result.success:
                 logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
                                color=Color.red)
