@@ -28,7 +28,7 @@ class EventBus:
         self.config = config
         
     def auto_register_handlers(self):
-        """自动注册所有标记的事件处理器"""
+        """Automatically register all marked event handlers"""
         if not self.config:
             logger.warning("No config set, cannot auto-register handlers")
             return
@@ -45,7 +45,7 @@ class EventBus:
                 logger.warning(f"Module {module_name} not found: {e}, exception is {traceback.format_exc()}")
 
     def _register_handlers_from_module(self, module):
-        """从模块中注册事件处理器"""
+        """Register event handlers from module"""
         for name, obj in inspect.getmembers(module):
             if (inspect.isclass(obj) and 
                 hasattr(obj, '__event_handler__') and 
@@ -76,7 +76,7 @@ class EventBus:
                     logger.error(f"Failed to auto-register handler {name}: {e}: traceback is {traceback.format_exc()}")
     
     async def start(self):
-        """启动事件总线"""
+        """Start event bus"""
         if self.is_running == True:
             return
         
@@ -86,7 +86,7 @@ class EventBus:
         logger.info(f"EventBus started")
     
     async def stop(self):
-        """停止事件总线"""
+        """Stop event bus"""
         if not self.is_running == False:
             return
         
@@ -116,7 +116,7 @@ class EventBus:
                 logger.error(f"Error in event worker: {e}")
     
     async def _process_event(self, event: Event):
-        """处理单个事件"""
+        """Process a single event"""
         try:
             await self.event_storage.update_status(event.event_id, EventStatus.PROCESSING)
             
@@ -149,7 +149,7 @@ class EventBus:
             await self.event_storage.update_status(event.event_id, EventStatus.FAILED)
     
     async def publish(self, event: Event) -> bool:
-        """发布事件"""
+        """Publish event"""
         if not self.is_running:
             logger.warning("EventBus is not running, event dropped")
             return False
@@ -167,15 +167,15 @@ class EventBus:
     
     async def publish_and_wait(self, event: Event, timeout: float = 30.0, poll_interval: float = 0.1) -> bool:
         """
-        发布事件并等待处理完成
+        Publish event and wait for processing to complete
         
         Args:
-            event: 要发布的事件
-            timeout: 超时时间（秒），默认30秒
-            poll_interval: 轮询间隔（秒），默认0.1秒
+            event: Event to publish
+            timeout: Timeout in seconds, default 30 seconds
+            poll_interval: Polling interval in seconds, default 0.1 seconds
             
         Returns:
-            bool: 事件是否成功处理完成
+            bool: Whether the event was successfully processed
         """
         if not self.is_running:
             logger.warning("EventBus is not running, event dropped")
@@ -185,7 +185,7 @@ class EventBus:
 
     
     def subscribe(self, event_type: str, handler: EventHandler):
-        """订阅事件"""
+        """Subscribe to event"""
         event_type_str = event_type
         if event_type_str not in self.handlers:
             self.handlers[event_type_str] = []
@@ -194,7 +194,7 @@ class EventBus:
         logger.info(f"Handler {handler.name} subscribed to {event_type_str}")
     
     def unsubscribe(self, event_type: str, handler_name: str):
-        """取消订阅"""
+        """Unsubscribe from event"""
         event_type_str = event_type
         if event_type_str in self.handlers:
             self.handlers[event_type_str] = [
@@ -279,13 +279,13 @@ _global_event_bus_started = False
 
 async def start_global_event_bus(config: Optional['AmniContextConfig'] = None) -> EventBus:
     """
-    异步启动全局事件总线
+    Asynchronously start global event bus
     
     Args:
-        config: 配置对象，如果为None则使用默认配置
+        config: Configuration object, if None uses default configuration
         
     Returns:
-        EventBus: 已启动的事件总线实例
+        EventBus: Started event bus instance
     """
     global _global_event_bus, _global_config, _global_event_bus_started
 
@@ -308,7 +308,7 @@ async def start_global_event_bus(config: Optional['AmniContextConfig'] = None) -
     return _global_event_bus
 
 async def stop_global_event_bus():
-    """异步停止全局事件总线"""
+    """Asynchronously stop global event bus"""
     global _global_event_bus, _global_event_bus_started
     
     if _global_event_bus is not None and _global_event_bus_started:
