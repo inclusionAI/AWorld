@@ -49,9 +49,6 @@ class DefaultAgentHandler(AgentHandler):
         return True
 
     async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if not self.is_valid_message(message):
-            return
-
         headers = {"context": message.context}
         session_id = message.session_id
         data = message.payload
