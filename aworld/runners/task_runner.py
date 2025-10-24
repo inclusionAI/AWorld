@@ -45,16 +45,13 @@ class TaskRunner(Runner):
         if agent_oriented:
             if not task.agent and not task.swarm:
                 raise ValueError("agent and swarm all is None.")
-            if task.agent and task.swarm:
-                logger.warning("agent and swarm all is not None.")
-                raise ValueError("agent and swarm choose one only.")
-            if task.agent:
+            if task.agent and not task.swarm:
                 # uniform agent
                 task.swarm = Swarm(task.agent)
 
         if task.conf is None:
             task.conf = dict()
-        if isinstance(task.conf, BaseModel):
+        if not isinstance(task.conf, ConfigDict) and isinstance(task.conf, BaseModel):
             task.conf = task.conf.model_dump()
         task.conf = ConfigDict(task.conf)
         check_input = task.conf.get("check_input", False)
@@ -72,8 +69,9 @@ class TaskRunner(Runner):
         self._exception = None
         self.start_time = time.time()
         self.step_agent_counter = {}
-        if task.conf.get("train_mode", False) and self.task.agent:
+        if task.conf.get("interactive_mode", False) and self.task.agent:
             self.task.agent.wait_tool_result = True
+            self.context.new_trajectory_step(self.task.agent.id())
 
     async def pre_run(self):
         task = self.task
@@ -115,23 +113,27 @@ class TaskRunner(Runner):
         self.context.swarm = self.swarm
 
         # init tool state by reset(), and ignore them observation
-        observation = None
+        observation = task.observation
+        tool_observation = None
         if self.tools:
             for _, tool in self.tools.items():
                 # use the observation and info of the last one
                 if isinstance(tool, Tool):
                     tool.context = self.context
-                    observation, info = tool.reset()
+                    tool_observation, info = tool.reset()
                 elif isinstance(tool, AsyncTool):
-                    observation, info = await tool.reset()
+                    tool_observation, info = await tool.reset()
                 else:
                     logger.warning(f"Unsupported tool type: {tool}, will ignored.")
 
-        if observation:
-            if not observation.content:
-                observation.content = self.input
-        else:
-            observation = Observation(content=self.input)
+        if not observation:
+            # task observation is None, use tool observation, if tool observation is None, use input
+            observation = tool_observation
+            if observation:
+                if not observation.content:
+                    observation.content = self.input
+            else:
+                observation = Observation(content=self.input)
 
         self.observation = observation
         if self.swarm:

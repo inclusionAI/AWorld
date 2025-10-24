@@ -1,4 +1,3 @@
-from traceback import print_tb
 import unittest
 import os
 from aworld.agents.llm_agent import Agent
@@ -38,7 +37,7 @@ class SingleStepTest(unittest.IsolatedAsyncioTestCase):
         task_id = "test_task"
 
         # step 1
-        context.new_train_step(agent.id())
+        step = 1
         task = Task(
             id=task_id,
             user_id="test_user",
@@ -47,11 +46,19 @@ class SingleStepTest(unittest.IsolatedAsyncioTestCase):
             conf=TaskConfig(
                 stream=False,
                 resp_carry_context=True,
-                train_mode=True
+                interactive_mode=True
             ),
             context=context
         )
         responses = await Runners.run_task(task)
-        print(f"step 1 resp: {responses[task_id]}")
+        resp = responses[task_id]
+        print(f"step {step} resp: {resp}")
+
+        while resp.status == "running":
+            step += 1
+            task.observation = resp.answer
+            responses = await Runners.run_task(task)
+            resp = responses[task_id]
+            print(f"step {step} resp: {resp.answer}")
 
         get_trace_server().join()

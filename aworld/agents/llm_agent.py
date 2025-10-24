@@ -1,6 +1,5 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import copy
 import json
 import time
 import traceback
@@ -473,7 +472,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 topic=TopicType.GROUP_ACTIONS,
                                 headers=self._update_headers(input_message))
         elif agents:
-            return AgentMessage(payload=actions,
+            payload = actions
+            if self.wait_tool_result and any(action.params.get('is_tool_result', False) for action in actions):
+                content = ''
+                content += ''.join(action.policy_info for action in actions)
+                action_result = [ActionResult(content=action.policy_info) for action in actions]
+                payload = Observation(content=content, action_result=action_result)
+
+            return AgentMessage(payload=payload,
                                 caller=caller,
                                 sender=self.id(),
                                 receiver=actions[0].tool_name,
@@ -647,7 +653,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         content = ""
         for res in tool_results:
             content += f"{res.content}\n"
-        return [ActionModel(agent_name=self.id(), policy_info=content)]
+        params = {"is_tool_result": True}
+        return [ActionModel(agent_name=self.id(), policy_info=content, params=params)]
 
     async def build_llm_input(self,
                               observation: Observation,
@@ -906,8 +913,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_tool_result_token_ids_to_context(self, context: Context):
         """Add tool result token ids to context"""
-        train_mode = context.get_task().conf.get("train_mode", False)
-        if not train_mode:
+        interactive_mode = context.get_task().conf.get("interactive_mode", False)
+        if not interactive_mode:
             return
         histories = self.memory.get_all(filters={
             "agent_id": self.id(),
