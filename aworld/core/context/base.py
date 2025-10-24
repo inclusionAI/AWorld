@@ -506,8 +506,8 @@ class Context:
         step.output_versions.extend([-1] * len(tool_resp_token_ids))
         token_id_traj.all_token_id_seq.extend(step.tool_resp_token_ids)
 
-    def new_train_step(self, agent_id: str = None):
-        """Add a new train step to the context.
+    def new_trajectory_step(self, agent_id: str = None):
+        """Add a new trajectory step to the context.
 
         Args:
             agent_id: Agent id.

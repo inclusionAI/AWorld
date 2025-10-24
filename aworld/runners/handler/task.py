@@ -86,12 +86,14 @@ class DefaultTaskHandler(TaskHandler):
             async for event in self.run_hooks(message, HookPoint.FINISHED):
                 yield event
 
+            status = "running" if message.headers.get("step_interrupt", False) else "finished"
             self.runner._task_response = TaskResponse(answer=message.payload,
                                                       success=True,
                                                       context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage)
+                                                      usage=self.runner.context.token_usage,
+                                                      status=status)
 
             logger.info(f"{task_flag} task {self.runner.task.id} receive finished message.")
 

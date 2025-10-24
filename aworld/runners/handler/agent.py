@@ -95,6 +95,20 @@ class DefaultAgentHandler(AgentHandler):
                 yield msg
                 return
 
+            if message.context.get_task().conf.get('interactive_mode', False) and data.action_result:
+                # train mode, send finished message to task after single-step completion.
+                headers = {"step_interrupt": True}
+                headers.update(message.headers)
+                yield Message(
+                    category=Constants.TASK,
+                    payload=data,
+                    sender=message.sender,
+                    session_id=session_id,
+                    topic=TopicType.FINISHED,
+                    headers=headers
+                )
+                return
+
             agent = self.swarm.agents.get(message.receiver)
             # agent + tool completion protocol.
             if agent and agent.finished and data.info.get('done'):
