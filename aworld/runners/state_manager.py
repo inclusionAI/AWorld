@@ -20,6 +20,7 @@ class RunNodeBusiType(Enum):
     TASK = 'TASK'
     TOOL_CALLBACK = 'TOOL_CALLBACK'
     HUMAN = 'HUMAN'
+    CONTEXT = "CONTEXT"
 
     @staticmethod
     def from_message_category(category: str) -> 'RunNodeBusiType':
@@ -33,6 +34,8 @@ class RunNodeBusiType(Enum):
             return RunNodeBusiType.TOOL_CALLBACK
         if category == Constants.HUMAN:
             return RunNodeBusiType.HUMAN
+        if category == Constants.CONTEXT:
+            return RunNodeBusiType.CONTEXT
         return None
 
 
