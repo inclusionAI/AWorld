@@ -308,7 +308,12 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 if idx >= len(observation.action_result):
                     continue
                 tool_result = observation.action_result[idx]
-                receive_agent = context.swarm.agents.get(act.agent_name)
+                receive_agent = None
+                if context.swarm and context.swarm.agents:
+                    receive_agent = context.swarm.agents.get(act.agent_name)
+                if not receive_agent:
+                    logger.warning(f"agent {act.agent_name} not found in swarm {context.swarm}.")
+                    return
                 sync_exec(send_message, MemoryEventMessage(
                     payload=tool_result,
                     agent=receive_agent,
@@ -512,7 +517,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 if idx >= len(observation.action_result):
                     continue
                 tool_result = observation.action_result[idx]
-                receive_agent = context.swarm.agents.get(act.agent_name)
+                receive_agent = None
+                if context.swarm and context.swarm.agents:
+                    receive_agent = context.swarm.agents.get(act.agent_name)
+                if not receive_agent:
+                    logger.warning(f"agent {act.agent_name} not found in swarm {context.swarm}.")
+                    return
                 memory_msg = MemoryEventMessage(
                     payload=tool_result,
                     agent=receive_agent,
