@@ -135,6 +135,27 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
       <td style="padding: 8px; vertical-align: top;">The more tools the better?</td>
       <td style="padding: 8px; vertical-align: top;">2025/09/18</td>
     </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>VisualWebArena Rank <br> 1st in September</strong>
+        <br>
+        <a href="https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=2044883967#gid=2044883967" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/VWA-Leaderboard-green" alt="VWA">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>36.5%</strong> <br> Success Rate
+        <br>
+        <a href="examples/visualwebarena/README.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">Automated tool generation <br>
+        <a href="https://arxiv.org/pdf/2509.21072" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper"></td>
+      <td style="padding: 8px; vertical-align: top;">2025/09/25</td>
+    </tr>
   </tbody>
 </table>
 

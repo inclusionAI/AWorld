@@ -143,14 +143,14 @@ class ToolMessage(Message[List[ActionModel]]):
 class CancelMessage(Message[TaskItem]):
     """Cancel event of the task, has higher priority."""
     category: str = 'task'
-    priority: int = -5
+    priority: int = field(default=-5)
     topic: str = TopicType.CANCEL
 
 
 @dataclass
 class GroupMessage(Message[Union[Dict[str, Any], List[ActionModel]]]):
     category: str = 'group'
-    group_id: str = None
+    group_id: str = field(default=None)
 
     def __post_init__(self):
         super().__post_init__()
@@ -171,8 +171,8 @@ class MemoryEventMessage(Message[Any]):
     For example, `memory` event can interact with other memory through the MCP protocol.
     """
     category: str = 'memory'
-    agent: 'BaseAgent' = None
-    memory_event_type: MemoryEventType = None
+    agent: 'BaseAgent' = field(default=None)
+    memory_event_type: MemoryEventType = field(default=None)
 
 
 @dataclass
@@ -183,7 +183,7 @@ class HumanMessage(Message[Any]):
     in interactive AI systems.
     """
     category: str = 'human'
-    priority = -1
+    priority: int = field(default=-1)
 
 
 class Messageable(object):

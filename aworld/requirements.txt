@@ -19,3 +19,4 @@ aiohttp~=3.9.5
 click
 packaging
 numpy
+langchain-text-splitters~=0.3.8

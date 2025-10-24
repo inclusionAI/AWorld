@@ -13,20 +13,18 @@ from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
-from aworld.core.context.processor.prompt_processor import PromptProcessor
 from aworld.core.context.prompts import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
-    MemoryEventType, MemoryEventMessage
+    MemoryEventType as MemoryType, MemoryEventMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MessageMetadata, MemoryAIMessage, MemoryToolMessage, MemoryHumanMessage, \
-    MemorySystemMessage, MemoryMessage
+from aworld.memory.models import MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall, LLMResponseError
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
@@ -315,8 +313,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         agent_prompt = self.agent_prompt
         messages = []
         # append sys_prompt to memory
-        content = await self.custom_system_prompt(context=message.context, content=observation.content, tool_list=self.tools)
-        await self._add_system_message_to_memory(context=message.context, content=content)
+        content = await self.custom_system_prompt(context=message.context,
+                                                  content=observation.content,
+                                                  tool_list=self.tools)
+        if self.system_prompt:
+            await self._add_message_to_memory(context=message.context, payload=content, message_type=MemoryType.SYSTEM)
 
         session_id = message.context.get_task().session_id
         task_id = message.context.get_task().id
@@ -326,7 +327,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "task_id": task_id,
             "memory_type": "message"
         })
-        last_history = histories[-1] if histories and len(histories) > 0 else None
 
         # append observation to memory
         tool_result_added = False
@@ -346,7 +346,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     urls.append(
                         {'type': 'image_url', 'image_url': {"url": image_url}})
                 content = urls
-            await self._add_human_input_to_memory(content, message.context)
+            await self._add_message_to_memory(payload={"content": content, "memory_type": "init"},
+                                              message_type=MemoryType.HUMAN,
+                                              context=message.context)
 
         # from memory get last n messages
         histories = self.memory.get_last_n(self.memory_config.history_rounds, filters={
@@ -576,7 +578,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         await send_message(output_message)
                 else:
-                    await self._add_llm_response_to_memory(llm_response, message.context, history_messages=messages)
+                    await self._add_message_to_memory(payload=llm_response,
+                                                      message_type=MemoryType.AI,
+                                                      context=message.context)
             else:
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(f"{self.id()} failed to get LLM response")
@@ -639,7 +643,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 continue
             act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer)
             tool_results.append(act_res)
-            await self._add_tool_result_to_memory(act_res, context=message.context)
+            await self._add_message_to_memory(payload=act_res, message_type=MemoryType.TOOL, context=message.context)
         result = sync_exec(self.tools_aggregate_func, tool_results)
         return result
 
@@ -687,41 +691,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     def _process_messages(self, messages: List[Dict[str, Any]],
                           context: Context = None) -> Optional[List[Dict[str, Any]]]:
-        origin_messages = messages
-        st = time.time()
-        with trace.span(f"{SPAN_NAME_PREFIX_AGENT}llm_context_process", attributes={
-            "start_time": st,
-            semconv.AGENT_ID: self.id()
-        }) as compress_span:
-            if self.conf.context_rule is None:
-                logger.debug('debug|skip process_messages context_rule is None')
-                return messages
-            origin_len = compressed_len = len(str(messages))
-            origin_messages_count = truncated_messages_count = len(messages)
-            try:
-                prompt_processor = PromptProcessor(self.conf.context_rule, self.conf.llm_config)
-                result = prompt_processor.process_messages(messages, context)
-                messages = result.processed_messages
-
-                compressed_len = len(str(messages))
-                truncated_messages_count = len(messages)
-                logger.debug(
-                    f'debug|llm_context_process|{origin_len}|{compressed_len}|{origin_messages_count}|{truncated_messages_count}|\n|{origin_messages}\n|{messages}')
-                return messages
-            finally:
-                compress_span.set_attributes({
-                    "end_time": time.time(),
-                    "duration": time.time() - st,
-                    # messages length
-                    "origin_messages_count": origin_messages_count,
-                    "truncated_messages_count": truncated_messages_count,
-                    "truncated_ratio": round(truncated_messages_count / origin_messages_count,
-                                             2) if origin_messages_count > 0 else 0,
-                    # token length
-                    "origin_len": origin_len,
-                    "compressed_len": compressed_len,
-                    "compress_ratio": round(compressed_len / origin_len, 2)
-                })
+        return messages
 
     async def invoke_model(self,
                            messages: List[Dict[str, str]] = [],
@@ -843,64 +813,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             except Exception as e:
                 logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
 
-    async def _add_system_message_to_memory(self, context: Context, content: str):
-        if not self.system_prompt:
-            return
-        memory_msg = MemoryEventMessage(
-            payload=content,
-            agent=self,
-            memory_event_type=MemoryEventType.SYSTEM,
-            headers={"context": context}
-        )
-        try:
-            future = await send_message_with_future(memory_msg)
-            results = await future.wait(timeout=10)
-            if not results:
-                logger.warning(f"Memory write task failed: {memory_msg}")
-        except Exception as e:
-            logger.warn(f"Memory write task failed: {traceback.format_exc()}")
-
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
         return self.system_prompt_template.format(context=context, task=content, tool_list=tool_list)
 
-    async def _add_human_input_to_memory(self, content: Any, context: Context, memory_type="init"):
-        """Add user input to memory"""
+    async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context):
         memory_msg = MemoryEventMessage(
-            payload={"content": content, "memory_type": memory_type},
+            payload=payload,
             agent=self,
-            memory_event_type=MemoryEventType.HUMAN,
-            headers={"context": context}
-        )
-        try:
-            future = await send_message_with_future(memory_msg)
-            results = await future.wait(timeout=10)
-            if not results:
-                logger.warning(f"Memory write task failed: {memory_msg}")
-        except Exception as e:
-            logger.warn(f"Memory write task failed: {e}. {traceback.format_exc()}")
-
-    async def _add_llm_response_to_memory(self, llm_response, context: Context, history_messages: list, **kwargs):
-        memory_msg = MemoryEventMessage(
-            payload=llm_response,
-            agent=self,
-            memory_event_type=MemoryEventType.AI,
-            headers={"context": context}
-        )
-        try:
-            future = await send_message_with_future(memory_msg)
-            results = await future.wait(timeout=10)
-            if not results:
-                logger.warning(f"Memory write task failed: {memory_msg}")
-        except Exception as e:
-            logger.warn(f"Memory write task failed: {traceback.format_exc()}")
-
-    async def _add_tool_result_to_memory(self, tool_result: ActionResult, context: Context):
-        """Add tool result to memory"""
-        memory_msg = MemoryEventMessage(
-            payload=tool_result,
-            agent=self,
-            memory_event_type=MemoryEventType.TOOL,
+            memory_event_type=message_type,
             headers={"context": context}
         )
         try:
@@ -936,32 +857,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             tool_result_token_ids = apply_chat_template(self.llm, tool_openai_messages_after_last_assistant)
             context.add_tool_resp_token_ids(tool_result_token_ids, self.id())
 
-    async def _do_add_tool_result_to_memory(self, tool_call_id: str, tool_result: ActionResult, context: Context):
-        """Add tool result to memory"""
-        tool_use_summary = None
-        if isinstance(tool_result, ActionResult):
-            tool_use_summary = tool_result.metadata.get("tool_use_summary")
-        await self.memory.add(MemoryToolMessage(
-            content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
-            tool_call_id=tool_call_id,
-            status="success",
-            metadata=MessageMetadata(
-                session_id=context.get_task().session_id,
-                user_id=context.get_task().user_id,
-                task_id=context.get_task().id,
-                agent_id=self.id(),
-                agent_name=self.name(),
-                summary_content=tool_use_summary
-            )
-        ), agent_memory_config=self.memory_config)
-
     async def send_llm_response_output(self, llm_response: ModelResponse, agent_result: AgentResult, context: Context,
                                        outputs: Outputs = None):
         """Send LLM response to output"""
         if not llm_response or llm_response.error:
             return
-        if eventbus is None:
-            logger.warn("=============== eventbus is none ============")
+
         llm_resp_output = MessageOutput(
             source=llm_response,
             metadata={"agent_id": self.id(), "agent_name": self.name(), "is_finished": self.finished}

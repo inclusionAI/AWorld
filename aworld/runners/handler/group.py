@@ -44,9 +44,6 @@ class DefaultGroupHandler(GroupHandler):
         return True
 
     async def _do_handle(self, message: GroupMessage) -> AsyncGenerator[Message, None]:
-        if not self.is_valid_message(message):
-            return
-
         self.context = message.context
         group_id = message.group_id
         headers = {'context': self.context}
