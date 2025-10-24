@@ -4,7 +4,8 @@ import asyncio
 import logging
 from typing import Optional, Callable
 
-from .base import Event
+from .base import BaseMessagePayload
+
 
 class EventHandler:
     """Base class for event handlers"""
@@ -15,8 +16,8 @@ class EventHandler:
         self.priority = priority
         self.is_active = True
     
-    async def handle(self, event: Event) -> Optional[Event]:
-        """Handle event"""
+    async def handle(self, event: BaseMessagePayload) -> Optional[BaseMessagePayload]:
+        """处理事件"""
         if not self.is_active:
             return None
         
@@ -26,7 +27,7 @@ class EventHandler:
             else:
                 result = self.handler_func(event)
             
-            if isinstance(result, Event):
+            if isinstance(result, BaseMessagePayload):
                 return result
             return None
         except Exception as e:

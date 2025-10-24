@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from ... import ApplicationContext
-from ...event import SystemPromptEvent
+from ...event import SystemPromptMessagePayload
 from aworld.logs.util import logger
 from .base import BaseOp, MemoryCommand
 from .op_factory import memory_op
@@ -28,7 +28,7 @@ class SystemPromptAugmentOp(BaseOp):
         super().__init__(name, **kwargs)
         self._memory = MemoryFactory.instance()
 
-    async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: SystemPromptEvent = None,
+    async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: SystemPromptMessagePayload = None,
                       **kwargs) -> Dict[str, Any]:
         try:
             # If system prompt existed, return
@@ -59,7 +59,7 @@ class SystemPromptAugmentOp(BaseOp):
                 "memory_commands": []
             }
 
-    async def _process_neurons(self, context: ApplicationContext, event: SystemPromptEvent) -> str:
+    async def _process_neurons(self, context: ApplicationContext, event: SystemPromptMessagePayload) -> str:
         """
         Process prompt components, supporting both rerank and append strategies
         Supports filtering components configured in component_neuron based on namespace
@@ -203,7 +203,7 @@ class SystemPromptAugmentOp(BaseOp):
 
         return filtered_results
 
-    async def build_system_command(self, context: ApplicationContext, event: SystemPromptEvent, augment_prompts: str) -> Optional[MemoryCommand]:
+    async def build_system_command(self, context: ApplicationContext, event: SystemPromptMessagePayload, augment_prompts: str) -> Optional[MemoryCommand]:
         """
         Build system message command
         """

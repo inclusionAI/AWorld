@@ -9,32 +9,33 @@ from typing import Optional, Any, Literal, List, Dict
 
 from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
-from aworld.config.conf import AgentMemoryConfig
 from aworld.core.agent.base import BaseAgent
 from aworld.core.context.base import Context
-from aworld.memory.main import Memory
+from aworld.events.util import send_message
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
 from aworld.output.artifact import ArtifactAttachment
 from examples.multi_agents.collaborative.debate.agent.debate_agent import truncate_content
+from aworld.runners.utils import long_wait_message_state
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
-from .logger import logger, amni_prompt_logger
 from .contexts import ContextManager
-from .retrieval.embeddings import EmbeddingsMetadata, SearchResults
-from .retrieval.chunker import Chunk
-from .event.base import ContextEvent, SystemPromptEvent
-from .event.event_bus import EventBus, EventType
-from .event.event_bus import get_global_event_bus, start_global_event_bus, stop_global_event_bus, \
-    is_global_event_bus_started
-from .retrieval.artifacts.file import DirArtifact
+# from .event.event_bus import EventBus, EventType
+# from .event.event_bus import get_global_event_bus, start_global_event_bus, stop_global_event_bus, \
+#     is_global_event_bus_started
+from .logger import logger, amni_prompt_logger
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .retrieval.artifacts import SearchArtifact
+from .retrieval.artifacts.file import DirArtifact
+from .retrieval.chunker import Chunk
+from .retrieval.embeddings import EmbeddingsMetadata, SearchResults
 from .state import ApplicationTaskContextState, ApplicationAgentState, TaskOutput, TaskWorkingState
 from .state.agent_state import AgentWorkingState
 from .state.common import WorkingState, TaskInput
 from .state.task_state import SubTask
 from .worksapces import ApplicationWorkspace, workspace_repo
+from .worksapces import ApplicationWorkspace
+from ...event.base import ContextMessage, Constants, TopicType
 
 DEFAULT_VALUE = None
 
@@ -409,10 +410,6 @@ class ApplicationContext(AmniContext):
     async def from_input(cls, task_input: TaskInput, workspace: WorkSpace = None, use_checkpoint: bool = False, context_config: AmniContextConfig = None,  **kwargs) -> "ApplicationContext":
         if not context_config:
             context_config = AmniConfigFactory.create()
-        try:
-            await start_global_event_bus(context_config)
-        except Exception as e:
-            logger.warning(f"Failed to start global event bus: {e} {traceback.format_exc()}")
 
         if not workspace:
             # build workspace for offload tool results
@@ -1046,16 +1043,26 @@ class ApplicationContext(AmniContext):
 
     ####################### Context Long Term Memory Processor Event #######################
 
-    async def pub_and_wait_event(self, event: ContextEvent):
-        event_bus = await get_global_event_bus()
-        await event_bus.publish_and_wait(event)
-
-    async def pub_and_wait_system_prompt_event(self, event_type: str, system_prompt: str, user_query: str, agent_id: str,
-                                               agent_name: str,  context: Context, namespace: str = "default"):
-        event_bus = await get_global_event_bus()
-        await event_bus.publish_and_wait(
-            EventBus.create_system_prompt_event(event_type=event_type, system_prompt=system_prompt, user_query=user_query, agent_id=agent_id,
-                                        agent_name=agent_name, context=context, namespace=namespace))
+    async def pub_and_wait_system_prompt_event(self, system_prompt: str, user_query: str, agent_id: str,
+                                               agent_name: str, namespace: str = "default"):
+        from .event.base import SystemPromptMessagePayload
+        logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|start|{namespace}|{agent_id}")
+        payload = SystemPromptMessagePayload(context=self, system_prompt=system_prompt, user_query=user_query,
+                                   agent_id=agent_id, agent_name=agent_name,
+                                   event_type=TopicType.SYSTEM_PROMPT, namespace=namespace)
+        message = ContextMessage(
+            category=Constants.CONTEXT,
+            payload=payload,
+            sender=None,
+            receiver=None,
+            session_id=self.session_id,
+            topic=TopicType.SYSTEM_PROMPT,
+            headers={"context": self}
+        )
+        await send_message(message)
+        logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|send_finished|{namespace}|{agent_id}")
+        await long_wait_message_state(message)
+        logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|wait_finished|{namespace}|{agent_id}")
 
     async def pub_and_wait_tool_result_event(self,
                                              tool_result: Any,
@@ -1063,21 +1070,28 @@ class ApplicationContext(AmniContext):
                                              agent_id: str,
                                              agent_name: str,
                                              namespace: str = "default"):
-        logger.info(f"publish tool result event process start ")
-        start_time = time.time()
-        """Publish and wait for tool result event"""
-        event_bus = await get_global_event_bus()
-        await event_bus.publish_and_wait(
-            EventBus.create_tool_result_event(
-                tool_result=tool_result,
-                context=self,
-                tool_call_id=tool_call_id,
-                agent_id=agent_id,
-                agent_name=agent_name,
-                namespace=namespace
-            )
+        from .event.base import ToolResultMessagePayload
+        logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|start|{namespace}|{agent_id}")
+        payload = ToolResultMessagePayload(event_type=TopicType.TOOL_RESULT,
+                                           tool_result=tool_result,
+                                           context=self,
+                                           tool_call_id=tool_call_id,
+                                           agent_id=agent_id,
+                                           agent_name=agent_name,
+                                           namespace=namespace)
+        message = ContextMessage(
+            category=Constants.CONTEXT,
+            payload=payload,
+            sender=None,
+            receiver=None,
+            session_id=self.session_id,
+            topic=TopicType.SYSTEM_PROMPT,
+            headers={"context": self}
         )
-        logger.info(f"publish tool result event process finished, use {time.time() - start_time:.3f} seconds")
+        await send_message(message)
+        logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|send_finished|{namespace}|{agent_id}")
+        await long_wait_message_state(message)
+        logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|wait_finished|{namespace}|{agent_id}")
 
     ####################### Context Write #######################
 
@@ -1430,10 +1444,11 @@ class ApplicationContext(AmniContext):
         return actions_info
 
     async def consolidation(self, namespace = "default"):
-        consolidation_event = EventBus.create_context_event(event_type=EventType.CONTEXT_CONSOLIDATION, context=self.deep_copy(), namespace=namespace)
-        event_bus = await get_global_event_bus()
-        await event_bus.publish(consolidation_event)
-        logger.info(f"context#{self.task_id}[{namespace}] -> consolidation trigger")
+        pass
+        # consolidation_event = EventBus.create_context_event(event_type=EventType.CONTEXT_CONSOLIDATION, context=self.deep_copy(), namespace=namespace)
+        # event_bus = await get_global_event_bus()
+        # await event_bus.publish(consolidation_event)
+        # logger.info(f"context#{self.task_id}[{namespace}] -> consolidation trigger")
 
     ####################### Context Read #######################
 

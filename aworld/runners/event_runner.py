@@ -269,6 +269,7 @@ class TaskEventRunner(TaskRunner):
                                                        context=message.context,
                                                        id=self.task.id,
                                                        time_cost=(time.time() - self.start_time),
+
                                                        usage=self.context.token_usage,
                                                        msg='cancellation: task timeout',
                                                        status='cancelled')
