@@ -150,5 +150,6 @@ class Sandbox(SandboxSetup):
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(self.cleanup())
                 loop.close()
+                logging.warning(f"cleanup sandbox resources during garbage collection: {id(asyncio.get_running_loop())}")
         except Exception as e:
             logging.warning(f"Failed to cleanup sandbox resources during garbage collection: {e}")

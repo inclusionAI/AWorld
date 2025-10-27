@@ -1,6 +1,11 @@
 import json
 import traceback
 
+import time
+from aworld.logs.util import logger
+import os
+import asyncio
+
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
 # from fastmcp.server.middleware import Middleware, MiddlewareContext
@@ -223,8 +228,11 @@ class McpServers:
 
                         await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
                                                      parameter=parameter)
-                        call_result_raw = await server.call_tool(tool_name=tool_name, arguments=parameter,
-                                                                 progress_callback=progress_callback)
+                        call_result_raw = await asyncio.wait_for(
+                            server.call_tool(tool_name=tool_name, arguments=parameter,
+                                           progress_callback=progress_callback),
+                            timeout=120
+                        )
                         break
                     except BaseException as e:
                         logger.warning(
@@ -235,6 +243,15 @@ class McpServers:
                 logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
                 if not call_result_raw:
                     logger.warning(f"Error calling tool with cached server")
+                    action_result = ActionResult(
+                        tool_name=server_name,
+                        action_name=tool_name,
+                        content=f"Error calling tool {tool_name}",
+                        keep=True,
+                        metadata={},
+                        parameter=parameter
+                    )
+                    results.append(action_result)
 
                     self._update_metadata(result_key, {"error": str(e)}, operation_info)
 
