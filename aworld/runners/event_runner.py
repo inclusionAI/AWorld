@@ -24,7 +24,7 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.task_runner import TaskRunner
 from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.trace.base import get_trace_id
-from aworld.utils.common import override_in_subclass, new_instance
+from aworld.utils.common import override_in_subclass, new_instance, scan_packages
 
 
 class TaskEventRunner(TaskRunner):
@@ -96,6 +96,9 @@ class TaskEventRunner(TaskRunner):
                 await self.event_mng.register(Constants.TOOL, Constants.TOOL, tool.step)
 
         self._stopped = asyncio.Event()
+
+        # Scan and register all handlers before iterating
+        scan_packages("aworld.core.context", [DefaultHandler])
 
         # handler of process in framework
         handler_list = self.conf.get("handlers")
