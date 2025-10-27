@@ -2,26 +2,11 @@
 # Copyright (c) 2025 inclusionAI.
 
 import traceback
-from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Type
 
-from aworld.core.common import Observation
-from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from ..config import AmniContextProcessorConfig
-from ..event import ContextMessagePayload
-
-
-class BaseContextProcessor(ABC):
-    """Base class for memory processors"""
-    
-    def __init__(self, config):
-        self.config = config
-
-    @abstractmethod
-    async def process(self, context: Context, event: ContextMessagePayload, **kwargs) -> Optional[Observation]:
-        """Process messages"""
-        pass
+from .base_processor import BaseContextProcessor
 
 
 class ProcessorFactory:

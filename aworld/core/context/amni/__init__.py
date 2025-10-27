@@ -9,7 +9,8 @@ from typing import Optional, Any, Literal, List, Dict
 
 from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
-from aworld.core.agent.base import BaseAgent
+# lazy import
+# from aworld.core.agent.base import BaseAgent
 from aworld.core.context.base import Context
 from aworld.events.util import send_message
 from aworld.memory.main import MemoryFactory
@@ -501,7 +502,7 @@ class ApplicationContext(AmniContext):
     async def build_sub_context(self, sub_task_content: str, sub_task_id: str = None, **kwargs):
         logger.info(f"build_sub_context: {self.task_id} -> {sub_task_id}: {sub_task_content}")
         sub_task_input = self.task_state.task_input.new_subtask(sub_task_content, sub_task_id)
-        agents: Dict[str,BaseAgent] = kwargs.get("agents")
+        agents = kwargs.get("agents")
         agent_list = []
         if agents:
             agent_list = [agent for agent_id, agent in agents.items()]
@@ -520,7 +521,7 @@ class ApplicationContext(AmniContext):
     async def build_sub_task_context(self, sub_task_input: TaskInput,
                                      sub_task_history: list[MemoryMessage] = None,
                                      workspace: WorkSpace = None,
-                                     agents: list[BaseAgent] = None) -> "ApplicationContext":
+                                     agents = None) -> "ApplicationContext":
         task_state = await self.build_sub_task_state(sub_task_input, sub_task_history)
         if not workspace:
             workspace = self.workspace
@@ -554,7 +555,7 @@ class ApplicationContext(AmniContext):
                 parent_working_state.kv_store) if parent_working_state and parent_working_state.kv_store else {}
         )
 
-    async def build_agents_state(self, agents: list[BaseAgent]):
+    async def build_agents_state(self, agents):
         """
         Build Multi Agent's Private State
 
@@ -572,7 +573,7 @@ class ApplicationContext(AmniContext):
             else:
                 await self.build_agent_state(agent)
 
-    async def build_agent_state(self, agent: BaseAgent):
+    async def build_agent_state(self, agent):
         """
         Build Single Agent Private State.
 
