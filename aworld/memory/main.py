@@ -742,6 +742,8 @@ class AworldMemory(Memory):
 
         init_items = [item for item in agent_task_total_message if item.memory_type == "init"]
 
+        logger.warn(f"last_rounds: {last_rounds}, {len(init_items)} init_messages.")
+
         # if last_rounds is 0, return init_items
         if last_rounds == 0:
             return init_items
@@ -757,6 +759,13 @@ class AworldMemory(Memory):
             # Ensure tool message completeness: LLM API requires the preceding tool_calls message 
             # to be included when processing a tool message. If the first message in our window 
             # is a tool message, we need to expand the window to include its associated tool_calls.
+
+            logger.warn("-" * 50)
+            logger.warn(f"last_rounds: {last_rounds}, init_message: {init_items}")
+            logger.warn(f"{len(result_items)} result_items truncated to {last_rounds}")
+            logger.warn(f"result_items[0]: {result_items[0]}")
+            logger.warn("-" * 50)
+
             while isinstance(result_items[-last_rounds], MemoryToolMessage):
                 last_rounds = last_rounds + 1
             result_items = init_items + result_items[-last_rounds:]

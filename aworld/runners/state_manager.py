@@ -445,7 +445,7 @@ class RuntimeStateManager(InheritanceSingleton):
             return RunNodeBusiType.TOOL
         return RunNodeBusiType.TASK
 
-    async def wait_for_node_completion(self, node_id: str, timeout: float = 600.0, interval: float = 1.0) -> RunNode:
+    async def wait_for_node_completion(self, node_id: str, timeout: float = 120.0, interval: float = 1.0) -> RunNode:
         '''Poll for node status until completion or timeout.
 
         Args:

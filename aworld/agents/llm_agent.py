@@ -728,6 +728,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.message.update(chunk.message)
 
             else:
+                logger.info(f"llm_agent|invoke_model|tools={self.tools}")
                 llm_response = await acall_llm_model(
                     self.llm,
                     messages=messages,

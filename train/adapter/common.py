@@ -4,10 +4,8 @@ import asyncio
 import json
 import os
 import traceback
-from typing import List, Dict, Any, Tuple
-
+from typing import List, Dict, Any, Tuple, Optional
 from transformers import AutoTokenizer
-
 
 def turns_num(messages: List[Dict[str, Any]]) -> int:
     # Normalize messages to satisfy chat templates expectations
@@ -49,7 +47,8 @@ def turns_num(messages: List[Dict[str, Any]]) -> int:
 async def encode_messages(tokenizer: AutoTokenizer,
                           messages: List[Dict[str, Any]],
                           response_length: int = 128000,
-                          tools: Dict[str, Any] = None) -> Tuple[List[int], List[int], List[int]]:
+                          tools: Dict[str, Any] = None,
+                          chat_template: Optional[str] = None) -> Tuple[List[int], List[int], List[int]]:
     """Encode messages to IDs.
 
     Args:
@@ -75,6 +74,7 @@ async def encode_messages(tokenizer: AutoTokenizer,
     loop = asyncio.get_running_loop()
     # system_prompt_prefix_ids = self.tokenizer.apply_chat_template([{}], add_generation_prompt=False, tokenize=True)
     i = 0
+    print(f"tokenizer={tokenizer}")
     try:
         while i < len(messages):
             if messages[i].get("role") == "system":
@@ -92,6 +92,7 @@ async def encode_messages(tokenizer: AutoTokenizer,
                             tools=tools,
                             add_generation_prompt=True,
                             tokenize=True,
+                            chat_template=chat_template
                         ),
                     )
                 else:
@@ -102,6 +103,7 @@ async def encode_messages(tokenizer: AutoTokenizer,
                             chat_list,
                             add_generation_prompt=False,
                             tokenize=True,
+                            chat_template=chat_template
                         ),
                     )
                     response_ids += cur_response_ids
@@ -118,6 +120,7 @@ async def encode_messages(tokenizer: AutoTokenizer,
                         chat_list,
                         add_generation_prompt=False,
                         tokenize=True,
+                        chat_template=chat_template
                     ),
                 )
                 chat_list = []
@@ -135,6 +138,7 @@ async def encode_messages(tokenizer: AutoTokenizer,
                         chat_list,
                         add_generation_prompt=False,
                         tokenize=True,
+                        chat_template=chat_template
                     ),
                 )
                 while i < len(messages) and messages[i].get("role") == "tool":
@@ -146,6 +150,7 @@ async def encode_messages(tokenizer: AutoTokenizer,
                         chat_list,
                         add_generation_prompt=False,
                         tokenize=True,
+                        chat_template=chat_template
                     ),
                 )
                 tool_response_ids = token_assistant_tool[len(token_assistant):]
@@ -206,13 +211,26 @@ def get_agent_tool_env_and_servers(
         >>> mcp_config["mcpServers"]["aworld-mcp"]["url"]
         'http://localhost:8080/mcp'
     """
-    if tool_config is None:
+    if tool_config is None or not tool_config.get("authorization"):
         tool_config = {}
     server_url = url or tool_config.get("url", os.getenv("MCP_SERVER_URL"))
+    authorization = tool_config.get("authorization")
     mcp_servers_str = mcp_server_list or tool_config.get("mcp_servers", mcp_server_list)
-    if not server_url:
-        raise ValueError("url is required. Please set MCP_SERVER_URL environment variable \
-            or provide 'url' in tool_config parameter.")
+    if not server_url or not authorization:
+        raise ValueError("url, Authorization are required. Please set MCP_SERVER_URL and MCP_SERVER_TOKEN environment variable \
+            or provide them in tool_config parameter.")
+# =======
+# def get_agent_tool_env_and_servers(tool_config: Dict[str, Any] = None) -> tuple[Dict[str, Any], List[str]]:
+#     if not tool_config or not tool_config.get("url") or not tool_config.get("authorization"):
+#         tool_config["url"] = os.getenv("MCP_SERVER_URL")
+#         tool_config["authorization"] = f"Bearer {os.getenv('MCP_SERVER_TOKEN')}"
+#     url = tool_config.get("url")
+#     authorization = tool_config.get("authorization")
+#     mcp_servers_str = tool_config.get("mcp_servers", "")
+#     if not url or not authorization:
+#         raise ValueError("url, Authorization are required. Please set MCP_SERVER_URL and MCP_SERVER_TOKEN environment variable \
+#             or provide them in tool_config parameter.")
+# >>>>>>> verl_support:train/adapter/verl/common.py
     server_name = tool_config.get('server_name', 'aworld-mcp')
     server_type = tool_config.get('type', 'streamable-http')
     timeout = tool_config.get('timeout', 600)
