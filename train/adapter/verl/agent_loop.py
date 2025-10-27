@@ -10,6 +10,9 @@ from typing import Any, List, Dict, Union
 from aworld.agents.llm_agent import Agent
 from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
+from aworld.core.context.amni import AmniConfigFactory, TaskInput, ApplicationContext
+from aworld.core.context.amni.config import AmniConfigLevel, get_default_config, AgentContextConfig, \
+    CONTEXT_OFFLOAD_TOOL_NAME_WHITE
 from aworld.runner import Runners
 from aworld.logs.util import logger
 from aworld.core.task import Task
@@ -39,6 +42,10 @@ from aworld.trace.base import Span
 from typing import Sequence
 from aworld.trace.span_cosumer import register_span_consumer, SpanConsumer
 import time
+
+from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import GaiaAgentLoop
+
+
 @register_span_consumer()
 class MockSpanConsumer(SpanConsumer):
     def consume(self, spans: Sequence[Span]) -> None:
@@ -162,15 +169,35 @@ class AworldAgentLoop(AgentLoopBase):
             return default_result
 
     async def _execute_agent_task(self, id, input, agent):
-        """Core logic for executing agent tasks"""
+
+        context_config = get_default_config()
+        context_config.agent_config = AgentContextConfig(
+            enable_system_prompt_augment=True,
+            neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
+            history_rounds= 100,
+            enable_summary=False,
+            summary_rounds= 30,
+            summary_context_length= 40960,
+            tool_result_offload= True,
+            tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
+            tool_result_length_threshold= 30000
+        )
+
+        GaiaAgentLoop
+
+        async def build_context(_task_input: TaskInput) -> ApplicationContext:
+            """Important Config"""
+            return await ApplicationContext.from_input(_task_input, context_config=context_config)
+        context = await build_context(input)
+
         # collect trajectory
         if isinstance(agent, Swarm):
-            task = Task(id=id, input=input, swarm=agent, timeout=1200)
+            task = Task(id=id, input=input, swarm=agent, timeout=1200, context=context)
             res = await Runners.run_task(task)
             result = res.get(id)
         else:
             agent.task = input
-            task = Task(id=id, input=input, agent=agent, timeout=1200)
+            task = Task(id=id, input=input, agent=agent, timeout=1200, context=context)
             res = await Runners.run_task(task)
             result = res.get(id)
         return result
