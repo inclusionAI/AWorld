@@ -3,6 +3,7 @@
 import uuid
 from typing import Union
 
+from aworld.agents.amni_llm_agent import ApplicationAgent
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ConfigDict
 from aworld.core.agent.swarm import Swarm
@@ -84,12 +85,12 @@ GAIA_MCP_CONFIG = {
             "type": "streamable-http",
             "url": "http://mcp.aworldagents.com/vpc/mcp",
             "headers": {
-              "Authorization": "",
+              "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJhd29ybGRjb3JlLWFnZW50IiwidmVyc2lvbiI6MSwidGltZSI6MTc1NjM0ODcyMi45MTYyODd9.zM_l1VghOHaV6lC_0fYmZ35bLnH8uxIaA8iGeyuwQWY",
               # "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
               
                 "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
                 # "MCP_SERVERS": "e2b-code-server",
-                "IMAGE_ENV": "{\"E2B_API_KEY\":\"\"}", # 在客户端指定tool的环境变量值，注意JSON String结构
+                "IMAGE_ENV": "{\"E2B_API_KEY\":\"e2b_1a9ada478b1c4a7d53837b9595b8e44e45a6b37a\"}", # 在客户端指定tool的环境变量值，注意JSON String结构
             },
             "timeout": 600,
             "sse_read_timeout": 600,
@@ -139,7 +140,7 @@ class GaiaAgentLoop(AworldAgentLoop):
             # memory_config=AgentMemoryConfig(history_rounds=100, enable_summary=False, summary_rounds=15, summary_context_length=32000),
         )
 
-        return Agent(
+        return ApplicationAgent(
             conf=conf,
             name="gaia_super_agent",
             system_prompt=GAIA_SYSTEM_PROMPT,
