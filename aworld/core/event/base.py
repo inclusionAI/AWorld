@@ -26,6 +26,8 @@ class Constants:
     HUMAN = "human"
     HUMAN_RESPONSE = "human_response"
     MEMORY = "memory"
+    CONTEXT = "context"
+    CONTEXT_RESPONSE = "context_response"
 
 
 class TopicType:
@@ -41,6 +43,9 @@ class TopicType:
     SUBSCRIBE_AGENT = "__subscribe_agent"
     GROUP_ACTIONS = "__group_actions"
     GROUP_RESULTS = "__group_results"
+    AGENT_RESULT = "__agent_result"
+    SYSTEM_PROMPT = "__system_prompt"
+    TOOL_RESULT = "__tool_result"
 
 
 DataType = TypeVar('DataType')
@@ -184,6 +189,11 @@ class HumanMessage(Message[Any]):
     """
     category: str = 'human'
     priority: int = field(default=-1)
+
+
+@dataclass
+class ContextMessage(Message[Any]):
+    category: str = 'context'
 
 
 class Messageable(object):

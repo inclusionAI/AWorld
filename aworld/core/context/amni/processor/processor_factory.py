@@ -5,11 +5,12 @@ import traceback
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Type
 
-from aworld.logs.util import logger
-from .. import ContextEvent
-from ..config import AmniContextProcessorConfig
 from aworld.core.common import Observation
 from aworld.core.context.base import Context
+from aworld.logs.util import logger
+from ..config import AmniContextProcessorConfig
+from ..event import ContextMessagePayload
+
 
 class BaseContextProcessor(ABC):
     """Base class for memory processors"""
@@ -18,7 +19,7 @@ class BaseContextProcessor(ABC):
         self.config = config
 
     @abstractmethod
-    async def process(self, context: Context, event: ContextEvent, **kwargs) -> Optional[Observation]:
+    async def process(self, context: Context, event: ContextMessagePayload, **kwargs) -> Optional[Observation]:
         """Process messages"""
         pass
 

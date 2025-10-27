@@ -16,9 +16,9 @@ from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
 from aworld.memory.main import MemoryFactory
-from .event.base import EventType
 from .retrieval.base import RetrieverFactory
 from .retrieval.graph.base import GraphDBConfig
+from ...event.base import TopicType
 
 
 class EventSubscriptionConfig(BaseModel):
@@ -200,7 +200,7 @@ def get_default_config() -> AmniContextConfig:
                 type="pipeline_memory_processor",
                 pipeline="extract_user_profile|save_memory",
                 subscription=EventSubscriptionConfig(
-                    event_types=[EventType.AGENT_RESULT],
+                    event_types=[TopicType.AGENT_RESULT],
                 )
             ),
             # System prompt augmentation
@@ -209,7 +209,7 @@ def get_default_config() -> AmniContextConfig:
                 type="pipeline_memory_processor",
                 pipeline="system_prompt_augment|save_memory",
                 subscription=EventSubscriptionConfig(
-                    event_types=[EventType.SYSTEM_PROMPT],
+                    event_types=[TopicType.SYSTEM_PROMPT],
                 )
             ),
             # Tool result offloading
@@ -218,7 +218,7 @@ def get_default_config() -> AmniContextConfig:
                 type="pipeline_memory_processor",
                 pipeline="tool_result_offload|save_memory",
                 subscription=EventSubscriptionConfig(
-                    event_types=[EventType.TOOL_RESULT],
+                    event_types=[TopicType.TOOL_RESULT],
                 ),
                 priority=0
             )

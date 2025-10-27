@@ -138,7 +138,7 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
     <tr>
       <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>VisualWebArena Rank <br> 1st in September</strong>
+        <strong>VisualWebArena Rank 1st in September</strong>
         <br>
         <a href="https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=2044883967#gid=2044883967" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/VWA-Leaderboard-green" alt="VWA">
@@ -155,6 +155,27 @@ Demonstrating collective intelligence across diverse domains. Join us in the ong
         <a href="https://arxiv.org/pdf/2509.21072" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper"></td>
       <td style="padding: 8px; vertical-align: top;">2025/09/25</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🔍 Deep-Search</td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>Xbench Excellence</strong>
+        <br>
+        <a href="https://xbench.org/" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/xbench-Leaderboard-green" alt="xbench">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        Pass@1: 51 <br> Pass@3: 61
+        <br>
+        <a href="examples/xbench/README.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+          AWorld has its own context engine: Amni.
+      </td>
+      <td style="padding: 8px; vertical-align: top;">2025/10/23</td>
     </tr>
   </tbody>
 </table>

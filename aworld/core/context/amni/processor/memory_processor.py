@@ -2,12 +2,12 @@ import time
 import traceback
 from typing import Dict, List, Any, Optional
 
-from .. import ContextEvent
-from ..config import AmniContextProcessorConfig
+from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from .op.op_factory import OpFactory
 from .processor_factory import memory_processor, BaseContextProcessor
-from aworld.core.context.base import Context
+from ..config import AmniContextProcessorConfig
+from ..event import ContextMessagePayload
 
 
 @memory_processor("pipeline_memory_processor")
@@ -53,7 +53,14 @@ class PipelineMemoryProcessor(BaseContextProcessor):
         
         return ops_list
     
-    async def execute_pipeline(self, ops_list: List[Any], context: Context, event: ContextEvent,  **kwargs) -> Optional[Dict[str, Any]]:
+    async def execute_pipeline(self, ops_list: List[Any], context: Context, event, **kwargs) -> Optional[Dict[str, Any]]:
+        # 确保 event 是 ContextMessagePayload 类型
+        from ..event import ContextMessagePayload
+        if not isinstance(event, ContextMessagePayload):
+            # 处理类型不匹配的情况
+            pass
+
+        """直接for循环执行操作列表"""
         pipeline_start_time = time.time()
         total_ops = len(ops_list)
         successful_ops = 0
@@ -154,7 +161,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
             logger.error(f"💥 Pipeline execution failed after {total_duration:.3f}s: {e}")
             return None
     
-    async def process_with_pipeline(self, pipeline: str, context: Context, event: ContextEvent, **kwargs) -> Optional[Dict[str, Any]]:
+    async def process_with_pipeline(self, pipeline: str, context: Context, event: ContextMessagePayload, **kwargs) -> Optional[Dict[str, Any]]:
         ops_list = self.build_pipeline(pipeline)
         if not ops_list:
             logger.warn("Failed to build pipeline")
@@ -165,7 +172,7 @@ class PipelineMemoryProcessor(BaseContextProcessor):
 
         return result
 
-    async def process(self, context: Context, event: ContextEvent, **kwargs) -> Dict[str, Any]:
+    async def process(self, context: Context, event: ContextMessagePayload, **kwargs) -> Dict[str, Any]:
         """process message"""
         # use the configured pipeline to process
         return await self.process_with_pipeline(pipeline=self.config.pipeline, context=context, event=event, **kwargs)

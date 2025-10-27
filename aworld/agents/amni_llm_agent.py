@@ -3,7 +3,7 @@ from typing import TypeVar, Generic, Any, Dict, List, Union, Callable
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ConfigDict
 from aworld.core.common import Observation, ActionModel, ActionResult
-from aworld.core.context.amni import AgentWorkingState, ApplicationAgentState, ApplicationContext, EventType
+from aworld.core.context.amni import AgentWorkingState, ApplicationAgentState, ApplicationContext
 from aworld.core.context.amni.prompt.prompt_ext import ContextPromptTemplate
 from aworld.core.context.amni.utils.context_log import PromptLogger
 from aworld.core.context.base import Context
@@ -127,11 +127,9 @@ class ApplicationAgent(Agent, Generic[S]):
             return
 
         await context.pub_and_wait_system_prompt_event(
-            event_type=EventType.SYSTEM_PROMPT,
             system_prompt=self.system_prompt,
             user_query=context.task_input,
             agent_id=self.id(),
             agent_name=self.name(),
-            context=context,
             namespace=self.name())
         logger.info(f"_add_system_message_to_memory finish {self.id()}")

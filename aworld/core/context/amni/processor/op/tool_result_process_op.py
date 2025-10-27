@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 
 from aworld.logs.util import logger
 from ... import ApplicationContext
-from ...event import ToolResultEvent
+from ...event import ToolResultMessagePayload
 from .op_factory import memory_op
 from .base import MemoryCommand, BaseOp
 from ...utils.memoryutils import MemoryItemConvertor
@@ -17,7 +17,7 @@ from ...utils.workspace_utils import extract_artifacts_from_toolresult
 class ToolResultOffloadOp(BaseOp):
     """ToolResultProcess"""
 
-    async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: ToolResultEvent = None,
+    async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: ToolResultMessagePayload = None,
                       **kwargs) -> Dict[str, Any]:
         if not event:
             logger.warning("ToolResultProcessOp execute failed is event is None")
@@ -35,7 +35,7 @@ class ToolResultOffloadOp(BaseOp):
                                    tool_call_id: str,
                                    tool_result: ActionResult,
                                    context: ApplicationContext,
-                                   event: ToolResultEvent
+                                   event: ToolResultMessagePayload
                                    ) -> Optional[list[MemoryMessage]]:
         try:
             # Check if tool is in context offload whitelist
@@ -55,7 +55,7 @@ class ToolResultOffloadOp(BaseOp):
             logger.warning(
                 f"extract_artifacts_from_toolresult execute failed is {err}, trace is {traceback.format_exc()}")
 
-    async def _need_offload(self, tool_result, context: ApplicationContext, event: ToolResultEvent) -> Optional[bool]:
+    async def _need_offload(self, tool_result, context: ApplicationContext, event: ToolResultMessagePayload) -> Optional[bool]:
         agent_context_config = context.get_config().get_agent_context_config(event.agent_id)
         if not agent_context_config.tool_result_offload:
             return False

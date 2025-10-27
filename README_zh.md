@@ -53,6 +53,7 @@ from examples.for_test import topology<div align="center">
 | **🧠 推理能力** | **IMO 2025问题求解** [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) | 6小时内解决5/6道题 [![][Code]](examples/imo/README.md) | 多智能体协作超越单一模型 | 2025/07/25 |
 | **🖼️ 多模态** | **OSWorld榜单第一** [![][OSWorld]](https://os-world.github.io/) | 成功率=58.0% [![][Code]](examples/osworld/README.md) | 工具越多越好？ | 2025/09/18 |
 | **🖼️ 多模态** | **VisualWebArena九月榜单第一** [![][VWA]](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=2044883967#gid=2044883967) | 成功率=36.5% [![][Code]](examples/visualwebarena/README.md) | 工具自动化生成 [![][Paper]](https://arxiv.org/pdf/2509.21072) | 2025/09/25 |
+| **🔍 深度检索** | **Xbench榜单获卓越表现** [![][Xbench]](https://xbench.org/) |  Pass@1: 51 <br> Pass@3: 61 [![][Code]](examples/xbench/README.md) | aworld有了自己的上下文管理引擎 | 2025/10/23 |
 
 <details>
 <summary style="font-size: 1.2em;font-weight: bold;"> 🌏 查看进行中的项目 </summary>
@@ -633,6 +634,7 @@ aworld api
 [Paper]: https://img.shields.io/badge/Paper-4ECDC4
 [OSWorld]: https://img.shields.io/badge/OSWorld-E66F51
 [VWA]: https://img.shields.io/badge/VWA-E66F51
+[Xbench]: https://img.shields.io/badge/Xbench-E66F51
 
 
 
