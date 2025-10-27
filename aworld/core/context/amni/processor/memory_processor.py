@@ -5,7 +5,8 @@ from typing import Dict, List, Any, Optional
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from .op.op_factory import OpFactory
-from .processor_factory import memory_processor, BaseContextProcessor
+from .processor_factory import memory_processor
+from .base_processor import BaseContextProcessor
 from ..config import AmniContextProcessorConfig
 from ..event import ContextMessagePayload
 

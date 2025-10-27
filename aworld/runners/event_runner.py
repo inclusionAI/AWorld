@@ -143,6 +143,9 @@ class TaskEventRunner(TaskRunner):
         event_bus = self.event_mng.event_bus
 
         key = message.category
+        logger.warn(f"Task {self.task.id} consume message: {message}")
+        if key == Constants.TOOL_CALLBACK:
+            logger.warn(f"Task {self.task.id} Tool callback message {message.id}")
         transformer = self.event_mng.get_transform_handler(key)
         if transformer:
             message = await event_bus.transform(message, handler=transformer)

@@ -29,8 +29,9 @@ Design: Factory, Template Method, Command, and Pipeline patterns
 """
 
 from .base import BaseArtifactProcessor
+from .base_processor import BaseContextProcessor
 from .memory_processor import PipelineMemoryProcessor
-from .processor_factory import BaseContextProcessor, ProcessorFactory
+from .processor_factory import ProcessorFactory
 
 __all__ = [
     "ProcessorFactory",
