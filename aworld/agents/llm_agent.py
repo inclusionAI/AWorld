@@ -721,6 +721,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=True,
+                    context=message.context,
                     **kwargs
                 )
 
@@ -745,6 +746,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     temperature=float_temperature,
                     tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
                     stream=kwargs.get("stream", False),
+                    context=message.context,
                     **kwargs
                 )
 
