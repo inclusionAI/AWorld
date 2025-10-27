@@ -520,3 +520,15 @@ class Context:
         """
         token_id_traj = self.get_agent_token_id_traj(agent_id)
         token_id_traj.new_step()
+
+    def get_current_step_of_trajectory(self, agent_id: str = None) -> AgentTokenIdStep:
+        """Get the current step of the trajectory.
+
+        Args:
+            agent_id: Agent id.
+
+        Returns:
+            AgentTokenIdStep: Current step of the trajectory.
+        """
+        token_id_traj = self.get_agent_token_id_traj(agent_id)
+        return token_id_traj.get_current_step()
