@@ -84,7 +84,7 @@ GAIA_MCP_CONFIG = {
             "type": "streamable-http",
             "url": "http://mcp.aworldagents.com/vpc/mcp",
             "headers": {
-              "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJhd29ybGRjb3JlLWFnZW50IiwidmVyc2lvbiI6MSwidGltZSI6MTc1NjM0ODcyMi45MTYyODd9.zM_l1VghOHaV6lC_0fYmZ35bLnH8uxIaA8iGeyuwQWY",
+              "Authorization": "",
               # "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
               
                 "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
