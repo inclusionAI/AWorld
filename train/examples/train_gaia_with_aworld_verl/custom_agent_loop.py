@@ -89,8 +89,7 @@ GAIA_MCP_CONFIG = {
               
                 "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
                 # "MCP_SERVERS": "e2b-code-server",
-                "IMAGE_ENV": "{\"E2B_API_KEY\":\"e2b_1a9ada478b1c4a7d53837b9595b8e44e45a6b37a\"}", # 在客户端指定tool的环境变量值，注意JSON String结构
-
+                "IMAGE_ENV": "{\"E2B_API_KEY\":\"\"}", # 在客户端指定tool的环境变量值，注意JSON String结构
             },
             "timeout": 600,
             "sse_read_timeout": 600,
