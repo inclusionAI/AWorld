@@ -20,6 +20,7 @@ class RunNodeBusiType(Enum):
     TASK = 'TASK'
     TOOL_CALLBACK = 'TOOL_CALLBACK'
     HUMAN = 'HUMAN'
+    CONTEXT = "CONTEXT"
     MEMORY = 'MEMORY'
 
     @staticmethod
@@ -36,6 +37,8 @@ class RunNodeBusiType(Enum):
             return RunNodeBusiType.HUMAN
         if category == Constants.MEMORY:
             return RunNodeBusiType.MEMORY
+        if category == Constants.CONTEXT:
+            return RunNodeBusiType.CONTEXT
         return None
 
 

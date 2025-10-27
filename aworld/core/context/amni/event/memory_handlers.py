@@ -1,42 +1,100 @@
-
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
+import abc
 import asyncio
 import traceback
-from abc import ABC
-from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, AsyncGenerator
 
+from aworld.core.event.base import Constants, Message, ContextMessage
 from aworld.logs.util import logger
-from .base import Event, ContextEvent
-from .base_handler import EventHandler
-from .decorators import event_handler
+from aworld.runners import HandlerFactory
+from aworld.runners.handler import DefaultHandler
+from aworld.runners.state_manager import HandleResult, RunNodeStatus, RuntimeStateManager
+from .base import BaseMessagePayload, ContextMessagePayload
 from ..processor.processor_factory import ProcessorFactory
 from ..utils.context_log import _generate_top_border, _generate_bottom_border
 
 
-@event_handler(event_types="*", priority=20)  # "*" means handle all event types
-class MemoryProcessorHandler(EventHandler, ABC):
-    """Base memory processor that abstracts workflow parsing and execution logic"""
+@HandlerFactory.register(name=f'__{Constants.CONTEXT}__')
+class MemoryProcessorHandler(DefaultHandler):
+    """基础记忆处理器，抽象 workflow 的解析和执行逻辑"""
 
-    def __init__(self, priority: int = 20):
-        super().__init__("memory_processor", self.process_messages, priority=priority)
-        self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="async_processor")
-        
-    async def process_messages(self, event: ContextEvent) -> Optional[Event]:
+    __metaclass__ = abc.ABCMeta
+
+    def __init__(self, runner: 'TaskEventRunner'):
+        super().__init__(runner)
+        self.runner = runner
+        self.swarm = runner.swarm
+        self.endless_threshold = runner.endless_threshold
+        self.task_id = runner.task.id
+
+        self.agent_calls = []
+
+    # def __init__(self, priority: int = 20):
+    #     super().__init__("memory_processor", self.process_messages, priority=priority)
+    #     self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="async_processor")
+
+    def is_valid_message(self, message: Message):
+        if message.category != Constants.CONTEXT \
+                or not isinstance(message, ContextMessage):
+            return False
+        return True
+
+    # receive message and handle
+    async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
+        if not self.is_valid_message(message):
+            return
+
+        headers = {"context": message.context}
+        session_id = message.session_id
+
+        context_message: ContextMessage = message
+        event = context_message.payload
+
+        res_message = await self.process_messages(event)
+        yield Message(
+            category=Constants.CONTEXT_RESPONSE,
+            sender=self.name(),
+            receiver=message.sender,
+            session_id=session_id,
+            payload=res_message,
+            headers=headers,
+        )
+        return
+
+    # notify complete
+    async def post_handle(self, input:Message, output: Message) -> Message:
+        if not self.is_valid_message(input):
+            return output
+
+        if output.category is not Constants.CONTEXT_RESPONSE:
+            return output
+
+        # update handle_result to state manager
+        results = [HandleResult(
+            name = output.category,
+            status = RunNodeStatus.SUCCESS,
+            result = output
+        )]
+        state_mng = RuntimeStateManager.instance()
+        state_mng.run_succeed(node_id=input.id,
+                              result_msg="run MemoryProcessorHandler succeed",
+                              results=results)
+        return output
+
+    async def process_messages(self, event: ContextMessagePayload) -> Optional[BaseMessagePayload]:
 
         try:
             sync_processors = []
             async_processors = []
-            
+
             for processor_config in event.context.get_config().processor_config:
                 # check subscription
                 if processor_config.subscription:
                     if not processor_config.subscription.should_process_event(event.event_type, event.namespace):
                         logger.debug(f"Skipping processor {processor_config.name} due to subscription filter")
                         continue
-                
+
                 if processor_config.is_async:
                     async_processors.append(processor_config)
                 else:
@@ -62,7 +120,7 @@ class MemoryProcessorHandler(EventHandler, ABC):
 
             logger.info(f"Memory processing completed for event {event.event_type}")
             return None
-            
+
         except Exception as e:
             logger.error(f"Memory processing failed: {e} {traceback.format_exc()}")
             return None
@@ -75,34 +133,34 @@ class MemoryProcessorHandler(EventHandler, ABC):
     def log_end(self, event, processor_config):
         logger.info(_generate_bottom_border())
 
-    async def _process_single_processor(self, processor_config, event: Event) -> Optional[Tuple[str, any]]:
-        """Process a single processor"""
+    async def _process_single_processor(self, processor_config, event: BaseMessagePayload) -> Optional[Tuple[str, any]]:
+        """process a single processor"""
         try:
             # Create processor
             processor = ProcessorFactory.create(processor_config=processor_config)
             if not processor:
                 logger.warning(f"Failed to create processor: {processor_config.name} {traceback.format_exc()}")
                 return None
-            
+
             logger.info(f"Processing with {processor.__class__.__name__}")
             result = await processor.process(event.context, event=event)
             logger.info(f"Processor {processor.__class__.__name__} completed")
             return (processor.__class__.__name__, result)
-            
+
         except Exception as e:
             logger.error(f"Processor {processor_config.name} failed: {e} {traceback.print_exc()}")
             return (processor_config.name, None)
-    
-    def _start_async_processors(self, async_processors: List, event: Event):
+
+    def _start_async_processors(self, async_processors: List, event: BaseMessagePayload):
         """Start async processors running in the background without waiting for completion"""
         for processor_config in async_processors:
             # Create background task without waiting for completion
             asyncio.create_task(
                 self._run_processor_in_thread_pool(processor_config, event.deep_copy()
-            ))
+                                                   ))
             logger.info(f"Started async processor {processor_config.name} in background")
-    
-    async def _run_processor_in_thread_pool(self, processor_config, event: Event) -> Optional[Tuple[str, any]]:
+
+    async def _run_processor_in_thread_pool(self, processor_config, event: BaseMessagePayload) -> Optional[Tuple[str, any]]:
         """Run processor in thread pool"""
         try:
             self.log_start(event, processor_config)
@@ -111,10 +169,10 @@ class MemoryProcessorHandler(EventHandler, ABC):
             if not processor:
                 logger.warning(f"Failed to create async processor: {processor_config.name} {traceback.format_exc()}")
                 return None
-            
+
             logger.info(f"Processing async with {processor.__class__.__name__}")
-            
-            # Run processor's process method in thread pool
+
+            # 在线程池中运行处理器的process方法
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 self.thread_pool,
@@ -123,16 +181,16 @@ class MemoryProcessorHandler(EventHandler, ABC):
                 event.context,
                 event
             )
-            
+
             logger.info(f"Async processor {processor.__class__.__name__} completed")
             self.log_end(event, processor_config)
             return (processor.__class__.__name__, result)
-            
+
         except Exception as e:
             logger.error(f"Async processor {processor_config.name} failed: {e} {traceback.print_exc()}")
             return (processor_config.name, None)
-    
-    def _sync_wrapper(self, processor, context, event: Event):
+
+    def _sync_wrapper(self, processor, context, event: BaseMessagePayload):
         """Synchronous wrapper for running async methods in thread pool"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -151,7 +209,7 @@ class MemoryProcessorHandler(EventHandler, ABC):
         #         logger.warning(f"Error waiting for tasks to complete: {e}")
         #     finally:
         #         loop.close()
-    
+
     def __del__(self):
         """Clean up thread pool resources"""
         if hasattr(self, 'thread_pool'):

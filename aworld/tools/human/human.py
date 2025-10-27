@@ -89,32 +89,6 @@ class HumanTool(AsyncTool):
         return (observation, reward, kwargs.get("terminated", False),
                 kwargs.get("truncated", False), info)
 
-    async def long_wait_message_state(self, message: Message):
-        from aworld.runners.state_manager import HandleResult, RunNodeBusiType
-        from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
-
-        state_mng = RuntimeStateManager.instance()
-        msg_id = message.id
-        # init node
-        state_mng.create_node(
-            node_id=msg_id,
-            busi_type=RunNodeBusiType.from_message_category(Constants.HUMAN),
-            busi_id=message.receiver or "",
-            session_id=message.session_id,
-            task_id=message.task_id,
-            msg_id=msg_id,
-            msg_from=message.sender)
-        # wait for message node completion
-        res_node = await state_mng.wait_for_node_completion(node_id=msg_id)
-        if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
-            # get result and status from node
-            handle_result: HandleResult = res_node.results[0]
-            logger.info(f"HumanTool|human input origin result: {res_node.results}")
-            return handle_result.result.payload
-        else:
-            logger.debug(f"HumanTool|tool {self.name()} callback failed with node: {res_node}.")
-            raise ValueError(f"HumanTool|send human message failed: {res_node}")
-
     async def send_human_message(self, action: ActionModel, confirm_content):
         error = None
         try:

@@ -11,6 +11,9 @@ import traceback
 from datetime import datetime
 from typing import Iterator
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
 from aworld.core.context.amni.worksapces import workspace_repo
