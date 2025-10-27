@@ -308,28 +308,27 @@ class MessageOutput(Output):
         return reasoning_generator(), response_generator()
 
     def __resolve_think__(self, content):
-        return content, content
-        # import re
-        # start_tag = self.reasoning_format_start.replace("<", "").replace(">", "")
-        # end_tag = self.reasoning_format_end.replace("<", "").replace(">", "")
+        import re
+        start_tag = self.reasoning_format_start.replace("<", "").replace(">", "")
+        end_tag = self.reasoning_format_end.replace("<", "").replace(">", "")
 
-        # llm_think = ""
-        # match = re.search(
-        #     rf"<{re.escape(start_tag)}(.*?)>(.|\n)*?<{re.escape(end_tag)}>",
-        #     content,
-        #     flags=re.DOTALL,
-        # )
-        # if match:
-        #     llm_think = match.group(0).replace("<think>", "").replace("</think>", "")
-        # llm_result = re.sub(
-        #     rf"<{re.escape(start_tag)}(.*?)>(.|\n)*?<{re.escape(end_tag)}>",
-        #     "",
-        #     content,
-        #     flags=re.DOTALL,
-        # )
-        # llm_result = self.__resolve_json__(llm_result, self.json_parse)
+        llm_think = ""
+        match = re.search(
+            rf"<{re.escape(start_tag)}(.*?)>(.|\n)*?<{re.escape(end_tag)}>",
+            content,
+            flags=re.DOTALL,
+        )
+        if match:
+            llm_think = match.group(0).replace("<think>", "").replace("</think>", "")
+        llm_result = re.sub(
+            rf"<{re.escape(start_tag)}(.*?)>(.|\n)*?<{re.escape(end_tag)}>",
+            "",
+            content,
+            flags=re.DOTALL,
+        )
+        llm_result = self.__resolve_json__(llm_result, self.json_parse)
 
-        # return llm_think, llm_result
+        return llm_think, llm_result
 
     def __resolve_json__(self, content, json_parse=False):
         if json_parse:
