@@ -114,7 +114,7 @@ class AworldAgentLoop(AgentLoopBase):
         if isinstance(input, dict):
             input = input.get("content", "")
         
-        # 定义默认的trajectory返回值
+        # Define default trajectory return value
         default_trajectory = [
             {
                 "exp_meta": {
@@ -133,7 +133,7 @@ class AworldAgentLoop(AgentLoopBase):
         
         import uuid
         task_id = uuid.uuid1().hex
-        # 创建默认结果对象
+        # Create default result object
         class DefaultResult:
             id: str = ""
             def __init__(self):
@@ -145,7 +145,7 @@ class AworldAgentLoop(AgentLoopBase):
         try:
             logger.info(f"agent_loop|run_agents|start|process_id={os.getpid()}|input={input}")
             
-            # 直接执行agent任务，设置超时
+            # Execute agent task directly with timeout
             result = await asyncio.wait_for(
                 self._execute_agent_task(task_id, input, agent),
                 timeout=1200.0
@@ -162,7 +162,7 @@ class AworldAgentLoop(AgentLoopBase):
             return default_result
 
     async def _execute_agent_task(self, id, input, agent):
-        """执行agent任务的核心逻辑"""
+        """Core logic for executing agent tasks"""
         # collect trajectory
         if isinstance(agent, Swarm):
             task = Task(id=id, input=input, swarm=agent, timeout=1200)

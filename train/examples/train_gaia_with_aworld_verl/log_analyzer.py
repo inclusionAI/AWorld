@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-日志分析脚本 - 提取性能指标并计算平均耗时占比
+Log analysis script - Extract performance metrics and calculate average time consumption ratios
 """
 
 import re
@@ -11,13 +11,13 @@ import statistics
 
 @dataclass
 class PerformanceMetrics:
-    """性能指标数据类"""
+    """Performance metrics data class"""
     time_per_step: float
     update_actor: float
     gen: float
     
     def calculate_ratios(self) -> Dict[str, float]:
-        """计算耗时占比"""
+        """Calculate time consumption ratios"""
         if self.time_per_step == 0:
             return {"update_actor_ratio": 0.0, "gen_ratio": 0.0}
         
@@ -27,10 +27,10 @@ class PerformanceMetrics:
         }
 
 class LogAnalyzer:
-    """日志分析器"""
+    """Log analyzer"""
     
     def __init__(self):
-        # 正则表达式模式，用于提取关键指标
+        # Regular expression patterns for extracting key metrics
         self.patterns = {
             'time_per_step': r'perf/time_per_step:([\d.]+)',
             'update_actor': r'timing_s/update_actor:([\d.]+)',
@@ -38,7 +38,7 @@ class LogAnalyzer:
         }
     
     def parse_log_line(self, line: str) -> PerformanceMetrics:
-        """解析单行日志，提取性能指标"""
+        """Parse a single log line and extract performance metrics"""
         metrics = {}
         
         for key, pattern in self.patterns.items():
@@ -46,7 +46,7 @@ class LogAnalyzer:
             if match:
                 metrics[key] = float(match.group(1))
             else:
-                print(f"警告: 在行中未找到 {key} 指标")
+                print(f"Warning: {key} metric not found in line")
                 metrics[key] = 0.0
         
         return PerformanceMetrics(
@@ -56,7 +56,7 @@ class LogAnalyzer:
         )
     
     def analyze_log_file(self, file_path: str) -> List[PerformanceMetrics]:
-        """分析日志文件，返回所有性能指标"""
+        """Analyze log file and return all performance metrics"""
         metrics_list = []
         
         try:
@@ -66,131 +66,131 @@ class LogAnalyzer:
                     if not line:
                         continue
                     
-                    # 检查是否包含关键指标（避免处理无关日志）
+                    # Check if line contains key metrics (avoid processing irrelevant logs)
                     if 'perf/time_per_step:' in line and 'timing_s/update_actor:' in line and 'timing_s/gen:' in line:
                         try:
                             metrics = self.parse_log_line(line)
                             metrics_list.append(metrics)
-                            print(f"第 {line_num} 行: 提取到指标 - time_per_step: {metrics.time_per_step:.2f}s, "
+                            print(f"Line {line_num}: Extracted metrics - time_per_step: {metrics.time_per_step:.2f}s, "
                                   f"update_actor: {metrics.update_actor:.2f}s, gen: {metrics.gen:.2f}s")
                         except Exception as e:
-                            print(f"第 {line_num} 行解析失败: {e}")
+                            print(f"Line {line_num} parsing failed: {e}")
                             continue
         
         except FileNotFoundError:
-            print(f"错误: 文件 {file_path} 不存在")
+            print(f"Error: File {file_path} not found")
             return []
         except Exception as e:
-            print(f"读取文件时出错: {e}")
+            print(f"Error reading file: {e}")
             return []
         
         return metrics_list
     
     def calculate_statistics(self, metrics_list: List[PerformanceMetrics]) -> Dict:
-        """计算统计信息"""
+        """Calculate statistics"""
         if not metrics_list:
-            return {"error": "没有找到有效的性能指标"}
+            return {"error": "No valid performance metrics found"}
         
-        # 提取各项指标
+        # Extract each metric
         time_per_step_values = [m.time_per_step for m in metrics_list]
         update_actor_values = [m.update_actor for m in metrics_list]
         gen_values = [m.gen for m in metrics_list]
         
-        # 计算平均耗时占比
+        # Calculate average time consumption ratios
         ratios = [m.calculate_ratios() for m in metrics_list]
         update_actor_ratios = [r["update_actor_ratio"] for r in ratios]
         gen_ratios = [r["gen_ratio"] for r in ratios]
         
         stats = {
-            "总记录数": len(metrics_list),
+            "Total records": len(metrics_list),
             "time_per_step": {
-                "平均值": statistics.mean(time_per_step_values),
-                "最大值": max(time_per_step_values),
-                "最小值": min(time_per_step_values),
-                "标准差": statistics.stdev(time_per_step_values) if len(time_per_step_values) > 1 else 0
+                "Average": statistics.mean(time_per_step_values),
+                "Maximum": max(time_per_step_values),
+                "Minimum": min(time_per_step_values),
+                "Standard deviation": statistics.stdev(time_per_step_values) if len(time_per_step_values) > 1 else 0
             },
             "update_actor": {
-                "平均值": statistics.mean(update_actor_values),
-                "最大值": max(update_actor_values),
-                "最小值": min(update_actor_values),
-                "标准差": statistics.stdev(update_actor_values) if len(update_actor_values) > 1 else 0
+                "Average": statistics.mean(update_actor_values),
+                "Maximum": max(update_actor_values),
+                "Minimum": min(update_actor_values),
+                "Standard deviation": statistics.stdev(update_actor_values) if len(update_actor_values) > 1 else 0
             },
             "gen": {
-                "平均值": statistics.mean(gen_values),
-                "最大值": max(gen_values),
-                "最小值": min(gen_values),
-                "标准差": statistics.stdev(gen_values) if len(gen_values) > 1 else 0
+                "Average": statistics.mean(gen_values),
+                "Maximum": max(gen_values),
+                "Minimum": min(gen_values),
+                "Standard deviation": statistics.stdev(gen_values) if len(gen_values) > 1 else 0
             },
-            "平均耗时占比": {
-                "update_actor占比": statistics.mean(update_actor_ratios) * 100,
-                "gen占比": statistics.mean(gen_ratios) * 100,
-                "其他占比": (1 - statistics.mean(update_actor_ratios) - statistics.mean(gen_ratios)) * 100
+            "Average time consumption ratios": {
+                "update_actor ratio": statistics.mean(update_actor_ratios) * 100,
+                "gen ratio": statistics.mean(gen_ratios) * 100,
+                "Other ratio": (1 - statistics.mean(update_actor_ratios) - statistics.mean(gen_ratios)) * 100
             }
         }
         
         return stats
     
     def print_results(self, stats: Dict):
-        """打印分析结果"""
+        """Print analysis results"""
         if "error" in stats:
-            print(f"错误: {stats['error']}")
+            print(f"Error: {stats['error']}")
             return
         
         print("\n" + "="*60)
-        print("性能分析结果")
+        print("Performance Analysis Results")
         print("="*60)
         
-        print(f"\n总记录数: {stats['总记录数']}")
+        print(f"\nTotal records: {stats['Total records']}")
         
-        print(f"\n每步总耗时 (time_per_step):")
-        print(f"  平均值: {stats['time_per_step']['平均值']:.2f}s")
-        print(f"  最大值: {stats['time_per_step']['最大值']:.2f}s")
-        print(f"  最小值: {stats['time_per_step']['最小值']:.2f}s")
-        print(f"  标准差: {stats['time_per_step']['标准差']:.2f}s")
+        print(f"\nTotal time per step (time_per_step):")
+        print(f"  Average: {stats['time_per_step']['Average']:.2f}s")
+        print(f"  Maximum: {stats['time_per_step']['Maximum']:.2f}s")
+        print(f"  Minimum: {stats['time_per_step']['Minimum']:.2f}s")
+        print(f"  Standard deviation: {stats['time_per_step']['Standard deviation']:.2f}s")
         
-        print(f"\nActor更新耗时 (update_actor):")
-        print(f"  平均值: {stats['update_actor']['平均值']:.2f}s")
-        print(f"  最大值: {stats['update_actor']['最大值']:.2f}s")
-        print(f"  最小值: {stats['update_actor']['最小值']:.2f}s")
-        print(f"  标准差: {stats['update_actor']['标准差']:.2f}s")
+        print(f"\nActor update time (update_actor):")
+        print(f"  Average: {stats['update_actor']['Average']:.2f}s")
+        print(f"  Maximum: {stats['update_actor']['Maximum']:.2f}s")
+        print(f"  Minimum: {stats['update_actor']['Minimum']:.2f}s")
+        print(f"  Standard deviation: {stats['update_actor']['Standard deviation']:.2f}s")
         
-        print(f"\n生成耗时 (gen):")
-        print(f"  平均值: {stats['gen']['平均值']:.2f}s")
-        print(f"  最大值: {stats['gen']['最大值']:.2f}s")
-        print(f"  最小值: {stats['gen']['最小值']:.2f}s")
-        print(f"  标准差: {stats['gen']['标准差']:.2f}s")
+        print(f"\nGeneration time (gen):")
+        print(f"  Average: {stats['gen']['Average']:.2f}s")
+        print(f"  Maximum: {stats['gen']['Maximum']:.2f}s")
+        print(f"  Minimum: {stats['gen']['Minimum']:.2f}s")
+        print(f"  Standard deviation: {stats['gen']['Standard deviation']:.2f}s")
         
-        print(f"\n平均耗时占比:")
-        print(f"  Actor更新占比: {stats['平均耗时占比']['update_actor占比']:.1f}%")
-        print(f"  生成占比: {stats['平均耗时占比']['gen占比']:.1f}%")
-        print(f"  其他占比: {stats['平均耗时占比']['其他占比']:.1f}%")
+        print(f"\nAverage time consumption ratios:")
+        print(f"  Actor update ratio: {stats['Average time consumption ratios']['update_actor ratio']:.1f}%")
+        print(f"  Generation ratio: {stats['Average time consumption ratios']['gen ratio']:.1f}%")
+        print(f"  Other ratio: {stats['Average time consumption ratios']['Other ratio']:.1f}%")
         
         print("\n" + "="*60)
 
 def main():
-    """主函数"""
+    """Main function"""
     if len(sys.argv) != 2:
-        print("用法: python log_analyzer.py <日志文件路径>")
-        print("示例: python log_analyzer.py /path/to/your/logfile.log")
+        print("Usage: python log_analyzer.py <log_file_path>")
+        print("Example: python log_analyzer.py /path/to/your/logfile.log")
         sys.exit(1)
     
     log_file = sys.argv[1]
     analyzer = LogAnalyzer()
     
-    print(f"开始分析日志文件: {log_file}")
+    print(f"Starting to analyze log file: {log_file}")
     print("-" * 60)
     
-    # 分析日志文件
+    # Analyze log file
     metrics_list = analyzer.analyze_log_file(log_file)
     
     if not metrics_list:
-        print("未找到有效的性能指标数据")
+        print("No valid performance metrics data found")
         sys.exit(1)
     
-    # 计算统计信息
+    # Calculate statistics
     stats = analyzer.calculate_statistics(metrics_list)
     
-    # 打印结果
+    # Print results
     analyzer.print_results(stats)
 
 if __name__ == "__main__":

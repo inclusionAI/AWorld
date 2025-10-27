@@ -179,7 +179,7 @@ class VerlProvider(LLMProviderBase):
                  sync_enabled: bool = None,
                  async_enabled: bool = None,
                  **kwargs):
-        logger.info(f"[VerlProvider] 开始初始化 - model_name={model_name}, sync_enabled={sync_enabled}, async_enabled={async_enabled}")
+        logger.info(f"[VerlProvider] Starting initialization - model_name={model_name}, sync_enabled={sync_enabled}, async_enabled={async_enabled}")
 
         super().__init__(api_key=api_key,
                          base_url=base_url,
@@ -188,7 +188,7 @@ class VerlProvider(LLMProviderBase):
                          async_enabled=async_enabled, **kwargs)
 
         params = kwargs.get("params")
-        logger.info(f"[VerlProvider] 初始化参数: {params}")
+        logger.info(f"[VerlProvider] Initialization parameters: {params}")
 
         self.provider = params.get("client")
         self.tokenizer = params.get("tokenizer")
@@ -196,18 +196,18 @@ class VerlProvider(LLMProviderBase):
         self.request_id = params.get("request_id")
         self.tool_parser = params.get("tool_parser")
 
-        # 验证关键组件
+        # Validate key components
         if not self.provider:
-            logger.error("[VerlProvider] 缺少provider客户端")
+            logger.error("[VerlProvider] Missing provider client")
         if not self.tokenizer:
-            logger.error("[VerlProvider] 缺少tokenizer")
+            logger.error("[VerlProvider] Missing tokenizer")
         if not self.request_id:
-            logger.warning("[VerlProvider] 缺少request_id，将使用默认值")
+            logger.warning("[VerlProvider] Missing request_id, will use default value")
 
-        logger.info(f"[VerlProvider] 初始化完成 - request_id={self.request_id}, param_task_id={params.get('task_id')}, param_request_id={params.get('request_id')}, tool_parser={self.tool_parser}")
-        logger.info(f"[VerlProvider] 采样参数: {self.sampling_params}")
-        logger.info(f"[VerlProvider] Provider类型: {type(self.provider).__name__ if self.provider else 'None'}")
-        logger.info(f"[VerlProvider] Tokenizer类型: {type(self.tokenizer).__name__ if self.tokenizer else 'None'}")
+        logger.info(f"[VerlProvider] Initialization completed - request_id={self.request_id}, param_task_id={params.get('task_id')}, param_request_id={params.get('request_id')}, tool_parser={self.tool_parser}")
+        logger.info(f"[VerlProvider] Sampling parameters: {self.sampling_params}")
+        logger.info(f"[VerlProvider] Provider type: {type(self.provider).__name__ if self.provider else 'None'}")
+        logger.info(f"[VerlProvider] Tokenizer type: {type(self.tokenizer).__name__ if self.tokenizer else 'None'}")
 
     def _init_provider(self):
         pass
@@ -232,12 +232,12 @@ class VerlProvider(LLMProviderBase):
                           max_tokens: int = None,
                           stop: List[str] = None,
                           **kwargs) -> ModelResponse:
-        logger.info(f"[VerlProvider] 开始异步完成 - request_id={self.request_id}, temperature={temperature}, max_tokens={max_tokens}")
-        logger.info(f"[VerlProvider] 消息数量: {len(messages)}, 角色分布: {[msg.get('role', 'unknown') for msg in messages]}")
-        logger.info(f"[VerlProvider] 是否提供工具: {bool(kwargs.get('tools'))}")
+        logger.info(f"[VerlProvider] Starting async completion - request_id={self.request_id}, temperature={temperature}, max_tokens={max_tokens}")
+        logger.info(f"[VerlProvider] Message count: {len(messages)}, role distribution: {[msg.get('role', 'unknown') for msg in messages]}")
+        logger.info(f"[VerlProvider] Tools provided: {bool(kwargs.get('tools'))}")
         if kwargs.get('tools'):
-            logger.info(f"[VerlProvider] 工具数量: {len(kwargs.get('tools', []))}")
-            logger.info(f"[VerlProvider] 工具名称: {[tool.get('function', {}).get('name', 'unknown') for tool in kwargs.get('tools', [])]}")
+            logger.info(f"[VerlProvider] Tool count: {len(kwargs.get('tools', []))}")
+            logger.info(f"[VerlProvider] Tool names: {[tool.get('function', {}).get('name', 'unknown') for tool in kwargs.get('tools', [])]}")
 
         start_time = time.time()
 
@@ -248,10 +248,10 @@ class VerlProvider(LLMProviderBase):
             "repetition_penalty": kwargs.get('repetition_penalty', 1.0),
         }
         sampling_params.update(self.sampling_params)
-        logger.info(f"[VerlProvider] 最终采样参数: {sampling_params}")
+        logger.info(f"[VerlProvider] Final sampling parameters: {sampling_params}")
 
         loop = asyncio.get_running_loop()
-        logger.info(f"[VerlProvider] 开始应用聊天模板 - request_id={self.request_id}")
+        logger.info(f"[VerlProvider] Starting chat template application - request_id={self.request_id}")
         template_start = time.time()
 
         try:
@@ -265,17 +265,17 @@ class VerlProvider(LLMProviderBase):
                 ),
             )
             template_time = time.time() - template_start
-            logger.info(f"[VerlProvider] 聊天模板应用完成 - 耗时: {template_time:.3f}s, prompt_ids长度: {len(prompt_ids)}")
-            logger.debug(f"[VerlProvider] 消息内容: {messages}")
+            logger.info(f"[VerlProvider] Chat template application completed - time taken: {template_time:.3f}s, prompt_ids length: {len(prompt_ids)}")
+            logger.debug(f"[VerlProvider] Message content: {messages}")
             logger.debug(f"[VerlProvider] prompt_ids: {prompt_ids}")
 
         except Exception as e:
             template_time = time.time() - template_start
-            logger.error(f"[VerlProvider] 聊天模板应用失败 - 耗时: {template_time:.3f}s, 错误: {e}")
+            logger.error(f"[VerlProvider] Chat template application failed - time taken: {template_time:.3f}s, error: {e}")
             raise
 
         rid = self.request_id
-        logger.info(f"[VerlProvider] 开始生成响应 - request_id={rid}, 超时时间: 120s")
+        logger.info(f"[VerlProvider] Starting response generation - request_id={rid}, timeout: 120s")
 
         try:
             generation_start = time.time()
@@ -285,18 +285,18 @@ class VerlProvider(LLMProviderBase):
                 sampling_params=sampling_params
             )
             generation_time = time.time() - generation_start
-            logger.info(f"[VerlProvider] 生成完成 - 耗时: {generation_time:.3f}s, request_id={rid}")
+            logger.info(f"[VerlProvider] Generation completed - time taken: {generation_time:.3f}s, request_id={rid}")
 
             decode_start = time.time()
             decoded_content = self.tokenizer.decode(response_output.token_ids, skip_special_tokens=True)
             decode_time = time.time() - decode_start
-            logger.info(f"[VerlProvider] 内容解码完成 - 耗时: {decode_time:.3f}s, 内容长度: {len(decoded_content)}")
-            logger.info(f"[VerlProvider] 生成内容预览: {decoded_content[:200]}...")
-            logger.debug(f"[VerlProvider] 完整生成内容: {decoded_content}")
+            logger.info(f"[VerlProvider] Content decoding completed - time taken: {decode_time:.3f}s, content length: {len(decoded_content)}")
+            logger.info(f"[VerlProvider] Generated content preview: {decoded_content[:200]}...")
+            logger.debug(f"[VerlProvider] Full generated content: {decoded_content}")
 
         except asyncio.TimeoutError:
             elapsed_time = time.time() - start_time
-            logger.warning(f"[VerlProvider] 请求超时 - request_id={rid}, 总耗时: {elapsed_time:.2f}s, 进程ID: {os.getpid()}")
+            logger.warning(f"[VerlProvider] Request timeout - request_id={rid}, total time taken: {elapsed_time:.2f}s, process ID: {os.getpid()}")
             decoded_content = "Request timed out. Please try again."
             
             class DefaultResponse:
@@ -305,25 +305,25 @@ class VerlProvider(LLMProviderBase):
                     self.token_ids = tokenizer.encode(content, add_special_tokens=False)
 
             response_output = DefaultResponse(self.tokenizer, decoded_content)
-            logger.warning(f"[VerlProvider] 为超时请求创建默认响应 - request_id={rid}")
+            logger.warning(f"[VerlProvider] Creating default response for timeout request - request_id={rid}")
 
         except Exception as e:
             elapsed_time = time.time() - start_time
-            logger.error(f"[VerlProvider] 生成失败 - request_id={rid}, 耗时: {elapsed_time:.2f}s, 错误: {e}")
-            logger.error(f"[VerlProvider] 错误详情: {type(e).__name__}: {str(e)}")
+            logger.error(f"[VerlProvider] Generation failed - request_id={rid}, time taken: {elapsed_time:.2f}s, error: {e}")
+            logger.error(f"[VerlProvider] Error details: {type(e).__name__}: {str(e)}")
             raise
 
-        logger.info(f"[VerlProvider] 开始提取工具调用 - 解析器: {self.tool_parser}")
+        logger.info(f"[VerlProvider] Starting tool call extraction - parser: {self.tool_parser}")
         tool_parser = ToolParser.get_tool_parser(self.tool_parser, self.tokenizer)
 
         extract_start = time.time()
         try:
             content, function_calls = await tool_parser.extract_tool_calls(response_output.token_ids)
             extract_time = time.time() - extract_start
-            logger.info(f"[VerlProvider] 工具调用提取完成 - 耗时: {extract_time:.3f}s, 找到工具调用: {len(function_calls)}个")
+            logger.info(f"[VerlProvider] Tool call extraction completed - time taken: {extract_time:.3f}s, found tool calls: {len(function_calls)}")
         except Exception as e:
             extract_time = time.time() - extract_start
-            logger.error(f"[VerlProvider] 工具调用提取失败 - 耗时: {extract_time:.3f}s, 错误: {e}")
+            logger.error(f"[VerlProvider] Tool call extraction failed - time taken: {extract_time:.3f}s, error: {e}")
             content = decoded_content
             function_calls = []
 
@@ -331,19 +331,19 @@ class VerlProvider(LLMProviderBase):
         valid_tool_calls = 0
         invalid_tool_calls = 0
 
-        logger.info(f"[VerlProvider] 开始验证工具调用 - 总数: {len(function_calls)}")
+        logger.info(f"[VerlProvider] Starting tool call validation - total count: {len(function_calls)}")
         for i, function_call in enumerate(function_calls):
             error = None
             try:
                 args = json.loads(function_call.arguments)
                 if not isinstance(args, dict):
-                    error = f"工具参数必须是JSON对象，实际类型: {type(args).__name__}"
+                    error = f"Tool parameters must be JSON object, actual type: {type(args).__name__}"
             except json.JSONDecodeError as e:
-                error = f"无效的JSON工具参数: {e}"
+                error = f"Invalid JSON tool parameters: {e}"
 
             if error:
-                logger.warning(f"[VerlProvider] 工具调用{i+1}验证失败: {error}")
-                logger.debug(f"[VerlProvider] 失败的工具调用详情: name={function_call.name}, arguments={function_call.arguments}")
+                logger.warning(f"[VerlProvider] Tool call {i+1} validation failed: {error}")
+                logger.debug(f"[VerlProvider] Failed tool call details: name={function_call.name}, arguments={function_call.arguments}")
                 invalid_tool_calls += 1
             else:
                 tool_calls.append(
@@ -356,19 +356,19 @@ class VerlProvider(LLMProviderBase):
                     )
                 )
                 valid_tool_calls += 1
-                logger.info(f"[VerlProvider] 工具调用{i+1}验证成功: {function_call.name}")
-                logger.debug(f"[VerlProvider] 成功工具调用详情: name={function_call.name}, arguments={function_call.arguments}")
+                logger.info(f"[VerlProvider] Tool call {i+1} validation successful: {function_call.name}")
+                logger.debug(f"[VerlProvider] Successful tool call details: name={function_call.name}, arguments={function_call.arguments}")
 
-        # 计算token使用情况
+        # Calculate token usage
         prompt_tokens = len(prompt_ids) if prompt_ids else 0
         completion_tokens = len(response_output.token_ids) if hasattr(response_output, 'token_ids') else 0
         total_tokens = prompt_tokens + completion_tokens
 
         total_time = time.time() - start_time
-        logger.info(f"[VerlProvider] 请求完成 - request_id={rid}, 总耗时: {total_time:.2f}s")
-        logger.info(f"[VerlProvider] 工具调用统计 - 有效: {valid_tool_calls}, 无效: {invalid_tool_calls}")
-        logger.info(f"[VerlProvider] Token使用统计 - 输入: {prompt_tokens}, 输出: {completion_tokens}, 总计: {total_tokens}")
-        logger.info(f"[VerlProvider] 最终响应 - 内容长度: {len(content)}, 工具调用数量: {len(tool_calls)}")
+        logger.info(f"[VerlProvider] Request completed - request_id={rid}, total time taken: {total_time:.2f}s")
+        logger.info(f"[VerlProvider] Tool call statistics - valid: {valid_tool_calls}, invalid: {invalid_tool_calls}")
+        logger.info(f"[VerlProvider] Token usage statistics - input: {prompt_tokens}, output: {completion_tokens}, total: {total_tokens}")
+        logger.info(f"[VerlProvider] Final response - content length: {len(content)}, tool call count: {len(tool_calls)}")
 
         return ModelResponse(
             id=rid,
