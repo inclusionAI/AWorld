@@ -279,11 +279,10 @@ class VerlProvider(LLMProviderBase):
 
         try:
             generation_start = time.time()
-            response_output = await asyncio.wait_for(
-                self.provider.generate(
-                    request_id=rid, prompt_ids=prompt_ids, sampling_params=sampling_params
-                ),
-                timeout=120.0
+            response_output = await self.provider.generate(
+                request_id=rid,
+                prompt_ids=prompt_ids,
+                sampling_params=sampling_params
             )
             generation_time = time.time() - generation_start
             logger.info(f"[VerlProvider] 生成完成 - 耗时: {generation_time:.3f}s, request_id={rid}")
