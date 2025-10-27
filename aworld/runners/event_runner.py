@@ -97,9 +97,6 @@ class TaskEventRunner(TaskRunner):
 
         self._stopped = asyncio.Event()
 
-        # Scan and register all handlers before iterating
-        scan_packages("aworld.core.context", [DefaultHandler])
-
         # handler of process in framework
         handler_list = self.conf.get("handlers")
         if handler_list:

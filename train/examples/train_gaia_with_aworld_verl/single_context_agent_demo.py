@@ -6,6 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
+from aworld.core.context.amni.event.memory_handlers import MemoryProcessorHandler
 
 from aworld.core.agent.swarm import Swarm
 
