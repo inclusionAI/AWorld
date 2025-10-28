@@ -70,7 +70,7 @@ def configure(config: ObservabilityConfig = None):
 def _trace_configure(config: ObservabilityConfig):
     if not config.trace_base_url and config.trace_provider == "otlp":
         if "logfire" in config.trace_backends:
-            config.trace_base_url = os.getenv("LOGFIRE_WRITE_TOKEN")
+            config.trace_base_url = os.getenv("LOGFIRE_BASE_URL")
         elif os.getenv("OTLP_TRACES_ENDPOINT"):
             config.trace_base_url = os.getenv("OTLP_TRACES_ENDPOINT")
             config.trace_backends.append("other_otlp")
