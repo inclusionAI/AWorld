@@ -218,7 +218,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
