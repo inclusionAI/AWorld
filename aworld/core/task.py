@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable, Optional
 
 from aworld.utils.serialized_util import to_serializable
-from pydantic import BaseModel
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm

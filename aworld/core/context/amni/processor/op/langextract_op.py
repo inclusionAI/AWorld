@@ -5,7 +5,7 @@ from typing import Any, Dict, List, TypeVar, Generic, Optional
 
 from aworld.logs.util import logger
 from ... import ApplicationContext
-from ...event import ContextEvent
+from ...event import ContextMessagePayload
 from .base import BaseOp, MemoryCommand
 from aworld.memory.models import MemoryItem
 from ...prompt.prompt_ext import ContextPromptTemplate
@@ -60,7 +60,7 @@ class LangExtractOp(BaseOp, Generic[T]):
             self.few_shots = few_shots
             self.extraction_classes = extraction_classes
 
-    async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: ContextEvent = None, **kwargs) -> Dict[str, Any]:
+    async def execute(self, context: ApplicationContext, info: Dict[str, Any] = None, event: ContextMessagePayload = None, **kwargs) -> Dict[str, Any]:
         """
         Execute the extraction operation
         
@@ -86,7 +86,7 @@ class LangExtractOp(BaseOp, Generic[T]):
         info["memory_commands"].extend(result)
         return info
 
-    async def _extract_information(self, prompt: str, context: ApplicationContext, agent_id: str, event: ContextEvent) -> List[MemoryCommand[T]]:
+    async def _extract_information(self, prompt: str, context: ApplicationContext, agent_id: str, event: ContextMessagePayload) -> List[MemoryCommand[T]]:
         """
         Extract information using langextract
         
@@ -184,7 +184,7 @@ class LangExtractOp(BaseOp, Generic[T]):
             return []
 
     @abstractmethod
-    def _prepare_extraction_text(self, context: ApplicationContext, agent_id: str, event: ContextEvent) -> str:
+    def _prepare_extraction_text(self, context: ApplicationContext, agent_id: str, event: ContextMessagePayload) -> str:
         """
         Prepare the text to be processed by langextract
         

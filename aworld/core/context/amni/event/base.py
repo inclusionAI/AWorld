@@ -6,39 +6,16 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from aworld.core.context.base import Context
-from aworld.memory.models import MemoryMessage
 from aworld.output import Artifact
 
 
-class EventType:
-    """Event types"""
-    ARTIFACT_ADDED = "artifact_added"
-    CONTEXT_CONSOLIDATION = "context_consolidation"
-    SYSTEM_PROMPT = "system_prompt"
-    USER_INPUT = "user_input"
-    AGENT_RESULT = "agent_result"
-    TOOL_RESULT = "tool_result"
-
-    @staticmethod
-    def as_list() -> list[str]:
-        return [EventType.ARTIFACT_ADDED, EventType.CONTEXT_CONSOLIDATION, EventType.SYSTEM_PROMPT,
-                EventType.USER_INPUT, EventType.AGENT_RESULT, EventType.TOOL_RESULT]
-
-class EventStatus:
-    """Event status"""
-    INIT = "init"
-    PROCESSING = "processing"
-    SUCCESS = "success"
-    FAILED = "failed"
-
 @dataclass
-class Event:
-    """Base event definition"""
+class BaseMessagePayload:
+    """基础事件定义"""
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     event_type: str = None
     timestamp: datetime = field(default_factory=datetime.now)
     namespace: str = ""
-    status: str = field(default=EventStatus.INIT)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -48,15 +25,15 @@ class Event:
             "namespace": self.namespace,
             "status": self.status
         }
-    
-    def deep_copy(self) -> 'Event':
-        """Create a deep copy of the event"""
+
+    def deep_copy(self) -> 'BaseMessagePayload':
+        """创建事件的深拷贝"""
         import copy
         return copy.deepcopy(self)
 
 
 @dataclass
-class ContextEvent(Event):
+class ContextMessagePayload(BaseMessagePayload):
     context: Optional[Context] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -68,17 +45,17 @@ class ContextEvent(Event):
 
 
 @dataclass
-class SystemPromptEvent(ContextEvent):
+class SystemPromptMessagePayload(ContextMessagePayload):
     system_prompt: Optional[str] = None
     user_query: Optional[str] = None
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
 
-    def deep_copy(self) -> 'SystemPromptEvent':
-        """Create a deep copy of the event, with memory field referenced directly"""
+    def deep_copy(self) -> 'SystemPromptMessagePayload':
+        """创建事件的深拷贝，memory字段直接引用"""
         import copy
-        
-        new_event = SystemPromptEvent()
+
+        new_event = SystemPromptMessagePayload()
         for key, value in self.__dict__.items():
             if key == 'memory':
                 # Reference memory field directly
@@ -92,11 +69,12 @@ class SystemPromptEvent(ContextEvent):
             else:
                 # Deep copy other fields
                 setattr(new_event, key, copy.deepcopy(value))
-        
+
         return new_event
 
+
 @dataclass
-class ArtifactEvent(ContextEvent):
+class ArtifactMessagePayload(ContextMessagePayload):
     """contains artifact"""
     artifact: Optional[Artifact] = None
 
@@ -109,32 +87,18 @@ class ArtifactEvent(ContextEvent):
 
 
 @dataclass
-class MessageEvent(ContextEvent):
-    """contain MemoryMessage"""
-    message: Optional[MemoryMessage] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        base_dict = super().to_dict()
-        base_dict.update({
-            "message_id": self.message.id if self.message else None,
-            "message_role": self.message.role if self.message else None,
-        })
-        return base_dict
-
-
-@dataclass
-class ToolResultEvent(ContextEvent):
-    """Event containing tool results"""
+class ToolResultMessagePayload(ContextMessagePayload):
+    """包含工具结果的事件"""
     tool_result: Optional[Any] = None
     tool_call_id: Optional[str] = None
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
 
-    def deep_copy(self) -> 'ToolResultEvent':
-        """Create a deep copy of the event"""
+    def deep_copy(self) -> 'ToolResultMessagePayload':
+        """创建事件的深拷贝"""
         import copy
-        
-        new_event = ToolResultEvent()
+
+        new_event = ToolResultMessagePayload()
         for key, value in self.__dict__.items():
             if key == 'context' and value is not None:
                 # Special handling for context field
@@ -145,5 +109,5 @@ class ToolResultEvent(ContextEvent):
             else:
                 # Deep copy other fields
                 setattr(new_event, key, copy.deepcopy(value))
-        
+
         return new_event

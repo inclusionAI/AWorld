@@ -4,6 +4,7 @@ from typing import List, Dict
 
 from aworld.config import RunConfig, EngineName, ConfigDict, TaskConfig
 from aworld.core.agent.swarm import GraphBuildType
+from aworld.core.event.base import Message, Constants
 
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.logs.util import logger
@@ -122,3 +123,31 @@ def endless_detect(records: List[str], endless_threshold: int, root_agent_name: 
                     return True
 
     return False
+
+
+async def long_wait_message_state(message: Message):
+    from aworld.runners.state_manager import HandleResult, RunNodeBusiType
+    from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
+
+    state_mng = RuntimeStateManager.instance()
+    msg_id = message.id
+    # init node
+    state_mng.create_node(
+        node_id=msg_id,
+        busi_type=RunNodeBusiType.from_message_category(message.category),
+        busi_id=message.receiver or "",
+        session_id=message.session_id,
+        task_id=message.task_id,
+        msg_id=msg_id,
+        msg_from=message.sender)
+    # wait for message node completion
+    res_node = await state_mng.wait_for_node_completion(node_id=msg_id)
+    if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
+        # get result and status from node
+        handle_result: HandleResult = res_node.results[0]
+        logger.info(f"long_wait_message_state|origin result: {res_node.results}")
+        return handle_result.result.payload
+    else:
+        logger.debug(f"long_wait_message_state|failed with node: {res_node}.")
+        raise ValueError(f"long_wait_message_state|failed with node: {res_node}")
+

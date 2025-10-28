@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Generic, TypeVar
 
-from ...event import ContextEvent
+from ...event import ContextMessagePayload
 from aworld.core.common import ActionResult
 from aworld.memory.models import Fact
 
@@ -36,7 +36,7 @@ class ExtractToolFactOp(LangExtractOp[Fact], Generic[T]):
             **kwargs
         )
 
-    def _prepare_extraction_text(self, context: ApplicationContext, agent_id: str, event: ContextEvent = None) -> str:
+    def _prepare_extraction_text(self, context: ApplicationContext, agent_id: str, event: ContextMessagePayload = None) -> str:
         """
         Prepare text for fact extraction
 

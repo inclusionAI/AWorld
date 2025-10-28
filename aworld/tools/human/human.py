@@ -5,10 +5,12 @@ from typing import Any, Dict, Tuple
 
 from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult
+from aworld.core.context.base import Context
 from aworld.core.event.base import Constants, TopicType, HumanMessage, Message
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.events.util import send_message
 from aworld.logs.util import logger
+from aworld.runners.utils import long_wait_message_state
 from aworld.tools.human.actions import HumanExecuteAction
 from aworld.tools.utils import build_observation
 
@@ -46,7 +48,7 @@ class HumanTool(AsyncTool):
     async def finished(self) -> bool:
         return self.step_finished
 
-    async def do_step(self, actions: list[ActionModel], **kwargs) -> Tuple[
+    async def do_step(self, actions: list[ActionModel], message:Message = None, **kwargs) -> Tuple[
         Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
@@ -62,14 +64,14 @@ class HumanTool(AsyncTool):
             if not confirm_content:
                 raise ValueError("content invalid")
             # send human message to read human input
-            message, error = await self.send_human_message(action=action, confirm_content=confirm_content)
+            human_message, error = await self.send_human_message(action=action, context= message.context, confirm_content=confirm_content)
             if error:
                 raise ValueError(f"HumanTool|send human message failed: {error}")
 
             # hanging on human message
             logger.info(f"HumanTool|waiting for human input")
-            result = await self.long_wait_message_state(message=message)
-            logger.info(f"HumanTool|human input succeed: {message.payload}")
+            result = await long_wait_message_state(message=human_message)
+            logger.info(f"HumanTool|human input succeed: {human_message.payload}")
 
             observation.content = result
             observation.action_result.append(
@@ -89,33 +91,7 @@ class HumanTool(AsyncTool):
         return (observation, reward, kwargs.get("terminated", False),
                 kwargs.get("truncated", False), info)
 
-    async def long_wait_message_state(self, message: Message):
-        from aworld.runners.state_manager import HandleResult, RunNodeBusiType
-        from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus
-
-        state_mng = RuntimeStateManager.instance()
-        msg_id = message.id
-        # init node
-        state_mng.create_node(
-            node_id=msg_id,
-            busi_type=RunNodeBusiType.from_message_category(Constants.HUMAN),
-            busi_id=message.receiver or "",
-            session_id=message.session_id,
-            task_id=message.task_id,
-            msg_id=msg_id,
-            msg_from=message.sender)
-        # wait for message node completion
-        res_node = await state_mng.wait_for_node_completion(node_id=msg_id)
-        if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
-            # get result and status from node
-            handle_result: HandleResult = res_node.results[0]
-            logger.info(f"HumanTool|human input origin result: {res_node.results}")
-            return handle_result.result.payload
-        else:
-            logger.debug(f"HumanTool|tool {self.name()} callback failed with node: {res_node}.")
-            raise ValueError(f"HumanTool|send human message failed: {res_node}")
-
-    async def send_human_message(self, action: ActionModel, confirm_content):
+    async def send_human_message(self, action: ActionModel, context: Context, confirm_content):
         error = None
         try:
             message = HumanMessage(
@@ -123,9 +99,9 @@ class HumanTool(AsyncTool):
                 payload=confirm_content,
                 sender=self.name(),
                 receiver=action.agent_name,
-                session_id=self.context.session_id,
+                session_id=context.session_id,
                 topic=TopicType.HUMAN_CONFIRM,
-                headers={"context": self.context}
+                headers={"context": context}
             )
             await send_message(message)
             return message, error

@@ -2,7 +2,8 @@ import asyncio
 import traceback
 from datetime import datetime
 
-from flask.cli import load_dotenv
+from dotenv import load_dotenv
+load_dotenv()
 
 from aworld.config import TaskConfig
 from aworld.core.context.amni import TaskInput, ApplicationContext

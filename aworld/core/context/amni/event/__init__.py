@@ -1,14 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
-from .base import Event, EventType, SystemPromptEvent, ToolResultEvent,ArtifactEvent, ContextEvent
+from .base import BaseMessagePayload, SystemPromptMessagePayload, ToolResultMessagePayload,ArtifactMessagePayload, ContextMessagePayload
 
 
 __all__ = [
-    "Event",
-    "EventType",
-    "SystemPromptEvent",
-    "ToolResultEvent",
-    "ArtifactEvent",
-    "ContextEvent"
+    "BaseMessagePayload",
+    "SystemPromptMessagePayload",
+    "ToolResultMessagePayload",
+    "ArtifactMessagePayload",
+    "ContextMessagePayload",
 ]

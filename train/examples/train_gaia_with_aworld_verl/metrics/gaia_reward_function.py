@@ -1,7 +1,20 @@
 import re
 import string
+import logging
 from aworld.logs.util import logger
+import traceback
 
+# logger.setLevel(logging.INFO)
+# logger.propagate = False
+# if not logger.handlers:
+#     handler = logging.StreamHandler()
+#     handler.setLevel(logging.INFO)
+#     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+#     handler.setFormatter(formatter)
+#     logger.addHandler(handler)
+
+# import aworld.trace as trace
+# trace.configure(trace.ObservabilityConfig())
 
 def normalize_number_str(number_str: str) -> float:
     # we replace these common units and commas to allow
@@ -103,10 +116,12 @@ def gaia_reward_func(data_source, solution_str, ground_truth, extra_info=None):
   comp_match = re.search(pattern, solution_str, re.DOTALL | re.MULTILINE)
 
   if not comp_match:
+      logger.info(f"gaia_reward_function|question_scorer=False|ext_info={extra_info}|solution_str={solution_str}|ground_truth={ground_truth}")
       return 0.0
   else:
       comp_answer = comp_match.group(1).strip()
-      logger.info(f"comp_answer: {comp_answer}, ground_truth: {ground_truth}")
+      logger.info(f"gaia_reward_function|question_scorer={question_scorer(comp_answer, ground_truth)}|ext_info={extra_info}|solution_str={solution_str}|ground_truth={ground_truth}|comp_answer={comp_answer}")
+
       if question_scorer(comp_answer, ground_truth):
           return 1.0
       else:
