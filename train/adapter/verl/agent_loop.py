@@ -44,6 +44,7 @@ from aworld.trace.span_cosumer import register_span_consumer, SpanConsumer
 import time
 
 from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import GaiaAgentLoop
+from train.examples.train_gaia_with_aworld_verl.gaia.gaia import build_gaia_task
 
 
 @register_span_consumer()
@@ -170,38 +171,12 @@ class AworldAgentLoop(AgentLoopBase):
 
     async def _execute_agent_task(self, id, input, agent):
 
-        context_config = get_default_config()
-        context_config.agent_config = AgentContextConfig(
-            enable_system_prompt_augment=True,
-            neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
-            history_rounds= 100,
-            enable_summary=False,
-            summary_rounds= 30,
-            summary_context_length= 40960,
-            tool_result_offload= True,
-            tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
-            tool_result_length_threshold= 30000
-        )
-
-        GaiaAgentLoop
-
-        async def build_context(_task_input: TaskInput) -> ApplicationContext:
-            """Important Config"""
-            return await ApplicationContext.from_input(_task_input, context_config=context_config)
-        context = await build_context(input)
+        task = await build_gaia_task(user_input=input, target=agent, timeout=1200)
 
         # collect trajectory
-        if isinstance(agent, Swarm):
-            task = Task(id=id, input=input, swarm=agent, timeout=1200, context=context)
-            res = await Runners.run_task(task)
-            result = res.get(id)
-        else:
-            agent.task = input
-            task = Task(id=id, input=input, agent=agent, timeout=1200, context=context)
-            res = await Runners.run_task(task)
-            result = res.get(id)
+        res = await Runners.run_task(task)
+        result = res.get(id)
         return result
-
 
     async def get_agent_tool_config(self, config_path: str) -> Dict[str, Any]:
         """Load tool configuration, preferring YAML with simple fields.

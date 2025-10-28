@@ -17,7 +17,6 @@ from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
 from aworld.output.artifact import ArtifactAttachment
-from examples.multi_agents.collaborative.debate.agent.debate_agent import truncate_content
 from aworld.runners.utils import long_wait_message_state
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .contexts import ContextManager
@@ -34,6 +33,7 @@ from .state import ApplicationTaskContextState, ApplicationAgentState, TaskOutpu
 from .state.agent_state import AgentWorkingState
 from .state.common import WorkingState, TaskInput
 from .state.task_state import SubTask
+from .utils.text_cleaner import truncate_content
 from .worksapces import ApplicationWorkspace, workspace_repo
 from .worksapces import ApplicationWorkspace
 from ...event.base import ContextMessage, Constants, TopicType
