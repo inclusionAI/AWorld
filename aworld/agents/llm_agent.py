@@ -13,6 +13,7 @@ import aworld.trace as trace
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
+from aworld.core.context.amni import AmniContext
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
@@ -765,9 +766,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message.context.context_info["llm_output"] = llm_response
         return llm_response
 
-    def _init_context(self, context: Context):
-        super()._init_context(context)
-        logger.debug(f'init_context llm_agent {self.name()} {self.conf} {self.conf.context_rule}')
 
     async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""
@@ -850,3 +848,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if input_message.group_id:
             headers['parent_group_id'] = input_message.group_id
         return headers
+
+    def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
+        if not isinstance(context, AmniContext):
+            return self.tools
+        # skills = context.get_active_skills(namespace=self.id())
+        # TODO add skill filter
+        return self.tools

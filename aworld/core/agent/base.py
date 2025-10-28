@@ -10,7 +10,6 @@ from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, ConfigDict, load_config
 from aworld.core.common import ActionModel
-from aworld.core.context.base import Context
 from aworld.core.event import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage
 from aworld.core.factory import Factory
@@ -175,9 +174,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
 
-    def _init_context(self, context: Context):
-        self.context = context
-
     def id(self) -> str:
         return self._id
 
@@ -188,7 +184,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._desc
 
     def run(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
@@ -213,8 +208,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     name=f"{self.id()}", alias_name=self.name(), step_num=0
                 ),
                 sender=self.id(),
-                session_id=self.context.session_id,
-                headers={"context": self.context},
+                session_id=message.context.session_id,
+                headers={"context": message.context},
             ),
         )
         self.pre_run()
@@ -248,8 +243,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                         name=f"{self.id()}", alias_name=self.name(), step_num=0
                     ),
                     sender=self.id(),
-                    session_id=self.context.session_id,
-                    headers={"context": self.context},
+                    session_id=message.context.session_id,
+                    headers={"context": message.context},
                 )
             )
         await self.async_pre_run()
