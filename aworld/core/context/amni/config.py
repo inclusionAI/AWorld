@@ -11,7 +11,7 @@ from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
-from aworld.config.conf import AgentMemoryConfig
+from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
@@ -102,6 +102,7 @@ class AgentContextConfig(BaseModel):
                                           description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
+    summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
 
     # Context Offload
     tool_result_offload: bool = Field(default=False, description="tool result offload")
@@ -119,7 +120,8 @@ class AgentContextConfig(BaseModel):
             history_rounds=self.history_rounds,
             enable_summary=self.enable_summary,
             summary_rounds=self.summary_rounds,
-            summary_context_length=self.summary_context_length
+            summary_context_length=self.summary_context_length,
+            summary_prompts=self.summary_prompts,
         )
 
 
@@ -261,8 +263,6 @@ class AmniConfigFactory:
                 enable_summary=True,
                 summary_rounds= 30,
                 summary_context_length= 40960,
-                summary_schemas=[],
-
                 tool_result_offload= True,
                 tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
                 tool_result_length_threshold= 30000

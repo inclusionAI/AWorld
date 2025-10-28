@@ -5,6 +5,7 @@ import json
 import traceback
 from typing import Optional, Tuple
 
+from aworld.config import SummaryPromptConfig
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.embeddings.base import EmbeddingsResult, EmbeddingsMetadata
@@ -34,8 +35,16 @@ Please read the conversation carefully and extract new information from the conv
        - step_result: the result of step and evidence information, such link of visited web page for slove task
 
 3. In your summary, aim to reduce unnecessary information, but make sure your summarized content still provides enough details for the task and does not lose any important information.
-<guide>
+</guide>
 
+
+<external_guides>
+{summary_rule}
+</external_guides>
+
+<schema>
+{summary_schema}
+</schema>
 
 <user_task> {user_task} </user_task>
 <existed_summary> {existed_summary} </existed_summary>
@@ -641,9 +650,7 @@ class AworldMemory(Memory):
                 existed_summary_items, 
                 to_be_summary_items, 
                 agent_memory_config,
-                summary_rule=summary_prompt_config.summary_rule,
-                summary_schema=summary_prompt_config.summary_schema,
-                template=summary_prompt_config.template
+                prompt=summary_prompt_config,
             )
             
             logger.debug(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] summary_content: {summary_content}")
@@ -696,9 +703,7 @@ class AworldMemory(Memory):
                                         existed_summary_items: list[MemorySummary],
                                         to_be_summary_items: list[MemoryItem],
                                         agent_memory_config: AgentMemoryConfig,
-                                        summary_rule: str = None,
-                                        summary_schema: str = None,
-                                        template: str = None) -> str:
+                                        prompt: SummaryPromptConfig) -> str:
 
         if len(to_be_summary_items) == 0:
             return ""
@@ -711,13 +716,15 @@ class AworldMemory(Memory):
 
         # generate summary
         # 使用自定义模板或默认模板
-        template_to_use = template if template else AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
+        template_to_use = prompt.template if prompt else AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
+        summary_rule = "Instructions:\n" + prompt.summary_rule if prompt else ""
+        summary_schema = "Output in this format:\n" + prompt.summary_schema if prompt else ""
         summary_messages = [
             {
                 "role": "user",
                 "content": template_to_use.format(
-                    summary_rule=summary_rule or "",
-                    summary_schema=summary_schema or "",
+                    summary_rule=summary_rule,
+                    summary_schema=summary_schema,
                     user_task=user_task,
                     existed_summary=existed_summary,
                     to_be_summary=to_be_summary
