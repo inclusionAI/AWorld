@@ -8,8 +8,7 @@ if __name__ == "__main__":
     search2 = Agent(
         conf=agent_config,
         name="search_agent",
-        system_prompt=search_sys_prompt,
-        agent_prompt=search_prompt,
+        system_prompt=search_sys_prompt + search_prompt,
         tool_names=[Tools.SEARCH_API.value]
     )
 

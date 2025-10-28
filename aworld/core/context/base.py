@@ -58,7 +58,7 @@ class Context:
 
     ## Field Classification
     - **Immutable Configuration Fields**: agent_id, agent_name, agent_desc, system_prompt, 
-      agent_prompt, tool_names, context_rule
+       tool_names, context_rule
     - **Mutable Runtime Fields**: tools, step, messages, context_usage, llm_output, trajectories
 
     ## LLM Call Intervention Mechanism

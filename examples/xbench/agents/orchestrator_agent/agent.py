@@ -1,12 +1,12 @@
 from typing import Dict, Any, List
 
-from aworld.agents.amni_llm_agent import ApplicationAgent
+from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
 from aworld.logs.util import logger
 
 
-class OrchestratorAgent(ApplicationAgent):
+class OrchestratorAgent(Agent):
 
     max_loop=50
 
