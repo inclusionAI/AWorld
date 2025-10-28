@@ -16,8 +16,7 @@ from aworld.runners.state_manager import HandleResult, RunNodeStatus, RuntimeSta
 
 
 @HandlerFactory.register(name=f'__{Constants.CONTEXT}__')
-class MemoryProcessorHandler(DefaultHandler):
-    """基础记忆处理器，抽象 workflow 的解析和执行逻辑"""
+class ContextProcessorHandler(DefaultHandler):
 
     __metaclass__ = abc.ABCMeta
 
