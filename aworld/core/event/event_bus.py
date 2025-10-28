@@ -113,13 +113,15 @@ class InMemoryEventbus(Eventbus):
                 queue.task_done()
             except QueueEmpty:
                 break
+        self._subscribers.pop(id, None)
+        self._transformer.pop(id, None)
 
     async def subscribe(self, task_id: str, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):
             # Initialize task_id dict if not exists
             if task_id not in self._transformer:
                 self._transformer[task_id] = {}
-                
+
             if event_type in self._transformer[task_id]:
                 logger.warning(f"{event_type} transform already subscribe for task {task_id}.")
                 return
