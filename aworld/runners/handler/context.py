@@ -5,19 +5,19 @@ import asyncio
 import traceback
 from typing import Optional, List, Tuple, AsyncGenerator
 
+from aworld.core.context.amni.event import ContextMessagePayload, BaseMessagePayload
+from aworld.core.context.amni.processor import ProcessorFactory
+from aworld.core.context.amni.utils.context_log import _generate_top_border, _generate_bottom_border
 from aworld.core.event.base import Constants, Message, ContextMessage
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler import DefaultHandler
 from aworld.runners.state_manager import HandleResult, RunNodeStatus, RuntimeStateManager
-from .base import BaseMessagePayload, ContextMessagePayload
-from ..processor.processor_factory import ProcessorFactory
-from ..utils.context_log import _generate_top_border, _generate_bottom_border
 
 
 @HandlerFactory.register(name=f'__{Constants.CONTEXT}__')
-class MemoryProcessorHandler(DefaultHandler):
-    """基础记忆处理器，抽象 workflow 的解析和执行逻辑"""
+class ContextProcessorHandler(DefaultHandler):
+    """Basic memory processor that abstracts workflow parsing and execution logic"""
 
     __metaclass__ = abc.ABCMeta
 
@@ -172,7 +172,7 @@ class MemoryProcessorHandler(DefaultHandler):
 
             logger.info(f"Processing async with {processor.__class__.__name__}")
 
-            # 在线程池中运行处理器的process方法
+            # Run the processor's process method in thread pool
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 self.thread_pool,
