@@ -384,7 +384,7 @@ def configure_otlp_provider(
                                                             id_generator=id_generator)))
 
 
-def _configure_logfire_exporter(write_token: str, base_url: str = None) -> None:
+def _configure_logfire_exporter(write_token: str, base_url: str = None, **kwargs) -> None:
     """Configure the Logfire exporter.
     Args:
         write_token: The write token to use.

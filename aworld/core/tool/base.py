@@ -4,6 +4,7 @@
 import abc
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
+import asyncio
 
 from pydantic import BaseModel
 
@@ -60,9 +61,6 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def _init_context(self, context: Context):
-        self.context = context
-
     def name(self):
         """Tool unique name."""
         return self._name
@@ -77,11 +75,10 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         pass
 
     def step(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
         action = message.payload
-        self.pre_step(action, **kwargs)
-        res = self.do_step(action, **kwargs)
-        final_res = self.post_step(res, action, **kwargs)
+        self.pre_step(action, message=message,**kwargs)
+        res = self.do_step(action, message =message, **kwargs)
+        final_res = self.post_step(res, action, message=message, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -144,9 +141,6 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def _init_context(self, context: Context):
-        self.context = context
-
     def name(self):
         """Tool unique name."""
         return self._name
@@ -161,11 +155,10 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         pass
 
     async def step(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
         action = message.payload
-        await self.pre_step(action, **kwargs)
-        res = await self.do_step(action, **kwargs)
-        final_res = await self.post_step(res, action, **kwargs)
+        await self.pre_step(action,message=message, **kwargs)
+        res = await self.do_step(action,message=message, **kwargs)
+        final_res = await self.post_step(res, action,message=message, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -202,6 +195,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                           action: ToolInput,
                           input_message: Message,
                           **kwargs):
+        context = input_message.context
         if not step_res or not action:
             return
         for idx, act in enumerate(action):
@@ -219,14 +213,14 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                         }
                     }),
                     metadata=step_res[0].action_result[idx].metadata,
-                    task_id=self.context.task_id
+                    task_id=context.task_id
                 )
                 tool_output_message = Message(
                     category=Constants.OUTPUT,
                     payload=tool_output,
                     sender=self.name(),
-                    session_id=self.context.session_id if self.context else "",
-                    headers={"context": self.context}
+                    session_id=context.session_id if context else "",
+                    headers={"context": context}
                 )
                 sync_exec(send_message, tool_output_message)
 
@@ -240,7 +234,6 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
     def step(self, message: Message, **kwargs) -> Message:
         final_res = None
         try:
-            self._init_context(message.context)
             action = message.payload
             tool_id_mapping = {}
             for act in action:
@@ -249,7 +242,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 tool_id_mapping[tool_id] = tool_name
             self.pre_step(action, **kwargs)
             res = self.do_step(action, **kwargs)
-            final_res = self.post_step(res, action, **kwargs)
+            final_res = self.post_step(res, action,message=message, **kwargs)
             self._internal_process(
                 res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             return final_res
@@ -268,16 +261,19 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
     def post_step(self,
                   step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                   action: List[ActionModel],
+                  message: Message,
                   **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
+
+        context = message.context
 
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
 
-        if self.context.swarm:
-            agent = self.context.swarm.agents.get(action[0].agent_name)
+        if context.swarm:
+            agent = context.swarm.agents.get(action[0].agent_name)
             feedback_tool_result = agent.feedback_tool_result if agent else False
         else:
             feedback_tool_result = True
@@ -286,13 +282,13 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+                                session_id=context.session_id,
+                                headers={"context": context})
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+                                session_id=context.session_id,
+                                headers={"context": context})
 
     def _add_tool_results_to_memory(self,
                                     step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
@@ -318,7 +314,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                     payload=tool_result,
                     agent=receive_agent,
                     memory_event_type=MemoryEventType.TOOL,
-                    session_id=self.context.session_id if self.context else "",
+                    session_id=context.session_id if context else "",
                     headers={"context": context}
                 ))
         except Exception:
@@ -331,6 +327,10 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 action: List[ActionModel],
                                 input_message: Message,
                                 **kwargs):
+        # logger.warning(f"tool {self.name()} sleep 60s start")
+        # await asyncio.sleep(60)
+        # logger.warning(f"tool {self.name()} sleep 60s finish")
+        context = input_message.context
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
@@ -347,14 +347,14 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                         }
                     }),
                     metadata=step_res[0].action_result[idx].metadata,
-                    task_id=self.context.task_id
+                    task_id=context.task_id
                 )
                 tool_output_message = Message(
                     category=Constants.OUTPUT,
                     payload=tool_output,
                     sender=self.name(),
-                    session_id=self.context.session_id if self.context else "",
-                    headers={"context": self.context}
+                    session_id=context.session_id if context else "",
+                    headers={"context": context}
                 )
                 await send_message(tool_output_message)
 
@@ -370,11 +370,11 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             category=Constants.OUTPUT,
             payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
                                                      step_num=0,
-                                                     task_id=self.context.task_id),
+                                                     task_id=context.task_id),
             sender=self.name(),
             receiver=action[0].agent_name,
-            session_id=self.context.session_id if self.context else "",
-            headers={"context": self.context}
+            session_id=context.session_id if context else "",
+            headers={"context": context}
         ))
         await self._exec_tool_callback(step_res, action,
                                        Message(
@@ -386,24 +386,23 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                            ),
                                            sender=self.name(),
                                            receiver=action[0].agent_name,
-                                           session_id=self.context.session_id,
-                                           headers={"context": self.context}
+                                           session_id=context.session_id,
+                                           headers={"context": context}
                                        ),
                                        **kwargs)
 
     async def step(self, message: Message, **kwargs) -> Message:
         final_res = None
         try:
-            self._init_context(message.context)
             action = message.payload
             tool_id_mapping = {}
             for act in action:
                 tool_id = act.tool_call_id
                 tool_name = act.tool_name
                 tool_id_mapping[tool_id] = tool_name
-            await self.pre_step(action, **kwargs)
-            res = await self.do_step(action, **kwargs)
-            final_res = await self.post_step(res, action, **kwargs)
+            await self.pre_step(action, message=message,**kwargs)
+            res = await self.do_step(action, message=message, **kwargs)
+            final_res = await self.post_step(res, action, message=message,**kwargs)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             if isinstance(final_res, Message):
                 self._update_headers(final_res, message)
@@ -428,6 +427,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
     async def post_step(self,
                         step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                         action: List[ActionModel],
+                        message: Message,
                         **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
@@ -436,8 +436,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
 
-        if self.context.swarm:
-            agent = self.context.swarm.agents.get(action[0].agent_name)
+        context = message.context
+        if context.swarm:
+            agent = context.swarm.agents.get(action[0].agent_name)
             feedback_tool_result = agent.feedback_tool_result if agent else False
         else:
             feedback_tool_result = True
@@ -446,13 +447,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+                                session_id=context.session_id,
+                                headers={"context": context})
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+                                session_id=context.session_id,
+                                headers={"context": context})
 
     async def _exec_tool_callback(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                                   action: List[ActionModel],
@@ -527,7 +528,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     payload=tool_result,
                     agent=receive_agent,
                     memory_event_type=MemoryEventType.TOOL,
-                    session_id=self.context.session_id if self.context else "",
+                    session_id=context.session_id if context else "",
                     headers={"context": context}
                 )
                 try:

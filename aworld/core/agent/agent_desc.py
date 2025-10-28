@@ -2,7 +2,8 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import Dict, Any
 
-from aworld.core.agent.base import AgentFactory
+# lazy import
+# from aworld.core.agent.base import AgentFactory
 from aworld.logs.util import logger
 
 
@@ -33,6 +34,8 @@ def get_agent_desc() -> Dict[str, dict]:
     }
     ```
     """
+    # lazy import
+    from aworld.core.agent.base import AgentFactory
 
     descs = dict()
     for agent in AgentFactory:

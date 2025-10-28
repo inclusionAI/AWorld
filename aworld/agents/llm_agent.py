@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import json
-import time
 import traceback
 import uuid
 from collections import OrderedDict
@@ -24,19 +23,17 @@ from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools
 from aworld.memory.main import MemoryFactory
+from aworld.memory.models import MemoryItem
 from aworld.memory.models import MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
-from aworld.models.model_response import ModelResponse, ToolCall, LLMResponseError
+from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
 from aworld.sandbox.base import Sandbox
-from aworld.trace.constants import SPAN_NAME_PREFIX_AGENT
-from aworld.trace.instrumentation import semconv
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
-from aworld.memory.models import MemoryItem
 
 
 class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
@@ -739,6 +736,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.message.update(chunk.message)
 
             else:
+                logger.info(f"llm_agent|invoke_model|tools={self.tools}")
                 llm_response = await acall_llm_model(
                     self.llm,
                     messages=messages,
@@ -782,9 +780,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message.context.context_info["llm_output"] = llm_response
         return llm_response
 
-    def _init_context(self, context: Context):
-        super()._init_context(context)
-        logger.debug(f'init_context llm_agent {self.name()} {self.conf} {self.conf.context_rule}')
 
     async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""
@@ -892,3 +887,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if input_message.group_id:
             headers['parent_group_id'] = input_message.group_id
         return headers
+
+    def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
+        from aworld.core.context.amni import AmniContext
+        if not isinstance(context, AmniContext):
+            return self.tools
+        # skills = context.get_active_skills(namespace=self.id())
+        # TODO add skill filter
+        return self.tools
