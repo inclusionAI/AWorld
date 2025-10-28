@@ -40,6 +40,8 @@ from ...event.base import ContextMessage, Constants, TopicType
 
 DEFAULT_VALUE = None
 
+ACTIVE_SKILLS_KEY = "active_skills"
+
 class AmniContext(Context):
     """
     AmniContext - Ant Mind Neuro-Intelligence Context Engine
@@ -358,6 +360,46 @@ class AmniContext(Context):
 
     @abc.abstractmethod
     def add_fact(self, fact: Fact, namespace: str = "default", **kwargs):
+        pass
+
+    """
+    Agent Skills Support
+    """
+    async def active_skill(self, skill_name: str, namespace: str) -> str:
+        """
+        activate a skill help agent to perform a task
+        """
+        skills = self.get_active_skills(namespace)
+        if not skills:
+            skills = []
+        skills.append(skill_name)
+        self.put(ACTIVE_SKILLS_KEY, skills, namespace=namespace)
+        return f"skill {skill_name} activated, current skills: {skills}"
+
+    async def offload_skill(self, skill_name: str,namespace: str) -> str:
+        """
+        offload a skill help agent to perform a task
+        """
+        skills = self.get_active_skills(namespace)
+        if not skills:
+            skills = []
+        skills.remove(skill_name)
+        self.put(ACTIVE_SKILLS_KEY, skills, namespace=namespace)
+        return f"skill {skill_name} offloaded, current skills: {skills}"
+
+    async def get_active_skills(self, namespace: str) -> list[str]:
+        """
+        get skills from context
+        """
+        skills = self.get(ACTIVE_SKILLS_KEY, namespace=namespace)
+        if not skills:
+            skills = []
+        return skills
+    
+    async def get_skill_list(self, namespace: str) -> list[str]:
+        # from aworld.core.agent.base import AgentFactory
+        # agent = AgentFactory.agent_instance(namespace)
+        # result = await agent.sandbox.get_skill_list
         pass
 
 
