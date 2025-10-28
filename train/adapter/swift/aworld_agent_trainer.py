@@ -45,9 +45,13 @@ class AworldTrainer(GRPOTrainer):
             return self.run_infer(infer_requests)
 
     def run_infer(self, infer_requests: List[Dict[str, Any]]) -> List[ChatCompletionResponse]:
-        workers = [asyncio.create_task(self._rollout(req)) for req in infer_requests]
-        results = sync_exec(asyncio.gather, *workers)
+        results = sync_exec(self.async_run_infer, infer_requests)
         return self.convert_agent_output(results, infer_requests)
+
+    async def async_run_infer(self, infer_requests: List[Dict[str, Any]]):
+        workers = [asyncio.create_task(self._rollout(req)) for req in infer_requests]
+        results = asyncio.gather(*workers)
+        return results
 
     async def _rollout(self, req: Dict[str, Any]):
         agent = self.build_agents()
@@ -61,9 +65,9 @@ class AworldTrainer(GRPOTrainer):
     async def run_agents(self, input, agent):
         # collect trajectory
         if isinstance(agent, Swarm):
-            result = Runners.sync_run(input=input, swarm=agent)
+            result = await Runners.run(input=input, swarm=agent)
         else:
-            result = Runners.sync_run(input=input, agent=agent)
+            result = await Runners.run(input=input, agent=agent)
         return result
 
     def convert_agent_output(self,
