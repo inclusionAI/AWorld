@@ -7,7 +7,7 @@ from datetime import datetime
 from aworld.agents.amni_llm_agent import ApplicationAgent
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ConfigDict, TaskConfig
-from aworld.core.agent.swarm import Swarm
+from aworld.core.agent.swarm import Swarm, TeamSwarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig, \
     CONTEXT_OFFLOAD_TOOL_NAME_WHITE
@@ -146,35 +146,49 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
 
 
     # 4. build swarm
-
-    # build gaia swarm
-    if isinstance(target, Agent):
+    # build gaia task
+    if isinstance(target, Swarm):
         swarm = target
+        Task(
+            id=context.task_id,
+            user_id=context.user_id,
+            session_id=context.session_id,
+            input=context.task_input,
+            endless_threshold=5,
+            swarm=swarm,
+            context=context,
+            conf=TaskConfig(
+                stream=False,
+                exit_on_failure=True
+            ),
+            timeout=timeout
+        )
     else:
-        swarm = Swarm(agent=target, max_steps=30)
+        # swarm = TeamSwarm(agent=target, max_steps=30)
         target.task = user_input
-    await context.build_agents_state(swarm.topology)
+        return Task(
+            id=context.task_id,
+            user_id=context.user_id,
+            session_id=context.session_id,
+            input=context.task_input,
+            endless_threshold=5,
+            agent=target,
+            context=context,
+            conf=TaskConfig(
+                stream=False,
+                exit_on_failure=True
+            ),
+            timeout=timeout
+        )
 
-    # 5. build task with context
-    return Task(
-        id=context.task_id,
-        user_id=context.user_id,
-        session_id=context.session_id,
-        input=context.task_input,
-        endless_threshold=5,
-        swarm=swarm,
-        context=context,
-        conf=TaskConfig(
-            stream=False,
-            exit_on_failure=True
-        ),
-        timeout=timeout
-    )
+    # await context.build_agents_state(swarm.topology)
+
 
 async def build_common_gaia_task(user_input: str, target: [Agent, Swarm], timeout):
     task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     
     if isinstance(target, Swarm):
+
         return Task(id=task_id, input=user_input, swarm=target, timeout=timeout)
     else:
         target.task = user_input
