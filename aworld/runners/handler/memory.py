@@ -239,7 +239,7 @@ class DefaultMemoryHandler(DefaultHandler):
             )
         ), agent_memory_config=agent.memory_config)
 
-    async def _is_amni_context(self, context: Context):
+    def _is_amni_context(self, context: Context):
         from aworld.core.context.amni import AmniContext
         return isinstance(context, AmniContext)
 
