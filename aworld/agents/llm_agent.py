@@ -11,6 +11,7 @@ from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
+from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage
@@ -358,8 +359,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # default use origin observation
         return observation
 
-    def _log_messages(self, messages: List[Dict[str, Any]], **kwargs) -> None:
-
+    def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
+        from aworld.core.context.amni import AmniContext
+        if isinstance(context, AmniContext):
+            from aworld.core.context.amni.utils.context_log import PromptLogger
+            PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context)
+            return
         """Log the sequence of messages for debugging purposes"""
         logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
         logger.debug(f"[agent] use tools: {self.tools}")
@@ -774,12 +779,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
         from aworld.core.context.amni.prompt.prompt_ext import ContextPromptTemplate
-        if isinstance(self.system_prompt_template, ContextPromptTemplate):
-            return await self.system_prompt_template.async_format(context=context, task=content, tool_list=tool_list,
-                                                                  # used to get agent context
-                                                                  agent_id=self.id())
+        from aworld.core.context.amni import AmniContext
+        if isinstance(context, AmniContext):
+            system_prompt_template = ContextPromptTemplate.from_template(self.system_prompt)
+            return await system_prompt_template.async_format(context=context, task=content, tool_list=tool_list,
+                                                             agent_id=self.id())
         else:
-            return self.system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+            system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
+            return system_prompt_template.format(context=context, task=content, tool_list=tool_list)
 
     async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context):
         memory_msg = MemoryEventMessage(
