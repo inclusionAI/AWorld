@@ -69,7 +69,7 @@ async def get_knowledge(
         logger.error(f"❌ Error retrieving knowledge artifact: knowledge_id={knowledge_id}, session_id={session_id}, error={str(e)}, trace is {traceback.format_exc()}")
         return f"Error retrieving knowledge artifact: {str(e)}"
 
-@mcp.tool(description="Retrieve a specific chunk of knowledge artifact by knowledge ID and chunk index")
+# @mcp.tool(description="Retrieve a specific chunk of knowledge artifact by knowledge ID and chunk index")
 async def get_knowledge_chunk(
         knowledge_id: str, 
         chunk_index: int,

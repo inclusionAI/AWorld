@@ -257,7 +257,7 @@ class AmniConfigFactory:
             config.agent_config = AgentContextConfig(
                 enable_system_prompt_augment=True,
                 neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
-                history_rounds= 100,
+                history_rounds= 20,
                 enable_summary=True,
                 summary_rounds= 30,
                 summary_context_length= 40960,
