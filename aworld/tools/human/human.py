@@ -9,6 +9,7 @@ from aworld.core.event.base import Constants, TopicType, HumanMessage, Message
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.events.util import send_message
 from aworld.logs.util import logger
+from aworld.runners.utils import long_wait_message_state
 from aworld.tools.human.actions import HumanExecuteAction
 from aworld.tools.utils import build_observation
 
@@ -68,7 +69,7 @@ class HumanTool(AsyncTool):
 
             # hanging on human message
             logger.info(f"HumanTool|waiting for human input")
-            result = await self.long_wait_message_state(message=message)
+            result = await long_wait_message_state(message=message)
             logger.info(f"HumanTool|human input succeed: {message.payload}")
 
             observation.content = result
