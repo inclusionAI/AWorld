@@ -6,7 +6,7 @@ from datetime import datetime
 
 from aworld.agents.amni_llm_agent import ApplicationAgent
 from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig, ConfigDict, TaskConfig
+from aworld.config import AgentConfig, ConfigDict, TaskConfig, SummaryPromptConfig
 from aworld.core.agent.swarm import Swarm, TeamSwarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig, \
@@ -14,7 +14,7 @@ from aworld.core.context.amni.config import get_default_config, init_middlewares
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig
 from aworld.core.task import Task
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
-from aworld.memory.main import MemoryFactory
+from aworld.memory.main import MemoryFactory, AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
 
 GAIA_SYSTEM_PROMPT = """You are an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.
 Please note that the task may be complex. Do not attempt to solve it all at once. You should break the task down and use different tools step by step to solve it. After using each tool, clearly explain the execution results and suggest the next steps.
@@ -52,18 +52,6 @@ Now, here is the task. Stay focused and complete it carefully using the appropri
 
 def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, server_manager = None, tokenizer = None):
 
-    MemoryFactory.init(
-        config=MemoryConfig(
-            provider="aworld",
-            llm_config=MemoryLLMConfig(
-                provider="openai",
-                model_name=os.getenv("LLM_MODEL_NAME"),
-                api_key=os.getenv("LLM_API_KEY"),
-                base_url=os.getenv("LLM_BASE_URL")
-            )
-        )
-    )
-
     conf=AgentConfig(
         llm_config=ConfigDict(
             llm_model_name=llm_model_name,
@@ -94,6 +82,10 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
             mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys()),
         )
     else:
+        # 1. init middlewares
+        init_middlewares()
+
+        # 2. init agent
         return ApplicationAgent(
             conf=conf,
             name="gaia_super_agent",
@@ -102,6 +94,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
             mcp_config=mcp_config,
             mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys()),
         )
+
 
 
 async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout, session_id: str = None, task_id: str = None):
@@ -119,6 +112,30 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
         enable_summary=True,
         summary_rounds= 30,
         summary_context_length= 40960,
+        summary_prompts=[
+            SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
+                                summary_rule="""
+1. Identify major milestones, subgoal completions, and strategic decisions
+2. Extract only the most critical events that provide experience for long-term goals
+""",
+                                summary_schema="""
+```json
+{{
+  "task_description": "A general summary of what the reasoning history has been doing and the overall goals it has been striving for.",
+  "key_events": [
+    {{
+      "step": "step number",
+      "description": "A detailed description of the specific action taken, decision made, or milestone achieved at this step, including relevant context and reasoning behind the choice.",
+      "outcome": "A detailed account of the direct result, observation, or feedback received from this action or decision, including any new information gained or changes in the task state."
+    }},
+    ...
+  ],
+  "current_progress": "A general summary of the current progress of the task, including what has been completed and what is left to be done."
+}}
+```
+""",
+                                memory_type="episode"
+                                             )],
         tool_result_offload= True,
         tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
         tool_result_length_threshold= 30000
