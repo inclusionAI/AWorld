@@ -193,6 +193,7 @@ def record_completion(span,
     usage = response_dict.get("usage")
     content = response_dict.get("content", "")
     tool_calls = response_dict.get("tool_calls")
+    reasoning_content = response_dict.get("reasoning_content", "")
     prompt_tokens = -1
     completion_tokens = -1
     total_tokens = -1
@@ -207,7 +208,8 @@ def record_completion(span,
         semconv.GEN_AI_USAGE_OUTPUT_TOKENS: completion_tokens,
         semconv.GEN_AI_USAGE_TOTAL_TOKENS: total_tokens,
         semconv.GEN_AI_DURATION: duration,
-        semconv.GEN_AI_COMPLETION_CONTENT: content
+        semconv.GEN_AI_COMPLETION_CONTENT: content,
+        semconv.GEN_AI_COMPLETION_REASONING_CONTENT: reasoning_content
     }
     span_attributes.update(parse_response_message(tool_calls))
     span.set_attributes(span_attributes)
