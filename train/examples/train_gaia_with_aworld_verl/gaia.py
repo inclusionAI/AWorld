@@ -181,7 +181,7 @@ async def build_common_gaia_task(user_input: str, target: [Agent, Swarm], timeou
         return Task(id=task_id, input=user_input, agent=target, timeout=timeout)
 
 async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout):
-    if os.getenv("GAIA_AGENT_CONTEXT", "common"):
+    if os.getenv("GAIA_AGENT_CONTEXT", "common") == 'common':
         return await build_common_gaia_task(user_input, target, timeout)
     else:
         return await build_amni_gaia_task(user_input, target, timeout)
