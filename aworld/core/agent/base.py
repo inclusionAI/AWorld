@@ -114,9 +114,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 "or pass AgentConfig explicitly"
             )
             logger.info(f"AgentConfig is empty, using env variables:\n"
-                           f"LLM_API_KEY={'*' * min(len(api_key), 8) if api_key else 'Not set'}\n"
-                           f"LLM_BASE_URL={base_url}\n"
-                           f"LLM_MODEL_NAME={model_name}")
+                        f"LLM_API_KEY={'*' * min(len(api_key), 8) if api_key else 'Not set'}\n"
+                        f"LLM_BASE_URL={base_url}\n"
+                        f"LLM_MODEL_NAME={model_name}")
 
             conf = AgentConfig(
                 llm_provider=os.getenv("LLM_PROVIDER", "openai"),
@@ -169,14 +169,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if self.mcp_servers or self.tool_names:
             self.sandbox = sandbox or Sandbox(
                 mcp_servers=self.mcp_servers, mcp_config=self.mcp_config,
-                black_tool_actions = self.black_tool_actions
+                black_tool_actions=self.black_tool_actions
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
-
-    def _init_context(self, context: Context):
-        self.context = context
-        self.context.agent_info.current_agent_id = self.id()
 
     def id(self) -> str:
         return self._id
@@ -188,6 +184,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._desc
 
     def run(self, message: Message, **kwargs) -> Message:
+        message.context.agent_info.current_agent_id = self.id()
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
@@ -222,6 +219,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
+        message.context.agent_info.current_agent_id = self.id()
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
