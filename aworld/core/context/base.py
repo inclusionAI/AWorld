@@ -337,6 +337,12 @@ class Context:
         if hasattr(self, '_event_manager'):
             new_context._event_manager = self._event_manager  # Shallow copy for complex objects
 
+        if hasattr(self, '_agent_token_id_traj'):
+            try:
+                new_context._agent_token_id_traj = copy.deepcopy(self._agent_token_id_traj)
+            except Exception:
+                new_context._agent_token_id_traj = copy.copy(self._agent_token_id_traj)
+
         return new_context
 
     def merge_context(self, other_context: 'Context') -> None:
