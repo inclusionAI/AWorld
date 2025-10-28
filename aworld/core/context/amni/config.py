@@ -261,6 +261,8 @@ class AmniConfigFactory:
                 enable_summary=True,
                 summary_rounds= 30,
                 summary_context_length= 40960,
+                summary_schemas=[],
+
                 tool_result_offload= True,
                 tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
                 tool_result_length_threshold= 30000

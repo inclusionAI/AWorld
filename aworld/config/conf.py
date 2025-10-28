@@ -147,6 +147,15 @@ class OptimizationConfig(BaseConfig):
     max_token_budget_ratio: float = 0.5  # Maximum context length ratio
 
 
+class SummaryPromptConfig(BaseConfig):
+    """Configuration for summary prompt templates."""
+    
+    template: str = Field(description="基础模板，如 AWORLD_MEMORY_EXTRACT_NEW_SUMMARY")
+    summary_rule: str = Field(description="摘要规则，用于指导如何生成摘要")
+    summary_schema: str = Field(description="摘要模式，定义输出格式和结构")
+    memory_type: str = Field(description="记忆类型，用于区分不同类型的摘要")
+
+
 class ContextRuleConfig(BaseConfig):
     """Context interference rule configuration"""
 
@@ -174,7 +183,7 @@ class AgentMemoryConfig(BaseConfig):
                                           description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
-    # summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
+    summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
 
     # Long-term memory config
     enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")

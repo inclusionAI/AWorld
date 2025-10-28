@@ -582,34 +582,98 @@ class AworldMemory(Memory):
 
         existed_summary_items = [item for item in agent_task_total_message if item.memory_type == "summary"]
         user_task_items = [item for item in agent_task_total_message if item.memory_type == "init"]
-        # generate summary
-        summary_content = await self._gen_multi_rounds_summary(user_task_items, existed_summary_items,
-                                                               to_be_summary_items, agent_memory_config)
-        logger.debug(f"🧠 [MEMORY:short-term] [Summary] summary_content: {summary_content}")
+        
+        # 检查是否有配置的 summary_prompts
+        if agent_memory_config.summary_prompts and len(agent_memory_config.summary_prompts) > 0:
+            # 轮询 summary_prompts 数组，为每种类型生成摘要
+            for summary_prompt_config in agent_memory_config.summary_prompts:
+                await self._generate_typed_summary(
+                    user_task_items, 
+                    existed_summary_items, 
+                    to_be_summary_items, 
+                    agent_memory_config, 
+                    summary_prompt_config, 
+                    memory_item, 
+                    trigger_reason
+                )
+        else:
+            # 使用默认的摘要生成逻辑
+            summary_content = await self._gen_multi_rounds_summary(user_task_items, existed_summary_items,
+                                                                   to_be_summary_items, agent_memory_config)
+            logger.debug(f"🧠 [MEMORY:short-term] [Summary] summary_content: {summary_content}")
 
-        summary_metadata = MessageMetadata(
-            agent_id=memory_item.agent_id,
-            agent_name=memory_item.agent_name,
-            session_id=memory_item.session_id,
-            task_id=memory_item.task_id,
-            user_id=memory_item.user_id
-        )
-        summary_memory = MemorySummary(
-            item_ids=[item.id for item in to_be_summary_items],
-            summary=summary_content,
-            metadata=summary_metadata,
-            created_at=to_be_summary_items[0].created_at
-        )
+            summary_metadata = MessageMetadata(
+                agent_id=memory_item.agent_id,
+                agent_name=memory_item.agent_name,
+                session_id=memory_item.session_id,
+                task_id=memory_item.task_id,
+                user_id=memory_item.user_id
+            )
+            summary_memory = MemorySummary(
+                item_ids=[item.id for item in to_be_summary_items],
+                summary=summary_content,
+                metadata=summary_metadata,
+                created_at=to_be_summary_items[0].created_at
+            )
 
-        # add summary to memory
-        self.memory_store.add(summary_memory)
+            # add summary to memory
+            self.memory_store.add(summary_memory)
 
-        # mark memory item summary flag
-        for summary_item in to_be_summary_items:
-            summary_item.mark_has_summary()
-            self.memory_store.update(summary_item)
-        logger.info(f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished: "
-                    f"content is {summary_content[:100]}")
+            # mark memory item summary flag
+            for summary_item in to_be_summary_items:
+                summary_item.mark_has_summary()
+                self.memory_store.update(summary_item)
+            logger.info(f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished: "
+                        f"content is {summary_content[:100]}")
+
+    async def _generate_typed_summary(self, user_task_items: list[MemoryItem],
+                                    existed_summary_items: list[MemorySummary],
+                                    to_be_summary_items: list[MemoryItem],
+                                    agent_memory_config: AgentMemoryConfig,
+                                    summary_prompt_config,
+                                    memory_item: MemoryItem,
+                                    trigger_reason: str):
+        """为特定类型生成摘要"""
+        try:
+            # 生成特定类型的摘要
+            summary_content = await self._gen_multi_rounds_summary(
+                user_task_items, 
+                existed_summary_items, 
+                to_be_summary_items, 
+                agent_memory_config,
+                summary_rule=summary_prompt_config.summary_rule,
+                summary_schema=summary_prompt_config.summary_schema,
+                template=summary_prompt_config.template
+            )
+            
+            logger.debug(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] summary_content: {summary_content}")
+
+            summary_metadata = MessageMetadata(
+                agent_id=memory_item.agent_id,
+                agent_name=memory_item.agent_name,
+                session_id=memory_item.session_id,
+                task_id=memory_item.task_id,
+                user_id=memory_item.user_id
+            )
+            
+            # 创建特定类型的摘要记忆
+            summary_memory = MemorySummary(
+                item_ids=[item.id for item in to_be_summary_items],
+                summary=summary_content,
+                metadata=summary_metadata,
+                created_at=to_be_summary_items[0].created_at,
+                memory_type=summary_prompt_config.memory_type  # 添加记忆类型标识
+            )
+
+            # 添加到记忆存储
+            self.memory_store.add(summary_memory)
+
+            logger.info(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] [{trigger_reason}]Creating typed summary memory finished: "
+                        f"content is {summary_content[:100]}")
+                        
+        except Exception as e:
+            logger.error(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] Error generating typed summary: {str(e)}")
+            logger.error(traceback.format_exc())
 
     def _check_need_summary(self,
                             to_be_summary_items: list[MemoryItem],
@@ -631,7 +695,10 @@ class AworldMemory(Memory):
     async def _gen_multi_rounds_summary(self, user_task_items: list[MemoryItem],
                                         existed_summary_items: list[MemorySummary],
                                         to_be_summary_items: list[MemoryItem],
-                                        agent_memory_config: AgentMemoryConfig) -> str:
+                                        agent_memory_config: AgentMemoryConfig,
+                                        summary_rule: str = None,
+                                        summary_schema: str = None,
+                                        template: str = None) -> str:
 
         if len(to_be_summary_items) == 0:
             return ""
@@ -643,10 +710,14 @@ class AworldMemory(Memory):
         to_be_summary = [{"role": item.metadata['role'], "content": item.content} for item in to_be_summary_items]
 
         # generate summary
+        # 使用自定义模板或默认模板
+        template_to_use = template if template else AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
         summary_messages = [
             {
                 "role": "user",
-                "content": AWORLD_MEMORY_EXTRACT_NEW_SUMMARY.format(
+                "content": template_to_use.format(
+                    summary_rule=summary_rule or "",
+                    summary_schema=summary_schema or "",
                     user_task=user_task,
                     existed_summary=existed_summary,
                     to_be_summary=to_be_summary

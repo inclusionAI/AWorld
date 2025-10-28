@@ -4,6 +4,7 @@ from typing import Dict, Any, Union, List, Literal, Optional
 from datetime import datetime
 import uuid
 
+from aworld.core.context.amni.utils.text_cleaner import truncate_content
 from aworld.models.model_response import ToolCall
 from examples.multi_agents.collaborative.debate.agent.base import DebateSpeech
 from examples.multi_agents.collaborative.debate.agent.prompts import user_assignment_prompt, user_assignment_system_prompt, affirmative_few_shots, \
@@ -17,13 +18,6 @@ from aworld.core.common import Observation, ActionModel
 from aworld.output import SearchOutput, SearchItem, MessageOutput
 from aworld.output.artifact import ArtifactType
 
-
-def truncate_content(raw_content, char_limit):
-    if raw_content is None:
-        raw_content = ''
-    if len(raw_content) > char_limit:
-        raw_content = raw_content[:char_limit] + "... [truncated]"
-    return raw_content
 
 class DebateAgent(StreamOutputAgent, ABC):
 
