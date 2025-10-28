@@ -6,8 +6,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
-from aworld.core.context.amni.event.memory_handlers import MemoryProcessorHandler
-
 from aworld.core.agent.swarm import Swarm
 
 from train.examples.train_gaia_with_aworld_verl.gaia_agent import build_gaia_agent
@@ -79,4 +77,5 @@ async def run(user_input: str):
         print(f"err is {err}, trace is {traceback.format_exc()}")
 
 if __name__ == '__main__':
-    asyncio.run(run(user_input="如果你是蚂蚁AQ的CEO，你面临一个业务转型压力，综合当前AQ的业务特点和医疗领域潜在方向，在tempus,hims,oscar三家公司的业务方向上进行选择，你会选择哪一条赛道"))
+    query = "In July 2, 1959 United States standards for grades of processed fruits, vegetables, and certain other products listed as dehydrated, consider the items in the \"dried and dehydrated section\" specifically marked as dehydrated along with any items in the Frozen/Chilled section that contain the whole name of the item, but not if they're marked Chilled. As of August 2023, what is the percentage (to the nearest percent) of those standards that have been superseded by a new version since the date given in the 1959 standards?"
+    asyncio.run(run(user_input=query))
