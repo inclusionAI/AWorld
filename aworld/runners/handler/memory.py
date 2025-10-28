@@ -5,14 +5,14 @@ import asyncio
 import traceback
 from typing import Optional, List, Tuple, AsyncGenerator
 
+from aworld.core.context.amni.event import ContextMessagePayload, BaseMessagePayload
+from aworld.core.context.amni.processor import ProcessorFactory
+from aworld.core.context.amni.utils.context_log import _generate_top_border, _generate_bottom_border
 from aworld.core.event.base import Constants, Message, ContextMessage
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler import DefaultHandler
 from aworld.runners.state_manager import HandleResult, RunNodeStatus, RuntimeStateManager
-from .base import BaseMessagePayload, ContextMessagePayload
-from ..processor.processor_factory import ProcessorFactory
-from ..utils.context_log import _generate_top_border, _generate_bottom_border
 
 
 @HandlerFactory.register(name=f'__{Constants.CONTEXT}__')
