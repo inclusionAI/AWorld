@@ -261,7 +261,7 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
 async def mcp_tool_desc_transform_v2(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
         server_instances: Dict[str, Any] = None,
-        black_tool_actions: Dict[str, List[str]] = None
+        black_tool_actions: Dict[str, List[str]] = None,
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
