@@ -19,7 +19,7 @@ class InMemoryEventbus(Eventbus):
         # self._message_queue: Queue = Queue()
         self._message_queue: Dict[str, Queue] = {}
 
-    def wait_consume_size(self, id: str) -> int:
+    async def wait_consume_size(self, id: str) -> int:
         return self._message_queue.get(id, Queue()).qsize()
 
     async def publish(self, message: Message, **kwargs):

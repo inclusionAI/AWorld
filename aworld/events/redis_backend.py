@@ -26,8 +26,9 @@ class RedisEventbus(InMemoryEventbus):
         con_url = f"redis://{conf.user_name}:{conf.password}@{conf.host}:{conf.port}"
         self.client = aioredis.from_url(con_url, db=conf.db)
 
-    def wait_consume_size(self, id: str) -> int:
-        return self.client.dbsize()
+    async def wait_consume_size(self, id: str) -> int:
+        # not really reserved data size
+        return await self.client.dbsize()
 
     async def publish(self, message: Message, **kwargs):
         logger.info(f"publish message: {message} of task: {message.task_id}")
@@ -60,7 +61,7 @@ class RedisEventbus(InMemoryEventbus):
             for msg in msgs:
                 message_id = msg[0]
                 message_content = msg[1]
-                data = pickle.loads(message_content.get("data"))
+                data = pickle.loads(message_content.get(b"data"))
                 logger.debug(f"Get message: {message_id} with content {data}")
                 await self.client.xdel(message.task_id, message_id)
                 return data
