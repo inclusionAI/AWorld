@@ -4,6 +4,7 @@ import abc
 
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
+from aworld.config.conf import TaskRunMode
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PostLLMCallHook, PreLLMCallHook
 from aworld.utils.common import convert_to_snake
@@ -17,10 +18,13 @@ class PreLLMCallContextProcessHook(PreLLMCallHook):
 
     def name(self):
         return convert_to_snake("PreLLMCallContextProcessHook")
-    
+
     async def exec(self, message: Message, context: Context = None) -> Message:
         # and do something
-        pass
+        task = context.get_task()
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
+            context.new_trajectory_step(task.agent.id())
+
 
 @HookFactory.register(name="PostLLMCallContextProcessHook",
                       desc="PostLLMCallContextProcessHook")
@@ -34,4 +38,3 @@ class PostLLMCallContextProcessHook(PostLLMCallHook):
     async def exec(self, message: Message, context: Context = None) -> Message:
         # get context
         pass
-        

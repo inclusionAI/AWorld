@@ -6,6 +6,7 @@ from typing import Any, List, Dict
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
+from aworld.config.conf import TaskConfig
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.task import Task, TaskResponse
@@ -52,7 +53,8 @@ async def exec_agent(question: Any,
                      context: Context,
                      sub_task: bool = False,
                      outputs: Outputs = None,
-                     task_group_id: str = None) -> TaskResponse:
+                     task_group_id: str = None,
+                     task_conf: TaskConfig = None) -> TaskResponse:
     """Utility method for executing an agent in a task-oriented manner.
 
     Args:
@@ -72,7 +74,8 @@ async def exec_agent(question: Any,
                 context=context,
                 is_sub_task=sub_task,
                 group_id=task_group_id,
-                session_id=context.session_id)
+                session_id=context.session_id,
+                conf=task_conf)
     if outputs:
         task.outputs = outputs
     runners = await choose_runners([task])
