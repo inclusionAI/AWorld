@@ -174,7 +174,7 @@ def ensure_directories_exist():
 
 
 def build_mcp_config():
-    if os.getenv('MCP_ENV') == 'local':
+    if os.getenv('MCP_ENV', 'local') == 'local':
         # 确保必要的目录存在
         ensure_directories_exist()
         return LOCAL_MCP_CONFIG
