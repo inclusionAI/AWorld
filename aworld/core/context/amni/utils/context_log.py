@@ -1,15 +1,18 @@
 import json
 import logging
 import time
+import traceback
 from datetime import datetime
 from typing import Any, Dict
 
-# from ... import ApplicationContext
-from ..logger import amni_digest_logger, amni_prompt_logger
+from aworld.config import AgentMemoryConfig
 from aworld.core.agent.base import BaseAgent
 from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES
-
+from aworld.memory.models import MemorySummary, MemoryItem
+from aworld.models.utils import num_tokens_from_messages
 from .modelutils import ModelUtils, num_tokens_from_string
+# from ... import ApplicationContext
+from ..logger import amni_digest_logger, amni_prompt_logger
 
 # Log display configuration constants
 BORDER_WIDTH = 100  # Border content area width
@@ -786,3 +789,79 @@ class PromptLogger:
         
         return grid
 
+    @staticmethod
+    def log_summary_memory(summary_memory: MemorySummary, to_be_summary_items: list[MemoryItem],
+                           trigger_reason: str, agent_memory_config: AgentMemoryConfig):
+        """
+        记录summary memory的上下文长度信息
+
+        Args:
+            summary_memory: 生成的摘要内存对象
+            to_be_summary_items: 被摘要的消息项列表
+            trigger_reason: 触发摘要的原因
+            agent_memory_config: 代理内存配置
+        """
+        try:
+            # 计算被摘要消息的token数量
+            summary_items_tokens = num_tokens_from_messages([item.to_openai_message() for item in to_be_summary_items])
+
+            # 计算摘要内容的token数量
+            summary_content_tokens = num_tokens_from_messages([{
+                "role": "assistant",
+                "content": summary_memory.content
+            }])
+
+            # 计算压缩比
+            compression_ratio = summary_items_tokens / summary_content_tokens if summary_content_tokens > 0 else 0
+
+            # 构建日志框内容
+            log_lines = [
+                "╭────────────────────────────────────────────────────────────────────────────────────────────────────╮",
+                "│                                      🧠 MEMORY SUMMARY CONTEXT ANALYSIS                            │",
+                "├────────────────────────────────────────────────────────────────────────────────────────────────────┤",
+                f"│ 🎯 Trigger Reason: {trigger_reason:<70} │",
+                f"│ 📊 Original Messages Count: {len(to_be_summary_items):<65} │",
+                f"│ 🔢 Original Messages Tokens: {summary_items_tokens:<64} │",
+                f"│ 📝 Summary Content Tokens: {summary_content_tokens:<66} │",
+                f"│ 📈 Compression Ratio: {compression_ratio:.2f}x{' ' * (65 - len(f'{compression_ratio:.2f}x'))} │",
+                f"│ 🆔 Summary Memory ID: {str(summary_memory.id):<68} │",
+                f"│ 📋 Summary Item IDs: {str(summary_memory.summary_item_ids)[:60]:<60} │",
+                "├────────────────────────────────────────────────────────────────────────────────────────────────────┤",
+                "│ 📄 Summary Content Preview:                                                                        │"
+            ]
+
+            # 添加摘要内容预览，每行最多70个字符
+            summary_preview = summary_memory.content[:200]
+            preview_lines = [summary_preview[i:i+70] for i in range(0, len(summary_preview), 70)]
+            for line in preview_lines:
+                log_lines.append(f"│ {line:<70} │")
+
+            # 添加警告信息（如果有）
+            if compression_ratio < 2.0:
+                log_lines.append("├────────────────────────────────────────────────────────────────────────────────────────────────────┤")
+                log_lines.append(f"│ ⚠️  WARNING: Low compression ratio ({compression_ratio:.2f}x) - summary may not be effective enough{' ' * 20} │")
+
+            # 添加阈值提醒（如果有）
+            if summary_items_tokens >= agent_memory_config.summary_context_length * 0.8:
+                log_lines.append("├────────────────────────────────────────────────────────────────────────────────────────────────────┤")
+                log_lines.append(f"│ ℹ️  INFO: Original messages tokens ({summary_items_tokens}) approaching threshold ({agent_memory_config.summary_context_length}){' ' * 15} │")
+
+            # 添加底部边框
+            log_lines.append("╰────────────────────────────────────────────────────────────────────────────────────────────────────╯")
+
+            # 输出日志
+            for line in log_lines:
+                amni_prompt_logger.info(line)
+
+        except Exception as e:
+            # 错误信息也用框框样式
+            error_lines = [
+                "╭────────────────────────────────────────────────────────────────────────────────────────────────────╮",
+                "│                                      ❌ MEMORY SUMMARY LOGGING ERROR                              │",
+                "├────────────────────────────────────────────────────────────────────────────────────────────────────┤",
+                f"│ Error: {str(e):<80} │",
+                f"│ Details: {traceback.format_exc()[:80]:<78} │",
+                "╰────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+            ]
+            for line in error_lines:
+                amni_prompt_logger.error(line)

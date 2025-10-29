@@ -153,7 +153,7 @@ class SummaryPromptConfig(BaseConfig):
     template: str = Field(description="基础模板，如 AWORLD_MEMORY_EXTRACT_NEW_SUMMARY")
     summary_rule: str = Field(description="摘要规则，用于指导如何生成摘要")
     summary_schema: str = Field(description="摘要模式，定义输出格式和结构")
-    memory_type: str = Field(description="记忆类型，用于区分不同类型的摘要")
+    memory_type: str = Field(default="summary", description="记忆类型，用于区分不同类型的摘要")
 
 
 class ContextRuleConfig(BaseConfig):

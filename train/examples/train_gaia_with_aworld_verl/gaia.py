@@ -7,14 +7,16 @@ from datetime import datetime
 from aworld.agents.amni_llm_agent import ApplicationAgent
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ConfigDict, TaskConfig, SummaryPromptConfig
-from aworld.core.agent.swarm import Swarm, TeamSwarm
+from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig, \
     CONTEXT_OFFLOAD_TOOL_NAME_WHITE
-from aworld.core.memory import MemoryConfig, MemoryLLMConfig
 from aworld.core.task import Task
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
-from aworld.memory.main import MemoryFactory, AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
+from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
+from train.examples.train_gaia_with_aworld_verl.summary import episode_memory_summary_rule, working_memory_summary_rule, \
+    working_memory_summary_schema, tool_memory_summary_rule, \
+    tool_memory_summary_schema, episode_memory_summary_schema
 
 GAIA_SYSTEM_PROMPT = """You are an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.
 Please note that the task may be complex. Do not attempt to solve it all at once. You should break the task down and use different tools step by step to solve it. After using each tool, clearly explain the execution results and suggest the next steps.
@@ -43,6 +45,7 @@ Here are some tips to help you give better instructions:
 17. The directory named gaia_dataset and all of its contents are a read-only data source. Your task is to work with the data, but you must not write, modify, or delete any files or folders within any path that ends with /gaia_dataset/.
 18. When using `image_server__mcp_image_recognition` tool to recognize images, the URL or path you provided should be a local path. Therefore, if it's an image on the internet, please download it to your local device first.
 19. When using `e2b_code_interpreter` tool to parse a local file, you need first to upload the local file to e2b sandbox with the following code and then parse the file. If you have uploaded a file, you should use the sandbox_id returned by the e2b_upload_file function as input to the `mcp__e2b-code-server__e2b_run_code` tool.
+20. 当你要输出答案时，给出对应的中文报告
 </tips>
 
 Now, here is the task. Stay focused and complete it carefully using the appropriate tools!
@@ -114,31 +117,18 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
         summary_context_length= 40960,
         summary_prompts=[
             SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
-                                summary_rule="""
-1. Identify major milestones, subgoal completions, and strategic decisions
-2. Extract only the most critical events that provide experience for long-term goals
-""",
-                                summary_schema="""
-```json
-{{
-  "task_description": "A general summary of what the reasoning history has been doing and the overall goals it has been striving for.",
-  "key_events": [
-    {{
-      "step": "step number",
-      "description": "A detailed description of the specific action taken, decision made, or milestone achieved at this step, including relevant context and reasoning behind the choice.",
-      "outcome": "A detailed account of the direct result, observation, or feedback received from this action or decision, including any new information gained or changes in the task state."
-    }},
-    ...
-  ],
-  "current_progress": "A general summary of the current progress of the task, including what has been completed and what is left to be done."
-}}
-```
-""",
-                                memory_type="episode"
-                                             )],
-        tool_result_offload= True,
-        tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
-        tool_result_length_threshold= 30000
+                                summary_rule=episode_memory_summary_rule,
+                                summary_schema=episode_memory_summary_schema),
+            SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
+                                summary_rule=working_memory_summary_rule,
+                                summary_schema=working_memory_summary_schema),
+            SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
+                                summary_rule=tool_memory_summary_rule,
+                                summary_schema=tool_memory_summary_schema)
+        ],
+        tool_result_offload=True,
+        tool_action_white_list=CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
+        tool_result_length_threshold=30000
     )
 
     # 3. build context

@@ -42,9 +42,9 @@ Please read the conversation carefully and extract new information from the conv
 {summary_rule}
 </external_guides>
 
-<schema>
+<output_schema>
 {summary_schema}
-</schema>
+</output_schema>
 
 <user_task> {user_task} </user_task>
 <existed_summary> {existed_summary} </existed_summary>
@@ -628,12 +628,15 @@ class AworldMemory(Memory):
             # add summary to memory
             self.memory_store.add(summary_memory)
 
-            # mark memory item summary flag
-            for summary_item in to_be_summary_items:
-                summary_item.mark_has_summary()
-                self.memory_store.update(summary_item)
-            logger.info(f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished: "
-                        f"content is {summary_content[:100]}")
+            # 记录summary的上下文长度信息
+            from aworld.core.context.amni.utils.context_log import PromptLogger
+            PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, trigger_reason, agent_memory_config)
+
+        # mark memory item summary flag
+        for summary_item in to_be_summary_items:
+            summary_item.mark_has_summary()
+            self.memory_store.update(summary_item)
+        logger.info(f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished")
 
     async def _generate_typed_summary(self, user_task_items: list[MemoryItem],
                                     existed_summary_items: list[MemorySummary],
@@ -668,7 +671,7 @@ class AworldMemory(Memory):
                 item_ids=[item.id for item in to_be_summary_items],
                 summary=summary_content,
                 metadata=summary_metadata,
-                created_at=to_be_summary_items[0].created_at,
+                # created_at=to_be_summary_items[0].created_at,
                 memory_type=summary_prompt_config.memory_type  # 添加记忆类型标识
             )
 
@@ -677,6 +680,10 @@ class AworldMemory(Memory):
 
             logger.info(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] [{trigger_reason}]Creating typed summary memory finished: "
                         f"content is {summary_content[:100]}")
+            
+            # 记录summary的上下文长度信息
+            from aworld.core.context.amni.utils.context_log import PromptLogger
+            PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, f"{trigger_reason}:{summary_prompt_config.memory_type}", agent_memory_config)
                         
         except Exception as e:
             logger.error(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] Error generating typed summary: {str(e)}")
@@ -717,8 +724,8 @@ class AworldMemory(Memory):
         # generate summary
         # 使用自定义模板或默认模板
         template_to_use = prompt.template if prompt else AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
-        summary_rule = "Instructions:\n" + prompt.summary_rule if prompt else ""
-        summary_schema = "Output in this format:\n" + prompt.summary_schema if prompt else ""
+        summary_rule = prompt.summary_rule if prompt else ""
+        summary_schema = prompt.summary_schema if prompt else ""
         summary_messages = [
             {
                 "role": "user",
