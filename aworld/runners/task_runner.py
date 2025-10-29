@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 import aworld.tools
 from aworld.config import ConfigDict
-from aworld.config.conf import ToolConfig
+from aworld.config.conf import ToolConfig, TaskRunMode
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation
 from aworld.core.context.base import Context
@@ -69,9 +69,8 @@ class TaskRunner(Runner):
         self._exception = None
         self.start_time = time.time()
         self.step_agent_counter = {}
-        if task.conf.get("interactive_mode", False) and self.task.agent:
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE and self.task.agent:
             self.task.agent.wait_tool_result = True
-            self.context.new_trajectory_step(self.task.agent.id())
 
     async def pre_run(self):
         task = self.task

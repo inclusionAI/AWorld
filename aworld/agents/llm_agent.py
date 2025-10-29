@@ -19,6 +19,7 @@ from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
     MemoryEventType as MemoryType, MemoryEventMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
+from aworld.config.conf import TaskConfig, TaskRunMode
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools
@@ -602,7 +603,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             else:
                 policy_result = await self.execution_tools(agent_result.actions, message)
         await self.send_llm_response_output(llm_response, agent_result, message.context, kwargs.get("outputs"))
-        await self._add_tool_result_token_ids_to_context(message.context)
         return policy_result
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
@@ -615,22 +615,26 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         tool_results = []
         for act in actions:
+            context = message.context.deep_copy()
+            context.agent_info.current_tool_call_id = act.tool_call_id
             if is_agent(act):
                 content = act.policy_info
                 if act.params and 'content' in act.params:
                     content = act.params['content']
+                task_conf = TaskConfig(run_mode=message.context.get_task().conf.run_mode)
                 act_result = await exec_agent(question=content,
                                               agent=act.agent_name,
-                                              context=message.context.deep_copy(),
+                                              context=context,
                                               sub_task=True,
                                               outputs=message.context.outputs,
-                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
+                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex,
+                                              task_conf=task_conf)
             else:
                 act_result = await exec_tool(tool_name=act.tool_name,
                                              action_name=act.action_name,
                                              params=act.params,
                                              agent_name=self.id(),
-                                             context=message.context.deep_copy(),
+                                             context=context,
                                              sub_task=True,
                                              outputs=message.context.outputs,
                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
@@ -642,6 +646,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             tool_results.append(act_res)
             await self._add_message_to_memory(payload=act_res, message_type=MemoryType.TOOL, context=message.context)
         result = sync_exec(self.tools_aggregate_func, tool_results)
+        await self._add_tool_result_token_ids_to_context(message.context)
         return result
 
     async def _tools_aggregate_func(self, tool_results: List[ActionResult]) -> List[ActionModel]:
@@ -780,7 +785,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message.context.context_info["llm_output"] = llm_response
         return llm_response
 
-
     async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""
         from aworld.runners.hook.hook_factory import HookFactory
@@ -831,8 +835,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_tool_result_token_ids_to_context(self, context: Context):
         """Add tool result token ids to context"""
-        interactive_mode = context.get_task().conf.get("interactive_mode", False)
-        if not interactive_mode:
+        if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVAE:
             return
         histories = self.memory.get_all(filters={
             "agent_id": self.id(),

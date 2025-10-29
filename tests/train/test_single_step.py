@@ -4,7 +4,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.context.base import Context
 from aworld.core.task import Task
-from aworld.config import TaskConfig
+from aworld.config import TaskConfig, TaskRunMode
 from aworld.runner import Runners
 from aworld.trace.server import get_trace_server
 import aworld.trace as trace
@@ -46,7 +46,7 @@ class SingleStepTest(unittest.IsolatedAsyncioTestCase):
             conf=TaskConfig(
                 stream=False,
                 resp_carry_context=True,
-                interactive_mode=True
+                run_mode=TaskRunMode.INTERACTIVAE
             ),
             context=context
         )
@@ -61,4 +61,4 @@ class SingleStepTest(unittest.IsolatedAsyncioTestCase):
             resp = responses[task_id]
             print(f"step {step} resp: {resp.answer}")
 
-        # get_trace_server().join()
+        get_trace_server().join()

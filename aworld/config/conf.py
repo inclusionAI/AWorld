@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, Callable, Union, Iterable
 import yaml
 from pydantic import BaseModel, Field
 
-from aworld.dataset.sampler import Sampler
 from aworld.logs.util import logger
 
 
@@ -230,6 +229,11 @@ class AgentConfig(BaseConfig):
         return self.llm_config.llm_provider
 
 
+class TaskRunMode(Enum):
+    INTERACTIVAE = "INTERACTIVAE"
+    ONE_WAY = "ONE_WAY"
+
+
 class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
@@ -239,7 +243,7 @@ class TaskConfig(BaseConfig):
     resp_carry_raw_llm_resp: bool = False
     exit_on_failure: bool = False
     ext: dict = {}
-    interactive_mode: bool = False
+    run_mode: TaskRunMode = TaskRunMode.ONE_WAY
 
 
 class ToolConfig(BaseConfig):
