@@ -161,6 +161,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  tool_aggregate_func: Callable[..., Any] = None,
                  event_handler_name: str = None,
                  event_driven: bool = True,
+                 skill_configs: Dict[str, Any] = None,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -185,6 +186,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                     feedback_tool_result=feedback_tool_result,
                                     wait_tool_result=wait_tool_result,
                                     sandbox=sandbox,
+                                    skill_configs=skill_configs,
                                     **kwargs)
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name
