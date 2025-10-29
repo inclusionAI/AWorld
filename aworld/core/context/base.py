@@ -411,3 +411,27 @@ class Context:
 
     async def update_task_after_run(self, task_response: 'TaskResponse'):
         pass
+
+    """
+    Agent Skills Support
+    """
+    async def active_skill(self, skill_name: str, namespace: str) -> str:
+        """
+        activate a skill help agent to perform a task
+        """
+        pass
+
+    async def offload_skill(self, skill_name: str, namespace: str) -> str:
+        """
+        offload a skill help agent to perform a task
+        """
+        pass
+
+    async def get_active_skills(self, namespace: str) -> list[str]:
+        """
+        get skills from context
+        """
+        pass
+
+    async def get_skill_list(self, namespace: str) -> list[str]:
+        pass

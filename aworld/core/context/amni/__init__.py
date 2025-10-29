@@ -396,11 +396,11 @@ class AmniContext(Context):
             skills = []
         return skills
     
-    async def get_skill_list(self, namespace: str) -> list[str]:
-        # from aworld.core.agent.base import AgentFactory
-        # agent = AgentFactory.agent_instance(namespace)
-        # result = await agent.sandbox.get_skill_list
-        pass
+    async def get_skill_list(self, namespace: str) -> Optional[Dict[str, Any]]:
+        from aworld.core.agent.base import AgentFactory
+        agent = AgentFactory.agent_instance(namespace)
+        return agent.skill_configs
+
 
 
 

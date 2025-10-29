@@ -22,12 +22,12 @@ class WebAgent(Agent):
         if self._finished:
             try:
                 # Get todo_info and actions_info, handle potential None values and exceptions
-                todo_info = await self.get_task_context(message).get_todo_info()
-                actions_info = await self.get_task_context(message).get_actions_info()
+                todo_info = await message.context.get_todo_info()
+                actions_info = await message.context.get_actions_info()
 
                 # Set to task_output_object
-                self.get_task_context(message).task_output_object.todo_info = todo_info
-                self.get_task_context(message).task_output_object.actions_info = actions_info
+                message.context.task_output_object.todo_info = todo_info
+                message.context.task_output_object.actions_info = actions_info
 
                 # Safely concatenate strings, handle None values
                 if todo_info is not None:
