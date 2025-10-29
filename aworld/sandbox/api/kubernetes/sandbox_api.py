@@ -23,6 +23,8 @@ class KubernetesSandboxApi(BaseSandboxApi):
         env_config: Any,
         mcp_servers: Optional[List[str]] = None,
         mcp_config: Optional[Any] = None,
+        black_tool_actions: Optional[Dict[str, List[str]]] = None,
+        skill_configs: Optional[Any] = None,
     ) -> SandboxK8sResponse:
         """
         Create a Kubernetes sandbox based on the reference implementation.
@@ -129,6 +131,7 @@ class KubernetesSandboxApi(BaseSandboxApi):
                 host=service_info.get("host"),
                 mcp_config=mcp_config,
                 env_type=SandboxEnvType.K8S,
+                skill_configs=skill_configs,
             )
 
         except Exception as e:

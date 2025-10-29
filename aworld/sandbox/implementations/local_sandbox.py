@@ -125,5 +125,15 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         except Exception as e:
             logger.warning(f"Failed to remove sandbox: {e}")
 
+    def get_skill_list(self) -> Optional[Any]:
+        """Get the skill configurations.
+        
+        Returns:
+            Optional[Any]: The skill configurations, or None if empty.
+        """
+        if self._skill_configs is None or not self._skill_configs:
+            return None
+        return self._skill_configs
+
     def __del__(self):
         super().__del__()

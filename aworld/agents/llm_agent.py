@@ -19,7 +19,7 @@ from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger, Color
-from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools
+from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryItem
 from aworld.memory.models import MemoryMessage
@@ -235,6 +235,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
                 self.sandbox.mcpservers.map_tool_list = tool_mapping
                 self.tools.extend(processed_tools)
+                self.tool_mapping = tool_mapping
             else:
                 self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
         except:
@@ -843,6 +844,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         from aworld.core.context.amni import AmniContext
         if not isinstance(context, AmniContext):
             return self.tools
-        # skills = context.get_active_skills(namespace=self.id())
+        #skills = context.get_active_skills(namespace=self.id())
         # TODO add skill filter
+        #await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools, tool_mapping=self.tool_mapping)
+
+
         return self.tools

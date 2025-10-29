@@ -39,7 +39,9 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
             metadata=metadata,
             timeout=timeout,
             mcp_servers=mcp_servers,
-            mcp_config=mcp_config
+            mcp_config=mcp_config,
+            black_tool_actions=kwargs.get('black_tool_actions'),
+            skill_configs=kwargs.get('skill_configs')
         )
 
         if sandbox_id:
@@ -55,6 +57,8 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
         self._env_type = SandboxEnvType.K8S
         self._mcp_servers = mcp_servers
         self._mcp_config = mcp_config
+        self._skill_configs = kwargs.get('skill_configs', {})
+        self._black_tool_actions = kwargs.get('black_tool_actions', {})
 
         # Ensure sandbox_id has a value in all cases
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -66,6 +70,8 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
                 env_config=None,
                 mcp_servers=mcp_servers,
                 mcp_config=mcp_config,
+                black_tool_actions=self._black_tool_actions,
+                skill_configs=self._skill_configs,
             )
 
             if not response:
@@ -85,12 +91,15 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
                     "env_type": getattr(response, 'env_type', None),
                 }
                 self._mcp_config = getattr(response, 'mcp_config', None)
+                self._skill_configs = getattr(response, 'skill_configs', None)
 
         # Initialize McpServers
         self._mcpservers = McpServers(
             mcp_servers,
             self._mcp_config,
-            sandbox=self
+            sandbox=self,
+            black_tool_actions=self._black_tool_actions,
+            skill_configs=self._skill_configs
         )
 
     async def remove(self) -> None:
@@ -115,6 +124,16 @@ class KubernetesSandbox(BaseSandbox, KubernetesSandboxApi):
             await self.remove()
         except Exception as e:
             logger.warning(f"Failed to remove sandbox: {e}")
+
+    def get_skill_list(self) -> Optional[Any]:
+        """Get the skill configurations.
+        
+        Returns:
+            Optional[Any]: The skill configurations, or None if empty.
+        """
+        if self._skill_configs is None or not self._skill_configs:
+            return None
+        return self._skill_configs
 
     def __del__(self):
         super().__del__()

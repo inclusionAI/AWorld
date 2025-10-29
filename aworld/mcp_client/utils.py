@@ -258,6 +258,111 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
     return openai_tools
 
 
+async def skill_translate_tools(
+        skills: List[str] = None,
+        skill_configs: Dict[str, Any] = None,
+        tools: List[Dict[str, Any]] = None,
+        tool_mapping: Dict[str, str] = {}
+) -> List[Dict[str, Any]]:
+    if not tools:
+        return tools or []
+    
+    if not skills or not skill_configs:
+        return tools
+    
+    # Collect all tool filters from skill configs
+    tool_filter = {}  # {server_name: set(tool_names)} or {server_name: None} means all tools
+    
+    for skill_id in skills:
+        if skill_id not in skill_configs:
+            logger.warning(f"Skill '{skill_id}' not found in skill_configs")
+            continue
+        
+        skill_config = skill_configs[skill_id]
+        tool_list = skill_config.get("tool_list", {})
+        
+        for server_name, tool_names in tool_list.items():
+            # Normalize tool_names to list (None or [] means all)
+            if not tool_names:
+                # If any skill requests ALL tools for this server, override to None
+                tool_filter[server_name] = None
+                continue
+            
+            # Merge specific tool names across skills
+            if server_name not in tool_filter or tool_filter[server_name] is None:
+                # Initialize with empty set if not already set to ALL (None)
+                tool_filter[server_name] = set()
+            
+            if isinstance(tool_names, list):
+                tool_filter[server_name].update(tool_names)
+            else:
+                # single string safety
+                tool_filter[server_name].add(str(tool_names))
+
+    # Selected servers from skills
+    selected_servers = set(tool_filter.keys())
+
+    # Build a set of all known MCP servers from mapping (values of mapping)
+    known_mcp_servers = set(tool_mapping.values()) if tool_mapping else set()
+
+    # Filter tools based on tool_filter and mapping rules
+    filtered_tools = []
+    tool_seen = set()  # Track unique tools to avoid duplicates
+
+    for tool in tools:
+        if not isinstance(tool, dict) or "function" not in tool:
+            filtered_tools.append(tool)  # non-conforming, keep
+            continue
+
+        function_info = tool["function"]
+        if not isinstance(function_info, dict) or "name" not in function_info:
+            filtered_tools.append(tool)
+            continue
+
+        tool_name = function_info["name"]
+
+        # Skip duplicates
+        if tool_name in tool_seen:
+            continue
+
+        # Resolve server and specific tool name (prefer mapping)
+        server_name = None
+        specific_tool_name = tool_name
+
+        if tool_mapping and specific_tool_name in tool_mapping:
+            server_name = tool_mapping[specific_tool_name]
+
+        # If this tool has no resolvable server (non-MCP or custom), keep it
+        if not server_name:
+            filtered_tools.append(tool)
+            tool_seen.add(tool_name)
+            continue
+
+        # If tool belongs to a known MCP server but not in selected skills, drop it
+        if server_name in known_mcp_servers and server_name not in selected_servers:
+            continue
+
+        # If the server is selected, apply per-server tool filtering
+        if server_name in tool_filter:
+            allowed = tool_filter[server_name]
+            if allowed is None:
+                # all tools from this server are allowed
+                filtered_tools.append(tool)
+                tool_seen.add(tool_name)
+            else:
+                if specific_tool_name in allowed:
+                    filtered_tools.append(tool)
+                    tool_seen.add(tool_name)
+            # else drop
+            continue
+
+        # If server is not in selected (and also not in known_mcp_servers), keep as non-target tool
+        filtered_tools.append(tool)
+        tool_seen.add(tool_name)
+
+    logger.info(f"Filtered {len(filtered_tools)} tools from {len(tools)} based on skills: {skills}")
+    return filtered_tools
+
 async def mcp_tool_desc_transform_v2(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
         server_instances: Dict[str, Any] = None,
