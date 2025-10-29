@@ -840,7 +840,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             headers['parent_group_id'] = input_message.group_id
         return headers
 
-    def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
+    async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
         if not isinstance(context, AmniContext):
             return self.tools
