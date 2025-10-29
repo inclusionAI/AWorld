@@ -267,7 +267,29 @@ async def skill_translate_tools(
     if not tools:
         return tools or []
     
-    if not skills or not skill_configs:
+    # If skills is empty, exclude all tools in tool_mapping (only keep non-MCP tools)
+    if not skills:
+        filtered_tools = []
+        for tool in tools:
+            if not isinstance(tool, dict) or "function" not in tool:
+                filtered_tools.append(tool)  # non-conforming, keep
+                continue
+            
+            function_info = tool["function"]
+            if not isinstance(function_info, dict) or "name" not in function_info:
+                filtered_tools.append(tool)
+                continue
+            
+            tool_name = function_info["name"]
+            
+            # Only keep tools that are NOT in tool_mapping
+            if not tool_mapping or tool_name not in tool_mapping:
+                filtered_tools.append(tool)
+        
+        logger.info(f"Skills is empty, excluded {len(tools) - len(filtered_tools)} MCP tools, kept {len(filtered_tools)} non-MCP tools")
+        return filtered_tools
+    
+    if not skill_configs:
         return tools
     
     # Collect all tool filters from skill configs
