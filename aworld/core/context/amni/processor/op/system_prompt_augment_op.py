@@ -142,7 +142,7 @@ class SystemPromptAugmentOp(BaseOp):
         # If length is not enough, no need to rerank, directly append
         total_length = sum(len(item) for item in items)
         if total_length <= 4000:
-            return await neuron.format(context=context, namespace=namespace)
+            return await neuron.format(context=context, items=items, namespace=namespace)
 
         # Only judge the first part of text
         tmp_items = [item[:1000] for item in items]

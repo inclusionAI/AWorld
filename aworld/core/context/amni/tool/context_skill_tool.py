@@ -12,7 +12,7 @@ from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
 from aworld.tools.utils import build_observation
 
-CONTEXT = "context"
+CONTEXT_SKILL = "SKILL"
 
 class ContextExecuteAction(ToolAction):
     """Definition of Context visit and setting supported action."""
@@ -39,13 +39,13 @@ class ContextExecuteAction(ToolAction):
         desc="offload a skill help agent to perform a task")
 
 
-@ToolFactory.register(name=CONTEXT,
-                      desc=CONTEXT,
+@ToolFactory.register(name=CONTEXT_SKILL,
+                      desc=CONTEXT_SKILL,
                       supported_action=ContextExecuteAction)
-class ContextTool(AsyncTool):
+class ContextSkillTool(AsyncTool):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
         """Init document tool."""
-        super(ContextTool, self).__init__(conf, **kwargs)
+        super(ContextSkillTool, self).__init__(conf, **kwargs)
         self.cur_observation = None
         self.content = None
         self.keyframes = []
@@ -59,7 +59,7 @@ class ContextTool(AsyncTool):
         await self.close()
         self.step_finished = True
         return build_observation(observer=self.name(),
-                                 ability=ContextExecuteAction.CONTEXT_CONFIRM.value.name), {}
+                                 ability=ContextExecuteAction.ACTIVE_SKILL.value.name), {}
 
     def init(self) -> None:
         self.initialized = True

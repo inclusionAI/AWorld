@@ -687,7 +687,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     messages=messages,
                     model=self.model_name,
                     temperature=float_temperature,
-                    tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
+                    tools=await self._filter_tools(message.context),
                     stream=True,
                     **kwargs
                 )
@@ -712,7 +712,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     messages=messages,
                     model=self.model_name,
                     temperature=float_temperature,
-                    tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
+                    tools=await self._filter_tools(message.context),
                     stream=kwargs.get("stream", False),
                     **kwargs
                 )
@@ -842,11 +842,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
-        if not isinstance(context, AmniContext):
+        if not isinstance(context, AmniContext) or not self.skill_configs:
+            logger.info(f"llm_agent don't need _filter_tools .. agent#{type(self)}#{self.id()}")
             return self.tools
-        #skills = context.get_active_skills(namespace=self.id())
-        # TODO add skill filter
-        #await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools, tool_mapping=self.tool_mapping)
+        # get current active skills
+        skills = await context.get_active_skills(namespace=self.id())
 
-
-        return self.tools
+        return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools, tool_mapping=self.tool_mapping)

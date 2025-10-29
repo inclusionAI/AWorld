@@ -249,7 +249,7 @@ class AmniConfigFactory:
 
 
     @staticmethod
-    def create(level: Optional[AmniConfigLevel] = None) -> AmniContextConfig:
+    def create(level: Optional[AmniConfigLevel] = None, neuron_names: Optional[list[str]] = None) -> AmniContextConfig:
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             config = get_default_config()
             config.agent_config = AgentContextConfig()
@@ -258,7 +258,7 @@ class AmniConfigFactory:
             config = get_default_config()
             config.agent_config = AgentContextConfig(
                 enable_system_prompt_augment=True,
-                neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
+                neuron_names= neuron_names or ["basic", "task", "work_dir", "todo", "action_info"],
                 history_rounds= 20,
                 enable_summary=True,
                 summary_rounds= 30,

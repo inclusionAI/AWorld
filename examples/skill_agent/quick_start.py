@@ -1,0 +1,78 @@
+import asyncio
+import traceback
+from datetime import datetime
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from aworld.config import TaskConfig
+from aworld.core.context.amni import TaskInput, ApplicationContext
+from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel, init_middlewares
+from aworld.core.task import Task
+from aworld.runner import Runners
+from examples.skill_agent.agents.swarm import build_swarm
+
+
+async def build_task(task_content: str, context_config, session_id: str = None, task_id: str = None) -> Task:
+    if not session_id:
+        session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    if not task_id:
+        task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    # 1. build task input
+    task_input = TaskInput(
+        user_id=f"user",
+        session_id=session_id,
+        task_id=task_id,
+        task_content=task_content,
+        origin_user_input=task_content
+    )
+
+    # 2. build context
+    async def build_context(_task_input: TaskInput) -> ApplicationContext:
+        """Important Config"""
+        return await ApplicationContext.from_input(_task_input, context_config=context_config)
+
+    context = await build_context(task_input)
+
+    # build swarm
+    swarm = build_swarm()
+
+    await context.build_agents_state(swarm.topology)
+
+    # 3. build task with context
+    return Task(
+        id=context.task_id,
+        user_id=context.user_id,
+        session_id=context.session_id,
+        input=context.task_input,
+        endless_threshold=5,
+        swarm=swarm,
+        context=context,
+        conf=TaskConfig(
+            stream=False,
+            exit_on_failure=True
+        ),
+        timeout=60 * 60
+    )
+
+async def run(user_input: str):
+    # 1. init middlewares
+    load_dotenv()
+    init_middlewares()
+
+    # 2. build context config
+    context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR, ["basic", "task", "work_dir", "todo", "action_info", "skills"])
+
+    # 3. build task
+    task = await build_task(user_input, context_config)
+
+    # 4. run task
+    try:
+        result = await Runners.run_task(task=task)
+        print(result[task.id].answer)
+    except Exception as err:
+        print(f"err is {err}, trace is {traceback.format_exc()}")
+
+if __name__ == '__main__':
+    asyncio.run(run(user_input="帮我在携程上面找到2025年12月份上海往返札幌的最便宜的机票，要求周五去，周日晚上（17:00后）或者周一回的，12月份的每个符合要求的日期都需要查询，并找到最便宜的符合要求的航班。"))
