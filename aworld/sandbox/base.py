@@ -134,6 +134,15 @@ class Sandbox(SandboxSetup):
         pass
 
     @abc.abstractmethod
+    def get_skill_list(self) -> Optional[Any]:
+        """Get the skill configurations.
+        
+        Returns:
+            Optional[Any]: The skill configurations, or None if empty.
+        """
+        pass
+
+    @abc.abstractmethod
     async def cleanup(self) -> bool:
         """Clean up the sandbox resources.
         

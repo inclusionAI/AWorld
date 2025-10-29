@@ -161,6 +161,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
+        tool_mapping= {}
         self.context = None
         self.state = AgentStatus.START
         self._finished = True
@@ -284,6 +285,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.handoffs = options.get("agent_names", self.handoffs)
         self.mcp_servers = options.get("mcp_servers", self.mcp_servers)
         self.tools = []
+        self.tool_mapping = {}
         self.trajectory = []
         self._finished = True
 
