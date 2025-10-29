@@ -251,7 +251,9 @@ class AmniConfigFactory:
     @staticmethod
     def create(level: Optional[AmniConfigLevel] = None) -> AmniContextConfig:
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
-            return get_default_config()
+            config = get_default_config()
+            config.agent_config = AgentContextConfig()
+            return config
         elif level == AmniConfigLevel.NAVIGATOR:
             config = get_default_config()
             config.agent_config = AgentContextConfig(
