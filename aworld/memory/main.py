@@ -595,8 +595,9 @@ class AworldMemory(Memory):
         # 检查是否有配置的 summary_prompts
         if agent_memory_config.summary_prompts and len(agent_memory_config.summary_prompts) > 0:
             # 轮询 summary_prompts 数组，为每种类型生成摘要
+            all_summary_contents = []
             for summary_prompt_config in agent_memory_config.summary_prompts:
-                await self._generate_typed_summary(
+                summary_content = await self._generate_typed_summary(
                     user_task_items, 
                     existed_summary_items, 
                     to_be_summary_items, 
@@ -605,6 +606,39 @@ class AworldMemory(Memory):
                     memory_item, 
                     trigger_reason
                 )
+                if summary_content:
+                    all_summary_contents.append(summary_content)
+            
+            # 拼接所有摘要内容
+            if all_summary_contents:
+                combined_summary = "\n\n".join(all_summary_contents)
+                logger.debug(f"🧠 [MEMORY:short-term] [Summary:Combined] combined_summary: {combined_summary}")
+
+                summary_metadata = MessageMetadata(
+                    agent_id=memory_item.agent_id,
+                    agent_name=memory_item.agent_name,
+                    session_id=memory_item.session_id,
+                    task_id=memory_item.task_id,
+                    user_id=memory_item.user_id
+                )
+
+                # 创建组合摘要记忆
+                summary_memory = MemorySummary(
+                    item_ids=[item.id for item in to_be_summary_items],
+                    summary=combined_summary,
+                    metadata=summary_metadata,
+                    created_at=to_be_summary_items[0].created_at,
+                )
+
+                # 添加到记忆存储
+                self.memory_store.add(summary_memory)
+
+                logger.info(f"🧠 [MEMORY:short-term] [Summary:Combined] [{trigger_reason}]Creating combined summary memory finished: "
+                           f"content is {combined_summary[:100]}")
+
+                # 记录summary的上下文长度信息
+                from aworld.core.context.amni.utils.context_log import PromptLogger
+                PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, f"{trigger_reason}:combined", agent_memory_config)
         else:
             # 使用默认的摘要生成逻辑
             summary_content = await self._gen_multi_rounds_summary(user_task_items, existed_summary_items,
@@ -645,7 +679,7 @@ class AworldMemory(Memory):
                                     summary_prompt_config,
                                     memory_item: MemoryItem,
                                     trigger_reason: str):
-        """为特定类型生成摘要"""
+        """为特定类型生成摘要，返回抽取的内容"""
         try:
             # 生成特定类型的摘要
             summary_content = await self._gen_multi_rounds_summary(
@@ -657,37 +691,15 @@ class AworldMemory(Memory):
             )
             
             logger.debug(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] summary_content: {summary_content}")
-
-            summary_metadata = MessageMetadata(
-                agent_id=memory_item.agent_id,
-                agent_name=memory_item.agent_name,
-                session_id=memory_item.session_id,
-                task_id=memory_item.task_id,
-                user_id=memory_item.user_id
-            )
-            
-            # 创建特定类型的摘要记忆
-            summary_memory = MemorySummary(
-                item_ids=[item.id for item in to_be_summary_items],
-                summary=summary_content,
-                metadata=summary_metadata,
-                # created_at=to_be_summary_items[0].created_at,
-                memory_type=summary_prompt_config.memory_type  # 添加记忆类型标识
-            )
-
-            # 添加到记忆存储
-            self.memory_store.add(summary_memory)
-
-            logger.info(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] [{trigger_reason}]Creating typed summary memory finished: "
+            logger.info(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] [{trigger_reason}]Generated typed summary: "
                         f"content is {summary_content[:100]}")
             
-            # 记录summary的上下文长度信息
-            from aworld.core.context.amni.utils.context_log import PromptLogger
-            PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, f"{trigger_reason}:{summary_prompt_config.memory_type}", agent_memory_config)
+            return summary_content
                         
         except Exception as e:
             logger.error(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] Error generating typed summary: {str(e)}")
             logger.error(traceback.format_exc())
+            return None
 
     def _check_need_summary(self,
                             to_be_summary_items: list[MemoryItem],
@@ -710,7 +722,7 @@ class AworldMemory(Memory):
                                         existed_summary_items: list[MemorySummary],
                                         to_be_summary_items: list[MemoryItem],
                                         agent_memory_config: AgentMemoryConfig,
-                                        prompt: SummaryPromptConfig) -> str:
+                                        prompt: SummaryPromptConfig = None) -> str:
 
         if len(to_be_summary_items) == 0:
             return ""

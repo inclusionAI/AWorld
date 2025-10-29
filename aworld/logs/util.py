@@ -135,7 +135,10 @@ class AWorldLogger:
                         level=console_level)
 
         log_file = f'{os.getcwd()}/logs/{tag}-{{time:YYYY-MM-DD}}.log'
+        error_log_file = f'{os.getcwd()}/logs/AWorld_error.log'
         handler_key = f'{name}_{tag}'
+        error_handler_key = f'{name}_{tag}_error'
+        
         if handler_key not in AWorldLogger._added_handlers:
             base_logger.add(log_file,
                             format=file_formatter,
@@ -147,6 +150,20 @@ class AWorldLogger:
                             backtrace=True,
                             compression='zip')
             AWorldLogger._added_handlers.add(handler_key)
+        
+        # 添加错误日志处理器，专门记录WARNING和ERROR级别的日志
+        if error_handler_key not in AWorldLogger._added_handlers:
+            base_logger.add(error_log_file,
+                            format=file_formatter,
+                            filter=lambda record: (record['extra'].get('name') == tag and 
+                                                 record['level'].name in ['WARNING', 'ERROR']),
+                            level='WARNING',
+                            rotation='32 MB',
+                            retention='7 days',
+                            enqueue=True,
+                            backtrace=True,
+                            compression='zip')
+            AWorldLogger._added_handlers.add(error_handler_key)
 
         self._logger = base_logger.bind(name=tag)
 
@@ -157,6 +174,9 @@ class AWorldLogger:
         for handler in handlers:
             self._logger.remove(handler._id)
         self._logger.remove()
+        # 清除错误日志处理器的记录，确保重新初始化时能正确添加
+        error_handler_key = f'{self.name}_{self.tag}_error'
+        AWorldLogger._added_handlers.discard(error_handler_key)
         self.__init__(tag=self.tag, name=self.name, console_level=level, file_level=level)
 
     def reset_format(self, format_str: str):
@@ -165,6 +185,9 @@ class AWorldLogger:
         handlers = _get_handlers(self._logger)
         for handler in handlers:
             self._logger.remove(handler._id)
+        # 清除错误日志处理器的记录，确保重新初始化时能正确添加
+        error_handler_key = f'{self.name}_{self.tag}_error'
+        AWorldLogger._added_handlers.discard(error_handler_key)
         self.__init__(tag=self.tag, name=self.name,
                       console_level=self.console_level, file_level=self.file_level,
                       formatter=format_str)
