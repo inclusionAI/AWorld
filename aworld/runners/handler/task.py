@@ -10,7 +10,7 @@ from aworld.core.tool.base import Tool, AsyncTool
 
 from aworld.core.event.base import Message, Constants, TopicType
 from aworld.core.task import TaskResponse
-from aworld.logs.util import logger
+from aworld.logs.util import logger, trajectory_logger
 from aworld.output import Output
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
@@ -87,6 +87,8 @@ class DefaultTaskHandler(TaskHandler):
                 yield event
 
             status = "running" if message.headers.get("step_interrupt", False) else "finished"
+            if status == "finished":
+                self._log_trajectory(message)
             self.runner._task_response = TaskResponse(answer=message.payload,
                                                       success=True,
                                                       context=message.context,
@@ -137,3 +139,6 @@ class DefaultTaskHandler(TaskHandler):
                                                       status='cancelled')
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers)
+
+    def _log_trajectory(self, message: Message):
+        trajectory_logger.info(f"task_id:{message.context.get_task().id}, trajectorys:{message.context._agent_token_id_traj}")

@@ -201,9 +201,13 @@ class AWorldLogger:
 
 logger = AWorldLogger(tag='AWorld', name='AWorld')
 trace_logger = AWorldLogger(tag='Trace', name='AWorld')
+trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
+
+
 
 monkey_logger(logger)
 monkey_logger(trace_logger)
+monkey_logger(trajectory_logger)
 
 # log examples:
 # the same as debug, warn, error, fatal
