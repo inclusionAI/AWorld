@@ -13,26 +13,26 @@ orchestrator_agent_config = AgentConfig(
     use_vision=False,
     skill_configs={
         "browser": {
-            "name": "浏览器",
-            "desc": "浏览器",
-            "usage": "使用浏览器",
+            "name": "Browser",
+            "desc": "Web browser automation and interaction capability",
+            "usage": "Automate web browsing tasks, navigate websites, interact with web elements, and extract information from web pages",
             "tool_list": {
                 "ms-playwright": []
             }
         },
         "planning": {
-            "name": "规划能力",
-            "desc": "使用todo监控任务执行进度",
-            "usage": "使用todo监控任务执行进度",
+            "name": "Planning",
+            "desc": "Task planning and progress tracking capability",
+            "usage": "Create, manage and track todos to monitor task execution progress and organize work efficiently",
             "active": True,
             "tool_list": {
                 "amnicontext-server": ["add_todo", "get_todo"]
             }
         },
         "scratchpad": {
-            "name": "文档编辑",
-            "desc": "文档编辑",
-            "usage": "使用文档编辑能力，记录任务执行过程中的关键信息",
+            "name": "Scratchpad",
+            "desc": "Knowledge management and documentation capability",
+            "usage": "Create, update, and manage knowledge documents to record key information, findings, and insights during task execution",
             "tool_list": {
                 "amnicontext-server": ["add_knowledge", "get_knowledge", "grep_knowledge", "list_knowledge_info",
                                        "update_knowledge"]
@@ -40,5 +40,3 @@ orchestrator_agent_config = AgentConfig(
         }
     }
 )
-
-orchestrator_mcp_servers = ["amnicontext-server", "ms-playwright"]
