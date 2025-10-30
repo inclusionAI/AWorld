@@ -1223,7 +1223,7 @@ class ApplicationContext(AmniContext):
                         f"  <knowledge_chunk>\n"
                         f"    <chunk_id>{_chunk.chunk_id}</chunk_id>\n"
                         f"    <chunk_index>{_chunk.chunk_metadata.chunk_index}</chunk_index>\n"
-                        f"    <chunk_content>{truncate_content(_chunk.content, 300)}</chunk_content>\n"
+                        f"    <chunk_content>{truncate_content(_chunk.content, 1000)}</chunk_content>\n"
                         f"  </knowledge_chunk>\n"
                     )
 

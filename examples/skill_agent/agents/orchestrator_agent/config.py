@@ -41,4 +41,4 @@ orchestrator_agent_config = AgentConfig(
     }
 )
 
-orchestrator_mcp_servers = ["amnicontext-server"]
+orchestrator_mcp_servers = ["amnicontext-server", "ms-playwright"]
