@@ -72,12 +72,15 @@ class OpenAIProvider(LLMProviderBase):
         if not base_url:
             base_url = os.getenv("OPENAI_ENDPOINT", "https://api.openai.com/v1")
 
+        # import httpx
+        # long_timeout_async_client = httpx.AsyncClient(timeout=7200)
         return AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=self.kwargs.get("timeout", 600),
+            timeout=self.kwargs.get("timeout", 7200),
             max_retries=self.kwargs.get("max_retries", 3),
             http_client=self.kwargs.get("http_client", None),
+            # http_client=long_timeout_async_client,
         )
 
     @classmethod

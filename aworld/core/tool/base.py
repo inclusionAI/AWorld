@@ -4,6 +4,7 @@
 import abc
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
+import asyncio
 
 from pydantic import BaseModel
 
@@ -292,6 +293,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 action: List[ActionModel],
                                 input_message: Message,
                                 **kwargs):
+        # logger.warning(f"tool {self.name()} sleep 60s start")
+        # await asyncio.sleep(60)
+        # logger.warning(f"tool {self.name()} sleep 60s finish")
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:

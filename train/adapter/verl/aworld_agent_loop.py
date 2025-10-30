@@ -42,13 +42,27 @@ class AworldAgentLoop(AgentLoopBase):
     #     messages = list(kwargs["raw_prompt"])
 
     # release 0.5.0
-    async def run(self, messages: list, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
+    # async def run(self, messages: list, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
+    async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
+        messages = list(kwargs["raw_prompt"])
+        logger.warning(f"######## messages: {messages} ########\n")
+
         agent = await self.build_agents()
 
         self.agent = agent
+        import time
+        start_time = time.time()
+        logger.warning(f"######## trajectory start ########\n")
 
         result = await self.run_agents(messages[0], agent)
         res = result.trajectory
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        logger.warning(f"######## trajectory finish, time costs {elapsed_time:.2f} s ########\n")
+
+        logger.warning(f"######## res[-1]['exp_data']: {res[-1]['exp_data']} ########\n")
+        logger.warning(f"######## res[-1]['exp_data']['actions']: {res[-1]['exp_data']['actions']} ########\n")
+        logger.warning(f"######## res[-1]['exp_data']['messages']: {res[-1]['exp_data']['messages']} ########\n")
 
         # build agent loop output
         output = await self.convert_agent_output(trajectory=res)
@@ -158,7 +172,7 @@ class AworldAgentLoop(AgentLoopBase):
                 for i in range(len(messages) - 1, -1, -1):
                     if messages[i].get("role") != "tool":
                         last_non_tool_index = i
-                        break
+                        break 
                 if last_non_tool_index != -1:
                     messages = messages[:last_non_tool_index + 1]
                 else:
@@ -181,6 +195,8 @@ class AworldAgentLoop(AgentLoopBase):
                     })
                 last_assistant_message["tool_calls"] = tool_calls
                 messages.append(last_assistant_message)
+                logger.info(f"last_assistant_message: {last_assistant_message}")
+                logger.info(f"messages postprocessed: {messages}")
 
         output = await self.to_agent_loop_output(messages=messages)
         return output

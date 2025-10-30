@@ -60,6 +60,27 @@ class SequentialSampler(Sampler):
         raise TypeError("Length is not defined for SequentialSampler")
 
 
+
+class FixedSampler(Sampler):
+    """Samples elements from a specified index.
+    """
+
+    def __init__(
+            self,
+            ids: list[int]
+    ) -> None:
+        self.ids = ids
+
+    def set_length(self, length: int) -> None:
+        super().set_length(len(self.ids))
+
+    def __iter__(self) -> Iterator[int]:
+        return iter([_ - 1 for _ in self.ids])
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+
 class RandomSampler(Sampler):
     """Samples elements randomly without replacement.
 
