@@ -84,12 +84,12 @@ GAIA_MCP_CONFIG = {
             "type": "streamable-http",
             "url": "http://mcp.aworldagents.com/vpc/mcp",
             "headers": {
-              "Authorization": "",
+                "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHAiOiJhd29ybGRjb3JlLWFnZW50IiwidmVyc2lvbiI6MSwidGltZSI6MTc1NjM0ODcyMi45MTYyODd9.zM_l1VghOHaV6lC_0fYmZ35bLnH8uxIaA8iGeyuwQWY",
               # "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
               
                 "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
                 # "MCP_SERVERS": "e2b-code-server",
-                "IMAGE_ENV": "{\"E2B_API_KEY\":\"\"}", # 在客户端指定tool的环境变量值，注意JSON String结构
+                "IMAGE_ENV": "{\"E2B_API_KEY\":\"e2b_1a9ada478b1c4a7d53837b9595b8e44e45a6b37a\"}", # 在客户端指定tool的环境变量值，注意JSON String结构
             },
             "timeout": 600,
             "sse_read_timeout": 600,
@@ -147,3 +147,47 @@ class GaiaAgentLoop(AworldAgentLoop):
             mcp_config=GAIA_MCP_CONFIG,
             mcp_servers=list(server_name for server_name in GAIA_MCP_CONFIG.get("mcpServers", {}).keys()),
         )
+
+async def build_agents() -> Union[Agent, Swarm]:
+    # gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
+
+    MemoryFactory.init(
+        config=MemoryConfig(
+            provider="aworld",
+            llm_config=MemoryLLMConfig(
+                provider="openai",
+                model_name="claude-sonnet-4-20250514",
+                api_key="sk-5d0c421b87724cdd883cfa8e883998da",
+                base_url="https://matrixllm.alipay.com/v1"
+            )
+        )
+    )
+
+    conf=AgentConfig(
+        llm_config=ConfigDict(
+            llm_model_name="claude-sonnet-4-20250514",
+            llm_base_url="https://matrixllm.alipay.com/v1",
+            llm_api_key="sk-5d0c421b87724cdd883cfa8e883998da",
+            llm_provider="verl",
+            llm_temperature=1.0,
+            top_p=1.0,
+            top_k=80,
+            timeout=7200,
+            params={
+                # "client": self.server_manager,
+                # "tokenizer": self.tokenizer,
+                "request_id": uuid.uuid4().hex,
+                "tool_parser": "hermes"
+            }
+        ),
+        # memory_config=AgentMemoryConfig(history_rounds=100, enable_summary=False, summary_rounds=15, summary_context_length=32000),
+    )
+
+    return Agent(
+        conf=conf,
+        name="gaia_super_agent",
+        system_prompt=GAIA_SYSTEM_PROMPT,
+        # MCP tool configuration for the agent
+        mcp_config=GAIA_MCP_CONFIG,
+        mcp_servers=list(server_name for server_name in GAIA_MCP_CONFIG.get("mcpServers", {}).keys()),
+    )
