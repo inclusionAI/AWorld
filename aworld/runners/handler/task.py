@@ -2,7 +2,6 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import time
-import json
 
 from typing import AsyncGenerator, TYPE_CHECKING
 
@@ -17,6 +16,7 @@ from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint
+from aworld.utils.serialized_util import to_serializable
 
 if TYPE_CHECKING:
     from aworld.runners.event_runner import TaskEventRunner
@@ -143,8 +143,5 @@ class DefaultTaskHandler(TaskHandler):
 
     def _log_trajectory(self, message: Message):
         """Log the trajectory of the agent."""
-        try:
-            trajectory_json = json.dumps(message.context._agent_token_id_traj, default=str)
-        except (TypeError, ValueError):
-            trajectory_json = str(message.context._agent_token_id_traj)
+        trajectory_json = to_serializable(message.context._agent_token_id_traj)
         trajectory_logger.info(f"task_id:{message.context.get_task().id}, trajectorys:{trajectory_json}")
