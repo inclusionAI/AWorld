@@ -716,7 +716,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     **kwargs
                 )
 
-            logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
+            logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
             if llm_response:
                 usage_process(llm_response.usage, message.context)
         except Exception as e:
@@ -799,7 +799,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         )
         try:
             future = await send_message_with_future(memory_msg)
-            results = await future.wait(timeout=10)
+            results = await future.wait(timeout=300)
             if not results:
                 logger.warning(f"Memory write task failed: {memory_msg}")
         except Exception as e:

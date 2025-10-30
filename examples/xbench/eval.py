@@ -131,11 +131,11 @@ async def evaluate():
                 }
             ],
             eval_dataset_id_or_file_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'benchmark', 'DeepSearch_decrypted.csv'),
-            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[3])),
+            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[4])),
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=3,
+            parallel_num=1,
             skip_passed_cases=True,
         )).run()
 
