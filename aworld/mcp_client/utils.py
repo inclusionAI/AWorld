@@ -448,6 +448,7 @@ async def process_mcp_tools(
 
     tool_mapping: Dict[str, str] = {}
     processed_tools: List[Dict[str, Any]] = []
+    seen_simple_names: set[str] = set()
 
     for tool in mcp_tools:
         processed_tool = tool.copy()
@@ -456,8 +457,15 @@ async def process_mcp_tools(
         original_name = processed_tool["function"]["name"]
         if "__" in original_name:
             server_name, simple_name = original_name.split("__", 1)
+            # only change: skip if we've already seen this simple name
+            if simple_name in seen_simple_names:
+                continue
+            seen_simple_names.add(simple_name)
+
             processed_tool["function"]["name"] = simple_name
-            tool_mapping[simple_name] = server_name
+            # keep first mapping only
+            if simple_name not in tool_mapping:
+                tool_mapping[simple_name] = server_name
 
         processed_tools.append(processed_tool)
 
