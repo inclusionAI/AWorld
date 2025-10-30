@@ -256,7 +256,7 @@ class PromptLogger:
             
             amni_prompt_logger.info(_generate_separator())
             if messages and len(messages) > 0 and messages[-1].get('role') != 'assistant':
-                amni_digest_logger.info(f"context_length|{agent.id()}|{context.task_id}|{context.user_id}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}")
+                amni_digest_logger.info(f"context_length|{agent.id()}|{context.task_id}|{context.user_id}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}|{len(messages)}")
         except Exception as e:
             # If any error occurs in context length logging, log warning and continue
             try:
