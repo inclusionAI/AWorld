@@ -72,6 +72,7 @@ class TaskRunner(Runner):
         self._exception = None
         self.start_time = time.time()
         self.step_agent_counter = {}
+        self.run_conf = None  # Will be set if needed for streaming queue recreation
 
         if task.streaming_mode:
             agents = task.swarm.agents
@@ -80,6 +81,14 @@ class TaskRunner(Runner):
                 raise ValueError("Cannot find `agent` or `swarm` in task.")
             for agent_id, agent in agents.items():
                 agent.conf.llm_config.llm_stream_call = True
+            
+            # In distributed scenarios, recreate streaming queue provider if needed
+            # This handles cases where Task was serialized and queue_provider was lost
+            if not task.streaming_queue_provider and task.streaming_queue_id:
+                self._init_streaming_queue_provider()
+
+        if task.task_status_store:
+            self.task_status_store = task.task_status_store
 
     async def pre_run(self):
         task = self.task
@@ -159,6 +168,41 @@ class TaskRunner(Runner):
                     load_module_by_path(os.path.basename(val), val)
         except:
             logger.warning(f"{os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')} tools load fail, can't use them!!")
+
+    def _init_streaming_queue_provider(self):
+        """Initialize streaming queue provider for distributed scenarios.
+        
+        This method is called when Task was serialized/deserialized and the
+        streaming_queue_provider object was lost. It recreates the provider
+        based on streaming_queue_config stored in the Task.
+        """
+        from aworld.core.streaming_queue import (
+            build_streaming_queue,
+            StreamingQueueConfig
+        )
+        
+        task = self.task
+        logger.info(f"Recreating streaming queue provider for task {task.id}, queue_id: {task.streaming_queue_id}")
+        
+        # Use the streaming_queue_config that was serialized with the Task
+        # This ensures we connect to the correct Redis server with correct credentials
+        if not task.streaming_queue_config:
+            logger.error(f"No streaming_queue_config found in task, cannot recreate queue provider")
+            task.streaming_queue_provider = None
+            return
+        
+        try:
+            # Build queue with the same config used in API server
+            config = StreamingQueueConfig(**task.streaming_queue_config)
+            task.streaming_queue_provider = build_streaming_queue(config)
+            logger.info(f"Successfully recreated streaming queue provider: {task.streaming_queue_id}")
+            logger.debug(f"Queue config: backend={config.backend}, queue_id={config.queue_id}")
+        except Exception as e:
+            logger.error(f"Failed to recreate streaming queue provider: {e}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
+            # Continue execution, but streaming will not work
+            task.streaming_queue_provider = None
 
     async def post_run(self):
         pass

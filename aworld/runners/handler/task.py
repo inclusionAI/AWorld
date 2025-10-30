@@ -134,4 +134,4 @@ class DefaultTaskHandler(TaskHandler):
                                                       msg=f'cancellation message received: {task_item.msg}',
                                                       status='cancelled')
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers)
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)

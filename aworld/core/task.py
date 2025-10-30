@@ -54,14 +54,23 @@ class Task:
     max_retry_count: int = 0
     timeout: int = field(default=0)
     streaming_mode: str = field(default=None)
-    streaming_queue: asyncio.Queue = None
-    streaming_config: Dict[str, Any] = field(default_factory=dict)
+    streaming_queue: asyncio.Queue = None  # Deprecated: use streaming_queue_provider instead
+    streaming_queue_provider: Optional[Any] = field(default=None)  # StreamingQueueProvider instance
+    streaming_queue_id: Optional[str] = field(default=None)  # Queue identifier for distributed scenarios
+    streaming_queue_config: Optional[Dict[str, Any]] = field(default=None)  # Queue config for reconstruction in distributed scenarios
+    streaming_config: Dict[str, Any] = field(default_factory=dict)  # Custom streaming config (for streaming_mode='custom')
+    # task status store for external task control (cancellation/interruption)
+    task_status_store: Optional[Any] = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.
 
         Returns:
             Dict[str, Any]: Serialized task dictionary without parent_task; includes parent_task_id instead.
+            
+        Note:
+            - streaming_queue and streaming_queue_provider are excluded (not serializable)
+            - streaming_mode, streaming_queue_id, streaming_config are included for distributed scenarios
         """
         return {
             "id": self.id,
@@ -87,6 +96,13 @@ class Task:
             "max_retry_count": self.max_retry_count,
             "timeout": self.timeout,
             "parent_task_id": self.parent_task.id if self.parent_task else None,
+            # Streaming-related fields (serializable)
+            "streaming_mode": self.streaming_mode,
+            "streaming_queue_id": self.streaming_queue_id,
+            "streaming_queue_config": to_serializable(self.streaming_queue_config),  # Important: for reconstruction
+            "streaming_config": to_serializable(self.streaming_config),
+            # Note: streaming_queue and streaming_queue_provider are NOT serialized
+            # They will be recreated on worker node based on streaming_queue_config
         }
 
 

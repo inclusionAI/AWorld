@@ -36,11 +36,13 @@ class TopicType:
     RERUN = "__rerun"
     HUMAN_CONFIRM = "__human_confirm"
     CANCEL = "__cancel"
+    INTERRUPT = "__interrupt"
     # for dynamic subscribe
     SUBSCRIBE_TOOL = "__subscribe_tool"
     SUBSCRIBE_AGENT = "__subscribe_agent"
     GROUP_ACTIONS = "__group_actions"
     GROUP_RESULTS = "__group_results"
+    TASK_RESPONSE = "__task_response"
 
 
 DataType = TypeVar('DataType')

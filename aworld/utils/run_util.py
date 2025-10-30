@@ -41,8 +41,9 @@ async def exec_tool(tool_name: str,
                 session_id=context.session_id)
     if outputs:
         task.outputs = outputs
-    runners = await choose_runners([task], agent_oriented=False)
-    res = await execute_runner(runners, RunConfig(reuse_process=True))
+    run_conf = RunConfig(reuse_process=True)
+    runners = await choose_runners([task], agent_oriented=False, run_conf=run_conf)
+    res = await execute_runner(runners, run_conf)
     resp: TaskResponse = res.get(task.id)
     return resp
 
@@ -75,8 +76,9 @@ async def exec_agent(question: Any,
                 session_id=context.session_id)
     if outputs:
         task.outputs = outputs
-    runners = await choose_runners([task])
-    res = await execute_runner(runners, RunConfig(reuse_process=True))
+    run_conf = RunConfig(reuse_process=True)
+    runners = await choose_runners([task], run_conf=run_conf)
+    res = await execute_runner(runners, run_conf)
     resp: TaskResponse = res.get(task.id)
     return resp
 
@@ -139,8 +141,9 @@ async def exec_process_agents(question: Any,
     if not tasks:
         raise RuntimeError("no task need to run.")
 
-    runners = await choose_runners(tasks)
-    results = await execute_runner(runners, RunConfig(reuse_process=True))
+    run_conf = RunConfig(reuse_process=True)
+    runners = await choose_runners(tasks, run_conf=run_conf)
+    results = await execute_runner(runners, run_conf)
 
     res = []
     for key, result in results.items():
@@ -158,7 +161,7 @@ async def exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()) -> Di
         if not task.group_id:
             task.group_id = uuid.uuid4().hex
         final_tasks.append(task)
-    runners = await choose_runners(final_tasks)
+    runners = await choose_runners(final_tasks, run_conf=run_conf)
     return await execute_runner(runners, run_conf)
 
 
@@ -167,7 +170,7 @@ async def serial_exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()
     task_input = tasks[0].input
     for task in tasks:
         task.input = task_input
-        runners = await choose_runners([task])
+        runners = await choose_runners([task], run_conf=run_conf)
         res = await execute_runner(runners, run_conf)
         result: TaskResponse = res.get(task.id)
         if result.success:

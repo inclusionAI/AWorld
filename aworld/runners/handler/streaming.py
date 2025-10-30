@@ -48,9 +48,12 @@ class DefaultStreamMessageHandler(DefaultHandler):
     async def _do_handle(self, message):
         if not self.is_valid_message(message):
             return
-        # 1. get outputs
+        
+        # Support both new streaming_queue_provider and old streaming_queue
+        queue_provider = self.runner.task.streaming_queue_provider
         streaming_queue = self.runner.task.streaming_queue
-        if not streaming_queue:
+        
+        if not queue_provider and not streaming_queue:
             yield Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg="Cannot get streaming queue.",
@@ -61,5 +64,10 @@ class DefaultStreamMessageHandler(DefaultHandler):
                 headers={"context": message.context}
             )
             return
-        streaming_queue.put_nowait(message)
+        
+        # Use new provider interface if available, otherwise fallback to old queue
+        if queue_provider:
+            await queue_provider.put(message)
+        else:
+            streaming_queue.put_nowait(message)
         return

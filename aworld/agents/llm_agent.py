@@ -748,7 +748,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     stream=True,
                     **kwargs
                 )
-                streaming_queue = message.context.streaming_queue
 
                 async for chunk in resp_stream:
                     if chunk.content:

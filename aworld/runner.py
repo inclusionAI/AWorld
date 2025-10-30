@@ -68,39 +68,116 @@ class Runners:
             task: Task,
             streaming_mode: str = 'chunk_output',
             streaming_conf: Dict[str, Any] = None,
-            run_conf: Config = None
+            run_conf: RunConfig = None
     ) -> AsyncGenerator[Message, None]:
-        queue = asyncio.Queue()
+        """Run task with streaming message support.
+        
+        Supports both single-process (inmemory) and distributed (redis/rabbitmq) scenarios.
+        The queue backend is determined by run_conf.streaming_queue_config.
+        
+        Args:
+            task: Task to execute.
+            streaming_mode: Streaming mode ('chunk_output', 'core', 'custom', 'all').
+            streaming_conf: Custom streaming configuration.
+            run_conf: Runtime configuration including streaming_queue_config.
+            
+        Yields:
+            Message objects from the streaming queue.
+            
+        Example:
+            # Local mode (default)
+            async for msg in Runners.streaming_run_task(task):
+                print(msg)
+            
+            # Distributed mode with Redis
+            run_conf = RunConfig(streaming_queue_config={
+                'backend': 'redis',
+                'redis': {'host': 'localhost', 'port': 6379}
+            })
+            async for msg in Runners.streaming_run_task(task, run_conf=run_conf):
+                print(msg)
+        """
+        import uuid
+        from aworld.core.streaming_queue import (
+            build_streaming_queue, 
+            StreamingQueueConfig,
+            InMemoryStreamingQueue
+        )
+        
+        if not run_conf:
+            run_conf = RunConfig()
+        
+        # Build streaming queue based on configuration
+        if run_conf.streaming_queue_config:
+            # Distributed mode: use configured backend
+            queue_config_dict = run_conf.streaming_queue_config.copy()
+            if 'queue_id' not in queue_config_dict:
+                queue_config_dict['queue_id'] = f"task-{task.id}-{uuid.uuid4().hex[:8]}"
+            
+            queue_config = StreamingQueueConfig(**queue_config_dict)
+            queue_provider = build_streaming_queue(queue_config)
+            logger.info(f"Using {queue_config.backend} streaming queue: {queue_provider.get_queue_id()}")
+        else:
+            # Local mode: use in-memory queue
+            queue_config_dict = {
+                'backend': 'inmemory',
+                'queue_id': f"task-{task.id}"
+            }
+            queue_config = StreamingQueueConfig(**queue_config_dict)
+            queue_provider = InMemoryStreamingQueue(queue_config)
+            logger.debug(f"Using in-memory streaming queue for task {task.id}")
 
-        task.streaming_queue = queue
+        # Set up task with streaming queue
+        task.streaming_queue_provider = queue_provider
+        task.streaming_queue_id = queue_provider.get_queue_id()
+        task.streaming_queue_config = queue_config_dict  # Store config for reconstruction in distributed scenarios
         task.streaming_mode = streaming_mode
+        
+        # Backward compatibility: also set streaming_queue for old code
+        if isinstance(queue_provider, InMemoryStreamingQueue):
+            task.streaming_queue = queue_provider._queue
+        
         if streaming_mode == 'custom':
             task.streaming_config = streaming_conf
 
-            # Execute the agent asynchronously
+        # Execute the agent asynchronously
         stream_task = asyncio.create_task(
-            Runners.run_task(task)
+            Runners.run_task(task, run_conf)
         )
 
-        if stream_task.done():
-            await queue.put(Message(payload="[END]"))
-        else:
-            stream_task.add_done_callback(lambda _: queue.put_nowait(Message(payload="[END]")))
+        # Setup end signal
+        async def send_end_signal():
+            try:
+                await stream_task
+            except Exception as e:
+                logger.error(f"Task execution failed: {e}")
+            finally:
+                await queue_provider.put(Message(payload="[END]"))
+
+        asyncio.create_task(send_end_signal())
 
         def is_task_end_msg(msg: Message):
             return msg and isinstance(msg, Message) and isinstance(msg.payload, str) and msg.payload == "[END]"
 
-        # Receive the messages from the agent's message queue
-        while True:
-            # The message obj, and a boolean indicating whether it's the last chunk
-            # in a streaming message
-            streaming_msg = await queue.get()
+        # Receive the messages from the streaming queue
+        try:
+            while True:
+                # Get message from queue (works in both local and distributed mode)
+                streaming_msg = await queue_provider.get(timeout=run_conf.streaming_queue_config.get('timeout', 60) if run_conf.streaming_queue_config else 60)
 
-            # End the loop when the message is None
-            if is_task_end_msg(streaming_msg):
-                break
+                # End the loop when receiving end signal
+                if is_task_end_msg(streaming_msg):
+                    break
 
-            yield streaming_msg
+                yield streaming_msg
+        except asyncio.TimeoutError:
+            logger.warning(f"Streaming queue timeout for task {task.id}")
+        except Exception as e:
+            logger.error(f"Error reading from streaming queue: {e}")
+            raise
+        finally:
+            # Clean up queue resources
+            await queue_provider.close()
 
     @staticmethod
     def sync_run(
