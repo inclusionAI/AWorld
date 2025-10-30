@@ -133,10 +133,6 @@ class Runners:
         task.streaming_queue_config = queue_config_dict  # Store config for reconstruction in distributed scenarios
         task.streaming_mode = streaming_mode
         
-        # Backward compatibility: also set streaming_queue for old code
-        if isinstance(queue_provider, InMemoryStreamingQueue):
-            task.streaming_queue = queue_provider._queue
-        
         if streaming_mode == 'custom':
             task.streaming_config = streaming_conf
 

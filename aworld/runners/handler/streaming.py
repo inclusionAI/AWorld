@@ -49,11 +49,9 @@ class DefaultStreamMessageHandler(DefaultHandler):
         if not self.is_valid_message(message):
             return
         
-        # Support both new streaming_queue_provider and old streaming_queue
         queue_provider = self.runner.task.streaming_queue_provider
-        streaming_queue = self.runner.task.streaming_queue
-        
-        if not queue_provider and not streaming_queue:
+
+        if not queue_provider:
             yield Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg="Cannot get streaming queue.",
@@ -68,6 +66,4 @@ class DefaultStreamMessageHandler(DefaultHandler):
         # Use new provider interface if available, otherwise fallback to old queue
         if queue_provider:
             await queue_provider.put(message)
-        else:
-            streaming_queue.put_nowait(message)
         return
