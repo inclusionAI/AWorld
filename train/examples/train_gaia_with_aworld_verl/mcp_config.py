@@ -6,7 +6,7 @@ LOCAL_MCP_CONFIG = {
             "command": "python",
             "args": [
                 "-m",
-                "train.examples.train_gaia_with_aworld_verl.qwen_doc_server"
+                "train.examples.train_gaia_with_aworld_verl.qwen.qwen_file_parser"
             ],
         },
         "ms-playwright": {
