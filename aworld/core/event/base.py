@@ -25,6 +25,8 @@ class Constants:
     GROUP = "group"
     HUMAN = "human"
     HUMAN_RESPONSE = "human_response"
+    CONTEXT = "context"
+    CONTEXT_RESPONSE = "context_response"
     CHUNK = "chunk"
 
 
@@ -42,6 +44,9 @@ class TopicType:
     SUBSCRIBE_AGENT = "__subscribe_agent"
     GROUP_ACTIONS = "__group_actions"
     GROUP_RESULTS = "__group_results"
+    AGENT_RESULT = "__agent_result"
+    SYSTEM_PROMPT = "__system_prompt"
+    TOOL_RESULT = "__tool_result"
     TASK_RESPONSE = "__task_response"
 
 
@@ -60,7 +65,7 @@ class Message(Generic[DataType]):
     or by extending `Message`.
     """
     session_id: str = field(default_factory=str)
-    payload: Optional[DataType] = field(default_factory=object)
+    payload: Optional[DataType] = field(default_factory=object, repr=False)
     # Current caller
     sender: str = field(default_factory=str)
     # event type
@@ -174,6 +179,11 @@ class ChunkMessage(Message[ModelResponse]):
     """Chunk message is used to stream the response of the LLM."""
     category: str = 'chunk'
     source_type: str = field(default=None)
+
+
+@dataclass
+class ContextMessage(Message[Any]):
+    category: str = 'context'
 
 
 class Messageable(object):
