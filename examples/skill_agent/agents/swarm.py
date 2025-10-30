@@ -1,6 +1,6 @@
 from aworld.core.agent.swarm import Swarm
 from .orchestrator_agent.agent import OrchestratorAgent
-from .orchestrator_agent.config import orchestrator_agent_config, orchestrator_mcp_servers
+from .orchestrator_agent.config import orchestrator_agent_config
 from .orchestrator_agent.prompt import orchestrator_agent_system_prompt
 from ..mcp_tools.mcp_config import MCP_CONFIG
 
@@ -11,7 +11,6 @@ def build_swarm():
         desc="orchestrator_agent",
         conf=orchestrator_agent_config,
         system_prompt=orchestrator_agent_system_prompt,
-        mcp_servers=orchestrator_mcp_servers,
         mcp_config=MCP_CONFIG,
     )
 
