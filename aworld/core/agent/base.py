@@ -8,7 +8,7 @@ from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union
 
 from pydantic import BaseModel
 
-from aworld.config.conf import AgentConfig, ConfigDict, load_config
+from aworld.config.conf import AgentConfig, ConfigDict, load_config, TaskRunMode
 from aworld.core.common import ActionModel
 from aworld.core.event import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage
@@ -185,6 +185,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def run(self, message: Message, **kwargs) -> Message:
         message.context.agent_info.current_agent_id = self.id()
+        task = message.context.get_task()
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
+            message.context.new_trajectory_step(task.agent.id())
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
@@ -220,6 +223,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         message.context.agent_info.current_agent_id = self.id()
+        task = message.context.get_task()
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
+            message.context.new_trajectory_step(task.agent.id())
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
