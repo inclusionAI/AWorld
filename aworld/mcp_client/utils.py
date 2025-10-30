@@ -963,3 +963,37 @@ async def cleanup_server(server):
         )
     except Exception as e:
         logger.warning(f"Failed to cleanup server: {e}")
+
+# Helper: derive mcp_servers from skill_configs if provided
+
+def replace_mcp_servers_variables(skill_configs: Dict[str, Any] = None,
+                                  current_servers: List[str] = None,
+                                  default_servers: List[str] = None) -> List[str]:
+    """
+    If skill_configs is empty/None, return current_servers (or default).
+    If present, collect all keys of `tool_list` across skills as server names.
+    Fallback to current_servers (or default) when no keys gathered.
+    """
+    if current_servers is None:
+        current_servers = []
+    if default_servers is None:
+        default_servers = []
+
+    if not skill_configs:
+        return current_servers or default_servers
+
+    server_set = set()
+    try:
+        for _skill_id, cfg in skill_configs.items():
+            tool_list = (cfg or {}).get("tool_list", {})
+            if isinstance(tool_list, dict):
+                for server in tool_list.keys():
+                    if server:
+                        server_set.add(str(server))
+    except Exception:
+        # On any unexpected structure, keep original servers
+        return current_servers or default_servers
+
+    if not server_set:
+        return current_servers or default_servers
+    return list(server_set)
