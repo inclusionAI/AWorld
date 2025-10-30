@@ -35,18 +35,16 @@ import traceback
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-import fitz
 import html2text
 import pandas as pd
 import xmltodict
+from PIL import Image, ImageDraw, ImageFont
 from bs4 import BeautifulSoup
 from docx2markdown._docx_to_markdown import docx_to_markdown
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
-from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
 from pydantic import BaseModel, Field
-from PyPDF2 import PdfReader
 from tabulate import tabulate
 from xls2xlsx import XLS2XLSX
 
