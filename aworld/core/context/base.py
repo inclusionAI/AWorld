@@ -507,7 +507,7 @@ class Context:
         step = token_id_traj.get_current_step()
         if not step:
             logger.error(f"No current step found in context. agent_id: {agent_id}, tool_call_id: {tool_call_id}")
-            raise Exception(f"No current step found in context. agent_id: {agent_id}, tool_call_id: {tool_call_id}")
+            raise Exception("No current step found in context.")
 
         step.prompt_token_ids = prompt_token_ids
         step.input_token_ids = input_token_ids

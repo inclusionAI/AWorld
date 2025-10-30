@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import time
+import json
 
 from typing import AsyncGenerator, TYPE_CHECKING
 
@@ -141,4 +142,9 @@ class DefaultTaskHandler(TaskHandler):
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers)
 
     def _log_trajectory(self, message: Message):
-        trajectory_logger.info(f"task_id:{message.context.get_task().id}, trajectorys:{message.context._agent_token_id_traj}")
+        """Log the trajectory of the agent."""
+        try:
+            trajectory_json = json.dumps(message.context._agent_token_id_traj, default=str)
+        except (TypeError, ValueError):
+            trajectory_json = str(message.context._agent_token_id_traj)
+        trajectory_logger.info(f"task_id:{message.context.get_task().id}, trajectorys:{trajectory_json}")
