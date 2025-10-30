@@ -158,6 +158,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
         self.skill_configs: Dict[str, Any] = skill_configs or {}
         if self.skill_configs:
+            from aworld.core.context.amni.tool.context_skill_tool import ContextSkillTool
             self.tool_names.extend(["SKILL"])
         self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []

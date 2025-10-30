@@ -366,7 +366,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         from aworld.core.context.amni import AmniContext
         if isinstance(context, AmniContext):
             from aworld.core.context.amni.utils.context_log import PromptLogger
-            PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context)
+            PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
             return
         """Log the sequence of messages for debugging purposes"""
         logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
@@ -652,9 +652,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as e:
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
-
-        self._log_messages(messages, context=message.context)
-
         return messages
 
     def _process_messages(self, messages: List[Dict[str, Any]],
@@ -677,6 +674,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """
         llm_response = None
         try:
+            tools = await self._filter_tools(message.context)
+            self._log_messages(messages, tools=tools, context=message.context)
             stream_mode = kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)
             if stream_mode:
@@ -687,7 +686,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     messages=messages,
                     model=self.model_name,
                     temperature=float_temperature,
-                    tools=await self._filter_tools(message.context),
+                    tools=tools,
                     stream=True,
                     **kwargs
                 )
@@ -712,7 +711,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     messages=messages,
                     model=self.model_name,
                     temperature=float_temperature,
-                    tools=await self._filter_tools(message.context),
+                    tools=tools,
                     stream=kwargs.get("stream", False),
                     **kwargs
                 )

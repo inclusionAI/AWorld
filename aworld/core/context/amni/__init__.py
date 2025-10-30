@@ -369,18 +369,25 @@ class AmniContext(Context):
         """
         activate a skill help agent to perform a task
         """
-        skills = self.get_active_skills(namespace)
-        if not skills:
+        if not skill_name:
+            return "skill name is required"
+        agent_skills = await self.get_skill_list(namespace)
+        if not agent_skills:
+            return "skill not found"
+        if skill_name not in agent_skills.keys():
+            return "skill not found"
+        activate_skills = await self.get_active_skills(namespace)
+        if not activate_skills:
             skills = []
-        skills.append(skill_name)
-        self.put(ACTIVE_SKILLS_KEY, skills, namespace=namespace)
-        return f"skill {skill_name} activated, current skills: {skills}"
+        activate_skills.append(skill_name)
+        self.put(ACTIVE_SKILLS_KEY, activate_skills, namespace=namespace)
+        return f"skill {skill_name} activated, current skills: {activate_skills}"
 
     async def offload_skill(self, skill_name: str,namespace: str) -> str:
         """
         offload a skill help agent to perform a task
         """
-        skills = self.get_active_skills(namespace)
+        skills = await self.get_active_skills(namespace)
         if not skills:
             skills = []
         skills.remove(skill_name)

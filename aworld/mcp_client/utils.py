@@ -266,7 +266,10 @@ async def skill_translate_tools(
 ) -> List[Dict[str, Any]]:
     if not tools:
         return tools or []
-    
+
+    if not skill_configs:
+        return tools
+
     # If skills is empty, exclude all tools in tool_mapping (only keep non-MCP tools)
     if not skills:
         filtered_tools = []
@@ -288,9 +291,7 @@ async def skill_translate_tools(
         
         logger.info(f"Skills is empty, excluded {len(tools) - len(filtered_tools)} MCP tools, kept {len(filtered_tools)} non-MCP tools")
         return filtered_tools
-    
-    if not skill_configs:
-        return tools
+
     
     # Collect all tool filters from skill configs
     tool_filter = {}  # {server_name: set(tool_names)} or {server_name: None} means all tools

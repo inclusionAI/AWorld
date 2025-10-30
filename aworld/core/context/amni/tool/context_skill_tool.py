@@ -76,7 +76,7 @@ class ContextSkillTool(AsyncTool):
         reward = 0.
         fail_error = ""
         observation = build_observation(observer=self.name(),
-                                        ability=ContextExecuteAction.CONTEXT_CONFIRM.value.name)
+                                        ability=ContextExecuteAction.ACTIVE_SKILL.value.name)
         info = {}
         try:
             if not actions:

@@ -21,6 +21,7 @@ SKILLS_PROMPT = """
     - Only activate skills needed for current task
     - Offload skills when no longer needed
     - Skills are scoped to current agent namespace
+    - only support skills_info internal skills
   </skill_guide>
   <skills_info>
   {skills}
