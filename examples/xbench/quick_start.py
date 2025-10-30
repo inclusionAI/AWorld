@@ -62,7 +62,7 @@ async def run(user_input: str):
     init_middlewares()
 
     # 2. build context config
-    context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
+    context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR, debug_mode=True)
 
     # 3. build task
     task = await build_task(user_input, context_config)
