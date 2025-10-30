@@ -6,7 +6,7 @@ from typing import List
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("qwen_doc_server")
+mcp = FastMCP("qwen_file_parser")
 
 import json
 import os
@@ -23,14 +23,14 @@ from pandas.api.types import is_datetime64_any_dtype
 
 import pandas as pd
 from tabulate import tabulate
-from qwen_agent.log import logger
-from qwen_agent.settings import DEFAULT_WORKSPACE, DEFAULT_MAX_INPUT_TOKENS
-from qwen_agent.tools.base import BaseTool, register_tool
-from qwen_agent.tools.storage import KeyNotExistsError, Storage
-from file_tools.utils import (get_file_type, hash_sha256, is_http_url, get_basename_from_url,
+from .qwen_agent.log import logger
+from .qwen_agent.settings import DEFAULT_WORKSPACE, DEFAULT_MAX_INPUT_TOKENS
+from .qwen_agent.tools.base import BaseTool, register_tool
+from .qwen_agent.tools.storage import KeyNotExistsError, Storage
+from .file_tools.utils import (get_file_type, hash_sha256, is_http_url, get_basename_from_url,
                               sanitize_chrome_file_path, save_url_to_local_work_dir)
-from qwen_agent.utils.tokenization_qwen import count_tokens, tokenizer
-from file_tools.idp import IDP
+from .qwen_agent.utils.tokenization_qwen import count_tokens, tokenizer
+from .file_tools.idp import IDP
 
 # Configuration constants
 PARSER_SUPPORTED_FILE_TYPES = ['pdf', 'docx', 'pptx', 'txt', 'html', 'csv', 'tsv', 'xlsx', 'xls', 'doc', 'zip', '.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav']
