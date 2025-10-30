@@ -75,10 +75,6 @@ class TaskEventRunner(TaskRunner):
                     if self.task.streaming_queue_provider:
                         await self.task.streaming_queue_provider.put(
                             Message(payload=resp, session_id=self.context.session_id, topic=TopicType.TASK_RESPONSE))
-                    elif self.task.streaming_queue:
-                        # Backward compatibility with old interface
-                        self.task.streaming_queue.put_nowait(
-                            Message(payload=resp, session_id=self.context.session_id, topic=TopicType.TASK_RESPONSE))
                 logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished'
                             f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
                 return resp
