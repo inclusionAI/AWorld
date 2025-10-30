@@ -2,6 +2,13 @@ import os
 
 LOCAL_MCP_CONFIG = {
     "mcpServers": {
+        "qwen_doc_server": {
+            "command": "python",
+            "args": [
+                "-m",
+                "train.examples.train_gaia_with_aworld_verl.qwen_doc_server"
+            ],
+        },
         "ms-playwright": {
             "command": "npx",
             "args": [
@@ -39,15 +46,19 @@ LOCAL_MCP_CONFIG = {
                 "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
             }
         },
-        "terminal-server": {
+        "terminal-controller": {
             "command": "python",
-            "args": [
-                "-m",
-                "examples.xbench.mcp_tools.terminal_server"
-            ],
-            "env": {
-            }
+            "args": ["-m", "terminal_controller"]
         },
+        # "terminal-server": {
+        #     "command": "python",
+        #     "args": [
+        #         "-m",
+        #         "examples.xbench.mcp_tools.terminal_server"
+        #     ],
+        #     "env": {
+        #     }
+        # },
         "filesystem-server": {
             "type": "stdio",
             "command": "npx",
