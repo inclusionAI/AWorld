@@ -3,15 +3,13 @@ import abc
 import uuid
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Literal
+from typing import List, Dict, Literal
 
 from aworld.core.llm_provider import LLMProviderBase
-from aworld.models.model_response import ModelResponse, ToolCall
+from aworld.models.model_response import ModelResponse, ToolCall, Function
 from aworld.utils.common import sync_exec
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
-from vllm.entrypoints.openai.protocol import ExtractedToolCallInformation
-from vllm.entrypoints.openai.tool_parsers import ToolParserManager, ToolParser
 
 
 @dataclass
@@ -22,7 +20,7 @@ class TokenIdModelResponse:
     finish_reason: Literal["length", "stop", "interrupt"] = "stop"
 
 
-class TrainLLMProvider(LLMProviderBase):
+class RolloutLLMProvider(LLMProviderBase):
 
     def __init__(self,
                  api_key: str = None,
@@ -39,7 +37,7 @@ class TrainLLMProvider(LLMProviderBase):
 
         params = kwargs.get("params")
         self.tokenizer = params.get("tokenizer")
-        self.tool_parser = params.get("tool_parser")
+        self.tool_parser = params.get("tool_parser") or HermesToolParser(self.tokenizer)
         self.request_id = params.get("request_id") or uuid.uuid4().hex
 
     def _init_provider(self):
@@ -81,15 +79,9 @@ class TrainLLMProvider(LLMProviderBase):
             lambda: self.tokenizer.decode(token_id_response.output_token_ids, skip_special_tokens=True)
         )
 
-        tool_parser = ToolParserManager.get_tool_parser(self.tool_parser)
-        res: ExtractedToolCallInformation = await loop.run_in_executor(
-            None,
-            lambda: tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
-        )
-
-        tool_calls = []
-        if res.tools_called:
-            tool_calls = [ToolCall(**tool_call.model_dump()) for tool_call in res.tool_calls]
+        res, tool_calls = await self.tool_parser.extract_tool_calls(content)
+        if tool_calls:
+            tool_calls = [ToolCall(id=uuid.uuid4().hex, function=tool_call) for tool_call in tool_calls]
 
         context.add_llm_resp_token_ids(input_token_ids=current_step_input_token_ids,
                                        prompt_token_ids=input_ids,
@@ -125,3 +117,34 @@ class TrainLLMProvider(LLMProviderBase):
         messages = placeholder_messages + messages
         s2 = self.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
         return s2[len(s1):]
+
+
+class HermesToolParser:
+    def __init__(self, tokenizer) -> None:
+        import re
+
+        self.tokenizer = tokenizer
+        self.tool_call_start_token: str = "<tool_call>"
+        self.tool_call_end_token: str = "</tool_call>"
+        self.tool_call_regex = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+
+    async def extract_tool_calls(self, text) -> tuple[str, list[Function]]:
+        import json
+
+        if self.tool_call_start_token not in text or self.tool_call_end_token not in text:
+            return text, []
+
+        matches = self.tool_call_regex.findall(text)
+        function_calls = []
+        for match in matches:
+            try:
+                function_call = json.loads(match)
+                name, arguments = function_call["name"], function_call["arguments"]
+                function_calls.append(Function(name=name, arguments=json.dumps(arguments, ensure_ascii=False)))
+            except Exception as e:
+                print(f"Failed to decode tool call: {e}")
+
+        # remaing text exclude tool call tokens
+        content = self.tool_call_regex.sub("", text)
+
+        return content, function_calls
