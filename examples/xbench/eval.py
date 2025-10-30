@@ -1,5 +1,11 @@
 
 from dotenv import load_dotenv
+
+from aworld.core.agent.swarm import Swarm
+from aworld.models.llm import register_llm_provider
+from train.adapter.verl.verl_provider import VerlProvider
+from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
+
 # init env
 load_dotenv()
 
@@ -21,7 +27,7 @@ from aworld.dataset.sampler import RangeSampler, Sampler, FixedSampler
 from aworld.output import WorkSpace
 from aworld.runners.evaluate_runner import EvaluateRunner
 from examples.xbench.agents.swarm import build_xbench_swarm
-from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig
+from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig, TaskRunMode
 from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTarget, EvalDataCase, EvalTask, EvalResult
 from aworld.runner import Runners
@@ -68,7 +74,9 @@ class AmniContextEvaluatable(EvalTarget):
         )
 
         context = await self.build_context(task_input)
-        swarm = build_xbench_swarm()
+        # TODO gaia agent
+        register_llm_provider("verl", VerlProvider)
+        swarm = Swarm(await build_agents()) # build_xbench_swarm()
         await context.build_agents_state(swarm.topology)
 
         return Task(
@@ -81,7 +89,9 @@ class AmniContextEvaluatable(EvalTarget):
             context=context,
             conf=TaskConfig(
                 stream=False,
-                exit_on_failure=True
+                exit_on_failure=True,
+                resp_carry_context=True,
+                run_mode=TaskRunMode.INTERACTIVAE
             ),
             timeout=60 * 60
         )
