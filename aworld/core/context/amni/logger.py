@@ -8,7 +8,7 @@ from logging.handlers import TimedRotatingFileHandler
 
 amni_prompt_logger = logging.getLogger("amnicontext_prompt")
 amni_digest_logger = logging.getLogger("amnicontext_digest")
-logger = logging.getLogger("amnicontext")
+logger = amni_prompt_logger
 # Add async logger
 async_logger = logging.getLogger("amnicontext_async")
 
