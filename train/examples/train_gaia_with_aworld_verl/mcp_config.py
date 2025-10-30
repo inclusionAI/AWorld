@@ -2,7 +2,7 @@ import os
 
 LOCAL_MCP_CONFIG = {
     "mcpServers": {
-        "qwen_doc_server": {
+        "qwen_file_parser": {
             "command": "python",
             "args": [
                 "-m",

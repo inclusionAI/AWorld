@@ -19,3 +19,4 @@ class BaseContextProcessor(ABC):
     async def process(self, context: Context, event: ContextMessagePayload, **kwargs) -> Optional[Observation]:
         """Process messages"""
         pass
+

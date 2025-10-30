@@ -1,35 +1,24 @@
 import re
 import sys
-from collections import Counter
-from typing import List
+import traceback
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+
+from aworld.logs.util import logger
 
 mcp = FastMCP("qwen_file_parser")
 
 import json
 import os
 import time
-import zipfile
-import math
-from pathlib import Path
 
-from typing import Any, Dict, List, Optional, Union
-import xml.etree.ElementTree as ET
+from typing import List, Optional
 from pandas import Timestamp
 from datetime import datetime
-from pandas.api.types import is_datetime64_any_dtype
 
 import pandas as pd
 from tabulate import tabulate
-from .qwen_agent.log import logger
-from .qwen_agent.settings import DEFAULT_WORKSPACE, DEFAULT_MAX_INPUT_TOKENS
-from .qwen_agent.tools.base import BaseTool, register_tool
-from .qwen_agent.tools.storage import KeyNotExistsError, Storage
-from .file_tools.utils import (get_file_type, hash_sha256, is_http_url, get_basename_from_url,
-                              sanitize_chrome_file_path, save_url_to_local_work_dir)
-from .qwen_agent.utils.tokenization_qwen import count_tokens, tokenizer
 from .file_tools.idp import IDP
 
 # Configuration constants
@@ -67,6 +56,7 @@ class FileParserError(Exception):
 def parse_file_by_idp(file_path: str = None, file_url: str = None) -> List[dict]:
     idp = IDP()
     try:
+        logger.info(f"parse_file_by_idp|start|{file_path}")
         fid = idp.file_submit_with_url(file_url) if file_url else idp.file_submit_with_path(file_path)
         if not fid:
             return []
@@ -80,13 +70,14 @@ def parse_file_by_idp(file_path: str = None, file_url: str = None) -> List[dict]
         logger.error("IDP parsing timeout")
         return []
     except Exception as e:
-        logger.error(f"IDP processing failed: {str(e)}")
+        logger.error(f"IDP processing failed: {str(e)} {traceback.format_exc()}")
         return []
 
 
 def process_idp_result(result: dict) -> List[dict]:
     pages = []
     current_page = None
+    logger.info("result: ", result)
 
     for layout in result.get('layouts', []):
         page_num = layout.get('pageNum', 0)
@@ -616,7 +607,6 @@ class SingleFileParser(BaseTool):
 def main():
     load_dotenv()
 
-    print("Starting Document MCP Server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 
@@ -634,3 +624,4 @@ sys.modules[__name__].__call__ = __call__
 # Run the server when the script is executed directly
 if __name__ == "__main__":
     main()
+    parse_file_by_idp("/private/tmp/usda_1959_standards.pdf")
