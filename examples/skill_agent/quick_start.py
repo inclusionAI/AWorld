@@ -3,6 +3,7 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from aworld.config import TaskConfig
@@ -56,13 +57,18 @@ async def build_task(task_content: str, context_config, session_id: str = None, 
         timeout=60 * 60
     )
 
+
 async def run(user_input: str):
     # 1. init middlewares
     load_dotenv()
     init_middlewares()
 
     # 2. build context config
-    context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR, ["basic", "task", "work_dir", "todo", "action_info", "skills"])
+    context_config = AmniConfigFactory.create(
+        AmniConfigLevel.NAVIGATOR,
+        ["basic", "task", "work_dir", "todo", "action_info", "skills"],
+        debug_mode=True
+    )
 
     # 3. build task
     task = await build_task(user_input, context_config)
@@ -74,5 +80,7 @@ async def run(user_input: str):
     except Exception as err:
         print(f"err is {err}, trace is {traceback.format_exc()}")
 
+
 if __name__ == '__main__':
-    asyncio.run(run(user_input="帮我在携程上面找到2025年12月份上海往返札幌的最便宜的机票，要求周五去，周日晚上（17:00后）或者周一回的，12月份的每个符合要求的日期都需要查询，并找到最便宜的符合要求的航班。"))
+    asyncio.run(
+        run(user_input="帮我在携程上面找到2025年12月份上海往返札幌的最便宜的机票，要求周五去，周日晚上（17:00后）或者周一回的，12月份的每个符合要求的日期都需要查询，并找到最便宜的符合要求的航班。"))
