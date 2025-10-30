@@ -43,8 +43,7 @@ from typing import Sequence
 from aworld.trace.span_cosumer import register_span_consumer, SpanConsumer
 import time
 
-from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import GaiaAgentLoop
-from train.examples.train_gaia_with_aworld_verl.gaia.gaia import build_gaia_task
+from train.examples.train_gaia_with_aworld_verl.gaia import build_gaia_task
 
 
 @register_span_consumer()
