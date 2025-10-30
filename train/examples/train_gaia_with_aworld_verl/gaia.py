@@ -45,7 +45,7 @@ Here are some tips to help you give better instructions:
 17. The directory named gaia_dataset and all of its contents are a read-only data source. Your task is to work with the data, but you must not write, modify, or delete any files or folders within any path that ends with /gaia_dataset/.
 18. When using `image_server__mcp_image_recognition` tool to recognize images, the URL or path you provided should be a local path. Therefore, if it's an image on the internet, please download it to your local device first.
 19. When using `e2b_code_interpreter` tool to parse a local file, you need first to upload the local file to e2b sandbox with the following code and then parse the file. If you have uploaded a file, you should use the sandbox_id returned by the e2b_upload_file function as input to the `mcp__e2b-code-server__e2b_run_code` tool.
-20. 当你要输出答案时，给出对应的中文报告
+20. 当你要输出答案时，给出对应的中文报告，并且告知你所检索到的信息来源，以及使用了什么工具来处理得到了这些信息
 </tips>
 
 Now, here is the task. Stay focused and complete it carefully using the appropriate tools!
