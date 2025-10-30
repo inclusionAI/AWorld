@@ -271,6 +271,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
+            step_res[0].action_result[idx].tool_name = act.tool_name
 
         if context.swarm:
             agent = context.swarm.agents.get(action[0].agent_name)
@@ -435,6 +436,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
+            step_res[0].action_result[idx].tool_name = act.tool_name
 
         context = message.context
         if context.swarm:
