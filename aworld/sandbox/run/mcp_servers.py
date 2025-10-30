@@ -300,7 +300,7 @@ class McpServers:
                     self._update_metadata(result_key, action_result, operation_info)
 
         except Exception as e:
-            logger.warning(f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}")
+            logger.warning(f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}, traceback = {traceback.format_exc()}")
             return None
 
         return results
