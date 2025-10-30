@@ -462,9 +462,9 @@ class Context:
         Returns:
             AgentTokenIdTrajectory: Token id trajectory of the agent.
         """
-        if not agent_id:
+        if not agent_id and hasattr(self.agent_info, 'current_agent_id'):
             agent_id = self.agent_info.current_agent_id
-        if not tool_call_id:
+        if not tool_call_id and hasattr(self.agent_info, 'current_tool_call_id'):
             tool_call_id = self.agent_info.current_tool_call_id
         if not agent_id:
             logger.error("No current agent id found in context.")
