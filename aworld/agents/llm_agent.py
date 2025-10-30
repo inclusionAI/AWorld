@@ -12,7 +12,7 @@ from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
-from aworld.core.event import eventbus
+from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage
 from aworld.core.model_output_parser import ModelOutputParser
