@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from aworld.config.conf import AgentConfig, ConfigDict, load_config
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
-from aworld.core.event import eventbus
+from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage
 from aworld.core.factory import Factory
 from aworld.events.util import send_message

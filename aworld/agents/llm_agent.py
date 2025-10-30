@@ -16,7 +16,7 @@ from aworld.core.common import ActionResult, Observation, ActionModel, Config, T
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import BasePromptTemplate
 from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
-from aworld.core.event import eventbus
+from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc

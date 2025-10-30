@@ -3,7 +3,7 @@
 from typing import Dict, Any, List, Callable
 
 from aworld.core.context.base import Context
-from aworld.core.event import eventbus
+from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message
 from aworld.core.storage.data import Data
 from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
