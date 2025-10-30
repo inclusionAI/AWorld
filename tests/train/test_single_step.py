@@ -61,4 +61,4 @@ class SingleStepTest(unittest.IsolatedAsyncioTestCase):
             resp = responses[task_id]
             print(f"step {step} resp: {resp.answer}")
 
-        get_trace_server().join()
+        # get_trace_server().join()

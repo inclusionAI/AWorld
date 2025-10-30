@@ -519,6 +519,7 @@ class Context:
 
     def add_tool_resp_token_ids(self,
                                 tool_resp_token_ids: List[int],
+                                resp_tool_call_ids: List[str],
                                 agent_id: str = None,
                                 tool_call_id: str = None):
         """Add the token ids of the current step tool response to the context.
@@ -535,6 +536,7 @@ class Context:
         if not step:
             logger.error("No current step found in context.")
             raise Exception("No current step found in context.")
+        step.tool_call_ids = resp_tool_call_ids
         step.tool_resp_token_ids = tool_resp_token_ids
         step.output_token_ids.extend(tool_resp_token_ids)
         step.output_logprobs.extend([0.0] * len(tool_resp_token_ids))
@@ -567,4 +569,4 @@ class Context:
         """Merge sub task token ids to context"""
         for agent_id, token_id_trajs in sub_task_context._agent_token_id_traj.items():
             for traj in token_id_trajs:
-                # TODO:
+                self._agent_token_id_traj[agent_id].append(traj)

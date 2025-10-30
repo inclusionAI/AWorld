@@ -845,6 +845,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         })
         tool_openai_messages_after_last_assistant = []
         found_assistant = False
+        tool_call_ids = []
         for i in range(len(histories) - 1, -1, -1):
             history = histories[i]
             if hasattr(history, 'role') and history.role == 'assistant':
@@ -852,10 +853,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 break
             elif not found_assistant and hasattr(history, 'role') and history.role == 'tool':
                 tool_openai_messages_after_last_assistant.append(history.to_openai_message())
+                tool_call_ids.append(history.tool_call_id)
 
         if tool_openai_messages_after_last_assistant:
             tool_result_token_ids = apply_chat_template(self.llm, tool_openai_messages_after_last_assistant)
-            context.add_tool_resp_token_ids(tool_result_token_ids, self.id())
+            context.add_tool_resp_token_ids(tool_resp_token_ids=tool_result_token_ids,
+                                            resp_tool_call_ids=tool_call_ids,
+                                            agent_id=self.id())
 
     async def send_llm_response_output(self, llm_response: ModelResponse, agent_result: AgentResult, context: Context,
                                        outputs: Outputs = None):
