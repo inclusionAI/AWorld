@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import time
+import json
 
 from typing import AsyncGenerator, TYPE_CHECKING
 
@@ -143,5 +144,5 @@ class DefaultTaskHandler(TaskHandler):
 
     def _log_trajectory(self, message: Message):
         """Log the trajectory of the agent."""
-        trajectory_json = to_serializable(message.context._agent_token_id_traj)
-        trajectory_logger.info(f"task_id:{message.context.get_task().id}, trajectorys:{trajectory_json}")
+        trajectory_logger.info(
+            f"task_id:{message.context.get_task().id}, trajectorys:{json.dumps(to_serializable(message.context._agent_token_id_traj))}")
