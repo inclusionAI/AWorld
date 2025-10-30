@@ -3,7 +3,7 @@
 import copy
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Dict, Any, TYPE_CHECKING, List, Literal
 
@@ -44,6 +44,10 @@ class AgentTokenIdStep:
     tool_resp_token_ids: List[int] = field(default_factory=list)
     finish_reason: Literal["length", "stop", "interrupt"] = None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the AgentTokenIdStep to a dictionary."""
+        return asdict(self)
+
 
 @dataclass
 class AgentTokenIdTrajectory:
@@ -61,6 +65,10 @@ class AgentTokenIdTrajectory:
     def get_current_step(self) -> AgentTokenIdStep:
         """Get the current step of the trajectory."""
         return self.token_id_steps[-1] if self.token_id_steps else None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the AgentTokenIdTrajectory to a dictionary."""
+        return asdict(self)
 
 
 class Context:
