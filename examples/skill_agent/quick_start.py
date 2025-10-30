@@ -81,5 +81,4 @@ async def run(user_input: str):
 
 
 if __name__ == '__main__':
-    asyncio.run(
-        run(user_input="How to use Aworld Framework skill feature to build Agent?"))
+    asyncio.run(run(user_input="Help me find the latest week stock price of AAPL."))
