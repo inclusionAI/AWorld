@@ -40,6 +40,9 @@ from ...event.base import ContextMessage, Constants, TopicType
 
 DEFAULT_VALUE = None
 
+SKILL_LIST_KEY = "skill_list"
+ACTIVE_SKILLS_KEY = "active_skills"
+
 class AmniContext(Context):
     """
     AmniContext - Ant Mind Neuro-Intelligence Context Engine
@@ -360,8 +363,69 @@ class AmniContext(Context):
     def add_fact(self, fact: Fact, namespace: str = "default", **kwargs):
         pass
 
+    """
+    Agent Skills Support
+    """
 
+    async def init_skill_list(self, skill_list: Dict[str, Any], namespace: str):
+        """
+        init skill list from agent
+        """
+        self.put(SKILL_LIST_KEY, skill_list, namespace=namespace)
+        for skill_name, skill_config in skill_list.items():
+            if skill_config.get('active', False):
+                await self.active_skill(skill_name, namespace)
 
+    async def active_skill(self, skill_name: str, namespace: str) -> str:
+        """
+        activate a skill help agent to perform a task
+        """
+        if not skill_name:
+            return "skill name is required"
+        agent_skills = await self.get_skill_name_list(namespace)
+        if skill_name not in agent_skills:
+            return "skill not found"
+        activate_skills = await self.get_active_skills(namespace)
+        if not activate_skills:
+            activate_skills = []
+        activate_skills.append(skill_name)
+        skill = await self.get_skill_list(namespace=namespace)
+
+        self.put(ACTIVE_SKILLS_KEY, activate_skills, namespace=namespace)
+        return (f"skill {skill_name} activated, current skills: {activate_skills} \n\n"
+                f"<skill_guide>{skill.get('usage', '')}</skill_guide>")
+
+    async def offload_skill(self, skill_name: str,namespace: str) -> str:
+        """
+        offload a skill help agent to perform a task
+        """
+        skills = await self.get_active_skills(namespace)
+        if not skills or skill_name not in skills:
+            return f"skill {skill_name} not found, current skills: {skills}"
+        skills.remove(skill_name)
+        self.put(ACTIVE_SKILLS_KEY, skills, namespace=namespace)
+        return f"skill {skill_name} offloaded, current skills: {skills}"
+
+    async def get_active_skills(self, namespace: str) -> list[str]:
+        """
+        get skills from context
+        """
+        skills = self.get(ACTIVE_SKILLS_KEY, namespace=namespace)
+        if not skills:
+            skills = []
+        return skills
+
+    async def get_skill_list(self, namespace: str) -> Dict[str, Any]:
+        return self.get(SKILL_LIST_KEY, namespace=namespace)
+
+    async def get_skill_name_list(self, namespace: str) -> list[str]:
+        agent_skills = self.get(SKILL_LIST_KEY, namespace=namespace)
+        skill_names = []
+        if not agent_skills:
+            return []
+        for skill_name, skill_config in agent_skills.items():
+            skill_names.append(skill_name)
+        return skill_names
 
 
 # Global context manager instance
@@ -598,6 +662,10 @@ class ApplicationContext(AmniContext):
             else:
                 # if no init_working_state method, use default AgentWorkingState
                 application_agent_state.working_state = AgentWorkingState()
+
+            if agent.conf and agent.conf.skill_configs:
+                logger.debug(f"init_skill_list: {agent.id()}")
+                await self.init_skill_list(namespace=agent.id(), skill_list=agent.conf.skill_configs)
 
     async def _build_agent_state(self, agent_id: str, agent_config: AgentConfig) -> ApplicationAgentState:
         agent_state = ApplicationAgentState()
@@ -1158,7 +1226,7 @@ class ApplicationContext(AmniContext):
                         f"  <knowledge_chunk>\n"
                         f"    <chunk_id>{_chunk.chunk_id}</chunk_id>\n"
                         f"    <chunk_index>{_chunk.chunk_metadata.chunk_index}</chunk_index>\n"
-                        f"    <chunk_content>{truncate_content(_chunk.content, 300)}</chunk_content>\n"
+                        f"    <chunk_content>{truncate_content(_chunk.content, 1000)}</chunk_content>\n"
                         f"  </knowledge_chunk>\n"
                     )
 
@@ -1275,6 +1343,7 @@ class ApplicationContext(AmniContext):
     ####################### Context Write #######################
 
     def put(self, key: str, value: Any, namespace: str = "default") -> None:
+        logger.info(f"{id(self)}#put key: {key}, value: {value}, namespace: {namespace}")
         if self._is_default_namespace(namespace):
             self.task_state.working_state.kv_store[key] = value
             return
@@ -1454,6 +1523,7 @@ class ApplicationContext(AmniContext):
     ####################### Context Read #######################
 
     def get(self, key: str, namespace: str = "default") -> Any:
+        logger.info(f"{id(self)}#get value for namespace: {namespace} -> key: {key}")
         if self._is_default_namespace(namespace):
             return self.task_state.working_state.kv_store.get(key)
 

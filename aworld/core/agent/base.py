@@ -10,7 +10,6 @@ from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, ConfigDict, load_config
 from aworld.core.common import ActionModel
-from aworld.core.context.base import Context
 from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage
 from aworld.core.factory import Factory
@@ -19,6 +18,7 @@ from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
+from aworld.mcp_client.utils import replace_mcp_servers_variables
 
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
@@ -153,13 +153,19 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.tool_names.append(tool)
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = agent_names or []
-        # Supported MCP server
         self.mcp_servers: List[str] = mcp_servers or []
         self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
+        self.skill_configs: Dict[str, Any] = self.conf.get("skill_configs", {})
+        # derive mcp_servers from skill_configs if provided
+        if self.skill_configs:
+            self.mcp_servers = replace_mcp_servers_variables(self.skill_configs, self.mcp_servers, [])
+            from aworld.core.context.amni.tool.context_skill_tool import ContextSkillTool
+            self.tool_names.extend(["SKILL"])
         self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
+        tool_mapping= {}
         self.context = None
         self.state = AgentStatus.START
         self._finished = True
@@ -170,13 +176,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if self.mcp_servers or self.tool_names:
             self.sandbox = sandbox or Sandbox(
                 mcp_servers=self.mcp_servers, mcp_config=self.mcp_config,
-                black_tool_actions = self.black_tool_actions
+                black_tool_actions = self.black_tool_actions,
+                skill_configs = self.skill_configs
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
-
-    def _init_context(self, context: Context):
-        self.context = context
 
     def id(self) -> str:
         return self._id
@@ -188,7 +192,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._desc
 
     def run(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
@@ -213,8 +216,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     name=f"{self.id()}", alias_name=self.name(), step_num=0
                 ),
                 sender=self.id(),
-                session_id=self.context.session_id,
-                headers={"context": self.context},
+                session_id=message.context.session_id,
+                headers={"context": message.context},
             ),
         )
         self.pre_run()
@@ -223,7 +226,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
@@ -248,8 +250,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                         name=f"{self.id()}", alias_name=self.name(), step_num=0
                     ),
                     sender=self.id(),
-                    session_id=self.context.session_id,
-                    headers={"context": self.context},
+                    session_id=message.context.session_id,
+                    headers={"context": message.context},
                 )
             )
         await self.async_pre_run()
@@ -287,6 +289,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.handoffs = options.get("agent_names", self.handoffs)
         self.mcp_servers = options.get("mcp_servers", self.mcp_servers)
         self.tools = []
+        self.tool_mapping = {}
         self.trajectory = []
         self._finished = True
 

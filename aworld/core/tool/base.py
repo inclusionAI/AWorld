@@ -14,9 +14,9 @@ from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants
+from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants, MemoryEventMessage, MemoryEventType
 from aworld.core.factory import Factory
-from aworld.events.util import send_message
+from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
@@ -61,9 +61,6 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def _init_context(self, context: Context):
-        self.context = context
-
     def name(self):
         """Tool unique name."""
         return self._name
@@ -78,11 +75,10 @@ class BaseTool(Generic[AgentInput, ToolInput]):
         pass
 
     def step(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
         action = message.payload
-        self.pre_step(action, **kwargs)
-        res = self.do_step(action, **kwargs)
-        final_res = self.post_step(res, action, **kwargs)
+        self.pre_step(action, message=message,**kwargs)
+        res = self.do_step(action, message =message, **kwargs)
+        final_res = self.post_step(res, action, message=message, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -145,9 +141,6 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def _init_context(self, context: Context):
-        self.context = context
-
     def name(self):
         """Tool unique name."""
         return self._name
@@ -162,11 +155,10 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
         pass
 
     async def step(self, message: Message, **kwargs) -> Message:
-        self._init_context(message.context)
         action = message.payload
-        await self.pre_step(action, **kwargs)
-        res = await self.do_step(action, **kwargs)
-        final_res = await self.post_step(res, action, **kwargs)
+        await self.pre_step(action,message=message, **kwargs)
+        res = await self.do_step(action,message=message, **kwargs)
+        final_res = await self.post_step(res, action,message=message, **kwargs)
         return final_res
 
     @abc.abstractmethod
@@ -201,7 +193,9 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
 class Tool(BaseTool[Observation, List[ActionModel]]):
     def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
                           action: ToolInput,
+                          input_message: Message,
                           **kwargs):
+        context = input_message.context
         if not step_res or not action:
             return
         for idx, act in enumerate(action):
@@ -219,21 +213,27 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                         }
                     }),
                     metadata=step_res[0].action_result[idx].metadata,
-                    task_id=self.context.task_id
+                    task_id=context.task_id
                 )
                 tool_output_message = Message(
                     category=Constants.OUTPUT,
                     payload=tool_output,
                     sender=self.name(),
-                    session_id=self.context.session_id if self.context else "",
-                    headers={"context": self.context}
+                    session_id=context.session_id if context else "",
+                    headers={"context": context}
                 )
                 sync_exec(send_message, tool_output_message)
+
+        # add results to memory after sending outputs
+        try:
+            # step_res typing narrowed: Tuple[Observation, ...]
+            self._add_tool_results_to_memory(step_res, action, input_message.context)
+        except Exception:
+            logger.warning(f"Tool {self.name()} post internal process memory write failed: {traceback.format_exc()}")
 
     def step(self, message: Message, **kwargs) -> Message:
         final_res = None
         try:
-            self._init_context(message.context)
             action = message.payload
             tool_id_mapping = {}
             for act in action:
@@ -242,9 +242,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 tool_id_mapping[tool_id] = tool_name
             self.pre_step(action, **kwargs)
             res = self.do_step(action, **kwargs)
-            final_res = self.post_step(res, action, **kwargs)
+            final_res = self.post_step(res, action,message=message, **kwargs)
             self._internal_process(
-                res, action, tool_id_mapping=tool_id_mapping, **kwargs)
+                res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             return final_res
         except Exception as e:
             logger.error(
@@ -261,16 +261,20 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
     def post_step(self,
                   step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                   action: List[ActionModel],
+                  message: Message,
                   **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
 
+        context = message.context
+
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
+            step_res[0].action_result[idx].tool_name = act.tool_name
 
-        if self.context.swarm:
-            agent = self.context.swarm.agents.get(action[0].agent_name)
+        if context.swarm:
+            agent = context.swarm.agents.get(action[0].agent_name)
             feedback_tool_result = agent.feedback_tool_result if agent else False
         else:
             feedback_tool_result = True
@@ -279,13 +283,44 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+                                session_id=context.session_id,
+                                headers={"context": context})
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+                                session_id=context.session_id,
+                                headers={"context": context})
+
+    def _add_tool_results_to_memory(self,
+                                    step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                                    action: List[ActionModel],
+                                    context: Context):
+        try:
+            if not step_res or not action:
+                return
+            observation = step_res[0]
+            if not hasattr(observation, 'action_result') or observation.action_result is None:
+                return
+            for idx, act in enumerate(action):
+                if idx >= len(observation.action_result):
+                    continue
+                tool_result = observation.action_result[idx]
+                receive_agent = None
+                if context.swarm and context.swarm.agents:
+                    receive_agent = context.swarm.agents.get(act.agent_name)
+                if not receive_agent:
+                    logger.warning(f"agent {act.agent_name} not found in swarm {context.swarm}.")
+                    return
+                sync_exec(send_message, MemoryEventMessage(
+                    payload=tool_result,
+                    agent=receive_agent,
+                    memory_event_type=MemoryEventType.TOOL,
+                    session_id=context.session_id if context else "",
+                    headers={"context": context}
+                ))
+        except Exception:
+            logger.warning(f"Tool {self.name()} write tool results to memory failed: {traceback.format_exc()}")
+
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
@@ -296,6 +331,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         # logger.warning(f"tool {self.name()} sleep 60s start")
         # await asyncio.sleep(60)
         # logger.warning(f"tool {self.name()} sleep 60s finish")
+        context = input_message.context
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
@@ -312,26 +348,34 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                         }
                     }),
                     metadata=step_res[0].action_result[idx].metadata,
-                    task_id=self.context.task_id
+                    task_id=context.task_id
                 )
                 tool_output_message = Message(
                     category=Constants.OUTPUT,
                     payload=tool_output,
                     sender=self.name(),
-                    session_id=self.context.session_id if self.context else "",
-                    headers={"context": self.context}
+                    session_id=context.session_id if context else "",
+                    headers={"context": context}
                 )
                 await send_message(tool_output_message)
+
+        # add results to memory after sending outputs
+        try:
+            await self._add_tool_results_to_memory(step_res, action, input_message.context)
+        except Exception:
+            logger.warning(f"AsyncTool {self.name()} post internal process memory write failed: {traceback.format_exc()}")
+
+        logger.info("[tag for memory tool]======= Send memory message finished")
 
         await send_message(Message(
             category=Constants.OUTPUT,
             payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
                                                      step_num=0,
-                                                     task_id=self.context.task_id),
+                                                     task_id=context.task_id),
             sender=self.name(),
             receiver=action[0].agent_name,
-            session_id=self.context.session_id if self.context else "",
-            headers={"context": self.context}
+            session_id=context.session_id if context else "",
+            headers={"context": context}
         ))
         await self._exec_tool_callback(step_res, action,
                                        Message(
@@ -343,31 +387,30 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                            ),
                                            sender=self.name(),
                                            receiver=action[0].agent_name,
-                                           session_id=self.context.session_id,
-                                           headers={"context": self.context}
+                                           session_id=context.session_id,
+                                           headers={"context": context}
                                        ),
                                        **kwargs)
 
     async def step(self, message: Message, **kwargs) -> Message:
         final_res = None
         try:
-            self._init_context(message.context)
             action = message.payload
             tool_id_mapping = {}
             for act in action:
                 tool_id = act.tool_call_id
                 tool_name = act.tool_name
                 tool_id_mapping[tool_id] = tool_name
-            await self.pre_step(action, **kwargs)
-            res = await self.do_step(action, **kwargs)
-            final_res = await self.post_step(res, action, **kwargs)
+            await self.pre_step(action, message=message,**kwargs)
+            res = await self.do_step(action, message=message, **kwargs)
+            final_res = await self.post_step(res, action, message=message,**kwargs)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             if isinstance(final_res, Message):
                 self._update_headers(final_res, message)
             if message.group_id and message.headers.get('level', 0) == 0:
                 from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
                 state_mng = RuntimeStateManager.instance()
-                state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
+                await state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
                 final_res.headers['_tool_finished'] = True
             return final_res
         except Exception as e:
@@ -385,6 +428,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
     async def post_step(self,
                         step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                         action: List[ActionModel],
+                        message: Message,
                         **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
@@ -392,9 +436,11 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
+            step_res[0].action_result[idx].tool_name = act.tool_name
 
-        if self.context.swarm:
-            agent = self.context.swarm.agents.get(action[0].agent_name)
+        context = message.context
+        if context.swarm:
+            agent = context.swarm.agents.get(action[0].agent_name)
             feedback_tool_result = agent.feedback_tool_result if agent else False
         else:
             feedback_tool_result = True
@@ -403,13 +449,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+                                session_id=context.session_id,
+                                headers={"context": context})
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
-                                session_id=self.context.session_id,
-                                headers={"context": self.context})
+                                session_id=context.session_id,
+                                headers={"context": context})
 
     async def _exec_tool_callback(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                                   action: List[ActionModel],
@@ -459,6 +505,44 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             logger.warn(
                 f"tool {self.name()} callback failed with node: {res_node}.")
             return
+
+    async def _add_tool_results_to_memory(self,
+                                          step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+                                          action: List[ActionModel],
+                                          context: Context):
+        try:
+            if not step_res or not action:
+                return
+            observation = step_res[0]
+            if not hasattr(observation, 'action_result') or observation.action_result is None:
+                return
+            for idx, act in enumerate(action):
+                if idx >= len(observation.action_result):
+                    continue
+                tool_result = observation.action_result[idx]
+                receive_agent = None
+                if context.swarm and context.swarm.agents:
+                    receive_agent = context.swarm.agents.get(act.agent_name)
+                if not receive_agent:
+                    logger.warning(f"agent {act.agent_name} not found in swarm {context.swarm}.")
+                    return
+                memory_msg = MemoryEventMessage(
+                    payload=tool_result,
+                    agent=receive_agent,
+                    memory_event_type=MemoryEventType.TOOL,
+                    session_id=context.session_id if context else "",
+                    headers={"context": context}
+                )
+                try:
+                    future = await send_message_with_future(memory_msg)
+                    results = await future.wait(timeout=300)
+                    if not results:
+                        logger.warning(f"Memory write task failed: {memory_msg}")
+                except Exception as e:
+                    logger.warn(f"Memory write task failed: {traceback.format_exc()}")
+
+        except Exception:
+            logger.warning(f"AsyncTool {self.name()} write tool results to memory failed: {traceback.format_exc()}")
 
     def _update_headers(self, message: Message, input_message: Message):
         headers = input_message.headers.copy()

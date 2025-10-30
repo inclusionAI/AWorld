@@ -187,7 +187,7 @@ class AWorldLogger:
             func_name = getattr(frame.f_code, "co_qualname", frame.f_code.co_name).replace("<module>", "")
 
             trace_id = get_trace_id()
-            update = {"function": func_name, "line": line, "name": module, "extra": {"trace_id": trace_id}}
+            update = {"function": func_name, "line": line, "name": module, "extra": {"trace_id": trace_id, "logger_name": "Aworld"}}
 
             def patch(record):
                 extra = update.pop("extra")

@@ -17,7 +17,8 @@ class LocalSandboxApi(BaseSandboxApi):
             env_config: Any,
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Optional[Any] = None,
-            black_tool_actions: Optional[Dict[str, List[str]]] = None
+            black_tool_actions: Optional[Dict[str, List[str]]] = None,
+            skill_configs: Optional[Any] = None,
     ) -> SandboxLocalResponse:
         """
         Create a local sandbox based on the reference implementation.
@@ -30,7 +31,8 @@ class LocalSandboxApi(BaseSandboxApi):
             return SandboxLocalResponse(
                 status=SandboxStatus.RUNNING,
                 mcp_config=mcp_config,
-                env_type=SandboxEnvType.LOCAL
+                env_type=SandboxEnvType.LOCAL,
+                skill_configs=skill_configs
             )
         except Exception as e:
             logger.warning(f"Failed to create local sandbox: {e}")
