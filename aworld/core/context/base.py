@@ -415,6 +415,11 @@ class Context:
     """
     Agent Skills Support
     """
+    async def init_skill_list(self, skill_list: Dict[str, Any], namespace: str):
+        """
+        init skill list from agent
+        """
+
     async def active_skill(self, skill_name: str, namespace: str) -> str:
         """
         activate a skill help agent to perform a task
@@ -433,5 +438,5 @@ class Context:
         """
         pass
 
-    async def get_skill_list(self, namespace: str) -> list[str]:
+    async def get_skill_list(self, namespace: str) -> Dict[str, Any]:
         pass

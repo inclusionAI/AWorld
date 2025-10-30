@@ -202,6 +202,7 @@ class AgentConfig(BaseConfig):
     use_tools_in_prompt: bool = False
     exit_on_failure: bool = False
     human_tools: List[str] = []
+    skill_configs: Dict[str, Any] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

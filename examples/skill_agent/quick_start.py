@@ -66,7 +66,6 @@ async def run(user_input: str):
     # 2. build context config
     context_config = AmniConfigFactory.create(
         AmniConfigLevel.NAVIGATOR,
-        ["basic", "task", "work_dir", "todo", "action_info", "skills"],
         debug_mode=True
     )
 
@@ -83,4 +82,4 @@ async def run(user_input: str):
 
 if __name__ == '__main__':
     asyncio.run(
-        run(user_input="帮我在携程上面找到2025年12月份上海往返札幌的最便宜的机票，要求周五去，周日晚上（17:00后）或者周一回的，12月份的每个符合要求的日期都需要查询，并找到最便宜的符合要求的航班。"))
+        run(user_input="How to use Aworld Framework skill feature to build Agent?"))

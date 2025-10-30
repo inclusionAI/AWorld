@@ -85,7 +85,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         feedback_tool_result: bool = True,
         wait_tool_result: bool = False,
         sandbox: Sandbox = None,
-        skill_configs: Dict[str, Any] = None,
         **kwargs,
     ):
         """Base agent init.
@@ -156,7 +155,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # Supported MCP server
         self.mcp_servers: List[str] = mcp_servers or []
         self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
-        self.skill_configs: Dict[str, Any] = skill_configs or {}
+        self.skill_configs: Dict[str, Any] = self.conf.get("skill_configs", {})
         if self.skill_configs:
             from aworld.core.context.amni.tool.context_skill_tool import ContextSkillTool
             self.tool_names.extend(["SKILL"])

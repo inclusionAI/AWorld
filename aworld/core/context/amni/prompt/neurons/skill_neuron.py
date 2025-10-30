@@ -35,13 +35,13 @@ class SkillsNeuron(Neuron):
     """Neuron for handling plan related properties"""
 
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
-        active_skills = await context.get_skill_list(namespace)
-        if not active_skills:
+        total_skills = await context.get_skill_list(namespace)
+        if not total_skills:
             return []
         items = []
-        for skill_id, skill in active_skills.items():
+        for skill_id, skill in total_skills.items():
             items.append(
-                f"  <skill id=\"{skill_id}\">\n"
+                f"  <skill id=\"{skill_id}\" status=\"{skill.get('active', False)}\">\n"
                 f"    <skill_name>{skill['name']}</skill_name>\n"
                 f"    <skill_name>{skill['desc']}</skill_name>\n"
                 f"  </skill>")
