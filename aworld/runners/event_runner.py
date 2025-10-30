@@ -152,6 +152,7 @@ class TaskEventRunner(TaskRunner):
 
         results = []
         handlers = self.event_mng.get_handlers(key)
+        inner_handlers = [handler.name() for handler in self.handlers]
         async with trace.message_span(message=message):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
@@ -179,7 +180,7 @@ class TaskEventRunner(TaskRunner):
                     for t, _ in handle_map.items():
                         t.add_done_callback(partial(self._task_done_callback, group=handle_map, message=message))
                         await asyncio.sleep(0)
-            else:
+            if not handlers or message.receiver in inner_handlers:
                 # not handler, return raw message
                 # if key == Constants.OUTPUT:
                 #     return results
