@@ -389,7 +389,7 @@ class AmniContext(Context):
         if not activate_skills:
             activate_skills = []
         activate_skills.append(skill_name)
-        skill = await self.get_skill_list(namespace=namespace)
+        skill = await self.get_skill(skill_name=skill_name, namespace=namespace)
 
         self.put(ACTIVE_SKILLS_KEY, activate_skills, namespace=namespace)
         return (f"skill {skill_name} activated, current skills: {activate_skills} \n\n"
@@ -417,6 +417,12 @@ class AmniContext(Context):
 
     async def get_skill_list(self, namespace: str) -> Dict[str, Any]:
         return self.get(SKILL_LIST_KEY, namespace=namespace)
+
+    async def get_skill(self, skill_name: str, namespace: str) -> Dict[str, Any]:
+        skills = await self.get_skill_list(namespace)
+        if not skills:
+            return {}
+        return skills.get(skill_name, {})
 
     async def get_skill_name_list(self, namespace: str) -> list[str]:
         agent_skills = self.get(SKILL_LIST_KEY, namespace=namespace)

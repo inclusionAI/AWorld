@@ -263,7 +263,7 @@ class AmniConfigFactory:
             config.debug_mode = debug_mode
             config.agent_config = AgentContextConfig(
                 enable_system_prompt_augment=True,
-                neuron_names= neuron_names or ["basic", "task", "work_dir", "todo", "action_info", "skills"],
+                neuron_names= neuron_names or ["task", "work_dir", "todo", "action_info", "skills", "basic"],
                 history_rounds= 20,
                 enable_summary=True,
                 summary_rounds= 30,
