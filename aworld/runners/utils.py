@@ -45,12 +45,12 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True, run_con
                 if task_status_store is None and run_conf.task_status_store_config:
                     from aworld.runners.task_status_storage import build_task_status_store
                     task_status_store = build_task_status_store(run_conf.task_status_store_config)
+                task.task_status_store = task_status_store
             
             if task.event_driven:
                 runner = new_instance("aworld.runners.event_runner.TaskEventRunner",
                                       task,
-                                      agent_oriented=agent_oriented,
-                                      task_status_store=task_status_store)
+                                      agent_oriented=agent_oriented)
             else:
                 runner = new_instance(
                     f"aworld.runners.call_driven_runner.{snake_to_camel(execute_type)}Runner",

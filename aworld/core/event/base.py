@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from aworld.config.conf import ConfigDict
 from aworld.core.common import Config, Observation, ActionModel, TaskItem
 from aworld.core.context.base import Context
-from aworld.models.model_response import ModelResponse
 
 
 class Constants:
@@ -175,7 +174,7 @@ class HumanMessage(Message[Any]):
     priority = -1
 
 @dataclass
-class ChunkMessage(Message[ModelResponse]):
+class ChunkMessage(Message[Any]):
     """Chunk message is used to stream the response of the LLM."""
     category: str = 'chunk'
     source_type: str = field(default=None)

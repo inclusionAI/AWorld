@@ -25,7 +25,7 @@ class RedisConfig(StorageConfig):
     password: str = None
     key_prefix: str = 'AWORLD:RB:'
     index_name: str = 'idx:AWORLD:RB'
-    recreate_idx_if_exists = False
+    recreate_idx_if_exists: bool = False
     data_schema: Dict[str, type] = {}
 
 

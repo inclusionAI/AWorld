@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 
+from pydantic import BaseModel
+
 from aworld.config import StorageConfig
 from aworld.core.singleton import InheritanceSingleton
 from aworld.core.storage.base import Storage
@@ -25,8 +27,8 @@ class TaskStatus:
     TIMEOUT = "timeout"
 
 
-@dataclass
-class TaskStatusData(Data):
+
+class TaskStatusData(BaseModel):
     """Task status data structure for storage.
     
     Attributes:
@@ -53,7 +55,7 @@ class TaskStatusStore:
     pluggable backends (in-memory, Redis, SQLite, etc.).
     """
 
-    def __init__(self, storage: Storage[TaskStatusData]):
+    def __init__(self, storage: Storage[Data]):
         """Initialize with a Storage instance.
         
         Args:
@@ -66,16 +68,19 @@ class TaskStatusStore:
         """Ensure the storage block exists."""
         await self._storage.create_block(self._block_id, overwrite=False)
 
+    async def _build_data_in_store(self, data: TaskStatusData) -> Data:
+        """Build Data instance for storage."""
+        return Data(value=data, block_id=self._block_id)
+
     async def register(self, task_id: str, status: str = TaskStatus.INIT):
         """Register a new task with initial status."""
         await self._ensure_block()
-        data = TaskStatusData(
+        data = await self._build_data_in_store(TaskStatusData(
             task_id=task_id,
             status=status,
             reason=None,
             updated_at=time.time(),
-            block_id=self._block_id
-        )
+        ))
         # Use overwrite=False to prevent overwriting existing tasks
         existing = await self._get_data(task_id)
         if not existing:
@@ -84,13 +89,12 @@ class TaskStatusStore:
     async def set_status(self, task_id: str, status: str, reason: Optional[str] = None):
         """Set task status with optional reason."""
         await self._ensure_block()
-        data = TaskStatusData(
+        data = await self._build_data_in_store(TaskStatusData(
             task_id=task_id,
             status=status,
             reason=reason,
             updated_at=time.time(),
-            block_id=self._block_id
-        )
+        ))
         await self._storage.create_data(data, block_id=self._block_id, overwrite=True)
 
     async def is_finished(self, task_id: str) -> bool:
@@ -137,7 +141,7 @@ class TaskStatusStore:
         }
         results = await self._storage.select_data(condition)
         if results:
-            return results[0]
+            return results[0].value
         return None
 
 
