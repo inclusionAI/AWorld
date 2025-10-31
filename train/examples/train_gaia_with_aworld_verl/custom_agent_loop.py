@@ -1,6 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import os
+
+
 import uuid
 from typing import Union
 
@@ -45,6 +47,26 @@ Here are some tips to help you give better instructions:
 Now, here is the task. Stay focused and complete it carefully using the appropriate tools!
 """
 
+GAIA_MCP_CONFIG = {
+    "mcpServers": {
+        "virtualpc-mcp-server": {
+            "type": "streamable-http",
+            "url": "http://mcp.aworldagents.com/vpc/mcp",
+            "headers": {
+                "Authorization": f"{os.getenv('MCP_AUTHORIZATION')}",
+                # "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
+
+                "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
+                # "MCP_SERVERS": "e2b-code-server",
+                "IMAGE_ENV": f"{{\"E2B_API_KEY\":\"{os.getenv('MCP_E2B_API_KEY', '')}\"}}",
+            },
+            "timeout": 600,
+            "sse_read_timeout": 600,
+            "client_session_timeout_seconds": 600
+        }
+    }
+}
+
 
 class GaiaAgentLoop(AworldAgentLoop):
     async def build_agents(self) -> Union[Agent, Swarm]:
@@ -67,26 +89,6 @@ class GaiaAgentLoop(AworldAgentLoop):
         )
 
 
-GAIA_MCP_CONFIG = {
-    "mcpServers": {
-        "virtualpc-mcp-server": {
-            "type": "streamable-http",
-            "url": "http://mcp.aworldagents.com/vpc/mcp",
-            "headers": {
-                "Authorization": f"{os.getenv('MCP_AUTHORIZATION')}",
-              # "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
-              
-                "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
-                # "MCP_SERVERS": "e2b-code-server",
-                "IMAGE_ENV": f"{{\"E2B_API_KEY\":\"{os.getenv('MCP_E2B_API_KEY', '')}\"}}",
-            },
-            "timeout": 600,
-            "sse_read_timeout": 600,
-            "client_session_timeout_seconds": 600
-        }
-    }
-}
-
 
 async def build_agents() -> Union[Agent, Swarm]:
     # gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
@@ -108,7 +110,7 @@ async def build_agents() -> Union[Agent, Swarm]:
             llm_model_name="claude-sonnet-4-20250514",
             llm_base_url="https://matrixllm.alipay.com/v1",
             llm_api_key="sk-5d0c421b87724cdd883cfa8e883998da",
-            llm_provider="verl",
+            llm_provider="openai",
             llm_temperature=1.0,
             top_p=1.0,
             top_k=80,
