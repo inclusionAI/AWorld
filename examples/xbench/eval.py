@@ -1,11 +1,7 @@
 
-# init env
 from dotenv import load_dotenv
+# init env
 load_dotenv()
-
-from aworld.core.agent.swarm import Swarm
-from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
-
 
 import asyncio
 import logging
@@ -13,9 +9,11 @@ import os
 import traceback
 from datetime import datetime
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
-from aworld.dataset.sampler import FixedSampler
 from aworld.runners.evaluate_runner import EvaluateRunner
 from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig
 from aworld.core.task import Task, TaskResponse
@@ -52,9 +50,6 @@ class AmniContextEvaluatable(EvalTarget):
 
         return await ApplicationContext.from_input(task_input, context_config = context_config)
 
-    # async def build_common_context(self, task_input: TaskInput) -> Context:
-    #     return
-
     async def build_task(self, task_content: str, session_id: str = None, task_id: str = None) -> Task:
         if not session_id:
             session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -81,8 +76,7 @@ class AmniContextEvaluatable(EvalTarget):
             context=context,
             conf=TaskConfig(
                 stream=False,
-                exit_on_failure=True,
-                resp_carry_context=True,
+                exit_on_failure=True
             ),
             timeout=60 * 60
         )
@@ -102,7 +96,7 @@ class AmniContextEvaluatable(EvalTarget):
             os.makedirs(f"results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
-                f.write(str(result[task_id].answer))
+                f.write(result[task_id].answer)
             if isinstance(result, TaskResponse):
                 return {"answer": result.answer}
             if isinstance(result, dict):
@@ -144,7 +138,10 @@ async def evaluate():
 
     # ============= SAVE RESULT TO FILE =============
     result_file_path = f"results/{task_id}/"
-    os.makedirs(result_file_path, exist_ok=True)
+    if not os.path.exists("results"):
+        os.mkdir("results")
+    if not os.path.exists(result_file_path):
+        os.mkdir(result_file_path)
     with open(f"{result_file_path}/results.txt", "w") as f:
         f.write(f"{result.run_id}\n")
         f.write(f"START: {datetime.fromtimestamp((int(result.create_time))).strftime('%Y%m%d %H%M%S')}\n")

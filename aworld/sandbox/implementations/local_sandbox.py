@@ -23,6 +23,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Optional[Any] = None,
             black_tool_actions: Optional[Dict[str, List[str]]] = None,
+            skill_configs: Optional[Any] = None,
             **kwargs
     ):
         """Initialize a new LocalSandbox instance.
@@ -42,7 +43,9 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             timeout=timeout,
             mcp_servers=mcp_servers,
             mcp_config=mcp_config,
-            black_tool_actions=black_tool_actions
+            black_tool_actions=black_tool_actions,
+            skill_configs=skill_configs,
+
         )
 
         if sandbox_id:
@@ -58,6 +61,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         self._env_type = SandboxEnvType.LOCAL
         self._mcp_servers = mcp_servers
         self._mcp_config = mcp_config
+        self._skill_configs= skill_configs
         self._black_tool_actions = black_tool_actions or {}
 
         # Ensure sandbox_id has a value in all cases
@@ -70,7 +74,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 env_config=None,
                 mcp_servers=mcp_servers,
                 mcp_config=mcp_config,
-                black_tool_actions=black_tool_actions
+                black_tool_actions=black_tool_actions,
+                skill_configs=skill_configs,
             )
 
             if not response:
@@ -86,13 +91,15 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                     "env_type": getattr(response, 'env_type', None),
                 }
                 self._mcp_config = getattr(response, 'mcp_config', None)
+                self._skill_configs = getattr(response, 'skill_configs', None)
 
         # Initialize McpServers with a reference to this sandbox instance
         self._mcpservers = McpServers(
             mcp_servers,
             self._mcp_config,
             sandbox=self,
-            black_tool_actions=self._black_tool_actions
+            black_tool_actions=self._black_tool_actions,
+            skill_configs=self._skill_configs
         )
 
     async def remove(self) -> None:
@@ -117,6 +124,16 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             await self.remove()
         except Exception as e:
             logger.warning(f"Failed to remove sandbox: {e}")
+
+    def get_skill_list(self) -> Optional[Any]:
+        """Get the skill configurations.
+        
+        Returns:
+            Optional[Any]: The skill configurations, or None if empty.
+        """
+        if self._skill_configs is None or not self._skill_configs:
+            return None
+        return self._skill_configs
 
     def __del__(self):
         super().__del__()

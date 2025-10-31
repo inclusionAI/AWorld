@@ -1,11 +1,10 @@
 import json
-import requests
 import traceback
-
+from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import List, Dict, Any, Optional, Tuple
-from contextlib import AsyncExitStack
 
+import requests
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
@@ -38,7 +37,7 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
                     param_type = (
                         param_info.get("type")
                         if param_info.get("type") != "str"
-                           and param_info.get("type") is not None
+                        and param_info.get("type") is not None
                         else "string"
                     )
                     param_desc = param_info.get("description", "")
@@ -107,7 +106,7 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
                         }
 
             openai_function_schema = {
-                #"name": f"mcp__{sever_name}__{tool.name}",
+                # "name": f"mcp__{sever_name}__{tool.name}",
                 "name": f"{sever_name}__{tool.name}",
                 "description": tool.description,
                 "parameters": {
@@ -161,7 +160,7 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                         param_type = (
                             param_info.get("type")
                             if param_info.get("type") != "str"
-                               and param_info.get("type") is not None
+                            and param_info.get("type") is not None
                             else "string"
                         )
                         param_desc = param_info.get("description", "")
@@ -258,10 +257,138 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
     return openai_tools
 
 
+async def skill_translate_tools(
+        skills: List[str] = None,
+        skill_configs: Dict[str, Any] = None,
+        tools: List[Dict[str, Any]] = None,
+        tool_mapping: Dict[str, str] = {}
+) -> List[Dict[str, Any]]:
+    if not tools:
+        return tools or []
+
+    if not skill_configs:
+        return tools
+
+    # If skills is empty, exclude all tools in tool_mapping (only keep non-MCP tools)
+    if not skills:
+        filtered_tools = []
+        for tool in tools:
+            if not isinstance(tool, dict) or "function" not in tool:
+                filtered_tools.append(tool)  # non-conforming, keep
+                continue
+
+            function_info = tool["function"]
+            if not isinstance(function_info, dict) or "name" not in function_info:
+                filtered_tools.append(tool)
+                continue
+
+            tool_name = function_info["name"]
+
+            # Only keep tools that are NOT in tool_mapping
+            if not tool_mapping or tool_name not in tool_mapping:
+                filtered_tools.append(tool)
+
+        logger.info(f"Skills is empty, excluded {len(tools) - len(filtered_tools)} MCP tools, kept {len(filtered_tools)} non-MCP tools")
+        return filtered_tools
+
+    # Collect all tool filters from skill configs
+    tool_filter = {}  # {server_name: set(tool_names)} or {server_name: None} means all tools
+
+    for skill_id in skills:
+        if skill_id not in skill_configs:
+            logger.warning(f"Skill '{skill_id}' not found in skill_configs")
+            continue
+
+        skill_config = skill_configs[skill_id]
+        tool_list = skill_config.get("tool_list", {})
+
+        for server_name, tool_names in tool_list.items():
+            # Normalize tool_names to list (None or [] means all)
+            if not tool_names:
+                # If any skill requests ALL tools for this server, override to None
+                tool_filter[server_name] = None
+                continue
+
+            # Merge specific tool names across skills
+            if server_name not in tool_filter or tool_filter[server_name] is None:
+                # Initialize with empty set if not already set to ALL (None)
+                tool_filter[server_name] = set()
+
+            if isinstance(tool_names, list):
+                tool_filter[server_name].update(tool_names)
+            else:
+                # single string safety
+                tool_filter[server_name].add(str(tool_names))
+
+    # Selected servers from skills
+    selected_servers = set(tool_filter.keys())
+
+    # Build a set of all known MCP servers from mapping (values of mapping)
+    known_mcp_servers = set(tool_mapping.values()) if tool_mapping else set()
+
+    # Filter tools based on tool_filter and mapping rules
+    filtered_tools = []
+    tool_seen = set()  # Track unique tools to avoid duplicates
+
+    for tool in tools:
+        if not isinstance(tool, dict) or "function" not in tool:
+            filtered_tools.append(tool)  # non-conforming, keep
+            continue
+
+        function_info = tool["function"]
+        if not isinstance(function_info, dict) or "name" not in function_info:
+            filtered_tools.append(tool)
+            continue
+
+        tool_name = function_info["name"]
+
+        # Skip duplicates
+        if tool_name in tool_seen:
+            continue
+
+        # Resolve server and specific tool name (prefer mapping)
+        server_name = None
+        specific_tool_name = tool_name
+
+        if tool_mapping and specific_tool_name in tool_mapping:
+            server_name = tool_mapping[specific_tool_name]
+
+        # If this tool has no resolvable server (non-MCP or custom), keep it
+        if not server_name:
+            filtered_tools.append(tool)
+            tool_seen.add(tool_name)
+            continue
+
+        # If tool belongs to a known MCP server but not in selected skills, drop it
+        if server_name in known_mcp_servers and server_name not in selected_servers:
+            continue
+
+        # If the server is selected, apply per-server tool filtering
+        if server_name in tool_filter:
+            allowed = tool_filter[server_name]
+            if allowed is None:
+                # all tools from this server are allowed
+                filtered_tools.append(tool)
+                tool_seen.add(tool_name)
+            else:
+                if specific_tool_name in allowed:
+                    filtered_tools.append(tool)
+                    tool_seen.add(tool_name)
+            # else drop
+            continue
+
+        # If server is not in selected (and also not in known_mcp_servers), keep as non-target tool
+        filtered_tools.append(tool)
+        tool_seen.add(tool_name)
+
+    logger.info(f"Filtered {len(filtered_tools)} tools from {len(tools)} based on skills: {skills}")
+    return filtered_tools
+
+
 async def mcp_tool_desc_transform_v2(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
         server_instances: Dict[str, Any] = None,
-        black_tool_actions: Dict[str, List[str]] = None
+        black_tool_actions: Dict[str, List[str]] = None,
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -301,7 +428,7 @@ async def mcp_tool_desc_transform_v2(
                         tmp_function = {
                             "type": "function",
                             "function": {
-                                #"name": "mcp__" + server_name + "__" + item["name"],
+                                # "name": "mcp__" + server_name + "__" + item["name"],
                                 "name": server_name + "__" + item["name"],
                                 "description": item["description"],
                                 "parameters": {
@@ -322,7 +449,7 @@ async def mcp_tool_desc_transform_v2(
             elif "sse" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                       # "name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "sse",
                         "params": {
@@ -338,8 +465,8 @@ async def mcp_tool_desc_transform_v2(
             elif "streamable-http" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
-                        "name":server_name,
+                        # "name": "mcp__" + server_name,
+                        "name": server_name,
                         "type": "streamable-http",
                         "params": {
                             "url": server_config["url"],
@@ -355,7 +482,7 @@ async def mcp_tool_desc_transform_v2(
                 # elif "stdio" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "stdio",
                         "params": {
@@ -441,6 +568,7 @@ async def mcp_tool_desc_transform_v2(
 
     return openai_tools
 
+
 async def process_mcp_tools(
         mcp_tools: Optional[List[Dict[str, Any]]] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
@@ -449,6 +577,7 @@ async def process_mcp_tools(
 
     tool_mapping: Dict[str, str] = {}
     processed_tools: List[Dict[str, Any]] = []
+    seen_simple_names: set[str] = set()
 
     for tool in mcp_tools:
         processed_tool = tool.copy()
@@ -457,12 +586,20 @@ async def process_mcp_tools(
         original_name = processed_tool["function"]["name"]
         if "__" in original_name:
             server_name, simple_name = original_name.split("__", 1)
+            # only change: skip if we've already seen this simple name
+            if simple_name in seen_simple_names:
+                continue
+            seen_simple_names.add(simple_name)
+
             processed_tool["function"]["name"] = simple_name
-            tool_mapping[simple_name] = server_name
+            # keep first mapping only
+            if simple_name not in tool_mapping:
+                tool_mapping[simple_name] = server_name
 
         processed_tools.append(processed_tool)
 
     return processed_tools, tool_mapping
+
 
 async def mcp_tool_desc_transform(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None
@@ -505,7 +642,7 @@ async def mcp_tool_desc_transform(
                         tmp_function = {
                             "type": "function",
                             "function": {
-                                #"name": "mcp__" + server_name + "__" + item["name"],
+                                # "name": "mcp__" + server_name + "__" + item["name"],
                                 "name": server_name + "__" + item["name"],
                                 "description": item["description"],
                                 "parameters": {
@@ -526,7 +663,7 @@ async def mcp_tool_desc_transform(
             elif "sse" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "sse",
                         "params": {
@@ -542,7 +679,7 @@ async def mcp_tool_desc_transform(
             elif "streamable-http" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "streamable-http",
                         "params": {
@@ -559,7 +696,7 @@ async def mcp_tool_desc_transform(
                 # elif "stdio" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "stdio",
                         "params": {
@@ -836,3 +973,38 @@ async def cleanup_server(server):
         )
     except Exception as e:
         logger.warning(f"Failed to cleanup server: {e}")
+
+# Helper: derive mcp_servers from skill_configs if provided
+
+
+def replace_mcp_servers_variables(skill_configs: Dict[str, Any] = None,
+                                  current_servers: List[str] = None,
+                                  default_servers: List[str] = None) -> List[str]:
+    """
+    If skill_configs is empty/None, return current_servers (or default).
+    If present, collect all keys of `tool_list` across skills as server names.
+    Fallback to current_servers (or default) when no keys gathered.
+    """
+    if current_servers is None:
+        current_servers = []
+    if default_servers is None:
+        default_servers = []
+
+    if not skill_configs:
+        return current_servers or default_servers
+
+    server_set = set()
+    try:
+        for _skill_id, cfg in skill_configs.items():
+            tool_list = (cfg or {}).get("tool_list", {})
+            if isinstance(tool_list, dict):
+                for server in tool_list.keys():
+                    if server:
+                        server_set.add(str(server))
+    except Exception:
+        # On any unexpected structure, keep original servers
+        return current_servers or default_servers
+
+    if not server_set:
+        return current_servers or default_servers
+    return list(server_set)
