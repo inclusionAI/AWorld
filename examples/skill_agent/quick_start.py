@@ -81,4 +81,5 @@ async def run(user_input: str):
 
 
 if __name__ == '__main__':
-    asyncio.run(run(user_input="Help me find the latest week stock price of BABA. And Analysis the trend of news."))
+    asyncio.run(run(user_input="read https://arxiv.org/pdf/2510.23595v1 and tell me the abstract and conclusion of this paper"))
+    # asyncio.run(run(user_input="Help me find the latest week stock price of BABA. And Analysis the trend of news."))
