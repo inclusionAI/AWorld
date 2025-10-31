@@ -1,11 +1,11 @@
 
+# init env
 from dotenv import load_dotenv
+load_dotenv()
 
 from aworld.core.agent.swarm import Swarm
 from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
 
-# init env
-load_dotenv()
 
 import asyncio
 import logging
@@ -13,14 +13,11 @@ import os
 import traceback
 from datetime import datetime
 
-from dotenv import load_dotenv
-load_dotenv()
-
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
 from aworld.dataset.sampler import FixedSampler
 from aworld.runners.evaluate_runner import EvaluateRunner
-from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig, TaskRunMode
+from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig
 from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTarget, EvalDataCase, EvalTask, EvalResult
 from aworld.runner import Runners
@@ -97,12 +94,10 @@ class AmniContextEvaluatable(EvalTarget):
         task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
         try:
             result = await Runners.run_task(task=task)
-            if not os.path.exists(f"trajectory/{batch_id}"):
-                os.mkdir(f"trajectory/{batch_id}")
-            with open(f"trajectory/{batch_id}/traj_{index}.txt", "a") as f:
-                f.write(str(result.trajectory))
-            if not os.path.exists(f"results/{batch_id}"):
-                os.mkdir(f"results/{batch_id}")
+            os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
+            with open(f"trajectory/{batch_id}/traj_{index}.json", "a") as f:
+                f.write(str(result[task_id].trajectory[-1].get("exp_data", {}).get("messages", [])))
+            os.makedirs(f"results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
                 f.write(str(result[task_id].answer))
@@ -141,16 +136,13 @@ async def evaluate():
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=3,
+            parallel_num=200,
             skip_passed_cases=True,
         )).run()
 
     # ============= SAVE RESULT TO FILE =============
     result_file_path = f"results/{task_id}/"
-    if not os.path.exists("results"):
-        os.mkdir("results")
-    if not os.path.exists(result_file_path):
-        os.mkdir(result_file_path)
+    os.makedirs(result_file_path, exist_ok=True)
     with open(f"{result_file_path}/results.txt", "w") as f:
         f.write(f"{result.run_id}\n")
         f.write(f"START: {datetime.fromtimestamp((int(result.create_time))).strftime('%Y%m%d %H%M%S')}\n")
