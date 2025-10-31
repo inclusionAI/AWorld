@@ -197,12 +197,12 @@ class AgentConfig(BaseConfig):
     max_actions_per_step: int = 10
     system_prompt: Optional[str] = None
     system_prompt_template: Optional[str] = None
-    agent_prompt: Optional[str] = None
     working_dir: Optional[str] = None
     enable_recording: bool = False
     use_tools_in_prompt: bool = False
     exit_on_failure: bool = False
     human_tools: List[str] = []
+    skill_configs: Dict[str, Any] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

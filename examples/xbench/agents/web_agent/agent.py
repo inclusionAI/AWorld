@@ -1,13 +1,13 @@
 from typing import Dict, Any, List
 
 
-from aworld.agents.amni_llm_agent import ApplicationAgent
+from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
 from aworld.logs.util import logger
 
 
-class WebAgent(ApplicationAgent):
+class WebAgent(Agent):
     """
     Web browsing agent for reading and analyzing web page content
     """
@@ -22,12 +22,12 @@ class WebAgent(ApplicationAgent):
         if self._finished:
             try:
                 # Get todo_info and actions_info, handle potential None values and exceptions
-                todo_info = await self.get_task_context(message).get_todo_info()
-                actions_info = await self.get_task_context(message).get_actions_info()
+                todo_info = await message.context.get_todo_info()
+                actions_info = await message.context.get_actions_info()
 
                 # Set to task_output_object
-                self.get_task_context(message).task_output_object.todo_info = todo_info
-                self.get_task_context(message).task_output_object.actions_info = actions_info
+                message.context.task_output_object.todo_info = todo_info
+                message.context.task_output_object.actions_info = actions_info
 
                 # Safely concatenate strings, handle None values
                 if todo_info is not None:

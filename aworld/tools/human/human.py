@@ -5,6 +5,7 @@ from typing import Any, Dict, Tuple
 
 from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult
+from aworld.core.context.base import Context
 from aworld.core.event.base import Constants, TopicType, HumanMessage, Message
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.events.util import send_message
@@ -47,7 +48,7 @@ class HumanTool(AsyncTool):
     async def finished(self) -> bool:
         return self.step_finished
 
-    async def do_step(self, actions: list[ActionModel], **kwargs) -> Tuple[
+    async def do_step(self, actions: list[ActionModel], message:Message = None, **kwargs) -> Tuple[
         Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
@@ -63,14 +64,14 @@ class HumanTool(AsyncTool):
             if not confirm_content:
                 raise ValueError("content invalid")
             # send human message to read human input
-            message, error = await self.send_human_message(action=action, confirm_content=confirm_content)
+            human_message, error = await self.send_human_message(action=action, context= message.context, confirm_content=confirm_content)
             if error:
                 raise ValueError(f"HumanTool|send human message failed: {error}")
 
             # hanging on human message
             logger.info(f"HumanTool|waiting for human input")
-            result = await long_wait_message_state(message=message)
-            logger.info(f"HumanTool|human input succeed: {message.payload}")
+            result = await long_wait_message_state(message=human_message)
+            logger.info(f"HumanTool|human input succeed: {human_message.payload}")
 
             observation.content = result
             observation.action_result.append(
@@ -90,7 +91,7 @@ class HumanTool(AsyncTool):
         return (observation, reward, kwargs.get("terminated", False),
                 kwargs.get("truncated", False), info)
 
-    async def send_human_message(self, action: ActionModel, confirm_content):
+    async def send_human_message(self, action: ActionModel, context: Context, confirm_content):
         error = None
         try:
             message = HumanMessage(
@@ -98,9 +99,9 @@ class HumanTool(AsyncTool):
                 payload=confirm_content,
                 sender=self.name(),
                 receiver=action.agent_name,
-                session_id=self.context.session_id,
+                session_id=context.session_id,
                 topic=TopicType.HUMAN_CONFIRM,
-                headers={"context": self.context}
+                headers={"context": context}
             )
             await send_message(message)
             return message, error

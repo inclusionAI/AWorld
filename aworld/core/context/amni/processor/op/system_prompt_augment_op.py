@@ -59,7 +59,7 @@ class SystemPromptAugmentOp(BaseOp):
                 "memory_commands": []
             }
 
-    async def _process_neurons(self, context: ApplicationContext, event: SystemPromptMessagePayload) -> str:
+    async def _process_neurons(self, context: ApplicationContext, event: SystemPromptMessagePayload) -> Optional[Dict[str, Any]]:
         """
         Process prompt components, supporting both rerank and append strategies
         Supports filtering components configured in component_neuron based on namespace
@@ -68,7 +68,7 @@ class SystemPromptAugmentOp(BaseOp):
 
         if not context.get_config().get_agent_context_config(agent_id).enable_system_prompt_augment:
             logger.info(f"[SYSTEM_PROMPT_AUGMENT_OP] switch is disabled")
-            return ""
+            return None
 
 
         augment_prompts = {}
@@ -142,7 +142,7 @@ class SystemPromptAugmentOp(BaseOp):
         # If length is not enough, no need to rerank, directly append
         total_length = sum(len(item) for item in items)
         if total_length <= 4000:
-            return await neuron.format(context=context, namespace=namespace)
+            return await neuron.format(context=context, items=items, namespace=namespace)
 
         # Only judge the first part of text
         tmp_items = [item[:1000] for item in items]
@@ -203,7 +203,7 @@ class SystemPromptAugmentOp(BaseOp):
 
         return filtered_results
 
-    async def build_system_command(self, context: ApplicationContext, event: SystemPromptMessagePayload, augment_prompts: str) -> Optional[MemoryCommand]:
+    async def build_system_command(self, context: ApplicationContext, event: SystemPromptMessagePayload, augment_prompts: Optional[Dict[str, Any]]) -> Optional[MemoryCommand]:
         """
         Build system message command
         """
@@ -212,7 +212,9 @@ class SystemPromptAugmentOp(BaseOp):
         user_query = event.user_query
 
         # Combine system prompt and augment_prompts
-        appended_prompt = event.system_prompt + "\n\n" + "\n".join(augment_prompts.values())
+        appended_prompt = event.system_prompt
+        if augment_prompts:
+            appended_prompt = event.system_prompt + "\n\n" + "\n".join(augment_prompts.values())
 
         formatted_system_prompt = await ContextPromptTemplate(template=appended_prompt).async_format(
             context=context,

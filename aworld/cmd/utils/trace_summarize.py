@@ -84,8 +84,7 @@ async def _do_summarize_trace(trace_id: str):
     trace_agent = Agent(
         conf=agent_config,
         name="trace_agent",
-        system_prompt=trace_sys_prompt,
-        agent_prompt=trace_prompt,
+        system_prompt=trace_sys_prompt + trace_prompt,
         tool_names=["trace"],
         feedback_tool_result=True,
     )

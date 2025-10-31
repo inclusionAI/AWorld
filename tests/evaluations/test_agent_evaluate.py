@@ -35,7 +35,6 @@ class AgentEvaluationTest(unittest.IsolatedAsyncioTestCase):
             conf=summarize_agent_config,
             name="summary_agent",
             system_prompt="You are a helpful general summary agent.",
-            agent_prompt="Summarize the following text in one clear and concise paragraph, capturing the key ideas without missing critical points. Ensure the summary is easy to understand and avoids excessive detail. Here are the content: {task}"
         )
 
         score_llm_config = ModelConfig(

@@ -7,7 +7,7 @@ from . import Neuron
 from .neuron_factory import neuron_factory
 
 
-@neuron_factory.register(name="basic", desc="Basic neuron for dynamic variables", prio=9)
+@neuron_factory.register(name="basic", desc="Basic neuron for dynamic variables", prio=1)
 class BasicNeuron(Neuron):
     """Neuron for handling dynamic variable related properties"""
     
@@ -83,4 +83,4 @@ class BasicNeuron(Neuron):
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
         
-        return f"This year is {datetime.now().strftime('%Y')}, Today is: {datetime.now().strftime('%Y-%m-%d')}, please keep in touch."
+        return f"\n\nThis year is {datetime.now().strftime('%Y')}, Today is: {datetime.now().strftime('%Y-%m-%d')}, please keep in touch."
