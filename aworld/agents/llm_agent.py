@@ -340,8 +340,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "task_id": task_id
         }, agent_memory_config=self.memory_config)
         if histories:
-            # default use the first tool call
-            tool_calls_map = None
+            tool_calls_map = {}
             count = 0
             for history in histories:
                 count += 1
@@ -350,7 +349,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     if isinstance(history, MemoryAIMessage):
                         tool_calls = messages[-1].get("tool_calls")
                         if tool_calls:
-                            tool_calls_map = {tool_call.get("id"): idx + count for idx, tool_call in enumerate(tool_calls)}
+                            tool_calls_map.update({tool_call.get("id"): idx + count for idx, tool_call in enumerate(
+                                tool_calls)})
                 else:
                     if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
                         'tool_calls']:
@@ -370,7 +370,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
                     real_idx = tool_calls_map.get(msg['tool_call_id'], -1)
                     if real_idx < 0:
-                        raise AWorldRuntimeException(f"tool_call_id mismatch! {messages}")
+                        raise AWorldRuntimeException(f"tool_calls mismatch! {tool_calls_map}, messages: {messages}")
                     final_messages[real_idx] = msg
                 messages = final_messages
 
