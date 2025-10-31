@@ -18,6 +18,7 @@ from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message, send_message_with_future
+from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
@@ -365,7 +366,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
         from aworld.core.context.amni import AmniContext
         if isinstance(context, AmniContext):
-            from aworld.core.context.amni.utils.context_log import PromptLogger
             PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
             return
         """Log the sequence of messages for debugging purposes"""

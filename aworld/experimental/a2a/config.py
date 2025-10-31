@@ -8,7 +8,10 @@ from a2a.types import AgentSkill
 
 from aworld.config import BaseConfig
 
-SERVER_APP_MAPPING = {"fastapi": A2AFastAPIApplication, "starlette": A2AStarletteApplication, "grpc": None}
+SERVER_APP_MAPPING = {"fastapi": A2AFastAPIApplication,
+                      "starlette": A2AStarletteApplication,
+                      # grpc use starlette for http server
+                      "grpc": A2AStarletteApplication}
 
 
 class ServingConfig(BaseConfig):

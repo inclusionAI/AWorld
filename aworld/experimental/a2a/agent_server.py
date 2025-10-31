@@ -97,7 +97,7 @@ class AgentServer:
             internal_router = FastAPI(
                 title="A2A Server",
                 description="A2A Server",
-                version="0.0.1",
+                version=self.config.version,
                 routes=[Mount(f"/{root}", routes=a2a_app.routes)]
             )
         elif self.config.server_app == "grpc":
@@ -151,8 +151,6 @@ class AgentServer:
         handler = self._build_request_handler()
 
         server_app = self.config.server_app
-        if server_app == "grpc":
-            server_app = "starlette"
         app = SERVER_APP_MAPPING[server_app](agent_card=self.agent_card, http_handler=handler)
         return app
 

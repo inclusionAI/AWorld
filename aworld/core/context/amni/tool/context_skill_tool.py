@@ -14,9 +14,9 @@ from aworld.tools.utils import build_observation
 
 CONTEXT_SKILL = "SKILL"
 
+
 class ContextExecuteAction(ToolAction):
     """Definition of Context visit and setting supported action."""
-
 
     """
     Agent Skills Support
@@ -25,17 +25,17 @@ class ContextExecuteAction(ToolAction):
     ACTIVE_SKILL = ToolActionInfo(
         name="active_skill",
         input_params={"skill_name": ParamInfo(name="skill_name",
-                                                 type="str",
-                                                 required=True,
-                                                 desc="name of the skill to be activated")},
+                                              type="str",
+                                              required=True,
+                                              desc="name of the skill to be activated")},
         desc="activate a skill help agent to perform a task")
 
     OFFLOAD_SKILL = ToolActionInfo(
         name="offload_skill",
         input_params={"skill_name": ParamInfo(name="skill_name",
-                                                   type="str",
-                                                   required=True,
-                                                   desc="name of the skill to be offloaded")},
+                                              type="str",
+                                              required=True,
+                                              desc="name of the skill to be offloaded")},
         desc="offload a skill help agent to perform a task")
 
 
@@ -70,7 +70,7 @@ class ContextSkillTool(AsyncTool):
     async def finished(self) -> bool:
         return self.step_finished
 
-    async def do_step(self, actions: list[ActionModel], message:Message = None, **kwargs) -> Tuple[
+    async def do_step(self, actions: list[ActionModel], message: Message = None, **kwargs) -> Tuple[
         Observation, float, bool, bool, Dict[str, Any]]:
         self.step_finished = False
         reward = 0.
@@ -81,12 +81,10 @@ class ContextSkillTool(AsyncTool):
         try:
             if not actions:
                 raise ValueError("actions is empty")
-            
             if not isinstance(message.context, AmniContext):
                 raise ValueError("context is not AmniContext")
 
             action = actions[0]
-            print(f"CONTEXTTool|do_step: {action}")
             action_name = action.action_name
             if action_name == ContextExecuteAction.ACTIVE_SKILL.value.name:
                 skill_name = action.params.get("skill_name", "")
@@ -121,5 +119,3 @@ class ContextSkillTool(AsyncTool):
         info.update(kwargs)
         return (observation, reward, kwargs.get("terminated", False),
                 kwargs.get("truncated", False), info)
-
- 

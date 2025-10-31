@@ -10,9 +10,9 @@ from typing import Optional, Any, Literal, List, Dict
 from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
 # lazy import
-# from aworld.core.agent.base import BaseAgent
 from aworld.core.context.base import Context
 from aworld.events.util import send_message
+from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
@@ -21,10 +21,6 @@ from examples.multi_agents.collaborative.debate.agent.debate_agent import trunca
 from aworld.runners.utils import long_wait_message_state
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .contexts import ContextManager
-# from .event.event_bus import EventBus, EventType
-# from .event.event_bus import get_global_event_bus, start_global_event_bus, stop_global_event_bus, \
-#     is_global_event_bus_started
-from .logger import logger, amni_prompt_logger
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .retrieval.artifacts import SearchArtifact
 from .retrieval.artifacts.file import DirArtifact
@@ -1120,7 +1116,7 @@ class ApplicationContext(AmniContext):
 
     async def pub_and_wait_system_prompt_event(self, system_prompt: str, user_query: str, agent_id: str,
                                                agent_name: str, namespace: str = "default"):
-        from .event.base import SystemPromptMessagePayload
+        from .payload import SystemPromptMessagePayload
         logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|start|{namespace}|{agent_id}")
         payload = SystemPromptMessagePayload(context=self, system_prompt=system_prompt, user_query=user_query,
                                    agent_id=agent_id, agent_name=agent_name,
@@ -1145,7 +1141,7 @@ class ApplicationContext(AmniContext):
                                              agent_id: str,
                                              agent_name: str,
                                              namespace: str = "default"):
-        from .event.base import ToolResultMessagePayload
+        from .payload import ToolResultMessagePayload
         logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|start|{namespace}|{agent_id}")
         payload = ToolResultMessagePayload(event_type=TopicType.TOOL_RESULT,
                                            tool_result=tool_result,
