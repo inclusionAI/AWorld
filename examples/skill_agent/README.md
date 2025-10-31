@@ -6,6 +6,9 @@ This example demonstrates how to build specialized AI agents using **Agent Skill
 
 Agent Skills transform general-purpose agents into specialized agents by packaging procedural knowledge, tools, and resources into discoverable, activatable units.
 
+![Skills and the Context Window](../../readme_assets/aworld_skills.png)
+
+
 ## Table of Contents
 
 - [Core Concepts](#core-concepts)
