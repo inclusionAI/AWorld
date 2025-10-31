@@ -6,6 +6,9 @@ This example demonstrates how to build specialized AI agents using **Agent Skill
 
 Agent Skills transform general-purpose agents into specialized agents by packaging procedural knowledge, tools, and resources into discoverable, activatable units.
 
+![Skills and the Context Window](../../readme_assets/aworld_skills.png)
+
+
 ## Table of Contents
 
 - [Core Concepts](#core-concepts)
@@ -26,18 +29,22 @@ An **Agent Skill** is a composable capability unit that contains:
 2. **Tool Mapping**: Specific MCP tools the skill provides access to
 3. **Active State**: Optional auto-activation flag
 
-### Progressive Disclosure
 
-AWorld Skills follow the **progressive disclosure** principle:
+### Skills and the Context Window
 
-1. **Level 1 - Metadata**: Skill metadata loaded into agent's system prompt
-2. **Level 2 - Activation**: Agent activates skill when needed (manual or auto)
-3. **Level 3 - Tool Usage**: Agent accesses skill tools and usage guide
+The diagram below illustrates how skills are progressively loaded and activated within the agent's context window:
 
-```
-System Prompt (Metadata) → Skill Activation → Tool Usage
-     [browser, planning]  →  active_skill()  →  [add_todo, get_todo]
-```
+![Skills and the Context Window](../../readme_assets/skills_context_window.svg)
+
+**Key Flow:**
+1. 📋 **System Prompt**: Agent initialized with task orchestration capabilities
+2. 🔧 **Skill Metadata**: Lightweight skill snippets (pdf, excel, browser, etc.) loaded into prompt
+3. 👤 **User Request**: User provides task requiring PDF processing
+4. 🧠 **Agent Decision**: Agent identifies need for PDF skill and calls `SKILL__active_skill("pdf")`
+5. 📖 **Skill Activation**: Detailed usage guide returned, instructing to use browser for remote URLs
+6. 🎯 **Skill Chaining**: Agent activates browser skill based on PDF skill's guidance
+7. ✅ **Multi-Skill Active**: Both `['pdf', 'browser']` skills now available simultaneously
+8. 🚀 **Tool Usage**: Agent uses `playwright__navigate` and `mcpreadpdf` to complete task
 
 ## Architecture
 
@@ -69,7 +76,7 @@ cd /path/to/AWorld
 pip install -e .
 
 # Install dependencies
-pip install -r aworld/requirements.txt
+pip install -r requirements.txt
 ```
 
 ### 2. Environment Setup
@@ -78,39 +85,10 @@ Create a `.env` file with the following configuration:
 
 ```bash
 # LLM Configuration
-LLM_MODEL_NAME=claude-3-5-sonnet-20241022
-LLM_PROVIDER=anthropic
+LLM_MODEL_NAME=gpt5
+LLM_PROVIDER=openai
 LLM_API_KEY=your_api_key
-LLM_BASE_URL=https://api.anthropic.com
-
-# AmniContext Configuration
-AMNI_RAG_TYPE=local
-WORKSPACE_TYPE=file
-WORKSPACE_PATH=./examples/skill_agent/data
-DB_PATH=./examples/skill_agent/data/amni_context.db
-
-# Vector Store Configuration
-VECTOR_STORE_PROVIDER=chroma
-CHROMA_PATH=./examples/skill_agent/data/chroma_db
-
-# Embedding Configuration
-EMBEDDING_PROVIDER=openai
-EMBEDDING_BASE_URL=https://api.openai.com/v1
-EMBEDDING_API_KEY=your_embedding_api_key
-EMBEDDING_MODEL_NAME=text-embedding-3-small
-EMBEDDING_MODEL_DIMENSIONS=1536
-
-# Chunking Configuration
-CHUNK_PROVIDER=langchain
-CHUNK_SIZE=1000
-CHUNK_OVERLAP=200
-CHUNK_SEPARATOR=\n\n
-
-# Reranker Configuration (Optional)
-RERANKER_PROVIDER=http
-RERANKER_BASE_URL=your_reranker_url
-RERANKER_API_KEY=your_reranker_key
-RERANKER_MODEL_NAME=bge-reranker-v2-m3
+LLM_BASE_URL=https://api.openai.com/v1
 ```
 
 ### 3. Run the Example
@@ -120,85 +98,186 @@ cd examples/skill_agent
 python quick_start.py
 ```
 
+### 4. Example Output
+
+When you run the example with a PDF reading task, you'll see the agent's skill activation:
+
+```
+📨 Message #1  🔧 SYSTEM     📏 Length: 2130
+📨 Message #2  👤 USER       📏 Length: 58
+Task: "read https://arxiv.org/pdf/2510.23595v1 and tell me the abstract"
+
+📨 Message #3  🤖 ASSISTANT  📏 Length: 93
+🛠️  Tool Calls: 1 found
+  🔧 Tool #1: SKILL__active_skill
+  📋 Args: {"skill_name": "pdf"}     # ← Activates PDF skill first
+
+📨 Message #4  🛠️ TOOL       📏 Length: 150
+Response: "skill pdf activated, current skills: ['pdf']
+          <skill_guide>Automate PDF tasks... if remote PDF URL, 
+          use browser skill first to download it</skill_guide>"
+
+📨 Message #5  🤖 ASSISTANT  📏 Length: 120
+🛠️  Tool Calls: 1 found
+  🔧 Tool #1: SKILL__active_skill
+  📋 Args: {"skill_name": "browser"}  # ← Activates browser based on guidance
+
+📨 Message #6  🛠️ TOOL       📏 Length: 150
+Response: "skill browser activated, current skills: ['pdf', 'browser']..."
+
+📨 Message #7  🤖 ASSISTANT  📏 Length: 120
+🛠️  Tool Calls: 1 found
+  🔧 Tool #1: playwright__navigate    # ← Uses browser tools
+  📋 Args: {"url": "https://arxiv.org/pdf/2510.23595v1"}
+```
+
+**Key Observations**:
+1. Agent intelligently activates skills in sequence
+2. PDF skill's usage guide instructs to use browser for remote URLs
+3. Multiple skills can be active simultaneously (`['pdf', 'browser']`)
+4. Agent accesses tools only from activated skills
+
+> **Note**: Skill names are case-sensitive. Use lowercase names like `"pdf"`, `"browser"`, `"planning"` when activating.
+
 ## How It Works
 
 ### Step 1: Define Skills
 
-Skills are defined in `agents/swarm.py` using the `skill_configs` parameter:
+AWorld supports two types of skills:
+
+#### Type A: Text-Based Skills (Pure Knowledge)
+
+These skills provide domain expertise and workflows **without requiring MCP servers**. The agent receives guidance through the `usage` field when the skill is activated.
 
 ```python
-skill_configs={
-    "browser": {
-        "name": "Browser",
-        "desc": "Web browsing and automation",
-        "usage": "Use for navigating websites, clicking elements, taking screenshots",
-        "active": False,  # Not auto-activated
-        "tool_list": {
-            "ms-playwright": []  # Empty list = all tools from this MCP server
-        }
+TEXT_SKILLS = {
+    "arxiv_research": {
+        "name": "ArXiv Research Guide",
+        "desc": "Best practices for searching and analyzing academic papers",
+        "usage": """
+1. Use specific search terms from the paper's abstract or title
+2. Navigate to https://arxiv.org/search/?query=<keywords>&searchtype=all
+3. Filter by category (cs.AI, cs.CL, etc.) and date range
+4. Access PDF directly via https://arxiv.org/pdf/<paper_id>.pdf
+5. Check citations and related work for additional papers
+        """
     },
-    "planning": {
-        "name": "Planning",
-        "desc": "Task planning and progress tracking",
-        "usage": "Use for breaking down tasks and tracking progress with todos",
-        "active": True,  # Auto-activated at initialization
-        "tool_list": {
-            "amnicontext-server": ["add_todo", "get_todo"]  # Specific tools only
-        }
-    },
-    "scratchpad": {
-        "name": "Scratchpad",
-        "desc": "Knowledge documentation and retrieval",
-        "usage": "Use for recording and retrieving important information during task execution",
-        "tool_list": {
-            "amnicontext-server": ["add_knowledge", "get_knowledge", "update_knowledge"]
-        }
+    
+    "github_navigation": {
+        "name": "GitHub Navigation Guide", 
+        "desc": "Efficient strategies for analyzing repositories",
+        "usage": """
+1. Start with README.md for project overview
+2. Check /docs or /documentation for detailed guides
+3. Review /examples for usage patterns
+4. Examine /tests for implementation details
+5. Check Issues and Discussions for common problems
+        """
     }
 }
 ```
 
-### Step 2: Configure MCP Servers
+**Use Cases**: Domain knowledge, best practices, workflow checklists, SOPs
 
-MCP servers provide the actual tool implementations in `mcp_tools/mcp_config.py`:
+#### Type B: Tool-Based Skills (MCP Integration)
+
+These skills provide executable tools via MCP servers. Each skill specifies which MCP server(s) and tools it requires.
+
+**Configuration** (`agents/orchestrator_agent/config.py`):
 
 ```python
-MCP_CONFIG = {
-    "mcpServers": {
-        "ms-playwright": {
-            "command": "npx",
-            "args": ["@playwright/mcp@0.0.37", "--no-sandbox"],
-            # ... configuration
-        },
-        "amnicontext-server": {
-            "command": "python",
-            "args": ["-m", "mcp_tools.contextserver"],
-            # ... environment variables
+# Document manipulation skills
+DOCUMENT_SKILLS = {
+    "pdf": {
+        "name": "PDF",
+        "desc": "PDF automation and manipulation capability",
+        "usage": "For remote PDF URLs, use browser skill to download first",
+        "tool_list": {
+            "document_server": ["mcpreadpdf"]  # Specific tool
+        }
+    },
+    "excel": {
+        "name": "Excel",
+        "desc": "Excel automation capability",
+        "usage": "Automate Excel tasks and extract data",
+        "tool_list": {
+            "document_server": ["mcpreadexcel"]
         }
     }
 }
-```
 
-### Step 3: Initialize Context with Skills
+# System operation skills
+BASIC_SKILLS = {
+    "bash": {
+        "name": "Bash",
+        "desc": "Command execution capability",
+        "usage": "Execute bash commands and scripts",
+        "tool_list": {
+            "terminal-server": ["execute_command"]
+        }
+    }
+}
 
-The context is configured with the `skills` neuron in `quick_start.py`:
-
-```python
-context_config = AmniConfigFactory.create(
-    AmniConfigLevel.NAVIGATOR,
-    ["basic", "task", "work_dir", "todo", "action_info", "skills"],  # ← skills enabled
-    debug_mode=True
+# Combine all skills
+orchestrator_agent_config = AgentConfig(
+    llm_config=ModelConfig(...),
+    skill_configs=TEXT_SKILLS | BASIC_SKILLS | DOCUMENT_SKILLS
 )
 ```
 
-### Step 4: Agent Discovers and Activates Skills
+**Use Cases**: File operations, API calls, database queries, system commands
 
-The agent's system prompt includes skill metadata. Skill lifecycle:
+##### Configure MCP Servers
 
-1. **Initialization**: Skills with `"active": True` are auto-activated
-2. **Discovery**: Agent sees available skills in system prompt
-3. **Activation**: Agent calls `active_skill("skill_name")` when needed
-4. **Usage**: Agent accesses skill tools and receives usage guide
-5. **Offloading**: Agent calls `offload_skill("skill_name")` when done
+For tool-based skills, configure the corresponding MCP servers in `mcp_tools/mcp_config.py`:
+
+```python
+import os
+
+MCP_CONFIG = {
+    "mcpServers": {
+        
+        # Document processing server for skills (PDF, Excel, PPTX)
+        "document_server": {
+            "command": "python",
+            "args": ["-m", "mcp_tools.document_server"],
+            "env": {
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+            }
+        },
+        
+        # Terminal/bash execution server for skill bash
+        "terminal-server": {
+            "command": "python",
+            "args": ["-m", "mcp_tools.terminal_server"],
+            "env": {}
+        }
+    }
+}
+```
+
+### Step 2: Build Agent with Skills
+
+Pass the skill configuration to your agent:
+
+```python
+from aworld.agents.llm_agent import Agent
+
+orchestrator_agent = OrchestratorAgent(
+    name="orchestrator_agent",
+    desc="Task orchestrator with skill management",
+    conf=orchestrator_agent_config,  # Contains skill_configs
+    system_prompt=orchestrator_agent_system_prompt,
+    mcp_servers=orchestrator_mcp_servers,
+    mcp_config=MCP_CONFIG
+)
+```
+
+The agent automatically:
+- Registers all skills from `skill_configs`
+- Derives required MCP servers from skill `tool_list`
+- Adds SKILL tool for activation/offloading
+
 
 ## Skill Configuration
 
@@ -249,14 +328,6 @@ all_skills = await context.get_skill_list(namespace="agent_name")       # Dict[s
 skill_names = await context.get_skill_name_list(namespace="agent_name") # List[str]
 ```
 
-**Skill Tool Translation** (`aworld/mcp_client/utils.py`):
-
-The `skill_translate_tools()` function filters available tools based on activated skills:
-- If no skills activated → Only non-MCP tools available
-- If skills activated → Only tools from those skills' `tool_list`
-- Empty `tool_list: []` → All tools from that MCP server
-- Specific `tool_list: ["tool1"]` → Only specified tools
-
 **Skills Neuron** (`aworld/core/context/amni/prompt/neurons/skill_neuron.py`):
 
 Formats available skills into the system prompt with activation instructions.
@@ -271,64 +342,6 @@ Provides `active_skill` and `offload_skill` as callable tools for the agent.
 - **Auto-Activation**: Skills with `"active": True` load at initialization  
 - **Progressive Loading**: Tools only available after skill activation
 - **Usage Guidance**: Agent receives skill-specific instructions on activation
-
-## Best Practices
-
-### Design Principles
-
-**Focus and Clarity**
-- Keep skills single-purpose and focused
-- Use descriptive names and clear descriptions
-- Write detailed `usage` guidelines for each skill
-
-**Tool Selection**
-- Use empty list `[]` for skill needing all tools from a server
-- Specify exact tools for focused skills
-- Avoid mixing unrelated tools in one skill
-
-### Skill Lifecycle Management
-
-**Activation Strategy**
-- Set `"active": True` for foundational skills (e.g., planning)
-- Let agent activate specialized skills on-demand
-- Offload skills when task phase completes
-
-**Context Efficiency**
-- Keep skill metadata concise
-- Monitor active skills to avoid context bloat
-- Use specific tool lists over `[]` when possible
-
-### Security
-
-**Tool Access Control**
-```python
-black_tool_actions = {
-    "amnicontext-server": ["delete_all_knowledge"],
-}
-
-sandbox = Sandbox(
-    mcp_servers=mcp_servers,
-    mcp_config=mcp_config,
-    black_tool_actions=black_tool_actions,
-    skill_configs=skill_configs
-)
-```
-
-### Debugging
-
-Enable debug mode for detailed logging:
-```python
-context_config = AmniConfigFactory.create(
-    AmniConfigLevel.NAVIGATOR,
-    ["skills"],
-    debug_mode=True
-)
-```
-
-Monitor:
-- Skill activation/offloading events in logs
-- Tool usage patterns within each skill
-- Agent reasoning about skill selection
 
 ## Advanced Topics
 
@@ -348,33 +361,23 @@ agent2 = Agent(name="coder", skill_configs={**shared_skills, "coding": {...}})
 **Sequential Activation**: Activate/offload skills as task phases progress
 **Parallel Activation**: Multiple skills active simultaneously for complex tasks
 
-## Comparison with Anthropic's Agent Skills
-
-| Feature | Anthropic Skills | AWorld Skills |
-|---------|-----------------|---------------|
-| **Skill Definition** | SKILL.md files | Python dict configuration |
-| **Progressive Disclosure** | ✅ 3-level (metadata → file → linked files) | ✅ 3-level (metadata → activation → tools) |
-| **Tool Integration** | Code execution + instructions | MCP servers + tools |
-| **Context Management** | Filesystem-based | AmniContext (DB + vector store) |
-| **Activation Model** | Implicit (agent reads files) | Explicit (`active_skill`/`offload_skill`) |
-| **Namespace Support** | Per-agent filesystem | ✅ Multi-agent namespaces |
-| **Auto-Activation** | ❌ | ✅ `"active": True` |
-
 ## Troubleshooting
 
 **Skills Not Appearing**
 - Enable `"skills"` in context config neurons list
 - Pass `skill_configs` to agent initialization
 
+**Skill Activation Fails**
+- ⚠️ **Skill names are case-sensitive**: Use `"pdf"` not `"PDF"`, `"browser"` not `"Browser"`
+- Confirm skill name exists in `skill_configs` dictionary
+- Verify namespace matches agent name
+- Check logs for detailed error messages
+
 **Tools Not Available After Activation**
 - Verify MCP server is running
 - Check tool names match configuration
 - Review `black_tool_actions` for conflicts
-
-**Activation Failures**
-- Confirm skill name exists in `skill_configs`
-- Verify namespace matches agent name
-- Check logs for detailed error messages
+- Ensure skill was successfully activated (check response message)
 
 ## Additional Resources
 

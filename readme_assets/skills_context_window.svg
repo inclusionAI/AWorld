@@ -1,0 +1,260 @@
+<svg width="1200" height="1400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="contextGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#f8f9fa;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#e9ecef;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="systemGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#d5e8ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#b3d7ff;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="skillsGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#e8f4ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#cfe8ff;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="userGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#f0f0f0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#e0e0e0;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="assistantGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffe8d5;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ffd4ad;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="toolGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#d5ffe8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#adffcf;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Arrow marker -->
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#28a745" />
+    </marker>
+  </defs>
+  
+  <!-- Title -->
+  <text x="600" y="35" font-family="Arial, sans-serif" font-size="28" font-weight="bold" text-anchor="middle" fill="#212529">
+    Skills and the Context Window
+  </text>
+  
+  <!-- Main Context Window -->
+  <rect x="50" y="70" width="1100" height="1260" rx="15" fill="url(#contextGrad)" stroke="#495057" stroke-width="3"/>
+  
+  <!-- Context Window Title -->
+  <text x="600" y="105" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#495057">
+    🧠 CONTEXT WINDOW
+  </text>
+  
+  <!-- System Prompt Box -->
+  <rect x="100" y="130" width="1000" height="70" rx="10" fill="url(#systemGrad)" stroke="#0066cc" stroke-width="2"/>
+  <text x="110" y="155" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#0066cc">
+    📋 Agent's System Prompt
+  </text>
+  <text x="120" y="178" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    - You are a task orchestrator with skill management capabilities
+  </text>
+  <text x="120" y="195" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    - Use skills to solve complex tasks efficiently
+  </text>
+  
+  <!-- Arrow down -->
+  <line x1="600" y1="200" x2="600" y2="230" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Skills Metadata Box -->
+  <rect x="100" y="235" width="1000" height="100" rx="10" fill="url(#skillsGrad)" stroke="#0066cc" stroke-width="2"/>
+  <text x="110" y="260" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#0066cc">
+    🔧 Available Skills (Metadata Only - Lightweight)
+  </text>
+  
+  <!-- Individual skill boxes -->
+  <rect x="130" y="275" width="80" height="35" rx="5" fill="#4a90e2" stroke="#0066cc" stroke-width="1"/>
+  <text x="170" y="297" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="white">pdf</text>
+  
+  <rect x="225" y="275" width="80" height="35" rx="5" fill="#4a90e2" stroke="#0066cc" stroke-width="1"/>
+  <text x="265" y="297" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="white">excel</text>
+  
+  <rect x="320" y="275" width="80" height="35" rx="5" fill="#4a90e2" stroke="#0066cc" stroke-width="1"/>
+  <text x="360" y="297" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="white">pptx</text>
+  
+  <rect x="415" y="275" width="90" height="35" rx="5" fill="#4a90e2" stroke="#0066cc" stroke-width="1"/>
+  <text x="460" y="297" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="white">browser</text>
+  
+  <rect x="520" y="275" width="95" height="35" rx="5" fill="#4a90e2" stroke="#0066cc" stroke-width="1"/>
+  <text x="567" y="297" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="white">planning</text>
+  
+  <text x="635" y="297" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#666">...</text>
+  
+  <rect x="675" y="275" width="80" height="35" rx="5" fill="#4a90e2" stroke="#0066cc" stroke-width="1"/>
+  <text x="715" y="297" font-family="Arial, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="white">bash</text>
+  
+  <!-- Annotation -->
+  <text x="800" y="287" font-family="Arial, sans-serif" font-size="13" fill="#28a745">← 💡 Short snippets from</text>
+  <text x="823" y="303" font-family="Arial, sans-serif" font-size="13" fill="#28a745">each skill appended</text>
+  
+  <!-- Arrow down -->
+  <line x1="600" y1="335" x2="600" y2="365" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- User Message Box -->
+  <rect x="100" y="370" width="1000" height="80" rx="10" fill="url(#userGrad)" stroke="#6c757d" stroke-width="2"/>
+  <text x="110" y="395" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#495057">
+    👤 User:
+  </text>
+  <text x="120" y="418" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    Read this PDF and summarize it:
+  </text>
+  <text x="120" y="438" font-family="Arial, sans-serif" font-size="14" fill="#0066cc" text-decoration="underline">
+    https://arxiv.org/pdf/2510.23595v1
+  </text>
+  
+  <!-- Annotation -->
+  <line x1="1105" y1="410" x2="1160" y2="410" stroke="#28a745" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="1165" y="415" font-family="Arial, sans-serif" font-size="13" fill="#28a745">Initial message</text>
+  
+  <!-- Arrow down -->
+  <line x1="600" y1="450" x2="600" y2="480" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Assistant Response 1 -->
+  <rect x="100" y="485" width="1000" height="95" rx="10" fill="url(#assistantGrad)" stroke="#ff8c00" stroke-width="2"/>
+  <text x="110" y="510" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#d97706">
+    🤖 Assistant:
+  </text>
+  <text x="120" y="533" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    I'll need to use the PDF skill to handle this task.
+  </text>
+  <text x="120" y="555" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    Tool Call: <tspan font-family="monospace" fill="#0066cc">SKILL__active_skill(skill_name="pdf")</tspan>
+  </text>
+  
+  <!-- Annotation -->
+  <line x1="1105" y1="530" x2="1160" y2="530" stroke="#28a745" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="1165" y="527" font-family="Arial, sans-serif" font-size="12" fill="#28a745">Claude decides to</text>
+  <text x="1165" y="542" font-family="Arial, sans-serif" font-size="12" fill="#28a745">"trigger" the PDF Skill</text>
+  
+  <!-- Arrow down -->
+  <line x1="600" y1="580" x2="600" y2="610" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Tool Result 1 -->
+  <rect x="100" y="615" width="1000" height="150" rx="10" fill="url(#toolGrad)" stroke="#28a745" stroke-width="2"/>
+  <text x="110" y="640" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#28a745">
+    🛠️ Tool Result:
+  </text>
+  <text x="120" y="663" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    skill pdf activated, current skills: ['pdf']
+  </text>
+  <text x="120" y="685" font-family="Arial, sans-serif" font-size="14" font-style="italic" fill="#666">
+    &lt;skill_guide&gt;
+  </text>
+  <text x="130" y="705" font-family="Arial, sans-serif" font-size="13" fill="#333">
+    📄 PDF Automation Capability
+  </text>
+  <text x="140" y="722" font-family="Arial, sans-serif" font-size="12" fill="#555">
+    - Use mcpreadpdf to extract text and structure
+  </text>
+  <text x="140" y="738" font-family="Arial, sans-serif" font-size="12" fill="#555">
+    - For remote PDF URLs, activate browser skill first to download
+  </text>
+  <text x="120" y="755" font-family="Arial, sans-serif" font-size="14" font-style="italic" fill="#666">
+    &lt;/skill_guide&gt;
+  </text>
+  
+  <!-- Annotation -->
+  <line x1="1105" y1="690" x2="1160" y2="690" stroke="#28a745" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="1165" y="687" font-family="Arial, sans-serif" font-size="12" fill="#28a745">Usage guide</text>
+  <text x="1165" y="702" font-family="Arial, sans-serif" font-size="12" fill="#28a745">returned with</text>
+  <text x="1165" y="717" font-family="Arial, sans-serif" font-size="12" fill="#28a745">available tools</text>
+  
+  <!-- Arrow down -->
+  <line x1="600" y1="765" x2="600" y2="795" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Assistant Response 2 -->
+  <rect x="100" y="800" width="1000" height="95" rx="10" fill="url(#assistantGrad)" stroke="#ff8c00" stroke-width="2"/>
+  <text x="110" y="825" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#d97706">
+    🤖 Assistant:
+  </text>
+  <text x="120" y="848" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    The PDF is remote, I need to activate the browser skill first.
+  </text>
+  <text x="120" y="870" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    Tool Call: <tspan font-family="monospace" fill="#0066cc">SKILL__active_skill(skill_name="browser")</tspan>
+  </text>
+  
+  <!-- Annotation -->
+  <line x1="1105" y1="845" x2="1160" y2="845" stroke="#28a745" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="1165" y="842" font-family="Arial, sans-serif" font-size="12" fill="#28a745">Claude follows</text>
+  <text x="1165" y="857" font-family="Arial, sans-serif" font-size="12" fill="#28a745">the guidance from</text>
+  <text x="1165" y="872" font-family="Arial, sans-serif" font-size="12" fill="#28a745">PDF skill guide</text>
+  
+  <!-- Arrow down -->
+  <line x1="600" y1="895" x2="600" y2="925" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Tool Result 2 -->
+  <rect x="100" y="930" width="1000" height="150" rx="10" fill="url(#toolGrad)" stroke="#28a745" stroke-width="2"/>
+  <text x="110" y="955" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#28a745">
+    🛠️ Tool Result:
+  </text>
+  <text x="120" y="978" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    skill browser activated, current skills: ['pdf', 'browser']
+  </text>
+  <text x="120" y="1000" font-family="Arial, sans-serif" font-size="14" font-style="italic" fill="#666">
+    &lt;skill_guide&gt;
+  </text>
+  <text x="130" y="1020" font-family="Arial, sans-serif" font-size="13" fill="#333">
+    🌐 Browser Automation Capability
+  </text>
+  <text x="140" y="1037" font-family="Arial, sans-serif" font-size="12" fill="#555">
+    - Use playwright__navigate to visit URLs
+  </text>
+  <text x="140" y="1053" font-family="Arial, sans-serif" font-size="12" fill="#555">
+    - Use playwright__screenshot to capture pages
+  </text>
+  <text x="120" y="1070" font-family="Arial, sans-serif" font-size="14" font-style="italic" fill="#666">
+    &lt;/skill_guide&gt;
+  </text>
+  
+  <!-- Annotation -->
+  <line x1="1105" y1="1005" x2="1160" y2="1005" stroke="#28a745" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="1165" y="1002" font-family="Arial, sans-serif" font-size="12" fill="#28a745">Multiple skills</text>
+  <text x="1165" y="1017" font-family="Arial, sans-serif" font-size="12" fill="#28a745">active at once</text>
+  
+  <!-- Arrow down -->
+  <line x1="600" y1="1080" x2="600" y2="1110" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Assistant Response 3 -->
+  <rect x="100" y="1115" width="1000" height="95" rx="10" fill="url(#assistantGrad)" stroke="#ff8c00" stroke-width="2"/>
+  <text x="110" y="1140" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#d97706">
+    🤖 Assistant:
+  </text>
+  <text x="120" y="1163" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    Now I'll download the PDF using browser tools.
+  </text>
+  <text x="120" y="1185" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    Tool Call: <tspan font-family="monospace" fill="#0066cc">playwright__navigate(url="https://arxiv.org/pdf/...")</tspan>
+  </text>
+  
+  <!-- Annotation -->
+  <line x1="1105" y1="1160" x2="1160" y2="1160" stroke="#28a745" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text x="1165" y="1157" font-family="Arial, sans-serif" font-size="12" fill="#28a745">Claude uses tools</text>
+  <text x="1165" y="1172" font-family="Arial, sans-serif" font-size="12" fill="#28a745">from activated skills</text>
+  
+  <!-- Arrow down -->
+  <line x1="600" y1="1210" x2="600" y2="1240" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Tool Result 3 -->
+  <rect x="100" y="1245" width="1000" height="70" rx="10" fill="url(#toolGrad)" stroke="#28a745" stroke-width="2"/>
+  <text x="110" y="1270" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#28a745">
+    🛠️ Tool Result:
+  </text>
+  <text x="120" y="1293" font-family="Arial, sans-serif" font-size="14" fill="#333">
+    { "status": "success", "downloaded_path": "/tmp/2510.23595v1.pdf" }
+  </text>
+  
+  <!-- Bottom note -->
+  <text x="600" y="1350" font-family="Arial, sans-serif" font-size="12" font-style="italic" text-anchor="middle" fill="#666">
+    ... Agent continues to use mcpreadpdf tool to extract and summarize content ...
+  </text>
+</svg>
