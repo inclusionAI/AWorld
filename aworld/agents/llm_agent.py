@@ -12,6 +12,7 @@ from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage
@@ -22,7 +23,7 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem
+from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryToolMessage
 from aworld.memory.models import MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse, ToolCall
@@ -340,9 +341,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         }, agent_memory_config=self.memory_config)
         if histories:
             # default use the first tool call
+            tool_calls_map = None
+            count = 0
             for history in histories:
+                count += 1
                 if isinstance(history, MemoryMessage):
                     messages.append(history.to_openai_message())
+                    if isinstance(history, MemoryAIMessage):
+                        tool_calls = messages[-1].get("tool_calls")
+                        if tool_calls:
+                            tool_calls_map = {tool_call.get("id"): idx + count for idx, tool_call in enumerate(tool_calls)}
                 else:
                     if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
                         'tool_calls']:
@@ -351,6 +359,21 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     else:
                         messages.append({'role': history.metadata['role'], 'content': history.content,
                                          "tool_call_id": history.metadata.get("tool_call_id")})
+
+            if tool_calls_map:
+                # keep consistent
+                final_messages = [''] * len(messages)
+                for idx, msg in enumerate(messages):
+                    if not msg.get("tool_call_id"):
+                        final_messages[idx] = msg
+                        continue
+
+                    real_idx = tool_calls_map.get(msg['tool_call_id'], -1)
+                    if real_idx < 0:
+                        raise AWorldRuntimeException(f"tool_call_id mismatch! {messages}")
+                    final_messages[real_idx] = msg
+                messages = final_messages
+
         return messages
 
     async def init_observation(self, observation: Observation) -> Observation:
