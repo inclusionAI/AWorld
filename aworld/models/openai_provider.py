@@ -1,6 +1,7 @@
 import json
 import os
 import traceback
+from datetime import datetime
 from typing import Any, Dict, List, Generator, AsyncGenerator
 
 from openai import OpenAI, AsyncOpenAI
@@ -419,7 +420,16 @@ class OpenAIProvider(LLMProviderBase):
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e
-            logger.warn(f"Error in acompletion: {e}\n\n\n {traceback.format_exc()}")
+            logger.warn(f"grep{e}\n\n\n {traceback.format_exc()}")
+            # 创建 trajectory/error 目录（如果不存在）
+            error_dir = "trajectory/error"
+            os.makedirs(error_dir, exist_ok=True)
+            # 生成唯一的文件名（使用时间戳）
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            error_file = os.path.join(error_dir, f"error_{timestamp}.json")
+            # 将 messages 写入新文件
+            with open(error_file, "w", encoding="utf-8") as f:
+                json.dump(messages, f, ensure_ascii=False, indent=2)
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
     def get_openai_params(self,

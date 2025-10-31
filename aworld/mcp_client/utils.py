@@ -382,6 +382,7 @@ async def mcp_tool_desc_transform_v2(
                 if server_config["type"] == "sse":
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
+                    # TODO
                     # if context and context.session_id:
                     #     headers["SESSION_ID"] = context.session_id
                     #
@@ -395,10 +396,10 @@ async def mcp_tool_desc_transform_v2(
                 elif server_config["type"] == "streamable-http":
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
-                    if context and context.session_id:
-                        headers["SESSION_ID"] = context.session_id
-                    if context and context.user:
-                        headers["USER_ID"] = context.user
+                    # if context and context.session_id:
+                    #     headers["SESSION_ID"] = context.session_id
+                    # if context and context.user:
+                    #     headers["USER_ID"] = context.user
                     params["headers"] = headers
                     if "timeout" in params and not isinstance(params["timeout"], timedelta):
                         params["timeout"] = timedelta(seconds=float(params["timeout"]))
@@ -763,10 +764,10 @@ async def get_server_instance(
             return None
         elif "sse" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
-            if context and context.session_id:
-                headers["SESSION_ID"] = context.session_id
-            if context and context.user:
-                headers["USER_ID"] = context.user
+            # if context and context.session_id:
+            #     headers["SESSION_ID"] = context.session_id
+            # if context and context.user:
+            #     headers["USER_ID"] = context.user
             server = MCPServerSse(
                 name=server_name,
                 params={
@@ -782,10 +783,10 @@ async def get_server_instance(
             return server
         elif "streamable-http" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
-            if context and context.session_id:
-                headers["SESSION_ID"] = context.session_id
-            if context and context.user:
-                headers["USER_ID"] = context.user
+            # if context and context.session_id:
+            #     headers["SESSION_ID"] = context.session_id
+            # if context and context.user:
+            #     headers["USER_ID"] = context.user
             server = MCPServerStreamableHttp(
                 name=server_name,
                 params={
