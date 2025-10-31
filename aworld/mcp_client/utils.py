@@ -38,7 +38,7 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
                     param_type = (
                         param_info.get("type")
                         if param_info.get("type") != "str"
-                           and param_info.get("type") is not None
+                        and param_info.get("type") is not None
                         else "string"
                     )
                     param_desc = param_info.get("description", "")
@@ -107,7 +107,7 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
                         }
 
             openai_function_schema = {
-                #"name": f"mcp__{sever_name}__{tool.name}",
+                # "name": f"mcp__{sever_name}__{tool.name}",
                 "name": f"{sever_name}__{tool.name}",
                 "description": tool.description,
                 "parameters": {
@@ -161,7 +161,7 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                         param_type = (
                             param_info.get("type")
                             if param_info.get("type") != "str"
-                               and param_info.get("type") is not None
+                            and param_info.get("type") is not None
                             else "string"
                         )
                         param_desc = param_info.get("description", "")
@@ -277,45 +277,44 @@ async def skill_translate_tools(
             if not isinstance(tool, dict) or "function" not in tool:
                 filtered_tools.append(tool)  # non-conforming, keep
                 continue
-            
+
             function_info = tool["function"]
             if not isinstance(function_info, dict) or "name" not in function_info:
                 filtered_tools.append(tool)
                 continue
-            
+
             tool_name = function_info["name"]
-            
+
             # Only keep tools that are NOT in tool_mapping
             if not tool_mapping or tool_name not in tool_mapping:
                 filtered_tools.append(tool)
-        
+
         logger.info(f"Skills is empty, excluded {len(tools) - len(filtered_tools)} MCP tools, kept {len(filtered_tools)} non-MCP tools")
         return filtered_tools
 
-    
     # Collect all tool filters from skill configs
     tool_filter = {}  # {server_name: set(tool_names)} or {server_name: None} means all tools
-    
+
     for skill_id in skills:
         if skill_id not in skill_configs:
             logger.warning(f"Skill '{skill_id}' not found in skill_configs")
             continue
-        
+
         skill_config = skill_configs[skill_id]
         tool_list = skill_config.get("tool_list", {})
-        
+
         for server_name, tool_names in tool_list.items():
             # Normalize tool_names to list (None or [] means all)
             if not tool_names:
                 # If any skill requests ALL tools for this server, override to None
                 tool_filter[server_name] = None
                 continue
-            
+
             # Merge specific tool names across skills
             if server_name not in tool_filter or tool_filter[server_name] is None:
                 # Initialize with empty set if not already set to ALL (None)
                 tool_filter[server_name] = set()
-            
+
             if isinstance(tool_names, list):
                 tool_filter[server_name].update(tool_names)
             else:
@@ -386,6 +385,7 @@ async def skill_translate_tools(
     logger.info(f"Filtered {len(filtered_tools)} tools from {len(tools)} based on skills: {skills}")
     return filtered_tools
 
+
 async def mcp_tool_desc_transform_v2(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
         server_instances: Dict[str, Any] = None,
@@ -429,7 +429,7 @@ async def mcp_tool_desc_transform_v2(
                         tmp_function = {
                             "type": "function",
                             "function": {
-                                #"name": "mcp__" + server_name + "__" + item["name"],
+                                # "name": "mcp__" + server_name + "__" + item["name"],
                                 "name": server_name + "__" + item["name"],
                                 "description": item["description"],
                                 "parameters": {
@@ -450,7 +450,7 @@ async def mcp_tool_desc_transform_v2(
             elif "sse" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                       # "name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "sse",
                         "params": {
@@ -466,8 +466,8 @@ async def mcp_tool_desc_transform_v2(
             elif "streamable-http" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
-                        "name":server_name,
+                        # "name": "mcp__" + server_name,
+                        "name": server_name,
                         "type": "streamable-http",
                         "params": {
                             "url": server_config["url"],
@@ -483,7 +483,7 @@ async def mcp_tool_desc_transform_v2(
                 # elif "stdio" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "stdio",
                         "params": {
@@ -510,11 +510,11 @@ async def mcp_tool_desc_transform_v2(
                 if server_config["type"] == "sse":
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
-                    # if context and context.session_id:
-                    #     headers["SESSION_ID"] = context.session_id
-                    #
-                    # if context and context.user:
-                    #     headers["USER_ID"] = context.user
+                    if context and context.session_id:
+                        headers["SESSION_ID"] = context.session_id
+
+                    if context and context.user:
+                        headers["USER_ID"] = context.user
                     params["headers"] = headers
 
                     server = MCPServerSse(
@@ -568,6 +568,7 @@ async def mcp_tool_desc_transform_v2(
 
     return openai_tools
 
+
 async def process_mcp_tools(
         mcp_tools: Optional[List[Dict[str, Any]]] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
@@ -598,6 +599,7 @@ async def process_mcp_tools(
         processed_tools.append(processed_tool)
 
     return processed_tools, tool_mapping
+
 
 async def mcp_tool_desc_transform(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None
@@ -640,7 +642,7 @@ async def mcp_tool_desc_transform(
                         tmp_function = {
                             "type": "function",
                             "function": {
-                                #"name": "mcp__" + server_name + "__" + item["name"],
+                                # "name": "mcp__" + server_name + "__" + item["name"],
                                 "name": server_name + "__" + item["name"],
                                 "description": item["description"],
                                 "parameters": {
@@ -661,7 +663,7 @@ async def mcp_tool_desc_transform(
             elif "sse" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "sse",
                         "params": {
@@ -677,7 +679,7 @@ async def mcp_tool_desc_transform(
             elif "streamable-http" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "streamable-http",
                         "params": {
@@ -694,7 +696,7 @@ async def mcp_tool_desc_transform(
                 # elif "stdio" == server_config.get("type", ""):
                 server_configs.append(
                     {
-                        #"name": "mcp__" + server_name,
+                        # "name": "mcp__" + server_name,
                         "name": server_name,
                         "type": "stdio",
                         "params": {
@@ -973,6 +975,7 @@ async def cleanup_server(server):
         logger.warning(f"Failed to cleanup server: {e}")
 
 # Helper: derive mcp_servers from skill_configs if provided
+
 
 def replace_mcp_servers_variables(skill_configs: Dict[str, Any] = None,
                                   current_servers: List[str] = None,

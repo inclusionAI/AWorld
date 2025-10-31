@@ -1,22 +1,26 @@
 
-# init env
 from dotenv import load_dotenv
+# init env
 load_dotenv()
-
-from aworld.core.agent.swarm import Swarm
-from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
-
 
 import asyncio
 import logging
 import os
+import sys
 import traceback
 from datetime import datetime
+from typing import Iterator
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
-from aworld.dataset.sampler import FixedSampler
+from aworld.core.context.amni.worksapces import workspace_repo
+from aworld.dataset.sampler import RangeSampler, Sampler, FixedSampler
+from aworld.output import WorkSpace
 from aworld.runners.evaluate_runner import EvaluateRunner
+from examples.xbench.agents.swarm import build_xbench_swarm
 from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig
 from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTarget, EvalDataCase, EvalTask, EvalResult
@@ -64,8 +68,7 @@ class AmniContextEvaluatable(EvalTarget):
         )
 
         context = await self.build_context(task_input)
-        # TODO gaia agent
-        swarm = Swarm(await build_agents()) # build_xbench_swarm()
+        swarm = build_xbench_swarm()
         await context.build_agents_state(swarm.topology)
 
         return Task(
@@ -78,8 +81,7 @@ class AmniContextEvaluatable(EvalTarget):
             context=context,
             conf=TaskConfig(
                 stream=False,
-                exit_on_failure=True,
-                resp_carry_context=True,
+                exit_on_failure=True
             ),
             timeout=60 * 60
         )
@@ -93,13 +95,11 @@ class AmniContextEvaluatable(EvalTarget):
         task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
         try:
             result = await Runners.run_task(task=task)
-            os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
-            with open(f"trajectory/{batch_id}/traj_{index}.json", "a") as f:
-                f.write(str(result[task_id].trajectory[-1]))
-            os.makedirs(f"results/{batch_id}", exist_ok=True)
+            if not os.path.exists(f"results/{batch_id}"):
+                os.mkdir(f"results/{batch_id}")
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
-                f.write(str(result[task_id].answer))
+                f.write(result[task_id].answer)
             if isinstance(result, TaskResponse):
                 return {"answer": result.answer}
             if isinstance(result, dict):
@@ -141,7 +141,10 @@ async def evaluate():
 
     # ============= SAVE RESULT TO FILE =============
     result_file_path = f"results/{task_id}/"
-    os.makedirs(result_file_path, exist_ok=True)
+    if not os.path.exists("results"):
+        os.mkdir("results")
+    if not os.path.exists(result_file_path):
+        os.mkdir(result_file_path)
     with open(f"{result_file_path}/results.txt", "w") as f:
         f.write(f"{result.run_id}\n")
         f.write(f"START: {datetime.fromtimestamp((int(result.create_time))).strftime('%Y%m%d %H%M%S')}\n")
