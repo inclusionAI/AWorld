@@ -364,63 +364,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return observation
 
     def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
-        from aworld.core.context.amni import AmniContext
-        if isinstance(context, AmniContext):
-            PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
-            return
-        """Log the sequence of messages for debugging purposes"""
-        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
-        logger.debug(f"[agent] use tools: {self.tools}")
-        for i, msg in enumerate(messages):
-            prefix = msg.get('role')
-            logger.info(
-                f"[agent] Message {i + 1}: {prefix} ===================================")
-            if isinstance(msg['content'], list):
-                try:
-                    for item in msg['content']:
-                        if item.get('type') == 'text':
-                            logger.info(
-                                f"[agent] Text content: {item.get('text')}")
-                        elif item.get('type') == 'image_url':
-                            image_url = item.get('image_url', {}).get('url', '')
-                            if image_url.startswith('data:image'):
-                                logger.info(f"[agent] Image: [Base64 image data]")
-                            else:
-                                logger.info(
-                                    f"[agent] Image URL: {image_url[:30]}...")
-                except Exception as e:
-                    logger.error(f"[agent] Error parsing msg['content']: {msg}. Error: {e}")
-                    content = str(msg['content'])
-                    chunk_size = 500
-                    for j in range(0, len(content), chunk_size):
-                        chunk = content[j:j + chunk_size]
-                        if j == 0:
-                            logger.info(f"[agent] Content: {chunk}")
-                        else:
-                            logger.info(f"[agent] Content (continued): {chunk}")
-            else:
-                content = str(msg['content'])
-                chunk_size = 500
-                for j in range(0, len(content), chunk_size):
-                    chunk = content[j:j + chunk_size]
-                    if j == 0:
-                        logger.info(f"[agent] Content: {chunk}")
-                    else:
-                        logger.info(f"[agent] Content (continued): {chunk}")
-
-            if 'tool_calls' in msg and msg['tool_calls']:
-                for tool_call in msg.get('tool_calls'):
-                    if isinstance(tool_call, dict):
-                        logger.info(
-                            f"[agent] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
-                        args = str(tool_call.get('function', {}).get(
-                            'arguments', {}))[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
-                    elif isinstance(tool_call, ToolCall):
-                        logger.info(
-                            f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
-                        args = str(tool_call.function.arguments)[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+        PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:

@@ -96,8 +96,6 @@ class Context:
                  session: Session = None,
                  engine: str = None,
                  **kwargs):
-
-        super().__init__()
         self._user = user
         self._init(task_id=task_id, trace_id=trace_id,
                    session=session, engine=engine, **kwargs)
@@ -239,6 +237,7 @@ class Context:
     def deep_copy(self) -> 'Context':
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
+        print("copy context: ", self._start)
         return self._deep_copy(new_context)
 
     def _deep_copy(self, new_context) -> 'Context':
@@ -255,7 +254,7 @@ class Context:
         new_context._task_id = self._task_id
         new_context._engine = self._engine
         new_context._trace_id = self._trace_id
-
+        new_context._start = self._start
         # Session - shallow copy to maintain reference
         new_context._session = self._session
 

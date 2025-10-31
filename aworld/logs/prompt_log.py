@@ -123,7 +123,6 @@ class PromptLogger:
         # Record function start time
         start_time = context.start_time
 
-        logger = logging.getLogger("amnicontext_prompt")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Use more beautiful separators and format
         prompt_logger.info(_generate_top_border())
@@ -134,7 +133,7 @@ class PromptLogger:
         prompt_logger.info(f"│ 🤖 Agent ID: {agent.id():<{BORDER_WIDTH - 12}} │")
         prompt_logger.info(f"│ 📋 Task ID:  {context.task_id:<{BORDER_WIDTH - 12}} │")
         prompt_logger.info(f"│ 📝 Task Input: {context.task_input:<{BORDER_WIDTH - 13}} │")
-        prompt_logger.info(f"│ 👨🏻 User ID:  {context.user_id:<{BORDER_WIDTH - 12}} │")
+        prompt_logger.info(f"│ 👨🏻 User ID:  {getattr(context, 'id', ''):<{BORDER_WIDTH - 12}} │")
         prompt_logger.info(f"│ 💬 Session ID:  {context.session_id:<{BORDER_WIDTH - 14}} │")
         prompt_logger.info(
             f"│ 🔢 Messages Count (See details in log file(amnicontext_prompt.log) ): {len(messages):<{BORDER_WIDTH - 12}} │")
@@ -174,8 +173,7 @@ class PromptLogger:
             prompt_logger.warning(f"❌ Error logging context tree: {str(e)}")
 
         try:
-            if context.get_config().debug_mode:
-                # Log OpenAI messages
+            if not hasattr(context, "get_config") or context.get_config().debug_mode:
                 PromptLogger._log_messages(messages)
         except Exception as e:
             prompt_logger.warning(f"❌ Error logging messages: {str(e)}")
@@ -256,7 +254,7 @@ class PromptLogger:
             prompt_logger.info(_generate_separator())
             if messages and len(messages) > 0 and messages[-1].get('role') != 'assistant':
                 digest_logger.info(
-                    f"context_length|{agent.id()}|{context.task_id}|{context.user_id}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}|{len(messages)}")
+                    f"context_length|{agent.id()}|{context.task_id}|{getattr(context, 'id', '')}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}|{len(messages)}")
         except Exception as e:
             # If any error occurs in context length logging, log warning and continue
             try:
@@ -332,8 +330,9 @@ class PromptLogger:
             agent (BaseAgent): The agent whose facts to log
             context (ApplicationContext): The current application context
         """
-        facts = context.get_facts(agent.id()) + context.get_facts()
-        if facts:
+
+        if hasattr(context, "get_facts"):
+            facts = context.get_facts(agent.id()) + context.get_facts()
             prompt_logger.info(f"│ 🧠 Context Facts: │")
             # Log all facts on separate lines
             for fact in facts:
@@ -394,7 +393,7 @@ class PromptLogger:
         prompt_logger.info(_generate_separator())
 
         # Format context tree output with intelligent hierarchical structure processing
-        tree_lines = context.tree.split('\n')
+        tree_lines = getattr(context, "tree", "").split('\n')
         for line in tree_lines:
             if line.strip():  # Skip empty lines
                 # Analyze line content to identify hierarchical structure
