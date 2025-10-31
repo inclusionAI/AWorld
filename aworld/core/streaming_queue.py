@@ -121,7 +121,7 @@ class InMemoryStreamingQueue(StreamingQueueProvider):
         """
         if self._closed:
             raise RuntimeError("Cannot put message to closed queue")
-        await self._queue.put_nowait(message)
+        self._queue.put_nowait(message)
         
     async def get(self, timeout: Optional[float] = None) -> Message:
         """Get a message from the queue (blocking).

@@ -87,8 +87,7 @@ class TaskRunner(Runner):
             if not task.streaming_queue_provider and task.streaming_queue_id:
                 self._init_streaming_queue_provider()
 
-        if task.task_status_store:
-            self.task_status_store = task.task_status_store
+        self.task_status_store = task.task_status_store or None
 
     async def pre_run(self):
         task = self.task

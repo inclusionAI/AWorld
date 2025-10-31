@@ -71,7 +71,6 @@ class TaskEventRunner(TaskRunner):
                 await self._save_trajectories()
                 resp = self._response()
                 if self.task.streaming_mode:
-                    # Support both old and new streaming queue interface
                     if self.task.streaming_queue_provider:
                         await self.task.streaming_queue_provider.put(
                             Message(payload=resp, session_id=self.context.session_id, topic=TopicType.TASK_RESPONSE))
