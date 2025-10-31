@@ -52,6 +52,9 @@ class AmniContextEvaluatable(EvalTarget):
 
         return await ApplicationContext.from_input(task_input, context_config = context_config)
 
+    # async def build_common_context(self, task_input: TaskInput) -> Context:
+    #     return
+
     async def build_task(self, task_content: str, session_id: str = None, task_id: str = None) -> Task:
         if not session_id:
             session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -135,7 +138,7 @@ async def evaluate():
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=200,
+            parallel_num=100,
             skip_passed_cases=True,
         )).run()
 
