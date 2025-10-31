@@ -237,7 +237,6 @@ class Context:
     def deep_copy(self) -> 'Context':
         # Create a new Context instance without calling __init__ to avoid singleton issues
         new_context = object.__new__(Context)
-        print("copy context: ", self._start)
         return self._deep_copy(new_context)
 
     def _deep_copy(self, new_context) -> 'Context':
