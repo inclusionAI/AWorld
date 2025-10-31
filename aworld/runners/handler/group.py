@@ -184,7 +184,8 @@ class DefaultGroupHandler(GroupHandler):
                 if node_results and tool_call_id:
                     act_res = ActionResult(
                         content=json.dumps(to_serializable(node_results), ensure_ascii=False),
-                        tool_call_id=tool_call_id
+                        tool_call_id=tool_call_id,
+                        tool_name=node.metadata.get('root_agent_id')
                     )
                     action_results.append(act_res)
             if action_results:
