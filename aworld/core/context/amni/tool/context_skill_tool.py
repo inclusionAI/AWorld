@@ -16,11 +16,7 @@ CONTEXT_SKILL = "SKILL"
 
 
 class ContextExecuteAction(ToolAction):
-    """Definition of Context visit and setting supported action."""
-
-    """
-    Agent Skills Support
-    """
+    """Agent Skills Support. Definition of Context visit and setting supported action."""
 
     ACTIVE_SKILL = ToolActionInfo(
         name="active_skill",
@@ -44,7 +40,6 @@ class ContextExecuteAction(ToolAction):
                       supported_action=ContextExecuteAction)
 class ContextSkillTool(AsyncTool):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
-        """Init document tool."""
         super(ContextSkillTool, self).__init__(conf, **kwargs)
         self.cur_observation = None
         self.content = None
@@ -84,31 +79,32 @@ class ContextSkillTool(AsyncTool):
             if not isinstance(message.context, AmniContext):
                 raise ValueError("context is not AmniContext")
 
-            action = actions[0]
-            action_name = action.action_name
-            if action_name == ContextExecuteAction.ACTIVE_SKILL.value.name:
-                skill_name = action.params.get("skill_name", "")
-                if not skill_name:
-                    raise ValueError("skill name invalid")
-                result = await message.context.active_skill(skill_name, namespace=action.agent_name)
-                if not result:
-                    raise ValueError("active skill failed")
-            elif action_name == ContextExecuteAction.OFFLOAD_SKILL.value.name:
-                skill_name = action.params.get("skill_name", "")
-                if not skill_name:
-                    raise ValueError("skill name invalid")
-                result = await message.context.offload_skill(skill_name, namespace=action.action_name)
-                if not result:
-                    raise ValueError("offload skill failed")
-            else:
-                raise ValueError("action name invalid")
+            for action in actions:
+                logger.info(f"CONTEXTTool|do_step: {action}")
+                action_name = action.action_name
+                if action_name == ContextExecuteAction.ACTIVE_SKILL.value.name:
+                    skill_name = action.params.get("skill_name", "")
+                    if not skill_name:
+                        raise ValueError("skill name invalid")
+                    result = await message.context.active_skill(skill_name, namespace=action.agent_name)
+                    if not result:
+                        raise ValueError("active skill failed")
+                elif action_name == ContextExecuteAction.OFFLOAD_SKILL.value.name:
+                    skill_name = action.params.get("skill_name", "")
+                    if not skill_name:
+                        raise ValueError("skill name invalid")
+                    result = await message.context.offload_skill(skill_name, namespace=action.action_name)
+                    if not result:
+                        raise ValueError("offload skill failed")
+                else:
+                    raise ValueError("action name invalid")
 
-            observation.content = result
-            observation.action_result.append(
-                ActionResult(is_done=True,
-                             success=True,
-                             content=f"{result}",
-                             keep=False))
+                observation.content = result
+                observation.action_result.append(
+                    ActionResult(is_done=True,
+                                 success=True,
+                                 content=f"{result}",
+                                 keep=False))
             reward = 1.
         except Exception as e:
             fail_error = str(e)
