@@ -6,7 +6,7 @@ import traceback
 from typing import AsyncGenerator, List, Dict, Any, Tuple
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.base import is_agent
+from aworld.core.agent.base import is_agent, is_agent_by_name
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, GroupMessage, MemoryEventMessage, MemoryEventType
@@ -184,7 +184,8 @@ class DefaultGroupHandler(GroupHandler):
                 if node_results and tool_call_id:
                     act_res = ActionResult(
                         content=json.dumps(to_serializable(node_results), ensure_ascii=False),
-                        tool_call_id=tool_call_id
+                        tool_call_id=tool_call_id,
+                        tool_name=node.metadata.get('root_agent_id')
                     )
                     action_results.append(act_res)
             if action_results:
@@ -212,6 +213,8 @@ class DefaultGroupHandler(GroupHandler):
                 # add tool message to receive_agent's memory
                 if result_message.payload and isinstance(result_message.payload, Observation) and result_message.payload.is_tool_result:
                     for action_item in result_message.payload.action_result:
+                        if not is_agent_by_name(action_item.tool_name):
+                            continue
                         memory_msg = MemoryEventMessage(
                             payload=action_item,
                             agent=receive_agent,
@@ -220,7 +223,7 @@ class DefaultGroupHandler(GroupHandler):
                         )
                         try:
                             future = await send_message_with_future(memory_msg)
-                            results = await future.wait(timeout=10)
+                            results = await future.wait(timeout=300)
                             if not results:
                                 logger.warning(f"Memory write task failed: {memory_msg}")
                         except Exception as e:

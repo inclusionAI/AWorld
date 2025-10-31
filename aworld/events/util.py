@@ -4,7 +4,7 @@ from typing import Callable, Any, List
 import asyncio
 
 from aworld.core.context.base import Context
-from aworld.core.event import eventbus
+from aworld.events import eventbus
 from aworld.core.event.base import Message, Constants
 from aworld.core.event.message_future import MessageFuture
 from aworld.events.manager import EventManager

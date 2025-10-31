@@ -21,6 +21,8 @@ class SuperSandboxApi(BaseSandboxApi):
         env_config: Any,
         mcp_servers: Optional[List[str]] = None,
         mcp_config: Optional[Any] = None,
+        black_tool_actions: Optional[Dict[str, List[str]]] = None,
+        skill_configs: Optional[Any] = None,
     ) -> SandboxSuperResponse:
         """
         Create a supercomputer sandbox based on the reference implementation.
@@ -56,7 +58,8 @@ class SuperSandboxApi(BaseSandboxApi):
                 status=SandboxStatus.RUNNING,
                 host=host,
                 mcp_config=mcp_config,
-                env_type=SandboxEnvType.SUPERCOMPUTER
+                env_type=SandboxEnvType.SUPERCOMPUTER,
+                skill_configs=skill_configs
             )
             
         except Exception as e:

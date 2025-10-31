@@ -21,7 +21,8 @@ class BaseSandbox(Sandbox):
             timeout: Optional[int] = None,
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Optional[Any] = None,
-            black_tool_actions: Optional[Dict[str, List[str]]] = None
+            black_tool_actions: Optional[Dict[str, List[str]]] = None,
+            skill_configs: Optional[Any] = None
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -33,6 +34,8 @@ class BaseSandbox(Sandbox):
             timeout: Timeout for sandbox operations.
             mcp_servers: List of MCP servers to use.
             mcp_config: Configuration for MCP servers.
+            black_tool_actions: Black list of tool actions.
+            skill_configs: Skill configurations.
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -41,7 +44,8 @@ class BaseSandbox(Sandbox):
             timeout=timeout,
             mcp_servers=mcp_servers,
             mcp_config=mcp_config,
-            black_tool_actions=black_tool_actions
+            black_tool_actions=black_tool_actions,
+            skill_configs=skill_configs
         )
         self._logger = self._setup_logger()
         
@@ -80,6 +84,17 @@ class BaseSandbox(Sandbox):
         if hasattr(self, '_mcpservers'):
             return self._mcpservers
         return None
+    
+    @abc.abstractmethod
+    def get_skill_list(self) -> Optional[Any]:
+        """
+        Get the skill configurations.
+        This method must be implemented by subclasses.
+        
+        Returns:
+            Optional[Any]: The skill configurations, or None if empty.
+        """
+        pass
     
     @abc.abstractmethod
     async def cleanup(self) -> bool:
