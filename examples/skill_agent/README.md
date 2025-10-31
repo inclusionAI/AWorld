@@ -27,55 +27,21 @@ An **Agent Skill** is a composable capability unit that contains:
 3. **Active State**: Optional auto-activation flag
 
 
-The skill system follows this lifecycle:
+### Skills and the Context Window
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  1. INITIALIZATION                                       │
-│     - Skills registered from config                     │
-│     - Skills with "active": True auto-activated         │
-│     - Skill metadata loaded into system prompt          │
-└─────────────────────────────────────────────────────────┘
-                         ↓
-┌─────────────────────────────────────────────────────────┐
-│  2. DISCOVERY                                            │
-│     - Agent sees available skills in prompt             │
-│     - Agent evaluates which skills are needed           │
-└─────────────────────────────────────────────────────────┘
-                         ↓
-┌─────────────────────────────────────────────────────────┐
-│  3. ACTIVATION                                           │
-│     - Agent calls: active_skill("skill_name")           │
-│     - Receives usage guide in response                  │
-│     - Tools become available                            │
-└─────────────────────────────────────────────────────────┘
-                         ↓
-┌─────────────────────────────────────────────────────────┐
-│  4. USAGE                                                │
-│     - Agent uses tools from activated skills            │
-│     - Multiple skills can be active simultaneously      │
-└─────────────────────────────────────────────────────────┘
-                         ↓
-┌─────────────────────────────────────────────────────────┐
-│  5. OFFLOADING                                           │
-│     - Agent calls: offload_skill("skill_name")          │
-│     - Tools removed from available list                 │
-│     - Reduces context window usage                      │
-└─────────────────────────────────────────────────────────┘
-```
+The diagram below illustrates how skills are progressively loaded and activated within the agent's context window:
 
-### Progressive Disclosure
+![Skills and the Context Window](../../readme_assets/skills_context_window.svg)
 
-AWorld Skills follow the **progressive disclosure** principle:
-
-1. **Level 1 - Metadata**: Skill metadata loaded into agent's system prompt
-2. **Level 2 - Activation**: Agent activates skill when needed (manual or auto)
-3. **Level 3 - Tool Usage**: Agent accesses skill tools and usage guide
-
-```
-System Prompt (Metadata) → Skill Activation → Tool Usage
-     [browser, planning]  →  active_skill()  →  [add_todo, get_todo]
-```
+**Key Flow:**
+1. 📋 **System Prompt**: Agent initialized with task orchestration capabilities
+2. 🔧 **Skill Metadata**: Lightweight skill snippets (pdf, excel, browser, etc.) loaded into prompt
+3. 👤 **User Request**: User provides task requiring PDF processing
+4. 🧠 **Agent Decision**: Agent identifies need for PDF skill and calls `SKILL__active_skill("pdf")`
+5. 📖 **Skill Activation**: Detailed usage guide returned, instructing to use browser for remote URLs
+6. 🎯 **Skill Chaining**: Agent activates browser skill based on PDF skill's guidance
+7. ✅ **Multi-Skill Active**: Both `['pdf', 'browser']` skills now available simultaneously
+8. 🚀 **Tool Usage**: Agent uses `playwright__navigate` and `mcpreadpdf` to complete task
 
 ## Architecture
 
