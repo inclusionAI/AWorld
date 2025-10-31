@@ -9,7 +9,7 @@ import asyncio
 from pydantic import BaseModel
 
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
-from aworld.core.event import eventbus
+from aworld.events import eventbus
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
@@ -271,6 +271,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
+            step_res[0].action_result[idx].tool_name = act.tool_name
 
         if context.swarm:
             agent = context.swarm.agents.get(action[0].agent_name)
@@ -409,7 +410,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             if message.group_id and message.headers.get('level', 0) == 0:
                 from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
                 state_mng = RuntimeStateManager.instance()
-                state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
+                await state_mng.finish_sub_group(message.group_id, message.headers.get('root_message_id'), [final_res])
                 final_res.headers['_tool_finished'] = True
             return final_res
         except Exception as e:
@@ -435,6 +436,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
+            step_res[0].action_result[idx].tool_name = act.tool_name
 
         context = message.context
         if context.swarm:
@@ -533,7 +535,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 )
                 try:
                     future = await send_message_with_future(memory_msg)
-                    results = await future.wait(timeout=10)
+                    results = await future.wait(timeout=300)
                     if not results:
                         logger.warning(f"Memory write task failed: {memory_msg}")
                 except Exception as e:
