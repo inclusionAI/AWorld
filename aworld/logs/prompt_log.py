@@ -4,21 +4,19 @@ import time
 from datetime import datetime
 from typing import Any, Dict
 
-# from ... import ApplicationContext
-from ..logger import amni_digest_logger, amni_prompt_logger
 from aworld.core.agent.base import BaseAgent
 from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES
-
-from .modelutils import ModelUtils, num_tokens_from_string
+from aworld.logs.util import digest_logger, prompt_logger
+from aworld.models.utils import num_tokens_from_string, ModelUtils
 
 # Log display configuration constants
 BORDER_WIDTH = 100  # Border content area width
 BORDER_PADDING = 4  # Left padding width
 TOTAL_WIDTH = BORDER_WIDTH + BORDER_PADDING + 4  # Total width (including border characters)
 
+
 def _generate_separator(style: str = "─") -> str:
-    """
-    Generate a separator line with the configured border width.
+    """Generate a separator line with the configured border width.
     
     Args:
         style (str): The character to use for the separator line
@@ -28,17 +26,19 @@ def _generate_separator(style: str = "─") -> str:
     """
     return f"├{style * BORDER_WIDTH}┤"
 
+
 def _generate_top_border() -> str:
     """Generate the top border of the log box."""
     return f"╭{('─' * BORDER_WIDTH)}╮"
+
 
 def _generate_bottom_border() -> str:
     """Generate the bottom border of the log box."""
     return f"╰{('─' * BORDER_WIDTH)}╯"
 
+
 def _format_llm_config(llm_config: Any) -> str:
-    """
-    Safely format LLM configuration for logging, filtering out sensitive information.
+    """Safely format LLM configuration for logging, filtering out sensitive information.
     
     Args:
         llm_config: The LLM configuration object or dictionary
@@ -48,9 +48,9 @@ def _format_llm_config(llm_config: Any) -> str:
     """
     if not llm_config:
         return "None"
-    
+
     try:
-        show_keys =['llm_model_name', 'llm_temperature','max_model_len', 'max_retries']
+        show_keys = ['llm_model_name', 'llm_temperature', 'max_model_len', 'max_retries']
 
         if isinstance(llm_config, dict):
             safe_config = {}
@@ -58,15 +58,13 @@ def _format_llm_config(llm_config: Any) -> str:
                 if any(key == show_key for show_key in show_keys):
                     safe_config[key] = value
             return str(safe_config)
-
-        
     except Exception:
         # If any error occurs, return a safe fallback
         return "Config (filtered)"
 
+
 def _format_tools(tools: list) -> str:
-    """
-    Format tools information for logging, categorizing them by type.
+    """Format tools information for logging, categorizing them by type.
     
     Args:
         tools (list): List of tool objects with function information
@@ -76,15 +74,14 @@ def _format_tools(tools: list) -> str:
     """
     if not tools:
         return "No tools"
-    
+
     formatted_tools = []
-    
     for tool in tools:
         if isinstance(tool, dict) and 'function' in tool:
             function_info = tool['function']
             if isinstance(function_info, dict) and 'name' in function_info:
                 tool_name = function_info['name']
-                
+
                 # Determine tool type based on name
                 if tool_name.startswith('mcp'):
                     tool_type = "mcp"
@@ -92,29 +89,30 @@ def _format_tools(tools: list) -> str:
                     tool_type = "agent_as_tool"
                 else:
                     tool_type = "tool"
-                
+
                 formatted_tools.append(f"{tool_name}({tool_type})")
-    
+
     if not formatted_tools:
         return "No valid tools"
-    
+
     # Return first tool, additional tools will be logged separately
     result = formatted_tools[0]
-    
+
     # Truncate if the result is too long for the border width
     max_length = BORDER_WIDTH - 13  # Account for "│ 🔨 Tools: " prefix
     if len(result) > max_length:
-        result = result[:max_length-3] + "..."
-    
+        result = result[:max_length - 3] + "..."
+
     return result
+
 
 class PromptLogger:
     """Logger class for handling prompt-related logging operations"""
 
     @staticmethod
-    def log_agent_call_llm_messages(agent: BaseAgent, context: "ApplicationContext", messages: list[dict], tools: list[Dict[str, Any]] = None, **kwargs) -> None:
-        """
-        Log OpenAI messages to the prompt log file
+    def log_agent_call_llm_messages(agent: BaseAgent, context: "ApplicationContext", messages: list[dict],
+                                    tools: list[Dict[str, Any]] = None, **kwargs) -> None:
+        """Log OpenAI messages to the prompt log file
         
         Args:
             agent (BaseAgent): The agent making the LLM call
@@ -125,73 +123,72 @@ class PromptLogger:
         # Record function start time
         start_time = context.start_time
 
-        logger = logging.getLogger("amnicontext_prompt")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         # Use more beautiful separators and format
-        amni_prompt_logger.info(_generate_top_border())
-        amni_prompt_logger.info(f"│{'🚀 AGENT EXECUTION START':^{BORDER_WIDTH}}│")
-        amni_prompt_logger.info(_generate_separator())
-        amni_prompt_logger.info(f"│ 🤖 Context ID: {str(id(context))+'|'+context.task_id+'|'+agent.id()+'|'+str(ts):<{BORDER_WIDTH-12}}  │")
-        amni_prompt_logger.info(f"│ 🤖 Agent ID: {agent.id():<{BORDER_WIDTH-12}} │")
-        amni_prompt_logger.info(f"│ 📋 Task ID:  {context.task_id:<{BORDER_WIDTH-12}} │")
-        amni_prompt_logger.info(f"│ 📝 Task Input: {context.task_input:<{BORDER_WIDTH-13}} │")
-        amni_prompt_logger.info(f"│ 👨🏻 User ID:  {context.user_id:<{BORDER_WIDTH-12}} │")
-        amni_prompt_logger.info(f"│ 💬 Session ID:  {context.session_id:<{BORDER_WIDTH-14}} │")
-        amni_prompt_logger.info(f"│ 🔢 Messages Count (See details in log file(amnicontext_prompt.log) ): {len(messages):<{BORDER_WIDTH-12}} │")
-        
+        prompt_logger.info(_generate_top_border())
+        prompt_logger.info(f"│{'🚀 AGENT EXECUTION START':^{BORDER_WIDTH}}│")
+        prompt_logger.info(_generate_separator())
+        prompt_logger.info(
+            f"│ 🤖 Context ID: {str(id(context)) + '|' + context.task_id + '|' + agent.id() + '|' + str(ts):<{BORDER_WIDTH - 12}}  │")
+        prompt_logger.info(f"│ 🤖 Agent ID: {agent.id():<{BORDER_WIDTH - 12}} │")
+        prompt_logger.info(f"│ 📋 Task ID:  {context.task_id:<{BORDER_WIDTH - 12}} │")
+        prompt_logger.info(f"│ 📝 Task Input: {context.task_input:<{BORDER_WIDTH - 13}} │")
+        prompt_logger.info(f"│ 👨🏻 User ID:  {getattr(context, 'id', ''):<{BORDER_WIDTH - 12}} │")
+        prompt_logger.info(f"│ 💬 Session ID:  {context.session_id:<{BORDER_WIDTH - 14}} │")
+        prompt_logger.info(
+            f"│ 🔢 Messages Count (See details in log file(amnicontext_prompt.log) ): {len(messages):<{BORDER_WIDTH - 12}} │")
+
         try:
             # Log context length information
             PromptLogger._log_context_length(messages, agent.conf.llm_config['llm_model_name'], context, agent)
         except Exception as e:
-            amni_prompt_logger.warning(f"❌ Error logging context length: {str(e)}")
+            prompt_logger.warning(f"❌ Error logging context length: {str(e)}")
 
         try:
             # Log facts information
             PromptLogger._log_agent_facts(agent, context)
         except Exception as e:
-            amni_prompt_logger.warning(f"❌ Error logging agent facts: {str(e)}")
-        
+            prompt_logger.warning(f"❌ Error logging agent facts: {str(e)}")
+
         try:
-            amni_prompt_logger.info(f"│ ⚙️ LLM Config: {_format_llm_config(agent.conf.llm_config):<{BORDER_WIDTH-13}} │")
+            prompt_logger.info(f"│ ⚙️ LLM Config: {_format_llm_config(agent.conf.llm_config):<{BORDER_WIDTH - 13}} │")
         except Exception as e:
-            amni_prompt_logger.warning(f"❌ Error logging LLM config: {str(e)}")
-        
+            prompt_logger.warning(f"❌ Error logging LLM config: {str(e)}")
+
         try:
             # Log tools information
             PromptLogger._log_agent_tools(agent, tools)
         except Exception as e:
-            amni_prompt_logger.warning(f"❌ Error logging agent tools: {str(e)}")
-        
+            prompt_logger.warning(f"❌ Error logging agent tools: {str(e)}")
+
         try:
-            amni_prompt_logger.info(_generate_separator())
+            prompt_logger.info(_generate_separator())
         except Exception as e:
-            amni_prompt_logger.warning(f"❌ Error generating separator: {str(e)}")
-        
+            prompt_logger.warning(f"❌ Error generating separator: {str(e)}")
+
         try:
             # Log context tree information
             PromptLogger._log_context_tree(context)
         except Exception as e:
-            amni_prompt_logger.warning(f"❌ Error logging context tree: {str(e)}")
-        
+            prompt_logger.warning(f"❌ Error logging context tree: {str(e)}")
+
         try:
-            if context.get_config().debug_mode:
-              # Log OpenAI messages
-              PromptLogger._log_messages(messages)
+            if not hasattr(context, "get_config") or context.get_config().debug_mode:
+                PromptLogger._log_messages(messages)
         except Exception as e:
-            amni_prompt_logger.warning(f"❌ Error logging messages: {str(e)}")
-        
+            prompt_logger.warning(f"❌ Error logging messages: {str(e)}")
+
         # Calculate and record function execution time
         end_time = time.time()
         execution_time = end_time - start_time
-        logger.info(_generate_separator())
-        logger.info(f"│ ⏱️  Execution Time: {execution_time:.3f}s{(' ' * (BORDER_WIDTH - 20))} │")
-        logger.info(_generate_bottom_border())
-
+        prompt_logger.info(_generate_separator())
+        prompt_logger.info(f"│ ⏱️  Execution Time: {execution_time:.3f}s{(' ' * (BORDER_WIDTH - 20))} │")
+        prompt_logger.info(_generate_bottom_border())
 
     @staticmethod
-    def _log_context_length(messages: list[dict], model_name: str, context: "ApplicationContext", agent: BaseAgent) -> None:
-        """
-        Log detailed context usage analysis similar to ClaudeCode, showing token breakdown by category.
+    def _log_context_length(messages: list[dict], model_name: str, context: "ApplicationContext",
+                            agent: BaseAgent) -> None:
+        """Log detailed context usage analysis similar to ClaudeCode, showing token breakdown by category.
         
         Args:
             messages (list[dict]): List of message dictionaries to calculate context length from
@@ -202,7 +199,7 @@ class PromptLogger:
             # Calculate total context length and breakdown using ModelUtils
             context_window_limit = ModelUtils.get_context_window(model_name)
             token_breakdown = ModelUtils.calculate_token_breakdown(messages, model_name)
-            
+
             total_context_length = token_breakdown['total']
             total_context_length_k = total_context_length / 1024  # Convert to K
             total_percentage = (total_context_length / context_window_limit) * 100
@@ -213,7 +210,7 @@ class PromptLogger:
             assistant_tokens = token_breakdown['assistant']
             tool_tokens = token_breakdown['tool']
             other_tokens = token_breakdown['other']
-            
+
             # Calculate percentages for each category
             system_percentage = (system_tokens / context_window_limit) * 100
             user_percentage = (user_tokens / context_window_limit) * 100
@@ -231,44 +228,44 @@ class PromptLogger:
                 system_tokens, user_tokens, assistant_tokens, tool_tokens, other_tokens,
                 context_window_limit
             )
-            
+
             # Prepare text data for the right side of the grid
             text_data = [
                 "",
                 f"📊 CONTEXT USAGE {agent.id()}",
-                f"{model_name} -> {total_context_length_k:.1f}k/{context_window_limit/1024}k tokens ({total_percentage:.1f}%)",
+                f"{model_name} -> {total_context_length_k:.1f}k/{context_window_limit / 1024}k tokens ({total_percentage:.1f}%)",
                 f"",
-                f"🟦 System: {system_tokens/1024:.1f}k tokens ({system_percentage:.1f}%)",
-                f"🟧 User: {user_tokens/1024:.1f}k tokens ({user_percentage:.1f}%)" if user_tokens > 1024 else f"🟧 User: {user_tokens} tokens ({user_percentage:.1f}%)",
-                f"🟨 Assistant: {assistant_tokens/1024:.1f}k tokens ({assistant_percentage:.1f}%)",
-                f"🟪 Tool: {tool_tokens/1024:.1f}k tokens ({tool_percentage:.1f}%)",
+                f"🟦 System: {system_tokens / 1024:.1f}k tokens ({system_percentage:.1f}%)",
+                f"🟧 User: {user_tokens / 1024:.1f}k tokens ({user_percentage:.1f}%)" if user_tokens > 1024 else f"🟧 User: {user_tokens} tokens ({user_percentage:.1f}%)",
+                f"🟨 Assistant: {assistant_tokens / 1024:.1f}k tokens ({assistant_percentage:.1f}%)",
+                f"🟪 Tool: {tool_tokens / 1024:.1f}k tokens ({tool_percentage:.1f}%)",
                 f"⬜ Free Space: {free_space_k:.1f}k ({free_percentage:.1f}%)",
                 "",  # Empty line for spacing
             ]
 
             # Use render_grid_with_text to display the context usage visualization
             grid_display = PromptLogger.render_grid_with_text(10, 10, grid, text_data)
-            
+
             # Log the grid display
             for line in grid_display.split('\n'):
                 if line.strip():  # Skip empty lines
-                    amni_prompt_logger.info(f"│ {line}")
-            
-            amni_prompt_logger.info(_generate_separator())
+                    prompt_logger.info(f"│ {line}")
+
+            prompt_logger.info(_generate_separator())
             if messages and len(messages) > 0 and messages[-1].get('role') != 'assistant':
-                amni_digest_logger.info(f"context_length|{agent.id()}|{context.task_id}|{context.user_id}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}|{len(messages)}")
+                digest_logger.info(
+                    f"context_length|{agent.id()}|{context.task_id}|{getattr(context, 'id', '')}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}|{len(messages)}")
         except Exception as e:
             # If any error occurs in context length logging, log warning and continue
             try:
-                amni_prompt_logger.warning(f"⚠️ Error in context length logging: {str(e)}")
+                prompt_logger.warning(f"⚠️ Error in context length logging: {str(e)}")
             except:
                 # If even warning fails, silently continue
                 pass
 
     @staticmethod
     def render_grid_with_text(x: int, y: int, grid_data: list[str], text_data: list[str]) -> str:
-        """
-        Render a grid with text on the right side.
+        """Render a grid with text on the right side.
 
         Args:
             x (int): Number of columns in the grid
@@ -327,16 +324,16 @@ class PromptLogger:
 
     @staticmethod
     def _log_agent_facts(agent: BaseAgent, context: "ApplicationContext") -> None:
-        """
-        Log agent facts information, each fact on a separate line.
+        """Log agent facts information, each fact on a separate line.
         
         Args:
             agent (BaseAgent): The agent whose facts to log
             context (ApplicationContext): The current application context
         """
-        facts = context.get_facts(agent.id()) + context.get_facts()
-        if facts:
-            amni_prompt_logger.info(f"│ 🧠 Context Facts: │")
+
+        if hasattr(context, "get_facts"):
+            facts = context.get_facts(agent.id()) + context.get_facts()
+            prompt_logger.info(f"│ 🧠 Context Facts: │")
             # Log all facts on separate lines
             for fact in facts:
                 if hasattr(fact, 'content'):
@@ -344,26 +341,25 @@ class PromptLogger:
                     # Truncate if too long
                     # if len(fact_content) > BORDER_WIDTH - 7:
                     #     fact_content = fact_content[:BORDER_WIDTH-10] + "..."
-                    amni_prompt_logger.info(f"│     │ {fact_content:<{BORDER_WIDTH-7}} │")
+                    prompt_logger.info(f"│     │ {fact_content:<{BORDER_WIDTH - 7}} │")
                 else:
                     # If fact doesn't have content attribute, show the fact object
                     fact_str = str(fact)
                     if len(fact_str) > BORDER_WIDTH - 7:
-                        fact_str = fact_str[:BORDER_WIDTH-10] + "..."
-                    amni_prompt_logger.info(f"│     │ {fact_str:<{BORDER_WIDTH-7}} │")
+                        fact_str = fact_str[:BORDER_WIDTH - 10] + "..."
+                    prompt_logger.info(f"│     │ {fact_str:<{BORDER_WIDTH - 7}} │")
         else:
-            amni_prompt_logger.info(f"│ 🧠 Context Facts: {'No facts':<{BORDER_WIDTH-13}} │")
+            prompt_logger.info(f"│ 🧠 Context Facts: {'No facts':<{BORDER_WIDTH - 13}} │")
 
     @staticmethod
     def _log_agent_tools(agent: BaseAgent, tools: list[dict[str, Any]]) -> None:
-        """
-        Log agent tools information, each tool on a separate line.
+        """Log agent tools information, each tool on a separate line.
         
         Args:
             agent (BaseAgent): The agent whose tools to log
         """
         if tools:
-            amni_prompt_logger.info(f"│ 🔨 Tools: │")
+            prompt_logger.info(f"│ 🔨 Tools: │")
             # Log all tools on separate lines
             for tool in tools:
                 if isinstance(tool, dict) and 'function' in tool:
@@ -377,33 +373,32 @@ class PromptLogger:
                             tool_type = "agent_as_tool"
                         else:
                             tool_type = "tool"
-                        
+
                         tool_display = f"{tool_name}({tool_type})"
                         # Truncate if too long
                         if len(tool_display) > BORDER_WIDTH - 7:
-                            tool_display = tool_display[:BORDER_WIDTH-10] + "..."
-                        amni_prompt_logger.info(f"{tool_display:<{BORDER_WIDTH-7}} │")
+                            tool_display = tool_display[:BORDER_WIDTH - 10] + "..."
+                        prompt_logger.info(f"{tool_display:<{BORDER_WIDTH - 7}} │")
         else:
-            amni_prompt_logger.info(f"│ 🔨 Tools: {'No tools':<{BORDER_WIDTH-13}} │")
+            prompt_logger.info(f"│ 🔨 Tools: {'No tools':<{BORDER_WIDTH - 13}} │")
 
     @staticmethod
     def _log_context_tree(context: "ApplicationContext") -> None:
-        """
-        Log context tree information with intelligent hierarchical structure formatting.
+        """Log context tree information with intelligent hierarchical structure formatting.
         
         Args:
             context (ApplicationContext): The current application context
         """
-        amni_prompt_logger.info(f"│{'🌳 CONTEXT TREE':^{BORDER_WIDTH}}│")
-        amni_prompt_logger.info(_generate_separator())
+        prompt_logger.info(f"│{'🌳 CONTEXT TREE':^{BORDER_WIDTH}}│")
+        prompt_logger.info(_generate_separator())
 
         # Format context tree output with intelligent hierarchical structure processing
-        tree_lines = context.tree.split('\n')
+        tree_lines = getattr(context, "tree", "").split('\n')
         for line in tree_lines:
             if line.strip():  # Skip empty lines
                 # Analyze line content to identify hierarchical structure
                 original_line = line
-                
+
                 # Detect level identifiers and calculate indentation
                 indent_level = 0
                 if line.startswith('├─ '):
@@ -440,10 +435,10 @@ class PromptLogger:
                     line_content = line
                     level_emoji = ""
                     indent_level = 0
-                
+
                 # Generate indentation string
                 indent_str = "  " * indent_level
-                
+
                 # Format display content
                 if level_emoji:
                     # Line with level identifier
@@ -451,7 +446,7 @@ class PromptLogger:
                 else:
                     # Regular line
                     formatted_line = f"{indent_str}{line_content}"
-                
+
                 # Special handling: if line contains 🎯 emoji, ensure correct indentation
                 if '🎯' in line_content and 'current' in line_content.lower():
                     # This is the current subtask, ensure correct indentation
@@ -463,21 +458,20 @@ class PromptLogger:
                 # Calculate right padding to maintain border alignment
                 padding = BORDER_WIDTH - len(formatted_line)
                 if padding > 0:
-                    amni_prompt_logger.info(f"│ {formatted_line:<{BORDER_WIDTH}} │")
+                    prompt_logger.info(f"│ {formatted_line:<{BORDER_WIDTH}} │")
                 else:
-                    amni_prompt_logger.info(f"│ {formatted_line} │")
+                    prompt_logger.info(f"│ {formatted_line} │")
 
     @staticmethod
     def _log_messages(messages: list[dict]) -> None:
-        """
-        Log OpenAI messages with intelligent formatting and multi-modal content support.
+        """Log OpenAI messages with intelligent formatting and multi-modal content support.
         
         Args:
             messages (list[dict]): List of message dictionaries with 'role' and 'content' keys
         """
-        amni_prompt_logger.info(_generate_separator())
-        amni_prompt_logger.info(f"│{'📝 OPENAI MESSAGES':^{BORDER_WIDTH}}│")
-        amni_prompt_logger.info(_generate_separator())
+        prompt_logger.info(_generate_separator())
+        prompt_logger.info(f"│{'📝 OPENAI MESSAGES':^{BORDER_WIDTH}}│")
+        prompt_logger.info(_generate_separator())
 
         # Format OpenAI Messages for clear display
         if messages:
@@ -489,17 +483,17 @@ class PromptLogger:
                 # Add different emojis and color identifiers for different roles
                 role_emoji = {
                     'system': '🔧',
-                    'user': '👤', 
+                    'user': '👤',
                     'assistant': '🤖',
                     'function': '⚙️',
                     'tool': '🛠️'
                 }.get(role, '❓')
-                
+
                 # Handle tool message tool_call_id
                 if role == 'tool' and 'tool_call_id' in message:
                     tool_call_id = message.get('tool_call_id', 'unknown')
-                    amni_prompt_logger.debug(f"🔗 Tool Call ID: {tool_call_id:<{BORDER_WIDTH-18}}")
-                
+                    prompt_logger.debug(f"🔗 Tool Call ID: {tool_call_id:<{BORDER_WIDTH - 18}}")
+
                 # Calculate message length
                 message_length = 0
                 if content:
@@ -514,25 +508,24 @@ class PromptLogger:
                 if tool_calls:
                     message_length += num_tokens_from_string(str(tool_calls))
 
-
                 # Format message content with length information
-                amni_prompt_logger.info(f"│ 📨 Message #{i:<2} {role_emoji} {role.upper():<10} 📏 Length: {message_length:<6}")
-                
+                prompt_logger.info(f"│ 📨 Message #{i:<2} {role_emoji} {role.upper():<10} 📏 Length: {message_length:<6}")
+
                 # Process message content, support multiple formats
                 if content:
                     if isinstance(content, list):
                         # Process multi-modal content list (e.g., containing text and images)
                         try:
-                            amni_prompt_logger.debug(f"📋 Multi-modal content ({len(content)} items):")
-                            
+                            prompt_logger.debug(f"📋 Multi-modal content ({len(content)} items):")
+
                             for item_idx, item in enumerate(content, 1):
                                 item_type = item.get('type', 'unknown')
-                                
+
                                 if item_type == 'text':
                                     # Process text content
                                     text_content = item.get('text', '')
                                     if text_content:
-                                        amni_prompt_logger.debug(f"  📝 Text #{item_idx}:")
+                                        prompt_logger.debug(f"  📝 Text #{item_idx}:")
                                         # Split text content by newlines
                                         text_lines = text_content.split('\n')
                                         for line in text_lines:
@@ -541,63 +534,63 @@ class PromptLogger:
                                                 padded_line = line.ljust(BORDER_WIDTH - 8)
                                                 # Use info level for user input text to make it visible in regular logs
                                                 if role == 'user':
-                                                    amni_prompt_logger.info(f"    {padded_line}")
+                                                    prompt_logger.info(f"    {padded_line}")
                                                 else:
-                                                    amni_prompt_logger.debug(f"    {padded_line}")
+                                                    prompt_logger.debug(f"    {padded_line}")
                                             else:
                                                 # Also display empty lines to maintain consistent format
                                                 empty_line = " " * (BORDER_WIDTH - 8)
                                                 if role == 'user':
-                                                    amni_prompt_logger.info(f"    {empty_line}")
+                                                    prompt_logger.info(f"    {empty_line}")
                                                 else:
-                                                    amni_prompt_logger.debug(f"    {empty_line}")
+                                                    prompt_logger.debug(f"    {empty_line}")
                                     else:
                                         empty_text = "<empty text>".ljust(BORDER_WIDTH - 8)
                                         if role == 'user':
-                                            amni_prompt_logger.info(f"    {empty_text}")
+                                            prompt_logger.info(f"    {empty_text}")
                                         else:
-                                            amni_prompt_logger.debug(f"    {empty_text}")
-                                        
+                                            prompt_logger.debug(f"    {empty_text}")
+
                                 elif item_type == 'image_url':
                                     # Process image URL
                                     image_url = item.get('image_url', {}).get('url', '')
                                     if image_url.startswith('data:image'):
                                         image_info = "[Base64 image data]".ljust(BORDER_WIDTH - 8)
-                                        amni_prompt_logger.debug(f"  🖼️  Image #{item_idx}: {image_info}")
+                                        prompt_logger.debug(f"  🖼️  Image #{item_idx}: {image_info}")
                                     else:
                                         # Truncate long URLs
                                         if len(image_url) > BORDER_WIDTH - 20:
                                             image_url = image_url[:BORDER_WIDTH - 23] + "..."
                                         padded_url = image_url.ljust(BORDER_WIDTH - 8)
-                                        amni_prompt_logger.debug(f"  🖼️  Image #{item_idx}: {padded_url}")
-                                        
+                                        prompt_logger.debug(f"  🖼️  Image #{item_idx}: {padded_url}")
+
                                 elif item_type == 'tool_use':
                                     # Process tool usage
                                     tool_name = item.get('tool_use', {}).get('name', 'unknown')
                                     padded_tool = tool_name.ljust(BORDER_WIDTH - 8)
-                                    amni_prompt_logger.debug(f"  🛠️  Tool #{item_idx}: {padded_tool}")
-                                    
+                                    prompt_logger.debug(f"  🛠️  Tool #{item_idx}: {padded_tool}")
+
                                 else:
                                     # Process other types of content
                                     other_content = str(item)[:BORDER_WIDTH - 20]
                                     if len(str(item)) > BORDER_WIDTH - 20:
                                         other_content += "..."
                                     padded_other = other_content.ljust(BORDER_WIDTH - 8)
-                                    amni_prompt_logger.debug(f"  ❓ {item_type.title()} #{item_idx}: {padded_other}")
-                                
+                                    prompt_logger.debug(f"  ❓ {item_type.title()} #{item_idx}: {padded_other}")
+
                                 # Add separator lines between content items (except the last one)
                                 if item_idx < len(content):
-                                    amni_prompt_logger.debug("  " + "─" * (BORDER_WIDTH - 4) + "")
-                                    
+                                    prompt_logger.debug("  " + "─" * (BORDER_WIDTH - 4) + "")
+
                         except Exception as e:
                             # If parsing fails, fall back to string display
-                            amni_prompt_logger.debug(f"⚠️  Error parsing content list: {str(e)[:BORDER_WIDTH-30]}...")
+                            prompt_logger.debug(f"⚠️  Error parsing content list: {str(e)[:BORDER_WIDTH - 30]}...")
                             fallback_content = str(content)[:BORDER_WIDTH - 8]
                             if len(str(content)) > BORDER_WIDTH - 8:
                                 fallback_content += "..."
                             padded_fallback = fallback_content.ljust(BORDER_WIDTH - 8)
-                            amni_prompt_logger.debug(f"📋 Fallback: {padded_fallback}")
-                            
+                            prompt_logger.debug(f"📋 Fallback: {padded_fallback}")
+
                     else:
                         # Process regular text content
                         content_str = str(content)
@@ -609,61 +602,61 @@ class PromptLogger:
                                 padded_line = line.ljust(BORDER_WIDTH)
                                 # Use info level for user input text to make it visible in regular logs
                                 if role in ['user'] or (role == 'system' and len(messages) <= 2) or i == len(messages):
-                                    amni_prompt_logger.info(f"{padded_line}")
+                                    prompt_logger.info(f"{padded_line}")
                                 else:
-                                    amni_prompt_logger.debug(f"{padded_line}")
+                                    prompt_logger.debug(f"{padded_line}")
                             else:
                                 # Also display empty lines to maintain consistent format
                                 empty_line = " " * BORDER_WIDTH
                                 if role == 'user':
-                                    amni_prompt_logger.info(f"{empty_line}")
+                                    prompt_logger.info(f"{empty_line}")
                                 else:
-                                    amni_prompt_logger.debug(f"{empty_line}")
+                                    prompt_logger.debug(f"{empty_line}")
                 else:
                     # Empty content, display placeholder
                     empty_placeholder = "<empty content>".ljust(BORDER_WIDTH)
-                    amni_prompt_logger.debug(f"{empty_placeholder}")
-                
+                    prompt_logger.debug(f"{empty_placeholder}")
+
                 # Process tool calls (tool_calls)
                 if 'tool_calls' in message and message['tool_calls']:
-                    amni_prompt_logger.info(f"🛠️  Tool Calls: {len(message['tool_calls'])} found")
-                    
+                    prompt_logger.info(f"🛠️  Tool Calls: {len(message['tool_calls'])} found")
+
                     for j, tool_call in enumerate(message['tool_calls'], 1):
                         if isinstance(tool_call, dict):
                             # Process dictionary format tool calls
                             function_name = tool_call.get('function', {}).get('name', 'unknown')
                             tool_id = tool_call.get('id', 'unknown')
                             args = tool_call.get('function', {}).get('arguments', '{}')
-                            
-                            amni_prompt_logger.info(f"  🔧 Tool #{j}: {function_name}")
-                            amni_prompt_logger.info(f"  🆔 ID: {tool_id}")
+
+                            prompt_logger.info(f"  🔧 Tool #{j}: {function_name}")
+                            prompt_logger.info(f"  🆔 ID: {tool_id}")
 
                             args_str = str(args)
                             padded_args = args_str.ljust(BORDER_WIDTH - 8)
-                            amni_prompt_logger.info(f"  📋 Args: {padded_args}")
-                            
+                            prompt_logger.info(f"  📋 Args: {padded_args}")
+
                         elif hasattr(tool_call, 'function') and hasattr(tool_call, 'id'):
                             # Process object format tool calls (e.g., ToolCall class)
                             function_name = getattr(tool_call.function, 'name', 'unknown')
                             tool_id = getattr(tool_call, 'id', 'unknown')
                             args = getattr(tool_call.function, 'arguments', '{}')
-                            
-                            amni_prompt_logger.info(f"  🔧 Tool #{j}: {function_name}")
-                            amni_prompt_logger.info(f"  🆔 ID: {tool_id}")
+
+                            prompt_logger.info(f"  🔧 Tool #{j}: {function_name}")
+                            prompt_logger.info(f"  🆔 ID: {tool_id}")
 
                             args_str = str(args)
                             padded_args = args_str.ljust(BORDER_WIDTH - 8)
-                            amni_prompt_logger.info(f"  📋 Args: {padded_args}")
-                        
+                            prompt_logger.info(f"  📋 Args: {padded_args}")
+
                         # Add separator lines between tool calls (except the last one)
                         if j < len(message['tool_calls']):
-                            amni_prompt_logger.debug("  " + "─" * (BORDER_WIDTH - 4) + "")
-                
+                            prompt_logger.debug("  " + "─" * (BORDER_WIDTH - 4) + "")
+
                 # Add message separator lines (except the last message)
                 if i < len(messages):
-                    amni_prompt_logger.debug("" + "─" * BORDER_WIDTH + "")
+                    prompt_logger.debug("" + "─" * BORDER_WIDTH + "")
         else:
-            amni_prompt_logger.debug("No messages" + " " * (BORDER_WIDTH - 12) + "")
+            prompt_logger.debug("No messages" + " " * (BORDER_WIDTH - 12) + "")
 
     @staticmethod
     def log_formatted_parameters(variables: Dict[str, Any] = None) -> None:
@@ -703,18 +696,19 @@ class PromptLogger:
         else:
             log_lines.append("│ 📋 User Variables: (empty)")
 
-        log_lines.append("├────────────────────────────────────────────────────────────────────────────────────────────────────┤")
-        log_lines.append("╰────────────────────────────────────────────────────────────────────────────────────────────────────╯")
+        log_lines.append(
+            "├────────────────────────────────────────────────────────────────────────────────────────────────────┤")
+        log_lines.append(
+            "╰────────────────────────────────────────────────────────────────────────────────────────────────────╯")
 
         for line in log_lines:
-            amni_prompt_logger.info(line)
+            prompt_logger.info(line)
 
     @staticmethod
-    def _generate_context_usage_grid(system_tokens: int, user_tokens: int, 
-                                    assistant_tokens: int, tool_tokens: int, 
-                                    other_tokens: int, context_window_limit: int = None) -> list[str]:
-        """
-        Generate a simple 10x10 grid visualization for context usage.
+    def _generate_context_usage_grid(system_tokens: int, user_tokens: int,
+                                     assistant_tokens: int, tool_tokens: int,
+                                     other_tokens: int, context_window_limit: int = None) -> list[str]:
+        """Generate a simple 10x10 grid visualization for context usage.
         
         Args:
             system_tokens (int): Number of system message tokens
@@ -730,25 +724,25 @@ class PromptLogger:
         total_cells = 100
         if context_window_limit is None:
             context_window_limit = 64 * 1024  # Default to 64k tokens
-        
+
         # Color blocks for different categories (full and partial)
         colors = {
-            'system': ('🟦', '🔷'),    # Blue square/blue diamond
-            'user': ('🟧', '🔶'),      # Orange square/orange diamond
-            'assistant': ('🟨', '🔸'), # Yellow square/yellow diamond
-            'tool': ('🟪', '🔮'),      # Purple square/purple diamond
-            'other': ('🟥', '🔺')      # Red square/red triangle
+            'system': ('🟦', '🔷'),  # Blue square/blue diamond
+            'user': ('🟧', '🔶'),  # Orange square/orange diamond
+            'assistant': ('🟨', '🔸'),  # Yellow square/yellow diamond
+            'tool': ('🟪', '🔮'),  # Purple square/purple diamond
+            'other': ('🟥', '🔺')  # Red square/red triangle
         }
-        
+
         # Calculate cells for each category based on percentage
         categories = [
             ('system', system_tokens),
-            ('user', user_tokens), 
+            ('user', user_tokens),
             ('assistant', assistant_tokens),
             ('tool', tool_tokens),
             ('other', other_tokens)
         ]
-        
+
         # Filter categories with tokens and calculate cells
         active_categories = []
         for name, count in categories:
@@ -756,16 +750,16 @@ class PromptLogger:
                 percentage = (count / context_window_limit) * 100
                 full_cells = int(percentage)  # Integer part
                 partial = percentage - full_cells  # Decimal part
-                
+
                 # Show categories with any meaningful representation
                 # Always show partial cells if they exist, even for small percentages
                 if full_cells > 0 or partial > 0:
                     active_categories.append((name, full_cells, partial))
-        
+
         # Create grid
         grid = []
         current_pos = 0
-        
+
         # Fill active categories
         for name, full_cells, partial in active_categories:
             # Fill full cells
@@ -773,16 +767,15 @@ class PromptLogger:
                 if current_pos < total_cells:
                     grid.append(colors[name][0])  # Full square
                     current_pos += 1
-            
+
             # Add partial cell if exists
             if partial > 0 and current_pos < total_cells:
                 grid.append(colors[name][1])  # Partial symbol
                 current_pos += 1
-        
+
         # Fill remaining with empty squares
         while current_pos < total_cells:
             grid.append('⬜')
             current_pos += 1
-        
-        return grid
 
+        return grid

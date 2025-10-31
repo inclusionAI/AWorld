@@ -10,9 +10,9 @@ from typing import Optional, Any, Literal, List, Dict
 from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
 # lazy import
-# from aworld.core.agent.base import BaseAgent
 from aworld.core.context.base import Context
 from aworld.events.util import send_message
+from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
@@ -21,10 +21,6 @@ from examples.multi_agents.collaborative.debate.agent.debate_agent import trunca
 from aworld.runners.utils import long_wait_message_state
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .contexts import ContextManager
-# from .event.event_bus import EventBus, EventType
-# from .event.event_bus import get_global_event_bus, start_global_event_bus, stop_global_event_bus, \
-#     is_global_event_bus_started
-from .logger import logger, amni_prompt_logger
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .retrieval.artifacts import SearchArtifact
 from .retrieval.artifacts.file import DirArtifact
@@ -149,7 +145,6 @@ class AmniContext(Context):
 
     By default, the system performs upward traversal queries, but this can be limited
     using the specific prefixes above.
-
     """
 
     def __init__(self, config: Optional['AmniContextConfig'] = None, **kwargs):
@@ -165,8 +160,7 @@ class AmniContext(Context):
 
     @trace.func_span(span_name="ApplicationContext#offload_by_workspace")
     async def offload_by_workspace(self, artifacts: list[Artifact], namespace="default"):
-        """
-        Context Offloading - Store information outside the LLM's context via external storage
+        """Context Offloading - Store information outside the LLM's context via external storage
 
         This function implements the core concept of Context Offloading: storing information
         outside the LLM's context, use workspace file system that store and manage the data.
@@ -214,7 +208,6 @@ class AmniContext(Context):
 
         """
         pass
-
 
     ####################### Context read #######################
 
@@ -458,8 +451,6 @@ class ApplicationContext(AmniContext):
     """
     ApplicationContext - Application-level context manager that supports referencing context information in prompts via template variables
     """
-    
-
     def __init__(self,
                  task_state: ApplicationTaskContextState,
                  workspace: ApplicationWorkspace = None,
@@ -548,10 +539,10 @@ class ApplicationContext(AmniContext):
         """
         if not task_input:
             raise ValueError("task_input cannot be None")
-        
+
         history_messages = await get_context_manager().get_task_histories(task_input)
         logger.info(f"[CONTEXT BUILD]history_messages: len = {len(history_messages) if history_messages else 0}")
-        
+
         user_profiles = await get_context_manager().get_user_profiles(task_input)
         logger.info(f"[CONTEXT BUILD]user_profiles: len = {len(user_profiles) if user_profiles else 0}")
 
@@ -589,7 +580,6 @@ class ApplicationContext(AmniContext):
             )
             self.task_state.working_state.sub_task_list.append(sub_task)
 
-
     async def build_sub_task_context(self, sub_task_input: TaskInput,
                                      sub_task_history: list[MemoryMessage] = None,
                                      workspace: WorkSpace = None,
@@ -610,7 +600,6 @@ class ApplicationContext(AmniContext):
 
     async def build_sub_task_state(self, sub_task_input: TaskInput,
                                    sub_task_history: list[MemoryMessage] = None) -> ApplicationTaskContextState:
-
         return ApplicationTaskContextState(
             task_input=sub_task_input,
             parent_task=self.task_state.task_input,
@@ -628,8 +617,7 @@ class ApplicationContext(AmniContext):
         )
 
     async def build_agents_state(self, agents):
-        """
-        Build Multi Agent's Private State
+        """Build Multi Agent's Private State
 
         Args:
             agents: list of agents
@@ -646,8 +634,7 @@ class ApplicationContext(AmniContext):
                 await self.build_agent_state(agent)
 
     async def build_agent_state(self, agent):
-        """
-        Build Single Agent Private State.
+        """Build Single Agent Private State.
 
         Args:
             agent: Agent
@@ -727,8 +714,6 @@ class ApplicationContext(AmniContext):
 
         if self.parent:
             self.parent.merge_sub_context(self)
-
-
 
     #################### Agent Isolated State ###################
 
@@ -830,7 +815,7 @@ class ApplicationContext(AmniContext):
         parent = self._parent
         while parent is not None and parent._parent is not None:
             parent = parent._parent
-        
+
         if parent is not None:
             return parent
         return self
@@ -855,8 +840,7 @@ class ApplicationContext(AmniContext):
 
     @property
     def tree(self) -> str:
-        """
-        Generate a tree representation showing the current context's position in the context hierarchy.
+        """Generate a tree representation showing the current context's position in the context hierarchy.
         
         Traverses up the parent chain to build a visual tree structure that shows
         the current context's location relative to its parent contexts, including subtasks.
@@ -870,37 +854,37 @@ class ApplicationContext(AmniContext):
         while current is not None:
             context_path.append(current)
             current = getattr(current, '_parent', None)
-        
+
         # Reverse list so root context is first
         context_path.reverse()
-        
+
         # 2. Get current task ID
         current_task_id = getattr(self, 'task_id', None)
-        
+
         # 3. Create a set to track processed task IDs
         processed_task_ids = set()
-        
+
         # 4. Add global flag to ensure current task is only displayed once
         current_task_marked = False
-        
+
         # 5. Create result list
         tree_lines = []
-        
+
         # 6. Recursively build tree
         def build_tree(context, level, prefix):
             nonlocal current_task_marked
-            
+
             # Get context identifier
             context_id = getattr(context, 'task_id', None) or getattr(context, 'session_id', 'unknown')
             task_content = getattr(context, 'task_input', '')
-            
+
             # Build description
             swarm_desc = ':'.join([agent.name() for agent in context.swarm.topology])
             context_desc = f"[T]{context_id}: [R]{task_content} : [O]{context.task_input_object.origin_user_input}" if task_content else str(context_id)
-            
+
             # Check if current context and not yet marked
             is_current = context is self and not current_task_marked
-            
+
             # Add current context line, only if context ID hasn't been processed
             if context_id not in processed_task_ids:
                 if is_current:
@@ -908,28 +892,28 @@ class ApplicationContext(AmniContext):
                     current_task_marked = True
                 else:
                     tree_lines.append(f"{prefix}├─ {context_desc}")
-                
+
                 # Mark as processed
                 processed_task_ids.add(context_id)
-            
+
             # Get sub-task list
             sub_tasks = []
             if hasattr(context, 'task_state') and context.task_state:
                 if hasattr(context.task_state.working_state, 'sub_task_list') and context.task_state.working_state.sub_task_list:
                     sub_tasks = context.task_state.working_state.sub_task_list
-            
+
             # Check if there is a next level context
             next_context_index = level + 1
             next_context = context_path[next_context_index] if next_context_index < len(context_path) else None
             next_context_id = getattr(next_context, 'task_id', None) if next_context else None
-            
+
             # Calculate sub-task indentation
             child_prefix = prefix + "│   "
-            
+
             # Process sub-tasks in original order
             valid_sub_tasks = []
             next_context_sub_task_index = -1
-            
+
             # Collect valid sub-tasks (not yet processed)
             for i, sub_task in enumerate(sub_tasks):
                 sub_task_id = getattr(sub_task, 'task_id', None)
@@ -938,55 +922,54 @@ class ApplicationContext(AmniContext):
                     # Check if it's the next level context
                     if sub_task_id == next_context_id:
                         next_context_sub_task_index = len(valid_sub_tasks) - 1
-            
+
             # Process valid sub-tasks
             for i, (original_index, sub_task) in enumerate(valid_sub_tasks):
                 sub_task_id = getattr(sub_task, 'task_id', None)
-                
+
                 # Get sub-task content
                 subtask_content = ""
                 if hasattr(sub_task, 'input') and sub_task.input:
                     subtask_content = getattr(sub_task.input, 'task_content', str(sub_task.input))
                 else:
                     subtask_content = str(sub_task)
-                
+
                 # Determine if it's the last sub-task
                 is_last = i == len(valid_sub_tasks) - 1
-                
+
                 # Choose appropriate connector
                 connector = "└─" if is_last else "├─"
-                
+
                 # Check if it contains the next level context
                 is_next_context_task = i == next_context_sub_task_index and next_context
-                
+
                 # Add sub-task line
                 if sub_task_id == current_task_id and not current_task_marked:
                     tree_lines.append(f"{child_prefix}{connector} 📍{swarm_desc} {sub_task_id}: {subtask_content} (current)")
                     current_task_marked = True
                 else:
                     tree_lines.append(f"{child_prefix}{connector} {swarm_desc} {sub_task_id}: {subtask_content}")
-                
+
                 # Mark as processed
                 processed_task_ids.add(sub_task_id)
-                
+
                 # If it's a sub-task containing the next level context, recursively process the next level
                 if is_next_context_task:
                     next_child_prefix = child_prefix + ("    " if is_last else "│   ")
                     build_tree(next_context, level + 1, next_child_prefix)
-        
+
         # Start building tree from root context
         if context_path:
             build_tree(context_path[0], 0, "")
-        
+
         # Add tree header
         tree_header = "Context Tree (from root to current):\n"
-        
+
         return tree_header + "\n".join(tree_lines)
 
     @staticmethod
     async def user_similar_history(context: "ApplicationContext") -> str:
         pass
-        # get_context_manager().
 
     ####################### Context logical schema #######################
 
@@ -1110,7 +1093,6 @@ class ApplicationContext(AmniContext):
                 return value
 
             result = str(value) if value is not None else DEFAULT_VALUE
-
             logger.debug(f"Field retrieval: '{key}' -> '{result}'")
             return result
 
@@ -1122,7 +1104,7 @@ class ApplicationContext(AmniContext):
 
     async def pub_and_wait_system_prompt_event(self, system_prompt: str, user_query: str, agent_id: str,
                                                agent_name: str, namespace: str = "default"):
-        from .event.base import SystemPromptMessagePayload
+        from .payload import SystemPromptMessagePayload
         logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|start|{namespace}|{agent_id}")
         payload = SystemPromptMessagePayload(context=self, system_prompt=system_prompt, user_query=user_query,
                                    agent_id=agent_id, agent_name=agent_name,
@@ -1137,9 +1119,9 @@ class ApplicationContext(AmniContext):
             headers={"context": self}
         )
         await send_message(message)
-        logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|send_finished|{namespace}|{agent_id}")
+        logger.debug(f"ApplicationContext|pub_and_wait_system_prompt_event|send_finished|{namespace}|{agent_id}")
         await long_wait_message_state(message)
-        logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|wait_finished|{namespace}|{agent_id}")
+        logger.debug(f"ApplicationContext|pub_and_wait_system_prompt_event|wait_finished|{namespace}|{agent_id}")
 
     async def pub_and_wait_tool_result_event(self,
                                              tool_result: Any,
@@ -1147,7 +1129,7 @@ class ApplicationContext(AmniContext):
                                              agent_id: str,
                                              agent_name: str,
                                              namespace: str = "default"):
-        from .event.base import ToolResultMessagePayload
+        from .payload import ToolResultMessagePayload
         logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|start|{namespace}|{agent_id}")
         payload = ToolResultMessagePayload(event_type=TopicType.TOOL_RESULT,
                                            tool_result=tool_result,
@@ -1166,9 +1148,9 @@ class ApplicationContext(AmniContext):
             headers={"context": self}
         )
         await send_message(message)
-        logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|send_finished|{namespace}|{agent_id}")
+        logger.debug(f"ApplicationContext|pub_and_wait_tool_result_event|send_finished|{namespace}|{agent_id}")
         await long_wait_message_state(message)
-        logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|wait_finished|{namespace}|{agent_id}")
+        logger.debug(f"ApplicationContext|pub_and_wait_tool_result_event|wait_finished|{namespace}|{agent_id}")
 
     ####################### Context Write #######################
 
@@ -1321,13 +1303,10 @@ class ApplicationContext(AmniContext):
 
         return knowledge_context
 
-
     async def _load_artifact_chunks_by_workspace(self, search_filter: dict,
                                                  namespace="default",
                                                  top_k: int = 20):
         knowledge_chunk_context = ""
-
-
         knowledge_chunks = await self.search_knowledge(user_query=self.task_input,
                                                        namespace=namespace,
                                                        search_filter=search_filter,
@@ -1419,9 +1398,8 @@ class ApplicationContext(AmniContext):
         #         endpoint=os.environ['DIR_ARTIFACT_OSS_ENDPOINT'],
         #         bucket_name=os.environ['DIR_ARTIFACT_OSS_BUCKET_NAME'],
         #         base_path=os.environ['DIR_ARTIFACT_OSS_BASE_PATH'] + "/sid-" + self.session_id)
-        
-        return self._working_dir
 
+        return self._working_dir
 
     async def load_working_dir(self, knowledge_id: Optional[str] = None) -> DirArtifact:
         await self.init_working_dir(knowledge_id)
@@ -1479,12 +1457,7 @@ class ApplicationContext(AmniContext):
         return result
 
     async def get_todo_info(self):
-        """
-        Get cooperation info from working state
-        Args:
-        Returns:
-
-        """
+        """Get cooperation info from working state."""
         self._workspace._load_workspace_data()
         todo_info = (
             "Below is the global task execute todo information, explaining the current progress:\n"
@@ -1496,12 +1469,7 @@ class ApplicationContext(AmniContext):
         return todo_info
 
     async def get_actions_info(self, namespace = "default"):
-        """
-        Get cooperation info from working state
-        Args:
-        Returns:
-
-        """
+        """Get cooperation info from working state."""
         self._workspace._load_workspace_data()
         artifacts = await self._workspace.query_artifacts(search_filter={
             "context_type": "actions_info",
@@ -1554,8 +1522,7 @@ class ApplicationContext(AmniContext):
 
     async def search_knowledge(self, user_query: str, top_k: int = None, search_filter:dict = None, namespace: str = "default"
                                ) -> Optional[SearchResults]:
-        """
-        semantic search knowledge from working state
+        """semantic search knowledge from working state
 
         Args:
             user_query:

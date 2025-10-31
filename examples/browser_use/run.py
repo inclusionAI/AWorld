@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import os
 
-from aworld.config.conf import ModelConfig
+from aworld.config.conf import ModelConfig, TaskConfig
 from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.browser_use.agent import BrowserAgent
@@ -40,10 +40,7 @@ if __name__ == '__main__':
         # use_vision=False
     )
 
-    task_config = {
-        'max_steps': 100,
-        'max_actions_per_step': 100
-    }
+    task_config = TaskConfig()
 
     task = Task(
         input="""step1: first go to https://www.dangdang.com/ and search for 'the little prince' and rank by sales from high to low, get the first 5 results and put the products info in memory.

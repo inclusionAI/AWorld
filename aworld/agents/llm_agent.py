@@ -12,16 +12,18 @@ from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message, send_message_with_future
+from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem
+from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryToolMessage
 from aworld.memory.models import MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream
 from aworld.models.model_response import ModelResponse, ToolCall
@@ -338,10 +340,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "task_id": task_id
         }, agent_memory_config=self.memory_config)
         if histories:
-            # default use the first tool call
+            tool_calls_map = {}
+            count = 0
             for history in histories:
+                count += 1
                 if isinstance(history, MemoryMessage):
                     messages.append(history.to_openai_message())
+                    if isinstance(history, MemoryAIMessage):
+                        tool_calls = messages[-1].get("tool_calls")
+                        if tool_calls:
+                            tool_calls_map.update({tool_call.get("id"): idx + count for idx, tool_call in enumerate(
+                                tool_calls)})
                 else:
                     if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
                         'tool_calls']:
@@ -350,6 +359,21 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     else:
                         messages.append({'role': history.metadata['role'], 'content': history.content,
                                          "tool_call_id": history.metadata.get("tool_call_id")})
+
+            if tool_calls_map:
+                # keep consistent
+                final_messages = [''] * len(messages)
+                for idx, msg in enumerate(messages):
+                    if not msg.get("tool_call_id"):
+                        final_messages[idx] = msg
+                        continue
+
+                    real_idx = tool_calls_map.get(msg['tool_call_id'], -1)
+                    if real_idx < 0:
+                        raise AWorldRuntimeException(f"tool_calls mismatch! {tool_calls_map}, messages: {messages}")
+                    final_messages[real_idx] = msg
+                messages = final_messages
+
         return messages
 
     async def init_observation(self, observation: Observation) -> Observation:
@@ -363,64 +387,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return observation
 
     def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
-        from aworld.core.context.amni import AmniContext
-        if isinstance(context, AmniContext):
-            from aworld.core.context.amni.utils.context_log import PromptLogger
-            PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
-            return
-        """Log the sequence of messages for debugging purposes"""
-        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
-        logger.debug(f"[agent] use tools: {self.tools}")
-        for i, msg in enumerate(messages):
-            prefix = msg.get('role')
-            logger.info(
-                f"[agent] Message {i + 1}: {prefix} ===================================")
-            if isinstance(msg['content'], list):
-                try:
-                    for item in msg['content']:
-                        if item.get('type') == 'text':
-                            logger.info(
-                                f"[agent] Text content: {item.get('text')}")
-                        elif item.get('type') == 'image_url':
-                            image_url = item.get('image_url', {}).get('url', '')
-                            if image_url.startswith('data:image'):
-                                logger.info(f"[agent] Image: [Base64 image data]")
-                            else:
-                                logger.info(
-                                    f"[agent] Image URL: {image_url[:30]}...")
-                except Exception as e:
-                    logger.error(f"[agent] Error parsing msg['content']: {msg}. Error: {e}")
-                    content = str(msg['content'])
-                    chunk_size = 500
-                    for j in range(0, len(content), chunk_size):
-                        chunk = content[j:j + chunk_size]
-                        if j == 0:
-                            logger.info(f"[agent] Content: {chunk}")
-                        else:
-                            logger.info(f"[agent] Content (continued): {chunk}")
-            else:
-                content = str(msg['content'])
-                chunk_size = 500
-                for j in range(0, len(content), chunk_size):
-                    chunk = content[j:j + chunk_size]
-                    if j == 0:
-                        logger.info(f"[agent] Content: {chunk}")
-                    else:
-                        logger.info(f"[agent] Content (continued): {chunk}")
-
-            if 'tool_calls' in msg and msg['tool_calls']:
-                for tool_call in msg.get('tool_calls'):
-                    if isinstance(tool_call, dict):
-                        logger.info(
-                            f"[agent] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
-                        args = str(tool_call.get('function', {}).get(
-                            'arguments', {}))[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
-                    elif isinstance(tool_call, ToolCall):
-                        logger.info(
-                            f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
-                        args = str(tool_call.function.arguments)[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+        PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:

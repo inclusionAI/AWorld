@@ -56,8 +56,7 @@ class McpServers:
             self.tool_list = await mcp_tool_desc_transform_v2(self.mcp_servers, self.mcp_config,context,self.server_instances,self.black_tool_actions)
             return self.tool_list
         except Exception as e:
-            traceback.print_exc()
-            logger.warning(f"Failed to list tools: {e}")
+            logger.warning(f"Failed to list tools: {traceback.print_exc()}")
             return []
 
     async def check_tool_params(self, context: Context, server_name: str, tool_name: str,
