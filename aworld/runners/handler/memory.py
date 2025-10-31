@@ -1,9 +1,9 @@
-# aworld/runners/handler/output.py
-import json
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
+import traceback
 from typing import AsyncGenerator, Any
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.context.amni import AmniContext
 from aworld.core.context.base import Context
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryToolMessage, MessageMetadata, MemoryHumanMessage, MemorySystemMessage, \
@@ -98,7 +98,7 @@ class DefaultMemoryHandler(DefaultHandler):
                 else:
                     logger.warning("DefaultMemoryHandler: invalid TOOL payload, missing tool_call_id or tool_result.")
         except Exception:
-            logger.warning("DefaultMemoryHandler: failed to write memory for event.", exc_info=True)
+            logger.warning(f"DefaultMemoryHandler: failed to write memory for event. {traceback.format_exc()}")
 
         # This handler only performs side-effects; do not emit framework messages
         if False:
@@ -242,5 +242,3 @@ class DefaultMemoryHandler(DefaultHandler):
     def _is_amni_context(self, context: Context):
         from aworld.core.context.amni import AmniContext
         return isinstance(context, AmniContext)
-
-

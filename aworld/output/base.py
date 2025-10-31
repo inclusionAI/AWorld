@@ -280,7 +280,7 @@ class MessageOutput(Output):
                         yield chunk_content
                         reasoning_buffer += chunk_content
             except StopIteration:
-                print("StopIteration")
+                logger.warning("StopIteration")
                 self.reasoning = reasoning_buffer
 
         def response_generator():
