@@ -86,6 +86,7 @@ class ContextSkillTool(AsyncTool):
                 raise ValueError("context is not AmniContext")
 
             action = actions[0]
+            print(f"CONTEXTTool|do_step: {action}")
             action_name = action.action_name
             if action_name == ContextExecuteAction.ACTIVE_SKILL.value.name:
                 skill_name = action.params.get("skill_name", "")
