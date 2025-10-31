@@ -7,7 +7,7 @@ import uuid
 from typing import Union
 
 from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig, ConfigDict
+from aworld.config import AgentConfig, ConfigDict, AgentMemoryConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni.config import init_middlewares
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig
@@ -94,6 +94,24 @@ GAIA_MCP_CONFIG = {
         }
     }
 }
+# GAIA_MCP_CONFIG = {
+#     "mcpServers": {
+#         "ms-playwright": {
+#             "command": "npx",
+#             "args": [
+#                 "@playwright/mcp@0.0.37",
+#                 "--no-sandbox",
+#                 "--isolated",
+#                 "--output-dir=/tmp/playwright",
+#                 "--timeout-action=10000"
+#             ],
+#             "env": {
+#                 "PLAYWRIGHT_TIMEOUT": "120000",
+#                 "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+#             }
+#         },
+#     }
+# }
 
 
 class GaiaAgentLoop(AworldAgentLoop):
@@ -120,8 +138,7 @@ class GaiaAgentLoop(AworldAgentLoop):
 
 async def build_agents() -> Union[Agent, Swarm]:
     # gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
-    init_middlewares()
-
+    # init_middlewares()
 
     # MemoryFactory.init(
     #     config=MemoryConfig(
@@ -131,7 +148,7 @@ async def build_agents() -> Union[Agent, Swarm]:
     #             model_name="claude-sonnet-4-20250514",
     #             api_key="sk-5d0c421b87724cdd883cfa8e883998da",
     #             base_url="https://matrixllm.alipay.com/v1"
-    #         )
+    #         ),
     #     )
     # )
 
@@ -141,18 +158,19 @@ async def build_agents() -> Union[Agent, Swarm]:
             llm_base_url="https://matrixllm.alipay.com/v1",
             llm_api_key="sk-5d0c421b87724cdd883cfa8e883998da",
             llm_provider="openai",
-            llm_temperature=1.0,
-            top_p=1.0,
-            top_k=80,
+            llm_temperature=0.6,
+            # top_p=20,
+            top_k=20,
             timeout=7200,
+            # max_tokens=131072,
             params={
                 # "client": self.server_manager,
                 # "tokenizer": self.tokenizer,
-                "request_id": uuid.uuid4().hex,
-                "tool_parser": "hermes"
+                # "request_id": uuid.uuid4().hex,
+                # "tool_parser": "hermes"
             }
         ),
-        # memory_config=AgentMemoryConfig(history_rounds=100, enable_summary=False, summary_rounds=15, summary_context_length=32000),
+        memory_config=AgentMemoryConfig(history_rounds=100, enable_summary=False, summary_rounds=15, summary_context_length=32000),
     )
 
     return Agent(

@@ -1,5 +1,10 @@
-
 from dotenv import load_dotenv
+load_dotenv()
+
+from aworld.core.agent.swarm import Swarm
+from aworld.core.context.base import Context
+from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
+
 # init env
 load_dotenv()
 
@@ -8,9 +13,6 @@ import logging
 import os
 import traceback
 from datetime import datetime
-
-from dotenv import load_dotenv
-load_dotenv()
 
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
@@ -50,6 +52,11 @@ class AmniContextEvaluatable(EvalTarget):
 
         return await ApplicationContext.from_input(task_input, context_config = context_config)
 
+    async def build_context_common(self, task_input: TaskInput) -> ApplicationContext:
+        context = Context()
+        context.task_input = task_input
+        return context
+
     async def build_task(self, task_content: str, session_id: str = None, task_id: str = None) -> Task:
         if not session_id:
             session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -81,13 +88,19 @@ class AmniContextEvaluatable(EvalTarget):
             timeout=60 * 60
         )
 
+    async def build_common_gaia_task(self, user_input: str, session_id, task_id):
+        swarm = Swarm(await build_agents())
+        return Task(id=task_id, session_id=session_id, input=user_input, swarm=swarm, timeout=1200)
+
+
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
         batch_id = o_input.run_id
         input = o_input.case_data
         session_id = f"{batch_id}_session#{input['id']}"
         task_id = f"{batch_id}_task#{input['id']}"
 
-        task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
+        # task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
+        task = await self.build_common_gaia_task(user_input=input['prompt'], session_id=session_id, task_id = task_id)
         try:
             result = await Runners.run_task(task=task)
             os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
@@ -112,7 +125,7 @@ class AmniContextEvaluatable(EvalTarget):
 
 
 async def evaluate():
-    init_middlewares()
+    # init_middlewares()
     eval_target = AmniContextEvaluatable()
     task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
