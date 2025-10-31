@@ -388,6 +388,8 @@ class AmniContext(Context):
         activate_skills = await self.get_active_skills(namespace)
         if not activate_skills:
             activate_skills = []
+        if skill_name in activate_skills:
+            return f"skill {skill_name} already activated, current skills: {activate_skills}"
         activate_skills.append(skill_name)
         skill = await self.get_skill(skill_name=skill_name, namespace=namespace)
 
