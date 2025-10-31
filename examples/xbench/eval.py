@@ -65,7 +65,6 @@ class AmniContextEvaluatable(EvalTarget):
 
         context = await self.build_context(task_input)
         # TODO gaia agent
-        # register_llm_provider("verl", VerlProvider)
         swarm = Swarm(await build_agents()) # build_xbench_swarm()
         await context.build_agents_state(swarm.topology)
 
@@ -96,7 +95,7 @@ class AmniContextEvaluatable(EvalTarget):
             result = await Runners.run_task(task=task)
             os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
             with open(f"trajectory/{batch_id}/traj_{index}.json", "a") as f:
-                f.write(str(result[task_id].trajectory[-1].get("exp_data", {}).get("messages", [])))
+                f.write(str(result[task_id].trajectory[-1]))
             os.makedirs(f"results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
@@ -132,7 +131,7 @@ async def evaluate():
                 }
             ],
             eval_dataset_id_or_file_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'benchmark', 'DeepSearch_decrypted.csv'),
-            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[0])),
+            eval_dataset_load_config=DataLoaderConfig(),
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
