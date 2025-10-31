@@ -36,14 +36,12 @@ agent_config = AgentConfig(
 search = Agent(
     conf=agent_config,
     name="search_agent",
-    system_prompt=search_sys_prompt,
-    agent_prompt=search_prompt,
+    system_prompt=search_sys_prompt + search_prompt,
     tool_names=[Tools.SEARCH_API.value]
 )
 
 summary = Agent(
     conf=agent_config,
     name="summary_agent",
-    system_prompt=summary_sys_prompt,
-    agent_prompt=summary_prompt
+    system_prompt=summary_sys_prompt + summary_prompt,
 )

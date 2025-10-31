@@ -4,7 +4,6 @@ import json
 import traceback
 import uuid
 from collections import OrderedDict
-from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
@@ -12,9 +11,8 @@ from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
-from aworld.core.context.prompts import BasePromptTemplate
-from aworld.core.context.prompts.string_prompt_template import StringPromptTemplate
-from aworld.core.event import eventbus
+from aworld.core.context.prompts import StringPromptTemplate
+from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage
 from aworld.core.model_output_parser import ModelOutputParser
@@ -22,7 +20,7 @@ from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.config.conf import TaskConfig, TaskRunMode
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger, Color
-from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools
+from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryItem
 from aworld.memory.models import MemoryMessage
@@ -148,8 +146,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  wait_tool_result: bool = False,
                  sandbox: Sandbox = None,
                  system_prompt: str = None,
-                 system_prompt_template: BasePromptTemplate = None,
-                 agent_prompt: str = None,
                  need_reset: bool = True,
                  step_reset: bool = True,
                  use_tools_in_prompt: bool = False,
@@ -158,12 +154,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  tool_aggregate_func: Callable[..., Any] = None,
                  event_handler_name: str = None,
                  event_driven: bool = True,
+                 skill_configs: Dict[str, Any] = None,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
         Args:
             system_prompt: Instruction of the agent.
-            agent_prompt: Optimized prompt of the agent.
             need_reset: Whether need to reset the status in start.
             step_reset: Reset the status at each step
             use_tools_in_prompt: Whether the tool description in prompt.
@@ -182,6 +178,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                     feedback_tool_result=feedback_tool_result,
                                     wait_tool_result=wait_tool_result,
                                     sandbox=sandbox,
+                                    skill_configs=skill_configs,
                                     **kwargs)
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name
@@ -189,17 +186,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.memory = MemoryFactory.instance()
         self.memory_config = conf.memory_config
         self.system_prompt: str = system_prompt if system_prompt else conf.system_prompt
-        self.system_prompt_template: str = system_prompt_template if (
-            system_prompt_template) else conf.system_prompt_template
-
-        # for backward compatibility
-        if not self.system_prompt_template:
-            self.system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
-        if isinstance(self.system_prompt_template, str):
-            self.system_prompt_template = StringPromptTemplate.from_template(self.system_prompt_template)
-        if not self.system_prompt:
-            self.system_prompt = self.system_prompt_template.template
-        self.agent_prompt: str = agent_prompt if agent_prompt else conf.agent_prompt
         self.event_driven = event_driven
 
         self.need_reset = need_reset if need_reset else conf.need_reset
@@ -250,6 +236,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
                 self.sandbox.mcpservers.map_tool_list = tool_mapping
                 self.tools.extend(processed_tools)
+                self.tool_mapping = tool_mapping
             else:
                 self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
         except:
@@ -308,7 +295,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             Message list for LLM.
         """
-        agent_prompt = self.agent_prompt
         messages = []
         # append sys_prompt to memory
         content = await self.custom_system_prompt(context=message.context,
@@ -335,9 +321,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if not tool_result_added:
             self._clean_redundant_tool_call_messages(histories)
             content = observation.content
-            logger.debug(f"agent_prompt: {agent_prompt}")
-            if agent_prompt:
-                content = agent_prompt.format(task=content, current_date=datetime.now().strftime("%Y-%m-%d"))
             if image_urls:
                 urls = [{'type': 'text', 'text': content}]
                 for image_url in image_urls:
@@ -379,7 +362,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # default use origin observation
         return observation
 
-    def _log_messages(self, messages: List[Dict[str, Any]], **kwargs) -> None:
+    def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
+        from aworld.core.context.amni import AmniContext
+        if isinstance(context, AmniContext):
+            from aworld.core.context.amni.utils.context_log import PromptLogger
+            PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
+            return
         """Log the sequence of messages for debugging purposes"""
         logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
         logger.debug(f"[agent] use tools: {self.tools}")
@@ -686,9 +674,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as e:
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
-
-        self._log_messages(messages, context=message.context)
-
         return messages
 
     def _process_messages(self, messages: List[Dict[str, Any]],
@@ -711,6 +696,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """
         llm_response = None
         try:
+            tools = await self._filter_tools(message.context)
+            self._log_messages(messages, tools=tools, context=message.context)
             stream_mode = kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)
             if stream_mode:
@@ -721,7 +708,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     messages=messages,
                     model=self.model_name,
                     temperature=float_temperature,
-                    tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
+                    tools=tools,
                     stream=True,
                     context=message.context,
                     **kwargs
@@ -741,19 +728,19 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.message.update(chunk.message)
 
             else:
-                logger.info(f"llm_agent|invoke_model|tools={self.tools}")
+                # logger.info(f"llm_agent|invoke_model|tools={self.tools}")
                 llm_response = await acall_llm_model(
                     self.llm,
                     messages=messages,
                     model=self.model_name,
                     temperature=float_temperature,
-                    tools=self.tools if not self.use_tools_in_prompt and self.tools else None,
+                    tools=tools,
                     stream=kwargs.get("stream", False),
                     context=message.context,
                     **kwargs
                 )
 
-            logger.info(f"Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
+            logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
             if llm_response:
                 usage_process(llm_response.usage, message.context)
         except Exception as e:
@@ -784,6 +771,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         finally:
             message.context.context_info["llm_output"] = llm_response
         return llm_response
+
 
     async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""
@@ -816,7 +804,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
-        return self.system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+        from aworld.core.context.amni.prompt.prompt_ext import ContextPromptTemplate
+        from aworld.core.context.amni import AmniContext
+        if isinstance(context, AmniContext):
+            system_prompt_template = ContextPromptTemplate.from_template(self.system_prompt)
+            return await system_prompt_template.async_format(context=context, task=content, tool_list=tool_list,
+                                                             agent_id=self.id())
+        else:
+            system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
+            return system_prompt_template.format(context=context, task=content, tool_list=tool_list)
 
     async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context):
         memory_msg = MemoryEventMessage(
@@ -827,39 +823,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         )
         try:
             future = await send_message_with_future(memory_msg)
-            results = await future.wait(timeout=10)
+            results = await future.wait(timeout=300)
             if not results:
                 logger.warning(f"Memory write task failed: {memory_msg}")
         except Exception as e:
             logger.warn(f"Memory write task failed: {traceback.format_exc()}")
-
-    async def _add_tool_result_token_ids_to_context(self, context: Context):
-        """Add tool result token ids to context"""
-        if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVAE:
-            return
-        histories = self.memory.get_all(filters={
-            "agent_id": self.id(),
-            "session_id": context.get_task().session_id,
-            "task_id": context.get_task().id,
-            "memory_type": "message"
-        })
-        tool_openai_messages_after_last_assistant = []
-        found_assistant = False
-        tool_call_ids = []
-        for i in range(len(histories) - 1, -1, -1):
-            history = histories[i]
-            if hasattr(history, 'role') and history.role == 'assistant':
-                found_assistant = True
-                break
-            elif not found_assistant and hasattr(history, 'role') and history.role == 'tool':
-                tool_openai_messages_after_last_assistant.append(history.to_openai_message())
-                tool_call_ids.append(history.tool_call_id)
-
-        if tool_openai_messages_after_last_assistant:
-            tool_result_token_ids = apply_chat_template(self.llm, tool_openai_messages_after_last_assistant)
-            context.add_tool_resp_token_ids(tool_resp_token_ids=tool_result_token_ids,
-                                            resp_tool_call_ids=tool_call_ids,
-                                            agent_id=self.id())
 
     async def send_llm_response_output(self, llm_response: ModelResponse, agent_result: AgentResult, context: Context,
                                        outputs: Outputs = None):
@@ -895,10 +863,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             headers['parent_group_id'] = input_message.group_id
         return headers
 
-    def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
+    async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
-        if not isinstance(context, AmniContext):
+        if not isinstance(context, AmniContext) or not self.skill_configs:
+            logger.info(f"llm_agent don't need _filter_tools .. agent#{type(self)}#{self.id()}")
             return self.tools
-        # skills = context.get_active_skills(namespace=self.id())
-        # TODO add skill filter
-        return self.tools
+        # get current active skills
+        skills = await context.get_active_skills(namespace=self.id())
+
+        return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools, tool_mapping=self.tool_mapping)

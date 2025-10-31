@@ -59,6 +59,11 @@ class Sandbox(SandboxSetup):
         return self._mcp_config
 
     @property
+    def skill_configs(self) -> Any:
+        """Returns the MCP configuration."""
+        return self._skill_configs
+
+    @property
     def mcp_servers(self) -> List[str]:
         """Returns the list of MCP servers."""
         return self._mcp_servers
@@ -86,7 +91,8 @@ class Sandbox(SandboxSetup):
             timeout: Optional[int] = None,
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Optional[Any] = None,
-            black_tool_actions: Optional[Dict[str, List[str]]] = None
+            black_tool_actions: Optional[Dict[str, List[str]]] = None,
+            skill_configs: Optional[Any] = None,
     ):
         """Initialize a new Sandbox instance.
         
@@ -106,6 +112,7 @@ class Sandbox(SandboxSetup):
         self._env_type = env_type or SandboxEnvType.LOCAL
         self._mcp_servers = mcp_servers or []
         self._mcp_config = mcp_config or {}
+        self._skill_configs = skill_configs or {}
         self._black_tool_actions = black_tool_actions or {}
 
     @abc.abstractmethod
@@ -123,6 +130,15 @@ class Sandbox(SandboxSetup):
         
         Returns:
             bool: True if removal was successful, False otherwise.
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_skill_list(self) -> Optional[Any]:
+        """Get the skill configurations.
+        
+        Returns:
+            Optional[Any]: The skill configurations, or None if empty.
         """
         pass
 

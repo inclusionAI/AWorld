@@ -3,6 +3,7 @@ import json
 from typing import AsyncGenerator, Any
 
 from aworld.agents.llm_agent import Agent
+from aworld.core.context.amni import AmniContext
 from aworld.core.context.base import Context
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryToolMessage, MessageMetadata, MemoryHumanMessage, MemorySystemMessage, \
@@ -107,6 +108,17 @@ class DefaultMemoryHandler(DefaultHandler):
     async def _add_system_message_to_memory(self, agent: Agent, context: Context, content: str):
         if not content:
             return
+
+        if self._is_amni_context(context):
+            logger.debug(f"memory is amni context, publish system prompt event")
+            await context.pub_and_wait_system_prompt_event(
+                system_prompt=content,
+                user_query=context.task_input,
+                agent_id=agent.id(),
+                agent_name=agent.name(),
+                namespace=agent.id())
+            logger.info(f"_add_system_message_to_memory finish {agent.id()}")
+            return
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
@@ -144,13 +156,23 @@ class DefaultMemoryHandler(DefaultHandler):
                 agent_name=agent.name()
             )
         )
-        await self.memory.add(ai_message, agent_memory_config=agent.memory_config)
+        agent_memory_config = agent.memory_config
+        if self._is_amni_context(context):
+            agent_memory_config = context.get_config().get_agent_context_config(agent.id())
+
+        await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
 
     async def add_human_input_to_memory(self, agent: Agent, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
         session_id = context.get_task().session_id
         user_id = context.get_task().user_id
         task_id = context.get_task().id
+        if not content:
+            return
+
+        agent_memory_config = agent.memory_config
+        if self._is_amni_context(context):
+            agent_memory_config = context.get_config().get_agent_context_config(agent.id())
 
         await self.memory.add(MemoryHumanMessage(
             content=content,
@@ -162,10 +184,20 @@ class DefaultMemoryHandler(DefaultHandler):
                 agent_name=agent.name(),
             ),
             memory_type=memory_type
-        ), agent_memory_config=agent.memory_config)
+        ), agent_memory_config=agent_memory_config)
 
     async def add_tool_result_to_memory(self, agent: 'Agent', tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
+        if self._is_amni_context(context):
+            logger.debug(f"memory is amni context, publish tool result prompt event")
+            await context.pub_and_wait_tool_result_event(tool_result,
+                                                         tool_call_id,
+                                                         agent_id=agent.id(),
+                                                         agent_name=agent.name(),
+                                                         namespace=agent.name())
+            logger.info(f"add_tool_result_to_memory finish {agent.id()}")
+            return
+
         if hasattr(tool_result, 'content') and isinstance(tool_result.content, str) and tool_result.content.startswith(
                 "data:image"):
             image_content = tool_result.content
@@ -206,4 +238,9 @@ class DefaultMemoryHandler(DefaultHandler):
                 summary_content=tool_use_summary
             )
         ), agent_memory_config=agent.memory_config)
+
+    def _is_amni_context(self, context: Context):
+        from aworld.core.context.amni import AmniContext
+        return isinstance(context, AmniContext)
+
 
