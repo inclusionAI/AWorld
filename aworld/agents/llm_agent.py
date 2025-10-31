@@ -362,7 +362,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # default use origin observation
         return observation
 
-    def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
+    def _log_messages(self, messages: List[Dict[str, Any]], context: Context, **kwargs) -> None:
         from aworld.core.context.amni import AmniContext
         if isinstance(context, AmniContext):
             from aworld.core.context.amni.utils.context_log import PromptLogger
@@ -772,7 +772,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message.context.context_info["llm_output"] = llm_response
         return llm_response
 
-
     async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""
         from aworld.runners.hook.hook_factory import HookFactory
@@ -872,3 +871,31 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         skills = await context.get_active_skills(namespace=self.id())
 
         return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools, tool_mapping=self.tool_mapping)
+
+    async def _add_tool_result_token_ids_to_context(self, context: Context):
+        """Add tool result token ids to context"""
+        if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVAE:
+            return
+        histories = self.memory.get_all(filters={
+            "agent_id": self.id(),
+            "session_id": context.get_task().session_id,
+            "task_id": context.get_task().id,
+            "memory_type": "message"
+        })
+        tool_openai_messages_after_last_assistant = []
+        found_assistant = False
+        tool_call_ids = []
+        for i in range(len(histories) - 1, -1, -1):
+            history = histories[i]
+            if hasattr(history, 'role') and history.role == 'assistant':
+                found_assistant = True
+                break
+            elif not found_assistant and hasattr(history, 'role') and history.role == 'tool':
+                tool_openai_messages_after_last_assistant.append(history.to_openai_message())
+                tool_call_ids.append(history.tool_call_id)
+
+        if tool_openai_messages_after_last_assistant:
+            tool_result_token_ids = apply_chat_template(self.llm, tool_openai_messages_after_last_assistant)
+            context.add_tool_resp_token_ids(tool_resp_token_ids=tool_result_token_ids,
+                                            resp_tool_call_ids=tool_call_ids,
+                                            agent_id=self.id())
