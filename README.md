@@ -537,11 +537,12 @@ This framework is engineered to be highly adaptable, enabling researchers and de
 |                            |                              | ✅ High-concurrency support    |
 -->
 
-| Agent Construction         | Topology Orchestration      | Environment                    |
-|:---------------------------|:----------------------------|:-------------------------------|
-| ✅ Integrated MCP services | ✅ Encapsulated runtime  | ✅ Runtime state management  |
-| ✅ Multi-model providers   | ✅ Flexible MAS patterns | ✅ High-concurrency support  |
-| ✅ Customization options   | ✅ Clear state tracing   | ✅ Distributed training      |
+| Agent Construction            | Topology Orchestration      | Environment                    |
+|:------------------------------|:----------------------------|:-------------------------------|
+| ✅ Integrated MCP services     | ✅ Encapsulated runtime  | ✅ Runtime state management  |
+| ✅ Multi-model providers       | ✅ Flexible MAS patterns | ✅ High-concurrency support  |
+| ✅ Customization options       | ✅ Clear state tracing   | ✅ Distributed training      |
+| ✅ [Support Agent Skills](https://github.com/inclusionAI/AWorld/tree/main/examples/skill_agent) 🚀 |  |       |
 
 
 
