@@ -85,32 +85,34 @@ class ContextSkillTool(AsyncTool):
             if not isinstance(message.context, AmniContext):
                 raise ValueError("context is not AmniContext")
 
-            action = actions[0]
-            print(f"CONTEXTTool|do_step: {action}")
-            action_name = action.action_name
-            if action_name == ContextExecuteAction.ACTIVE_SKILL.value.name:
-                skill_name = action.params.get("skill_name", "")
-                if not skill_name:
-                    raise ValueError("skill name invalid")
-                result = await message.context.active_skill(skill_name, namespace=action.agent_name)
-                if not result:
-                    raise ValueError("active skill failed")
-            elif action_name == ContextExecuteAction.OFFLOAD_SKILL.value.name:
-                skill_name = action.params.get("skill_name", "")
-                if not skill_name:
-                    raise ValueError("skill name invalid")
-                result = await message.context.offload_skill(skill_name, namespace=action.action_name)
-                if not result:
-                    raise ValueError("offload skill failed")
-            else:
-                raise ValueError("action name invalid")
+            for action in actions:
+                logger.info(f"CONTEXTTool|do_step: {action}")
+                action_name = action.action_name
+                if action_name == ContextExecuteAction.ACTIVE_SKILL.value.name:
+                    skill_name = action.params.get("skill_name", "")
+                    if not skill_name:
+                        raise ValueError("skill name invalid")
+                    result = await message.context.active_skill(skill_name, namespace=action.agent_name)
+                    if not result:
+                        raise ValueError("active skill failed")
+                elif action_name == ContextExecuteAction.OFFLOAD_SKILL.value.name:
+                    skill_name = action.params.get("skill_name", "")
+                    if not skill_name:
+                        raise ValueError("skill name invalid")
+                    result = await message.context.offload_skill(skill_name, namespace=action.action_name)
+                    if not result:
+                        raise ValueError("offload skill failed")
+                else:
+                    raise ValueError("action name invalid")
 
-            observation.content = result
-            observation.action_result.append(
-                ActionResult(is_done=True,
-                             success=True,
-                             content=f"{result}",
-                             keep=False))
+                observation.content = result
+                observation.action_result.append(
+                    ActionResult(is_done=True,
+                                 success=True,
+                                 content=f"{result}",
+                                 keep=False))
+
+
             reward = 1.
         except Exception as e:
             fail_error = str(e)
