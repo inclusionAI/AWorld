@@ -187,7 +187,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         message.context.agent_info.current_agent_id = self.id()
         task = message.context.get_task()
         if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
-            message.context.new_trajectory_step(task.agent.id())
+            agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
+            message.context.new_trajectory_step(agent.id())
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
@@ -225,7 +226,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         message.context.agent_info.current_agent_id = self.id()
         task = message.context.get_task()
         if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
-            message.context.new_trajectory_step(task.agent.id())
+            agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
+            message.context.new_trajectory_step(agent.id())
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
