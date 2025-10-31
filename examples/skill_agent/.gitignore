@@ -1,0 +1,37 @@
+# XBench specific ignores
+
+# Decrypted datasets - DO NOT COMMIT
+benchmark/DeepSearch_decrypted.csv
+benchmark/DeepSearch_original.csv
+
+# Temporary download directory
+benchmark/temp_xbench/
+
+# Runtime data
+data/amni_context.db*
+data/chroma_db/
+
+# Logs
+logs/*.log
+logs/*.log.*
+
+# Results
+results/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+

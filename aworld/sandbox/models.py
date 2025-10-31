@@ -29,6 +29,7 @@ class SandboxCreateResponse:
     env_type: int = SandboxEnvType.LOCAL
     status: Optional[str] = None
     mcp_config: Optional[Any] = None
+    skill_configs: Optional[Any] = None
 
 @dataclass
 class SandboxK8sResponse(SandboxCreateResponse):

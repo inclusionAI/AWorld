@@ -58,7 +58,7 @@ class Context:
 
     ## Field Classification
     - **Immutable Configuration Fields**: agent_id, agent_name, agent_desc, system_prompt, 
-      agent_prompt, tool_names, context_rule
+       tool_names, context_rule
     - **Mutable Runtime Fields**: tools, step, messages, context_usage, llm_output, trajectories
 
     ## LLM Call Intervention Mechanism
@@ -410,4 +410,33 @@ class Context:
         self.trajectories[step_key] = step_data
 
     async def update_task_after_run(self, task_response: 'TaskResponse'):
+        pass
+
+    """
+    Agent Skills Support
+    """
+    async def init_skill_list(self, skill_list: Dict[str, Any], namespace: str):
+        """
+        init skill list from agent
+        """
+
+    async def active_skill(self, skill_name: str, namespace: str) -> str:
+        """
+        activate a skill help agent to perform a task
+        """
+        pass
+
+    async def offload_skill(self, skill_name: str, namespace: str) -> str:
+        """
+        offload a skill help agent to perform a task
+        """
+        pass
+
+    async def get_active_skills(self, namespace: str) -> list[str]:
+        """
+        get skills from context
+        """
+        pass
+
+    async def get_skill_list(self, namespace: str) -> Dict[str, Any]:
         pass

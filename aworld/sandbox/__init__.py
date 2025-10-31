@@ -18,6 +18,8 @@ def create_sandbox(
     timeout: Optional[int] = None,
     mcp_servers: Optional[List[str]] = None,
     mcp_config: Optional[Any] = None,
+    black_tool_actions: Optional[Dict[str, List[str]]] = None,
+    skill_configs: Optional[Any] = None,
     **kwargs
 ) -> Sandbox:
     """
@@ -30,6 +32,8 @@ def create_sandbox(
         timeout: Timeout for sandbox operations.
         mcp_servers: List of MCP servers to use.
         mcp_config: Configuration for MCP servers.
+        black_tool_actions: Black list of tool actions.
+        skill_configs: Skill configurations.
         **kwargs: Additional parameters for specific sandbox types.
         
     Returns:
@@ -47,6 +51,8 @@ def create_sandbox(
             timeout=timeout,
             mcp_servers=mcp_servers,
             mcp_config=mcp_config,
+            black_tool_actions=black_tool_actions,
+            skill_configs=skill_configs,
             **kwargs
         )
     elif env_type == SandboxEnvType.K8S:
@@ -56,6 +62,8 @@ def create_sandbox(
             timeout=timeout,
             mcp_servers=mcp_servers,
             mcp_config=mcp_config,
+            black_tool_actions=black_tool_actions,
+            skill_configs=skill_configs,
             **kwargs
         )
     elif env_type == SandboxEnvType.SUPERCOMPUTER:
@@ -65,6 +73,8 @@ def create_sandbox(
             timeout=timeout,
             mcp_servers=mcp_servers,
             mcp_config=mcp_config,
+            black_tool_actions=black_tool_actions,
+            skill_configs=skill_configs,
             **kwargs
         )
     else:

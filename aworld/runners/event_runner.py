@@ -143,15 +143,16 @@ class TaskEventRunner(TaskRunner):
         event_bus = self.event_mng.event_bus
 
         key = message.category
-        logger.warn(f"Task {self.task.id} consume message: {message}")
+        logger.info(f"Task {self.task.id} consume message: {message}")
         if key == Constants.TOOL_CALLBACK:
-            logger.warn(f"Task {self.task.id} Tool callback message {message.id}")
+            logger.info(f"Task {self.task.id} Tool callback message {message.id}")
         transformer = self.event_mng.get_transform_handler(key)
         if transformer:
             message = await event_bus.transform(message, handler=transformer)
 
         results = []
         handlers = self.event_mng.get_handlers(key)
+        inner_handlers = [handler.name() for handler in self.handlers]
         async with trace.message_span(message=message):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
@@ -179,7 +180,7 @@ class TaskEventRunner(TaskRunner):
                     for t, _ in handle_map.items():
                         t.add_done_callback(partial(self._task_done_callback, group=handle_map, message=message))
                         await asyncio.sleep(0)
-            else:
+            if not handlers or message.receiver in inner_handlers:
                 # not handler, return raw message
                 # if key == Constants.OUTPUT:
                 #     return results
