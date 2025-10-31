@@ -1,15 +1,16 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import copy
 import json
+import traceback
 from typing import AsyncGenerator, List, Dict, Any, Tuple
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.base import is_agent
+from aworld.core.agent.base import is_agent, is_agent_by_name
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, Constants, TopicType, GroupMessage
+from aworld.core.event.base import Message, Constants, TopicType, GroupMessage, MemoryEventMessage, MemoryEventType
+from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.runners import HandlerFactory
@@ -43,9 +44,6 @@ class DefaultGroupHandler(GroupHandler):
         return True
 
     async def _do_handle(self, message: GroupMessage) -> AsyncGenerator[Message, None]:
-        if not self.is_valid_message(message):
-            return
-
         self.context = message.context
         group_id = message.group_id
         headers = {'context': self.context}
@@ -174,8 +172,11 @@ class DefaultGroupHandler(GroupHandler):
                             receiver_results[receiver] = []
                         receiver_results[receiver].append(res_msg)
                     else:
-                        if is_tool and isinstance(res_msg.payload, Observation):
+                        if is_tool and isinstance(res_msg.payload, Observation) and res_msg.payload.is_tool_result:
                             action_results.extend(res_msg.payload.action_result)
+                        elif isinstance(res_msg.payload, Observation) and res_msg.payload.content:
+                            node_results.append(res_msg.payload.content)
+                            self._merge_context(agent_context, res_msg.context)
                         else:
                             node_results.append(res_msg.payload)
                             self._merge_context(agent_context, res_msg.context)
@@ -207,6 +208,25 @@ class DefaultGroupHandler(GroupHandler):
                     group_headers['level'] = headers.get('level', 0) + 1
                 group_headers['context'] = result_message.context or self.context
                 result_message.headers = group_headers
+                receive_agent = self.swarm.agents.get(receiver)
+                # add tool message to receive_agent's memory
+                if result_message.payload and isinstance(result_message.payload, Observation) and result_message.payload.is_tool_result:
+                    for action_item in result_message.payload.action_result:
+                        if not is_agent_by_name(action_item.tool_name):
+                            continue
+                        memory_msg = MemoryEventMessage(
+                            payload=action_item,
+                            agent=receive_agent,
+                            memory_event_type=MemoryEventType.TOOL,
+                            headers=message.headers
+                        )
+                        try:
+                            future = await send_message_with_future(memory_msg)
+                            results = await future.wait(timeout=300)
+                            if not results:
+                                logger.warning(f"Memory write task failed: {memory_msg}")
+                        except Exception as e:
+                            logger.warn(f"Memory write task failed: {e}. {traceback.format_exc()}")
                 yield result_message
 
     def copy_agent(self, agent: Agent):

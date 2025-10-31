@@ -211,7 +211,7 @@ def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
 
 def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
                       other: Dict[str, Union[int, Dict[str, int]]],
-                      ignore_zero: bool = True):
+                      ignore_zero: bool = False):
     """Add counts from two dicts or nest dicts."""
     result = {}
     for elem, count in usage.items():

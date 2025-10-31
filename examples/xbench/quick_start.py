@@ -62,7 +62,7 @@ async def run(user_input: str):
     init_middlewares()
 
     # 2. build context config
-    context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
+    context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR, debug_mode=True)
 
     # 3. build task
     task = await build_task(user_input, context_config)
@@ -70,9 +70,9 @@ async def run(user_input: str):
     # 4. run task
     try:
         result = await Runners.run_task(task=task)
-        print(result)
+        print(result[task.id].answer)
     except Exception as err:
         print(f"err is {err}, trace is {traceback.format_exc()}")
 
 if __name__ == '__main__':
-    asyncio.run(run(user_input="如果你是蚂蚁AQ的CEO，你面临一个业务转型压力，综合当前AQ的业务特点和医疗领域潜在方向，在tempus,hims,oscar三家公司的业务方向上进行选择，你会选择哪一条赛道"))
+    asyncio.run(run(user_input="Help me find the latest week stock price of BABA. And Analysis the trend of news."))

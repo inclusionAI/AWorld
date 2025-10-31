@@ -112,7 +112,7 @@ class PromptLogger:
     """Logger class for handling prompt-related logging operations"""
 
     @staticmethod
-    def log_agent_call_llm_messages(agent: BaseAgent, context: "ApplicationContext", messages: list[dict]) -> None:
+    def log_agent_call_llm_messages(agent: BaseAgent, context: "ApplicationContext", messages: list[dict], tools: list[Dict[str, Any]] = None, **kwargs) -> None:
         """
         Log OpenAI messages to the prompt log file
         
@@ -158,7 +158,7 @@ class PromptLogger:
         
         try:
             # Log tools information
-            PromptLogger._log_agent_tools(agent)
+            PromptLogger._log_agent_tools(agent, tools)
         except Exception as e:
             amni_prompt_logger.warning(f"❌ Error logging agent tools: {str(e)}")
         
@@ -174,8 +174,9 @@ class PromptLogger:
             amni_prompt_logger.warning(f"❌ Error logging context tree: {str(e)}")
         
         try:
-            # Log OpenAI messages
-            PromptLogger._log_messages(messages)
+            if context.get_config().debug_mode:
+              # Log OpenAI messages
+              PromptLogger._log_messages(messages)
         except Exception as e:
             amni_prompt_logger.warning(f"❌ Error logging messages: {str(e)}")
         
@@ -255,7 +256,7 @@ class PromptLogger:
             
             amni_prompt_logger.info(_generate_separator())
             if messages and len(messages) > 0 and messages[-1].get('role') != 'assistant':
-                amni_digest_logger.info(f"context_length|{agent.id()}|{context.task_id}|{context.user_id}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}")
+                amni_digest_logger.info(f"context_length|{agent.id()}|{context.task_id}|{context.user_id}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}|{len(messages)}")
         except Exception as e:
             # If any error occurs in context length logging, log warning and continue
             try:
@@ -354,14 +355,13 @@ class PromptLogger:
             amni_prompt_logger.info(f"│ 🧠 Context Facts: {'No facts':<{BORDER_WIDTH-13}} │")
 
     @staticmethod
-    def _log_agent_tools(agent: BaseAgent) -> None:
+    def _log_agent_tools(agent: BaseAgent, tools: list[dict[str, Any]]) -> None:
         """
         Log agent tools information, each tool on a separate line.
         
         Args:
             agent (BaseAgent): The agent whose tools to log
         """
-        tools = agent.tools if hasattr(agent, 'tools') else []
         if tools:
             amni_prompt_logger.info(f"│ 🔨 Tools: │")
             # Log all tools on separate lines

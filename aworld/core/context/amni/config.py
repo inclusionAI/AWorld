@@ -63,13 +63,13 @@ class BaseNeuronStrategyConfig(BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
-    
+
     def __getitem__(self, key):
         return getattr(self, key)
-    
+
     def __setitem__(self, key, value):
         setattr(self, key, value)
-    
+
     def get(self, key, default=None):
         return getattr(self, key, default)
 
@@ -249,15 +249,22 @@ class AmniConfigFactory:
 
 
     @staticmethod
-    def create(level: Optional[AmniConfigLevel] = None) -> AmniContextConfig:
+    def create(level: Optional[AmniConfigLevel] = None,
+               neuron_names: Optional[list[str]] = None,
+               debug_mode: bool = False,
+               **kwargs) -> AmniContextConfig:
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
-            return get_default_config()
+            config = get_default_config()
+            config.agent_config = AgentContextConfig()
+            config.debug_mode = debug_mode
+            return config
         elif level == AmniConfigLevel.NAVIGATOR:
             config = get_default_config()
+            config.debug_mode = debug_mode
             config.agent_config = AgentContextConfig(
                 enable_system_prompt_augment=True,
-                neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
-                history_rounds= 100,
+                neuron_names= neuron_names or ["basic", "task", "work_dir", "todo", "action_info", "skills"],
+                history_rounds= 20,
                 enable_summary=True,
                 summary_rounds= 30,
                 summary_context_length= 40960,

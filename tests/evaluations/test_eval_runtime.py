@@ -18,7 +18,6 @@ class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 "agent_config": {
                     "name": "test_agent",
                     "system_prompt": "You are a mathematical calculation agent.",
-                    "agent_prompt": "Please provide the calculation results directly without any other explanatory text. Here are the content: {task}",
                     "conf": {}
                 },
             },
