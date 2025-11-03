@@ -510,8 +510,8 @@ async def mcp_tool_desc_transform_v2(
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
                     if context and context.session_id:
-                        #headers["SESSION_ID"] = context.session_id
-                        headers["SESSION_ID"] = f"{server_config['name']}_{context.session_id}"
+                        env_name = headers.get("env_name")
+                        headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else context.session_id
                     if context and context.user:
                         headers["USER_ID"] = context.user
                     params["headers"] = headers
@@ -523,7 +523,8 @@ async def mcp_tool_desc_transform_v2(
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
                     if context and context.session_id:
-                        headers["SESSION_ID"] = f"{server_config['name']}_{context.session_id}"
+                        env_name = headers.get("env_name")
+                        headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else context.session_id
                     if context and context.user:
                         headers["USER_ID"] = context.user
                     params["headers"] = headers
@@ -901,7 +902,8 @@ async def get_server_instance(
         elif "sse" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             if context and context.session_id:
-                headers["SESSION_ID"] = f"{server_name}_{context.session_id}"
+                env_name = headers.get("env_name")
+                headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else context.session_id
             if context and context.user:
                 headers["USER_ID"] = context.user
             server = MCPServerSse(
@@ -920,8 +922,8 @@ async def get_server_instance(
         elif "streamable-http" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             if context and context.session_id:
-                headers["SESSION_ID"] = f"{server_name}_{context.session_id}"
-                #headers["SESSION_ID"] = context.session_id
+                env_name = headers.get("env_name")
+                headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else context.session_id
             if context and context.user:
                 headers["USER_ID"] = context.user
             server = MCPServerStreamableHttp(
