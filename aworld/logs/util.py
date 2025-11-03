@@ -201,6 +201,9 @@ class AWorldLogger:
 
 logger = AWorldLogger(tag='AWorld', name='AWorld')
 trace_logger = AWorldLogger(tag='Trace', name='AWorld')
+trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
+
+
 prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
                              formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {level} |</black> <level>{message}</level>")
 digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
@@ -208,6 +211,7 @@ digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
 
 monkey_logger(logger)
 monkey_logger(trace_logger)
+monkey_logger(trajectory_logger)
 monkey_logger(prompt_logger)
 monkey_logger(digest_logger)
 

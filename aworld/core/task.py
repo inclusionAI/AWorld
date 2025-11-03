@@ -9,7 +9,7 @@ from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Config
+from aworld.core.common import Config, Observation
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
@@ -51,6 +51,7 @@ class Task:
     parent_task: Optional['Task'] = field(default=None, repr=False)
     max_retry_count: int = 0
     timeout: int = field(default=0)
+    observation: Optional[Observation] = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.

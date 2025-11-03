@@ -9,6 +9,7 @@ from aworld.core.agent.swarm import GraphBuildType, AgentGraph
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
+from aworld.config.conf import TaskRunMode
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
@@ -90,6 +91,20 @@ class DefaultAgentHandler(AgentHandler):
                 )
                 logger.info(f"agent handler send finished message: {msg}")
                 yield msg
+                return
+
+            if message.context.get_task().conf.get("run_mode") == TaskRunMode.INTERACTIVAE and data.action_result:
+                # train mode, send finished message to task after single-step completion.
+                headers = {"step_interrupt": True}
+                headers.update(message.headers)
+                yield Message(
+                    category=Constants.TASK,
+                    payload=data,
+                    sender=message.sender,
+                    session_id=session_id,
+                    topic=TopicType.FINISHED,
+                    headers=headers
+                )
                 return
 
             agent = self.swarm.agents.get(message.receiver)

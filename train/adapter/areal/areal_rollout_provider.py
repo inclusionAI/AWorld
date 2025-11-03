@@ -1,30 +1,31 @@
-# coding: utf-8
-# Copyright (c) 2025 inclusionAI.
-import asyncio
-import os
-import time
 import uuid
-import random
-from typing import List, Dict, Any
-
+import time
 import aiohttp
+import random
+import os
+
+from dataclasses import dataclass, field
+from typing import List, Any, Literal
+
+from ..rollout_llm_provider import RolloutLLMProvider
+from aworld.models.model_response import ModelResponse
+from aworld.logs.util import logger
+from aworld.models.llm import register_llm_provider
 
 from areal.api.cli_args import GenerationHyperparameters
-from areal.api.io_struct import ModelRequest, ModelResponse as ArealModelResponse
 from areal.engine.sglang_remote import RID_CACHE_SIZE
 from areal.utils.http import get_default_connector, arequest_with_retry
-from aworld.core.llm_provider import LLMProviderBase
-from aworld.models.llm import register_llm_provider
-from aworld.models.model_response import ModelResponse, ToolCall, Function
-from aworld.utils.common import sync_exec
-from aworld.logs.util import logger
-
-from vllm.entrypoints.openai.protocol import ExtractedToolCallInformation
-from vllm.entrypoints.openai.tool_parsers import ToolParserManager, ToolParser
 
 
-class ArealProvider(LLMProviderBase):
-    """AReaL provider implementation."""
+@dataclass
+class TokenIdModelResponse:
+    token_ids: List[int] = field(default_factory=list)
+    logprobs: List[float] = field(default_factory=list)
+    versions: List[int] = field(default_factory=list)
+    finish_reason: Literal["length", "stop", "interrupt"] = "stop"
+
+
+class ArealRolloutLLMProvider(RolloutLLMProvider):
 
     def __init__(self,
                  api_key: str = None,
@@ -41,9 +42,8 @@ class ArealProvider(LLMProviderBase):
 
         params = kwargs.get("params")
         self.tokenizer = params.get("tokenizer")
-        self.sampling_params = params.get("sampling_params", {})
-        self.request_id = params.get("request_id")
         self.tool_parser = params.get("tool_parser")
+        self.request_id = params.get("request_id") or uuid.uuid4().hex
         self.request_timeout = params.get("request_timeout", 3600)
         self.request_retries = params.get("request_retries", 3)
 
@@ -60,70 +60,18 @@ class ArealProvider(LLMProviderBase):
     def _init_async_provider(self):
         pass
 
-    @classmethod
-    def supported_models(cls) -> list[str]:
-        return [""]
-
     def postprocess_response(self, response: Any) -> ModelResponse:
         pass
 
-    def completion(self, messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = None,
-                   stop: List[str] = None, **kwargs) -> ModelResponse:
-        return sync_exec(self.acompletion, messages, temperature, max_tokens, stop, **kwargs)
-
-    async def acompletion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> ModelResponse:
-        loop = asyncio.get_running_loop()
-
-        prompt_ids = await loop.run_in_executor(
-            None,
-            lambda: self.tokenizer.apply_chat_template(
-                messages,
-                tools=kwargs.get("tools"),
-                add_generation_prompt=True,
-                tokenize=True,
-            )
-        )
-        rid = self.request_id or uuid.uuid4().hex
-        req = ModelRequest(
-            rid=rid,
-            input_ids=prompt_ids,
-            gconfig=GenerationHyperparameters(n_samples=1, **self.sampling_params),
-            tokenizer=self.tokenizer,
-        )
-
-        response: ArealModelResponse = await self.agenerate(req)
-
-        content = await loop.run_in_executor(
-            None,
-            lambda: self.tokenizer.decode(response.output_tokens, skip_special_tokens=True)
-        )
-
-        tool_parser = ToolParserManager.get_tool_parser(self.tool_parser)
-        res: ExtractedToolCallInformation = await loop.run_in_executor(
-            None,
-            lambda: tool_parser(self.tokenizer).extract_tool_calls(content, request=None)
-        )
-
-        tool_calls = []
-        if res.tools_called:
-            tool_calls = [ToolCall(**tool_call.model_dump()) for tool_call in res.tool_calls]
-        return ModelResponse(id=rid,
-                             content=res.content,
-                             tool_calls=tool_calls,
-                             model=self.model_name,
-                             raw_response=ArealModelResponse(input_tokens=list(response.input_tokens),
-                                                             output_tokens=list(response.output_tokens),
-                                                             output_logprobs=list(response.output_logprobs),
-                                                             output_versions=[-1] * len(prompt_ids)))
-
-    async def agenerate(self, req: ModelRequest) -> ModelResponse:
-        # from AReaL
-        gconfig = req.gconfig
+    async def agenerate(self, input_ids: List[int],
+                        temperature: float = 0.0,
+                        max_tokens: int = None,
+                        stop: List[str] = None,
+                        **kwargs) -> TokenIdModelResponse:
+        """
+        Generate token ids asynchronously.
+        """
+        gconfig = GenerationHyperparameters(n_samples=1)
         stop_token_ids = gconfig.stop_token_ids
         stop = gconfig.stop
 
@@ -139,8 +87,8 @@ class ArealProvider(LLMProviderBase):
             sample_params["stop"] = stop
 
         payload = {
-            "input_ids": req.input_ids.copy(),
-            "image_data": req.image_data,  # ImageObject or str
+            "input_ids": input_ids.copy(),
+            # "image_data": req.image_data,  # ImageObject or str
             "sampling_params": sample_params,
             "return_logprob": True,
             "stream": False,
@@ -153,8 +101,9 @@ class ArealProvider(LLMProviderBase):
         accumulated_versions = []
 
         # A single "rid" shares the same sever to allow KV cache reuse
-        if req.rid in self.rid_to_address:
-            server_addr = self.rid_to_address[req.rid]
+        rid = self.request_id
+        if rid in self.rid_to_address:
+            server_addr = self.rid_to_address[rid]
         else:
             server_addr = self.addresses[self.server_idx]
             self.server_idx = (self.server_idx + 1) % len(self.addresses)
@@ -162,8 +111,8 @@ class ArealProvider(LLMProviderBase):
                 # Remove the oldest entry if cache is full
                 oldest_rid = self.rid_queue.pop(0)
                 self.rid_to_address.pop(oldest_rid, None)
-            self.rid_to_address[req.rid] = server_addr
-            self.rid_queue.append(req.rid)
+            self.rid_to_address[rid] = server_addr
+            self.rid_queue.append(rid)
 
         # Create a new session because we don't know whether this method
         # is called in the workflow thread or the main thread.
@@ -226,20 +175,14 @@ class ArealProvider(LLMProviderBase):
             stop_reason = "length"
         await session.close()
         latency = time.perf_counter() - start_time
-
-        response = ArealModelResponse(
-            input_tokens=req.input_ids,
-            input_images=req.image_data,
-            output_tokens=accumulated_output_tokens,
-            output_logprobs=accumulated_output_logprobs,
-            output_versions=accumulated_versions,
-            stop_reason=stop_reason,
-            latency=latency,
-            ttft=latency,  # Simplified for non-streaming
-            tokenizer=req.tokenizer,
-            processor=req.processor,
+        logger.info(f"latency time: {latency}")
+        response = TokenIdModelResponse(
+            token_ids=accumulated_output_tokens,
+            logprobs=accumulated_output_logprobs,
+            versions=accumulated_versions,
+            finish_reason=stop_reason
         )
         return response
 
 
-register_llm_provider("areal", ArealProvider)
+register_llm_provider("areal_rollout", ArealRolloutLLMProvider)

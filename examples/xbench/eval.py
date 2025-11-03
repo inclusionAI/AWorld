@@ -1,26 +1,24 @@
-
 from dotenv import load_dotenv
+load_dotenv()
+
+from examples.xbench.agents.swarm import build_xbench_swarm
+
+from aworld.core.agent.swarm import Swarm
+from aworld.core.context.base import Context
+from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
+
 # init env
 load_dotenv()
 
 import asyncio
 import logging
 import os
-import sys
 import traceback
 from datetime import datetime
-from typing import Iterator
-
-from dotenv import load_dotenv
-load_dotenv()
 
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import init_middlewares, AmniConfigFactory, AmniConfigLevel
-from aworld.core.context.amni.worksapces import workspace_repo
-from aworld.dataset.sampler import RangeSampler, Sampler, FixedSampler
-from aworld.output import WorkSpace
 from aworld.runners.evaluate_runner import EvaluateRunner
-from examples.xbench.agents.swarm import build_xbench_swarm
 from aworld.config import TaskConfig, EvaluationConfig, DataLoaderConfig
 from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTarget, EvalDataCase, EvalTask, EvalResult
@@ -56,6 +54,11 @@ class AmniContextEvaluatable(EvalTarget):
 
         return await ApplicationContext.from_input(task_input, context_config = context_config)
 
+    async def build_context_common(self, task_input: TaskInput) -> ApplicationContext:
+        context = Context()
+        context.task_input = task_input
+        return context
+
     async def build_task(self, task_content: str, session_id: str = None, task_id: str = None) -> Task:
         if not session_id:
             session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -86,6 +89,11 @@ class AmniContextEvaluatable(EvalTarget):
             timeout=60 * 60
         )
 
+    async def build_common_gaia_task(self, user_input: str, session_id, task_id):
+        swarm = Swarm(await build_agents())
+        return Task(id=task_id, session_id=session_id, input=user_input, swarm=swarm, timeout=1200)
+
+
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
         batch_id = o_input.run_id
         input = o_input.case_data
@@ -95,8 +103,10 @@ class AmniContextEvaluatable(EvalTarget):
         task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
         try:
             result = await Runners.run_task(task=task)
-            if not os.path.exists(f"results/{batch_id}"):
-                os.mkdir(f"results/{batch_id}")
+            os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
+            with open(f"trajectory/{batch_id}/traj_{index}.json", "a") as f:
+                f.write(str(result[task_id].trajectory[-1]))
+            os.makedirs(f"results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
                 f.write(result[task_id].answer)
@@ -131,11 +141,11 @@ async def evaluate():
                 }
             ],
             eval_dataset_id_or_file_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'benchmark', 'DeepSearch_decrypted.csv'),
-            eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids=[4])),
+            eval_dataset_load_config=DataLoaderConfig(),
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=1,
+            parallel_num=100,
             skip_passed_cases=True,
         )).run()
 

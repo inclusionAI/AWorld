@@ -264,8 +264,7 @@ def usage_process(usage: Dict[str, Union[int, Dict[str, int]]] = {}, context: Co
 
 
 def num_tokens_from_string(string: str, model: str = "openai"):
-    """Return the number of tokens used by a string."""
-    import_package("tiktoken")
+    """Return the number of tokens used by a list of messages."""
     import tiktoken
 
     if model.lower() == "qwen":
