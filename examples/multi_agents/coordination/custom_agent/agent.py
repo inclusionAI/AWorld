@@ -147,6 +147,7 @@ class ExecuteAgent(Agent):
                 params = json.loads(tool_call.function.arguments)
                 res.append(ActionModel(agent_name=Agents.EXECUTE.value,
                                        tool_name=tool_name,
+                                       tool_call_id=tool_call.id,
                                        action_name=action_name,
                                        params=params))
 
