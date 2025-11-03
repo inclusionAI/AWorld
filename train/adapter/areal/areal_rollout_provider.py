@@ -19,9 +19,9 @@ from areal.utils.http import get_default_connector, arequest_with_retry
 
 @dataclass
 class TokenIdModelResponse:
-    output_token_ids: List[int] = field(default_factory=list)
-    output_logprobs: List[float] = field(default_factory=list)
-    output_versions: List[int] = field(default_factory=list)
+    token_ids: List[int] = field(default_factory=list)
+    logprobs: List[float] = field(default_factory=list)
+    versions: List[int] = field(default_factory=list)
     finish_reason: Literal["length", "stop", "interrupt"] = "stop"
 
 
@@ -177,9 +177,9 @@ class ArealRolloutLLMProvider(RolloutLLMProvider):
         latency = time.perf_counter() - start_time
         logger.info(f"latency time: {latency}")
         response = TokenIdModelResponse(
-            output_token_ids=accumulated_output_tokens,
-            output_logprobs=accumulated_output_logprobs,
-            output_versions=accumulated_versions,
+            token_ids=accumulated_output_tokens,
+            logprobs=accumulated_output_logprobs,
+            versions=accumulated_versions,
             finish_reason=stop_reason
         )
         return response
