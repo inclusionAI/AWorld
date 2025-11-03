@@ -2,12 +2,13 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import Union
 
+from train.examples.train_gaia_with_aworld_verl.gaia import build_mcp_config
+
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.adapter.verl.agent_loop import AworldAgentLoop
 from train.examples.train_gaia_with_aworld_verl.gaia import build_gaia_agent
-from train.examples.train_gaia_with_aworld_verl.mcp_config import build_mcp_config
 
 
 class GaiaAgentLoop(AworldAgentLoop):

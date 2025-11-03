@@ -1,11 +1,14 @@
 from dotenv import load_dotenv
+
+from train.examples.train_gaia_with_aworld_verl.gaia import build_gaia_agent
+from train.examples.train_gaia_with_aworld_verl.mcp_config import build_mcp_config
+
 load_dotenv()
 
 from examples.xbench.agents.swarm import build_xbench_swarm
 
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
-from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
 
 # init env
 load_dotenv()
@@ -90,7 +93,10 @@ class AmniContextEvaluatable(EvalTarget):
         )
 
     async def build_common_gaia_task(self, user_input: str, session_id, task_id):
-        swarm = Swarm(await build_agents())
+        swarm = Swarm(build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
+                                       llm_base_url=os.getenv("LLM_BASE_URL"),
+                                       llm_api_key=os.getenv("LLM_API_KEY"),
+                                       mcp_config=build_mcp_config()))
         return Task(id=task_id, session_id=session_id, input=user_input, swarm=swarm, timeout=1200)
 
 
@@ -100,7 +106,8 @@ class AmniContextEvaluatable(EvalTarget):
         session_id = f"{batch_id}_session#{input['id']}"
         task_id = f"{batch_id}_task#{input['id']}"
 
-        task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
+        # task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
+        task = await self.build_common_gaia_task(user_input=input['prompt'], session_id=session_id, task_id=task_id)
         try:
             result = await Runners.run_task(task=task)
             os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
