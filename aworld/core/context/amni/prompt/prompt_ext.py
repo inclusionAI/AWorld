@@ -5,9 +5,9 @@ from typing import Optional
 
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni.prompt.neurons import neuron_factory, Neurons
-from aworld.core.context.amni.utils.context_log import PromptLogger
 from aworld.core.context.prompts import StringPromptTemplate, TemplateFormat, format_template
 from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES
+from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger
 
 DEFAULT_VALUE = None
@@ -23,8 +23,7 @@ def logical_schema_getter(
         key=field_path, context=context, recursive=recursive, agent_id=agent_id)
 
 def create_neuron_formatter(neuron_type: Neurons):
-    """
-    Factory function to create neuron formatter functions.
+    """Factory function to create neuron formatter functions.
     
     This eliminates code duplication by dynamically generating formatter functions
     for different neuron types with the same logic pattern.
@@ -44,7 +43,7 @@ def create_neuron_formatter(neuron_type: Neurons):
         if not component:
             return ""
         return await component.format(context=context)
-    
+
     return formatter
 
 
@@ -87,7 +86,6 @@ class ContextPromptTemplate(StringPromptTemplate):
         try:
             variables = await self.async_merge_partial_and_user_variables(context=context, **kwargs)
             self._validate_input_variables(variables)
-            # 记录格式化的参数日志
             PromptLogger.log_formatted_parameters(variables)
             return format_template(self.template, self.template_format, **variables)
         except Exception as e:
@@ -115,10 +113,10 @@ class ContextPromptTemplate(StringPromptTemplate):
                             # Check if the function accepts context parameter
                             import inspect
                             sig = inspect.signature(value)
-                            
+
                             # Check if it's an async function
                             is_async = inspect.iscoroutinefunction(value)
-                            
+
                             if ("context" in sig.parameters.keys()) == True:
                                 # If function accepts context parameter, pass the context
                                 if is_async:
@@ -167,11 +165,8 @@ class ContextPromptTemplate(StringPromptTemplate):
             logger.error(f"Error in _merge_partial_and_user_variables: {e}, returning only kwargs")
             merged = kwargs.copy()
 
-        # 遍历merged，将None值改成空字符串
         for key, value in merged.items():
             if value is None or value == 'unknown':
                 merged[key] = ""
 
         return merged
-
-

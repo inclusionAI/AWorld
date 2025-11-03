@@ -294,7 +294,7 @@ class DefaultGroupHandler(GroupHandler):
                 if isinstance(event, Message) and (
                         event.category == Constants.AGENT or event.category == Constants.TASK):
                     finish_group_messages.append(event)
-                    print(f"======== event context: {event.context},.context.task: {event.context.get_task()}")
+                    logger.info(f"event context: {event.context},context.task: {event.context.get_task()}")
             await state_manager.finish_sub_group(node.metadata.get('group_id'), node_id, finish_group_messages)
         for agent_id in root_agent_set:
             agent = self.swarm.agents.get(agent_id)

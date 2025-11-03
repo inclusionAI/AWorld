@@ -5,7 +5,7 @@ import asyncio
 import traceback
 from typing import Optional, List, Tuple, AsyncGenerator
 
-from aworld.core.context.amni.event import ContextMessagePayload, BaseMessagePayload
+from aworld.core.context.amni.payload import ContextMessagePayload, BaseMessagePayload
 from aworld.core.context.amni.processor import ProcessorFactory
 from aworld.core.context.amni.utils.context_log import _generate_top_border, _generate_bottom_border
 from aworld.core.event.base import Constants, Message, ContextMessage

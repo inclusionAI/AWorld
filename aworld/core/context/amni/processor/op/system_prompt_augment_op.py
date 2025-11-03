@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from ... import ApplicationContext
-from ...event import SystemPromptMessagePayload
+from ...payload import SystemPromptMessagePayload
 from aworld.logs.util import logger
 from .base import BaseOp, MemoryCommand
 from .op_factory import memory_op
