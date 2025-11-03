@@ -99,15 +99,14 @@ GAIA_MCP_CONFIG = {
 #         "ms-playwright": {
 #             "command": "npx",
 #             "args": [
-#                 "@playwright/mcp@0.0.37",
+#                 "@playwright/mcp@latest",
 #                 "--no-sandbox",
 #                 "--isolated",
 #                 "--output-dir=/tmp/playwright",
 #                 "--timeout-action=10000"
 #             ],
 #             "env": {
-#                 "PLAYWRIGHT_TIMEOUT": "120000",
-#                 "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+#                 "PLAYWRIGHT_TIMEOUT": "120000"
 #             }
 #         },
 #     }
