@@ -7,6 +7,7 @@ from aworld.core.context.base import Context
 
 from aworld.config.conf import ToolConfig, ConfigDict
 from aworld.core.common import ActionModel, Observation, ActionResult
+from aworld.core.event.base import Message
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
 from aworld.tools.mcp_tool.executor import MCPToolExecutor
@@ -38,6 +39,7 @@ class McpTool(AsyncTool):
 
     async def do_step(self,
                       actions: list[ActionModel],
+                      message: Message,
                       **kwargs) -> Tuple[Observation, float, bool, bool, dict[str, Any]]:
         """Step of tool.
 
@@ -57,8 +59,8 @@ class McpTool(AsyncTool):
         if not agent:
             logger.warning(
                 f"async_mcp_tool can not get agent,agent_name:{actions[0].agent_name}")
-        task_id = self.context.task_id
-        session_id = self.context.session_id
+        task_id = message.context.task_id
+        session_id = message.context.session_id
 
         if not actions:
             self._finished = True
@@ -106,7 +108,7 @@ class McpTool(AsyncTool):
         try:
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
-                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions, task_id=task_id, session_id=session_id,context=self.context)
+                action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions, task_id=task_id, session_id=session_id,context=message.context)
             else:
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
             reward = 1

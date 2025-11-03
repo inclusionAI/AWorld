@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, Callable, Union, Iterable
 import yaml
 from pydantic import BaseModel, Field
 
-from aworld.dataset.sampler import Sampler
 from aworld.logs.util import logger
 
 
@@ -206,12 +205,12 @@ class AgentConfig(BaseConfig):
     max_actions_per_step: int = 10
     system_prompt: Optional[str] = None
     system_prompt_template: Optional[str] = None
-    agent_prompt: Optional[str] = None
     working_dir: Optional[str] = None
     enable_recording: bool = False
     use_tools_in_prompt: bool = False
     exit_on_failure: bool = False
     human_tools: List[str] = []
+    skill_configs: Dict[str, Any] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -239,6 +238,11 @@ class AgentConfig(BaseConfig):
         return self.llm_config.llm_provider
 
 
+class TaskRunMode(Enum):
+    INTERACTIVAE = "INTERACTIVAE"
+    ONE_WAY = "ONE_WAY"
+
+
 class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
@@ -248,6 +252,7 @@ class TaskConfig(BaseConfig):
     resp_carry_raw_llm_resp: bool = False
     exit_on_failure: bool = False
     ext: dict = {}
+    run_mode: TaskRunMode = TaskRunMode.ONE_WAY
 
 
 class ToolConfig(BaseConfig):

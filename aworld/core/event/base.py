@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import enum
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ class Constants:
     GROUP = "group"
     HUMAN = "human"
     HUMAN_RESPONSE = "human_response"
+    MEMORY = "memory"
     CONTEXT = "context"
     CONTEXT_RESPONSE = "context_response"
 
@@ -146,18 +148,36 @@ class ToolMessage(Message[List[ActionModel]]):
 class CancelMessage(Message[TaskItem]):
     """Cancel event of the task, has higher priority."""
     category: str = 'task'
-    priority: int = -5
+    priority: int = field(default=-5)
     topic: str = TopicType.CANCEL
 
 
 @dataclass
 class GroupMessage(Message[Union[Dict[str, Any], List[ActionModel]]]):
     category: str = 'group'
-    group_id: str = None
+    group_id: str = field(default=None)
 
     def __post_init__(self):
         super().__post_init__()
         self.headers['group_id'] = self.group_id
+
+
+class MemoryEventType(enum.Enum):
+    SYSTEM = 'SYSTEM'
+    HUMAN = 'HUMAN'
+    AI = 'AI'
+    TOOL = 'TOOL'
+
+
+@dataclass
+class MemoryEventMessage(Message[Any]):
+    """Memory event is oriented towards applications, can interact with third-party entities independently.
+
+    For example, `memory` event can interact with other memory through the MCP protocol.
+    """
+    category: str = 'memory'
+    agent: 'BaseAgent' = field(default=None)
+    memory_event_type: MemoryEventType = field(default=None)
 
 
 @dataclass
@@ -168,7 +188,7 @@ class HumanMessage(Message[Any]):
     in interactive AI systems.
     """
     category: str = 'human'
-    priority = -1
+    priority: int = field(default=-1)
 
 
 @dataclass

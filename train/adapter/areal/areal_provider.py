@@ -20,7 +20,7 @@ from aworld.utils.common import sync_exec
 from aworld.logs.util import logger
 
 from vllm.entrypoints.openai.protocol import ExtractedToolCallInformation
-from vllm.entrypoints.openai.tool_parsers import ToolParserManager, ToolParser
+from vllm.entrypoints.openai.tool_parsers import ToolParserManager
 
 
 class ArealProvider(LLMProviderBase):

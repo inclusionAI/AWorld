@@ -17,10 +17,11 @@ class PreLLMCallContextProcessHook(PreLLMCallHook):
 
     def name(self):
         return convert_to_snake("PreLLMCallContextProcessHook")
-    
+
     async def exec(self, message: Message, context: Context = None) -> Message:
         # and do something
         pass
+
 
 @HookFactory.register(name="PostLLMCallContextProcessHook",
                       desc="PostLLMCallContextProcessHook")
@@ -34,4 +35,3 @@ class PostLLMCallContextProcessHook(PostLLMCallHook):
     async def exec(self, message: Message, context: Context = None) -> Message:
         # get context
         pass
-        

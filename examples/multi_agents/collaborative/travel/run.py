@@ -34,8 +34,7 @@ agent_config = AgentConfig(
 plan = Agent(
     conf=agent_config,
     name="example_plan_agent",
-    system_prompt=plan_sys_prompt,
-    agent_prompt=plan_prompt,
+    system_prompt=plan_sys_prompt + plan_prompt,
     agent_names=['browser_agent'],
     step_reset=False
 )
@@ -44,8 +43,7 @@ search = Agent(
     conf=agent_config,
     name="example_search_agent",
     desc="search ",
-    system_prompt=search_sys_prompt,
-    agent_prompt=search_prompt,
+    system_prompt=search_sys_prompt + search_prompt,
     tool_names=[Tools.SEARCH_API.value],
     black_tool_actions={Tools.SEARCH_API.value: [SearchAction.DUCK_GO.value.name, SearchAction.WIKI.value.name,
                                                  SearchAction.GOOGLE.value.name]}
@@ -54,8 +52,7 @@ search = Agent(
 write = Agent(
     conf=agent_config,
     name="example_write_agent",
-    system_prompt=write_sys_prompt,
-    agent_prompt=write_prompt,
+    system_prompt=write_sys_prompt + write_prompt,
     tool_names=[Tools.HTML.value],
 )
 

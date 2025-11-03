@@ -9,6 +9,7 @@ from aworld.core.agent.swarm import GraphBuildType, AgentGraph
 from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
+from aworld.config.conf import TaskRunMode
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
@@ -49,9 +50,6 @@ class DefaultAgentHandler(AgentHandler):
         return True
 
     async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if not self.is_valid_message(message):
-            return
-
         headers = {"context": message.context}
         session_id = message.session_id
         data = message.payload
@@ -93,6 +91,20 @@ class DefaultAgentHandler(AgentHandler):
                 )
                 logger.info(f"agent handler send finished message: {msg}")
                 yield msg
+                return
+
+            if message.context.get_task().conf.get("run_mode") == TaskRunMode.INTERACTIVAE and data.action_result:
+                # train mode, send finished message to task after single-step completion.
+                headers = {"step_interrupt": True}
+                headers.update(message.headers)
+                yield Message(
+                    category=Constants.TASK,
+                    payload=data,
+                    sender=message.sender,
+                    session_id=session_id,
+                    topic=TopicType.FINISHED,
+                    headers=headers
+                )
                 return
 
             agent = self.swarm.agents.get(message.receiver)
@@ -450,10 +462,14 @@ class DefaultAgentHandler(AgentHandler):
                 headers=message.headers
             )
 
-    def is_group_finish(self, event: Message) -> bool:
+    def is_group_finish(self, input_msg: Message, event: Message) -> bool:
         """Determine if an event triggers group completion"""
         if not isinstance(event, Message) or not event.group_id:
             return False
+
+        group_sender = event.headers.get("group_sender")
+        if group_sender and group_sender == event.receiver and event.headers.get("_tool_finished", False):
+            return True
 
         agent_id = event.sender
         if not agent_id:
@@ -469,7 +485,7 @@ class DefaultAgentHandler(AgentHandler):
         new_context = output.context.deep_copy()
         new_context._task = output.context.get_task()
         output.context = new_context
-        if self.is_group_finish(output):
+        if self.is_group_finish(input, output):
             from aworld.runners.state_manager import RuntimeStateManager
             state_mng = RuntimeStateManager.instance()
             await state_mng.finish_sub_group(output.group_id, output.headers.get('root_message_id'),
