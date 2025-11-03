@@ -254,7 +254,7 @@ class PromptLogger:
             prompt_logger.info(_generate_separator())
             if messages and len(messages) > 0 and messages[-1].get('role') != 'assistant':
                 digest_logger.info(
-                    f"context_length|{agent.id()}|{context.task_id}|{getattr(context, 'id', '')}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}|{len(messages)}")
+                    f"context_length|{agent.id()}|{context.task_id}|{getattr(context, 'user', 'default')}|{context.session_id}|{model_name}|{total_context_length}|{json.dumps(token_breakdown)}|{len(messages)}")
         except Exception as e:
             # If any error occurs in context length logging, log warning and continue
             try:

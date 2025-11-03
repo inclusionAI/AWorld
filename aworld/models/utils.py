@@ -275,7 +275,7 @@ def num_tokens_from_string(string: str, model: str = "openai"):
         try:
             encoding = tiktoken.encoding_for_model(model)
         except KeyError:
-            logger.warning(
+            logger.debug(
                 f"{model} model not found. Using cl100k_base encoding.")
             encoding = tiktoken.get_encoding("cl100k_base")
     return len(encoding.encode(string))
