@@ -203,9 +203,9 @@ def mcp_server(name: str = None, **server_config):
                 self._mcp.settings.sse_path = sse_path
 
                 # Print running information
-                print(f"Running MCP server: {server_name}")
-                print(f"Description: {server_description.strip()}")
-                print(f"Address: http://{host}:{port}{sse_path}")
+                logger.info(f"Running MCP server: {server_name}")
+                logger.info(f"Description: {server_description.strip()}")
+                logger.info(f"Address: http://{host}:{port}{sse_path}")
 
                 self._mcp.run(transport="sse")
             else:

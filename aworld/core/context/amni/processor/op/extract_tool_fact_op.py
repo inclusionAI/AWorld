@@ -1,6 +1,5 @@
 from typing import Any, Dict, List, Optional, Generic, TypeVar
 
-from ...event import ContextMessagePayload
 from aworld.core.common import ActionResult
 from aworld.memory.models import Fact
 
@@ -8,6 +7,7 @@ from aworld.logs.util import logger
 from .langextract_op import LangExtractOp
 from .op_factory import memory_op
 from ... import ApplicationContext
+from ...payload import ContextMessagePayload
 
 # Define generic type variable
 T = TypeVar('T', bound=Fact)

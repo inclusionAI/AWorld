@@ -8,7 +8,7 @@ from opentelemetry.sdk._logs import LoggerProvider as SDKLoggerProvider
 from opentelemetry.sdk._logs._internal import SynchronousMultiLogRecordProcessor
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
-from ..log import LoggerProvider
+from ..log_provider import LoggerProvider
 
 
 class OTLPLoggerProvider(LoggerProvider):
