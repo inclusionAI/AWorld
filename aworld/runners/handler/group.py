@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import json
 import traceback
 from typing import AsyncGenerator, List, Dict, Any, Tuple
@@ -69,6 +70,7 @@ class DefaultGroupHandler(GroupHandler):
                     agent_actions_map[agent_name].append(action)
                 else:
                     tools.append(action)
+            logger.info(f"DefaultGroupHandler receive group message with {len(agents)} agents and {len(tools)} tools.")
 
             # Process each agent's actions
             agent_messages = {}
@@ -76,6 +78,7 @@ class DefaultGroupHandler(GroupHandler):
                 # Get original agent
                 original_agent = self.swarm.agents.get(agent_name)
                 if not original_agent:
+                    logger.warning(f"DefaultGroupHandler|agent_as_tool|Can not find {agent_name} agent in swarm.")
                     error_msg = Message(
                         category=Constants.TASK,
                         payload=TaskItem(msg=f"Can not find {agent_name} agent in swarm.",
@@ -132,7 +135,7 @@ class DefaultGroupHandler(GroupHandler):
                     self.runner.state_manager.start_message_node(act[2])
             for msg in action_messages:
                 yield msg
-            await self.process_agent_tasks(agent_tasks, message)
+            await self.process_agent_task_parallel(agent_tasks, message)
 
         elif message.topic == TopicType.GROUP_RESULTS:
             # merge group results
@@ -143,6 +146,8 @@ class DefaultGroupHandler(GroupHandler):
             agent_context = self.context.deep_copy()
             agent_context._task = self.context.get_task()
             receiver_results = {}
+
+            logger.info(f"DefaultGroupHandler receive group result with {len(group_results)} nodes.")
 
             for node_id, handle_res_list in group_results.items():
                 if not handle_res_list:
@@ -164,6 +169,10 @@ class DefaultGroupHandler(GroupHandler):
                         return
                     receiver = res_msg.receiver
                     if not receiver:
+                        if res_msg.category == Constants.TASK:
+                            yield res_msg
+                            logger.info(f"{self.name()} get group result with task message: {res_msg}, return.")
+                            return
                         logger.warn(f"{self.name()} get group result with empty receiver: {res_msg}.")
                         continue
 
@@ -181,10 +190,10 @@ class DefaultGroupHandler(GroupHandler):
                             node_results.append(res_msg.payload)
                             self._merge_context(agent_context, res_msg.context)
 
-                if node_results and tool_call_id:
+                if node_results:
                     act_res = ActionResult(
                         content=json.dumps(to_serializable(node_results), ensure_ascii=False),
-                        tool_call_id=tool_call_id,
+                        tool_call_id=tool_call_id or "",
                         tool_name=node.metadata.get('root_agent_id')
                     )
                     action_results.append(act_res)
@@ -211,23 +220,55 @@ class DefaultGroupHandler(GroupHandler):
                 result_message.headers = group_headers
                 receive_agent = self.swarm.agents.get(receiver)
                 # add tool message to receive_agent's memory
-                if result_message.payload and isinstance(result_message.payload, Observation) and result_message.payload.is_tool_result:
+                if (result_message.payload
+                        and isinstance(result_message.payload, Observation)
+                        and result_message.payload.is_tool_result):
+                    as_tool_results = []
+                    as_human_messages = []
                     for action_item in result_message.payload.action_result:
-                        if not is_agent_by_name(action_item.tool_name):
+                        if not action_item.tool_call_id:
+                            as_human_messages.append(action_item)
+                        elif not is_agent_by_name(action_item.tool_name):
+                            as_tool_results.append(action_item)
+                            # tool.step results already added to memory
                             continue
+                        else:
+                            as_tool_results.append(action_item)
+                            memory_msg = MemoryEventMessage(
+                                payload=action_item,
+                                agent=receive_agent,
+                                memory_event_type=MemoryEventType.TOOL,
+                                headers=message.headers
+                            )
+                            try:
+                                logger.info(f"add tool message to memory: {memory_msg}")
+                                future = await send_message_with_future(memory_msg)
+                                results = await future.wait(timeout=300)
+                                if not results:
+                                    logger.warning(f"Memory write task failed: {memory_msg}")
+                            except Exception as e:
+                                logger.warn(f"Memory write task failed: {e}. {traceback.format_exc()}")
+                    if as_human_messages:
+                        human_message_input = [{item.tool_name: item.content} for item in as_human_messages]
+                        human_message_content = json.dumps(to_serializable(human_message_input), ensure_ascii=False)
+                        result_message.payload.content = human_message_content
+                        result_message.payload.action_result = as_tool_results
                         memory_msg = MemoryEventMessage(
-                            payload=action_item,
+                            payload={"content":human_message_content,
+                                     "memory_type": "message"},
                             agent=receive_agent,
-                            memory_event_type=MemoryEventType.TOOL,
+                            memory_event_type=MemoryEventType.HUMAN,
                             headers=message.headers
                         )
                         try:
+                            logger.info(f"add human message to memory: {memory_msg}")
                             future = await send_message_with_future(memory_msg)
                             results = await future.wait(timeout=300)
                             if not results:
                                 logger.warning(f"Memory write task failed: {memory_msg}")
                         except Exception as e:
                             logger.warn(f"Memory write task failed: {e}. {traceback.format_exc()}")
+                logger.info(f"group_handler result message: {result_message}")
                 yield result_message
 
     def copy_agent(self, agent: Agent):
@@ -271,7 +312,7 @@ class DefaultGroupHandler(GroupHandler):
             state_manager = self.runner.state_manager
             node = state_manager._find_node(node_id)
             if not node:
-                logger.warn(f"{self.name()} get group result with empty node.")
+                logger.warn(f"DefaultGroupHandler|Can not find agent_task {node_id} in state_manager.")
                 return
             root_agent_id = node.metadata.get('root_agent_id')
             root_agent_set.add(root_agent_id)
@@ -294,8 +335,59 @@ class DefaultGroupHandler(GroupHandler):
                 if isinstance(event, Message) and (
                         event.category == Constants.AGENT or event.category == Constants.TASK):
                     finish_group_messages.append(event)
-                    logger.info(f"event context: {event.context},context.task: {event.context.get_task()}")
+                    logger.debug(f"event context: {event.context},context.task: {event.context.get_task()}")
             await state_manager.finish_sub_group(node.metadata.get('group_id'), node_id, finish_group_messages)
+        for agent_id in root_agent_set:
+            agent = self.swarm.agents.get(agent_id)
+            if agent:
+                agent._finished = True
+
+    async def process_agent_task_parallel(self, agent_tasks, input_message):
+        """Process agent async tasks in parallel
+
+        Args:
+            agent_tasks: Agent async tasks (dict mapping node_id to task)
+        """
+        # Prepare for parallel execution - keep node_id and task correspondence
+        node_ids = list(agent_tasks.keys())
+        tasks = [agent_tasks[node_id] for node_id in node_ids]
+
+        # Execute all tasks in parallel
+        results = await asyncio.gather(*tasks)
+
+        # Process each result with its corresponding node_id
+        root_agent_set = set()
+        state_manager = self.runner.state_manager
+
+        for node_id, res in zip(node_ids, results):
+            logger.info(f"{node_id} finished task: {res}")
+            node = state_manager._find_node(node_id)
+            if not node:
+                logger.warn(f"DefaultGroupHandler|Can not find agent_task {node_id} in state_manager.")
+                return
+            root_agent_id = node.metadata.get('root_agent_id')
+            root_agent_set.add(root_agent_id)
+            self.context.merge_sub_context(res.context)
+            msg = Message(
+                category=Constants.AGENT,
+                payload=[ActionModel(policy_info=res.answer, agent_name=root_agent_id)],
+                sender=root_agent_id,
+                session_id=node.session_id,
+                headers={'context': self.context,
+                         'root_agent_id': root_agent_id,
+                         'root_tool_call_id': node.metadata.get('root_tool_call_id')}
+            )
+            finish_group_messages = []
+            async for event in self.runner._inner_handler_process(
+                    results=[msg],
+                    handlers=self.runner.handlers
+            ):
+                # Only AGENT and TASK messages
+                if isinstance(event, Message) and (
+                        event.category == Constants.AGENT or event.category == Constants.TASK):
+                    finish_group_messages.append(event)
+            await state_manager.finish_sub_group(node.metadata.get('group_id'), node_id, finish_group_messages)
+
         for agent_id in root_agent_set:
             agent = self.swarm.agents.get(agent_id)
             if agent:
