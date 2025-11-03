@@ -7,7 +7,6 @@ from typing import Optional, List, Tuple, AsyncGenerator
 
 from aworld.core.context.amni.payload import ContextMessagePayload, BaseMessagePayload
 from aworld.core.context.amni.processor import ProcessorFactory
-from aworld.core.context.amni.utils.context_log import _generate_top_border, _generate_bottom_border
 from aworld.core.event.base import Constants, Message, ContextMessage
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -126,12 +125,12 @@ class ContextProcessorHandler(DefaultHandler):
             return None
 
     def log_start(self, event, processor_config):
-        logger.info(_generate_top_border())
         logger.info(f"|        {processor_config.name}         |")
         logger.info(f"Processing memory for event: {event.event_type} - {event.event_id}")
 
     def log_end(self, event, processor_config):
-        logger.info(_generate_bottom_border())
+        pass
+
 
     async def _process_single_processor(self, processor_config, event: BaseMessagePayload) -> Optional[Tuple[str, any]]:
         """process a single processor"""
