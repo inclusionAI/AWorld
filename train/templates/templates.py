@@ -22,15 +22,7 @@ from .tool_policy import ToolPolicy
 from .constants import ToolPlacement, Role
 from .global_policy import GlobalPolicy
 
-Logger = logging.getLogger(__name__)
-
-# Add console handler if no handlers exist
-if not Logger.handlers:
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(formatter)
-    Logger.addHandler(console_handler)
+from aworld.logs.util import logger
 
 
 @dataclasses.dataclass
@@ -317,7 +309,7 @@ class Template:
         return "\n".join([json.dumps(tool) for tool in tools])
 
     def _encode_system_message_default(self, tools=None) -> str:
-        Logger.debug(f"[Template] Encoding system message default for template: {self.name}")
+        logger.debug(f"[Template] Encoding system message default for template: {self.name}")
         if not self.system_policy.use_system_without_system_message:
             if tools is None:
                 return ""
@@ -340,7 +332,7 @@ class Template:
 
     def _encode_system_message(self, content, tools=None) -> str:
         # Handle both string content and list content formats
-        Logger.debug(f"[Template] Encoding system message for template: {self.name}")
+        logger.debug(f"[Template] Encoding system message for template: {self.name}")
         if isinstance(content, str):
             system_message = content
         else:
@@ -470,7 +462,7 @@ class Template:
             return self._encode_standard(messages, tokenizer, return_tensors, tools, add_generation_prompt=add_generation_prompt, **kwargs)
 
     def _encode_standard(self, messages: List[Dict], tokenizer: PreTrainedTokenizer, return_tensors: str = None, tools=None, add_generation_prompt=False, **kwargs) -> str:
-        Logger.debug(f"[Template] Encoding standard for template: {self.name}")
+        logger.debug(f"[Template] Encoding standard for template: {self.name}")
         """Standard encoding without vision support"""
         prompt, elements, roles = self.render(messages, tools=tools, add_generation_prompt=add_generation_prompt, **kwargs)
         elements, mask_flags = self._postprocess_elements(elements, roles)
@@ -509,7 +501,7 @@ class Template:
         return inputs
 
     def _encode_with_vision_processor(self, messages: List[Dict], tokenizer: PreTrainedTokenizer, return_tensors: str = None, tools=None, add_generation_prompt=False, processor=None, **kwargs) -> str:
-        Logger.debug(f"[Template] Encoding with vision processor for template: {self.name}")
+        logger.debug(f"[Template] Encoding with vision processor for template: {self.name}")
         """Encode with vision processor handling proper alignment"""
         from .vision_processor import get_processor
         from .utils import extract_vision_inputs_from_messages
@@ -526,10 +518,10 @@ class Template:
         # Extract vision inputs
         images, videos = extract_vision_inputs_from_messages(messages)
 
-        Logger.debug(f"[Template] images: {len(images)}")
-        Logger.debug(f"[Template] videos: {len(videos)}")
+        logger.debug(f"[Template] images: {len(images)}")
+        logger.debug(f"[Template] videos: {len(videos)}")
 
-        Logger.debug(f"[Template] messages: {messages}")
+        logger.debug(f"[Template] messages: {messages}")
 
         # Use vision processor with alignment support
         return vision_processor.process_for_llm(
@@ -608,7 +600,7 @@ class Template:
 
     def get_vision_inputs(self, messages: List[Dict]):
         vision_inputs = defaultdict(list)
-        Logger.debug(f"[Template] get_vision_inputs: messages: {messages}")
+        logger.debug(f"[Template] get_vision_inputs: messages: {messages}")
         for message in messages:
             content = message["content"]
             if isinstance(content, list):
