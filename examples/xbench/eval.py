@@ -1,6 +1,8 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+from examples.xbench.agents.swarm import build_xbench_swarm
+
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
 from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
@@ -69,8 +71,7 @@ class AmniContextEvaluatable(EvalTarget):
         )
 
         context = await self.build_context(task_input)
-        # TODO gaia agent
-        swarm = Swarm(await build_agents()) # build_xbench_swarm()
+        swarm = build_xbench_swarm()
         await context.build_agents_state(swarm.topology)
 
         return Task(
@@ -99,8 +100,7 @@ class AmniContextEvaluatable(EvalTarget):
         session_id = f"{batch_id}_session#{input['id']}"
         task_id = f"{batch_id}_task#{input['id']}"
 
-        # task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
-        task = await self.build_common_gaia_task(user_input=input['prompt'], session_id=session_id, task_id = task_id)
+        task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
         try:
             result = await Runners.run_task(task=task)
             os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
@@ -125,7 +125,7 @@ class AmniContextEvaluatable(EvalTarget):
 
 
 async def evaluate():
-    # init_middlewares()
+    init_middlewares()
     eval_target = AmniContextEvaluatable()
     task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
