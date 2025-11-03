@@ -36,10 +36,21 @@ def usage_process(usage: Dict[str, Union[int, Dict[str, int]]] = {}, context: Co
 
 
 def num_tokens_from_string(string: str, model: str = "openai"):
-    """Return the number of tokens used by a string."""
-    import_package("tiktoken")
+    """Return the number of tokens used by a list of messages."""
     import tiktoken
-    encoding = tiktoken.encoding_for_model(model)
+
+    if model.lower() == "qwen":
+        encoding = qwen_tokenizer
+    elif model.lower() == "openai":
+        encoding = openai_tokenizer
+    else:
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            logger.warning(
+                f"{model} model not found. Using cl100k_base encoding.")
+            encoding = tiktoken.get_encoding("cl100k_base")
+
     return len(encoding.encode(string))
 
 def num_tokens_from_messages(messages, model="openai"):

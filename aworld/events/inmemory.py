@@ -49,6 +49,8 @@ class InMemoryEventbus(Eventbus):
                 queue.task_done()
             except QueueEmpty:
                 break
+        self._subscribers.pop(id, None)
+        self._transformer.pop(id, None)
 
     async def subscribe(self, task_id: str, event_type: str, topic: str, handler: Callable[..., Any], **kwargs):
         if kwargs.get("transformer"):

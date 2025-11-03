@@ -21,6 +21,7 @@ class RunNodeBusiType(Enum):
     TOOL_CALLBACK = 'TOOL_CALLBACK'
     HUMAN = 'HUMAN'
     CONTEXT = "CONTEXT"
+    MEMORY = 'MEMORY'
 
     @staticmethod
     def from_message_category(category: str) -> 'RunNodeBusiType':
@@ -34,6 +35,8 @@ class RunNodeBusiType(Enum):
             return RunNodeBusiType.TOOL_CALLBACK
         if category == Constants.HUMAN:
             return RunNodeBusiType.HUMAN
+        if category == Constants.MEMORY:
+            return RunNodeBusiType.MEMORY
         if category == Constants.CONTEXT:
             return RunNodeBusiType.CONTEXT
         return None
@@ -478,6 +481,7 @@ class RuntimeStateManager(InheritanceSingleton):
             if time.time() - start_time > timeout:
                 self.run_timeout(node_id, result_msg=f"Waiting for node completion timed out after {timeout} seconds")
                 node = self._find_node(node_id)
+                logger.warn(f"wait for node completion timed out: {node_id}, node: {node}")
                 return node
 
             # Wait for the specified interval before polling again

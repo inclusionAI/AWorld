@@ -25,6 +25,12 @@ class TestClass:
         logger.info(f"this is a test func, artifact={artifact}")
 
 
+class TestClass:
+    @trace.func_span(span_name="test_func_args")
+    def test_func(self, artifact: Artifact = None):
+        logger.info(f"this is a test func, artifact={artifact}")
+
+
 @trace.func_span(span_name="test_func", attributes={"test_attr": "test_value"}, extract_args=["param1"], add_attr="add_attr_value")
 def traced_func(param1: str = None, param2: int = None):
     trace_logger.info("this is a traced func")

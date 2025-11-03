@@ -34,9 +34,11 @@ class McpServers:
             mcp_config: Dict[str, Any] = None,
             sandbox=None,
             black_tool_actions: Dict[str, List[str]] = None,
+            skill_configs: Dict[str, Any] = None,
     ) -> None:
         self.mcp_servers = mcp_servers
         self.mcp_config = mcp_config
+        self.skill_configs = skill_configs or {}
         self.sandbox = sandbox
         # Dictionary to store server instances {server_name: server_instance}
         self.server_instances = {}

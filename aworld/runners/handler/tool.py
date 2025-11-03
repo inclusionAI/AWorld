@@ -34,9 +34,6 @@ class DefaultToolHandler(ToolHandler):
         return True
 
     async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if not self.is_valid_message(message):
-            return
-
         headers = {"context": message.context}
         # data is List[ActionModel]
         data = message.payload

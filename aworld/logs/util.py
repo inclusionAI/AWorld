@@ -210,7 +210,7 @@ class AWorldLogger:
             func_name = getattr(frame.f_code, "co_qualname", frame.f_code.co_name).replace("<module>", "")
 
             trace_id = get_trace_id()
-            update = {"function": func_name, "line": line, "name": module, "extra": {"trace_id": trace_id}}
+            update = {"function": func_name, "line": line, "name": module, "extra": {"trace_id": trace_id, "logger_name": "Aworld"}}
 
             def patch(record):
                 extra = update.pop("extra")
@@ -224,9 +224,13 @@ class AWorldLogger:
 
 logger = AWorldLogger(tag='AWorld', name='AWorld')
 trace_logger = AWorldLogger(tag='Trace', name='AWorld')
+trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
+
+
 
 monkey_logger(logger)
 monkey_logger(trace_logger)
+monkey_logger(trajectory_logger)
 
 # log examples:
 # the same as debug, warn, error, fatal
