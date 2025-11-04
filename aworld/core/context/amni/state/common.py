@@ -40,6 +40,7 @@ class OpenAIChatCompletionForm(BaseModel):
     stream: bool = True
     model: Optional[str] = Field(default=None)
     messages: Optional[list[OpenAIChatMessage]] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="allow")
 
