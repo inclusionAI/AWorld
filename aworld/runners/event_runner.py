@@ -16,7 +16,7 @@ from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse
-from aworld.dataset.trajectory_dataset import generate_trajectory
+from aworld.dataset.trajectory_dataset import generate_trajectory_from_strategy
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -352,8 +352,8 @@ class TaskEventRunner(TaskRunner):
 
     async def _save_trajectories(self):
         try:
-            messages = await self.event_mng.messages_by_task_id(self.task.id)
-            trajectory = await generate_trajectory(messages, self.task.id, self.state_manager)
+            trajectory_strategy = self.conf.get('trajectory_strategy', None)
+            trajectory = await generate_trajectory_from_strategy(self.task.id, trajectory_strategy, self)
             self._task_response.trajectory = trajectory
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
