@@ -123,7 +123,7 @@ def setup_amni_logging(log_dir: str = "./logs") -> None:
     async_logger.propagate = False
 
     # Prevent duplicate handlers
-    if logger.handlers:
+    if amni_prompt_logger.handlers:
         return
 
     # Prompt-specific logging handler

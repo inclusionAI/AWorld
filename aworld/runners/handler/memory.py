@@ -1,5 +1,6 @@
 # aworld/runners/handler/output.py
 import json
+import traceback
 from typing import AsyncGenerator, Any
 
 from aworld.agents.llm_agent import Agent
@@ -98,7 +99,7 @@ class DefaultMemoryHandler(DefaultHandler):
                 else:
                     logger.warning("DefaultMemoryHandler: invalid TOOL payload, missing tool_call_id or tool_result.")
         except Exception:
-            logger.warning("DefaultMemoryHandler: failed to write memory for event.", exc_info=True)
+            logger.warning(f"DefaultMemoryHandler: failed to write memory for event. {traceback.format_exc()}")
 
         # This handler only performs side-effects; do not emit framework messages
         if False:

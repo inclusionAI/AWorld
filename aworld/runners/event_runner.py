@@ -19,6 +19,7 @@ from aworld.core.task import Task, TaskResponse
 from aworld.dataset.trajectory_dataset import generate_trajectory
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
+from aworld.memory.main import MemoryFactory
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.task_runner import TaskRunner
@@ -354,6 +355,14 @@ class TaskEventRunner(TaskRunner):
         try:
             messages = await self.event_mng.messages_by_task_id(self.task.id)
             trajectory = await generate_trajectory(messages, self.task.id, self.state_manager)
-            self._task_response.trajectory = trajectory
+
+            memory_items = MemoryFactory.instance().get_last_n(100, filters={
+                "agent_id": self.swarm.cur_agent[0].id(),
+                "session_id": self.context.session_id,
+                "task_id": self.context.task_id,
+                "include_summaried": True
+            }, agent_memory_config=self.swarm.cur_agent[0].memory_config)
+            # self._task_response.trajectory = trajectory
+            self._task_response.trajectory = {i: item for i, item in enumerate(memory_items)} 
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
