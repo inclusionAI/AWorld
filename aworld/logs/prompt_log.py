@@ -1,5 +1,4 @@
 import json
-import logging
 import time
 import traceback
 from datetime import datetime
@@ -8,12 +7,10 @@ from typing import Any, Dict
 from aworld.config import AgentMemoryConfig
 from aworld.core.agent.base import BaseAgent
 from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES
+# from ... import ApplicationContext
+from aworld.logs.util import digest_logger, prompt_logger
 from aworld.memory.models import MemorySummary, MemoryItem
 from aworld.models.utils import num_tokens_from_messages
-from .modelutils import ModelUtils, num_tokens_from_string
-# from ... import ApplicationContext
-from ..logger import amni_digest_logger, amni_prompt_logger
-from aworld.logs.util import digest_logger, prompt_logger
 from aworld.models.utils import num_tokens_from_string, ModelUtils
 
 # Log display configuration constants
@@ -849,7 +846,7 @@ class PromptLogger:
 
             # 输出日志
             for line in log_lines:
-                amni_prompt_logger.info(line)
+                prompt_logger.info(line)
 
         except Exception as e:
             # 错误信息也用框框样式
@@ -862,4 +859,4 @@ class PromptLogger:
                 "╰────────────────────────────────────────────────────────────────────────────────────────────────────╯"
             ]
             for line in error_lines:
-                amni_prompt_logger.error(line)
+                prompt_logger.error(line)

@@ -652,7 +652,7 @@ class AworldMemory(Memory):
                            f"content is {combined_summary[:100]}")
 
                 # 记录summary的上下文长度信息
-                from aworld.core.context.amni.utils.context_log import PromptLogger
+                from aworld.logs.prompt_log import PromptLogger
                 PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, f"{trigger_reason}:combined", agent_memory_config)
         else:
             # 使用默认的摘要生成逻辑
@@ -678,7 +678,7 @@ class AworldMemory(Memory):
             self.memory_store.add(summary_memory)
 
             # 记录summary的上下文长度信息
-            from aworld.core.context.amni.utils.context_log import PromptLogger
+            from aworld.logs.prompt_log import PromptLogger
             PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, trigger_reason, agent_memory_config)
 
         # mark memory item summary flag
