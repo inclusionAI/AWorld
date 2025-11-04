@@ -3,6 +3,8 @@ import threading
 from typing import Sequence, Optional, Dict, List
 from prometheus_client import Counter as PCounter, Gauge as PGauge, Histogram as PHistogram, CollectorRegistry
 from prometheus_client import start_http_server, REGISTRY
+
+from aworld.logs.util import logger
 from aworld.metrics.metric import(
     MetricProvider,
     Counter,
@@ -356,7 +358,7 @@ class PrometheusConsoleMetricExporter(MetricExporter):
     def _output_metrics_to_console(self):
         while not self._should_shutdown:
             metrics_text = self.generate_latest(REGISTRY)
-            print(metrics_text.decode('utf-8'))
+            logger.info(metrics_text.decode('utf-8'))
             time.sleep(self.out_interval_secs)
 
     def shutdown(self) -> None:

@@ -11,7 +11,7 @@ from aworld.trace.instrumentation.agent import AgentInstrumentor
 from aworld.trace.instrumentation.tool import ToolInstrumentor
 from aworld.trace.instrumentation.threading import ThreadingInstrumentor
 
-from aworld.logs.log import set_log_provider
+from aworld.logs.log_provider import set_log_provider
 from aworld.trace.opentelemetry.memory_storage import TraceStorage
 from aworld.logs.util import trace_logger
 

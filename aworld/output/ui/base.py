@@ -90,22 +90,14 @@ class PrinterAworldUI(AworldUI):
         # if __output__.tool_calls:
         #     await consume_content(__output__.tool_calls, __log_item)
 
-        print("")
         return "".join(result)
 
     async def tool_result(self, output: ToolResultOutput) -> str:
-        """
-            loading
-        """
         return f"call tool {output.origin_tool_call.id}#{output.origin_tool_call.function.name} \n" \
                f"with params {output.origin_tool_call.function.arguments} \n" \
                f"with result {output.data}\n"
 
-
     async def step(self, output: StepOutput) -> str:
-        """
-            loading
-        """
         if output.status == "START":
             return f"=============✈️START {output.name}======================"
         elif output.status == "FINISHED":
@@ -116,5 +108,3 @@ class PrinterAworldUI(AworldUI):
 
     async def custom_output(self, output: Output) -> str:
         pass
-
-

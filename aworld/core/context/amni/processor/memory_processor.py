@@ -8,7 +8,7 @@ from .op.op_factory import OpFactory
 from .processor_factory import memory_processor
 from .base_processor import BaseContextProcessor
 from ..config import AmniContextProcessorConfig
-from ..event import ContextMessagePayload
+from ..payload import ContextMessagePayload
 
 
 @memory_processor("pipeline_memory_processor")
@@ -56,7 +56,6 @@ class PipelineMemoryProcessor(BaseContextProcessor):
     
     async def execute_pipeline(self, ops_list: List[Any], context: Context, event, **kwargs) -> Optional[Dict[str, Any]]:
         # 确保 event 是 ContextMessagePayload 类型
-        from ..event import ContextMessagePayload
         if not isinstance(event, ContextMessagePayload):
             # 处理类型不匹配的情况
             pass

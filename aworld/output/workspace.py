@@ -121,8 +121,7 @@ class WorkSpace(BaseModel):
                 self.artifacts = []
                 self.metadata = {}
         except Exception as e:
-            traceback.print_exc()
-            print(f"Error loading workspace data: {e}")
+            logger.warning(f"Error loading workspace data: {traceback.print_exc()}")
             return None
 
     @classmethod
@@ -423,7 +422,7 @@ class WorkSpace(BaseModel):
                     if result:
                         results.append(result)
             except Exception as e:
-                print(f"Observer notification failed: {e}")
+                logger.warning(f"Observer notification failed: {traceback.print_exc()}")
         return results
     
     def _check_artifact_exists(self, artifact_id: str) -> bool:
