@@ -165,8 +165,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
-        tool_mapping= {}
-        self.context = None
         self.state = AgentStatus.START
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
