@@ -4,17 +4,19 @@ import os
 import uuid
 from datetime import datetime
 
-from aworld.agents.amni_llm_agent import ApplicationAgent
 from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig, ConfigDict, TaskConfig, SummaryPromptConfig
+from aworld.config import AgentConfig, ConfigDict, TaskConfig, SummaryPromptConfig, AgentMemoryConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig, \
     CONTEXT_OFFLOAD_TOOL_NAME_WHITE
+from aworld.core.memory import MemoryConfig, MemoryLLMConfig
 from aworld.core.task import Task
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
-from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
-from train.examples.train_gaia_with_aworld_verl.summary import episode_memory_summary_rule, working_memory_summary_rule, \
+from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY, MemoryFactory
+from aworldspace.models import ApplicationAgent
+from train.examples.train_gaia_with_aworld_verl.gaia.summary import episode_memory_summary_rule, \
+    working_memory_summary_rule, \
     working_memory_summary_schema, tool_memory_summary_rule, \
     tool_memory_summary_schema, episode_memory_summary_schema
 
@@ -55,12 +57,24 @@ Now, here is the task. Stay focused and complete it carefully using the appropri
 
 def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, server_manager = None, tokenizer = None):
 
+    MemoryFactory.init(
+        config=MemoryConfig(
+            provider="aworld",
+            llm_config=MemoryLLMConfig(
+                provider="openai",
+                model_name=os.getenv("LLM_MODEL_NAME"),
+                api_key=os.getenv("LLM_API_KEY"),
+                base_url=os.getenv("LLM_BASE_URL")
+            )
+        )
+    )
+
     conf=AgentConfig(
         llm_config=ConfigDict(
             llm_model_name=llm_model_name,
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key,
-            llm_provider="verl",
+            llm_provider="openai",
             llm_temperature=1.0,
             top_p=1.0,
             top_k=80,
@@ -72,7 +86,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
                 "tool_parser": "hermes"
             }
         ),
-        # memory_config=AgentMemoryConfig(history_rounds=100, enable_summary=False, summary_rounds=15, summary_context_length=32000),
+        memory_config=AgentMemoryConfig(history_rounds=100, enable_summary=True, summary_rounds=5, summary_context_length=32000),
     )
 
     if os.getenv("GAIA_AGENT_CONTEXT", "common") == 'common':
@@ -113,7 +127,7 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
         neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
         history_rounds= 100,
         enable_summary=True,
-        summary_rounds= 30,
+        summary_rounds= 6,
         summary_context_length= 40960,
         summary_prompts=[
             SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,

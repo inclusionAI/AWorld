@@ -3,6 +3,7 @@
 import abc
 import json
 import traceback
+from datetime import datetime
 from typing import Optional, Tuple
 
 from aworld.config import SummaryPromptConfig
@@ -579,8 +580,22 @@ class AworldMemory(Memory):
         to_be_summary_items = [item for item in agent_task_total_message if
                                item.memory_type == "message" and not item.has_summary]
 
-        # 序列中删除最后一组完整的 [ai,tool] 组合
+        # Filter out incomplete message pairs
         to_be_summary_items = self._filter_incomplete_message_pairs(to_be_summary_items)
+
+        # Calculate summary_created_time
+        summary_created_time = datetime.now().isoformat()
+        if len(agent_task_total_message) > len(to_be_summary_items) and len(to_be_summary_items) > 0:
+            idx1, idx2 = len(to_be_summary_items) - 1, len(to_be_summary_items)
+            if idx2 < len(agent_task_total_message):
+                try:
+                    msg1, msg2 = agent_task_total_message[idx1], agent_task_total_message[idx2]
+                    t1 = msg1.created_at.replace('Z', '+00:00') if msg1.created_at and msg1.created_at.endswith('Z') else msg1.created_at
+                    t2 = msg2.created_at.replace('Z', '+00:00') if msg2.created_at and msg2.created_at.endswith('Z') else msg2.created_at
+                    dt1, dt2 = datetime.fromisoformat(t1), datetime.fromisoformat(t2)
+                    summary_created_time = (dt1 + (dt2 - dt1) / 2).isoformat()
+                except (ValueError, AttributeError):
+                    pass 
 
         check_need_summary, trigger_reason = self._check_need_summary(to_be_summary_items, agent_memory_config)
         logger.info(
@@ -627,7 +642,7 @@ class AworldMemory(Memory):
                     item_ids=[item.id for item in to_be_summary_items],
                     summary=combined_summary,
                     metadata=summary_metadata,
-                    created_at=to_be_summary_items[0].created_at,
+                    created_at=summary_created_time,
                 )
 
                 # 添加到记忆存储
@@ -656,7 +671,7 @@ class AworldMemory(Memory):
                 item_ids=[item.id for item in to_be_summary_items],
                 summary=summary_content,
                 metadata=summary_metadata,
-                created_at=to_be_summary_items[0].created_at
+                created_at=summary_created_time,
             )
 
             # add summary to memory
@@ -845,8 +860,13 @@ class AworldMemory(Memory):
         if last_rounds == 0:
             return init_items
 
+        include_summaried = filters.get("include_summaried", False)
         # get unsummarized messages and summary messages
-        result_items = [item for item in agent_task_total_message if
+        if include_summaried:
+            result_items = [item for item in agent_task_total_message if
+                            (item.memory_type == "message") or (item.memory_type == 'summary')]
+        else:
+            result_items = [item for item in agent_task_total_message if
                         (item.memory_type == "message" and not item.has_summary) or (item.memory_type == 'summary')]
 
         # if total messages <= requested rounds, return all messages

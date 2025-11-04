@@ -25,7 +25,7 @@ async def run(user_input: str):
     # 3. run task
     try:
         result = await Runners.run_task(task=task)
-        print(result)
+        print(result[task.id].trajectory)
     except Exception as err:
         print(f"err is {err}, trace is {traceback.format_exc()}")
 
@@ -35,5 +35,6 @@ if __name__ == '__main__':
     # query = "How many images are there in the latest 2022 Lego english wikipedia article?"
     # query = "What is the minimum number of page links a person must click on to go from the english Wikipedia page on The Lord of the Rings (the book) to the english Wikipedia page on A Song of Ice and Fire (the book series)? In your count, include each link you would click on to get to the page. Use the pages as they appeared at the end of the day on July 3, 2023."
     # query = "What percentage of the total penguin population according to the upper estimates on english Wikipedia at the end of 2012 is made up by the penguins in this file that don't live on Dream Island or have beaks longer than 42mm? Round to the nearest five decimal places."
-    query = "使用parse_file_by_idp工具来解析/private/tmp/usda_1959_standards.pdf"
+    # query = "使用parse_file_by_idp工具来解析/private/tmp/usda_1959_standards.pdf"
+    query = "杭州天气是什么"
     asyncio.run(run(user_input=query))
