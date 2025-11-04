@@ -14,7 +14,6 @@ from aworld.core.memory import MemoryConfig, MemoryLLMConfig
 from aworld.core.task import Task
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY, MemoryFactory
-from aworldspace.models import ApplicationAgent
 from train.examples.train_gaia_with_aworld_verl.gaia.summary import episode_memory_summary_rule, \
     working_memory_summary_rule, \
     working_memory_summary_schema, tool_memory_summary_rule, \
@@ -103,7 +102,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
         init_middlewares()
 
         # 2. init agent
-        return ApplicationAgent(
+        return Agent(
             conf=conf,
             name="gaia_super_agent",
             system_prompt=GAIA_SYSTEM_PROMPT,
