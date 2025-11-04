@@ -88,6 +88,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
     )
 
     if os.getenv("GAIA_AGENT_CONTEXT", "common") == 'common':
+        init_middlewares()
         return Agent(
             conf=conf,
             name="gaia_super_agent",
