@@ -77,7 +77,7 @@ class DefaultMemoryHandler(DefaultHandler):
                     llm_response = payload.get("llm_response", payload)
                     history_messages = payload.get("history_messages", [])
 
-                # 在添加新的 AI message 之前，更新最后一条 message 的 usage
+                # Update the usage of the last message before adding a new AI message
                 if llm_response and hasattr(llm_response, 'usage') and llm_response.usage:
                     await self._update_last_message_usage(agent, llm_response, context)
 
@@ -150,7 +150,7 @@ class DefaultMemoryHandler(DefaultHandler):
         ), agent_memory_config=agent.memory_config)
 
     async def _update_last_message_usage(self, agent: Agent, llm_response, context: Context):
-        """更新最后一条 message 的 usage 信息"""
+        """Update the usage information of the last message"""
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
             agent_memory_config = context.get_config().get_agent_context_config(agent.id())
@@ -161,14 +161,14 @@ class DefaultMemoryHandler(DefaultHandler):
             "task_id": context.get_task().id,
             "memory_type": "message"
         }
-        # 获取最后一条 message
+        # Get the last message
         last_messages = self.memory.get_last_n(1, filters=filters, agent_memory_config=agent_memory_config)
         if last_messages and len(last_messages) > 0:
             last_message = last_messages[0]
-            # 更新 metadata 中的 usage
+            # Update usage in metadata
             last_message.metadata['usage'] = llm_response.usage
             last_message.updated_at = datetime.now().isoformat()
-            # 更新 memory
+            # Update memory
             self.memory.update(last_message)
 
     async def _add_llm_response_to_memory(self, agent: Agent, llm_response, context: Context, history_messages: list, **kwargs):
