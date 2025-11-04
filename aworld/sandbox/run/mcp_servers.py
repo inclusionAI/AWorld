@@ -270,6 +270,7 @@ class McpServers:
 
                         content_list: list[str] = []
                         for content in call_result_raw.content:
+                            logger.info(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {content}")
                             if isinstance(call_result_raw.content[0], TextContent):
                                 content_list.append(content.text)
                                 _metadata = content.model_extra.get("metadata", {})
