@@ -17,7 +17,7 @@ from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
-    MemoryEventType as MemoryType, MemoryEventMessage
+    MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events.util import send_message, send_message_with_future

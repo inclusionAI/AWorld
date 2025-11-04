@@ -159,8 +159,7 @@ class Runners:
         try:
             while True:
                 # Get message from queue (works in both local and distributed mode)
-                streaming_msg = await queue_provider.get(
-                    timeout=run_conf.streaming_queue_config.get('timeout', 60) if run_conf.streaming_queue_config else 60)
+                streaming_msg = await queue_provider.get()
 
                 # End the loop when receiving end signal
                 if is_task_end_msg(streaming_msg):

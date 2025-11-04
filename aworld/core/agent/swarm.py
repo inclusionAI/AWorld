@@ -406,6 +406,10 @@ class TeamSwarm(Swarm):
                          event_driven=event_driven)
 
 
+# Alias for TeamSwarm
+Team = TeamSwarm
+
+
 class HandoffSwarm(Swarm):
     """Collaborative paradigm."""
 
