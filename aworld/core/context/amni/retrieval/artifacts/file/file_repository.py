@@ -1,7 +1,7 @@
 
 import os
 from abc import abstractmethod
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,7 @@ class FileRepository(BaseModel):
         pass
     
     @abstractmethod
-    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
         """Upload data to the repository with the given key."""
         pass
     
@@ -66,7 +66,7 @@ class LocalFileRepository(FileRepository):
             logger.error(f"❌ Error reading file {file_path}: {e}")
             return None
     
-    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
         """
         Upload data to local file system with immediate disk sync.
         
@@ -91,10 +91,10 @@ class LocalFileRepository(FileRepository):
             with open(file_path, 'wb') as f:
                 f.write(data)
             logger.info(f"✅ uploading file {file_path} success")
-            return True
+            return True, file_path
         except Exception as e:
             logger.error(f"❌ Error uploading file {file_path}: {e}")
-            return False
+            return False, None
     
     def delete_data(self, key: str) -> bool:
         """Delete data from local file system."""
@@ -210,14 +210,14 @@ class OssFileRepository(FileRepository):
             logger.error(f"❌ Error reading data from OSS with key {key}: {e}")
             return None
     
-    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
         """Upload data to OSS."""
         if not self.bucket:
             logger.error("❌ OSS client not initialized")
             return False
         
         try:
-            return self.bucket.put_object(key=key, data=data)
+            return self.bucket.put_object(key=key, data=data), key
         except Exception as e:
             logger.error(f"❌ Error uploading data to OSS with key {key}: {e}")
             return False
