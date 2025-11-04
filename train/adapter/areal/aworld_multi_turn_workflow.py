@@ -16,6 +16,7 @@ from areal.api.engine_api import InferenceEngine
 from areal.api.reward_api import AsyncRewardWrapper
 from areal.api.workflow_api import RolloutWorkflow
 from areal.utils import logging, stats_tracker
+from areal.utils import stats_tracker
 from areal.utils.data import concat_padded_tensors
 from areal.workflow.areal_rollout_provider import RolloutLLMProvider
 
@@ -25,6 +26,7 @@ from aworld.core.task import Task
 from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.context.base import Context
 from aworld.runner import Runners
+from aworld.logs.util import logger
 
 logger = logging.getLogger("Multi-Turn workflow")
 

@@ -235,7 +235,7 @@ class BrowserTool(AsyncTool):
             'doHighlightElements': self.conf.get("do_highlight", True),
             'focusHighlightIndex': self.conf.get("focus_highlight", -1),
             'viewportExpansion': self.conf.get("viewport_expansion", 0),
-            'debugMode': logger.getEffectiveLevel() == 10,
+            'debugMode': False,
         }
         element_tree, element_map = await async_build_dom_tree(self.page, self.js_code, args)
         return DomTree(element_tree=element_tree, element_map=element_map)

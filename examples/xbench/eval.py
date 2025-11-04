@@ -1,14 +1,20 @@
 from dotenv import load_dotenv
+load_dotenv()
 
 from train.examples.train_gaia_with_aworld_verl.gaia import build_gaia_agent
 from train.examples.train_gaia_with_aworld_verl.mcp_config import build_mcp_config
 
-load_dotenv()
 
 from examples.xbench.agents.swarm import build_xbench_swarm
 
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
+
+from examples.xbench.agents.swarm import build_xbench_swarm
+
+from aworld.core.agent.swarm import Swarm
+from aworld.core.context.base import Context
+from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
 
 # init env
 load_dotenv()

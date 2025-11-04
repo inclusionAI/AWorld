@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import AsyncGenerator, Any
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.context.amni import AmniContext
 from aworld.core.context.base import Context
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryToolMessage, MessageMetadata, MemoryHumanMessage, MemorySystemMessage, \
@@ -77,11 +76,11 @@ class DefaultMemoryHandler(DefaultHandler):
                 if isinstance(payload, dict):
                     llm_response = payload.get("llm_response", payload)
                     history_messages = payload.get("history_messages", [])
-                
+
                 # 在添加新的 AI message 之前，更新最后一条 message 的 usage
                 if llm_response and hasattr(llm_response, 'usage') and llm_response.usage:
                     await self._update_last_message_usage(agent, llm_response, context)
-    
+
                 await self._add_llm_response_to_memory(agent, llm_response, context, history_messages)
 
             elif event_type == MemoryEventType.TOOL:
@@ -155,7 +154,7 @@ class DefaultMemoryHandler(DefaultHandler):
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
             agent_memory_config = context.get_config().get_agent_context_config(agent.id())
-        
+
         filters = {
             "agent_id": agent.id(),
             "session_id": context.get_task().session_id,
@@ -271,5 +270,3 @@ class DefaultMemoryHandler(DefaultHandler):
     def _is_amni_context(self, context: Context):
         from aworld.core.context.amni import AmniContext
         return isinstance(context, AmniContext)
-
-

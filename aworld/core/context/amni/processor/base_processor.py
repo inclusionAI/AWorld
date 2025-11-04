@@ -5,8 +5,8 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from aworld.core.common import Observation
+from aworld.core.context.amni.payload import ContextMessagePayload
 from aworld.core.context.base import Context
-from ..event import ContextMessagePayload
 
 
 class BaseContextProcessor(ABC):

@@ -15,13 +15,18 @@ from aworld.models.llm import register_llm_provider
 from areal.api.cli_args import GenerationHyperparameters
 from areal.engine.sglang_remote import RID_CACHE_SIZE
 from areal.utils.http import get_default_connector, arequest_with_retry
+from aworld.core.llm_provider import LLMProviderBase
+from aworld.models.llm import register_llm_provider
+from aworld.models.model_response import ModelResponse, ToolCall, Function
+from aworld.utils.common import sync_exec
+from aworld.logs.util import logger
 
 
 @dataclass
 class TokenIdModelResponse:
-    output_token_ids: List[int] = field(default_factory=list)
-    output_logprobs: List[float] = field(default_factory=list)
-    output_versions: List[int] = field(default_factory=list)
+    token_ids: List[int] = field(default_factory=list)
+    logprobs: List[float] = field(default_factory=list)
+    versions: List[int] = field(default_factory=list)
     finish_reason: Literal["length", "stop", "interrupt"] = "stop"
 
 
@@ -177,9 +182,9 @@ class ArealRolloutLLMProvider(RolloutLLMProvider):
         latency = time.perf_counter() - start_time
         logger.info(f"latency time: {latency}")
         response = TokenIdModelResponse(
-            output_token_ids=accumulated_output_tokens,
-            output_logprobs=accumulated_output_logprobs,
-            output_versions=accumulated_versions,
+            token_ids=accumulated_output_tokens,
+            logprobs=accumulated_output_logprobs,
+            versions=accumulated_versions,
             finish_reason=stop_reason
         )
         return response

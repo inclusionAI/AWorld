@@ -8,7 +8,7 @@ from typing import Union, Callable
 from loguru import logger as base_logger
 
 base_logger.remove()
-SEGMENT_LEN = 2000
+SEGMENT_LEN = 9999999999999
 CONSOLE_LEVEL = 'INFO'
 STORAGE_LEVEL = 'INFO'
 SUPPORTED_FUNC = ['info', 'debug', 'warning', 'error', 'critical', 'exception', 'trace', 'success', 'log', 'catch',
@@ -138,7 +138,7 @@ class AWorldLogger:
         error_log_file = f'{os.getcwd()}/logs/AWorld_error.log'
         handler_key = f'{name}_{tag}'
         error_handler_key = f'{name}_{tag}_error'
-        
+
         if handler_key not in AWorldLogger._added_handlers:
             base_logger.add(log_file,
                             format=file_formatter,
@@ -150,12 +150,12 @@ class AWorldLogger:
                             backtrace=True,
                             compression='zip')
             AWorldLogger._added_handlers.add(handler_key)
-        
+
         # 添加错误日志处理器，专门记录WARNING和ERROR级别的日志
         if error_handler_key not in AWorldLogger._added_handlers:
             base_logger.add(error_log_file,
                             format=file_formatter,
-                            filter=lambda record: (record['extra'].get('name') == tag and 
+                            filter=lambda record: (record['extra'].get('name') == tag and
                                                  record['level'].name in ['WARNING', 'ERROR']),
                             level='WARNING',
                             rotation='32 MB',
@@ -227,10 +227,16 @@ trace_logger = AWorldLogger(tag='Trace', name='AWorld')
 trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
 
 
+prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
+                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {level} |</black> <level>{message}</level>")
+digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
+                             formatter="{time:YYYY-MM-DD HH:mm:ss.SSS} - {message}")
 
 monkey_logger(logger)
 monkey_logger(trace_logger)
 monkey_logger(trajectory_logger)
+monkey_logger(prompt_logger)
+# monkey_logger(digest_logger)
 
 # log examples:
 # the same as debug, warn, error, fatal
