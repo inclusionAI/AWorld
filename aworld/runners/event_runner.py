@@ -352,6 +352,8 @@ class TaskEventRunner(TaskRunner):
         return self._task_response
 
     async def generate_trajectory_for_memory(self):
+        if not self.swarm or not self.swarm.cur_agent:
+            return {}
         memory_items = MemoryFactory.instance().get_last_n(100, filters={
             "agent_id": self.swarm.cur_agent[0].id(),
             "session_id": self.context.session_id,
