@@ -25,7 +25,9 @@ async def run(user_input: str):
     # 3. run task
     try:
         result = await Runners.run_task(task=task)
-        print(result[task.id].trajectory)
+        os.makedirs(f"trajectory", exist_ok=True)
+        with open(f"trajectory/traj.json", "a") as f:
+            f.write(str(result[task.id].trajectory[-1]))
     except Exception as err:
         print(f"err is {err}, trace is {traceback.format_exc()}")
 
