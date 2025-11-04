@@ -116,9 +116,9 @@ class MessageMetadata(BaseModel):
     task_id: Optional[str] = Field(default=None,description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
     summary_content: Optional[str] = Field(default=None, description="The summary of the memory item")
+    ext_info: Optional[dict] = Field(default_factory=dict, description="The ext info of the memory item")
 
     model_config = ConfigDict(extra="allow")
-
     @property
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
@@ -432,6 +432,7 @@ class MemoryToolMessage(MemoryMessage):
 
     def to_openai_message(self) -> dict:
         return {
+            "metadata": self.metadata,
             "role": self.role,
             "content": self.content,
             "tool_call_id": self.tool_call_id,

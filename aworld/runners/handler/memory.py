@@ -262,7 +262,8 @@ class DefaultMemoryHandler(DefaultHandler):
                 task_id=context.get_task().id,
                 agent_id=agent.id(),
                 agent_name=agent.name(),
-                summary_content=tool_use_summary
+                summary_content=tool_use_summary,
+                ext_info={"tool_name": tool_result.tool_name, "action_name": tool_result.action_name}
             )
         ), agent_memory_config=agent.memory_config)
 
