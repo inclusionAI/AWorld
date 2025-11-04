@@ -107,7 +107,7 @@ class AmniContextEvaluatable(EvalTarget):
             result = await Runners.run_task(task=task)
             os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
             with open(f"trajectory/{batch_id}/traj_{index}.json", "a") as f:
-                f.write(str(result[task_id].trajectory[-1]))
+                f.write(str(result[task_id].trajectory))
             os.makedirs(f"results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
