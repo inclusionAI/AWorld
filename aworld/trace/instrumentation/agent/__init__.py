@@ -151,7 +151,7 @@ def _call_llm_model_class_wrapper(tracer: Tracer):
         if hasattr(instance, "context") and instance.context:
             attributes.update({
                 semconv.TASK_ID: instance.context.task_id if (instance.context and instance.context.task_id) else "",
-                semconv.SESSION_ID: instance.context.session_id if (instance.context and instance.context.session_id) else instance.session_id,
+                semconv.SESSION_ID: instance.context.session_id if (instance.context and instance.context.session_id) else "",
                 semconv.USER_ID: instance.context.user if (instance.context and instance.context.user) else ""
             })
         try:
