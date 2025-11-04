@@ -206,16 +206,16 @@ trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
 prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
                              formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {level} |</black> <level>{message}</level>")
 digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
-                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | digest | {level} |</black> <level>{message}</level>")
+                             formatter="{time:YYYY-MM-DD HH:mm:ss.SSS} - {message}")
 
 asyncio_monitor_logger = AWorldLogger(tag='asyncio_monitor', name='AWorld',
-                                      formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | monitor | {level} |</black> <level>{message}</level>")
+                                      formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | </black> <level>{message}</level>")
 
 monkey_logger(logger)
 monkey_logger(trace_logger)
 monkey_logger(trajectory_logger)
 monkey_logger(prompt_logger)
-monkey_logger(digest_logger)
+# monkey_logger(digest_logger)
 monkey_logger(asyncio_monitor_logger)
 
 
