@@ -8,7 +8,7 @@ from typing import Union, Callable
 from loguru import logger as base_logger
 
 base_logger.remove()
-SEGMENT_LEN = 2000
+SEGMENT_LEN = 9999999999999
 CONSOLE_LEVEL = 'INFO'
 STORAGE_LEVEL = 'INFO'
 SUPPORTED_FUNC = ['info', 'debug', 'warning', 'error', 'critical', 'exception', 'trace', 'success', 'log', 'catch',
@@ -201,9 +201,19 @@ class AWorldLogger:
 
 logger = AWorldLogger(tag='AWorld', name='AWorld')
 trace_logger = AWorldLogger(tag='Trace', name='AWorld')
+trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
+
+
+prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
+                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {level} |</black> <level>{message}</level>")
+digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
+                             formatter="{time:YYYY-MM-DD HH:mm:ss.SSS} - {message}")
 
 monkey_logger(logger)
 monkey_logger(trace_logger)
+monkey_logger(trajectory_logger)
+monkey_logger(prompt_logger)
+# monkey_logger(digest_logger)
 
 # log examples:
 # the same as debug, warn, error, fatal

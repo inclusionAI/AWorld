@@ -15,18 +15,21 @@ from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
+from aworld.config.conf import TaskConfig, TaskRunMode
 from aworld.events.util import send_message, send_message_with_future
+from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem
+from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryToolMessage
 from aworld.memory.models import MemoryMessage
-from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream
+from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
 from aworld.output import Outputs
@@ -207,7 +210,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self._llm is None:
             llm_config = self.conf.llm_config or None
             conf = llm_config if llm_config and (
-                    llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
+                llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
             self._llm = get_llm_model(conf)
         return self._llm
 
@@ -283,7 +286,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.error(f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}")
             pass
 
-
     async def async_messages_transform(self,
                                        image_urls: List[str] = None,
                                        observation: Observation = None,
@@ -341,18 +343,40 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             "task_id": task_id
         }, agent_memory_config=self.memory_config)
         if histories:
-            # default use the first tool call
+            tool_calls_map = {}
+            count = 0
             for history in histories:
+                count += 1
                 if isinstance(history, MemoryMessage):
                     messages.append(history.to_openai_message())
+                    if isinstance(history, MemoryAIMessage):
+                        tool_calls = messages[-1].get("tool_calls")
+                        if tool_calls:
+                            tool_calls_map.update({tool_call.get("id"): idx + count for idx, tool_call in enumerate(
+                                tool_calls)})
                 else:
                     if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
-                        'tool_calls']:
+                            'tool_calls']:
                         messages.append({'role': history.metadata['role'], 'content': history.content,
                                          'tool_calls': [history.metadata["tool_calls"][0]]})
                     else:
                         messages.append({'role': history.metadata['role'], 'content': history.content,
                                          "tool_call_id": history.metadata.get("tool_call_id")})
+
+            if tool_calls_map:
+                # keep consistent
+                final_messages = [''] * len(messages)
+                for idx, msg in enumerate(messages):
+                    if not msg.get("tool_call_id"):
+                        final_messages[idx] = msg
+                        continue
+
+                    real_idx = tool_calls_map.get(msg['tool_call_id'], -1)
+                    if real_idx < 0:
+                        raise AWorldRuntimeException(f"tool_calls mismatch! {tool_calls_map}, messages: {messages}")
+                    final_messages[real_idx] = msg
+                messages = final_messages
+
         return messages
 
     async def init_observation(self, observation: Observation) -> Observation:
@@ -366,64 +390,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return observation
 
     def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
-        from aworld.core.context.amni import AmniContext
-        if isinstance(context, AmniContext):
-            from aworld.core.context.amni.utils.context_log import PromptLogger
-            PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
-            return
-        """Log the sequence of messages for debugging purposes"""
-        logger.info(f"[agent] Invoking LLM with {len(messages)} messages:")
-        logger.debug(f"[agent] use tools: {self.tools}")
-        for i, msg in enumerate(messages):
-            prefix = msg.get('role')
-            logger.info(
-                f"[agent] Message {i + 1}: {prefix} ===================================")
-            if isinstance(msg['content'], list):
-                try:
-                    for item in msg['content']:
-                        if item.get('type') == 'text':
-                            logger.info(
-                                f"[agent] Text content: {item.get('text')}")
-                        elif item.get('type') == 'image_url':
-                            image_url = item.get('image_url', {}).get('url', '')
-                            if image_url.startswith('data:image'):
-                                logger.info(f"[agent] Image: [Base64 image data]")
-                            else:
-                                logger.info(
-                                    f"[agent] Image URL: {image_url[:30]}...")
-                except Exception as e:
-                    logger.error(f"[agent] Error parsing msg['content']: {msg}. Error: {e}")
-                    content = str(msg['content'])
-                    chunk_size = 500
-                    for j in range(0, len(content), chunk_size):
-                        chunk = content[j:j + chunk_size]
-                        if j == 0:
-                            logger.info(f"[agent] Content: {chunk}")
-                        else:
-                            logger.info(f"[agent] Content (continued): {chunk}")
-            else:
-                content = str(msg['content'])
-                chunk_size = 500
-                for j in range(0, len(content), chunk_size):
-                    chunk = content[j:j + chunk_size]
-                    if j == 0:
-                        logger.info(f"[agent] Content: {chunk}")
-                    else:
-                        logger.info(f"[agent] Content (continued): {chunk}")
-
-            if 'tool_calls' in msg and msg['tool_calls']:
-                for tool_call in msg.get('tool_calls'):
-                    if isinstance(tool_call, dict):
-                        logger.info(
-                            f"[agent] Tool call: {tool_call.get('function', {}).get('name', {})} - ID: {tool_call.get('id')}")
-                        args = str(tool_call.get('function', {}).get(
-                            'arguments', {}))[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
-                    elif isinstance(tool_call, ToolCall):
-                        logger.info(
-                            f"[agent] Tool call: {tool_call.function.name} - ID: {tool_call.id}")
-                        args = str(tool_call.function.arguments)[:1000]
-                        logger.info(f"[agent] Tool args: {args}...")
+        PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
@@ -463,7 +430,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 topic=TopicType.GROUP_ACTIONS,
                                 headers=self._update_headers(input_message))
         elif agents:
-            return AgentMessage(payload=actions,
+            payload = actions
+            if self.wait_tool_result and any(action.params.get('is_tool_result', False) for action in actions):
+                content = ''
+                content += ''.join(action.policy_info for action in actions)
+                action_result = [ActionResult(content=action.policy_info) for action in actions]
+                payload = Observation(content=content, action_result=action_result)
+
+            return AgentMessage(payload=payload,
                                 caller=caller,
                                 sender=self.id(),
                                 receiver=actions[0].tool_name,
@@ -494,7 +468,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         )
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
-        ActionModel]:
+            ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -595,28 +569,42 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         Returns:
             ActionModel sequence. Tool execution result.
         """
-        from aworld.utils.run_util import exec_tool
+        from aworld.utils.run_util import exec_tool, exec_agent
 
         tool_results = []
         for act in actions:
+            context = message.context.deep_copy()
+            context.agent_info.current_tool_call_id = act.tool_call_id
             if is_agent(act):
-                continue
-            tool_exec_response = await exec_tool(tool_name=act.tool_name,
-                                         action_name=act.action_name,
-                                         params=act.params,
-                                         agent_name=self.id(),
-                                         context=message.context.deep_copy(),
-                                         sub_task=True,
-                                         outputs=message.context.outputs,
-                                         task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
-            if not tool_exec_response.success:
-                logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {tool_exec_response.msg}",
+                content = act.policy_info
+                if act.params and 'content' in act.params:
+                    content = act.params['content']
+                task_conf = TaskConfig(run_mode=message.context.get_task().conf.run_mode)
+                act_result = await exec_agent(question=content,
+                                              agent=act.agent_name,
+                                              context=context,
+                                              sub_task=True,
+                                              outputs=message.context.outputs,
+                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex,
+                                              task_conf=task_conf)
+            else:
+                act_result = await exec_tool(tool_name=act.tool_name,
+                                             action_name=act.action_name,
+                                             params=act.params,
+                                             agent_name=self.id(),
+                                             context=context,
+                                             sub_task=True,
+                                             outputs=message.context.outputs,
+                                             task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
+            if not act_result.success:
+                logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
                                color=Color.red)
                 continue
-            act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=tool_exec_response.answer)
+            act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer)
             tool_results.append(act_res)
             await self._add_message_to_memory(payload=act_res, message_type=MemoryType.TOOL, context=message.context)
         result = sync_exec(self.tools_aggregate_func, tool_results)
+        await self._add_tool_result_token_ids_to_context(message.context)
         return result
 
     async def _tools_aggregate_func(self, tool_results: List[ActionResult]) -> List[ActionModel]:
@@ -629,7 +617,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         content = ""
         for res in tool_results:
             content += f"{res.content}\n"
-        return [ActionModel(agent_name=self.id(), policy_info=content)]
+        params = {"is_tool_result": True}
+        return [ActionModel(agent_name=self.id(), policy_info=content, params=params)]
 
     async def build_llm_input(self,
                               observation: Observation,
@@ -691,6 +680,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     temperature=float_temperature,
                     tools=tools,
                     stream=True,
+                    context=message.context,
                     **kwargs
                 )
 
@@ -720,6 +710,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     temperature=float_temperature,
                     tools=tools,
                     stream=kwargs.get("stream", False),
+                    context=message.context,
                     **kwargs
                 )
 
@@ -754,7 +745,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         finally:
             message.context.context_info["llm_output"] = llm_response
         return llm_response
-
 
     async def run_hooks(self, context: Context, hook_point: str):
         """Execute hooks asynchronously"""
@@ -855,3 +845,31 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         skills = await context.get_active_skills(namespace=self.id())
 
         return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools, tool_mapping=self.tool_mapping)
+
+    async def _add_tool_result_token_ids_to_context(self, context: Context):
+        """Add tool result token ids to context"""
+        if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVAE:
+            return
+        histories = self.memory.get_all(filters={
+            "agent_id": self.id(),
+            "session_id": context.get_task().session_id,
+            "task_id": context.get_task().id,
+            "memory_type": "message"
+        })
+        tool_openai_messages_after_last_assistant = []
+        found_assistant = False
+        tool_call_ids = []
+        for i in range(len(histories) - 1, -1, -1):
+            history = histories[i]
+            if hasattr(history, 'role') and history.role == 'assistant':
+                found_assistant = True
+                break
+            elif not found_assistant and hasattr(history, 'role') and history.role == 'tool':
+                tool_openai_messages_after_last_assistant.append(history.to_openai_message())
+                tool_call_ids.append(history.tool_call_id)
+
+        if tool_openai_messages_after_last_assistant:
+            tool_result_token_ids = apply_chat_template(self.llm, tool_openai_messages_after_last_assistant)
+            context.add_tool_resp_token_ids(tool_resp_token_ids=tool_result_token_ids,
+                                            resp_tool_call_ids=tool_call_ids,
+                                            agent_id=self.id())

@@ -10,7 +10,7 @@ from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Config
+from aworld.core.common import Config, Observation
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
@@ -52,6 +52,8 @@ class Task:
     parent_task: Optional['Task'] = field(default=None, repr=False)
     max_retry_count: int = 0
     timeout: int = field(default=0)
+    observation: Optional[Observation] = field(default=None)
+    # streaming support
     streaming_mode: str = field(default=None)
     streaming_queue_provider: Optional[Any] = field(default=None)  # StreamingQueueProvider instance
     streaming_queue_id: Optional[str] = field(default=None)  # Queue identifier for distributed scenarios
@@ -65,7 +67,7 @@ class Task:
 
         Returns:
             Dict[str, Any]: Serialized task dictionary without parent_task; includes parent_task_id instead.
-            
+
         Note:
             - streaming_queue_provider are excluded (not serializable)
             - streaming_mode, streaming_queue_id, streaming_config are included for distributed scenarios

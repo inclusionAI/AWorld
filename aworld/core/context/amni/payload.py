@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import copy
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,11 +12,10 @@ from aworld.output import Artifact
 
 @dataclass
 class BaseMessagePayload:
-    """基础事件定义"""
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    event_type: str = None
+    event_type: str = field(default=None)
     timestamp: datetime = field(default_factory=datetime.now)
-    namespace: str = ""
+    namespace: str = field(default="")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -34,7 +34,7 @@ class BaseMessagePayload:
 
 @dataclass
 class ContextMessagePayload(BaseMessagePayload):
-    context: Optional[Context] = None
+    context: Optional[Context] = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
         base_dict = super().to_dict()
@@ -46,15 +46,12 @@ class ContextMessagePayload(BaseMessagePayload):
 
 @dataclass
 class SystemPromptMessagePayload(ContextMessagePayload):
-    system_prompt: Optional[str] = None
-    user_query: Optional[str] = None
-    agent_id: Optional[str] = None
-    agent_name: Optional[str] = None
+    system_prompt: Optional[str] = field(default=None)
+    user_query: Optional[str] = field(default=None)
+    agent_id: Optional[str] = field(default=None)
+    agent_name: Optional[str] = field(default=None)
 
     def deep_copy(self) -> 'SystemPromptMessagePayload':
-        """创建事件的深拷贝，memory字段直接引用"""
-        import copy
-
         new_event = SystemPromptMessagePayload()
         for key, value in self.__dict__.items():
             if key == 'memory':
@@ -88,16 +85,12 @@ class ArtifactMessagePayload(ContextMessagePayload):
 
 @dataclass
 class ToolResultMessagePayload(ContextMessagePayload):
-    """包含工具结果的事件"""
     tool_result: Optional[Any] = None
     tool_call_id: Optional[str] = None
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
 
     def deep_copy(self) -> 'ToolResultMessagePayload':
-        """创建事件的深拷贝"""
-        import copy
-
         new_event = ToolResultMessagePayload()
         for key, value in self.__dict__.items():
             if key == 'context' and value is not None:

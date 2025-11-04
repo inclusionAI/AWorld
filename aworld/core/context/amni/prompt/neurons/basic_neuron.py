@@ -7,7 +7,7 @@ from . import Neuron
 from .neuron_factory import neuron_factory
 
 
-@neuron_factory.register(name="basic", desc="Basic neuron for dynamic variables", prio=1)
+@neuron_factory.register(name="basic", desc="Basic neuron for dynamic variables", prio=100)
 class BasicNeuron(Neuron):
     """Neuron for handling dynamic variable related properties"""
     

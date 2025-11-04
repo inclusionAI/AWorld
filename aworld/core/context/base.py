@@ -3,9 +3,9 @@
 import copy
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Dict, Any, TYPE_CHECKING, Optional
+from typing import Dict, Any, TYPE_CHECKING, List, Literal, Optional
 
 from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict
@@ -29,6 +29,47 @@ class ContextUsage:
     def __init__(self, total_context_length: int = 128000, used_context_length: int = 0):
         self.total_context_length = total_context_length
         self.used_context_length = used_context_length
+
+
+@dataclass
+class AgentTokenIdStep:
+    step: int
+    tool_call_ids: List[str] = field(default_factory=list)
+    # Prompt token ids of the current llm call, including historical messages.
+    prompt_token_ids: List[int] = field(default_factory=list)
+    # Input token ids of the step, without tokens of previous steps.
+    input_token_ids: List[int] = field(default_factory=list)
+    output_token_ids: List[int] = field(default_factory=list)
+    output_logprobs: List[float] = field(default_factory=list)
+    output_versions: List[int] = field(default_factory=list)
+    tool_resp_token_ids: List[int] = field(default_factory=list)
+    finish_reason: Literal["length", "stop", "interrupt"] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the AgentTokenIdStep to a dictionary."""
+        return asdict(self)
+
+
+@dataclass
+class AgentTokenIdTrajectory:
+    agent_id: str
+    tool_call_id: str = None
+    all_token_id_seq: List[int] = field(default_factory=list)
+    token_id_steps: List[AgentTokenIdStep] = field(default_factory=list)
+
+    def new_step(self):
+        """Add a new step to the trajectory."""
+        current_step = self.get_current_step()
+        step = AgentTokenIdStep(step=(current_step.step if current_step else 0) + 1)
+        self.token_id_steps.append(step)
+
+    def get_current_step(self) -> AgentTokenIdStep:
+        """Get the current step of the trajectory."""
+        return self.token_id_steps[-1] if self.token_id_steps else None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the AgentTokenIdTrajectory to a dictionary."""
+        return asdict(self)
 
 
 class Context:
@@ -97,8 +138,6 @@ class Context:
                  session: Session = None,
                  engine: str = None,
                  **kwargs):
-
-        super().__init__()
         self._user = user
         self._init(task_id=task_id, trace_id=trace_id,
                    session=session, engine=engine, **kwargs)
@@ -123,6 +162,8 @@ class Context:
         # checkpoint repository for saving/restoring context state
         self._checkpoint_repository = kwargs.get('checkpoint_repository', InMemoryCheckpointRepository())
         self._start = time.time()
+        # agent_id -> token_id trajectory
+        self._agent_token_id_traj: Dict[str, List[AgentTokenIdTrajectory]] = {}
 
     @property
     def start_time(self) -> float:
@@ -269,14 +310,13 @@ class Context:
             Context: A new Context instance with deeply copied attributes
         """
 
-
         # Manually copy all important instance attributes
         # Basic attributes
         new_context._user = self._user
         new_context._task_id = self._task_id
         new_context._engine = self._engine
         new_context._trace_id = self._trace_id
-
+        new_context._start = self._start
         # Session - shallow copy to maintain reference
         new_context._session = self._session
 
@@ -325,6 +365,12 @@ class Context:
             new_context._swarm = self._swarm  # Shallow copy for complex objects
         if hasattr(self, '_event_manager'):
             new_context._event_manager = self._event_manager  # Shallow copy for complex objects
+
+        if hasattr(self, '_agent_token_id_traj'):
+            try:
+                new_context._agent_token_id_traj = copy.deepcopy(self._agent_token_id_traj)
+            except Exception:
+                new_context._agent_token_id_traj = copy.copy(self._agent_token_id_traj)
 
         return new_context
 
@@ -461,6 +507,126 @@ class Context:
 
     async def get_skill_list(self, namespace: str) -> Dict[str, Any]:
         pass
+
+    def get_agent_token_id_traj(self, agent_id: str = None, tool_call_id: str = None) -> AgentTokenIdTrajectory:
+        """Get the token id trajectory of the agent.
+
+        Args:
+            agent_id: Agent id.
+            tool_call_id: Tool call id when agent as tool.
+
+        Returns:
+            AgentTokenIdTrajectory: Token id trajectory of the agent.
+        """
+        if not agent_id and 'current_agent_id' in self.agent_info:
+            agent_id = self.agent_info.current_agent_id
+        if not tool_call_id and 'current_tool_call_id' in self.agent_info:
+            tool_call_id = self.agent_info.current_tool_call_id
+        if not agent_id:
+            logger.error("No current agent id found in context.")
+            raise Exception("No current agent id found in context.")
+
+        if agent_id not in self._agent_token_id_traj:
+            self._agent_token_id_traj[agent_id] = []
+        trajectories = self._agent_token_id_traj[agent_id]
+        if tool_call_id:
+            for traj in trajectories:
+                if traj.tool_call_id == tool_call_id:
+                    return traj
+                traj = AgentTokenIdTrajectory(agent_id=agent_id, tool_call_id=tool_call_id)
+                trajectories.append(traj)
+                return traj
+        else:
+            if trajectories:
+                return trajectories[0]
+            else:
+                traj = AgentTokenIdTrajectory(agent_id=agent_id, tool_call_id=tool_call_id)
+                trajectories.append(traj)
+                return traj
+
+    def add_llm_resp_token_ids(self,
+                               input_token_ids: List[int],
+                               prompt_token_ids: List[int],
+                               response: "TokenIdModelResponse",
+                               agent_id: str = None,
+                               tool_call_id: str = None):
+        """Add the token ids of the current step input to the context.
+
+        Args:
+            agent_id: Agent id.
+            input_token_ids: Input token ids of the current step.
+            prompt_token_ids: Prompt token ids of the current llm call.
+            response: Token id model response.
+            tool_call_id: Tool call id when agent as tool.
+        """
+        token_id_traj = self.get_agent_token_id_traj(agent_id, tool_call_id)
+        step = token_id_traj.get_current_step()
+        if not step:
+            logger.error(f"No current step found in context. agent_id: {agent_id}, tool_call_id: {tool_call_id}")
+            raise Exception("No current step found in context.")
+
+        step.prompt_token_ids = prompt_token_ids
+        step.input_token_ids = input_token_ids
+        step.output_token_ids = response.output_token_ids
+        step.output_logprobs = response.output_logprobs
+        step.output_versions = response.output_versions
+        step.finish_reason = response.finish_reason
+        token_id_traj.all_token_id_seq.extend(step.input_token_ids + step.output_token_ids)
+
+    def add_tool_resp_token_ids(self,
+                                tool_resp_token_ids: List[int],
+                                resp_tool_call_ids: List[str],
+                                agent_id: str = None,
+                                tool_call_id: str = None):
+        """Add the token ids of the current step tool response to the context.
+
+        Args:
+            agent_id: Agent id.
+            tool_resp_token_ids: Tool response token ids of the current step.
+            tool_call_id: Tool call id when agent as tool.
+        """
+        if not tool_resp_token_ids:
+            return
+        token_id_traj = self.get_agent_token_id_traj(agent_id, tool_call_id)
+        step = token_id_traj.get_current_step()
+        if not step:
+            logger.error("No current step found in context.")
+            raise Exception("No current step found in context.")
+        step.tool_call_ids = resp_tool_call_ids
+        step.tool_resp_token_ids = tool_resp_token_ids
+        step.output_token_ids.extend(tool_resp_token_ids)
+        step.output_logprobs.extend([0.0] * len(tool_resp_token_ids))
+        step.output_versions.extend([-1] * len(tool_resp_token_ids))
+        token_id_traj.all_token_id_seq.extend(step.tool_resp_token_ids)
+
+    def new_trajectory_step(self, agent_id: str = None, tool_call_id: str = None):
+        """Add a new trajectory step to the context.
+
+        Args:
+            agent_id: Agent id.
+        """
+        token_id_traj = self.get_agent_token_id_traj(agent_id, tool_call_id)
+        token_id_traj.new_step()
+
+    def get_current_step_of_trajectory(self, agent_id: str = None, tool_call_id: str = None) -> AgentTokenIdStep:
+        """Get the current step of the trajectory.
+
+        Args:
+            agent_id: Agent id.
+            tool_call_id: Tool call id when agent as tool.
+
+        Returns:
+            AgentTokenIdStep: Current step of the trajectory.
+        """
+        token_id_traj = self.get_agent_token_id_traj(agent_id, tool_call_id)
+        return token_id_traj.get_current_step()
+
+    def merge_sub_task_token_ids(self, sub_task_context: 'Context'):
+        """Merge sub task token ids to context"""
+        for agent_id, token_id_trajs in sub_task_context._agent_token_id_traj.items():
+            for traj in token_id_trajs:
+                self._agent_token_id_traj[agent_id].append(traj)
+
 
     """
         Context Checkpoint Support
