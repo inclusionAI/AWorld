@@ -131,9 +131,10 @@ class TaskEventRunner(TaskRunner):
         else:
             for handler in HandlerFactory:
                 handler_instance = HandlerFactory(handler, runner=self)
-                self.handlers.append(handler_instance)
                 if handler_instance.is_stream_handler():
                     self.streaming_handlers.append(handler_instance)
+                else:
+                    self.handlers.append(handler_instance)
 
         await self._register_task_status_handler()
 
@@ -244,7 +245,8 @@ class TaskEventRunner(TaskRunner):
                                                                   result=con)
                     async for event in self._inner_handler_process(
                             results=[con],
-                            handlers=self.handlers
+                            # Add handler's result to streaming queue
+                            handlers=[*self.handlers, *self.streaming_handlers]
                     ):
                         await self.event_mng.emit_message(event)
                 else:

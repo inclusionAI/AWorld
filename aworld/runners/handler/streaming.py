@@ -34,7 +34,7 @@ class DefaultStreamMessageHandler(DefaultHandler):
         streaming_mode = self.runner.task.streaming_mode
         if not streaming_mode:
             return False
-        if streaming_mode == "core" and message.category in [Constants.AGENT, Constants.TOOL, Constants.CHUNK, Constants.TASK]:
+        if streaming_mode == "core" and message.category in [Constants.AGENT, Constants.TOOL, Constants.CHUNK, Constants.TASK, Constants.GROUP]:
             return True
         if streaming_mode == "chunk_output" and message.category == Constants.CHUNK:
             return True
@@ -48,7 +48,7 @@ class DefaultStreamMessageHandler(DefaultHandler):
     async def _do_handle(self, message):
         if not self.is_valid_message(message):
             return
-        
+
         queue_provider = self.runner.task.streaming_queue_provider
 
         if not queue_provider:
