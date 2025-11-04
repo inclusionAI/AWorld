@@ -111,6 +111,8 @@ class TaskEventRunner(TaskRunner):
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")
 
     def _build_first_message(self):
+        new_context = self.context.deep_copy()
+        new_context._task = self.context.get_task()
         # build the first message
         if self.agent_oriented:
             agents = self.swarm.communicate_agent
@@ -122,7 +124,7 @@ class TaskEventRunner(TaskRunner):
                                                        sender='runner',
                                                        receiver=agent.id(),
                                                        session_id=self.context.session_id,
-                                                       headers={'context': self.context}))
+                                                       headers={'context': new_context}))
         else:
             actions: List[ActionModel] = self.observation.content
             action_dict = {}
@@ -136,7 +138,7 @@ class TaskEventRunner(TaskRunner):
                                                       sender='runner',
                                                       receiver=tool_name,
                                                       session_id=self.context.session_id,
-                                                      headers={'context': self.context}))
+                                                      headers={'context': new_context}))
 
     async def _common_process(self, message: Message) -> List[Message]:
         logger.debug(f"will process message id: {message.id} of task {self.task.id}")
