@@ -351,18 +351,37 @@ class TaskEventRunner(TaskRunner):
         self._task_response.trace_id = get_trace_id()
         return self._task_response
 
+    async def generate_trajectory_for_memory(self):
+        memory_items = MemoryFactory.instance().get_last_n(100, filters={
+            "agent_id": self.swarm.cur_agent[0].id(),
+            "session_id": self.context.session_id,
+            "task_id": self.context.task_id,
+            "include_summaried": True
+        }, agent_memory_config=self.swarm.cur_agent[0].memory_config)
+
+        # Convert memory items to OpenAI message format
+        result = {}
+        for i, item in enumerate(memory_items):
+            # Check if item has to_openai_message method
+            if hasattr(item, 'to_openai_message'):
+                message = item.to_openai_message()
+                # Add usage to the message if it exists in metadata
+                if hasattr(item, 'metadata') and item.metadata and 'usage' in item.metadata:
+                    message['usage'] = item.metadata['usage']
+                result[i] = message
+            else:
+                # If item doesn't have to_openai_message, return the item as is
+                result[i] = item
+        
+        return result
+
     async def _save_trajectories(self):
         try:
             messages = await self.event_mng.messages_by_task_id(self.task.id)
             trajectory = await generate_trajectory(messages, self.task.id, self.state_manager)
+            self._task_response.trajectory = trajectory
 
-            memory_items = MemoryFactory.instance().get_last_n(100, filters={
-                "agent_id": self.swarm.cur_agent[0].id(),
-                "session_id": self.context.session_id,
-                "task_id": self.context.task_id,
-                "include_summaried": True
-            }, agent_memory_config=self.swarm.cur_agent[0].memory_config)
-            # self._task_response.trajectory = trajectory
-            self._task_response.trajectory = {i: item for i, item in enumerate(memory_items)} 
+            # TODO from memory
+            self._task_response.trajectory = await self.generate_trajectory_for_memory()
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
