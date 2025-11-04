@@ -319,7 +319,7 @@ class TaskEventRunner(TaskRunner):
                                                            success=True if not msg else False,
                                                            id=self.task.id,
                                                            time_cost=(
-                                                                   time.time() - start),
+                                                               time.time() - start),
                                                            usage=self.context.token_usage,
                                                            status='success' if not msg else 'failed')
                     break

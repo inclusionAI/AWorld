@@ -1,4 +1,4 @@
-
+import asyncio
 import os
 
 from aworld.agents.llm_agent import Agent
@@ -19,8 +19,8 @@ from examples.web.agent_deploy.deep_research.agent import BaseDynamicPromptAgent
 class PlannerAgent(BaseDynamicPromptAgent):
     pass
 
-def get_deepresearch_swarm(user_input):
 
+def get_deepresearch_swarm(user_input):
     agent_config = AgentConfig(
         llm_config=ModelConfig(
             llm_provider=os.getenv("LLM_PROVIDER", "openai"),
@@ -34,7 +34,7 @@ def get_deepresearch_swarm(user_input):
 
     agent_id = "planner_agent"
     plan_agent = PlannerAgent(
-        agent_id = agent_id,
+        agent_id=agent_id,
         name="planner_agent",
         desc="planner_agent",
         conf=agent_config,
@@ -50,7 +50,7 @@ def get_deepresearch_swarm(user_input):
         system_prompt=search_sys_prompt,
         tool_names=[Tools.SEARCH_API.value]
     )
-    
+
     reporting_agent = Agent(
         name="reporting_agent",
         desc="reporting_agent",
@@ -59,13 +59,17 @@ def get_deepresearch_swarm(user_input):
     )
 
     return TeamSwarm(plan_agent, web_search_agent, reporting_agent, max_steps=1)
-    
 
-if __name__ == "__main__":
-    user_input = "7天北京旅游计划"
+
+async def run(user_input):
     swarm = get_deepresearch_swarm(user_input)
-    result = Runners.sync_run(
+    result = await Runners.run(
         input=user_input,
         swarm=swarm
     )
     print("deepresearch result: ", result)
+
+
+if __name__ == "__main__":
+    user_input = "7天北京旅游计划"
+    asyncio.run(run(user_input))

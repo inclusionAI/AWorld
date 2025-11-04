@@ -5,7 +5,7 @@ from typing import Any, Dict, List, TypeVar, Generic, Optional
 
 from aworld.logs.util import logger
 from ... import ApplicationContext
-from ...event import ContextMessagePayload
+from ...payload import ContextMessagePayload
 from .base import BaseOp, MemoryCommand
 from aworld.memory.models import MemoryItem
 from ...prompt.prompt_ext import ContextPromptTemplate

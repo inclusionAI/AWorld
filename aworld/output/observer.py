@@ -83,7 +83,7 @@ class DecoratorBasedObserver(WorkspaceObserver):
                 if result is not None:
                     results.append(result)
             except Exception as e:
-                print(f"Create handler failed:  error is {e}: {traceback.format_exc()}")
+                logger.warning(f"Create handler failed:  error is {e}: {traceback.format_exc()}")
         return results
 
     async def on_update(self, artifact: Artifact, **kwargs) -> List[Any]:
@@ -95,7 +95,7 @@ class DecoratorBasedObserver(WorkspaceObserver):
                 if result is not None:
                     results.append(result)
             except Exception as e:
-                print(f"Update handler failed: {e}")
+                logger.warning(f"Update handler failed: {e}")
         return results
 
     async def on_delete(self, artifact: Artifact, **kwargs) -> List[Any]:
@@ -107,7 +107,7 @@ class DecoratorBasedObserver(WorkspaceObserver):
                 if result is not None:
                     results.append(result)
             except Exception as e:
-                print(f"Delete handler failed: {e}")
+                logger.warning(f"Delete handler failed: {e}")
         return results
 
     def register_create_handler(self, func, instance=None, workspace_id=None, filters=None):

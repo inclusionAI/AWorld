@@ -8,7 +8,7 @@ from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union
 
 from pydantic import BaseModel
 
-from aworld.config.conf import AgentConfig, ConfigDict, load_config
+from aworld.config.conf import AgentConfig, ConfigDict, load_config, TaskRunMode
 from aworld.core.common import ActionModel
 from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage
@@ -115,9 +115,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 "or pass AgentConfig explicitly"
             )
             logger.info(f"AgentConfig is empty, using env variables:\n"
-                           f"LLM_API_KEY={'*' * min(len(api_key), 8) if api_key else 'Not set'}\n"
-                           f"LLM_BASE_URL={base_url}\n"
-                           f"LLM_MODEL_NAME={model_name}")
+                        f"LLM_API_KEY={'*' * min(len(api_key), 8) if api_key else 'Not set'}\n"
+                        f"LLM_BASE_URL={base_url}\n"
+                        f"LLM_MODEL_NAME={model_name}")
 
             conf = AgentConfig(
                 llm_provider=os.getenv("LLM_PROVIDER", "openai"),
@@ -192,6 +192,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._desc
 
     def run(self, message: Message, **kwargs) -> Message:
+        message.context.agent_info.current_agent_id = self.id()
+        task = message.context.get_task()
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
+            agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
+            message.context.new_trajectory_step(agent.id())
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1
@@ -226,6 +231,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
+        message.context.agent_info.current_agent_id = self.id()
+        task = message.context.get_task()
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
+            agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
+            message.context.new_trajectory_step(agent.id())
         caller = message.caller
         if caller and caller == self.id():
             self.loop_step += 1

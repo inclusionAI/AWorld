@@ -5,6 +5,7 @@ import uuid
 from typing import Dict, Any, Optional, List, Literal
 from .artifact_repository import ArtifactRepository, CommonEncoder
 from aworld.output.artifact import Artifact, ArtifactAttachment
+from ...logs.util import logger
 
 
 class OSSArtifactRepository(ArtifactRepository):
@@ -52,7 +53,7 @@ class OSSArtifactRepository(ArtifactRepository):
             self._save_index(index)
             return index
         except Exception as e:
-            print(f"Failed to load index file: {e}")
+            logger.warning(f"Failed to load index file: {e}")
             return {"artifacts": [], "versions": []}
 
     def save_index(self, index: Dict[str, Any]) -> None:
@@ -71,7 +72,7 @@ class OSSArtifactRepository(ArtifactRepository):
             content = json.dumps(index, indent=2, ensure_ascii=False, cls=CommonEncoder)
             self.bucket.put_object(self.index_key, content.encode('utf-8'))
         except Exception as e:
-            print(f"Failed to save index file: {e}")
+            logger.warning(f"Failed to save index file: {e}")
             raise
 
     def artifact_path(self, artifact_id: str) -> str:
@@ -139,7 +140,7 @@ class OSSArtifactRepository(ArtifactRepository):
             self._save_index(self.index)
             return "success"
         except Exception as e:
-            print(f"Storage failed: {e}")
+            logger.warning(f"Storage failed: {e}")
             raise
 
     def retrieve_latest_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
@@ -159,10 +160,10 @@ class OSSArtifactRepository(ArtifactRepository):
                 content = result.read().decode('utf-8')
                 return json.loads(content)
             except oss2.exceptions.NoSuchKey:
-                print(f"Content file doesn't exist: {content_key}")
+                logger.warning(f"Content file doesn't exist: {content_key}")
                 return None
         except Exception as e:
-            print(f"Failed to retrieve latest artifact: {e}")
+            logger.warning(f"Failed to retrieve latest artifact: {e}")
             return None
 
     def get_artifact_versions(self, artifact_id: str) -> List[Dict[str, Any]]:
@@ -181,7 +182,7 @@ class OSSArtifactRepository(ArtifactRepository):
                     return [version_info]
             return []
         except Exception as e:
-            print(f"Failed to get version information: {e}")
+            logger.warning(f"Failed to get version information: {e}")
             return []
 
     def delete_artifact(self, artifact_id: str) -> bool:
@@ -213,7 +214,7 @@ class OSSArtifactRepository(ArtifactRepository):
                     return True
             return False
         except Exception as e:
-            print(f"Failed to delete artifact: {e}")
+            logger.warning(f"Failed to delete artifact: {e}")
             return False
 
     def list_artifacts(self) -> List[Dict[str, Any]]:
@@ -233,9 +234,8 @@ class OSSArtifactRepository(ArtifactRepository):
                 for artifact in self.index["artifacts"]
             ]
         except Exception as e:
-            print(f"Failed to list artifacts: {e}")
+            logger.warning(f"Failed to list artifacts: {e}")
             return []
-    
 
     def generate_tree_data(self, workspace_name: str) -> dict:
         """
