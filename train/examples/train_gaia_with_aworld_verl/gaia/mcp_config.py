@@ -120,6 +120,7 @@ DISTRIBUTED_MCP_CONFIG = {
                 # "MCP_SERVERS": "e2b-code-server",
                 "IMAGE_ENV": f"{{\"E2B_API_KEY\":\"{os.getenv('MCP_E2B_API_KEY', '')}\"}}",
                 # Specify environment variable values for tools on the client side, note JSON String structure
+                "IMAGE_VERSION": f"{os.getenv('IMAGE_VERSION', '')}",
             },
             "timeout": 600,
             "sse_read_timeout": 600,
