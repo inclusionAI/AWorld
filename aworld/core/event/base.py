@@ -101,6 +101,22 @@ class Message(Generic[DataType]):
 
     def is_error(self):
         return self.topic == TopicType.ERROR
+    
+    def debug_repr(self) -> str:
+        """Return a full representation including payload for debugging."""
+        return (
+            f"Message(session_id={self.session_id!r}, "
+            f"sender={self.sender!r}, "
+            f"receiver={self.receiver!r}, "
+            f"caller={self.caller!r}, "
+            f"category={self.category!r}, "
+            f"topic={self.topic!r}, "
+            f"priority={self.priority!r}, "
+            f"timestamp={self.timestamp!r}, "
+            f"id={self.id!r}, "
+            f"payload={self.payload!r}), "
+            f"headers={self.headers!r}"
+        )
 
     @property
     def task_id(self):
