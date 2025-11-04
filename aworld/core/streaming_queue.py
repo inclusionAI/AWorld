@@ -67,18 +67,8 @@ class StreamingQueueProvider(abc.ABC):
         pass
     
     @abc.abstractmethod
-    async def get(self, timeout: Optional[float] = None) -> Message:
-        """Get a message from the queue (blocking).
-        
-        Args:
-            timeout: Timeout in seconds. None means use default config timeout.
-            
-        Returns:
-            Message from the queue.
-            
-        Raises:
-            asyncio.TimeoutError: If timeout is reached.
-        """
+    async def get(self) -> Message:
+        """Get a message from the queue (blocking)."""
         pass
     
     @abc.abstractmethod
@@ -123,25 +113,14 @@ class InMemoryStreamingQueue(StreamingQueueProvider):
             raise RuntimeError("Cannot put message to closed queue")
         self._queue.put_nowait(message)
         
-    async def get(self, timeout: Optional[float] = None) -> Message:
-        """Get a message from the queue (blocking).
-        
-        Args:
-            timeout: Timeout in seconds. None means use default config timeout.
-            
-        Returns:
-            Message from the queue.
-            
-        Raises:
-            asyncio.TimeoutError: If timeout is reached.
-        """
-        if timeout is None:
-            timeout = self.config.timeout
-            
+    async def get(self) -> Message:
+        """Get a message from the queue."""
         try:
-            return await asyncio.wait_for(self._queue.get(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning(f"Queue get timeout after {timeout}s")
+            return await self._queue.get()
+        except asyncio.CancelledError as err:
+            logger.warning(f"InMemoryStreamingQueue|CancelledError|{err}")
+        except Exception as e:
+            logger.warning(f"InMemoryStreamingQueue|Error|{e}")
             raise
     
     async def close(self) -> None:
@@ -213,20 +192,9 @@ class RedisStreamingQueue(StreamingQueueProvider):
             maxlen=self.config.max_size if self.config.max_size > 0 else None
         )
         
-    async def get(self, timeout: Optional[float] = None) -> Message:
-        """Get a message from Redis stream (blocking).
-        
-        Args:
-            timeout: Timeout in seconds. None means use default config timeout.
-            
-        Returns:
-            Message from the stream.
-            
-        Raises:
-            asyncio.TimeoutError: If timeout is reached.
-        """
-        if timeout is None:
-            timeout = self.config.timeout
+    async def get(self) -> Message:
+        """Get a message from Redis stream (blocking)."""
+        timeout = self.config.timeout
             
         await self._ensure_connection()
         

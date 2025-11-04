@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from aworld.config import StorageConfig
 from aworld.core.singleton import InheritanceSingleton
-from aworld.core.storage.base import Storage
+from aworld.core.storage.base import Storage, DataItem
 from aworld.core.storage.data import Data, DataBlock
 from aworld.core.storage.condition import Condition
 from aworld.logs.util import logger
@@ -55,7 +55,7 @@ class TaskStatusStore:
     pluggable backends (in-memory, Redis, SQLite, etc.).
     """
 
-    def __init__(self, storage: Storage[Data]):
+    def __init__(self, storage: Storage[DataItem]):
         """Initialize with a Storage instance.
         
         Args:

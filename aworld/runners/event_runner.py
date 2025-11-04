@@ -190,20 +190,12 @@ class TaskEventRunner(TaskRunner):
             self.state_manager.start_message_node(message)
             logger.debug(f"start_message_node end message id: {message.id} of task {self.task.id}")
             if handlers:
-                if message.topic:
-                    handlers = {message.topic: handlers.get(message.topic, [])}
-                elif message.receiver:
-                    handlers = {message.receiver: handlers.get(
-                        message.receiver, [])}
-                else:
-                    logger.warning(f"{message.id} no receiver and topic, be ignored.")
+                handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
+                if not handler_list:
+                    logger.warning(f"{message.topic}/{message.receiver} no handler, ignore.")
                     handlers.clear()
-
-                handle_map = {}
-                for topic, handler_list in handlers.items():
-                    if not handler_list:
-                        logger.warning(f"{topic} no handler, ignore.")
-                        continue
+                else:
+                    handle_map = {}
 
                     for handler in handler_list:
                         t = asyncio.create_task(self._handle_task(message, handler))
