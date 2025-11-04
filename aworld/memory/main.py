@@ -753,16 +753,17 @@ class AworldMemory(Memory):
         template_to_use = prompt.template if prompt else AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
         summary_rule = prompt.summary_rule if prompt else ""
         summary_schema = prompt.summary_schema if prompt else ""
+        content = template_to_use.format(
+            summary_rule=summary_rule,
+            summary_schema=summary_schema,
+            user_task=user_task,
+            existed_summary=existed_summary,
+            to_be_summary=to_be_summary
+        ).rstrip()  # Remove trailing whitespace as OpenAI API requires
         summary_messages = [
             {
-                "role": "user",
-                "content": template_to_use.format(
-                    summary_rule=summary_rule,
-                    summary_schema=summary_schema,
-                    user_task=user_task,
-                    existed_summary=existed_summary,
-                    to_be_summary=to_be_summary
-                )
+                "role": "assistant",
+                "content": content
             }
         ]
         llm_summary = await self._call_llm_summary(summary_messages, agent_memory_config)

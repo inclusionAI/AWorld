@@ -262,7 +262,7 @@ class MemorySummary(MemoryItem):
     def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, memory_type: str = "summary", **kwargs) -> None:
         meta = metadata.to_dict
         meta['item_ids'] = item_ids
-        meta['role'] = "user"
+        meta['role'] = "assistant"
         super().__init__(content=summary, metadata=meta, memory_type=memory_type, **kwargs)
 
     @property
@@ -271,6 +271,8 @@ class MemorySummary(MemoryItem):
 
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
+            "metadata": self.metadata,
             "role": "user",
             "content": self.content
         }
@@ -352,6 +354,8 @@ class MemorySystemMessage(MemoryMessage):
 
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
+            "metadata": self.metadata,
             "role": self.role,
             "content": self.content
         }
@@ -373,6 +377,8 @@ class MemoryHumanMessage(MemoryMessage):
     
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
+            "metadata": self.metadata,
             "role": self.role,
             "content": self.content
         }
@@ -399,6 +405,8 @@ class MemoryAIMessage(MemoryMessage):
       
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
+            "metadata": self.metadata,
             "role": self.role,
             "content": self.content,
             "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None
@@ -432,6 +440,7 @@ class MemoryToolMessage(MemoryMessage):
 
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
             "metadata": self.metadata,
             "role": self.role,
             "content": self.content,
