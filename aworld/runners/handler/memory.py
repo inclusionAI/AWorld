@@ -159,12 +159,11 @@ class DefaultMemoryHandler(DefaultHandler):
             "agent_id": agent.id(),
             "session_id": context.get_task().session_id,
             "task_id": context.get_task().id,
-            "memory_type": "message"
         }
         # Get the last message
         last_messages = self.memory.get_last_n(1, filters=filters, agent_memory_config=agent_memory_config)
         if last_messages and len(last_messages) > 0:
-            last_message = last_messages[0]
+            last_message = last_messages[-1]
             # Update usage in metadata
             last_message.metadata['usage'] = llm_response.usage
             last_message.updated_at = datetime.now().isoformat()
