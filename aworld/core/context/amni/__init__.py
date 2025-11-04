@@ -5,7 +5,7 @@ import os
 import time
 import traceback
 import uuid
-from typing import Optional, Any, Literal, List, Dict
+from typing import Optional, Any, Literal, List, Dict, Tuple
 
 from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
@@ -1368,17 +1368,20 @@ class ApplicationContext(AmniContext):
 
     @property
     def working_dir_root(self) -> str:
-        return os.environ['DIR_ARTIFACT_MOUNT_BASE_PATH']
+        return os.environ.get('DIR_ARTIFACT_MOUNT_BASE_PATH', '/tmp/workspaces')
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
-                       knowledge_id: Optional[str] = None, namespace: str = "default"):
+                       knowledge_id: Optional[str] = None, namespace: str = "default") -> Tuple[bool, Optional[str]]:
         # Save metadata
         file = ArtifactAttachment(filename=filename, mime_type=mime_type, content=content)
         dir_artifact: DirArtifact = await self.load_working_dir(knowledge_id)
         # Persist the new file to the directory
-        dir_artifact.add_file(file)
+        success, file_path = dir_artifact.add_file(file)
+        if not success:
+            return False, None
         # Refresh directory index
         await self.add_knowledge(dir_artifact, namespace, index=False)
+        return True, file_path
 
     async def init_working_dir(self, knowledge_id: Optional[str] = None) -> DirArtifact:
         if knowledge_id:
