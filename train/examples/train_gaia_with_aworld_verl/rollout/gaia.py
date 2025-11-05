@@ -59,32 +59,20 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
                 "tool_parser": "hermes"
             }
         ),
-        memory_config=AgentMemoryConfig(history_rounds=100, enable_summary=True, summary_rounds=30, summary_context_length=32000),
     )
 
-    if os.getenv("GAIA_AGENT_CONTEXT", "common") == 'common':
-        init_middlewares()
-        return Agent(
-            conf=conf,
-            name="gaia_super_agent",
-            system_prompt=GAIA_SYSTEM_PROMPT,
-            # MCP tool configuration for the agent
-            mcp_config=mcp_config,
-            mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys()),
-        )
-    else:
-        # 1. init middlewares
-        init_middlewares()
+    # 1. init middlewares
+    init_middlewares()
 
-        # 2. init agent
-        return Agent(
-            conf=conf,
-            name="gaia_super_agent",
-            system_prompt=GAIA_SYSTEM_PROMPT,
-            # MCP tool configuration for the agent
-            mcp_config=mcp_config,
-            mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys()),
-        )
+    # 2. init agent
+    return Agent(
+        conf=conf,
+        name="gaia_super_agent",
+        system_prompt=GAIA_SYSTEM_PROMPT,
+        # MCP tool configuration for the agent
+        mcp_config=mcp_config,
+        mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys()),
+    )
 
 
 
@@ -100,7 +88,7 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
         enable_system_prompt_augment=True,
         neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
         history_rounds= 100,
-        enable_summary=True,
+        enable_summary=False,
         summary_rounds= 30,
         summary_context_length= 40960,
         summary_prompts=[
@@ -114,7 +102,7 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
                                 summary_rule=tool_memory_summary_rule,
                                 summary_schema=tool_memory_summary_schema)
         ],
-        tool_result_offload=True,
+        tool_result_offload=False,
         tool_action_white_list=CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
         tool_result_length_threshold=30000
     )
