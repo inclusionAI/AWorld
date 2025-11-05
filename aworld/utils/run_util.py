@@ -68,24 +68,30 @@ async def exec_agent(question: Any,
     """
     task_id = uuid.uuid1().hex
     info_dict = context.agent_info.get(agent.id(), {})
-    use_new_agent = info_dict.get("new_instance")
+    use_new_agent = info_dict.get("use_new_agent")
     if use_new_agent:
         override = {}
-        if task_conf and task_conf.task_name:
+        if info_dict.get("agent_name"):
             # unique agent_name
-            override['name'] = f"{agent.name()}_{task_conf.task_name}"
-        if not info_dict.get("new_id"):
+            override['name'] = info_dict.get("agent_name")
+        if info_dict.get("agent_id"):
             # not new_id or new_id is True, will use the difference agent id
-            override["agent_id"] = agent.id()
+            override["agent_id"] = info_dict.get("agent_id")
 
         agent = Agent.from_dict(await Agent.to_dict(agent, override=override))
+
+    context_info = context.context_info.get(agent.id(), {})
+    session_id = context_info.get("session_id") or context.session_id
+    if context_info.get("use_new_context"):
+        context = context.deep_copy()
+
     task = Task(id=task_id,
                 input=question,
                 agent=agent,
                 context=context,
                 is_sub_task=sub_task,
                 group_id=task_group_id,
-                session_id=context.session_id,
+                session_id=session_id,
                 conf=task_conf)
     if outputs:
         task.outputs = outputs
