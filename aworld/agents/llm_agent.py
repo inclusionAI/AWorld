@@ -24,8 +24,7 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryToolMessage
-from aworld.memory.models import MemoryMessage
+from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
@@ -193,9 +192,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.need_reset = need_reset if need_reset else conf.need_reset
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = step_reset
-        # tool_name: [tool_action1, tool_action2, ...]
-        # self.black_tool_actions: Dict[str, List[str]] = black_tool_actions if black_tool_actions \
-        #     else conf.get('black_tool_actions', {})
         self.model_output_parser = model_output_parser
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
@@ -377,12 +373,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return messages
 
     async def init_observation(self, observation: Observation) -> Observation:
-        # supported string only
-        # if self.task and isinstance(self.task, str) and self.task != observation.content:
-        #     observation.content = f"base task is: {self.task}\n{observation.content}"
-        #     # `task` only needs to be processed once and reflected in the context
-        #     self.task = None
-
         # default use origin observation
         return observation
 
@@ -549,7 +539,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                             agent_id=self.id(),
                                                             use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
-        policy_result: Optional[List[ActionModel]] = None
+
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
@@ -696,7 +686,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.message.update(chunk.message)
 
             else:
-                # logger.info(f"llm_agent|invoke_model|tools={self.tools}")
                 llm_response = await acall_llm_model(
                     self.llm,
                     messages=messages,
