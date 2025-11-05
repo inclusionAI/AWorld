@@ -1400,7 +1400,8 @@ class ApplicationContext(AmniContext):
                 base_path=os.environ.get('WORKING_DIR_OSS_BASE_PATH', os.environ.get('WORKSPACE_PATH')) + "/" + self.session_id + "/files")
         else:
             # default local
-            self._working_dir = DirArtifact.with_local_repository(base_path=os.environ.get('WORKSPACE_PATH') + self.session_id + "/files")
+            self._working_dir = DirArtifact.with_local_repository(base_path=os.environ.get('WORKSPACE_PATH')  + "/" + self.session_id + "/files")
+            self._config.env_config.working_dir_path = self._working_dir.base_path
 
         return self._working_dir
 
