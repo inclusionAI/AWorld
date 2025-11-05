@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from train.examples.train_gaia_with_aworld_verl.gaia import build_gaia_agent, build_mcp_config
+from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_mcp_config
 
 from examples.xbench.agents.swarm import build_xbench_swarm
 
@@ -147,7 +147,7 @@ async def evaluate():
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=100,
+            parallel_num=1,
             skip_passed_cases=True,
         )).run()
 

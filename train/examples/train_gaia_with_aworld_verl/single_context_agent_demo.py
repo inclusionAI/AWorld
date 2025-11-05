@@ -5,9 +5,7 @@ import traceback
 from dotenv import load_dotenv
 load_dotenv()
 
-from train.examples.train_gaia_with_aworld_verl.gaia import build_gaia_agent, build_gaia_task
-
-from train.examples.train_gaia_with_aworld_verl.gaia import build_mcp_config
+from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task, build_mcp_config
 
 from aworld.runner import Runners
 

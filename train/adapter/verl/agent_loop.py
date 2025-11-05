@@ -1,30 +1,29 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import json
-import logging
 import os
+import time
+import traceback
 import uuid
 from typing import Any, List, Dict, Union
+from typing import Sequence
+
+from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
-from aworld.core.context.amni import AmniConfigFactory, TaskInput, ApplicationContext
-from aworld.core.context.amni.config import AmniConfigLevel, get_default_config, AgentContextConfig, \
-    CONTEXT_OFFLOAD_TOOL_NAME_WHITE
-from aworld.runner import Runners
 from aworld.logs.util import logger
-from aworld.core.task import Task
-import asyncio
-import traceback
-import concurrent
-import concurrent.futures
-
-from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
-
+from aworld.runner import Runners
+from aworld.trace.base import Span
+from aworld.trace.span_cosumer import register_span_consumer, SpanConsumer
 from train.adapter.common import encode_messages, turns_num
-from train.adapter.verl.verl_provider import VerlProvider
+# Import from rollout.gaia directly to avoid circular import
+# (rollout/__init__.py imports custom_agent_loop which imports this file)
+from train.examples.train_gaia_with_aworld_verl.rollout.gaia import build_gaia_task
+
 
 # logger.setLevel(logging.INFO)
 # logger.propagate = False
@@ -34,16 +33,8 @@ from train.adapter.verl.verl_provider import VerlProvider
 #     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 #     handler.setFormatter(formatter)
 #     logger.addHandler(handler)
-
 # import aworld.trace as trace
 # trace.configure(trace.ObservabilityConfig())
-
-from aworld.trace.base import Span
-from typing import Sequence
-from aworld.trace.span_cosumer import register_span_consumer, SpanConsumer
-import time
-
-from train.examples.train_gaia_with_aworld_verl.gaia import build_gaia_task
 
 
 @register_span_consumer()

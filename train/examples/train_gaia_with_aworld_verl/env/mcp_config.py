@@ -117,7 +117,8 @@ DISTRIBUTED_MCP_CONFIG = {
                 "Authorization": f"{os.getenv('MCP_AUTHORIZATION')}",
                 # "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
 
-                "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
+                # "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
+                "MCP_SERVERS": "ms-playwright",
                 # "MCP_SERVERS": "e2b-code-server",
                 "IMAGE_ENV": f"{{\"E2B_API_KEY\":\"{os.getenv('MCP_E2B_API_KEY', '')}\"}}",
                 # Specify environment variable values for tools on the client side, note JSON String structure
