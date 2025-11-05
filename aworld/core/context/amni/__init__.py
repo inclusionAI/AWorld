@@ -1330,7 +1330,7 @@ class ApplicationContext(AmniContext):
     ####################### Context Write #######################
 
     def put(self, key: str, value: Any, namespace: str = "default") -> None:
-        logger.info(f"{id(self)}#put key: {key}, value: {value}, namespace: {namespace}")
+        logger.debug(f"{id(self)}#put key: {key}, value: {value}, namespace: {namespace}")
         if self._is_default_namespace(namespace):
             self.task_state.working_state.kv_store[key] = value
             return
@@ -1371,17 +1371,17 @@ class ApplicationContext(AmniContext):
         return os.environ.get('DIR_ARTIFACT_MOUNT_BASE_PATH', '/tmp/workspaces')
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
-                       knowledge_id: Optional[str] = None, namespace: str = "default") -> Tuple[bool, Optional[str]]:
+                       knowledge_id: Optional[str] = None, namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
         # Save metadata
-        file = ArtifactAttachment(filename=filename, mime_type=mime_type, content=content)
+        file = ArtifactAttachment(filename=filename, mime_type=mime_type, content=content, origin_type=origin_type, origin_path=origin_path)
         dir_artifact: DirArtifact = await self.load_working_dir(knowledge_id)
         # Persist the new file to the directory
-        success, file_path = dir_artifact.add_file(file)
+        success, file_path, content = await dir_artifact.add_file(file)
         if not success:
-            return False, None
+            return False, None, None
         # Refresh directory index
         await self.add_knowledge(dir_artifact, namespace, index=False)
-        return True, file_path
+        return True, file_path, content
 
     async def init_working_dir(self, knowledge_id: Optional[str] = None) -> DirArtifact:
         if knowledge_id:

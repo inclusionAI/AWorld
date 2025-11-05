@@ -7,6 +7,7 @@ from pydantic import Field
 from aworld.logs.util import logger
 from aworld.output.artifact import ArtifactAttachment,Artifact, ArtifactType
 from .file_repository import FileRepository, OssFileRepository, LocalFileRepository
+from .utils import FileUtils
 
 
 class DirArtifact(Artifact):
@@ -60,7 +61,7 @@ class DirArtifact(Artifact):
         )
         return cls(file_repository=oss_repo, base_path=base_path, **kwargs)
 
-    def add_file(self, attachment: ArtifactAttachment) -> Tuple[bool, Optional[str]]:
+    async def add_file(self, attachment: ArtifactAttachment) -> Tuple[bool, Optional[str], Optional[str]]:
         try:
             if not isinstance(attachment, ArtifactAttachment):
                 raise ValueError("attachment must be an instance of ArtifactAttachment")
@@ -75,17 +76,21 @@ class DirArtifact(Artifact):
             self.updated_at = datetime.now().isoformat()
             
             # upload to repository
-            self._upload_file_to_repository(attachment)
+            await self._upload_file_to_repository(attachment)
 
             # Add the attachment
             if not self.check_attachment_exists(attachment):
                 self.inner_attachments.append(attachment)
-            return True, attachment.path
+
+            if isinstance(attachment.content, str):
+               return True, attachment.path,attachment.content
+            else:
+                return True, attachment.path,None
             
         except Exception as e:
             logger.error(f"❌ Error adding attachment: {e}")
             logger.debug(f"❌ Traceback: {traceback.format_exc()}")
-            return False, None
+            return False, None, None
 
     def check_attachment_exists(self, attachment: ArtifactAttachment) -> bool:
         if not self.inner_attachments:
@@ -97,7 +102,7 @@ class DirArtifact(Artifact):
 
         return False
 
-    def _upload_file_to_repository(self, attachment: ArtifactAttachment, 
+    async def _upload_file_to_repository(self, attachment: ArtifactAttachment,
                                   custom_key: Optional[str] = None) -> Optional[str]:
         try:
             if not self.file_repository:
@@ -114,6 +119,10 @@ class DirArtifact(Artifact):
                     custom_key = f"{self.base_path}/{attachment.filename}"
                 else:
                     custom_key = f"{attachment.filename}"
+
+            # Download content from original source
+            if not attachment.content and attachment.origin_type and attachment.origin_path:
+                attachment.content = await FileUtils.read_origin_file_content(attachment.origin_type, attachment.origin_path, attachment.filename)
             
             # Upload content to file repository
             success, file_path = self.file_repository.upload_data(
@@ -142,6 +151,8 @@ class DirArtifact(Artifact):
             logger.error(f"❌ Error uploading attachment to repository: {e}")
             logger.debug(f"❌ Traceback: {traceback.format_exc()}")
             return None
+
+
     
     def get_file(self, filename: str) -> Optional[ArtifactAttachment]:
         if not self.inner_attachments:
