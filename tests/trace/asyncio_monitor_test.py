@@ -1,17 +1,16 @@
 import traceback
 import asyncio
+import time
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
-from typing import List
 from aworld.trace.config import ObservabilityConfig
 from aworld.logs.util import logger
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
-from aworld.trace.server import get_trace_server
-from aworld.runners.state_manager import RuntimeStateManager, RunNode
+from aworld.runners.state_manager import RuntimeStateManager
 import aworld.trace as trace
-from aworld.trace.asyncio_monitor import AsyncioMonitor
+from aworld.trace.asyncio_monitor.base import AsyncioMonitor
 
 trace.configure(ObservabilityConfig(trace_server_enabled=True))
 
@@ -35,15 +34,15 @@ Here are the content:
 """
 
 
-async def run():
+async def run_agent():
     asyncio_monitor = AsyncioMonitor(detect_duration_second=1, shot_file_name=False)
     asyncio_monitor.start()
 
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="claude-3-7-sonnet-20250219",
-        llm_base_url="xxx",
-        llm_api_key="xxx",
+        llm_base_url="",
+        llm_api_key="",
     )
 
     search = Agent(
@@ -86,6 +85,54 @@ async def run():
     await asyncio.sleep(5)
 
     asyncio_monitor.stop()
+
+
+async def run():
+    monitor = AsyncioMonitor(detect_duration_second=1, slow_task_ms=500)
+    monitor.start()
+
+    try:
+        async def short_task():
+            await asyncio.sleep(0.1)
+            return "Short task completed"
+
+        async def slow_task():
+            await asyncio.sleep(8)
+            return "Slow task completed"
+
+        async def waiting_task(wait_event):
+            print("Waiting task started")
+            await wait_event.wait()
+            print("Waiting task resumed")
+            return "Waiting task completed"
+
+        async def concurrent_task(task_id):
+            print("Concurrent task 3 is sleeping for 3 seconds")
+            time.sleep(3)
+            return f"Concurrent task {task_id} completed"
+
+        wait_event = asyncio.Event()
+
+        tasks = []
+        short_future = asyncio.create_task(short_task())
+        tasks.append(short_future)
+        slow_future = asyncio.create_task(slow_task())
+        tasks.append(slow_future)
+        waiting_future = asyncio.create_task(waiting_task(wait_event))
+        tasks.append(waiting_future)
+        for i in range(1, 6):
+            concurrent_future = asyncio.create_task(concurrent_task(i))
+            tasks.append(concurrent_future)
+
+        await asyncio.sleep(1.2)
+        wait_event.set()
+
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(2)
+    except Exception as e:
+        logger.error(traceback.format_exc())
+    finally:
+        monitor.stop()
 
 
 # if __name__ == "__main__":
