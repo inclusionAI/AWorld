@@ -19,9 +19,9 @@ class SemanticIndexPlugin(RetrievalIndexPlugin):
         # Initialize embedder
         self.embedder = EmbeddingFactory.get_embedder(embedding_config=AmniEmbeddingsConfig(
                 provider=os.getenv("EMBEDDING_PROVIDER", "openai"),
-                base_url=os.getenv('EMBEDDING_BASE_URL'),
-                api_key=os.getenv('EMBEDDING_API_KEY'),
-                model_name=os.getenv('EMBEDDING_MODEL_NAME'),
+                base_url=os.getenv('EMBEDDING_BASE_URL', ""),
+                api_key=os.getenv('EMBEDDING_API_KEY', ""),
+                model_name=os.getenv('EMBEDDING_MODEL_NAME', ""),
                 dimensions=int(os.getenv('EMBEDDING_MODEL_DIMENSIONS', '1024'))
             ) if not config.get("embedding_config") else config.get("embedding_config"))
         if self.embedder is None:
@@ -33,10 +33,10 @@ class SemanticIndexPlugin(RetrievalIndexPlugin):
             provider=os.getenv("VECTOR_STORE_PROVIDER", "chroma"),
             config={
                 "chroma_data_path": os.getenv("CHROMA_PATH", "./data/chroma_db"),
-                "elasticsearch_url": os.getenv("ELASTICSEARCH_URL"),
-                "elasticsearch_index_prefix": os.getenv("ELASTICSEARCH_INDEX_PREFIX"),
-                "elasticsearch_username": os.getenv("ELASTICSEARCH_USERNAME"),
-                "elasticsearch_password": os.getenv("ELASTICSEARCH_PASSWORD"),
+                "elasticsearch_url": os.getenv("ELASTICSEARCH_URL", ""),
+                "elasticsearch_index_prefix": os.getenv("ELASTICSEARCH_INDEX_PREFIX", ""),
+                "elasticsearch_username": os.getenv("ELASTICSEARCH_USERNAME", ""),
+                "elasticsearch_password": os.getenv("ELASTICSEARCH_PASSWORD", ""),
                 "ssl_assert_fingerprint": os.getenv("ELASTICSEARCH__SSL_ASSERT_FINGERPRINT"),
             }
         ) if not config.get("vector_db_config") else config.get("vector_db_config"))

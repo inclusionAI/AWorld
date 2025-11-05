@@ -1,6 +1,6 @@
 import traceback
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from pydantic import Field
 
@@ -60,7 +60,7 @@ class DirArtifact(Artifact):
         )
         return cls(file_repository=oss_repo, base_path=base_path, **kwargs)
 
-    def add_file(self, attachment: ArtifactAttachment) -> bool:
+    def add_file(self, attachment: ArtifactAttachment) -> Tuple[bool, Optional[str]]:
         try:
             if not isinstance(attachment, ArtifactAttachment):
                 raise ValueError("attachment must be an instance of ArtifactAttachment")
@@ -80,12 +80,12 @@ class DirArtifact(Artifact):
             # Add the attachment
             if not self.check_attachment_exists(attachment):
                 self.inner_attachments.append(attachment)
-            return True
+            return True, attachment.path
             
         except Exception as e:
             logger.error(f"❌ Error adding attachment: {e}")
             logger.debug(f"❌ Traceback: {traceback.format_exc()}")
-            return False
+            return False, None
 
     def check_attachment_exists(self, attachment: ArtifactAttachment) -> bool:
         if not self.inner_attachments:
@@ -116,7 +116,7 @@ class DirArtifact(Artifact):
                     custom_key = f"{attachment.filename}"
             
             # Upload content to file repository
-            success = self.file_repository.upload_data(
+            success, file_path = self.file_repository.upload_data(
                 key=custom_key,
                 data=attachment.content,
                 metadata={
@@ -131,6 +131,7 @@ class DirArtifact(Artifact):
                 # Update artifact metadata
                 self.metadata['last_attachment_upload'] = datetime.now().isoformat()
                 self.updated_at = datetime.now().isoformat()
+                attachment.path = file_path
                 
                 return custom_key
             else:

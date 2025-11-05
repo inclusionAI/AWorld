@@ -6,12 +6,15 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING
 
 import yaml
 from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
+
+if TYPE_CHECKING:
+    from aworld.dataset.trajectory_strategy import TrajectoryStrategy
 
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
@@ -238,6 +241,7 @@ class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
+    trajectory_strategy: Type['TrajectoryStrategy'] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False
