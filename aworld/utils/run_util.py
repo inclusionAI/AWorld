@@ -67,7 +67,7 @@ async def exec_agent(question: Any,
         task_conf: Task config.
     """
     task_id = uuid.uuid1().hex
-    info_dict = context.agent_info.get(agent.id())
+    info_dict = context.agent_info.get(agent.id(), {})
     use_new_agent = info_dict.get("new_instance")
     if use_new_agent:
         override = {}
