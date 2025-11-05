@@ -203,13 +203,21 @@ class AsyncioMonitor:
                              name: str | None = None,
                              context: contextvars.Context | None = None,) -> asyncio.Future[T_co]:
         assert loop is self._monitored_loop
-        return MonitoredTask(
-            coro,  # type: ignore
-            slow_task_ms=self.slow_task_ms,
-            loop=self._monitored_loop,
-            name=name,  # since Python 3.8
-            context=context,  # since Python 3.11
-        )
+        if context:
+            return MonitoredTask(
+                coro,  # type: ignore
+                slow_task_ms=self.slow_task_ms,
+                loop=self._monitored_loop,
+                name=name,  # since Python 3.8
+                context=context,  # since Python 3.11
+            )
+        else:
+            return MonitoredTask(
+                coro,  # type: ignore
+                slow_task_ms=self.slow_task_ms,
+                loop=self._monitored_loop,
+                name=name,  # since Python 3.8
+            )
 
     def _get_task_full_stack(self, task):
         coro = task.get_coro()
