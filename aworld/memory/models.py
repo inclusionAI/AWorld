@@ -374,7 +374,11 @@ class MemoryHumanMessage(MemoryMessage):
     """
     def __init__(self, metadata: MessageMetadata, content: Any, memory_type = "init", **kwargs) -> None:
         super().__init__(role="user", metadata=metadata, content=content, memory_type=memory_type, **kwargs)
-    
+
+    @property
+    def embedding_text(self) -> Optional[str]:
+        return None
+
     def to_openai_message(self) -> dict:
         return {
             "id": self.id,
@@ -402,7 +406,11 @@ class MemoryAIMessage(MemoryMessage):
             return None
         tc = [ToolCall(**tool_call) for tool_call in self.metadata['tool_calls']]
         return tc if len(tc) > 0 else None
-      
+
+    @property
+    def embedding_text(self) -> Optional[str]:
+        return None
+
     def to_openai_message(self) -> dict:
         return {
             "id": self.id,

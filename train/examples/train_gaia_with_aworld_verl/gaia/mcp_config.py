@@ -1,3 +1,4 @@
+import copy
 import os
 
 LOCAL_MCP_CONFIG = {
@@ -186,9 +187,16 @@ def ensure_directories_exist():
 
 
 def build_mcp_config():
+    mcp_config = None
     if os.getenv('MCP_ENV', 'local') == 'local':
         # 确保必要的目录存在
         ensure_directories_exist()
-        return LOCAL_MCP_CONFIG
+        mcp_config = copy.deepcopy(LOCAL_MCP_CONFIG)
     else:
-        return DISTRIBUTED_MCP_CONFIG
+        mcp_config = copy.deepcopy(DISTRIBUTED_MCP_CONFIG)
+
+    # 未开启，移除相关的配置
+    if os.getenv('GAIA_AGENT_CONTEXT', 'common') == 'common':
+        del mcp_config['mcpServers']['amnicontext-server']
+
+    return mcp_config
