@@ -121,13 +121,14 @@ class DirArtifact(Artifact):
                     custom_key = f"{attachment.filename}"
 
             # Download content from original source
-            if not attachment.content and attachment.origin_type and attachment.origin_path:
-                attachment.content = await FileUtils.read_origin_file_content(attachment.origin_type, attachment.origin_path, attachment.filename)
+            content = attachment.content
+            if not content and attachment.origin_type and attachment.origin_path:
+                content = await FileUtils.read_origin_file_content(attachment.origin_type, attachment.origin_path, attachment.filename)
             
             # Upload content to file repository
             success, file_path = self.file_repository.upload_data(
                 key=custom_key,
-                data=attachment.content,
+                data=content,
                 metadata={
                     'filename': attachment.filename,
                     'mime_type': attachment.mime_type,

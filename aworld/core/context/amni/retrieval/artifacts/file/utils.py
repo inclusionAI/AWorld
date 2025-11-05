@@ -87,8 +87,8 @@ class FileUtils:
             if len(parts) == 3:
                 endpoint, bucket_name, key = parts
                 # Get credentials from environment
-                access_key_id = os.getenv('DIR_ARTIFACT_OSS_ACCESS_KEY_ID') or os.getenv('OSS_ACCESS_KEY_ID')
-                access_key_secret = os.getenv('DIR_ARTIFACT_OSS_ACCESS_KEY_SECRET') or os.getenv('OSS_ACCESS_KEY_SECRET')
+                access_key_id = os.getenv('WORKING_DIR_OSS_ACCESS_KEY_ID') or os.getenv('OSS_ACCESS_KEY_ID')
+                access_key_secret = os.getenv('WORKING_DIR_OSS_ACCESS_KEY_SECRET') or os.getenv('OSS_ACCESS_KEY_SECRET')
                 
                 if not access_key_id or not access_key_secret:
                     logger.error("❌ OSS credentials not found in environment variables")
@@ -98,10 +98,10 @@ class FileUtils:
                 bucket = oss2.Bucket(auth, endpoint, bucket_name)
             else:
                 # Assume origin_path is just the key, use default bucket from env
-                access_key_id = os.getenv('DIR_ARTIFACT_OSS_ACCESS_KEY_ID') or os.getenv('OSS_ACCESS_KEY_ID')
-                access_key_secret = os.getenv('DIR_ARTIFACT_OSS_ACCESS_KEY_SECRET') or os.getenv('OSS_ACCESS_KEY_SECRET')
-                endpoint = os.getenv('DIR_ARTIFACT_OSS_ENDPOINT') or os.getenv('OSS_ENDPOINT')
-                bucket_name = os.getenv('DIR_ARTIFACT_OSS_BUCKET_NAME') or os.getenv('OSS_BUCKET_NAME')
+                access_key_id = os.getenv('WORKING_DIR_OSS_ACCESS_KEY_ID') or os.getenv('OSS_ACCESS_KEY_ID')
+                access_key_secret = os.getenv('WORKING_DIR_OSS_ACCESS_KEY_SECRET') or os.getenv('OSS_ACCESS_KEY_SECRET')
+                endpoint = os.getenv('WORKING_DIR_OSS_ENDPOINT') or os.getenv('OSS_ENDPOINT')
+                bucket_name = os.getenv('WORKING_DIR_OSS_BUCKET_NAME') or os.getenv('OSS_BUCKET_NAME')
                 
                 if not all([access_key_id, access_key_secret, endpoint, bucket_name]):
                     logger.error("❌ OSS configuration not found in environment variables")

@@ -124,6 +124,14 @@ class AgentContextConfig(BaseModel):
 
 
 DEFAULT_AGENT_CONFIG = AgentContextConfig()
+
+
+class ContextEnvConfig(BaseModel):
+    """Represents environment configuration for an agent team."""
+    isolate: bool = Field(default=False, description="One Task, One Isolate Env")
+    working_dir_type: str = Field(default="local", description="Working directory Type")
+    working_dir_path: str = Field(default="~/workspaces", description="Env Working directory for share")
+
 class AmniContextConfig(BaseModel):
     """AmniContext configs"""
 
@@ -132,6 +140,9 @@ class AmniContextConfig(BaseModel):
 
     # processor config
     processor_config: Optional[list[AmniContextProcessorConfig]] = Field(default_factory=list)
+
+    # env config
+    env_config: Optional[ContextEnvConfig] = Field(default_factory=ContextEnvConfig)
 
     # other config
     debug_mode: Optional[bool] = False
