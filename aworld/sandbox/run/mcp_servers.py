@@ -273,7 +273,7 @@ class McpServers:
                         content_list: list[str] = []
                         for content in call_result_raw.content:
                             logger.info(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {content}")
-                            if isinstance(call_result_raw.content[0], TextContent):
+                            if isinstance(content, TextContent):
                                 content_list.append(content.text)
                                 _metadata = content.model_extra.get("metadata", {})
                                 if "artifact_data" in _metadata and isinstance(_metadata["artifact_data"], dict):
@@ -281,7 +281,7 @@ class McpServers:
                                         "artifact_type": _metadata["artifact_type"],
                                         "artifact_data": _metadata["artifact_data"]
                                     })
-                            elif isinstance(call_result_raw.content[0], ImageContent):
+                            elif isinstance(content, ImageContent):
                                 content_list.append(f"data:image/jpeg;base64,{content.data}")
                                 _metadata = content.model_extra.get("metadata", {})
                                 if "artifact_data" in _metadata and isinstance(_metadata["artifact_data"], dict):

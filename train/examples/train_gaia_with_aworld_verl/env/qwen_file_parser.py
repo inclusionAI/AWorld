@@ -10,9 +10,6 @@ import traceback
 from collections import Counter
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("qwen_file_parser")
 
 import json
 import os

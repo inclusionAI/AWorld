@@ -2,13 +2,14 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import Union
 
-from train.examples.train_gaia_with_aworld_verl.gaia import build_mcp_config
-
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.adapter.verl.agent_loop import AworldAgentLoop
-from train.examples.train_gaia_with_aworld_verl.gaia import build_gaia_agent
+# Import from submodules directly to avoid circular import
+# (rollout/__init__.py imports this file at the top)
+from train.examples.train_gaia_with_aworld_verl.rollout.gaia import build_gaia_agent
+from train.examples.train_gaia_with_aworld_verl.env import build_mcp_config
 
 
 class GaiaAgentLoop(AworldAgentLoop):
