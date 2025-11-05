@@ -7,6 +7,7 @@ import traceback
 from typing import AsyncGenerator, List, Dict, Any, Tuple
 
 from aworld.agents.llm_agent import Agent
+from aworld.config import TaskConfig
 from aworld.core.agent.base import is_agent, is_agent_by_name
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
@@ -295,10 +296,9 @@ class DefaultGroupHandler(GroupHandler):
             for idx, act in enumerate(acts):
                 agent_message = act[2]
                 messages_ids.append(agent_message.id)
-                # unique name avoid duplicate
-                act[1]._name = f"{act[1].name()}_{idx}"
-                tasks[agent_message.id] = exec_agent(act[0], act[1], self.context, sub_task=True, outputs=self.context.outputs)
-
+                tasks[agent_message.id] = exec_agent(act[0], act[1], self.context, sub_task=True,
+                                                     outputs=self.context.outputs,
+                                                     task_conf=TaskConfig(task_name=f"{idx}"))
         return messages_ids, tasks
 
     async def process_agent_tasks(self, agent_tasks, input_message):

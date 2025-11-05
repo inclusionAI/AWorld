@@ -161,6 +161,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.mcp_servers = replace_mcp_servers_variables(self.skill_configs, self.mcp_servers, [])
             from aworld.core.context.amni.tool.context_skill_tool import ContextSkillTool
             self.tool_names.extend(["SKILL"])
+        # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
