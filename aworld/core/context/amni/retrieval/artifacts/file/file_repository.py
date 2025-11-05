@@ -182,7 +182,8 @@ class OssFileRepository(FileRepository):
                               enable_export: bool = True):
         """Initialize OSS client using provided parameters or environment variables."""
         if not OSS2_AVAILABLE:
-            self.bucket = None
+            from oss2 import Bucket
+            self.bucket: Bucket = None
             return
             
         try:
