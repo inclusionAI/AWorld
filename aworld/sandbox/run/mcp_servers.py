@@ -207,6 +207,7 @@ class McpServers:
                     content="",
                     keep=True
                 )
+                call_mcp_e = None
                 max_retry = 3
                 for i in range(max_retry):
                     try:
@@ -236,6 +237,7 @@ class McpServers:
                         )
                         break
                     except BaseException as e:
+                        call_mcp_e = e
                         logger.warning(
                             f"Error calling tool error: {e}. Extra info: session_id = {session_id}, tool_name = {tool_name}."
                             f"Traceback:\n{traceback.format_exc()}"
@@ -254,7 +256,7 @@ class McpServers:
                     )
                     results.append(action_result)
 
-                    self._update_metadata(result_key, {"error": str(e)}, operation_info)
+                    self._update_metadata(result_key, {"error": call_mcp_e}, operation_info)
 
                     # If using cached server instance fails, try to clean up and recreate
                     if server_name in self.server_instances:

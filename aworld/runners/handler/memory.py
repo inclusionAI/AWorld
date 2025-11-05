@@ -180,7 +180,10 @@ class DefaultMemoryHandler(DefaultHandler):
                 user_id=context.get_task().user_id,
                 task_id=context.get_task().id,
                 agent_id=agent.id(),
-                agent_name=agent.name()
+                agent_name=agent.name(),
+                ext_info={
+                    "tools": agent.tools
+                }
             )
         )
         agent_memory_config = agent.memory_config
