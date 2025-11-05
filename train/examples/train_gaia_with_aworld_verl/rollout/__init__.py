@@ -18,13 +18,11 @@ from .gaia import (
 )
 
 # Import custom_agent_loop last (depends on gaia and agent_loop)
-from .custom_agent_loop import GaiaAgentLoop
 
 # Re-export build_mcp_config for convenience
 from ..env import build_mcp_config
 
 __all__ = [
-    "GaiaAgentLoop",
     "GAIA_SYSTEM_PROMPT",
     "build_gaia_agent",
     "build_gaia_task",
