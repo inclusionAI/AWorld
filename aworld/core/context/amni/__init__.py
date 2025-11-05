@@ -1368,44 +1368,44 @@ class ApplicationContext(AmniContext):
 
     @property
     def working_dir_root(self) -> str:
-        return os.environ.get('DIR_ARTIFACT_MOUNT_BASE_PATH', '/tmp/workspaces')
+        return self._config.env_config.working_dir_path
+
+    def abs_file_path(self, filename: str):
+        return self.working_dir_root + "/" + filename
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
-                       knowledge_id: Optional[str] = None, namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
+                       namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
         # Save metadata
         file = ArtifactAttachment(filename=filename, mime_type=mime_type, content=content, origin_type=origin_type, origin_path=origin_path)
-        dir_artifact: DirArtifact = await self.load_working_dir(knowledge_id)
+        dir_artifact: DirArtifact = await self.load_working_dir()
         # Persist the new file to the directory
         success, file_path, content = await dir_artifact.add_file(file)
         if not success:
             return False, None, None
         # Refresh directory index
         await self.add_knowledge(dir_artifact, namespace, index=False)
-        return True, file_path, content
+        return True, self.abs_file_path(filename), content
 
-    async def init_working_dir(self, knowledge_id: Optional[str] = None) -> DirArtifact:
-        if knowledge_id:
-            # Reset current context working dir
-            self._working_dir = await self.get_knowledge_by_id(knowledge_id)
-            return self._working_dir
+    async def init_working_dir(self) -> DirArtifact:
         if self._working_dir:
             return self._working_dir
-        # Initialize by env. Using with_local_repository for local testing may cause file not found issues
-        # because MCP container has no local environment and local MCP tool implementation is incomplete
 
-        self._working_dir = DirArtifact.with_local_repository(base_path=str(self._workspace.repository.storage_path) + "/tempfiles")
-        # else:
-        #     self._working_dir = DirArtifact.with_oss_repository(
-        #         access_key_id=os.environ['DIR_ARTIFACT_OSS_ACCESS_KEY_ID'],
-        #         access_key_secret=os.environ['DIR_ARTIFACT_OSS_ACCESS_KEY_SECRET'],
-        #         endpoint=os.environ['DIR_ARTIFACT_OSS_ENDPOINT'],
-        #         bucket_name=os.environ['DIR_ARTIFACT_OSS_BUCKET_NAME'],
-        #         base_path=os.environ['DIR_ARTIFACT_OSS_BASE_PATH'] + "/sid-" + self.session_id)
+        # Initialize working directory
+        if self._config.env_config.working_dir_type == 'oss':
+            self._working_dir = DirArtifact.with_oss_repository(
+                access_key_id=os.environ.get('WORKING_DIR_OSS_ACCESS_KEY_ID', os.environ.get('OSS_ACCESS_KEY_ID')),
+                access_key_secret=os.environ.get('WORKING_DIR_OSS_ACCESS_KEY_SECRET', os.environ.get('OSS_ACCESS_KEY_SECRET')),
+                endpoint=os.environ.get('WORKING_DIR_OSS_ENDPOINT', os.environ.get('OSS_ENDPOINT')),
+                bucket_name=os.environ.get('WORKING_DIR_OSS_BUCKET_NAME', os.environ.get('OSS_BUCKET_NAME'))   ,
+                base_path=os.environ.get('WORKING_DIR_OSS_BASE_PATH', os.environ.get('WORKSPACE_PATH')) + "/" + self.session_id + "/files")
+        else:
+            # default local
+            self._working_dir = DirArtifact.with_local_repository(base_path=os.environ.get('WORKSPACE_PATH') + self.session_id + "/files")
 
         return self._working_dir
 
-    async def load_working_dir(self, knowledge_id: Optional[str] = None) -> DirArtifact:
-        await self.init_working_dir(knowledge_id)
+    async def load_working_dir(self) -> DirArtifact:
+        await self.init_working_dir()
         self._working_dir.reload_working_files()
         return self._working_dir
 
