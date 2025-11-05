@@ -13,7 +13,7 @@ LOCAL_MCP_CONFIG = {
         "ms-playwright": {
             "command": "npx",
             "args": [
-                "@playwright/mcp@0.0.37",
+                "@playwright/mcp@latest",
                 "--no-sandbox",
                 "--isolated",
                 "--output-dir=/tmp/playwright",
