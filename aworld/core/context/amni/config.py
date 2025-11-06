@@ -130,7 +130,7 @@ class ContextEnvConfig(BaseModel):
     """Represents environment configuration for an agent team."""
     isolate: bool = Field(default=False, description="One Task, One Isolate Env")
     env_type: str = Field(default="local", description="Env Type, local|remote")
-    env_mount_path: str = Field(default="~/workspaces", description="Env Working directory for share")
+    env_mount_path: str = Field(default="~/workspace", description="Env Working directory for share")
 
 class AmniContextConfig(BaseModel):
     """AmniContext configs"""
@@ -263,18 +263,20 @@ class AmniConfigFactory:
     def create(level: Optional[AmniConfigLevel] = None,
                neuron_names: Optional[list[str]] = None,
                debug_mode: bool = False,
+               env_config: ContextEnvConfig = None,
                **kwargs) -> AmniContextConfig:
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             config = get_default_config()
             config.agent_config = AgentContextConfig()
             config.debug_mode = debug_mode
+            config.env_config = env_config
             return config
         elif level == AmniConfigLevel.NAVIGATOR:
             config = get_default_config()
             config.debug_mode = debug_mode
             config.agent_config = AgentContextConfig(
                 enable_system_prompt_augment=True,
-                neuron_names= neuron_names or ["task", "work_dir", "todo", "action_info", "skills", "basic"],
+                neuron_names= neuron_names or ["task", "working_dir", "todo", "action_info", "skills", "basic"],
                 history_rounds= 20,
                 enable_summary=True,
                 summary_rounds= 30,
@@ -283,6 +285,7 @@ class AmniConfigFactory:
                 tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
                 tool_result_length_threshold= 30000
             )
+            config.env_config = env_config
             return config
         raise ValueError(f"Unsupported level: {level}")
 
