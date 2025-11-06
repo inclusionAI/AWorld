@@ -15,7 +15,7 @@ from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.task import Task, TaskResponse
+from aworld.core.task import Task, TaskResponse, TaskStatus
 from aworld.dataset.trajectory_dataset import generate_trajectory_from_strategy
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
@@ -23,12 +23,7 @@ from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.task_runner import TaskRunner
 from aworld.runners.state_manager import EventRuntimeStateManager
-from aworld.runners.task_status_storage import (
-    TaskStatusStore,
-    TaskStatusRegistry,
-    TaskStatus,
-    InMemoryTaskStatusStore
-)
+
 from aworld.trace.base import get_trace_id
 from aworld.utils.common import override_in_subclass, new_instance
 
@@ -45,12 +40,6 @@ class TaskEventRunner(TaskRunner):
         self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
-
-        # Task status store for cancellation/interruption control
-        if not self.task_status_store:
-            self.task_status_store = kwargs.get("task_status_store") or InMemoryTaskStatusStore()
-        if not self.task.task_status_store:
-            self.task.task_status_store = self.task_status_store
 
         # Custom event handlers (hooks)
         self._cancel_handler = kwargs.get("cancel_handler", None)
@@ -83,10 +72,6 @@ class TaskEventRunner(TaskRunner):
         await super().pre_run()
         self.event_mng.context = self.context
         self.context.event_manager = self.event_mng
-
-        # Register task status for cancellation/interruption control
-        await self.task_status_store.register(self.task.id, TaskStatus.INIT)
-        logger.info(f"Registered task {self.task.id} in task status store")
 
         if self.swarm and not self.swarm.max_steps:
             self.swarm.max_steps = self.task.conf.get('max_steps', 10)
@@ -127,8 +112,6 @@ class TaskEventRunner(TaskRunner):
             for handler in HandlerFactory:
                 handler_instance = HandlerFactory(handler, runner=self)
                 self.handlers.append(handler_instance)
-
-        await self._register_task_status_handler()
 
         self.task_flag = "sub" if self.task.is_sub_task else "main"
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")
@@ -281,14 +264,10 @@ class TaskEventRunner(TaskRunner):
         answer = None
         message = None
 
-        # Update task status to RUNNING
-        await self.task_status_store.set_status(self.task.id, TaskStatus.RUNNING)
-
         try:
             while True:
                 # External control - Check task status before processing each message
-                task_status_info = await self.task_status_store.get(self.task.id)
-                should_stop_task = await self.should_stop_task(task_status_info, message)
+                should_stop_task = await self.should_stop_task(message)
                 if should_stop_task:
                     await self.stop()
                 if await self.is_stopped():
@@ -304,7 +283,7 @@ class TaskEventRunner(TaskRunner):
                                                            time_cost=(
                                                                time.time() - start),
                                                            usage=self.context.token_usage,
-                                                           status='success' if not msg else 'failed')
+                                                           status=TaskStatus.SUCCESS if not msg else TaskStatus.FAILED)
                     break
                 logger.debug(f"{task_flag} task {self.task.id} next message snap")
                 # consume message
@@ -331,15 +310,6 @@ class TaskEventRunner(TaskRunner):
             if await self.is_stopped():
                 # Update final task status in store
                 if self._task_response:
-                    final_status = self._task_response.status or TaskStatus.SUCCESS
-                    reason = self._task_response.msg
-                    await self.task_status_store.set_status(
-                        self.task.id,
-                        final_status,
-                        reason=reason
-                    )
-                    logger.info(f"Updated final task status for {self.task.id}: {final_status}")
-
                     if self.event_mng.streaming_eventbus:
                         task_resp_msg = Message(payload=self._task_response, session_id=self.context.session_id,
                                                 topic=TopicType.TASK_RESPONSE)
@@ -388,57 +358,9 @@ class TaskEventRunner(TaskRunner):
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 
-    async def should_stop_task(self, task_status_info: Dict[str, Any], message: Message):
-        status = task_status_info.get('status')
-        reason = task_status_info.get('reason')
-        msg = reason or f"Task status is {task_status_info}"
+    async def should_stop_task(self, message: Message):
         task_flag = self.task_flag
         time_cost = time.time() - self.start_time
-
-        if status == TaskStatus.CANCELLED:
-            logger.warning(
-                f"{task_flag} task {self.task.id} was cancelled. Reason: {reason}")
-
-            # Save checkpoint before stopping
-            try:
-                checkpoint = await self.context.snapshot()
-                logger.info(f"Saved context checkpoint {checkpoint.id} for cancelled task {self.task.id}")
-            except Exception as e:
-                logger.error(f"Failed to save checkpoint for cancelled task {self.task.id}: {e}")
-
-            self._task_response = TaskResponse(
-                answer='',
-                success=False,
-                context=message.context if message else self.context,
-                id=self.task.id,
-                time_cost=time_cost,
-                usage=self.context.token_usage,
-                msg=f'Task cancelled: {msg}',
-                status=TaskStatus.CANCELLED
-            )
-            return True
-        elif status == TaskStatus.INTERRUPTED:
-            logger.warning(
-                f"{task_flag} task {self.task.id} was interrupted. Reason: {reason}")
-
-            # Save checkpoint before stopping
-            try:
-                checkpoint = await self.context.snapshot()
-                logger.info(f"Saved context checkpoint {checkpoint.id} for interrupted task {self.task.id}")
-            except Exception as e:
-                logger.error(f"Failed to save checkpoint for interrupted task {self.task.id}: {e}")
-
-            self._task_response = TaskResponse(
-                answer='',
-                success=False,
-                context=message.context if message else self.context,
-                id=self.task.id,
-                time_cost=time_cost,
-                usage=self.context.token_usage,
-                msg=f'Task interrupted: {msg}',
-                status=TaskStatus.INTERRUPTED
-            )
-            return True
 
         # Check timeout
         if 0 < self.task.timeout < time_cost:
@@ -452,176 +374,24 @@ class TaskEventRunner(TaskRunner):
                 time_cost=(time.time() - self.start_time),
                 usage=self.context.token_usage,
                 msg=f'Task timeout after {time_cost} seconds.',
-                status=TaskStatus.CANCELLED
+                status=TaskStatus.TIMEOUT
             )
-            await self.task_status_store.cancel(self.task.id, reason="Task timeout")
+            await self.context.update_task_status(self.task.id, TaskStatus.TIMEOUT)
+            return True
+
+        # Check Task status from context
+        task_status = await self.context.get_task_status(self.task.id)
+        if task_status == TaskStatus.INTERRUPTED or task_status == TaskStatus.CANCELLED:
+            logger.warn(f"{task_flag} task {self.task.id} is {task_status}.")
+            self._task_response = TaskResponse(
+                answer='',
+                success=False,
+                context=message.context if message else self.context,
+                id=self.task.id,
+                time_cost=time_cost,
+                usage=self.context.token_usage,
+                msg=f'Task is {task_status}.',
+                status=task_status
+            )
             return True
         return False
-
-    # process event-based cancellation/interruption
-    async def _register_task_status_handler(self):
-        # Register CANCEL and INTERRUPT event handlers
-        # Use custom handlers if provided, otherwise use default implementations
-        cancel_handler = self._cancel_handler if self._cancel_handler else self._default_cancel_handler
-        interrupt_handler = self._interrupt_handler if self._interrupt_handler else self._default_interrupt_handler
-
-        await self.event_mng.register(Constants.TASK, TopicType.CANCEL, cancel_handler)
-        await self.event_mng.register(Constants.TASK, TopicType.INTERRUPT, interrupt_handler)
-
-        handler_type = "custom" if self._cancel_handler else "default"
-        logger.info(f"Registered {handler_type} cancel handler for task {self.task.id}")
-        handler_type = "custom" if self._interrupt_handler else "default"
-        logger.info(f"Registered {handler_type} interrupt handler for task {self.task.id}")
-
-    async def _default_cancel_handler(self, message: Message):
-        """Default handler for CANCEL event sent through event bus.
-
-        This is the default implementation of cancel event handling. Users can provide
-        their own implementation by passing a custom cancel_handler to the constructor.
-
-        Args:
-            message: Message with category=Constants.Task and topic=TopicType.CANCEL
-
-        Returns:
-            Message: Response message indicating task cancellation
-
-        Note:
-            Custom handlers should follow the same signature and return a Message.
-        """
-        reason = None
-        if isinstance(message.payload, (TaskItem, dict)):
-            reason = message.payload.get('msg') if isinstance(message.payload, dict) else message.payload.msg
-        elif isinstance(message.payload, str):
-            reason = message.payload
-
-        reason = reason or "Task cancelled via event"
-
-        logger.warning(f"Received CANCEL event for task {self.task.id}. Reason: {reason}")
-
-        # Save current context checkpoint before cancellation
-        try:
-            checkpoint = await self.context.snapshot()
-            logger.info(f"Saved context checkpoint {checkpoint.id} for cancelled task {self.task.id}")
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint for task {self.task.id}: {e}")
-
-        # Update task status in store
-        await self.task_status_store.cancel(self.task.id, reason=reason)
-
-        # Stop the runner
-        await self.stop()
-
-        # Return a response message
-        return Message(
-            category=Constants.TASK,
-            topic=TopicType.FINISHED,
-            payload=TaskItem(msg=f"Task cancelled: {reason}", data=message.payload),
-            sender=self.name,
-            session_id=self.context.session_id,
-            headers={"context": self.context}
-        )
-
-    async def _default_interrupt_handler(self, message: Message):
-        """Default handler for INTERRUPT event sent through event bus.
-
-        This is the default implementation of interrupt event handling. Users can provide
-        their own implementation by passing a custom interrupt_handler to the constructor.
-
-        Args:
-            message: Message with topic=TopicType.INTERRUPT
-
-        Returns:
-            Message: Response message indicating task interruption
-
-        Note:
-            Custom handlers should follow the same signature and return a Message.
-        """
-        reason = None
-        if isinstance(message.payload, (TaskItem, dict)):
-            reason = message.payload.get('msg') if isinstance(message.payload, dict) else message.payload.msg
-        elif isinstance(message.payload, str):
-            reason = message.payload
-
-        reason = reason or "Task interrupted via event"
-
-        logger.warning(f"Received INTERRUPT event for task {self.task.id}. Reason: {reason}")
-
-        # Save current context checkpoint before interruption
-        try:
-            checkpoint = await self.context.snapshot()
-            logger.info(f"Saved context checkpoint {checkpoint.id} for interrupted task {self.task.id}")
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint for task {self.task.id}: {e}")
-
-        # Update task status in store
-        await self.task_status_store.interrupt(self.task.id, reason=reason)
-
-        # Stop the runner
-        await self.stop()
-
-        # Return a response message
-        return Message(
-            category=Constants.TASK,
-            topic=TopicType.FINISHED,
-            payload=TaskItem(msg=f"Task interrupted: {reason}", data=message.payload),
-            sender=self.name,
-            session_id=self.context.session_id,
-            headers={"context": self.context}
-        )
-
-    # user can implement their own cancel/interrupt interfaces
-    async def cancel_task(self, reason: Optional[str] = None):
-        """Cancel the task externally.
-
-        This allows external code to cancel a running task by updating its status
-        in the task status store. The runner will detect this change in its main loop.
-
-        Args:
-            reason: Optional reason for cancellation
-
-        Example:
-            # From external code or API:
-            await runner.cancel_task(reason="User requested cancellation")
-        """
-        if self.task_status_store.is_finished(self.task.id):
-            logger.info(f"Task {self.task.id} is already finished. Cancellation ignored.")
-            return
-        reason = reason or "Task cancelled externally"
-        logger.info(f"Cancelling task {self.task.id} externally. Reason: {reason}")
-        await self.task_status_store.cancel(self.task.id, reason=reason)
-
-    async def interrupt_task(self, reason: Optional[str] = None):
-        """Interrupt the task externally.
-
-        This allows external code to interrupt a running task by updating its status
-        in the task status store. The runner will detect this change in its main loop.
-
-        Args:
-            reason: Optional reason for interruption
-
-        Example:
-            # From external code or API:
-            await runner.interrupt_task(reason="System maintenance required")
-        """
-        if self.task_status_store.is_finished(self.task.id):
-            logger.info(f"Task {self.task.id} is already finished. Cancellation ignored.")
-            return
-        reason = reason or "Task interrupted externally"
-        logger.info(f"Interrupting task {self.task.id} externally. Reason: {reason}")
-        await self.task_status_store.interrupt(self.task.id, reason=reason)
-
-    def get_task_status_store(self) -> TaskStatusStore:
-        """Get the task status store for external access.
-
-        This allows external code to directly access the task status store
-        for querying or updating task statuses.
-
-        Returns:
-            TaskStatusStore instance used by this runner
-
-        Example:
-            # From external code:
-            store = runner.get_task_status_store()
-            await store.cancel(task_id, reason="External cancellation")
-        """
-        return self.task_status_store

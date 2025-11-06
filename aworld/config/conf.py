@@ -285,12 +285,6 @@ class RunConfig(BaseConfig):
     cls: Optional[str] = None
     event_bus: Optional[Dict[str, Any]] = None
     tracer: Optional[Dict[str, Any]] = None
-    # Global task status store for task cancellation/interruption control
-    # Can be overridden by Task.task_status_store
-    task_status_store: Optional[Any] = None
-    # Configuration dict for building task status store (alternative to task_status_store)
-    # Example: {"backend": "redis", "redis": {"host": "127.0.0.1", "port": 6379}}
-    task_status_store_config: Optional[Dict[str, Any]] = None
 
 
 class StorageConfig(BaseConfig):

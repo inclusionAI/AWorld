@@ -83,8 +83,6 @@ class TaskRunner(Runner):
             for agent_id, agent in agents.items():
                 agent.conf.llm_config.llm_stream_call = True
 
-        self.task_status_store = task.task_status_store or None
-
     async def pre_run(self):
         task = self.task
         # copy context from parent_task(if exists)

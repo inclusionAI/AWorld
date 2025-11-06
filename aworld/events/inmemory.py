@@ -12,10 +12,6 @@ from aworld.logs.util import logger
 
 
 class InMemoryEventbus(Eventbus):
-    # Class-level registry for named instances
-    _named_instances: Dict[str, 'InMemoryEventbus'] = {}
-    _named_instances_lock = threading.Lock()
-    
     def __init__(self, conf: Config = None, **kwargs):
         super().__init__(conf, **kwargs)
 
@@ -24,42 +20,6 @@ class InMemoryEventbus(Eventbus):
         # self._message_queue: Queue = Queue()
         self._message_queue: Dict[str, Queue] = {}
     
-    @classmethod
-    def get_instance(cls, name: str = 'default', conf: Config = None, **kwargs) -> 'InMemoryEventbus':
-        """Get or create a named instance of InMemoryEventbus.
-        
-        This allows multiple isolated instances identified by name,
-        bypassing the singleton pattern for specific use cases.
-        
-        Args:
-            name: Instance identifier (e.g., 'main', 'streaming')
-            conf: Configuration object
-            **kwargs: Additional arguments passed to __init__
-            
-        Returns:
-            Named instance of InMemoryEventbus
-        """
-        with cls._named_instances_lock:
-            if name not in cls._named_instances:
-                # Create new instance by directly calling object.__new__
-                # to bypass the singleton metaclass
-                instance = object.__new__(cls)
-                instance.__init__(conf, **kwargs)
-                cls._named_instances[name] = instance
-                logger.info(f"Created new InMemoryEventbus instance: {name}")
-        return cls._named_instances[name]
-    
-    @classmethod
-    def clear_named_instance(cls, name: str):
-        """Clear a specific named instance.
-        
-        Args:
-            name: Instance identifier to clear
-        """
-        with cls._named_instances_lock:
-            if name in cls._named_instances:
-                del cls._named_instances[name]
-                logger.info(f"Cleared InMemoryEventbus instance: {name}")
 
     async def wait_consume_size(self, id: str) -> int:
         return self._message_queue.get(id, Queue()).qsize()
@@ -72,16 +32,7 @@ class InMemoryEventbus(Eventbus):
             queue = PriorityQueue()
             self._message_queue[message.task_id] = queue
         logger.debug(f"{type}|publish message: {message.task_id}:  {message.session_id}, queue: {id(queue)}")
-        
-        # Debug: Log queue state for streaming type
-        if type == "stream":
-            logger.warn(f"[Streaming Publish] task_id={message.task_id}, all_keys={list(self._message_queue.keys())}, queue_size={queue.qsize()}")
-        
         await queue.put(message)
-        
-        # Debug: Log after put
-        if type == "stream":
-            logger.warn(f"[Streaming Publish] After put - queue_size={queue.qsize()}")
 
     async def consume(self, message: Message, **kwargs):
         return await self._message_queue.get(message.task_id, PriorityQueue()).get()
@@ -90,6 +41,9 @@ class InMemoryEventbus(Eventbus):
         return self._message_queue.get(message.task_id, PriorityQueue()).get_nowait()
 
     async def get_nowait(self, task_id: str):
+        # Ensure the queue exists in the dict before waiting
+        if task_id not in self._message_queue:
+            self._message_queue[task_id] = PriorityQueue()
         return self._message_queue.get(task_id, PriorityQueue()).get_nowait()
 
     async def get(self, task_id: str):

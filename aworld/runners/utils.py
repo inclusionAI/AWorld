@@ -18,7 +18,7 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True, run_con
     Args:
         tasks: A list of tasks that contains agents, tools and datas.
         agent_oriented: Whether the runner is agent-oriented.
-        run_conf: Runtime configuration that may contain task_status_store.
+        run_conf: Runtime configuration.
 
     Returns:
         Runner instance or exception.
@@ -37,16 +37,6 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True, run_con
             else:
                 execute_type = GraphBuildType.WORKFLOW.value
 
-            # Determine task_status_store with priority: Task > RunConfig > None
-            task_status_store = task.task_status_store
-            if task_status_store is None and run_conf:
-                task_status_store = run_conf.task_status_store
-                # If no direct store but has config, build from config
-                if task_status_store is None and run_conf.task_status_store_config:
-                    from aworld.runners.task_status_storage import build_task_status_store
-                    task_status_store = build_task_status_store(run_conf.task_status_store_config)
-                task.task_status_store = task_status_store
-            
             if task.event_driven:
                 runner = new_instance("aworld.runners.event_runner.TaskEventRunner",
                                       task,
