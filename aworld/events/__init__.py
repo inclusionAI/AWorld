@@ -5,3 +5,4 @@ from aworld.events.redis_backend import RedisEventbus
 
 # global
 eventbus = InMemoryEventbus()
+streaming_eventbus = InMemoryEventbus()

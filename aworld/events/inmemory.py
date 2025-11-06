@@ -37,6 +37,12 @@ class InMemoryEventbus(Eventbus):
     async def consume_nowait(self, message: Message):
         return self._message_queue.get(message.task_id, PriorityQueue()).get_nowait()
 
+    async def get_nowait(self, task_id: str):
+        return self._message_queue.get(task_id, PriorityQueue()).get_nowait()
+
+    async def get(self, task_id: str):
+        return self._message_queue.get(task_id, PriorityQueue()).get()
+
     async def done(self, id: str):
         # Only operate on an existing queue; avoid creating a new temporary queue via dict.get default
         queue = self._message_queue.get(id)

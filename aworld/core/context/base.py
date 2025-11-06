@@ -682,36 +682,12 @@ class Context:
 
         return CheckpointMetadata(**metadata_dict)
 
-    def save_checkpoint(
-        self,
-        parent_checkpoint_id: Optional[str] = None,
-        namespace: str = 'aworld',
-        metadata_extra: Optional[Dict[str, Any]] = None
-    ) -> 'Checkpoint':
+    async def snapshot(self):
         """Save current context state to a checkpoint.
 
         This method serializes the current context state into a Checkpoint object,
-        which can be used to restore the context later (e.g., after task cancellation
-        or interruption).
-
-        The checkpoint will be automatically saved to the internal checkpoint_repository
+        which will be automatically saved to the internal checkpoint_repository
         if one has been set via `context.checkpoint_repository = repo`.
-
-        Args:
-            parent_checkpoint_id: Optional parent checkpoint ID for checkpoint chaining.
-            namespace: Namespace for the checkpoint (default: 'aworld').
-            metadata_extra: Extra metadata to include in the checkpoint metadata.
-
-        Returns:
-            Checkpoint: The created checkpoint object containing the context state.
-
-        Example:
-            >>> # Set checkpoint repository (once)
-            >>> context.checkpoint_repository = InMemoryCheckpointRepository()
-            >>>
-            >>> # Save checkpoint during task cancellation
-            >>> checkpoint = context.save_checkpoint()
-            >>> logger.info(f"Checkpoint saved with ID: {checkpoint.id}")
         """
         from aworld.checkpoint import create_checkpoint, VersionUtils
 
@@ -719,62 +695,12 @@ class Context:
         checkpoint_values = self._create_checkpoint_values()
 
         # Create checkpoint metadata
-        checkpoint_metadata = self._create_checkpoint_metadata(metadata_extra)
+        from aworld.checkpoint import CheckpointMetadata
 
-        # Get version for the checkpoint
-        version = 1
-        if self._checkpoint_repository:
-            try:
-                # Try to get last checkpoint for this session to determine next version
-                last_checkpoint = self._checkpoint_repository.get_by_session(self.session_id)
-                if last_checkpoint:
-                    version = VersionUtils.get_next_version(last_checkpoint.version)
-            except Exception as e:
-                logger.warning(f"Failed to get last checkpoint version: {e}")
-
-        # Create the checkpoint
-        checkpoint = create_checkpoint(
-            values=checkpoint_values,
-            metadata=checkpoint_metadata,
-            parent_id=parent_checkpoint_id,
-            version=version,
-            namespace=namespace
+        checkpoint_metadata = CheckpointMetadata(
+            session_id=self.session_id,
+            task_id=self._task_id
         )
-
-        # Save to repository if available
-        if self._checkpoint_repository:
-            try:
-                self._checkpoint_repository.put(checkpoint)
-                logger.info(f"Checkpoint {checkpoint.id} saved to repository for task {self._task_id}")
-            except Exception as e:
-                logger.error(f"Failed to save checkpoint to repository: {e}")
-                # Don't raise exception, just log the error and return the checkpoint object
-
-        return checkpoint
-
-    async def save_checkpoint_async(
-        self,
-        parent_checkpoint_id: Optional[str] = None,
-        namespace: str = 'aworld',
-        metadata_extra: Optional[Dict[str, Any]] = None
-    ) -> 'Checkpoint':
-        """Async version of save_checkpoint.
-
-        Args:
-            parent_checkpoint_id: Optional parent checkpoint ID.
-            namespace: Namespace for the checkpoint.
-            metadata_extra: Extra metadata to include.
-
-        Returns:
-            Checkpoint: The created checkpoint object.
-        """
-        from aworld.checkpoint import create_checkpoint, VersionUtils
-
-        # Extract checkpoint values
-        checkpoint_values = self._create_checkpoint_values()
-
-        # Create checkpoint metadata
-        checkpoint_metadata = self._create_checkpoint_metadata(metadata_extra)
 
         # Get version for the checkpoint
         version = 1
@@ -791,9 +717,7 @@ class Context:
         checkpoint = create_checkpoint(
             values=checkpoint_values,
             metadata=checkpoint_metadata,
-            parent_id=parent_checkpoint_id,
-            version=version,
-            namespace=namespace
+            version=version
         )
 
         # Save asynchronously if repository available

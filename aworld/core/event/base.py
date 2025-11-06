@@ -197,6 +197,7 @@ class MemoryEventMessage(Message[Any]):
     category: str = 'memory'
     agent: 'BaseAgent' = field(default=None)
     memory_event_type: MemoryEventType = field(default=None)
+    priority: int = field(default=-2)
 
 
 @dataclass
@@ -211,7 +212,7 @@ class HumanMessage(Message[Any]):
 
 @dataclass
 class ChunkMessage(Message[Any]):
-    """Chunk message is used to stream the response of the LLM."""
+    """Chunk message is used to stream the response of the LLM or tool."""
     category: str = 'chunk'
     source_type: str = field(default=None)
 
