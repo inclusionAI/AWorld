@@ -3,6 +3,8 @@
 from aworld.events.inmemory import InMemoryEventbus
 from aworld.events.redis_backend import RedisEventbus
 
-# global
-eventbus = InMemoryEventbus()
-streaming_eventbus = InMemoryEventbus()
+# global - use named instances to avoid singleton collision
+# 'main' eventbus for normal event handling
+eventbus = InMemoryEventbus.get_instance(name='main')
+# 'streaming' eventbus will be initialized on-demand for streaming mode
+streaming_eventbus = None

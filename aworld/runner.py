@@ -67,14 +67,14 @@ class Runners:
     @staticmethod
     async def streaming_run_task(
             task: Task,
-            streaming_mode: str = 'chunk_output',
+            streaming_mode: str = 'chunk',
             run_conf: RunConfig = None
     ) -> AsyncGenerator[Message, None]:
         """Run task with streaming message support.
 
         Args:
             task: Task to execute.
-            streaming_mode: Streaming mode ('chunk_output', 'core', 'all').
+            streaming_mode: Streaming mode ('chunk', 'core', 'all').
             run_conf: Runtime configuration.
             
         Yields:
@@ -85,44 +85,25 @@ class Runners:
 
         # Set up task with streaming mode
         task.streaming_mode = streaming_mode
-
-        # Execute the agent asynchronously
-        stream_task = asyncio.create_task(
-            Runners.run_task(task, run_conf)
-        )
         runners = await choose_runners([task], run_conf=run_conf)
         stream_task = asyncio.create_task(execute_runner(runners, run_conf))
         runner: TaskEventRunner = runners[0]
-        streaming_queue = runner.streaming_eventbus
+        streaming_queue = runner.event_mng.streaming_eventbus
         task_id = task.id
 
-        # Setup end signal
-        async def send_end_signal():
-            try:
-                await stream_task
-            except Exception as e:
-                logger.error(f"Task execution failed: {e}")
-            finally:
-                end_message = Message(payload="[END]")
-                end_message.context = task.context
-                await streaming_queue.publish(end_message)
-
-        asyncio.create_task(send_end_signal())
-
         def is_task_end_msg(msg: Message):
-            return msg and isinstance(msg, Message) and isinstance(msg.payload, str) and msg.payload == "[END]"
+            return msg and isinstance(msg, Message) and msg.topic == TopicType.TASK_RESPONSE
 
         # Receive the messages from the streaming queue
         try:
             while True:
-                # Get message from queue (works in both local and distributed mode)
-                streaming_msg = await streaming_queue.get_nowait(task_id)
+                streaming_msg = await streaming_queue.get(task_id)
+                yield streaming_msg
 
                 # End the loop when receiving end signal
                 if is_task_end_msg(streaming_msg):
                     break
 
-                yield streaming_msg
         except asyncio.TimeoutError:
             logger.warning(f"Streaming queue timeout for task {task.id}")
         except Exception as e:

@@ -17,7 +17,6 @@ from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, A
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse
 from aworld.dataset.trajectory_dataset import generate_trajectory
-from aworld.events import streaming_eventbus
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -40,15 +39,12 @@ class TaskEventRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task, *args, **kwargs)
         self._task_response = None
-        self.event_mng = EventManager(self.context)
+        self.event_mng = EventManager(self.context, streaming_mode=task.streaming_mode)
         self.hooks = {}
         self.handlers = []
-        self.streaming_handlers = []
         self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
-
-        self.streaming_eventbus = streaming_eventbus
 
         # Task status store for cancellation/interruption control
         if not self.task_status_store:
@@ -73,11 +69,6 @@ class TaskEventRunner(TaskRunner):
                 await self._do_run()
                 await self._save_trajectories()
                 resp = self._response()
-                if self.task.streaming_mode:
-                    if self.streaming_eventbus:
-                        task_resp_msg = Message(payload=resp, session_id=self.context.session_id, topic=TopicType.TASK_RESPONSE)
-                        task_resp_msg.context = self.context
-                        await self.streaming_eventbus.publish(task_resp_msg)
                 logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished'
                             f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
                 return resp
@@ -135,10 +126,7 @@ class TaskEventRunner(TaskRunner):
         else:
             for handler in HandlerFactory:
                 handler_instance = HandlerFactory(handler, runner=self)
-                if handler_instance.is_stream_handler():
-                    self.streaming_handlers.append(handler_instance)
-                else:
-                    self.handlers.append(handler_instance)
+                self.handlers.append(handler_instance)
 
         await self._register_task_status_handler()
 
@@ -176,8 +164,6 @@ class TaskEventRunner(TaskRunner):
     async def _common_process(self, message: Message) -> List[Message]:
         logger.debug(f"will process message id: {message.id} of task {self.task.id}")
         event_bus = self.event_mng.event_bus
-
-        await self._streaming_task(message)
 
         key = message.category
         logger.info(f"Task {self.task.id} consume message: {message}")
@@ -249,8 +235,7 @@ class TaskEventRunner(TaskRunner):
                                                                   result=con)
                     async for event in self._inner_handler_process(
                             results=[con],
-                            # Add handler's result to streaming queue
-                            handlers=[*self.handlers, *self.streaming_handlers]
+                            handlers=self.handlers
                     ):
                         await self.event_mng.emit_message(event)
                 else:
@@ -285,16 +270,6 @@ class TaskEventRunner(TaskRunner):
             for result in results:
                 async for event in handler.handle(result):
                     yield event
-
-    async def _streaming_task(self, message: Message):
-        async def streaming_handle(message: Message):
-            for handler in self.streaming_handlers:
-                async for event in handler.handle(message):
-                    pass
-        t = asyncio.create_task(streaming_handle(message))
-        self.background_tasks.add(t)
-        t.add_done_callback(partial(self._task_done_callback, message=message))
-        await asyncio.sleep(0)
 
     async def _do_run(self):
         """Task execution process in real."""
@@ -362,6 +337,12 @@ class TaskEventRunner(TaskRunner):
                         reason=reason
                     )
                     logger.info(f"Updated final task status for {self.task.id}: {final_status}")
+
+                    if self.event_mng.streaming_eventbus:
+                        task_resp_msg = Message(payload=self._task_response, session_id=self.context.session_id,
+                                                topic=TopicType.TASK_RESPONSE)
+                        task_resp_msg.context = self.context
+                        await self.event_mng.streaming_eventbus.publish(task_resp_msg)
 
                 try:
                     await self.context.update_task_after_run(self._task_response)
