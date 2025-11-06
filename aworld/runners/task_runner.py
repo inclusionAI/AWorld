@@ -18,7 +18,7 @@ from aworld.core.context.session import Session
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.logs.util import logger
-from aworld import trace, cleanup
+from aworld import trace
 from aworld.utils.common import load_module_by_path
 
 
