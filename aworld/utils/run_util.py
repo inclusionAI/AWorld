@@ -7,7 +7,7 @@ from typing import Any, List, Dict
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
 from aworld.config.conf import TaskConfig
-from aworld.core.common import ActionModel, Observation
+from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.core.task import Task, TaskResponse
 from aworld.output.outputs import Outputs
@@ -64,17 +64,34 @@ async def exec_agent(question: Any,
         sub_task: Is it a subtask with the main task set to False.
         outputs: The same outputs instance.
         task_group_id: ID of group of task.
+        task_conf: Task config.
     """
     task_id = uuid.uuid1().hex
-    # sub_task_context = await context.build_sub_context(question, task_id, agents = {agent.id(): agent})
-    # logger.info(f"{context.task_id} build sub_task: {task_id}, sub_task_context: {sub_task_context}")
+    info_dict = context.agent_info.get(agent.id(), {})
+    use_new_agent = info_dict.get("use_new_agent")
+    if use_new_agent:
+        override = {}
+        if info_dict.get("agent_name"):
+            # unique agent_name
+            override['name'] = info_dict.get("agent_name")
+        if info_dict.get("agent_id"):
+            # not new_id or new_id is True, will use the difference agent id
+            override["agent_id"] = info_dict.get("agent_id")
+
+        agent = Agent.from_dict(await Agent.to_dict(agent, override=override))
+
+    context_info = context.context_info.get(agent.id(), {})
+    session_id = context_info.get("session_id") or context.session_id
+    if context_info.get("use_new_context"):
+        context = context.deep_copy()
+
     task = Task(id=task_id,
                 input=question,
                 agent=agent,
                 context=context,
                 is_sub_task=sub_task,
                 group_id=task_group_id,
-                session_id=context.session_id,
+                session_id=session_id,
                 conf=task_conf)
     if outputs:
         task.outputs = outputs
@@ -88,7 +105,9 @@ async def exec_agents(questions: List[Any],
                       agents: List[Agent],
                       context: Context,
                       sub_task: bool = False,
-                      task_group_id: str = None) -> List[ActionModel]:
+                      outputs: Outputs = None,
+                      task_group_id: str = None,
+                      task_conf: TaskConfig = None) -> List[ActionModel]:
     """Execute the agent list with the questions, using asyncio.
 
     Args:
@@ -96,13 +115,16 @@ async def exec_agents(questions: List[Any],
         agents: Defined intelligent agents that solve specific problem.
         context: Context in the runtime.
         sub_task: Is it a subtask with the main task set to False.
+        outputs: The same outputs instance.
         task_group_id: ID of group of task.
+        task_conf: Task config.
     """
     tasks = []
     if agents:
         for idx, agent in enumerate(agents):
             tasks.append(asyncio.create_task(
-                exec_agent(questions[idx], agent, context, sub_task=sub_task, task_group_id=task_group_id)))
+                exec_agent(questions[idx], agent, context, sub_task=sub_task, outputs=outputs,
+                           task_group_id=task_group_id, task_conf=task_conf)))
 
     results = await asyncio.gather(*tasks)
     res = []
