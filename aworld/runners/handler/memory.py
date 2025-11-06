@@ -81,7 +81,9 @@ class DefaultMemoryHandler(DefaultHandler):
                 if llm_response and hasattr(llm_response, 'usage') and llm_response.usage:
                     await self._update_last_message_usage(agent, llm_response, context)
 
-                await self._add_llm_response_to_memory(agent, llm_response, context, history_messages)
+                # 从 headers 获取 skip_summary 参数
+                skip_summary = message.headers.get("skip_summary", False)
+                await self._add_llm_response_to_memory(agent, llm_response, context, history_messages, skip_summary=skip_summary)
 
             elif event_type == MemoryEventType.TOOL:
                 # Accept ActionResult or dict with tool_call_id/tool_result/content
@@ -173,7 +175,7 @@ class DefaultMemoryHandler(DefaultHandler):
             # Update memory
             self.memory.update(last_message)
 
-    async def _add_llm_response_to_memory(self, agent: Agent, llm_response, context: Context, history_messages: list, **kwargs):
+    async def _add_llm_response_to_memory(self, agent: Agent, llm_response, context: Context, history_messages: list, skip_summary: bool = False, **kwargs):
         """Add LLM response to memory"""
         # 从 context 获取开始时间（如果存在）
         start_time = context.context_info.get("llm_call_start_time")
@@ -196,15 +198,19 @@ class DefaultMemoryHandler(DefaultHandler):
         # 如果 context 中有开始时间，更新它
         if start_time:
             ai_message.metadata['start_time'] = start_time
+        # 记录消息结束时间
+        ai_message.set_end_time()
         
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
             agent_memory_config = context.get_config().get_agent_context_config(agent.id())
 
-        # 记录消息结束时间
-        ai_message.set_end_time()
-        
+        # 如果 skip_summary 为 True，禁用 summary
+        if skip_summary:
+            agent_memory_config['enable_summary'] = False
         await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
+        if skip_summary:
+            agent_memory_config['enable_summary'] = True
 
     async def add_human_input_to_memory(self, agent: Agent, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""

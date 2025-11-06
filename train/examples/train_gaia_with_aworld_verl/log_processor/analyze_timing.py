@@ -312,7 +312,8 @@ def analyze_level_from_log(log_file_path: str, level_id: str, trajectory_dir: st
     """从log文件和trajectory目录分析level数据
     
     Total Task耗时: 从log文件中统计该level_id的所有任务的平均耗时
-    LLM Calls和Tool Calls耗时: 从trajectory目录中统计
+    LLM Calls和Tool Calls耗时: 从trajectory目录中统计每个任务的平均值
+    LLM和Tool调用次数: 从trajectory目录中统计每个任务的平均调用次数
     """
     # 1. 从log文件获取任务总耗时（这是Total Task的耗时）
     task_durations = parse_digest_log(log_file_path, level_id)
@@ -324,33 +325,36 @@ def analyze_level_from_log(log_file_path: str, level_id: str, trajectory_dir: st
     # 计算任务平均总耗时（用于Total Task）
     avg_task_time = sum(task_durations) / len(task_durations)
     
-    # 2. 从trajectory目录获取LLM和工具调用耗时
+    # 2. 从trajectory目录获取LLM和工具调用耗时及平均调用次数
+    # 每个level都有自己独立的trajectory目录，分别计算平均值
     if trajectory_dir and os.path.isdir(trajectory_dir):
         trajectory_data = analyze_directory(trajectory_dir, generate_plot=False)
         if trajectory_data:
+            # analyze_directory返回的已经是平均值（基于该level目录下的所有traj文件）
             avg_llm_time = trajectory_data.get('total_llm_time', 0)
             avg_tool_time = trajectory_data.get('total_tool_time', 0)
-            llm_count = trajectory_data.get('llm_count', 0)
-            tool_count = trajectory_data.get('tool_count', 0)
+            # llm_count和tool_count已经是该level的平均调用次数（四舍五入后的整数）
+            avg_llm_count = trajectory_data.get('llm_count', 0)
+            avg_tool_count = trajectory_data.get('tool_count', 0)
         else:
             print(f"  警告: 无法从trajectory目录获取数据，LLM和Tool耗时设为0")
             avg_llm_time = 0
             avg_tool_time = 0
-            llm_count = 0
-            tool_count = 0
+            avg_llm_count = 0
+            avg_tool_count = 0
     else:
         print(f"  警告: 未找到trajectory目录，LLM和Tool耗时设为0")
         avg_llm_time = 0
         avg_tool_time = 0
-        llm_count = 0
-        tool_count = 0
+        avg_llm_count = 0
+        avg_tool_count = 0
     
     return {
-        'total_time': avg_task_time,  # 来自log文件
-        'total_llm_time': avg_llm_time,  # 来自trajectory目录
-        'total_tool_time': avg_tool_time,  # 来自trajectory目录
-        'llm_count': llm_count,
-        'tool_count': tool_count,
+        'total_time': avg_task_time,  # 来自log文件，所有任务的平均耗时
+        'total_llm_time': avg_llm_time,  # 来自trajectory目录，每个任务的平均LLM耗时
+        'total_tool_time': avg_tool_time,  # 来自trajectory目录，每个任务的平均工具耗时
+        'llm_count': avg_llm_count,  # 来自trajectory目录，每个任务的平均LLM调用次数
+        'tool_count': avg_tool_count,  # 来自trajectory目录，每个任务的平均工具调用次数
         'task_count': len(task_durations)
     }
 
@@ -499,6 +503,8 @@ if __name__ == '__main__':
                 level_data_list.append(chart_data)
                 print(f"  找到 {chart_data['task_count']} 个任务")
                 print(f"  平均任务总耗时: {chart_data['total_time']:.2f}秒")
+                print(f"  平均LLM调用次数: {chart_data['llm_count']} 次")
+                print(f"  平均工具调用次数: {chart_data['tool_count']} 次")
             else:
                 print(f"  警告: Level {i} 分析失败，跳过")
         
