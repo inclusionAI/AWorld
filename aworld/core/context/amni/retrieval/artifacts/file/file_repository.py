@@ -215,13 +215,14 @@ class OssFileRepository(FileRepository):
         """Upload data to OSS."""
         if not self.bucket:
             logger.error("❌ OSS client not initialized")
-            return False
+            return False, key
         
         try:
-            return self.bucket.put_object(key=key, data=data), key
+            result = self.bucket.put_object(key=key, data=data)
+            return result.status == 200, key
         except Exception as e:
             logger.error(f"❌ Error uploading data to OSS with key {key}: {e}")
-            return False
+            return False, key
     
     def delete_data(self, key: str) -> bool:
         """Delete data from OSS."""
