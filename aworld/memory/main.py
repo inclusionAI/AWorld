@@ -579,6 +579,10 @@ class AworldMemory(Memory):
         )
         to_be_summary_items = [item for item in agent_task_total_message if
                                item.memory_type == "message" and not item.has_summary]
+        # filter summary items
+        if not agent_memory_config.summary_summaried:
+            to_be_summary_items = [item for item in agent_task_total_message if
+                                  not item.memory_type == 'summary']
 
         # Filter out incomplete message pairs
         to_be_summary_items = self._filter_incomplete_message_pairs(to_be_summary_items)

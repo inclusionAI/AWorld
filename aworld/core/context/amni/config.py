@@ -84,7 +84,7 @@ class HumanNeuronStrategyConfig(NeuronStrategyConfig):
 
 
 
-class AgentContextConfig(BaseModel):
+class AgentContextConfig(BaseConfig):
     # System Prompt Augment
     enable_system_prompt_augment: bool = Field(default=False, description="enable_system_prompt_augment")
     neuron_names: Optional[list[str]] = Field(default_factory=list)
@@ -126,7 +126,7 @@ class AgentContextConfig(BaseModel):
 
 
 DEFAULT_AGENT_CONFIG = AgentContextConfig()
-class AmniContextConfig(BaseModel):
+class AmniContextConfig(BaseConfig):
     """AmniContext configs"""
 
     # agent config

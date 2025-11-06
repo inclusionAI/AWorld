@@ -9,24 +9,24 @@ from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
+from aworld.config.conf import TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
-from aworld.core.exceptions import AWorldRuntimeException
-from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
-from aworld.config.conf import TaskConfig, TaskRunMode
+from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryToolMessage
+from aworld.memory.models import MemoryItem, MemoryAIMessage
 from aworld.memory.models import MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall
@@ -510,6 +510,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         serializable_messages = to_serializable(messages)
         message.context.context_info["llm_input"] = serializable_messages
         llm_response = None
+        agent_result = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
         # 记录 LLM 调用开始时间（用于设置 MemoryMessage 的 start_time）
@@ -536,9 +537,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         await send_message(output_message)
                 else:
+                    agent_result = await self.model_output_parser.parse(llm_response,
+                                                                        agent_id=self.id(),
+                                                                        use_tools_in_prompt=self.use_tools_in_prompt)
+                    # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
                                                       message_type=MemoryType.AI,
-                                                      context=message.context)
+                                                      context=message.context,
+                                                      skip_summary=self.is_agent_finished(llm_response, agent_result))
             else:
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(f"{self.id()} failed to get LLM response")
@@ -550,9 +556,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as e:
             logger.debug(traceback.format_exc())
 
-        agent_result = await self.model_output_parser.parse(llm_response,
-                                                            agent_id=self.id(),
-                                                            use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
         policy_result: Optional[List[ActionModel]] = None
         if self.is_agent_finished(llm_response, agent_result):
@@ -794,12 +797,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
             return system_prompt_template.format(context=context, task=content, tool_list=tool_list)
 
-    async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context):
+    async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context, skip_summary: bool = False):
         memory_msg = MemoryEventMessage(
             payload=payload,
             agent=self,
             memory_event_type=message_type,
-            headers={"context": context}
+            headers={"context": context, "skip_summary": skip_summary}
         )
         try:
             future = await send_message_with_future(memory_msg)
