@@ -15,7 +15,7 @@ from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
-    from aworld.core.task import Task, TaskResponse
+    from aworld.core.task import Task, TaskResponse, TaskStatus
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
@@ -729,3 +729,10 @@ class Context:
                 logger.error(f"Failed to save checkpoint asynchronously: {e}")
 
         return checkpoint
+
+    async def get_task_status(self, task_id: str):
+        from aworld.core.task import TaskStatus
+        return TaskStatus.SUCCESS
+
+    async def update_task_status(self, task_id: str, status: 'TaskStatus'):
+        pass

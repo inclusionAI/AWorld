@@ -21,7 +21,7 @@ class EventManager:
         # Use named instance 'streaming' to create a separate eventbus instance
         self.streaming_mode = streaming_mode
         if self.streaming_mode and aworld.events.streaming_eventbus is None:
-            aworld.events.streaming_eventbus = InMemoryEventbus.get_instance(name='streaming')
+            aworld.events.streaming_eventbus = InMemoryEventbus()
         self.streaming_eventbus = aworld.events.streaming_eventbus
         
         self.context = context
@@ -157,20 +157,11 @@ class EventManager:
                 return True
             return False
 
-        # Debug: Log all messages and filter decisions
-        from aworld.logs.util import logger
-        passed = filter_stream_message(msg, self.streaming_mode)
-        logger.warn(f"[Streaming Filter] mode={self.streaming_mode}, category={msg.category}, topic={msg.topic}, passed={passed}")
-        
-        if not passed:
+        if not filter_stream_message(msg, self.streaming_mode):
             return
 
         if not self.streaming_eventbus:
             return
 
-        # Debug: Log message info before publishing
-        from aworld.logs.util import logger
-        logger.warn(f"[Streaming] Publishing message - task_id: {msg.task_id}, category: {msg.category}, topic: {msg.topic}, payload: {msg.payload}")
-        
         await self.streaming_eventbus.publish(msg, type='stream')
         return

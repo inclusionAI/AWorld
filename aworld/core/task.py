@@ -2,9 +2,11 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import asyncio
+import enum
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable, Optional
+
 
 from aworld.utils.serialized_util import to_serializable
 
@@ -14,6 +16,17 @@ from aworld.core.common import Config, Observation
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
+
+
+
+class TaskStatus(enum.Enum):
+    INIT = 'init'
+    RUNNING = 'running'
+    SUCCESS = 'success'
+    FAILED = 'failed'
+    CANCELLED = 'cancelled'
+    INTERRUPTED = 'interrupted'
+    TIMEOUT = 'timeout'
 
 
 @dataclass
@@ -53,10 +66,9 @@ class Task:
     max_retry_count: int = 0
     timeout: int = field(default=0)
     observation: Optional[Observation] = field(default=None)
+    task_status: TaskStatus = field(default=TaskStatus.INIT)
     # streaming support
     streaming_mode: str = field(default=None)
-    # task status store for external task control (cancellation/interruption)
-    task_status_store: Optional[Any] = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.
@@ -88,6 +100,7 @@ class Task:
             "max_retry_count": self.max_retry_count,
             "timeout": self.timeout,
             "parent_task_id": self.parent_task.id if self.parent_task else None,
+            "task_status": self.task_status.value,
             # Streaming-related fields (serializable)
             "streaming_mode": self.streaming_mode,
         }
@@ -106,7 +119,7 @@ class TaskResponse:
     msg: str | None = field(default=None)
     trajectory: List[Dict[str, Any]] = field(default_factory=list)
     # task final status, e.g. success/failed/cancelled
-    status: str | None = field(default=None)
+    status: TaskStatus | None = field(default=TaskStatus.SUCCESS)
 
 
 class Runner(object):
