@@ -138,7 +138,7 @@ class DefaultMemoryHandler(DefaultHandler):
             logger.debug(f"🧠 [MEMORY:short-term] histories is not empty, do not need add system input to agent memory")
             return
 
-        await self.memory.add(MemorySystemMessage(
+        system_message = MemorySystemMessage(
             content=content,
             metadata=MessageMetadata(
                 session_id=session_id,
@@ -147,7 +147,10 @@ class DefaultMemoryHandler(DefaultHandler):
                 agent_id=agent.id(),
                 agent_name=agent.name(),
             )
-        ), agent_memory_config=agent.memory_config)
+        )
+        # 记录消息结束时间
+        system_message.set_end_time()
+        await self.memory.add(system_message, agent_memory_config=agent.memory_config)
 
     async def _update_last_message_usage(self, agent: Agent, llm_response, context: Context):
         """Update the usage information of the last message"""
@@ -172,6 +175,9 @@ class DefaultMemoryHandler(DefaultHandler):
 
     async def _add_llm_response_to_memory(self, agent: Agent, llm_response, context: Context, history_messages: list, **kwargs):
         """Add LLM response to memory"""
+        # 从 context 获取开始时间（如果存在）
+        start_time = context.context_info.get("llm_call_start_time")
+        
         ai_message = MemoryAIMessage(
             content=llm_response.content,
             tool_calls=llm_response.tool_calls,
@@ -186,10 +192,18 @@ class DefaultMemoryHandler(DefaultHandler):
                 }
             )
         )
+        
+        # 如果 context 中有开始时间，更新它
+        if start_time:
+            ai_message.metadata['start_time'] = start_time
+        
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
             agent_memory_config = context.get_config().get_agent_context_config(agent.id())
 
+        # 记录消息结束时间
+        ai_message.set_end_time()
+        
         await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
 
     async def add_human_input_to_memory(self, agent: Agent, content: Any, context: Context, memory_type="init"):
@@ -204,7 +218,7 @@ class DefaultMemoryHandler(DefaultHandler):
         if self._is_amni_context(context):
             agent_memory_config = context.get_config().get_agent_context_config(agent.id())
 
-        await self.memory.add(MemoryHumanMessage(
+        human_message = MemoryHumanMessage(
             content=content,
             metadata=MessageMetadata(
                 session_id=session_id,
@@ -214,7 +228,10 @@ class DefaultMemoryHandler(DefaultHandler):
                 agent_name=agent.name(),
             ),
             memory_type=memory_type
-        ), agent_memory_config=agent_memory_config)
+        )
+        # 记录消息结束时间
+        human_message.set_end_time()
+        await self.memory.add(human_message, agent_memory_config=agent_memory_config)
 
     async def add_tool_result_to_memory(self, agent: 'Agent', tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""
@@ -255,7 +272,11 @@ class DefaultMemoryHandler(DefaultHandler):
         tool_use_summary = None
         if isinstance(tool_result, ActionResult):
             tool_use_summary = tool_result.metadata.get("tool_use_summary")
-        await memory.add(MemoryToolMessage(
+        
+        # 从 context 获取开始时间（如果存在）
+        start_time = context.context_info.get(f"tool_call_start_time_{tool_call_id}")
+        
+        tool_message = MemoryToolMessage(
             content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
             tool_call_id=tool_call_id,
             status="success",
@@ -268,7 +289,16 @@ class DefaultMemoryHandler(DefaultHandler):
                 summary_content=tool_use_summary,
                 ext_info={"tool_name": tool_result.tool_name, "action_name": tool_result.action_name}
             )
-        ), agent_memory_config=agent.memory_config)
+        )
+        
+        # 如果 context 中有开始时间，更新它
+        if start_time:
+            tool_message.metadata['start_time'] = start_time
+        
+        # 记录消息结束时间
+        tool_message.set_end_time()
+        
+        await memory.add(tool_message, agent_memory_config=agent.memory_config)
 
     def _is_amni_context(self, context: Context):
         from aworld.core.context.amni import AmniContext

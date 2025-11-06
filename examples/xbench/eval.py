@@ -170,8 +170,14 @@ async def evaluate():
             if not case_result.score_rows or not case_result.score_rows.get('AnswerAccuracyLLMScorer'):
                 continue
             answer_acc = case_result.score_rows.get('AnswerAccuracyLLMScorer').metric_results.get('answer_accuracy')
-            cost_time = case_result.score_rows.get('TimeCostScorer').metric_results.get('predict_time_cost_ms')
-            f.write(f"{case_result.eval_case_id}|{case_result.input.case_data.get('id')}|{answer_acc.get('eval_status')}|{int(cost_time.get('value')/1000)}\n")
+            time_cost_scorer = case_result.score_rows.get('TimeCostScorer')
+            cost_time = time_cost_scorer.metric_results.get('predict_time_cost_ms') if time_cost_scorer and time_cost_scorer.metric_results else None
+            
+            # 处理可能为 None 的情况
+            answer_status = answer_acc.get('eval_status') if answer_acc else 'N/A'
+            cost_time_value = int(cost_time.get('value')/1000) if cost_time and cost_time.get('value') else 0
+            
+            f.write(f"{case_result.eval_case_id}|{case_result.input.case_data.get('id')}|{answer_status}|{cost_time_value}\n")
 
 
 if __name__ == '__main__':
