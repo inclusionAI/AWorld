@@ -129,8 +129,8 @@ DEFAULT_AGENT_CONFIG = AgentContextConfig()
 class ContextEnvConfig(BaseModel):
     """Represents environment configuration for an agent team."""
     isolate: bool = Field(default=False, description="One Task, One Isolate Env")
-    working_dir_type: str = Field(default="local", description="Working directory Type")
-    working_dir_path: str = Field(default="~/workspaces", description="Env Working directory for share")
+    env_type: str = Field(default="local", description="Env Type, local|remote")
+    env_mount_path: str = Field(default="~/workspaces", description="Env Working directory for share")
 
 class AmniContextConfig(BaseModel):
     """AmniContext configs"""

@@ -14,12 +14,14 @@ class DirArtifact(Artifact):
     base_path: Optional[str] = Field(default='', description="base path for file uploads")
     file_repository: Optional[FileRepository] = Field(default=None, description="file repository", exclude=True)
     inner_attachments: Optional[List[ArtifactAttachment]] = Field(default=None, description="inner attachments", exclude=True)
+    mount_path: Optional[str] = Field(default='', description="mount path for file uploads")
 
     def __init__(self, 
                  content: Any = None,
                  metadata: Optional[Dict[str, Any]] = None,
                  file_repository: Optional[FileRepository] = None,
                  base_path: Optional[str] = None,
+                 mount_path: Optional[str] = None,
                  **kwargs):
         # Set default artifact type to DIR for file artifacts
         artifact_type = kwargs.get('artifact_type', ArtifactType.DIR)
@@ -34,6 +36,8 @@ class DirArtifact(Artifact):
         
         # Set base path for file uploads
         self.base_path = base_path or ""
+
+        self.mount_path = mount_path or base_path or ""
         
         # Initialize file repository (defaults to OSS if not provided)
         self.file_repository = file_repository or OssFileRepository()
@@ -42,7 +46,7 @@ class DirArtifact(Artifact):
     def with_local_repository(cls, base_path: str, **kwargs) -> 'DirArtifact':
         """Create a DirArtifact with a local file repository."""
         local_repo = LocalFileRepository(base_path)
-        return cls(file_repository=local_repo, base_path=base_path, **kwargs)
+        return cls(file_repository=local_repo, base_path=base_path, mount_path=base_path, **kwargs)
     
     @classmethod
     def with_oss_repository(cls, 
