@@ -183,7 +183,7 @@ async def exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()) -> Di
         if not task.group_id:
             task.group_id = uuid.uuid4().hex
         final_tasks.append(task)
-    runners = await choose_runners(final_tasks, run_conf=run_conf)
+    runners = await choose_runners(final_tasks)
     return await execute_runner(runners, run_conf)
 
 
@@ -192,7 +192,7 @@ async def serial_exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()
     task_input = tasks[0].input
     for task in tasks:
         task.input = task_input
-        runners = await choose_runners([task], run_conf=run_conf)
+        runners = await choose_runners([task])
         res = await execute_runner(runners, run_conf)
         result: TaskResponse = res.get(task.id)
         if result.success:

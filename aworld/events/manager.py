@@ -18,7 +18,6 @@ class EventManager:
         self.event_bus = eventbus
         
         # Initialize global streaming_eventbus if enable_stream is True
-        # Use named instance 'streaming' to create a separate eventbus instance
         self.streaming_mode = streaming_mode
         if self.streaming_mode and aworld.events.streaming_eventbus is None:
             aworld.events.streaming_eventbus = InMemoryEventbus()

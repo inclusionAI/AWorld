@@ -48,10 +48,6 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
         """
         return getattr(self.__class__, "REGISTERED_NAME", None)
 
-    def is_stream_handler(self):
-        """Check if the handler is a stream handler. Return False by default."""
-        return False
-
     def is_valid_message(self, message: Message):
         """Validate if the message is valid for this handler.
         

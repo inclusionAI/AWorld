@@ -72,12 +72,8 @@ class TaskRunner(Runner):
         if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE and self.task.agent:
             self.task.agent.wait_tool_result = True
 
-        # streaming support
-        self.run_conf = None  # Will be set if needed for streaming queue recreation
-
         if task.streaming_mode:
             agents = task.swarm.agents
-            logger.info(f"task agents: {agents}")
             if not agents:
                 raise ValueError("Cannot find `agent` or `swarm` in task.")
             for agent_id, agent in agents.items():
