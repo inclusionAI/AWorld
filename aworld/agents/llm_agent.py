@@ -27,8 +27,7 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryToolMessage
-from aworld.memory.models import MemoryMessage
+from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
@@ -85,7 +84,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                 agent_info = AgentFactory.agent_instance(agent_id)
                 if full_name and not full_name.startswith(
                         "mcp__") and agent_info and agent_info.sandbox and agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers and len(
-                        agent_info.sandbox.mcpservers.mcp_servers) > 0:
+                    agent_info.sandbox.mcpservers.mcp_servers) > 0:
                     if agent_info.sandbox.mcpservers.map_tool_list:
                         _server_name = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
                         if _server_name:
@@ -196,9 +195,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.need_reset = need_reset if need_reset else conf.need_reset
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = step_reset
-        # tool_name: [tool_action1, tool_action2, ...]
-        # self.black_tool_actions: Dict[str, List[str]] = black_tool_actions if black_tool_actions \
-        #     else conf.get('black_tool_actions', {})
         self.model_output_parser = model_output_parser
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
@@ -210,7 +206,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self._llm is None:
             llm_config = self.conf.llm_config or None
             conf = llm_config if llm_config and (
-                llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
+                    llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
             self._llm = get_llm_model(conf)
         return self._llm
 
@@ -356,7 +352,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                 tool_calls)})
                 else:
                     if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
-                            'tool_calls']:
+                        'tool_calls']:
                         messages.append({'role': history.metadata['role'], 'content': history.content,
                                          'tool_calls': [history.metadata["tool_calls"][0]]})
                     else:
@@ -380,16 +376,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return messages
 
     async def init_observation(self, observation: Observation) -> Observation:
-        # supported string only
-        # if self.task and isinstance(self.task, str) and self.task != observation.content:
-        #     observation.content = f"base task is: {self.task}\n{observation.content}"
-        #     # `task` only needs to be processed once and reflected in the context
-        #     self.task = None
-
         # default use origin observation
         return observation
 
-    def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
+    def _log_messages(self, messages: List[Dict[str, Any]], context: Context, **kwargs) -> None:
         PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
@@ -468,7 +458,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         )
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
-            ActionModel]:
+        ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -552,7 +542,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                             agent_id=self.id(),
                                                             use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
-        policy_result: Optional[List[ActionModel]] = None
+
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
@@ -668,7 +658,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         try:
             tools = await self._filter_tools(message.context)
             self._log_messages(messages, tools=tools, context=message.context)
-            stream_mode = kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
+            stream_mode = kwargs.get("stream",
+                                     False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)
             if stream_mode:
                 llm_response = ModelResponse(
@@ -702,7 +693,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                     headers=message.headers))
 
             else:
-                # logger.info(f"llm_agent|invoke_model|tools={self.tools}")
                 llm_response = await acall_llm_model(
                     self.llm,
                     messages=messages,
@@ -844,7 +834,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # get current active skills
         skills = await context.get_active_skills(namespace=self.id())
 
-        return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools, tool_mapping=self.tool_mapping)
+        return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools,
+                                           tool_mapping=self.tool_mapping)
 
     async def _add_tool_result_token_ids_to_context(self, context: Context):
         """Add tool result token ids to context"""
@@ -873,3 +864,36 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             context.add_tool_resp_token_ids(tool_resp_token_ids=tool_result_token_ids,
                                             resp_tool_call_ids=tool_call_ids,
                                             agent_id=self.id())
+
+    @staticmethod
+    async def to_dict(agent, override: Dict[str, Any] = None):
+        """Agent attribute dict."""
+        attr_dict = {
+            "name": agent.name(),
+            "conf": agent.conf,
+            "desc": agent.desc(),
+            "task": agent.task,
+            "tool_names": agent.tool_names,
+            "agent_names": agent.handoffs,
+            "mcp_servers": agent.mcp_servers,
+            "mcp_config": agent.mcp_config,
+            "feedback_tool_result": agent.feedback_tool_result,
+            "wait_tool_result": agent.wait_tool_result,
+            "system_prompt": agent.system_prompt,
+            "need_reset": agent.need_reset,
+            "step_reset": agent.step_reset,
+            "use_tools_in_prompt": agent.use_tools_in_prompt,
+            "black_tool_actions": agent.black_tool_actions,
+            "model_output_parser": agent.model_output_parser,
+            "tool_aggregate_func": agent.tools_aggregate_func,
+            "event_handler_name": agent.event_handler_name,
+            "event_driven": agent.event_driven,
+            "skill_configs": agent.skill_configs
+        }
+        if override:
+            attr_dict.update(override)
+        return attr_dict
+
+    @staticmethod
+    def from_dict(attr_dict: Dict[str, Any]) -> 'Agent':
+        return Agent(**attr_dict)
