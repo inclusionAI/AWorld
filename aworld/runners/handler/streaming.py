@@ -38,23 +38,23 @@ class DefaultStreamMessageHandler(DefaultHandler):
             return True
         if streaming_mode == "chunk_output" and message.category == Constants.CHUNK:
             return True
-        if streaming_mode == "custom":
-            streaming_config = self.runner.task.streaming_config
-            # todo: customize
         if streaming_mode == "all":
             return True
+        # todo: customize
+        # if streaming_mode == "custom":
+        #     streaming_config = self.runner.task.streaming_config
         return False
 
     async def _do_handle(self, message):
         if not self.is_valid_message(message):
             return
 
-        queue_provider = self.runner.task.streaming_queue_provider
+        streaming_eventbus = self.runner.streaming_eventbus
 
-        if not queue_provider:
+        if not streaming_eventbus:
             yield Message(
                 category=Constants.TASK,
-                payload=TaskItem(msg="Cannot get streaming queue.",
+                payload=TaskItem(msg="Cannot get streaming eventbus.",
                                  data=message, stop=True),
                 sender=self.name(),
                 session_id=self.runner.context.session_id,
@@ -64,6 +64,6 @@ class DefaultStreamMessageHandler(DefaultHandler):
             return
         
         # Use new provider interface if available, otherwise fallback to old queue
-        if queue_provider:
-            await queue_provider.put(message)
+        if streaming_eventbus:
+            await streaming_eventbus.publish(message)
         return

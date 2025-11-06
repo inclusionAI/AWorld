@@ -17,6 +17,7 @@ from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, A
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse
 from aworld.dataset.trajectory_dataset import generate_trajectory
+from aworld.events import streaming_eventbus
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -47,6 +48,8 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
 
+        self.streaming_eventbus = streaming_eventbus
+
         # Task status store for cancellation/interruption control
         if not self.task_status_store:
             self.task_status_store = kwargs.get("task_status_store") or InMemoryTaskStatusStore()
@@ -71,9 +74,10 @@ class TaskEventRunner(TaskRunner):
                 await self._save_trajectories()
                 resp = self._response()
                 if self.task.streaming_mode:
-                    if self.task.streaming_queue_provider:
-                        await self.task.streaming_queue_provider.put(
-                            Message(payload=resp, session_id=self.context.session_id, topic=TopicType.TASK_RESPONSE))
+                    if self.streaming_eventbus:
+                        task_resp_msg = Message(payload=resp, session_id=self.context.session_id, topic=TopicType.TASK_RESPONSE)
+                        task_resp_msg.context = self.context
+                        await self.streaming_eventbus.publish(task_resp_msg)
                 logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished'
                             f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
                 return resp
@@ -414,13 +418,7 @@ class TaskEventRunner(TaskRunner):
 
             # Save checkpoint before stopping
             try:
-                checkpoint = await self.context.save_checkpoint_async(
-                    metadata_extra={
-                        "reason": reason,
-                        "status": TaskStatus.CANCELLED,
-                        "time_cost": time_cost
-                    }
-                )
+                checkpoint = await self.context.snapshot()
                 logger.info(f"Saved context checkpoint {checkpoint.id} for cancelled task {self.task.id}")
             except Exception as e:
                 logger.error(f"Failed to save checkpoint for cancelled task {self.task.id}: {e}")
@@ -442,13 +440,7 @@ class TaskEventRunner(TaskRunner):
 
             # Save checkpoint before stopping
             try:
-                checkpoint = await self.context.save_checkpoint_async(
-                    metadata_extra={
-                        "reason": reason,
-                        "status": TaskStatus.INTERRUPTED,
-                        "time_cost": time_cost
-                    }
-                )
+                checkpoint = await self.context.snapshot()
                 logger.info(f"Saved context checkpoint {checkpoint.id} for interrupted task {self.task.id}")
             except Exception as e:
                 logger.error(f"Failed to save checkpoint for interrupted task {self.task.id}: {e}")
@@ -525,13 +517,7 @@ class TaskEventRunner(TaskRunner):
 
         # Save current context checkpoint before cancellation
         try:
-            checkpoint = await self.context.save_checkpoint_async(
-                metadata_extra={
-                    "reason": reason,
-                    "status": TaskStatus.CANCELLED,
-                    "event": "cancel"
-                }
-            )
+            checkpoint = await self.context.snapshot()
             logger.info(f"Saved context checkpoint {checkpoint.id} for cancelled task {self.task.id}")
         except Exception as e:
             logger.error(f"Failed to save checkpoint for task {self.task.id}: {e}")
@@ -579,13 +565,7 @@ class TaskEventRunner(TaskRunner):
 
         # Save current context checkpoint before interruption
         try:
-            checkpoint = await self.context.save_checkpoint_async(
-                metadata_extra={
-                    "reason": reason,
-                    "status": TaskStatus.INTERRUPTED,
-                    "event": "interrupt"
-                }
-            )
+            checkpoint = await self.context.snapshot()
             logger.info(f"Saved context checkpoint {checkpoint.id} for interrupted task {self.task.id}")
         except Exception as e:
             logger.error(f"Failed to save checkpoint for task {self.task.id}: {e}")
