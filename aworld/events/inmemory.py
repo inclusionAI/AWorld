@@ -2,7 +2,6 @@
 # Copyright (c) 2025 inclusionAI.
 from asyncio import Queue, PriorityQueue, QueueEmpty
 from inspect import isfunction
-import threading
 from typing import Dict, Callable, Any, List
 
 from aworld.core.common import Config

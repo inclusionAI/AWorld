@@ -12,13 +12,12 @@ from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import new_instance, snake_to_camel
 
 
-async def choose_runners(tasks: List[Task], agent_oriented: bool = True, run_conf: RunConfig = None) -> List[Runner]:
+async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List[Runner]:
     """Choose the correct runner to run the task.
 
     Args:
         tasks: A list of tasks that contains agents, tools and datas.
         agent_oriented: Whether the runner is agent-oriented.
-        run_conf: Runtime configuration.
 
     Returns:
         Runner instance or exception.

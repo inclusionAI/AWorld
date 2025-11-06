@@ -308,14 +308,6 @@ class TaskEventRunner(TaskRunner):
             await self.event_mng.emit_message(error_msg)
         finally:
             if await self.is_stopped():
-                # Update final task status in store
-                if self._task_response:
-                    if self.event_mng.streaming_eventbus:
-                        task_resp_msg = Message(payload=self._task_response, session_id=self.context.session_id,
-                                                topic=TopicType.TASK_RESPONSE)
-                        task_resp_msg.context = self.context
-                        await self.event_mng.streaming_eventbus.publish(task_resp_msg)
-
                 try:
                     await self.context.update_task_after_run(self._task_response)
                 except:
