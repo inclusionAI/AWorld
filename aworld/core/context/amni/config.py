@@ -131,6 +131,7 @@ class ContextEnvConfig(BaseModel):
     isolate: bool = Field(default=False, description="One Task, One Isolate Env")
     env_type: str = Field(default="local", description="Env Type, local|remote")
     env_mount_path: str = Field(default="~/workspace", description="Env Working directory for share")
+    env_config: dict = Field(default_factory=dict, description="Env Config")
 
 class AmniContextConfig(BaseModel):
     """AmniContext configs"""
