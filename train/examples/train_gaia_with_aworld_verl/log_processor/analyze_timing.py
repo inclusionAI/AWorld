@@ -32,13 +32,8 @@ try:
     
     if chinese_font:
         matplotlib.rcParams['font.sans-serif'] = [chinese_font] + matplotlib.rcParams['font.sans-serif']
-        print(f"使用字体: {chinese_font}")
-    else:
-        # 如果没有找到中文字体，使用英文标签
-        print("未找到中文字体，将使用英文标签")
-        matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']
-except Exception as e:
-    print(f"字体设置失败: {e}，将使用默认字体")
+except Exception:
+    # 静默使用默认字体
     matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']
 
 matplotlib.rcParams['axes.unicode_minus'] = False
@@ -63,9 +58,12 @@ def analyze_single_trajectory(file_path: str, silent: bool = False):
         # 尝试使用ast.literal_eval解析Python字典格式
         try:
             data = ast.literal_eval(content)
-        except:
+        except (ValueError, SyntaxError):
             # 如果不是Python格式，尝试JSON
-            data = json.loads(content)
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"无法解析文件 {file_path}: 既不是有效的Python字典也不是JSON格式") from e
     
     llm_durations = []  # LLM调用耗时
     tool_durations = []  # 工具调用耗时
@@ -155,16 +153,15 @@ def analyze_single_trajectory(file_path: str, silent: bool = False):
     
     return result_data
 
-def plot_timing_analysis(data: Dict, output_path: str = None):
-    """生成耗时分析图表"""
-    # 支持两种数据格式：完整数据或汇总数据
+def extract_timing_data(data: Dict) -> Dict:
+    """从数据字典中提取耗时和调用次数信息"""
     if 'total_time' in data:
         # 汇总数据（来自目录分析）
         total_llm_time = data.get('total_llm_time', 0)
         total_tool_time = data.get('total_tool_time', 0)
         total_time = data.get('total_time', total_llm_time + total_tool_time)
-        llm_count = data.get('llm_count', 0)
-        tool_count = data.get('tool_count', 0)
+        llm_count = int(round(data.get('llm_count', 0)))
+        tool_count = int(round(data.get('tool_count', 0)))
     else:
         # 完整数据（来自单个文件分析）
         llm_durations = data.get('llm_durations', [])
@@ -175,8 +172,21 @@ def plot_timing_analysis(data: Dict, output_path: str = None):
         llm_count = len(llm_durations)
         tool_count = len(tool_durations)
     
-    # 创建单个柱状图
-    fig, ax = plt.subplots(figsize=(10, 6))
+    return {
+        'total_time': total_time,
+        'total_llm_time': total_llm_time,
+        'total_tool_time': total_tool_time,
+        'llm_count': llm_count,
+        'tool_count': tool_count
+    }
+
+def plot_single_bar_chart(ax, timing_data: Dict, title: str = 'Timing Analysis Report'):
+    """在指定的axes上绘制单个柱状图"""
+    total_time = timing_data['total_time']
+    total_llm_time = timing_data['total_llm_time']
+    total_tool_time = timing_data['total_tool_time']
+    llm_count = timing_data['llm_count']
+    tool_count = timing_data['tool_count']
     
     # 准备数据：任务总耗时、LLM调用总耗时、工具调用总耗时
     categories = ['Total Task', 'LLM Calls', 'Tool Calls']
@@ -184,15 +194,12 @@ def plot_timing_analysis(data: Dict, output_path: str = None):
     counts = [llm_count + tool_count, llm_count, tool_count]
     
     # 创建标签，Total Task不加括号，其他加上调用次数（带"calls"）
-    labels = []
-    labels.append('Total Task')  # Total Task不加括号
+    labels = ['Total Task']
     labels.append(f'LLM Calls ({llm_count} calls)')
     labels.append(f'Tool Calls ({tool_count} calls)')
     
     x_pos = range(len(categories))
     width = 0.6
-    
-    # 使用不同颜色
     colors = ['#FFA07A', '#FF6B6B', '#4ECDC4']
     
     bars = ax.bar(x_pos, times, width, color=colors, alpha=0.8, 
@@ -200,7 +207,7 @@ def plot_timing_analysis(data: Dict, output_path: str = None):
     
     ax.set_xlabel('Type', fontsize=12, fontweight='bold')
     ax.set_ylabel('Total Time (seconds)', fontsize=12, fontweight='bold')
-    ax.set_title('Timing Analysis Report', fontsize=14, fontweight='bold')
+    ax.set_title(title, fontsize=14, fontweight='bold')
     ax.set_xticks(x_pos)
     ax.set_xticklabels(labels, fontsize=11)
     ax.grid(axis='y', alpha=0.3)
@@ -212,6 +219,16 @@ def plot_timing_analysis(data: Dict, output_path: str = None):
                 f'{time:.1f}s', ha='center', va='bottom',
                 fontsize=10, fontweight='bold')
     
+    return max(times)  # 返回最大耗时，用于统一y轴
+
+def plot_timing_analysis(data: Dict, output_path: str = None):
+    """生成耗时分析图表"""
+    timing_data = extract_timing_data(data)
+    
+    # 创建单个柱状图
+    fig, ax = plt.subplots(figsize=(10, 6))
+    plot_single_bar_chart(ax, timing_data, 'Timing Analysis Report')
+    
     # 保存图表
     if output_path is None:
         output_path = 'timing_analysis.png'
@@ -219,6 +236,46 @@ def plot_timing_analysis(data: Dict, output_path: str = None):
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
     print(f"\n📊 图表已保存到: {output_path}")
+    plt.close()
+
+def plot_multi_level_analysis(level_data_list: List[Dict], output_path: str = None):
+    """生成多Level对比图表，每个Level一个柱状图"""
+    if len(level_data_list) != 3:
+        raise ValueError("需要提供3个Level的数据")
+    
+    # 提取所有Level的数据
+    timing_data_list = [extract_timing_data(data) for data in level_data_list]
+    
+    # 计算所有Level的最大耗时，用于统一y轴范围
+    max_time = max(td['total_time'] for td in timing_data_list)
+    y_max = max_time * 1.15  # 留15%的顶部空间
+    
+    # 创建3个子图：1行3列
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    level_titles = ['Level 1', 'Level 2', 'Level 3']
+    
+    for idx, (timing_data, ax) in enumerate(zip(timing_data_list, axes)):
+        # 绘制柱状图
+        plot_single_bar_chart(ax, timing_data, level_titles[idx])
+        
+        # 统一y轴范围
+        ax.set_ylim(0, y_max)
+        
+        # 调整标签角度以适应3个子图布局
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=15, ha='right', fontsize=10)
+        ax.set_xlabel('Type', fontsize=11, fontweight='bold')
+        ax.set_ylabel('Total Time (seconds)', fontsize=11, fontweight='bold')
+    
+    # 添加总标题
+    fig.suptitle('Multi-Level Timing Analysis', fontsize=16, fontweight='bold', y=1.02)
+    
+    # 保存图表
+    if output_path is None:
+        output_path = 'multi_level_timing_analysis.png'
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    print(f"\n📊 多Level对比图表已保存到: {output_path}")
     plt.close()
 
 def analyze_directory(directory_path: str, generate_plot: bool = True):
@@ -257,15 +314,19 @@ def analyze_directory(directory_path: str, generate_plot: bool = True):
     avg_llm_count = sum(r['llm_count'] for r in all_results) / num_files
     avg_tool_count = sum(r['tool_count'] for r in all_results) / num_files
     
+    # 调用次数取整（因为平均值可能为小数）
+    avg_llm_count_int = int(round(avg_llm_count))
+    avg_tool_count_int = int(round(avg_tool_count))
+    
     # 打印统计信息
     print("\n" + "=" * 80)
     print(f"平均统计结果 (基于 {num_files} 个文件)")
     print("=" * 80)
     
     print(f"\n📊 平均统计:")
-    print(f"  平均LLM调用次数: {avg_llm_count:.2f}")
-    print(f"  平均工具调用次数: {avg_tool_count:.2f}")
-    print(f"  平均总调用次数: {avg_llm_count + avg_tool_count:.2f}")
+    print(f"  平均LLM调用次数: {avg_llm_count:.2f} (约 {avg_llm_count_int})")
+    print(f"  平均工具调用次数: {avg_tool_count:.2f} (约 {avg_tool_count_int})")
+    print(f"  平均总调用次数: {avg_llm_count + avg_tool_count:.2f} (约 {avg_llm_count_int + avg_tool_count_int})")
     
     print(f"\n📈 平均耗时:")
     print(f"  平均LLM调用总耗时: {avg_total_llm_time:.2f}秒")
@@ -288,8 +349,8 @@ def analyze_directory(directory_path: str, generate_plot: bool = True):
         'total_llm_time': avg_total_llm_time,
         'total_tool_time': avg_total_tool_time,
         'total_time': avg_total_time,
-        'llm_count': int(round(avg_llm_count)),
-        'tool_count': int(round(avg_tool_count))
+        'llm_count': avg_llm_count_int,
+        'tool_count': avg_tool_count_int
     }
     
     # 生成图表
@@ -302,27 +363,67 @@ def analyze_directory(directory_path: str, generate_plot: bool = True):
 if __name__ == '__main__':
     import sys
     if len(sys.argv) < 2:
-        print("用法: python analyze_timing.py <directory_path> [--no-plot]")
-        print("      扫描目录下所有 traj_*.json 文件并计算平均值")
+        print("用法:")
+        print("  1. 单个文件: python analyze_timing.py <file_path> [--no-plot]")
+        print("  2. 单个目录: python analyze_timing.py <directory_path> [--no-plot]")
+        print("  3. 3个Level对比: python analyze_timing.py <dir1> <dir2> <dir3> [output_path]")
         sys.exit(1)
     
-    path = sys.argv[1]
+    # 过滤掉--no-plot参数
+    args = [arg for arg in sys.argv[1:] if arg != '--no-plot']
     generate_plot = '--no-plot' not in sys.argv
     
-    # 判断是文件还是目录
-    if os.path.isfile(path):
-        # 单个文件模式（向后兼容）
-        analyze_single_trajectory(path, silent=False)
-        if generate_plot:
-            base_name = os.path.splitext(os.path.basename(path))[0]
-            output_dir = os.path.dirname(path)
-            output_path = os.path.join(output_dir, f'{base_name}_timing_analysis.png')
-            result = analyze_single_trajectory(path, silent=True)
-            plot_timing_analysis(result, output_path)
-    elif os.path.isdir(path):
-        # 目录模式
-        analyze_directory(path, generate_plot=generate_plot)
+    # 检查是否是3个目录模式
+    if len(args) >= 3:
+        # 3个Level对比模式
+        dir1 = args[0]
+        dir2 = args[1]
+        dir3 = args[2]
+        output_path = args[3] if len(args) > 3 else None
+        
+        if not all(os.path.isdir(d) for d in [dir1, dir2, dir3]):
+            print("错误: 3个Level模式需要提供3个有效的目录路径")
+            sys.exit(1)
+        
+        print("=" * 80)
+        print("多Level对比分析")
+        print("=" * 80)
+        
+        # 分析每个目录
+        level_data_list = []
+        for i, directory in enumerate([dir1, dir2, dir3], 1):
+            print(f"\n分析 Level {i}: {directory}")
+            chart_data = analyze_directory(directory, generate_plot=False)
+            if chart_data:
+                level_data_list.append(chart_data)
+            else:
+                print(f"警告: Level {i} 分析失败，跳过")
+        
+        if len(level_data_list) == 3:
+            if output_path is None:
+                # 使用第一个目录作为输出目录
+                output_path = os.path.join(dir1, 'multi_level_timing_analysis.png')
+            plot_multi_level_analysis(level_data_list, output_path)
+        else:
+            print("错误: 需要成功分析3个Level才能生成对比图")
+            sys.exit(1)
     else:
-        print(f"错误: {path} 不是有效的文件或目录")
-        sys.exit(1)
+        # 单个文件或目录模式
+        path = args[0]
+        
+        if os.path.isfile(path):
+            # 单个文件模式（向后兼容）
+            analyze_single_trajectory(path, silent=False)
+            if generate_plot:
+                base_name = os.path.splitext(os.path.basename(path))[0]
+                output_dir = os.path.dirname(path)
+                output_path = os.path.join(output_dir, f'{base_name}_timing_analysis.png')
+                result = analyze_single_trajectory(path, silent=True)
+                plot_timing_analysis(result, output_path)
+        elif os.path.isdir(path):
+            # 目录模式
+            analyze_directory(path, generate_plot=generate_plot)
+        else:
+            print(f"错误: {path} 不是有效的文件或目录")
+            sys.exit(1)
 
