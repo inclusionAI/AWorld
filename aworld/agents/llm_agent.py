@@ -1,9 +1,11 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import json
+import time
 import traceback
 import uuid
 from collections import OrderedDict
+from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
@@ -510,6 +512,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+        # 记录 LLM 调用开始时间（用于设置 MemoryMessage 的 start_time）
+        llm_call_start_time = datetime.now().isoformat()
+        message.context.context_info["llm_call_start_time"] = llm_call_start_time
         try:
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
@@ -553,6 +558,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
+            # 记录工具执行开始时间
+            tools_execution_start_time = time.time()
+            # 记录所有工具调用的开始时间（用于设置 MemoryMessage 的 start_time）
+            for act in agent_result.actions:
+                tool_call_start_time = datetime.now().isoformat()
+                message.context.context_info[f"tool_call_start_time_{act.tool_call_id}"] = tool_call_start_time
+            
             if not self.wait_tool_result:
                 policy_result = agent_result.actions
             else:
@@ -593,8 +605,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                              sub_task=True,
                                              outputs=message.context.outputs,
                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
-            if not act_result.success:
-                logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
+            
+            if not act_result or not act_result.success:
+                error_msg = act_result.msg if act_result else "Unknown error"
+                logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {error_msg}",
                                color=Color.red)
                 continue
             act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer)

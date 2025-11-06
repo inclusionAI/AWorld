@@ -313,6 +313,9 @@ class MemoryMessage(MemoryItem):
     def __init__(self, role: str, metadata: MessageMetadata, content: Optional[Any] = None, memory_type="message", **kwargs) -> None:
         meta = metadata.to_dict
         meta['role'] = role
+        # 记录开始时间
+        if 'start_time' not in meta:
+            meta['start_time'] = datetime.now().isoformat()
         super().__init__(content=content, metadata=meta, memory_type=memory_type, **kwargs)
 
     @property
@@ -337,6 +340,21 @@ class MemoryMessage(MemoryItem):
     @property
     def agent_id(self) -> str:
         return self.metadata['agent_id']
+    
+    @property
+    def start_time(self) -> Optional[str]:
+        """获取消息开始时间"""
+        return self.metadata.get('start_time')
+    
+    @property
+    def end_time(self) -> Optional[str]:
+        """获取消息结束时间"""
+        return self.metadata.get('end_time')
+    
+    def set_end_time(self):
+        """设置消息结束时间"""
+        self.metadata['end_time'] = datetime.now().isoformat()
+        self.updated_at = datetime.now().isoformat()
     
     @abstractmethod
     def to_openai_message(self) -> dict:
@@ -430,9 +448,10 @@ class MemoryToolMessage(MemoryMessage):
         content (str): The content of the message.
     """
     def __init__(self, tool_call_id: str, content: Any, status: Literal["success", "error"] = "success", metadata: MessageMetadata = None, **kwargs) -> None:
-        metadata.tool_call_id = tool_call_id
-        metadata.status = status
-        super().__init__(role="tool", metadata=metadata, content=content, **kwargs)
+        meta = metadata.to_dict if metadata else {}
+        meta['tool_call_id'] = tool_call_id
+        meta['status'] = status
+        super().__init__(role="tool", metadata=MessageMetadata(**meta), content=content, **kwargs)
 
     @property
     def tool_call_id(self) -> str:
