@@ -278,6 +278,82 @@ def plot_multi_level_analysis(level_data_list: List[Dict], output_path: str = No
     print(f"\n📊 多Level对比图表已保存到: {output_path}")
     plt.close()
 
+def parse_digest_log(log_file_path: str, level_id: str) -> List[float]:
+    """从digest log文件中解析指定level_id的所有任务执行耗时"""
+    task_durations = []
+    
+    try:
+        with open(log_file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # 解析格式: eval_task_digest|level_id|task_id|duration|usage_dict
+                parts = line.split('|')
+                if len(parts) >= 4 and parts[0] == 'eval_task_digest':
+                    log_level_id = parts[1]
+                    if log_level_id == level_id:
+                        try:
+                            duration = float(parts[3])
+                            task_durations.append(duration)
+                        except (ValueError, IndexError):
+                            continue
+    except FileNotFoundError:
+        print(f"错误: 找不到log文件 {log_file_path}")
+        return []
+    except Exception as e:
+        print(f"错误: 读取log文件时出错: {e}")
+        return []
+    
+    return task_durations
+
+def analyze_level_from_log(log_file_path: str, level_id: str, trajectory_dir: str = None) -> Dict:
+    """从log文件和trajectory目录分析level数据
+    
+    Total Task耗时: 从log文件中统计该level_id的所有任务的平均耗时
+    LLM Calls和Tool Calls耗时: 从trajectory目录中统计
+    """
+    # 1. 从log文件获取任务总耗时（这是Total Task的耗时）
+    task_durations = parse_digest_log(log_file_path, level_id)
+    
+    if not task_durations:
+        print(f"警告: 在log文件中未找到 level_id {level_id} 的任务数据")
+        return None
+    
+    # 计算任务平均总耗时（用于Total Task）
+    avg_task_time = sum(task_durations) / len(task_durations)
+    
+    # 2. 从trajectory目录获取LLM和工具调用耗时
+    if trajectory_dir and os.path.isdir(trajectory_dir):
+        trajectory_data = analyze_directory(trajectory_dir, generate_plot=False)
+        if trajectory_data:
+            avg_llm_time = trajectory_data.get('total_llm_time', 0)
+            avg_tool_time = trajectory_data.get('total_tool_time', 0)
+            llm_count = trajectory_data.get('llm_count', 0)
+            tool_count = trajectory_data.get('tool_count', 0)
+        else:
+            print(f"  警告: 无法从trajectory目录获取数据，LLM和Tool耗时设为0")
+            avg_llm_time = 0
+            avg_tool_time = 0
+            llm_count = 0
+            tool_count = 0
+    else:
+        print(f"  警告: 未找到trajectory目录，LLM和Tool耗时设为0")
+        avg_llm_time = 0
+        avg_tool_time = 0
+        llm_count = 0
+        tool_count = 0
+    
+    return {
+        'total_time': avg_task_time,  # 来自log文件
+        'total_llm_time': avg_llm_time,  # 来自trajectory目录
+        'total_tool_time': avg_tool_time,  # 来自trajectory目录
+        'llm_count': llm_count,
+        'tool_count': tool_count,
+        'task_count': len(task_durations)
+    }
+
 def analyze_directory(directory_path: str, generate_plot: bool = True):
     """分析目录下所有traj_*.json文件，计算平均值"""
     # 查找所有traj_*.json文件
@@ -366,15 +442,77 @@ if __name__ == '__main__':
         print("用法:")
         print("  1. 单个文件: python analyze_timing.py <file_path> [--no-plot]")
         print("  2. 单个目录: python analyze_timing.py <directory_path> [--no-plot]")
-        print("  3. 3个Level对比: python analyze_timing.py <dir1> <dir2> <dir3> [output_path]")
+        print("  3. 3个Level对比(目录): python analyze_timing.py <dir1> <dir2> <dir3> [output_path]")
+        print("  4. 3个Level对比(Log): python analyze_timing.py --log <log_file> <level_id1> <level_id2> <level_id3> [traj_base_dir] [output_path]")
         sys.exit(1)
     
     # 过滤掉--no-plot参数
     args = [arg for arg in sys.argv[1:] if arg != '--no-plot']
     generate_plot = '--no-plot' not in sys.argv
     
+    # 检查是否是log文件模式
+    if args[0] == '--log' and len(args) >= 5:
+        # Log文件模式: --log <log_file> <level_id1> <level_id2> <level_id3> [traj_base_dir] [output_path]
+        log_file = args[1]
+        level_id1 = args[2]
+        level_id2 = args[3]
+        level_id3 = args[4]
+        
+        # 可选的trajectory基础目录（trajectory目录名就是level_id）
+        traj_base_dir = None
+        output_path = None
+        
+        if len(args) > 5:
+            # 检查第5个参数是trajectory基础目录还是output_path
+            if os.path.isdir(args[5]):
+                traj_base_dir = args[5]
+                if len(args) > 6:
+                    output_path = args[6]
+            else:
+                output_path = args[5]
+        
+        if not os.path.isfile(log_file):
+            print(f"错误: log文件不存在: {log_file}")
+            sys.exit(1)
+        
+        print("=" * 80)
+        print("多Level对比分析 (从Log文件)")
+        print("=" * 80)
+        
+        # 分析每个Level
+        level_data_list = []
+        level_ids = [level_id1, level_id2, level_id3]
+        
+        for i, level_id in enumerate(level_ids, 1):
+            print(f"\n分析 Level {i}: {level_id}")
+            
+            # 如果提供了trajectory基础目录，尝试找到对应的trajectory目录
+            traj_dir = None
+            if traj_base_dir:
+                potential_traj_dir = os.path.join(traj_base_dir, level_id)
+                if os.path.isdir(potential_traj_dir):
+                    traj_dir = potential_traj_dir
+                    print(f"  找到trajectory目录: {traj_dir}")
+            
+            chart_data = analyze_level_from_log(log_file, level_id, traj_dir)
+            if chart_data:
+                level_data_list.append(chart_data)
+                print(f"  找到 {chart_data['task_count']} 个任务")
+                print(f"  平均任务总耗时: {chart_data['total_time']:.2f}秒")
+            else:
+                print(f"  警告: Level {i} 分析失败，跳过")
+        
+        if len(level_data_list) == 3:
+            if output_path is None:
+                # 使用第一个level_id作为输出文件名
+                output_path = f'multi_level_timing_analysis_{level_id1}.png'
+            plot_multi_level_analysis(level_data_list, output_path)
+        else:
+            print("错误: 需要成功分析3个Level才能生成对比图")
+            sys.exit(1)
+    
     # 检查是否是3个目录模式
-    if len(args) >= 3:
+    elif len(args) >= 3:
         # 3个Level对比模式
         dir1 = args[0]
         dir2 = args[1]
