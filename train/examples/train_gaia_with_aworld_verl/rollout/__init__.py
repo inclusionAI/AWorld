@@ -1,5 +1,5 @@
 # Import summary first (no dependencies)
-from .summary import (
+from .summary_prompts import (
     episode_memory_summary_rule,
     episode_memory_summary_schema,
     working_memory_summary_rule,

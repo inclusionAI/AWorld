@@ -214,6 +214,9 @@ class McpServers:
                         async def progress_callback(
                                 progress: float, total: float | None, message: str | None
                         ):
+                            # for debug vnc
+                            message_str = message.replace('\n', '\\n') if message else message
+                            logger.debug(f"McpServers|progress_callback|{progress}|{total}|{message_str}")
                             try:
                                 output = Output()
                                 output.data = message
@@ -272,7 +275,7 @@ class McpServers:
 
                         content_list: list[str] = []
                         for content in call_result_raw.content:
-                            logger.info(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {content}")
+                            logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {content}")
                             if isinstance(content, TextContent):
                                 content_list.append(content.text)
                                 _metadata = content.model_extra.get("metadata", {})

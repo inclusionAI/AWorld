@@ -12,11 +12,12 @@ from aworld.core.context.amni.config import get_default_config, init_middlewares
     CONTEXT_OFFLOAD_TOOL_NAME_WHITE
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig
 from aworld.core.task import Task
+from aworld.logs.util import logger
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY, MemoryFactory
 # Import from summary module directly to avoid circular import
 # (rollout/__init__.py imports this file at the top)
-from train.examples.train_gaia_with_aworld_verl.rollout.summary import (
+from train.examples.train_gaia_with_aworld_verl.rollout.summary_prompts import (
     episode_memory_summary_rule,
     working_memory_summary_rule,
     working_memory_summary_schema,
@@ -26,7 +27,7 @@ from train.examples.train_gaia_with_aworld_verl.rollout.summary import (
 )
 
 GAIA_SYSTEM_PROMPT = os.getenv("GAIA_SYSTEM_PROMPT")
-print("GAIA_SYSTEM_PROMPT", GAIA_SYSTEM_PROMPT)
+logger.info("GAIA_SYSTEM_PROMPT", GAIA_SYSTEM_PROMPT)
 
 def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, server_manager = None, tokenizer = None):
 
@@ -88,7 +89,7 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
         enable_system_prompt_augment=True,
         neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
         history_rounds= 100,
-        enable_summary=False,
+        enable_summary= True,
         summary_rounds= 30,
         summary_context_length= 40960,
         summary_prompts=[
@@ -121,11 +122,7 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
         origin_user_input=user_input
     )
 
-    async def build_context(_task_input: TaskInput) -> ApplicationContext:
-        """Important Config"""
-        return await ApplicationContext.from_input(_task_input, context_config=context_config)
-
-    context = await build_context(task_input)
+    context = await ApplicationContext.from_input(task_input=task_input, context_config=context_config)
 
 
     # 4. build swarm
@@ -147,7 +144,6 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
             timeout=timeout
         )
     else:
-        # swarm = TeamSwarm(agent=target, max_steps=30)
         target.task = user_input
         return Task(
             id=context.task_id,
