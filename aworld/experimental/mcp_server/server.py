@@ -2,6 +2,7 @@ import json
 from pydantic import create_model
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool as MCPTool, ContentBlock, TextContent
+from typing import Any, Sequence
 
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.config.conf import TaskConfig
