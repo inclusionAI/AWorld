@@ -408,7 +408,7 @@ def tool_desc_transform(tool_dict: Dict[str, Any],
 
     if provider and 'openai' in provider:
         for tool_name, tool_info in tool_dict.items():
-            if tools and tool_name not in tools:
+            if tools and tool_name not in tools and tool_name.replace("async_", "") not in tools:
                 logger.debug(
                     f"{tool_name} can not supported in {tools}, you can set `tools` params to support it.")
                 continue
