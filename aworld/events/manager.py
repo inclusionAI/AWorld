@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import Dict, Any, List, Callable
 
+from aworld.core.common import StreamingMode
 from aworld.core.context.base import Context
 from aworld.events import eventbus, InMemoryEventbus
 import aworld.events
@@ -13,7 +14,7 @@ from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
 class EventManager:
     """The event manager is now used to build an event bus instance and store the messages recently."""
 
-    def __init__(self, context: Context, streaming_mode: str = None, **kwargs):
+    def __init__(self, context: Context, streaming_mode: StreamingMode = None, **kwargs):
         # use conf to build event bus instance
         self.event_bus = eventbus
         
@@ -137,22 +138,23 @@ class EventManager:
         return results
 
     async def _handle_streaming(self, msg: Message):
-        def filter_stream_message(message: Message, streaming_mode: str):
+        def filter_stream_message(message: Message, streaming_mode: StreamingMode):
             if not streaming_mode:
                 return False
             # Always allow task end messages through
             if message.topic == TopicType.TASK_RESPONSE:
                 return True
-            if streaming_mode == "core" and message.category in [Constants.AGENT, Constants.TOOL, Constants.CHUNK,
-                                                                 Constants.TASK, Constants.GROUP]:
+            if streaming_mode == StreamingMode.CORE and message.category in [Constants.AGENT, Constants.TOOL,
+                                                                             Constants.CHUNK, Constants.TASK,
+                                                                             Constants.GROUP]:
                 return True
-            if streaming_mode == "chunk" and message.category == Constants.CHUNK:
+            if streaming_mode == StreamingMode.CHUNK and message.category == Constants.CHUNK:
                 return True
-            if streaming_mode == "output" and message.category == Constants.OUTPUT:
+            if streaming_mode == StreamingMode.OUTPUT and message.category == Constants.OUTPUT:
                 return True
-            if streaming_mode == "chunk_output" and message.category in [Constants.CHUNK, Constants.OUTPUT]:
+            if streaming_mode == StreamingMode.CHUNK_OUTPUT and message.category in [Constants.CHUNK, Constants.OUTPUT]:
                 return True
-            if streaming_mode == "all":
+            if streaming_mode == StreamingMode.ALL:
                 return True
             return False
 

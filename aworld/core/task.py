@@ -12,7 +12,7 @@ from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Config, Observation
+from aworld.core.common import Config, Observation, StreamingMode
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
@@ -68,7 +68,7 @@ class Task:
     observation: Optional[Observation] = field(default=None)
     task_status: TaskStatus = field(default=TaskStatus.INIT)
     # streaming support
-    streaming_mode: str = field(default=None)
+    streaming_mode: StreamingMode = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.

@@ -34,16 +34,16 @@ class InMemoryEventbus(Eventbus):
         await queue.put(message)
 
     async def consume(self, message: Message, **kwargs):
-        return await self._message_queue.get(message.task_id, PriorityQueue()).get()
+        return await self.get(message.task_id)
 
     async def consume_nowait(self, message: Message):
-        return self._message_queue.get(message.task_id, PriorityQueue()).get_nowait()
+        return await self.get_nowait(message.task_id)
 
     async def get_nowait(self, task_id: str):
         # Ensure the queue exists in the dict before waiting
         if task_id not in self._message_queue:
             self._message_queue[task_id] = PriorityQueue()
-        return self._message_queue.get(task_id, PriorityQueue()).get_nowait()
+        return self._message_queue[task_id].get_nowait()
 
     async def get(self, task_id: str):
         # Ensure the queue exists in the dict before waiting

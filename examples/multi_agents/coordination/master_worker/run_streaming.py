@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import sys
 
+from aworld.core.common import StreamingMode
 from aworld.core.event.base import TopicType, Message
 from aworld.core.task import Task
 
@@ -92,7 +93,7 @@ async def run_task_stream():
     task = Task(input=user_input, swarm=swarm)
     idx = 0
     with open("stream_core.txt", "w") as f:
-        async for res in Runners.streaming_run_task(task, streaming_mode="core"):
+        async for res in Runners.streaming_run_task(task, streaming_mode=StreamingMode.CORE):
             f.write(f"idx {idx}|{res.category}: {res.debug_repr()}\n")
             idx += 1
             if isinstance(res, Message) and res.topic == TopicType.TASK_RESPONSE:
