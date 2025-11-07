@@ -48,6 +48,7 @@ if __name__ == '__main__':
     if not is_open:
         from examples.aworld_quick_start.mcp_tool.mcp_server import main as mcp_main
         thread = Thread(target=mcp_main)
+        thread.daemon = True
         thread.start()
         time.sleep(1)
 

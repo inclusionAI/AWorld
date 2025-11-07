@@ -8,7 +8,6 @@ from aworld.core.memory import MemoryConfig
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MessageMetadata, MemoryHumanMessage
 
-import examples.aworld_quick_start
 from examples.aworld_quick_start.use_memory.util import add_mock_messages
 
 

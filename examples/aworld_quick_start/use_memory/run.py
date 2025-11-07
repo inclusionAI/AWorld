@@ -1,14 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-import os
 
-from aworld.config import AgentMemoryConfig, ModelConfig
-from aworld.core.memory import MemoryConfig
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MessageMetadata, MemoryHumanMessage
+from aworld.memory.models import MessageMetadata
 
-import examples.aworld_quick_start
 from examples.aworld_quick_start.use_memory.util import add_mock_messages
 
 
