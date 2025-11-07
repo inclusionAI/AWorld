@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 
 from aworld.logs.util import asyncio_monitor_logger as logger
-from aworld.trace.asyncio_monitor.util import get_task_stack_info
+from aworld.trace.asyncio_monitor.util import get_task_stack_info, report_stack_info
 
 
 class MonitorDetector(ABC):
@@ -99,7 +99,7 @@ class PendingReasonDetector(MonitorDetector):
 
         for location, _ in top_pengding_locations:
             task = reason_tasks[location]
-            top_location_task_stacks[location] = task.get_stack()
+            top_location_task_stacks[location] = get_task_stack_info(task)
 
         return {
             'top_location_task_stacks': top_location_task_stacks,
@@ -133,12 +133,7 @@ class PendingReasonDetector(MonitorDetector):
 
             logger.info("=" * (width + border_width))
             # print stack trace for each pending location
-            for location, stack_info in data['top_location_task_stacks'].items():
-                logger.info(f"  Stack trace for {location}:")
-                for frame in stack_info[:5]:
-                    logger.info(f"    {frame}")
-                if len(stack_info) > 5:
-                    logger.info(f"    ... and {len(stack_info) - 5} more frames")
+            report_stack_info(data['top_location_task_stacks'])
         else:
             logger.info(loc_header_format.format("No hot pending locations", "-"))
             logger.info(loc_separator_format)
@@ -178,7 +173,7 @@ class BlockingLocationDetector(MonitorDetector):
 
         for location, _ in top_blocking_locations:
             task = location_tasks[location]
-            top_location_task_stacks[location] = task.get_stack()
+            top_location_task_stacks[location] = get_task_stack_info(task)
 
         return {
             'top_location_task_stacks': top_location_task_stacks,
@@ -211,12 +206,7 @@ class BlockingLocationDetector(MonitorDetector):
                 logger.info(loc_header_format.format(display_location, str(count).rjust(count_col_width)))
             logger.info("=" * (width + border_width))
             # print stack trace for each blocking location
-            for location, stack_info in data['top_location_task_stacks'].items():
-                logger.info(f"  Stack trace for {location}:")
-                for frame in stack_info[:5]:
-                    logger.info(f"    {frame}")
-                if len(stack_info) > 5:
-                    logger.info(f"    ... and {len(stack_info) - 5} more frames")
+            report_stack_info(data['top_location_task_stacks'])
         else:
             logger.info(loc_header_format.format("No hot blocking locations", "-"))
             logger.info(loc_separator_format)
