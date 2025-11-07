@@ -4,23 +4,24 @@
 import abc
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
-import asyncio
 
 from pydantic import BaseModel
 
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
-from aworld.events import eventbus
-from aworld.core.tool.action import ToolAction
-from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants, MemoryEventMessage, MemoryEventType
+from aworld.core.event.base import Message, AgentMessage, Constants, MemoryEventMessage, MemoryEventType
 from aworld.core.factory import Factory
+from aworld.core.tool.action import ToolAction
+from aworld.core.tool.action_factory import ActionFactory
+from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
 from aworld.output.base import StepOutput
+from aworld.runners.hook.hooks import HookPoint
+from aworld.runners.hook.utils import run_hooks
 from aworld.utils.common import convert_to_snake, sync_exec
 
 AgentInput = TypeVar("AgentInput")
@@ -445,17 +446,26 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
-            return AgentMessage(payload=step_res,
+            result = AgentMessage(payload=step_res,
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
                                 session_id=context.session_id,
                                 headers={"context": context})
         else:
-            return AgentMessage(payload=step_res,
+            result = AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
                                 session_id=context.session_id,
                                 headers={"context": context})
+
+        # tool hooks
+        try:
+            events = []
+            async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_TOOL_CALL, hook_from=result.caller, payload=step_res):
+                events.append(event)
+        except Exception:
+            logger.debug(traceback.format_exc())
+        return result
 
     async def _exec_tool_callback(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                                   action: List[ActionModel],

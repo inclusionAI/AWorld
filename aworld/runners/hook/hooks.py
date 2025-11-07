@@ -13,6 +13,7 @@ class HookPoint:
     ERROR = "error"
     PRE_LLM_CALL = "pre_llm_call"
     POST_LLM_CALL = "post_llm_call"
+    POST_TOOL_CALL = "post_tool_call"
     OUTPUT_PROCESS = "output_process"
 
 class Hook:
@@ -64,6 +65,13 @@ class PostLLMCallHook(Hook):
 
     def point(self):
         return HookPoint.POST_LLM_CALL
+
+class PostToolCallHook(Hook):
+    """Process in the hook point of the post_tool_call."""
+    __metaclass__ = abc.ABCMeta
+
+    def point(self):
+        return HookPoint.POST_TOOL_CALL
 
 class OutputProcessHook(Hook):
     """Output process hook for processing output data for display."""

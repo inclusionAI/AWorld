@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import json
 import traceback
 from datetime import datetime
@@ -613,10 +614,9 @@ class AworldMemory(Memory):
         
         # 检查是否有配置的 summary_prompts
         if agent_memory_config.summary_prompts and len(agent_memory_config.summary_prompts) > 0:
-            # 轮询 summary_prompts 数组，为每种类型生成摘要
-            all_summary_contents = []
-            for summary_prompt_config in agent_memory_config.summary_prompts:
-                summary_content = await self._generate_typed_summary(
+            # 并行调用 summary_prompts 数组，为每种类型生成摘要
+            tasks = [
+                self._generate_typed_summary(
                     user_task_items, 
                     existed_summary_items, 
                     to_be_summary_items, 
@@ -625,8 +625,11 @@ class AworldMemory(Memory):
                     memory_item, 
                     trigger_reason
                 )
-                if summary_content:
-                    all_summary_contents.append(summary_content)
+                for summary_prompt_config in agent_memory_config.summary_prompts
+            ]
+            summary_contents = await asyncio.gather(*tasks)
+            # 过滤掉 None 的结果
+            all_summary_contents = [content for content in summary_contents if content]
             
             # 拼接所有摘要内容
             if all_summary_contents:

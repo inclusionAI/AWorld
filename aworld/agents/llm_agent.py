@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import json
-import time
 import traceback
 import uuid
 from collections import OrderedDict
@@ -34,6 +33,7 @@ from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
+from aworld.runners.hook.utils import run_hooks
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
@@ -500,7 +500,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         try:
             events = []
-            async for event in self.run_hooks(message.context, HookPoint.PRE_LLM_CALL):
+            async for event in run_hooks(context=message.context, hook_point=HookPoint.PRE_LLM_CALL, hook_from=self.id(), payload=observation):
                 events.append(event)
         except Exception:
             logger.debug(traceback.format_exc())
@@ -551,7 +551,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         try:
             events = []
-            async for event in self.run_hooks(message.context, HookPoint.POST_LLM_CALL):
+            async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_LLM_CALL, hook_from=self.id(), payload=llm_response):
                 events.append(event)
         except Exception as e:
             logger.debug(traceback.format_exc())
@@ -561,8 +561,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
-            # 记录工具执行开始时间
-            tools_execution_start_time = time.time()
             # 记录所有工具调用的开始时间（用于设置 MemoryMessage 的 start_time）
             for act in agent_result.actions:
                 tool_call_start_time = datetime.now().isoformat()
@@ -608,7 +606,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                              sub_task=True,
                                              outputs=message.context.outputs,
                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
-            
+
+            # tool hooks
+            try:
+                events = []
+                async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_TOOL_CALL, hook_from=self.id(), payload=act_result):
+                    events.append(event)
+            except Exception:
+                logger.debug(traceback.format_exc())
+
             if not act_result or not act_result.success:
                 error_msg = act_result.msg if act_result else "Unknown error"
                 logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {error_msg}",
@@ -755,35 +761,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         finally:
             message.context.context_info["llm_output"] = llm_response
         return llm_response
-
-    async def run_hooks(self, context: Context, hook_point: str):
-        """Execute hooks asynchronously"""
-        from aworld.runners.hook.hook_factory import HookFactory
-        from aworld.core.event.base import Message
-
-        # Get all hooks for the specified hook point
-        all_hooks = HookFactory.hooks(hook_point)
-        hooks = all_hooks.get(hook_point, [])
-
-        for hook in hooks:
-            try:
-                # Create a temporary Message object to pass to the hook
-                message = Message(
-                    category="agent_hook",
-                    payload=None,
-                    sender=self.id(),
-                    session_id=context.session_id if hasattr(
-                        context, 'session_id') else None,
-                    headers={"context": message.context}
-                )
-
-                # Execute hook
-                msg = await hook.exec(message, context)
-                if msg:
-                    logger.debug(f"Hook {hook.point()} executed successfully")
-                    yield msg
-            except Exception as e:
-                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
