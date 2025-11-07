@@ -6,7 +6,7 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING, ClassVar
 
 import yaml
 from pydantic import BaseModel, Field
@@ -241,7 +241,7 @@ class TaskConfig(BaseConfig):
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
-    trajectory_strategy: Type['TrajectoryStrategy'] = None
+    trajectory_strategy: ClassVar[Type['TrajectoryStrategy']] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False
