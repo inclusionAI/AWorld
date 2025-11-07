@@ -22,8 +22,7 @@ class WorkingDirNeuron(Neuron):
                 f" <working_dir_attachment>\n"
                 f"  <attachment_id>{i}</attachment_id>\n"
                 f"  <filename>{attachment.filename}</filename>\n"
-                f"  <file_path>{context.working_dir_root}/{attachment.filename}</file_path>\n"
-                f"  <mime_type>{attachment.mime_type}</mime_type>\n"
+                f"  <file_path>{context.abs_file_path(attachment.filename)}</file_path>\n"
             )
 
             # Add additional metadata information (if exists)
