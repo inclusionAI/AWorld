@@ -29,20 +29,15 @@ from train.examples.train_gaia_with_aworld_verl.rollout.summary_prompts import (
 GAIA_SYSTEM_PROMPT = os.getenv("GAIA_SYSTEM_PROMPT")
 logger.info("GAIA_SYSTEM_PROMPT", GAIA_SYSTEM_PROMPT)
 
+def is_summary():
+    return os.getenv("GAIA_AGENT_CONTEXT", 'common') == 'amni'
+
 def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, server_manager = None, tokenizer = None):
 
-    MemoryFactory.init(
-        config=MemoryConfig(
-            provider="aworld",
-            llm_config=MemoryLLMConfig(
-                provider="openai",
-                model_name=os.getenv("LLM_MODEL_NAME"),
-                api_key=os.getenv("LLM_API_KEY"),
-                base_url=os.getenv("LLM_BASE_URL")
-            )
-        )
-    )
+    # # init middlewares
+    # init_middlewares()
 
+    # 1. config agent context
     conf=AgentConfig(
         llm_config=ConfigDict(
             llm_model_name=llm_model_name,
@@ -60,10 +55,21 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
                 "tool_parser": "hermes"
             }
         ),
+        memory_config=AgentMemoryConfig()
     )
-
-    # 1. init middlewares
-    init_middlewares()
+    if is_summary():
+        MemoryFactory.init(
+            config=MemoryConfig(
+                provider="aworld",
+                llm_config=MemoryLLMConfig(
+                    provider="openai",
+                    model_name=os.getenv("LLM_MODEL_NAME"),
+                    api_key=os.getenv("LLM_API_KEY"),
+                    base_url=os.getenv("LLM_BASE_URL")
+                )
+            )
+        )
+        conf.memory_config = AgentMemoryConfig(history_rounds=100, enable_summary=True, summary_rounds=30, summary_context_length=32000)
 
     # 2. init agent
     return Agent(
@@ -77,36 +83,31 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
 
 
 
-async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout, session_id: str = None, task_id: str = None):
+async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, session_id: str = None, task_id: str = None):
     # 1. init middlewares
     init_middlewares()
 
     # 2. build context config
-    # context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
-    # 定制化
     context_config = get_default_config()
-    context_config.agent_config = AgentContextConfig(
-        enable_system_prompt_augment=True,
-        neuron_names= ["basic", "task", "work_dir", "todo", "action_info"],
-        history_rounds= 100,
-        enable_summary= True,
-        summary_rounds= 30,
-        summary_context_length= 40960,
-        summary_prompts=[
-            SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
-                                summary_rule=episode_memory_summary_rule,
-                                summary_schema=episode_memory_summary_schema),
-            SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
-                                summary_rule=working_memory_summary_rule,
-                                summary_schema=working_memory_summary_schema),
-            SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
-                                summary_rule=tool_memory_summary_rule,
-                                summary_schema=tool_memory_summary_schema)
-        ],
-        tool_result_offload=False,
-        tool_action_white_list=CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
-        tool_result_length_threshold=30000
-    )
+    context_config.agent_config = AgentContextConfig()
+    if is_summary():
+        context_config.agent_config = AgentContextConfig(
+            history_rounds= 100,
+            enable_summary= True,
+            summary_rounds= 30,
+            summary_context_length= 40960,
+            summary_prompts=[
+                SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
+                                    summary_rule=episode_memory_summary_rule,
+                                    summary_schema=episode_memory_summary_schema),
+                SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
+                                    summary_rule=working_memory_summary_rule,
+                                    summary_schema=working_memory_summary_schema),
+                SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
+                                    summary_rule=tool_memory_summary_rule,
+                                    summary_schema=tool_memory_summary_schema)
+            ],
+        )
 
     # 3. build context
     if not session_id:
@@ -126,7 +127,6 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
 
 
     # 4. build swarm
-    # build gaia task
     if isinstance(target, Swarm):
         swarm = target
         Task(
@@ -161,20 +161,3 @@ async def build_amni_gaia_task(user_input: str, target: [Agent, Swarm], timeout,
         )
 
     # await context.build_agents_state(swarm.topology)
-
-
-async def build_common_gaia_task(user_input: str, target: [Agent, Swarm], timeout):
-    task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    
-    if isinstance(target, Swarm):
-
-        return Task(id=task_id, input=user_input, swarm=target, timeout=timeout)
-    else:
-        target.task = user_input
-        return Task(id=task_id, input=user_input, agent=target, timeout=timeout)
-
-async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout):
-    if os.getenv("GAIA_AGENT_CONTEXT", "common") == 'common':
-        return await build_common_gaia_task(user_input, target, timeout)
-    else:
-        return await build_amni_gaia_task(user_input, target, timeout)
